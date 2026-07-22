@@ -62,6 +62,7 @@ final class WorkspaceSceneModel: ObservableObject {
     private var isApplyingInventoryOverlay = false
     private var inventoryHosts: [UUID: TmuxHost] = [:]
     private var tmuxSessionsByHost: [UUID: [TmuxSessionSummary]] = [:]
+    private var tmuxReachabilityByHost: [UUID: Date] = [:]
     private var tmuxDiscoveryFailuresByHost: [UUID: String] = [:]
     private var isTmuxDiscoveryLoading = false
     private var tmuxDiscoveryGeneration = 0
@@ -660,6 +661,9 @@ final class WorkspaceSceneModel: ObservableObject {
         tmuxSessionsByHost = tmuxSessionsByHost.filter {
             retainedHostIDs.contains($0.key)
         }
+        tmuxReachabilityByHost = tmuxReachabilityByHost.filter {
+            retainedHostIDs.contains($0.key)
+        }
         tmuxDiscoveryFailuresByHost = tmuxDiscoveryFailuresByHost.filter {
             retainedHostIDs.contains($0.key)
         }
@@ -780,6 +784,7 @@ final class WorkspaceSceneModel: ObservableObject {
             kwtInventoriesByHost: kwtInventoriesByHost,
             kwtAvailabilityByHost: kwtAvailabilityByHost,
             tmuxSessionsByHost: tmuxSessionsByHost,
+            tmuxReachabilityByHost: tmuxReachabilityByHost,
             to: source
         )
     }
@@ -833,6 +838,7 @@ final class WorkspaceSceneModel: ObservableObject {
                         continue
                     }
                     self.tmuxDiscoveryFailuresByHost.removeValue(forKey: hostID)
+                    self.tmuxReachabilityByHost[hostID] = Date()
                     self.tmuxSessionsByHost[hostID] =
                         self.reconciledTmuxSessions(
                             discovered,

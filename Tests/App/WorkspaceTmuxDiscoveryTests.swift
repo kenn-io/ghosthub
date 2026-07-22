@@ -892,6 +892,8 @@ struct WorkspaceTmuxDiscoveryTests {
             model.snapshot.host(id: remoteHostID)
         )
         #expect(remoteSummary.primaryDiagnostic?.code == .missingKwt)
+        #expect(remoteSummary.lastKnownReachable)
+        #expect(remoteSummary.connectionState == .degraded)
         #expect(!remoteSummary.canCreateWorktree)
         await model.shutdown()
     }
