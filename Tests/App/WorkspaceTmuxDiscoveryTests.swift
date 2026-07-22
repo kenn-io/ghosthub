@@ -854,6 +854,42 @@ struct WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("connection probe accepts a tmux-only SSH host")
+    func connectionProbeAcceptsRemoteWithoutKwt() async throws {
+        let environment = try setupStandardEnvironment()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            sshHostProbeRunner: { _, command in
+                #expect(command.contains("command -v tmux"))
+                return (
+                    status: 0,
+                    stdout: "GHOSTHUB_KWT_UNAVAILABLE\n"
+                )
+            }
+        )
+
+        let result = await model.probeSSHHost(SSHHost(
+            configKey: "tmux-only",
+            name: "Tmux Only",
+            platform: .linux,
+            sshDestination: "tmux-only"
+        ))
+        let summary = try result.get()
+
+        #expect(summary.connectionState == .online)
+        #expect(summary.host.lastKnownReachable)
+        #expect(summary.diagnostics.count == 1)
+        #expect(summary.diagnostics.first?.code == .missingKwt)
+        #expect(summary.diagnostics.first?.severity == .warning)
+        #expect(
+            summary.diagnostics.first?.recoverySuggestion
+                .contains("Tmux sessions remain available") == true
+        )
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("remote failures do not enter the workspace-wide error")
     func remoteFailureStaysHostScopedWhenLocalAlsoFails() async throws {
         let environment = try setupStandardEnvironment()

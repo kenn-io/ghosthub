@@ -101,6 +101,7 @@ public enum RemoteHostDiagnosticSeverity: String, Codable, Equatable, Sendable {
 public enum RemoteHostDiagnosticCode: String, Codable, Equatable, Sendable {
     case missingGit
     case missingGh
+    case missingKwt
     case ghNotAuthenticated
     case missingTmux
     case missingInstallDependencies
@@ -135,6 +136,7 @@ public struct RemoteHostDiagnostic: Codable, Equatable, Sendable, Identifiable {
     public var blocksWorktreeCreate: Bool {
         switch code {
         case .missingGit,
+             .missingKwt,
              .missingInstallDependencies,
              .bootstrapFailure,
              .configurationFailure,
@@ -159,7 +161,7 @@ public struct RemoteHostDiagnostic: Codable, Equatable, Sendable, Identifiable {
              .sshConnectionFailed,
              .probeFailure:
             return true
-        case .missingGit, .missingGh, .ghNotAuthenticated:
+        case .missingGit, .missingGh, .missingKwt, .ghNotAuthenticated:
             return false
         }
     }

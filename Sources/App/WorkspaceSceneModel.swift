@@ -49,6 +49,9 @@ final class WorkspaceSceneModel: ObservableObject {
     typealias TmuxSessionDiscovery = @Sendable (
         TmuxHost
     ) -> Result<[DiscoveredTmuxSession], TmuxBinaryError>
+    typealias SSHHostProbeRunner = @Sendable (
+        SSHHostInfo, String
+    ) -> (status: Int32, stdout: String)
 
     @Published var snapshot: WorkspaceSnapshot {
         didSet {
@@ -191,6 +194,7 @@ final class WorkspaceSceneModel: ObservableObject {
     private let kwtInventoryLoader: KwtInventoryLoader
     private let kwtWorktreeCreator: KwtWorktreeCreator
     private let tmuxSessionDiscovery: TmuxSessionDiscovery
+    private let sshHostProbeRunner: SSHHostProbeRunner
     private let configuredSSHHostsProvider: () -> [SSHHost]
     private var configuredSSHHostsCancellable: AnyCancellable?
     private var activityControllerBacking: ActivityMonitoringController?
@@ -289,6 +293,13 @@ final class WorkspaceSceneModel: ObservableObject {
                 resolver.discoverSessions(on: info)
             }
         },
+        sshHostProbeRunner: @escaping SSHHostProbeRunner = { host, command in
+            TmuxBinaryResolver.runRemoteLoginShell(
+                host: host,
+                command: command,
+                timeout: 10
+            )
+        },
         configuredSSHHostsProvider: @escaping () -> [SSHHost] = {
             SettingsStore.shared.sshHosts
         },
@@ -315,6 +326,7 @@ final class WorkspaceSceneModel: ObservableObject {
         self.kwtInventoryLoader = kwtInventoryLoader
         self.kwtWorktreeCreator = kwtWorktreeCreator
         self.tmuxSessionDiscovery = tmuxSessionDiscovery
+        self.sshHostProbeRunner = sshHostProbeRunner
         self.createdSessionDiscoveryDelays =
             createdSessionDiscoveryDelays
         self.configuredSSHHostsProvider = configuredSSHHostsProvider
@@ -1028,22 +1040,39 @@ final class WorkspaceSceneModel: ObservableObject {
         ) else {
             return .failure(.message("Enter a valid SSH destination."))
         }
+        let sshHostProbeRunner = sshHostProbeRunner
         return await Task.detached {
-            let result = TmuxBinaryResolver.runRemoteLoginShell(
-                host: sshHost,
-                command: "command -v tmux >/dev/null && command -v kwt >/dev/null",
-                timeout: 10
+            let result = sshHostProbeRunner(
+                sshHost,
+                "command -v tmux >/dev/null || exit $?; "
+                    + "if command -v kwt >/dev/null; then "
+                    + "printf 'GHOSTHUB_KWT_AVAILABLE\\n'; "
+                    + "else printf 'GHOSTHUB_KWT_UNAVAILABLE\\n'; fi"
             )
             let reachable = result.status == 0
-            let diagnostics: [RemoteHostDiagnostic] = reachable ? [] : [
-                RemoteHostDiagnostic(
+            let kwtAvailable = result.stdout.contains(
+                "GHOSTHUB_KWT_AVAILABLE"
+            )
+            let diagnostics: [RemoteHostDiagnostic]
+            if !reachable {
+                diagnostics = [RemoteHostDiagnostic(
                     code: .probeFailure,
                     severity: .error,
-                    summary: "SSH, tmux, or kwt could not be reached.",
+                    summary: "SSH or tmux could not be reached.",
                     recoverySuggestion:
-                        "Verify the SSH destination and install tmux and kwt on the host."
-                ),
-            ]
+                        "Verify the SSH destination and install tmux on the host."
+                )]
+            } else if !kwtAvailable {
+                diagnostics = [RemoteHostDiagnostic(
+                    code: .missingKwt,
+                    severity: .warning,
+                    summary: "kwt is not available (optional).",
+                    recoverySuggestion:
+                        "Install kwt to show projects and worktrees from this host. Tmux sessions remain available."
+                )]
+            } else {
+                diagnostics = []
+            }
             return .success(HostProbeSummary(
                 host: HostSummary(
                     id: UUID(),
