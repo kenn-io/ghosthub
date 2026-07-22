@@ -62,7 +62,8 @@ final class WorkspaceSceneModel: ObservableObject {
     private var isApplyingInventoryOverlay = false
     private var inventoryHosts: [UUID: TmuxHost] = [:]
     private var tmuxSessionsByHost: [UUID: [TmuxSessionSummary]] = [:]
-    private var tmuxReachabilityByHost: [UUID: Date] = [:]
+    private var tmuxReachabilityByHost: [UUID: Bool] = [:]
+    private var tmuxLastSeenByHost: [UUID: Date] = [:]
     private var tmuxDiscoveryFailuresByHost: [UUID: String] = [:]
     private var isTmuxDiscoveryLoading = false
     private var tmuxDiscoveryGeneration = 0
@@ -606,19 +607,36 @@ final class WorkspaceSceneModel: ObservableObject {
 
         isWorktreeCreationInProgress = true
         invalidateKwtInventoryRefresh()
-        defer { isWorktreeCreationInProgress = false }
+        var shouldRefreshKwtInventory = false
+        defer {
+            isWorktreeCreationInProgress = false
+            if shouldRefreshKwtInventory {
+                scheduleKwtInventory()
+            }
+        }
 
-        try await kwtWorktreeCreator(request, project.rootPath, host)
+        do {
+            try await kwtWorktreeCreator(request, project.rootPath, host)
 
-        let refreshed = try await kwtInventoryLoader(host)
-        let previous = kwtInventoriesByHost[project.hostID]
-        kwtInventoriesByHost[project.hostID] =
-            refreshed.retainingFailedProjectWorktrees(from: previous)
-        kwtAvailabilityByHost[project.hostID] = true
-        kwtInventoryFailuresByHost.removeValue(forKey: project.hostID)
-        applyInventoryOverlayIfNeeded()
-        updateWorkspaceInventoryState()
-        scheduleTmuxSessionDiscovery()
+            let refreshed = try await kwtInventoryLoader(host)
+            let previous = kwtInventoriesByHost[project.hostID]
+            kwtInventoriesByHost[project.hostID] =
+                refreshed.retainingFailedProjectWorktrees(from: previous)
+            kwtAvailabilityByHost[project.hostID] = true
+            kwtInventoryFailuresByHost.removeValue(forKey: project.hostID)
+            applyInventoryOverlayIfNeeded()
+            updateWorkspaceInventoryState()
+            scheduleTmuxSessionDiscovery()
+        } catch {
+            if isRemoteKwtUnavailable(error, hostID: project.hostID) {
+                kwtAvailabilityByHost[project.hostID] = false
+                kwtInventoryFailuresByHost.removeValue(forKey: project.hostID)
+                applyInventoryOverlayIfNeeded()
+                updateWorkspaceInventoryState()
+                shouldRefreshKwtInventory = true
+            }
+            throw error
+        }
 
         guard let created = snapshot.worktrees.first(where: {
             $0.projectID == project.id && $0.branch == request.branchName
@@ -662,6 +680,9 @@ final class WorkspaceSceneModel: ObservableObject {
             retainedHostIDs.contains($0.key)
         }
         tmuxReachabilityByHost = tmuxReachabilityByHost.filter {
+            retainedHostIDs.contains($0.key)
+        }
+        tmuxLastSeenByHost = tmuxLastSeenByHost.filter {
             retainedHostIDs.contains($0.key)
         }
         tmuxDiscoveryFailuresByHost = tmuxDiscoveryFailuresByHost.filter {
@@ -730,7 +751,7 @@ final class WorkspaceSceneModel: ObservableObject {
                             forKey: hostID
                         )
                     case let .failure(error):
-                        if self.isOptionalRemoteKwtUnavailable(
+                        if self.isRemoteKwtUnavailable(
                             error,
                             hostID: hostID
                         ) {
@@ -766,15 +787,20 @@ final class WorkspaceSceneModel: ObservableObject {
         updateWorkspaceInventoryState()
     }
 
-    private func isOptionalRemoteKwtUnavailable(
+    private func isRemoteKwtUnavailable(
         _ error: Error,
         hostID: UUID
     ) -> Bool {
-        guard inventoryHosts[hostID]?.isRemote == true,
-              let inventoryError = error as? KwtInventoryError,
-              case .commandFailed(_, 127) = inventoryError
-        else { return false }
-        return true
+        guard inventoryHosts[hostID]?.isRemote == true else { return false }
+        if let inventoryError = error as? KwtInventoryError,
+           case .commandFailed(_, 127) = inventoryError {
+            return true
+        }
+        if let worktreeError = error as? KwtWorktreeError,
+           case .commandFailed(_, 127) = worktreeError {
+            return true
+        }
+        return false
     }
 
     private func applyingCachedInventories(
@@ -785,6 +811,7 @@ final class WorkspaceSceneModel: ObservableObject {
             kwtAvailabilityByHost: kwtAvailabilityByHost,
             tmuxSessionsByHost: tmuxSessionsByHost,
             tmuxReachabilityByHost: tmuxReachabilityByHost,
+            tmuxLastSeenByHost: tmuxLastSeenByHost,
             to: source
         )
     }
@@ -829,16 +856,19 @@ final class WorkspaceSceneModel: ObservableObject {
                     }
                     guard case let .success(discovered) = result else {
                         if case let .failure(error) = result {
+                            self.tmuxReachabilityByHost[hostID] = false
                             let hostName = self.snapshot.host(id: hostID)?.name
                                 ?? "Unknown host"
                             self.tmuxDiscoveryFailuresByHost[hostID] =
                                 "\(hostName): \(error.localizedDescription)"
                         }
+                        self.applyInventoryOverlayIfNeeded()
                         self.updateWorkspaceInventoryState()
                         continue
                     }
                     self.tmuxDiscoveryFailuresByHost.removeValue(forKey: hostID)
-                    self.tmuxReachabilityByHost[hostID] = Date()
+                    self.tmuxReachabilityByHost[hostID] = true
+                    self.tmuxLastSeenByHost[hostID] = Date()
                     self.tmuxSessionsByHost[hostID] =
                         self.reconciledTmuxSessions(
                             discovered,

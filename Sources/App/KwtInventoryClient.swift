@@ -372,7 +372,8 @@ enum HostInventoryOverlay {
         kwtInventoriesByHost: [UUID: KwtHostInventory],
         kwtAvailabilityByHost: [UUID: Bool] = [:],
         tmuxSessionsByHost: [UUID: [TmuxSessionSummary]],
-        tmuxReachabilityByHost: [UUID: Date] = [:],
+        tmuxReachabilityByHost: [UUID: Bool] = [:],
+        tmuxLastSeenByHost: [UUID: Date] = [:],
         to source: WorkspaceSnapshot
     ) -> WorkspaceSnapshot {
         var updated = kwtInventoriesByHost.reduce(source) { partial, entry in
@@ -401,11 +402,16 @@ enum HostInventoryOverlay {
                 )
             }
         }
-        for (hostID, reachedAt) in tmuxReachabilityByHost {
+        for (hostID, isReachable) in tmuxReachabilityByHost {
             guard let index = updated.hosts.firstIndex(where: {
                 $0.id == hostID
             }) else { continue }
-            updated.hosts[index].lastKnownReachable = true
+            updated.hosts[index].lastKnownReachable = isReachable
+        }
+        for (hostID, reachedAt) in tmuxLastSeenByHost {
+            guard let index = updated.hosts.firstIndex(where: {
+                $0.id == hostID
+            }) else { continue }
             if updated.hosts[index].lastSeenAt.map({ $0 < reachedAt }) ?? true {
                 updated.hosts[index].lastSeenAt = reachedAt
             }

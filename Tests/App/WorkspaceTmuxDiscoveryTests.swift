@@ -10,6 +10,11 @@ import Testing
 
 @Suite("Workspace tmux discovery")
 struct WorkspaceTmuxDiscoveryTests {
+    private enum CreationKwtFailurePhase: CaseIterable, Sendable {
+        case command
+        case inventoryRefresh
+    }
+
     private final class Counter: @unchecked Sendable {
         private let lock = NSLock()
         private var value = 0
@@ -32,6 +37,7 @@ struct WorkspaceTmuxDiscoveryTests {
         private let lock = NSLock()
         private let remoteInventory: KwtHostInventory
         private var remoteKwtAvailable = true
+        private var remoteLoads = 0
 
         init(remoteInventory: KwtHostInventory) {
             self.remoteInventory = remoteInventory
@@ -42,6 +48,7 @@ struct WorkspaceTmuxDiscoveryTests {
                 return KwtHostInventory(projects: [])
             }
             lock.lock()
+            remoteLoads += 1
             let isAvailable = remoteKwtAvailable
             lock.unlock()
             guard isAvailable else {
@@ -62,6 +69,43 @@ struct WorkspaceTmuxDiscoveryTests {
         func markRemoteKwtAvailable() {
             lock.lock()
             remoteKwtAvailable = true
+            lock.unlock()
+        }
+
+        var remoteLoadCount: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return remoteLoads
+        }
+    }
+
+    private final class TmuxReachabilityState: @unchecked Sendable {
+        private let lock = NSLock()
+        private var remoteReachable = true
+
+        func discover(
+            _ host: TmuxHost
+        ) -> Result<[DiscoveredTmuxSession], TmuxBinaryError> {
+            guard host.isRemote else { return .success([]) }
+            lock.lock()
+            let isReachable = remoteReachable
+            lock.unlock()
+            guard isReachable else {
+                return .failure(.shellFailed(status: 255))
+            }
+            return .success([
+                DiscoveredTmuxSession(
+                    name: "docbank",
+                    windowCount: 1,
+                    createdAt: "1721552400",
+                    managed: false
+                ),
+            ])
+        }
+
+        func markRemoteUnreachable() {
+            lock.lock()
+            remoteReachable = false
             lock.unlock()
         }
     }
@@ -997,6 +1041,180 @@ struct WorkspaceTmuxDiscoveryTests {
                 && host?.canCreateWorktree == true
         }
         #expect(model.snapshot.canCreateWorktree(in: cachedProject))
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test(
+        "status 127 during creation disables kwt and schedules discovery",
+        arguments: CreationKwtFailurePhase.allCases
+    )
+    private func creationKwtLossDisablesCapability(
+        phase: CreationKwtFailurePhase
+    ) async throws {
+        let environment = try setupStandardEnvironment()
+        let remote = SSHHost(
+            configKey: "build-box",
+            name: "Build Box",
+            platform: .linux,
+            sshDestination: "build-box"
+        )
+        let configuredHosts = CurrentValueSubject<[SSHHost], Never>([remote])
+        let availability = KwtAvailabilityState(
+            remoteInventory: KwtHostInventory(projects: [
+                KwtProjectInventory(
+                    project: KwtProjectRecord(
+                        repository: "github.com/kenn-io/docbank",
+                        name: "docbank",
+                        path: "/srv/docbank",
+                        lastTouched: nil
+                    ),
+                    worktrees: [],
+                    warning: nil
+                ),
+            ])
+        )
+        let creationAttempts = Counter()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            kwtInventoryLoader: { host in
+                try availability.load(host)
+            },
+            kwtWorktreeCreator: { _, _, host in
+                _ = creationAttempts.increment()
+                if phase == .command {
+                    throw KwtWorktreeError.commandFailed(
+                        host: host.displayName,
+                        status: 127
+                    )
+                }
+            },
+            tmuxSessionDiscovery: { _ in .success([]) },
+            configuredSSHHostsProvider: { configuredHosts.value },
+            configuredSSHHostsPublisher:
+                configuredHosts.eraseToAnyPublisher(),
+            startServices: true
+        )
+
+        await waitUntilMainActor {
+            model.snapshot.projects.contains { $0.name == "docbank" }
+        }
+        let cachedProject = try #require(
+            model.snapshot.projects.first { $0.name == "docbank" }
+        )
+        availability.markRemoteKwtUnavailable()
+
+        do {
+            try await model.createWorktree(WorktreeCreateRequest(
+                projectID: cachedProject.id,
+                branchName: "feature/kwt-disappeared",
+                createsBranch: true
+            ))
+            Issue.record("Expected status 127 from worktree creation")
+        } catch {
+            switch (phase, error) {
+            case let (.command, worktreeError as KwtWorktreeError):
+                #expect(
+                    worktreeError == .commandFailed(
+                        host: "build-box",
+                        status: 127
+                    )
+                )
+            case let (.inventoryRefresh, inventoryError as KwtInventoryError):
+                #expect(
+                    inventoryError == .commandFailed(
+                        host: "build-box",
+                        status: 127
+                    )
+                )
+            default:
+                Issue.record("Unexpected status-127 error: \(error)")
+            }
+        }
+
+        await waitUntilMainActor {
+            availability.remoteLoadCount >= 2
+                && model.snapshot.host(id: cachedProject.hostID)?
+                    .primaryDiagnostic?.code == .missingKwt
+        }
+        #expect(creationAttempts.count == 1)
+        #expect(model.snapshot.project(id: cachedProject.id) != nil)
+        #expect(!model.snapshot.canCreateWorktree(in: cachedProject))
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("tmux discovery failure invalidates prior host reachability")
+    func tmuxFailureMarksPreviouslyReachableHostOffline() async throws {
+        let environment = try setupStandardEnvironment()
+        let remote = SSHHost(
+            configKey: "build-box",
+            name: "Build Box",
+            platform: .linux,
+            sshDestination: "build-box"
+        )
+        let configuredHosts = CurrentValueSubject<[SSHHost], Never>([remote])
+        let availability = KwtAvailabilityState(
+            remoteInventory: KwtHostInventory(projects: [
+                KwtProjectInventory(
+                    project: KwtProjectRecord(
+                        repository: "github.com/kenn-io/docbank",
+                        name: "docbank",
+                        path: "/srv/docbank",
+                        lastTouched: nil
+                    ),
+                    worktrees: [],
+                    warning: nil
+                ),
+            ])
+        )
+        let reachability = TmuxReachabilityState()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            kwtInventoryLoader: { host in
+                try availability.load(host)
+            },
+            tmuxSessionDiscovery: reachability.discover,
+            configuredSSHHostsProvider: { configuredHosts.value },
+            configuredSSHHostsPublisher:
+                configuredHosts.eraseToAnyPublisher(),
+            startServices: true
+        )
+
+        await waitUntilMainActor {
+            model.snapshot.hosts.contains {
+                $0.configKey == remote.configKey
+                    && $0.lastKnownReachable
+                    && $0.tmuxSessions.map(\.name) == ["docbank"]
+            }
+        }
+        let remoteHost = try #require(
+            model.snapshot.hosts.first { $0.configKey == remote.configKey }
+        )
+        let lastSeenAt = try #require(remoteHost.lastSeenAt)
+        let cachedProject = try #require(
+            model.snapshot.projects.first { $0.hostID == remoteHost.id }
+        )
+        #expect(model.snapshot.canCreateWorktree(in: cachedProject))
+
+        reachability.markRemoteUnreachable()
+        model.refreshTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            model.snapshot.host(id: remoteHost.id)?.connectionState == .offline
+        }
+
+        let offlineHost = try #require(model.snapshot.host(id: remoteHost.id))
+        #expect(!offlineHost.lastKnownReachable)
+        #expect(offlineHost.lastSeenAt == lastSeenAt)
+        #expect(offlineHost.tmuxSessions.map(\.name) == ["docbank"])
+        #expect(model.snapshot.project(id: cachedProject.id) != nil)
+        #expect(!model.snapshot.canCreateWorktree(in: cachedProject))
+        #expect(
+            model.workspaceInventoryWarningsByHost[offlineHost.id]?
+                .contains("255") == true
+        )
         await model.shutdown()
     }
 
