@@ -1,0 +1,214 @@
+---
+import { DISCORD_URL, GITHUB_REPO, GITHUB_URL } from '../config';
+import AppIcon from './AppIcon.astro';
+---
+
+<header>
+  <div class="container bar">
+    <a class="brand" href="/"><AppIcon prefix="gh-ic-hdr" /><span>Ghosthub</span></a>
+    <nav aria-label="External links">
+      <a class="repo" href={GITHUB_URL}>
+        <span class="sr-only">Ghosthub on GitHub:</span>
+        <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true" fill="currentColor">
+          <path
+            d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38
+            0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13
+            -.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07
+            -.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2
+            -.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27
+            c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0
+            3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0
+            .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"
+          />
+        </svg>
+        <span class="repo-meta">
+          <span class="repo-name">{GITHUB_REPO}</span>
+          <span class="facts" data-facts hidden>
+            <span class="fact" data-fact="version" hidden>
+              <span class="sr-only">latest release</span>
+              <svg
+                viewBox="0 0 24 24"
+                width="11"
+                height="11"
+                aria-hidden="true"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path
+                  d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0
+                  .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426
+                  2.426 0 0 0 0-3.42z"
+                />
+                <circle cx="7.5" cy="7.5" r=".5" fill="currentColor"></circle>
+              </svg>
+              <span data-fact-text></span>
+            </span>
+            <span class="fact" data-fact="stars" hidden>
+              <span class="sr-only">stars</span>
+              <svg
+                viewBox="0 0 16 16"
+                width="11"
+                height="11"
+                aria-hidden="true"
+                fill="currentColor"
+              >
+                <path
+                  d="M8 .25a.75.75 0 0 1 .67.42l1.88 3.8 4.2.62a.75.75 0 0 1 .42
+                  1.28l-3.04 2.97.72 4.18a.75.75 0 0 1-1.09.8L8 12.35l-3.76
+                  1.97a.75.75 0 0 1-1.09-.79l.72-4.19L.83 6.37a.75.75 0 0 1
+                  .42-1.28l4.2-.61L7.33.67A.75.75 0 0 1 8 .25Z"
+                />
+              </svg>
+              <span data-fact-text></span>
+            </span>
+            <span class="fact" data-fact="forks" hidden>
+              <span class="sr-only">forks</span>
+              <svg
+                viewBox="0 0 24 24"
+                width="11"
+                height="11"
+                aria-hidden="true"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <circle cx="12" cy="18" r="3"></circle>
+                <circle cx="6" cy="6" r="3"></circle>
+                <circle cx="18" cy="6" r="3"></circle>
+                <path d="M18 9v2c0 .6-.4 1-1 1H7c-.6 0-1-.4-1-1V9m6 3v3"></path>
+              </svg>
+              <span data-fact-text></span>
+            </span>
+          </span>
+        </span>
+      </a>
+      <a class="icon" href={DISCORD_URL} aria-label="Ghosthub Discord">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" fill="currentColor">
+          <path
+            d="M20.32 4.37a19.8 19.8 0 0 0-4.89-1.52.07.07 0 0 0-.08.04c-.21.38-.44.87-.6
+            1.25a18.3 18.3 0 0 0-5.5 0 12.6 12.6 0 0 0-.61-1.25.08.08 0 0 0-.08-.04
+            19.7 19.7 0 0 0-4.88 1.52.07.07 0 0 0-.04.03C.53 9.05-.32 13.58.1 18.06c0
+            .02.01.04.03.05a19.9 19.9 0 0 0 6 3.03.08.08 0 0 0 .08-.03c.46-.63.87-1.3
+            1.22-2a.08.08 0 0 0-.04-.11 13 13 0 0 1-1.87-.9.08.08 0 0 1-.01-.12l.37-.29
+            a.07.07 0 0 1 .08-.01 14.2 14.2 0 0 0 12.06 0 .07.07 0 0 1 .08 0l.37.3a.08.08
+            0 0 1 0 .12 12.3 12.3 0 0 1-1.88.89.08.08 0 0 0-.04.12c.36.7.77 1.36 1.22
+            1.99a.08.08 0 0 0 .08.03 19.8 19.8 0 0 0 6.03-3.03.08.08 0 0 0 .03-.05c.5
+            -5.18-.84-9.68-3.55-13.66a.06.06 0 0 0-.03-.03ZM8.02 15.33c-1.18 0-2.16-1.08
+            -2.16-2.42 0-1.33.96-2.42 2.16-2.42 1.21 0 2.18 1.1 2.16 2.42 0 1.34-.96 2.42
+            -2.16 2.42Zm7.97 0c-1.18 0-2.15-1.08-2.15-2.42 0-1.33.95-2.42 2.15-2.42 1.21
+            0 2.18 1.1 2.16 2.42 0 1.34-.95 2.42-2.16 2.42Z"
+          />
+        </svg>
+      </a>
+    </nav>
+  </div>
+</header>
+
+<style>
+  header {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: color-mix(in srgb, var(--bg) 82%, transparent);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--line);
+  }
+
+  .bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 3.5rem;
+  }
+
+  .brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-family: var(--font-mono);
+    font-weight: 700;
+    font-size: 1.05rem;
+  }
+
+  .brand :global(svg) {
+    width: 24px;
+    height: 24px;
+  }
+
+  nav {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+  }
+
+  .repo {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    color: var(--text-dim);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 0.3rem 0.7rem;
+    transition: color 0.15s, border-color 0.15s;
+  }
+
+  .repo:hover {
+    color: var(--text);
+    border-color: var(--text-faint);
+  }
+
+  .repo-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    line-height: 1.2;
+  }
+
+  .facts {
+    display: flex;
+    gap: 0.6rem;
+    font-size: 0.68rem;
+    color: var(--text-faint);
+  }
+
+  .facts[hidden] {
+    display: none;
+  }
+
+  .fact {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.22rem;
+  }
+
+  .fact[hidden] {
+    display: none;
+  }
+
+  .repo:hover .facts {
+    color: var(--text-dim);
+  }
+
+  .icon {
+    color: var(--text-dim);
+    display: inline-flex;
+    transition: color 0.15s;
+  }
+
+  .icon:hover {
+    color: var(--text);
+  }
+
+  @media (max-width: 560px) {
+    .repo-meta {
+      display: none;
+    }
+  }
+</style>

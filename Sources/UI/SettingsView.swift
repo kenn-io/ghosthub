@@ -1,0 +1,525 @@
+import GhosthubSettings
+import SwiftUI
+import GhosthubWorkspace
+
+public struct SettingsActions {
+    var refreshHosts: () -> Void = {}
+    var probeSSHHost:
+        (SSHHost) async -> Result<
+            HostProbeSummary,
+            HostProbeError
+        > = { _ in
+            .failure(.message("SSH host probing is unavailable."))
+        }
+    var loadTailscalePeers: () async -> TailscalePeerLoadResult = {
+        .failure("Tailscale import is unavailable.")
+    }
+    var reloadTerminalConfig: () -> Void = {}
+
+    public init(
+        refreshHosts: @escaping () -> Void = {},
+        probeSSHHost: @escaping (SSHHost) async -> Result<
+            HostProbeSummary,
+            HostProbeError
+        > = { _ in
+            .failure(.message("SSH host probing is unavailable."))
+        },
+        loadTailscalePeers: @escaping () async -> TailscalePeerLoadResult = {
+            .failure("Tailscale import is unavailable.")
+        },
+        reloadTerminalConfig: @escaping () -> Void = {}
+    ) {
+        self.refreshHosts = refreshHosts
+        self.probeSSHHost = probeSSHHost
+        self.loadTailscalePeers = loadTailscalePeers
+        self.reloadTerminalConfig = reloadTerminalConfig
+    }
+}
+
+public struct SettingsView: View {
+    private static let minSheetWidth: CGFloat = 1040
+    private static let minSheetHeight: CGFloat = 680
+
+    @ObservedObject private var store: SettingsStore
+    private let actions: SettingsActions
+    private let showsToolbar: Bool
+    private let simplifiedForTesting: Bool
+    private let defaultFontSizes: [Double] = [10, 11, 12, 13, 14, 15, 16, 18, 20, 24]
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var draft: SettingsViewDraft
+    @State private var hostProbeResult: HostProbeSummary?
+    @State private var hostProbeErrorMessage: String?
+    @State private var isProbingHost = false
+    @State private var tailscalePeers: [TailscalePeer]?
+    @State private var tailscaleError: String?
+    @State private var isLoadingTailscale = false
+    @State private var isTailscaleSheetPresented = false
+    public init(
+        store: SettingsStore,
+        actions: SettingsActions = SettingsActions(),
+        showsToolbar: Bool = true,
+        simplifiedForTesting: Bool = false
+    ) {
+        _store = ObservedObject(wrappedValue: store)
+        self.actions = actions
+        self.showsToolbar = showsToolbar
+        self.simplifiedForTesting = simplifiedForTesting
+
+        _draft = State(
+            initialValue: SettingsViewDraft(
+                store: store
+            )
+        )
+    }
+
+    public var body: some View {
+        settingsContent
+            .onDisappear {
+                persist()
+            }
+            .onChange(of: draft.selectedSSHHostDraftID) { _, _ in
+                hostProbeResult = nil
+                hostProbeErrorMessage = nil
+            }
+    }
+
+    @ViewBuilder
+    private var settingsContent: some View {
+        let content = NavigationSplitView {
+            sidebar
+                .navigationSplitViewColumnWidth(
+                    min: 190,
+                    ideal: 210,
+                    max: 240
+                )
+        } detail: {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    header
+                    detail
+                }
+                .padding(24)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+            .background(paneFill)
+        }
+        .frame(
+            minWidth: Self.minSheetWidth,
+            minHeight: Self.minSheetHeight
+        )
+        if showsToolbar {
+            content.toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") {
+                        persist()
+                        dismiss()
+                    }
+                }
+            }
+        } else {
+            content
+        }
+    }
+
+    private var sidebar: some View {
+        List(selection: $draft.selectedDomain) {
+            Section("Settings") {
+                ForEach(SettingsDomain.allCases) { domain in
+                    Label(
+                        domain.title,
+                        systemImage: domain.systemImageName
+                    )
+                    .tag(domain)
+                }
+            }
+        }
+        .listStyle(.sidebar)
+    }
+
+    @ViewBuilder
+    private var detail: some View {
+        if simplifiedForTesting {
+            Color.clear
+                .frame(maxWidth: .infinity, minHeight: 1)
+        } else {
+            switch draft.selectedDomain {
+            case .appearance:
+                appearanceDetail
+            case .terminal:
+                terminalDetail
+            case .keyboard:
+                keyboardDetail
+            case .worktrees:
+                worktreesDetail
+            case .agents:
+                agentsDetail
+            case .hosts:
+                hostsDetail
+            }
+        }
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(draft.selectedDomain.title)
+                .font(.system(size: 24, weight: .bold))
+
+            Text(draft.selectedDomain.subtitle)
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
+
+            if let lastErrorMessage = store.lastErrorMessage {
+                Text(lastErrorMessage)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.red)
+            }
+        }
+    }
+
+    private var availableTerminalFontFamilies: [String] {
+        let installed = NSFontManager.shared.availableFontFamilies.sorted()
+        let trimmedCurrent = draft.terminalFontFamily.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !trimmedCurrent.isEmpty,
+              !installed.contains(trimmedCurrent)
+        else {
+            return installed
+        }
+        return [trimmedCurrent] + installed
+    }
+
+    private var availableTerminalFontSizes: [Double] {
+        let roundedCurrent = (draft.terminalFontSize * 2).rounded() / 2
+        let sizes = Set(defaultFontSizes + [roundedCurrent])
+        return sizes.sorted()
+    }
+
+    private var hostsDetail: some View {
+        HostsSettingsView(
+            sshHosts: $draft.sshHosts,
+            selectedSSHHostDraftID: $draft.selectedSSHHostDraftID,
+            hostProbeResult: $hostProbeResult,
+            hostProbeErrorMessage: $hostProbeErrorMessage,
+            isProbingSSHHost: $isProbingHost,
+            tailscalePeers: $tailscalePeers,
+            tailscaleError: $tailscaleError,
+            isLoadingTailscale: $isLoadingTailscale,
+            isTailscaleSheetPresented: $isTailscaleSheetPresented,
+            probeSSHHost: actions.probeSSHHost,
+            loadTailscalePeers: actions.loadTailscalePeers
+        )
+    }
+
+    private var terminalDetail: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            settingsSection("Interaction") {
+                Toggle("Hide the mouse while typing", isOn: $draft.hideMouseWhileTyping)
+                Toggle(
+                    "Copy selections directly to the clipboard",
+                    isOn: $draft.copySelectionToClipboard
+                )
+
+                Text(
+                    "These settings stay in Ghosthub’s managed terminal block inside ghostty.conf. Built-in themes and font overrides are handled separately in Appearance."
+                )
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var keyboardDetail: some View {
+        ApplicationShortcutsView()
+    }
+
+    private var worktreesDetail: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            settingsSection("Sidebar Behavior") {
+                Toggle(
+                    "Hide the root checkout in the sidebar",
+                    isOn: $draft.hideRootCheckout
+                )
+                Toggle(
+                    "Show hidden worktrees by default",
+                    isOn: $draft.showHiddenWorktreesByDefault
+                )
+
+                Text(
+                    "Kwt remains authoritative for registered projects,"
+                        + " worktrees, and tmux session names."
+                )
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
+            settingsSection("Workspace Sessions") {
+                Label(
+                    "Kwt supplies each workspace’s exact tmux session name.",
+                    systemImage: "checkmark.circle.fill"
+                )
+                .foregroundStyle(.secondary)
+
+                Label(
+                    "Tmux owns windows, panes, layout, history, and process lifetime.",
+                    systemImage: "rectangle.split.3x1"
+                )
+                .foregroundStyle(.secondary)
+
+                Label(
+                    "Closing Ghosthub detaches; reopening reattaches locally or over SSH.",
+                    systemImage: "arrow.triangle.2.circlepath"
+                )
+                .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var agentsDetail: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            settingsSection("Agent Attention") {
+                Toggle(
+                    "Show macOS notifications when agents need attention",
+                    isOn: $draft.showMacOSNotifications
+                )
+
+                settingRow("Attention sound") {
+                    Picker(
+                        "Attention sound",
+                        selection: $draft.attentionSound
+                    ) {
+                        ForEach(
+                            WorkspaceNotificationSound.allCases,
+                            id: \.self
+                        ) { sound in
+                            Text(sound.title).tag(sound)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 180)
+                    .disabled(!draft.showMacOSNotifications)
+                }
+
+                Text(
+                    "Ghosthub uses this notification policy when a"
+                        + " recognized agent session needs attention."
+                )
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var appearanceDetail: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            settingsSection("App Appearance") {
+                settingRow("App appearance") {
+                    Picker("App appearance", selection: $draft.interfaceAppearance) {
+                        Text("Follow System").tag(AppearancePreference.system)
+                        Text("Light").tag(AppearancePreference.light)
+                        Text("Dark").tag(AppearancePreference.dark)
+                    }
+                    .labelsHidden()
+                    .frame(width: 260)
+                }
+            }
+
+            settingsSection("Terminal Theme") {
+                settingRow("Theme") {
+                    Picker("Theme", selection: $draft.terminalTheme) {
+                        ForEach(TerminalTheme.allCases) { theme in
+                            Text(theme.title).tag(theme)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 260)
+                }
+
+                terminalThemePreview(theme: draft.terminalTheme)
+
+                Text(
+                    "Follow ghostty.conf keeps Ghosthub from applying any built-in terminal colors. Choosing a built-in theme writes a Ghosthub-owned overlay file that loads after ghostty.conf and any project terminal.conf override."
+                )
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
+            settingsSection("Terminal Font") {
+                Toggle("Override font from ghostty.conf", isOn: $draft.usesCustomTerminalFont)
+
+                if draft.usesCustomTerminalFont {
+                    settingRow("Font family") {
+                        Picker("Font family", selection: $draft.terminalFontFamily) {
+                            ForEach(availableTerminalFontFamilies, id: \.self) { family in
+                                Text(family).tag(family)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 260)
+                    }
+
+                    settingRow("Font size") {
+                        Picker("Font size", selection: $draft.terminalFontSize) {
+                            ForEach(availableTerminalFontSizes, id: \.self) { size in
+                                Text(fontSizeLabel(size)).tag(size)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 140)
+                    }
+                }
+
+                Text(
+                    "When font override is off, Ghosthub leaves font-family and font-size entirely to ghostty.conf. When it is on, the override lives in the same Ghosthub-owned appearance overlay as the built-in theme."
+                )
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
+            settingsSection("Cursor") {
+                settingRow("Cursor style") {
+                    Picker("Cursor style", selection: $draft.cursorStyle) {
+                        Text("Block").tag(CursorStyle.block)
+                        Text("Line").tag(CursorStyle.bar)
+                        Text("Underline").tag(CursorStyle.underline)
+                    }
+                    .labelsHidden()
+                    .frame(width: 180)
+                }
+
+                Toggle(
+                    "Let shell integration control cursor shape",
+                    isOn: $draft.allowShellIntegrationToControlCursor
+                )
+
+                Text(
+                    "Cursor shape can either follow Ghosthub's chosen cursor style or let shell integration change it dynamically."
+                )
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
+            settingsSection("Config Files") {
+                configPathRow(
+                    "Ghosthub reads base terminal config from:",
+                    path: store.terminalConfigFile.path
+                )
+                configPathRow(
+                    "Ghosthub writes built-in theme/font overrides to:",
+                    path: store.terminalAppearanceConfigFile.path
+                )
+            }
+        }
+    }
+
+    private func settingRow<Control: View>(
+        _ title: String,
+        @ViewBuilder control: () -> Control
+    ) -> some View {
+        HStack {
+            Text(title)
+            Spacer()
+            control()
+        }
+    }
+
+    private func configPathRow(
+        _ label: String,
+        path: String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label)
+                .font(.system(size: 12, weight: .semibold))
+            HStack(spacing: 6) {
+                Text(path)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(
+                        path, forType: .string
+                    )
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Copy path")
+                .accessibilityLabel("Copy config path")
+            }
+        }
+    }
+
+    private func fontSizeLabel(_ size: Double) -> String {
+        if size.rounded() == size {
+            return "\(Int(size)) pt"
+        }
+        return "\(size.formatted(.number.precision(.fractionLength(1)))) pt"
+    }
+
+    @ViewBuilder
+    private func terminalThemePreview(
+        theme: TerminalTheme
+    ) -> some View {
+        if let spec = theme.spec {
+            HStack(spacing: 12) {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(spec.background.swiftUIColor)
+                    .overlay(
+                        HStack(spacing: 6) {
+                            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                                .fill(spec.foreground.swiftUIColor)
+                                .frame(width: 18, height: 6)
+                            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                                .fill(spec.emphasis.swiftUIColor)
+                                .frame(width: 18, height: 6)
+                            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                                .fill(spec.cursorColor.swiftUIColor)
+                                .frame(width: 4, height: 18)
+                            if let selection = spec.selection {
+                                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                                    .fill(selection.swiftUIColor)
+                                    .frame(width: 18, height: 12)
+                            }
+                        }
+                        .padding(.horizontal, 12)
+                    )
+                    .frame(width: 120, height: 44)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(theme.title)
+                        .font(.system(size: 13, weight: .semibold))
+                    Text(theme.summary)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        } else {
+            Text(theme.summary)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func persist() {
+        let result = draft.persist(to: store)
+        if result.shouldRefreshHosts {
+            actions.refreshHosts()
+        }
+        if result.shouldReloadTerminalConfig {
+            actions.reloadTerminalConfig()
+        }
+    }
+
+}

@@ -1,0 +1,27 @@
+{
+  "name": "ghosthub-website",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.15.1",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "bash scripts/sync-assets.sh && astro dev",
+    "build": "bash scripts/sync-assets.sh && astro build",
+    "preview": "astro preview",
+    "check": "bash scripts/sync-assets.sh && astro check",
+    "lint": "oxlint src",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "astro": "7.1.3",
+    "sharp": "0.35.3"
+  },
+  "devDependencies": {
+    "@astrojs/check": "0.9.9",
+    "oxlint": "1.74.0",
+    "typescript": "5.9.3",
+    "vitest": "4.1.10"
+  }
+}

@@ -1,0 +1,42 @@
+# SwiftFormat configuration for Ghosthub
+# Version: 0.60+
+
+--swiftversion 6.0
+--indent 4
+--indentcase false
+--maxwidth 100
+--wraparguments before-first
+--wrapparameters before-first
+--wrapcollections before-first
+--wrapconditions after-first
+--closingparen balanced
+--self remove
+--stripunusedargs closure-only
+--ifdef no-indent
+--semicolons never
+--commas always
+--trimwhitespace always
+--voidtype void
+--emptybraces no-space
+--patternlet hoist
+
+# Disable rules that are too opinionated or create noisy diffs
+--disable blankLinesAtStartOfScope
+--disable blankLinesAtEndOfScope
+--disable blankLinesBetweenScopes
+--disable sortImports
+--disable wrapMultilineStatementBraces
+--disable hoistTry
+--disable redundantReturn
+--disable conditionalAssignment
+--disable opaqueGenericParameters
+--disable numberFormatting
+--disable extensionAccessControl
+--disable redundantSendable
+--disable swiftTestingTestCaseNames
+--disable noForceUnwrapInTests
+--disable wrapPropertyBodies
+--disable preferKeyPath
+
+# Exclude build artifacts and vendored code
+--exclude .build,tools,host

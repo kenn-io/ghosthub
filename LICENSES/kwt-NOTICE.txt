@@ -1,0 +1,8 @@
+kwt
+Copyright 2026 Kenn Software LLC
+
+This product is a personalized fork of gwq (https://github.com/d-kuro/gwq),
+Copyright d-kuro, licensed under the Apache License, Version 2.0.
+
+Modifications from the original are Copyright 2026 Kenn Software LLC and are
+likewise licensed under the Apache License, Version 2.0.

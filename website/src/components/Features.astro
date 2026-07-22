@@ -1,0 +1,101 @@
+---
+interface Feature {
+  title: string;
+  body: string;
+  icon: string;
+}
+
+const features: Feature[] = [
+  {
+    title: 'tmux-native',
+    body: 'Works with the tmux sessions you already have, local or over SSH with keepalives '
+      + 'and automatic reconnect. Nothing to migrate.',
+    icon: 'M4 5h24v22H4Z M4 13h24 M16 13v14',
+  },
+  {
+    title: 'Worktree-first',
+    body: 'Projects and worktrees in the sidebar. Create a worktree and drop into its session '
+      + 'without leaving the keyboard.',
+    icon: 'M9 6v14a6 6 0 0 0 6 6h4 M9 6a3 3 0 1 0 0-1 '
+      + 'M23 26a3 3 0 1 0 0 1 M23 9h-6 M23 9a3 3 0 1 0 0-1',
+  },
+  {
+    title: 'Powered by libghostty',
+    body: "The terminal engine from Ghostty. Uses Ghostty's configuration format, with a "
+      + 'dedicated Ghosthub config.',
+    icon: 'M16 4a9 9 0 0 0-9 9v14l4-3 5 3 5-3 4 3V13a9 9 0 0 0-9-9Z M12 14h.01 M20 14h.01',
+  },
+  {
+    title: 'Featherweight',
+    body: 'Native Swift with GPU-accelerated rendering. No Electron.',
+    icon: 'M26 6C16 6 8 14 6 26c12-2 20-10 20-20Z M6 26 22 10',
+  },
+];
+---
+
+<section class="features">
+  <h2 class="sr-only">Features</h2>
+  <div class="container grid">
+    {
+      features.map((f) => (
+        <article>
+          <svg
+            viewBox="0 0 32 32"
+            width="28"
+            height="28"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d={f.icon} />
+          </svg>
+          <h3>{f.title}</h3>
+          <p>{f.body}</p>
+        </article>
+      ))
+    }
+  </div>
+</section>
+
+<style>
+  .features {
+    padding: 4rem 0 6rem;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+    gap: 1rem;
+  }
+
+  article {
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: var(--bg-raise);
+    padding: 1.5rem;
+    transition: border-color 0.15s;
+  }
+
+  article:hover {
+    border-color: var(--text-faint);
+  }
+
+  article svg {
+    color: var(--text-dim);
+    margin-bottom: 0.9rem;
+  }
+
+  h3 {
+    font-size: 1rem;
+    margin-bottom: 0.5rem;
+  }
+
+  p {
+    color: var(--text-dim);
+    font-size: 0.92rem;
+    margin: 0;
+  }
+</style>

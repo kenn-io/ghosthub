@@ -1,0 +1,3 @@
+review_guidelines = """
+We are not performing database migrations before the first production release.
+"""

@@ -1,0 +1,141 @@
+#!/bin/bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+cd "$REPO_ROOT"
+
+APP_NAME="${GHOSTHUB_APP:-Ghosthub}"
+RELEASE_ROOT="${RELEASE_ROOT:-dist/release}"
+RELEASE_APP_VERSION="${RELEASE_APP_VERSION:-0.1.0}"
+RELEASE_BUILD_VERSION="${RELEASE_BUILD_VERSION:-$(git rev-list --count HEAD 2>/dev/null || echo 0)}"
+RELEASE_BUNDLE_ID="${RELEASE_BUNDLE_ID:-com.ghosthub}"
+# `hdiutil create` fails here when the mounted volume name matches the staged
+# top-level `Ghosthub.app` bundle name exactly, so keep the default distinct.
+RELEASE_VOLUME_NAME="${RELEASE_VOLUME_NAME:-Ghosthub Installer}"
+RELEASE_ARCH="${RELEASE_ARCH:-$(uname -m)}"
+RELEASE_DMG_NAME="${RELEASE_DMG_NAME:-${APP_NAME}_${RELEASE_APP_VERSION}_macos_${RELEASE_ARCH}.dmg}"
+RELEASE_APP_PATH="${RELEASE_APP_PATH:-$RELEASE_ROOT/${APP_NAME}.app}"
+RELEASE_DMG_PATH="${RELEASE_DMG_PATH:-$RELEASE_ROOT/$RELEASE_DMG_NAME}"
+DMG_STAGING_DIR="${DMG_STAGING_DIR:-$RELEASE_ROOT/dmg-staging}"
+KWT_BINARY_PATH="${KWT_BINARY_PATH:-}"
+KWT_VERSION="${KWT_VERSION:-development}"
+KWT_SOURCE_REVISION="${KWT_SOURCE_REVISION:-unpinned}"
+
+APPLE_SIGNING_IDENTITY="${APPLE_SIGNING_IDENTITY:-}"
+APPLE_NOTARY_KEY_FILE="${APPLE_NOTARY_KEY_FILE:-}"
+APPLE_NOTARY_KEY_ID="${APPLE_NOTARY_KEY_ID:-${APPLE_API_KEY:-}}"
+APPLE_NOTARY_ISSUER="${APPLE_NOTARY_ISSUER:-${APPLE_API_ISSUER:-}}"
+
+make release-app \
+  RELEASE_ROOT="$RELEASE_ROOT" \
+  RELEASE_APP_VERSION="$RELEASE_APP_VERSION" \
+  RELEASE_BUILD_VERSION="$RELEASE_BUILD_VERSION" \
+  RELEASE_BUNDLE_ID="$RELEASE_BUNDLE_ID" \
+  KWT_BINARY_PATH="$KWT_BINARY_PATH" \
+  KWT_VERSION="$KWT_VERSION" \
+  KWT_SOURCE_REVISION="$KWT_SOURCE_REVISION"
+
+xattr -cr "$RELEASE_APP_PATH"
+
+if [[ -n "$APPLE_SIGNING_IDENTITY" ]]; then
+  KWT_HELPER_PATH="$RELEASE_APP_PATH/Contents/Helpers/kwt"
+  printf 'Codesigning kwt helper: %s\n' "$KWT_HELPER_PATH"
+  codesign \
+    --force \
+    --options runtime \
+    --timestamp \
+    --sign "$APPLE_SIGNING_IDENTITY" \
+    "$KWT_HELPER_PATH"
+  codesign --verify --strict --verbose=2 "$KWT_HELPER_PATH"
+
+  printf 'Codesigning app bundle: %s\n' "$RELEASE_APP_PATH"
+  codesign \
+    --force \
+    --options runtime \
+    --timestamp \
+    --sign "$APPLE_SIGNING_IDENTITY" \
+    "$RELEASE_APP_PATH"
+  codesign --verify --deep --strict --verbose=2 "$RELEASE_APP_PATH"
+fi
+
+rm -rf "$DMG_STAGING_DIR" "$RELEASE_DMG_PATH"
+mkdir -p "$DMG_STAGING_DIR"
+cp -R "$RELEASE_APP_PATH" "$DMG_STAGING_DIR/"
+ln -s /Applications "$DMG_STAGING_DIR/Applications"
+
+printf 'Creating DMG: %s\n' "$RELEASE_DMG_PATH"
+hdiutil create \
+  -volname "$RELEASE_VOLUME_NAME" \
+  -srcfolder "$DMG_STAGING_DIR" \
+  -ov \
+  -format UDZO \
+  "$RELEASE_DMG_PATH"
+
+if [[ -n "$APPLE_SIGNING_IDENTITY" ]]; then
+  printf 'Codesigning DMG: %s\n' "$RELEASE_DMG_PATH"
+  codesign \
+    --force \
+    --timestamp \
+    --sign "$APPLE_SIGNING_IDENTITY" \
+    "$RELEASE_DMG_PATH"
+  codesign --verify --verbose=2 "$RELEASE_DMG_PATH"
+fi
+
+if [[ -n "$APPLE_NOTARY_KEY_FILE" || -n "$APPLE_NOTARY_KEY_ID" || -n "$APPLE_NOTARY_ISSUER" ]]; then
+  if [[ -z "$APPLE_NOTARY_KEY_FILE" || -z "$APPLE_NOTARY_KEY_ID" || -z "$APPLE_NOTARY_ISSUER" ]]; then
+    echo "APPLE_NOTARY_KEY_FILE, APPLE_NOTARY_KEY_ID, and APPLE_NOTARY_ISSUER must all be set to notarize the DMG." >&2
+    exit 1
+  fi
+
+  printf 'Submitting DMG for notarization: %s\n' "$RELEASE_DMG_PATH"
+  NOTARY_RESULT_PATH="$(mktemp "${TMPDIR:-/tmp}/notary-submit.XXXXXX.json")"
+  cleanup_notary_result() { rm -f "$NOTARY_RESULT_PATH"; }
+  trap cleanup_notary_result EXIT
+  xcrun notarytool submit \
+    "$RELEASE_DMG_PATH" \
+    --key "$APPLE_NOTARY_KEY_FILE" \
+    --key-id "$APPLE_NOTARY_KEY_ID" \
+    --issuer "$APPLE_NOTARY_ISSUER" \
+    --wait \
+    --output-format json \
+    > "$NOTARY_RESULT_PATH"
+
+  cat "$NOTARY_RESULT_PATH"
+
+  NOTARY_ID="$(plutil -extract id raw -o - "$NOTARY_RESULT_PATH" 2>/dev/null || true)"
+  NOTARY_STATUS="$(plutil -extract status raw -o - "$NOTARY_RESULT_PATH" 2>/dev/null || true)"
+
+  if [[ "$NOTARY_STATUS" != "Accepted" ]]; then
+    printf 'Notarization failed with status: %s\n' "$NOTARY_STATUS" >&2
+    if [[ -n "$NOTARY_ID" ]]; then
+      printf 'Fetching notarization log for submission: %s\n' "$NOTARY_ID" >&2
+      xcrun notarytool log \
+        "$NOTARY_ID" \
+        --key "$APPLE_NOTARY_KEY_FILE" \
+        --key-id "$APPLE_NOTARY_KEY_ID" \
+        --issuer "$APPLE_NOTARY_ISSUER" \
+        || true
+    fi
+    exit 1
+  fi
+
+  printf 'Stapling notarization ticket: %s\n' "$RELEASE_DMG_PATH"
+  xcrun stapler staple "$RELEASE_DMG_PATH"
+  xcrun stapler validate "$RELEASE_DMG_PATH"
+  spctl --assess --type open --context context:primary-signature --verbose=2 \
+    "$RELEASE_DMG_PATH"
+fi
+
+RELEASE_DMG_DIR="$(dirname "$RELEASE_DMG_PATH")"
+RELEASE_DMG_BASENAME="$(basename "$RELEASE_DMG_PATH")"
+(
+  cd "$RELEASE_DMG_DIR"
+  shasum -a 256 "$RELEASE_DMG_BASENAME"
+) > "$RELEASE_DMG_PATH.sha256"
+rm -rf "$DMG_STAGING_DIR"
+
+printf 'Release app bundle: %s\n' "$RELEASE_APP_PATH"
+printf 'Release DMG: %s\n' "$RELEASE_DMG_PATH"
+printf 'SHA256 file: %s.sha256\n' "$RELEASE_DMG_PATH"

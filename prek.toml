@@ -1,0 +1,55 @@
+default_install_hook_types = ["pre-commit"]
+
+[[repos]]
+repo = "builtin"
+hooks = [
+  { id = "check-case-conflict" },
+  { id = "check-merge-conflict", args = ["--assume-in-merge"] },
+  { id = "detect-private-key" },
+  # no-commit-to-branch disabled — no remote, main is the working branch
+  { id = "check-added-large-files", args = ["--maxkb=1024"] },
+  { id = "trailing-whitespace", args = ["--markdown-linebreak-ext=md"] },
+  { id = "end-of-file-fixer" },
+  { id = "check-json" },
+  { id = "check-toml" },
+  { id = "check-yaml" },
+]
+
+[[repos]]
+repo = "local"
+hooks = [
+  {
+    id = "swiftformat",
+    name = "swiftformat",
+    language = "system",
+    entry = "swiftformat --quiet",
+    files = "\\.swift$",
+    pass_filenames = true,
+    priority = 0,
+  },
+  {
+    id = "swiftformat-lint",
+    name = "swiftformat --lint",
+    language = "system",
+    entry = "swiftformat --lint --quiet",
+    files = "\\.swift$",
+    pass_filenames = true,
+    priority = 5,
+  },
+  {
+    id = "swift-warning-check",
+    name = "swift build test targets warnings-as-errors",
+    language = "system",
+    entry = "make swift-warning-check",
+    files = "(\\.swift$|^Package\\.swift$)",
+    pass_filenames = false,
+    priority = 10,
+  },
+]
+
+[[repos]]
+repo = "meta"
+hooks = [
+  { id = "check-hooks-apply" },
+  { id = "check-useless-excludes" },
+]

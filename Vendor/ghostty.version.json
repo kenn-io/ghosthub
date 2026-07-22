@@ -1,0 +1,6 @@
+{
+  "source": "https://github.com/ghostty-org/ghostty.git",
+  "tag": "v1.3.1",
+  "commit": "22efb0be2bbea73e5339f5426fa3b20edabcaa11",
+  "required_zig_version": "0.15.2"
+}

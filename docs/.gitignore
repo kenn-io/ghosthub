@@ -1,0 +1,5 @@
+.cache/
+.venv/
+site/
+zensical-public-docs.*/
+.zensical-build.*

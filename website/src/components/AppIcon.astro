@@ -1,0 +1,90 @@
+---
+// Full-color app icon, matching Resources/AppIcon/Ghosthub.svg in the app
+// repo: outline ghost with a shell-prompt face ($ + block cursor, drawn as
+// paths) and four spoke-and-node hub connectors.
+// Gradient ids take a per-instance prefix: the icon renders more than once
+// per page (header, hero) and duplicate SVG ids are invalid.
+interface Props {
+  prefix: string;
+}
+const { prefix } = Astro.props;
+
+const dollar =
+  'M462.1 473.1V506.2Q469.0 505.2 472.8 500.9Q476.6 496.6 476.6 489.9Q476.6 '
+  + '483.1 472.9 478.8Q469.1 474.5 462.1 473.1ZM446.7 441.5V410.6Q439.9 411.5 '
+  + '436.4 415.1Q433.0 418.8 433.0 425.1Q433.0 431.4 436.4 435.5Q439.9 439.7 '
+  + '446.7 441.5ZM462.1 563.8H446.7L446.5 530.9Q437.0 530.6 426.6 528.1Q416.2 '
+  + '525.5 405.0 520.8V492.2Q416.2 498.9 426.8 502.5Q437.4 506.1 446.7 '
+  + '506.2V470.2Q425.1 465.9 414.6 455.5Q404.1 445.0 404.1 427.9Q404.1 409.6 '
+  + '415.3 398.8Q426.4 387.9 446.7 386.6V360.7H462.1L462.2 386.6Q470.0 387.1 '
+  + '478.3 388.6Q486.7 390.1 495.4 392.9V420.9Q488.7 416.5 480.3 413.9Q472.0 '
+  + '411.2 462.1 410.6V444.2Q483.6 447.6 494.6 458.9Q505.6 470.2 505.6 '
+  + '489.0Q505.6 506.9 493.7 518.4Q481.9 529.9 462.2 530.9Z';
+
+const ghost =
+  'M312 424 a200 200 0 0 1 400 0 v330 l-100 -68 -100 68 -100 -68 -100 68 Z';
+---
+
+<svg viewBox="0 0 1024 1024" width="96" height="96" aria-hidden="true">
+  <defs>
+    <linearGradient
+      id={`${prefix}-bg`}
+      x1="160"
+      y1="120"
+      x2="864"
+      y2="904"
+      gradientUnits="userSpaceOnUse"
+    >
+      <stop offset="0" stop-color="#183245"></stop>
+      <stop offset="1" stop-color="#0b131c"></stop>
+    </linearGradient>
+    <linearGradient
+      id={`${prefix}-sig`}
+      x1="330"
+      y1="300"
+      x2="700"
+      y2="760"
+      gradientUnits="userSpaceOnUse"
+    >
+      <stop offset="0" stop-color="#bde8ff"></stop>
+      <stop offset="1" stop-color="#7fd8ff"></stop>
+    </linearGradient>
+  </defs>
+
+  <rect x="80" y="80" width="864" height="864" rx="220" fill={`url(#${prefix}-bg)`}></rect>
+  <rect
+    x="80"
+    y="80"
+    width="864"
+    height="864"
+    rx="220"
+    fill="none"
+    stroke="#3f6176"
+    stroke-opacity="0.26"
+    stroke-width="8"></rect>
+
+  <g stroke="#85daf7" stroke-opacity="0.5" stroke-width="26" stroke-linecap="round">
+    <line x1="240" y1="266" x2="286" y2="306"></line>
+    <line x1="784" y1="266" x2="738" y2="306"></line>
+    <line x1="240" y1="772" x2="284" y2="736"></line>
+    <line x1="784" y1="772" x2="740" y2="736"></line>
+  </g>
+  <g fill="#d4f2ff">
+    <circle cx="206" cy="236" r="34" fill-opacity="0.9"></circle>
+    <circle cx="818" cy="236" r="34" fill-opacity="0.9"></circle>
+    <circle cx="206" cy="800" r="34" fill-opacity="0.9"></circle>
+    <circle cx="818" cy="800" r="34" fill-opacity="0.9"></circle>
+  </g>
+
+  <path
+    d={ghost}
+    fill="none"
+    stroke="#9de9ff"
+    stroke-opacity="0.95"
+    stroke-width="40"
+    stroke-linecap="round"
+    stroke-linejoin="round"></path>
+
+  <path fill={`url(#${prefix}-sig)`} d={dollar}></path>
+  <rect x="522.4" y="377.3" width="97.6" height="156.8" fill={`url(#${prefix}-sig)`}></rect>
+</svg>

@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root {
+  /* Injected from NSColor at render time */
+  /* __THEME_VARS__ */
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  background: var(--bg);
+  color: var(--text);
+  font: 12px/1.5 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -webkit-text-size-adjust: none;
+  overflow: hidden;
+}
+
+body { padding: 0; }
+
+.content > *:first-child { margin-top: 0; }
+.content > *:last-child { margin-bottom: 0; }
+
+/* Headings */
+h1, h2, h3, h4, h5, h6 {
+  color: var(--text);
+  font-weight: 600;
+  line-height: 1.25;
+  margin: 12px 0 6px;
+}
+h1 { font-size: 15px; border-bottom: 1px solid var(--border); padding-bottom: 4px; }
+h2 { font-size: 13px; border-bottom: 1px solid var(--border); padding-bottom: 4px; }
+h3 { font-size: 12px; }
+h4 { font-size: 11px; }
+h5, h6 { font-size: 10.5px; color: var(--text-secondary); }
+
+/* Paragraphs */
+p { margin: 6px 0; }
+
+/* Links */
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+strong { font-weight: 600; }
+em { font-style: italic; }
+
+/* Inline code */
+code {
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.88em;
+  background: var(--bg-code);
+  border-radius: 3px;
+  padding: 0.1em 0.3em;
+}
+
+/* Code blocks */
+pre {
+  margin: 8px 0;
+  background: var(--bg-code-block);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+pre code {
+  display: block;
+  padding: 8px 10px;
+  background: none;
+  border-radius: 0;
+  font-size: 10px;
+  line-height: 1.5;
+  white-space: pre;
+  tab-size: 4;
+}
+
+/* Blockquotes */
+blockquote {
+  margin: 6px 0;
+  padding: 1px 0 1px 10px;
+  border-left: 2px solid var(--bg-blockquote-bar);
+  color: var(--text-secondary);
+}
+blockquote > *:first-child { margin-top: 0; }
+blockquote > *:last-child { margin-bottom: 0; }
+
+/* Lists */
+ul, ol { margin: 6px 0; padding-left: 20px; }
+li { margin: 2px 0; }
+li > ul, li > ol { margin: 1px 0; }
+li > p { margin: 3px 0; }
+
+/* Task lists (marked.js adds these classes) */
+ul.contains-task-list {
+  list-style: none;
+  padding-left: 4px;
+}
+li.task-list-item {
+  position: relative;
+  padding-left: 18px;
+}
+li.task-list-item > input[type="checkbox"] {
+  position: absolute;
+  left: 0;
+  top: 2px;
+  accent-color: var(--link);
+  pointer-events: none;
+}
+
+/* Tables */
+table {
+  margin: 8px 0;
+  border-collapse: collapse;
+  border-spacing: 0;
+  width: 100%;
+  font-size: 10px;
+}
+th, td {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  text-align: left;
+}
+th { font-weight: 600; background: var(--bg-code-block); }
+tr:nth-child(even) { background: var(--bg-table-alt); }
+
+/* Horizontal rule */
+hr {
+  margin: 10px 0;
+  border: none;
+  border-top: 1px solid var(--border);
+}
+
+/* Images */
+img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 3px;
+}
+
+/* Details/summary */
+details {
+  margin: 6px 0;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 4px 8px;
+}
+summary { cursor: pointer; font-weight: 600; font-size: 10.5px; }
+details[open] summary { margin-bottom: 4px; }
+
+/* Keyboard */
+kbd {
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.85em;
+  background: var(--bg-code-block);
+  border: 1px solid var(--border-heavy);
+  border-bottom-width: 2px;
+  border-radius: 3px;
+  padding: 1px 4px;
+}
+
+del { color: var(--text-tertiary); }
+sup, sub { font-size: 0.8em; }
+</style>
+</head>
+<body>
+<div class="content" id="content"></div>
+<script type="application/json" id="markdown-base64">__MARKDOWN_BASE64__</script>
+<script>/* __MARKED_JS__ */</script>
+<script>
+(function() {
+  'use strict';
+
+  function decodeBase64UTF8(base64) {
+    if (!base64) {
+      return '';
+    }
+    var binary = atob(base64);
+    var bytes = new Uint8Array(binary.length);
+    for (var i = 0; i < binary.length; i += 1) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return new TextDecoder().decode(bytes);
+  }
+
+  function escapeHTML(value) {
+    return String(value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  var repoBaseURL = '__REPO_BASE_URL__';
+
+  function sanitizeURL(value, allowedSchemes) {
+    if (!value) {
+      return null;
+    }
+    // Fragment-only links stay in-document.
+    if (value.charAt(0) === '#') {
+      return value;
+    }
+    try {
+      var base = repoBaseURL || 'https://github.com/';
+      var url = new URL(value, base);
+      var scheme = url.protocol.replace(/:$/, '').toLowerCase();
+      if (!allowedSchemes.includes(scheme)) {
+        return null;
+      }
+      return url.toString();
+    } catch (error) {
+      return null;
+    }
+  }
+
+  if (typeof marked !== 'undefined') {
+    var renderer = new marked.Renderer();
+    renderer.html = function(token) {
+      var raw = token.text || '';
+      if (/^\s*<!--[\s\S]*?-->\s*$/.test(raw)) {
+        return '';
+      }
+      return escapeHTML(raw);
+    };
+    renderer.link = function(token) {
+      var text = this.parser.parseInline(token.tokens || []);
+      var href = sanitizeURL(token.href, ['http', 'https', 'mailto']);
+      if (!href) {
+        return text;
+      }
+      var html = '<a href="' + escapeHTML(href) + '"';
+      if (token.title) {
+        html += ' title="' + escapeHTML(token.title) + '"';
+      }
+      html += '>' + text + '</a>';
+      return html;
+    };
+    renderer.image = function(token) {
+      var src = sanitizeURL(token.href, ['http', 'https']);
+      if (!src) {
+        return escapeHTML(token.text || '');
+      }
+      var html = '<img src="' + escapeHTML(src) + '" alt="' + escapeHTML(token.text || '') + '"';
+      if (token.title) {
+        html += ' title="' + escapeHTML(token.title) + '"';
+      }
+      html += '>';
+      return html;
+    };
+    marked.setOptions({
+      gfm: true,
+      breaks: true,
+      renderer: renderer
+    });
+  }
+
+  const src = decodeBase64UTF8(
+    document.getElementById('markdown-base64').textContent
+  );
+  const el = document.getElementById('content');
+
+  if (typeof marked !== 'undefined') {
+    el.innerHTML = marked.parse(src);
+  } else {
+    el.textContent = src;
+  }
+
+  // Add task-list classes for styling
+  el.querySelectorAll('ul').forEach(function(ul) {
+    if (ul.querySelector(':scope > li > input[type="checkbox"]')) {
+      ul.classList.add('contains-task-list');
+      ul.querySelectorAll(':scope > li').forEach(function(li) {
+        if (li.querySelector(':scope > input[type="checkbox"]')) {
+          li.classList.add('task-list-item');
+        }
+      });
+    }
+  });
+
+  function reportHeight() {
+    var h = document.documentElement.scrollHeight;
+    window.webkit.messageHandlers.ghosthub.postMessage({ height: h });
+  }
+
+  reportHeight();
+  new ResizeObserver(reportHeight).observe(el);
+  window.addEventListener('load', reportHeight);
+
+  document.addEventListener('click', function(e) {
+    var a = e.target.closest('a');
+    if (!a) return;
+    var raw = a.getAttribute('href');
+    if (raw && raw.charAt(0) === '#') return;
+    if (a.href) {
+      e.preventDefault();
+      window.webkit.messageHandlers.ghosthub.postMessage({
+        openURL: a.href
+      });
+    }
+  });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,455 @@
+import AppKit
+import Combine
+import Foundation
+import GhosthubTestSupport
+import SwiftUI
+import XCTest
+import GhosthubPersistence
+import GhosthubSettings
+import GhosthubTmux
+import GhosthubWorkspace
+@testable import GhosthubTerminal
+@testable import GhosthubApp
+
+// MARK: - Environment Setup
+
+struct HostEnv {
+    let id: UUID
+    let configKey: String
+    let name: String
+    let kind: HostKind
+    let platform: HostPlatform
+    let sshDestination: String?
+}
+
+struct ProjectEnv {
+    let id: UUID
+    let hostID: UUID
+    let scopedKey: String
+    let name: String
+    let rootPath: String
+    let defaultBranch: String
+    var registryID: String?
+}
+
+struct WorktreeEnv {
+    let id: UUID
+    let hostID: UUID
+    let projectID: UUID
+    let scopedKey: String
+    let name: String
+    let path: String
+    let branch: String
+    let isPrimary: Bool
+    let isHidden: Bool
+    var registryID: String?
+}
+
+struct StandardEnvironment {
+    let database: WorkspaceDatabase
+    let host: HostEnv
+    let project: ProjectEnv
+    let worktree: WorktreeEnv
+    let snapshot: WorkspaceSnapshot
+}
+
+func setupStandardEnvironment() throws -> StandardEnvironment {
+    let database = try WorkspaceDatabase.inMemory()
+    let hostID = UUID()
+    let projectID = UUID()
+    let worktreeID = UUID()
+    let host = HostEnv(
+        id: hostID,
+        configKey: "local",
+        name: "This Mac",
+        kind: .selfHost,
+        platform: .macOS,
+        sshDestination: nil
+    )
+    let project = ProjectEnv(
+        id: projectID,
+        hostID: hostID,
+        scopedKey: "repo:/tmp/ghosthub",
+        name: "Ghosthub",
+        rootPath: "/tmp/ghosthub",
+        defaultBranch: "main",
+        registryID: "mm-proj-local"
+    )
+    // The primary root checkout is a first-class inventory row
+    // (registryID set) since the 2026-06-11 primary-root registration.
+    let worktree = WorktreeEnv(
+        id: worktreeID,
+        hostID: hostID,
+        projectID: projectID,
+        scopedKey: "worktree:/tmp/ghosthub",
+        name: "root",
+        path: "/tmp/ghosthub",
+        branch: "main",
+        isPrimary: true,
+        isHidden: false,
+        registryID: "mm-wt-root"
+    )
+    let snapshot = WorkspaceSnapshot(
+        hosts: [
+            HostSummary(
+                id: hostID, configKey: host.configKey,
+                name: host.name, kind: host.kind,
+                platform: host.platform,
+                sshDestination: host.sshDestination
+            ),
+        ],
+        projects: [
+            ProjectSummary(
+                id: projectID, hostID: hostID,
+                scopedKey: project.scopedKey,
+                registryID: project.registryID,
+                name: project.name,
+                rootPath: project.rootPath,
+                defaultBranch: project.defaultBranch
+            ),
+        ],
+        worktrees: [
+            WorktreeSummary(
+                id: worktreeID, hostID: hostID,
+                projectID: projectID,
+                scopedKey: worktree.scopedKey,
+                registryID: worktree.registryID,
+                name: worktree.name,
+                path: worktree.path,
+                branch: worktree.branch,
+                isPrimary: worktree.isPrimary
+            ),
+        ]
+    )
+    return StandardEnvironment(
+        database: database,
+        host: host,
+        project: project,
+        worktree: worktree,
+        snapshot: snapshot
+    )
+}
+
+struct HostEnvironment {
+    let database: WorkspaceDatabase
+    let host: HostEnv
+    let snapshot: WorkspaceSnapshot
+}
+
+func setupHostEnvironment() throws -> HostEnvironment {
+    let database = try WorkspaceDatabase.inMemory()
+    let hostID = UUID()
+    let host = HostEnv(
+        id: hostID,
+        configKey: "local",
+        name: "This Mac",
+        kind: .selfHost,
+        platform: .macOS,
+        sshDestination: nil
+    )
+    let snapshot = WorkspaceSnapshot(
+        hosts: [
+            HostSummary(
+                id: hostID, configKey: host.configKey,
+                name: host.name, kind: host.kind,
+                platform: host.platform,
+                sshDestination: host.sshDestination
+            ),
+        ],
+        projects: [],
+        worktrees: []
+    )
+    return HostEnvironment(database: database, host: host, snapshot: snapshot)
+}
+
+struct RemoteEnvironment {
+    let database: WorkspaceDatabase
+    let host: HostEnv
+    let project: ProjectEnv
+    let worktree: WorktreeEnv
+    let snapshot: WorkspaceSnapshot
+}
+
+func setupRemoteEnvironment() throws -> RemoteEnvironment {
+    let database = try WorkspaceDatabase.inMemory()
+    let hostID = UUID()
+    let projectID = UUID()
+    let worktreeID = UUID()
+    let host = HostEnv(
+        id: hostID,
+        configKey: "office-linux",
+        name: "Office Linux",
+        kind: .remote,
+        platform: .linux,
+        sshDestination: "wesm@office-linux"
+    )
+    let project = ProjectEnv(
+        id: projectID,
+        hostID: hostID,
+        scopedKey: "repo:/srv/ghosthub",
+        name: "Ghosthub",
+        rootPath: "/srv/ghosthub",
+        defaultBranch: "main",
+        registryID: "mm-proj-1"
+    )
+    let worktree = WorktreeEnv(
+        id: worktreeID,
+        hostID: hostID,
+        projectID: projectID,
+        scopedKey: "worktree:/srv/ghosthub",
+        name: "root",
+        path: "/srv/ghosthub",
+        branch: "main",
+        isPrimary: false,
+        isHidden: false,
+        registryID: "mm-wt-1"
+    )
+    let snapshot = WorkspaceSnapshot(
+        hosts: [
+            HostSummary(
+                id: hostID, configKey: host.configKey,
+                name: host.name, kind: host.kind,
+                platform: host.platform,
+                sshDestination: host.sshDestination
+            ),
+        ],
+        projects: [
+            ProjectSummary(
+                id: projectID, hostID: hostID,
+                scopedKey: project.scopedKey,
+                registryID: project.registryID,
+                name: project.name,
+                rootPath: project.rootPath,
+                defaultBranch: project.defaultBranch
+            ),
+        ],
+        worktrees: [
+            WorktreeSummary(
+                id: worktreeID, hostID: hostID,
+                projectID: projectID,
+                scopedKey: worktree.scopedKey,
+                registryID: worktree.registryID,
+                name: worktree.name,
+                path: worktree.path,
+                branch: worktree.branch,
+                isPrimary: worktree.isPrimary,
+                sessionBackend: .remoteTmux
+            ),
+        ]
+    )
+    return RemoteEnvironment(
+        database: database,
+        host: host,
+        project: project,
+        worktree: worktree,
+        snapshot: snapshot
+    )
+}
+
+// MARK: - Model Factory
+
+@MainActor
+func makeModel(
+    database: WorkspaceDatabase,
+    localHostID: UUID,
+    snapshot: WorkspaceSnapshot? = nil,
+    configuration: WorkspaceConfiguration = .defaults(),
+    notificationService: any NotificationService = NotificationServiceStub(),
+    nativeTmuxSurfaceStore: (any TmuxSurfaceStoring)? = nil,
+    nativeTmuxPathProvider:
+        (@Sendable () -> Result<String, TmuxBinaryError>)? = nil,
+    remoteTmuxPathProvider: @escaping @Sendable (SSHHostInfo)
+        -> Result<String, TmuxBinaryError> = { _ in
+            .failure(.notFound(shell: "test"))
+        },
+    kwtInventoryLoader: @escaping WorkspaceSceneModel.KwtInventoryLoader = {
+        host in
+        try await KwtInventoryClient().load(from: host)
+    },
+    kwtWorktreeCreator: @escaping WorkspaceSceneModel.KwtWorktreeCreator = {
+        request, projectPath, host in
+        try await KwtWorktreeClient().create(
+            request: request,
+            projectPath: projectPath,
+            on: host
+        )
+    },
+    tmuxSessionDiscovery: @escaping
+        WorkspaceSceneModel.TmuxSessionDiscovery = { _ in .success([]) },
+    configuredSSHHostsProvider: @escaping () -> [SSHHost] = { [] },
+    configuredSSHHostsPublisher: AnyPublisher<[SSHHost], Never> =
+        Empty(completeImmediately: false).eraseToAnyPublisher(),
+    sceneSettings: WorkspaceSceneSettings = .live(),
+    createdSessionDiscoveryDelays: [Duration] = [
+        .milliseconds(500),
+        .seconds(1),
+        .seconds(2),
+        .seconds(4),
+    ],
+    startServices: Bool = false
+) throws -> WorkspaceSceneModel {
+    return try WorkspaceSceneModel(
+        database: database,
+        workspaceConfiguration: configuration,
+        notificationService: notificationService,
+        nativeTmuxSurfaceStore: nativeTmuxSurfaceStore,
+        nativeTmuxPathProvider: nativeTmuxPathProvider,
+        remoteTmuxPathProvider: remoteTmuxPathProvider,
+        kwtInventoryLoader: kwtInventoryLoader,
+        kwtWorktreeCreator: kwtWorktreeCreator,
+        tmuxSessionDiscovery: tmuxSessionDiscovery,
+        configuredSSHHostsProvider: configuredSSHHostsProvider,
+        configuredSSHHostsPublisher: configuredSSHHostsPublisher,
+        sceneSettings: sceneSettings,
+        localHostID: localHostID,
+        overrideSnapshot: snapshot,
+        createdSessionDiscoveryDelays: createdSessionDiscoveryDelays,
+        startServices: startServices
+    )
+}
+
+// MARK: - Protocol Stubs
+
+final class NotificationServiceStub: NotificationService {
+    struct IdleNotification: Equatable {
+        let worktreeName: String
+        let projectName: String
+    }
+
+    var idleNotifications: [IdleNotification] = []
+    var agentAttentionNotifications: [IdleNotification] = []
+    var dockBadgeCounts: [Int] = []
+
+    func requestAuthorization() async {}
+    func postAgentFinished(worktreeName: String, projectName: String) {}
+    func postWorktreeBecameIdle(worktreeName: String, projectName: String) {
+        idleNotifications.append(
+            IdleNotification(
+                worktreeName: worktreeName,
+                projectName: projectName
+            )
+        )
+    }
+    func postAgentsNeedAttention(worktreeName: String, projectName: String) {
+        agentAttentionNotifications.append(
+            IdleNotification(
+                worktreeName: worktreeName,
+                projectName: projectName
+            )
+        )
+    }
+    func updateDockBadge(unseenCount: Int) {
+        dockBadgeCounts.append(unseenCount)
+    }
+    func playCompletionSound() {}
+}
+
+// MARK: - XCTest Polling Helpers
+
+extension XCTestCase {
+    @MainActor
+    func waitUntil(
+        timeout: TimeInterval = 5.0,
+        file: StaticString = #filePath,
+        line: UInt = #line,
+        condition: @escaping () -> Bool
+    ) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() {
+                return
+            }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        }
+        XCTFail("Timed out waiting for condition", file: file, line: line)
+    }
+
+    @MainActor
+    func waitUntilAsync(
+        timeout: TimeInterval = 5.0,
+        file: StaticString = #filePath,
+        line: UInt = #line,
+        condition: @escaping @Sendable () async -> Bool
+    ) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if await condition() {
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        XCTFail(
+            "Timed out waiting for async condition",
+            file: file, line: line
+        )
+    }
+}
+
+// MARK: - View Hosting Helpers
+
+@MainActor
+func hostView(
+    rootView: AnyView,
+    size: CGSize = CGSize(width: 960, height: 640)
+) -> NSHostingView<AnyView> {
+    let hostingView = NSHostingView(rootView: rootView)
+    hostingView.frame = NSRect(origin: .zero, size: size)
+    hostingView.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+    return hostingView
+}
+
+@MainActor
+func hostWindow(
+    rootView: AnyView,
+    size: CGSize = CGSize(width: 960, height: 640)
+) -> NSWindow {
+    let hostingView = hostView(rootView: rootView, size: size)
+    let window = NSWindow(
+        contentRect: NSRect(origin: .zero, size: size),
+        styleMask: [.titled, .closable, .resizable],
+        backing: .buffered,
+        defer: false
+    )
+    window.contentView = hostingView
+    window.makeKeyAndOrderFront(nil)
+    window.displayIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+    return window
+}
+
+// MARK: - View Hierarchy Traversal
+
+@MainActor
+func descendants(
+    of view: NSView
+) -> [NSView] {
+    [view] + view.subviews.flatMap(descendants(of:))
+}
+
+@MainActor
+func buttons(
+    in view: NSView
+) -> [NSButton] {
+    descendants(of: view).compactMap { $0 as? NSButton }
+}
+
+@MainActor
+func button(
+    accessibilityIdentifier identifier: String,
+    in view: NSView
+) -> NSButton? {
+    if let button = buttons(in: view)
+        .first(where: { $0.accessibilityIdentifier() == identifier }) {
+        return button
+    }
+    guard let identifiedView = descendants(of: view).first(
+        where: { $0.accessibilityIdentifier() == identifier }
+    ) else {
+        return nil
+    }
+    if let button = identifiedView as? NSButton {
+        return button
+    }
+    return descendants(of: identifiedView).compactMap { $0 as? NSButton }.first
+}

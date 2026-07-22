@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# Faux kwt for marketing screenshots. Emits the machine-readable JSON shapes
+# Ghosthub consumes (see Sources/App/KwtInventoryClient.swift) with staged
+# kenn-io open source projects instead of real registry contents.
+set -euo pipefail
+
+scratch="${GHOSTHUB_DEMO_SCRATCH:?GHOSTHUB_DEMO_SCRATCH is not set}"
+
+projects_json() {
+  cat <<EOF
+[
+  {"repository": "github.com/kenn-io/ghosthub", "name": "ghosthub",
+   "path": "$scratch/repos/ghosthub", "last_touched": "2026-07-21T14:02:11Z"},
+  {"repository": "github.com/kenn-io/agentsview", "name": "agentsview",
+   "path": "$scratch/repos/agentsview", "last_touched": "2026-07-21T09:47:03Z"},
+  {"repository": "github.com/kenn-io/msgvault", "name": "msgvault",
+   "path": "$scratch/repos/msgvault", "last_touched": "2026-07-20T22:15:40Z"}
+]
+EOF
+}
+
+worktree() {
+  local project="$1" branch="$2" hash="$3" main="$4" created="$5" path
+  if [[ "$main" == "true" ]]; then
+    path="$scratch/repos/$project"
+  else
+    path="$scratch/worktrees/$project/$branch"
+  fi
+  cat <<EOF
+  {"path": "$path", "branch": "$branch", "commit_hash": "$hash",
+   "is_main": $main, "created_at": "$created",
+   "repository": "github.com/kenn-io/$project",
+   "session_name": "$project--${branch//\//-}"}
+EOF
+}
+
+list_json() {
+  local project
+  project="$(basename "$PWD")"
+  echo "["
+  case "$project" in
+    ghosthub)
+      worktree ghosthub main c41d9f2ab8e04d7c9b1f5a6e832d0c4b7a95e1f3 true \
+        "2026-05-02T18:20:04Z"
+      echo ","
+      worktree ghosthub fix-reconnect-backoff 8f27ac41d5b9e6038c2d17f4ab60e95c3d81b246 \
+        false "2026-07-21T13:44:52Z"
+      echo ","
+      worktree ghosthub pr-142-fleet-sidebar 2b90de57f1a34c8867e5b0d2c49f16a3e7d8054c \
+        false "2026-07-20T16:08:19Z"
+      ;;
+    agentsview)
+      worktree agentsview main 7e153ba9d0c246f18a3e5c7b924d68f0b1c3a5d7 true \
+        "2026-04-11T11:03:37Z"
+      echo ","
+      worktree agentsview add-session-filters 91c64df2e8a75b30d4f19c6a057e83b2f4d0c681 \
+        false "2026-07-19T20:31:26Z"
+      ;;
+    msgvault)
+      worktree msgvault main 5a08c37e94d1b62f80c4e5a3d7192b6c0e8f4a21 true \
+        "2026-03-28T15:52:48Z"
+      echo ","
+      worktree msgvault pr-87-imap-sync d63f01b8a2c94e57316b8d0f5c2a794e1b60d3f8 \
+        false "2026-07-21T08:12:05Z"
+      ;;
+    *)
+      :
+      ;;
+  esac
+  echo "]"
+}
+
+case "${1:-}" in
+  projects) projects_json ;;
+  list) list_json ;;
+  *)
+    echo "faux kwt: unsupported command: ${1:-<none>}" >&2
+    exit 64
+    ;;
+esac

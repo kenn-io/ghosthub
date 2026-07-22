@@ -1,0 +1,31 @@
+# Python cache files
+__pycache__/
+*.pyc
+
+# Swift Package Manager and Xcode build artifacts
+.build/
+.dist/
+dist/
+.release-inputs/
+.swiftpm/
+DerivedData/
+*.xcuserstate
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# Ghostty source is fetched into a local checkout on demand, not committed
+Vendor/ghostty/
+
+.superpowers/
+/loc_over_time.png
+
+# Local test and task state
+test-results/
+.kata.local.toml
+
+# roborev snapshots
+/.roborev/
+
+# Claude Code local state (agent worktrees, personal settings)
+.claude/worktrees/
+.claude/settings.local.json

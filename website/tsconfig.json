@@ -1,0 +1,13 @@
+{
+  "extends": "astro/tsconfigs/strictest",
+  "compilerOptions": {
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true
+  },
+  "include": [".astro/types.d.ts", "src/**/*"],
+  "exclude": ["dist"]
+}

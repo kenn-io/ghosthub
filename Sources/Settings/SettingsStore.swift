@@ -1,0 +1,605 @@
+import Combine
+import Foundation
+import GhosthubTerminalSupport
+import GhosthubWorkspace
+
+private extension Double {
+    var roundedFontSize: Double {
+        (self * 2.0).rounded() / 2.0
+    }
+}
+
+@MainActor
+public final class SettingsStore: ObservableObject {
+    private enum DefaultsKey {
+        static let showPaneResourceUsage = "ghosthub.settings.terminal.showPaneResourceUsage"
+        static let confirmPaneClose = "ghosthub.settings.terminal.confirmPaneClose"
+        static let hideRootCheckout = "ghosthub.settings.worktrees.hideRootCheckout"
+        static let showHiddenWorktreesByDefault = "ghosthub.settings.worktrees.showHiddenWorktreesByDefault"
+        static let interfaceAppearance = "ghosthub.settings.appearance.interfaceAppearance"
+        static let showMacOSNotifications =
+            "ghosthub.settings.notifications.showMacOSNotifications"
+        static let attentionSound =
+            "ghosthub.settings.notifications.attentionSound"
+        static let terminalTheme =
+            "ghosthub.settings.terminalAppearance.theme"
+        static let terminalUsesCustomFont =
+            "ghosthub.settings.terminalAppearance.usesCustomFont"
+        static let terminalFontFamily =
+            "ghosthub.settings.terminalAppearance.fontFamily"
+        static let terminalFontSize =
+            "ghosthub.settings.terminalAppearance.fontSize"
+        static let sshHosts = "ghosthub.settings.hosts.ssh"
+    }
+
+    public static let shared = SettingsStore(
+        configPipeline: GhosttyConfigPipeline(
+            paths: GhosttyConfigPaths(
+                configDirectory: ConfigHome.resolved()
+            )
+        )
+    )
+
+    public static let defaultTerminalPreferences = TerminalPreferences(
+        cursorStyle: .block,
+        allowShellIntegrationToControlCursor: false,
+        hideMouseWhileTyping: true,
+        copySelectionToClipboard: true,
+        showPaneResourceUsage: true,
+        confirmPaneClose: true
+    )
+
+    public static let defaultTerminalAppearancePreferences =
+        TerminalAppearancePreferences(
+            theme: .followGhostty,
+            usesCustomFont: false,
+            fontFamily: "Berkeley Mono",
+            fontSize: 13
+        )
+
+    public static let defaultWorktreePreferences = WorktreePreferences(
+        hideRootCheckout: false,
+        showHiddenWorktreesByDefault: false
+    )
+
+    public static let defaultAgentPreferences = AgentPreferences()
+
+    @Published public var selectedDomain: SettingsDomain = .appearance
+    @Published public private(set) var interfaceAppearance: AppearancePreference
+    @Published public private(set) var notificationConfiguration: NotificationsConfiguration
+    @Published public private(
+        set
+    ) var terminalAppearancePreferences: TerminalAppearancePreferences
+    @Published public private(set) var terminalPreferences: TerminalPreferences
+    @Published public private(set) var worktreePreferences: WorktreePreferences
+    @Published public private(set) var agentPreferences: AgentPreferences
+    @Published public private(set) var sshHosts: [SSHHost]
+    @Published public private(set) var lastErrorMessage: String?
+
+    private let configPipeline: GhosttyConfigPipeline
+    private let userDefaults: UserDefaults
+
+    public var terminalConfigFile: URL {
+        configPipeline.paths.globalConfigFile
+    }
+
+    public var terminalAppearanceConfigFile: URL {
+        configPipeline.paths.terminalAppearanceConfigFile
+    }
+
+    public init(
+        configPipeline: GhosttyConfigPipeline = .live,
+        userDefaults: UserDefaults = .standard
+    ) {
+        self.configPipeline = configPipeline
+        self.userDefaults = userDefaults
+
+        let loadedAppearance = Self.loadInterfaceAppearance(
+            using: userDefaults
+        )
+        let loadedNotifications = Self.loadNotificationConfiguration(
+            using: userDefaults
+        )
+        let loadedTerminalAppearance =
+            Self.loadTerminalAppearancePreferences(
+                using: userDefaults
+            )
+        let loadedTerminal = Self.loadTerminalPreferences(
+            using: configPipeline,
+            userDefaults: userDefaults
+        )
+        let loadedWorktrees = Self.loadWorktreePreferences(
+            using: userDefaults
+        )
+        let loadedAgents = Self.loadAgentPreferences(
+            using: userDefaults
+        )
+        let loadedSSHHosts = Self.loadSSHHosts(using: userDefaults)
+
+        interfaceAppearance = loadedAppearance
+        notificationConfiguration = loadedNotifications
+        terminalAppearancePreferences = loadedTerminalAppearance
+        terminalPreferences = loadedTerminal
+        worktreePreferences = loadedWorktrees
+        agentPreferences = loadedAgents
+        sshHosts = loadedSSHHosts
+        persistTerminalPreferences()
+        persistTerminalAppearancePreferences()
+    }
+
+    public func reload() {
+        interfaceAppearance = Self.loadInterfaceAppearance(
+            using: userDefaults
+        )
+        notificationConfiguration =
+            Self.loadNotificationConfiguration(
+                using: userDefaults
+            )
+        terminalAppearancePreferences =
+            Self.loadTerminalAppearancePreferences(
+                using: userDefaults
+            )
+        terminalPreferences = Self.loadTerminalPreferences(
+            using: configPipeline,
+            userDefaults: userDefaults
+        )
+        worktreePreferences = Self.loadWorktreePreferences(using: userDefaults)
+        agentPreferences = Self.loadAgentPreferences(using: userDefaults)
+
+        sshHosts = Self.loadSSHHosts(using: userDefaults)
+        lastErrorMessage = nil
+    }
+
+    public func setInterfaceAppearance(
+        _ appearance: AppearancePreference
+    ) {
+        interfaceAppearance = appearance
+        userDefaults.set(
+            appearance.rawValue,
+            forKey: DefaultsKey.interfaceAppearance
+        )
+    }
+
+    public func setShowMacOSNotifications(_ enabled: Bool) {
+        var updated = notificationConfiguration
+        updated.showMacOSNotifications = enabled
+        updated.showDockBadge = enabled
+        notificationConfiguration = updated
+        userDefaults.set(
+            enabled,
+            forKey: DefaultsKey.showMacOSNotifications
+        )
+    }
+
+    public func setNotificationAttentionSound(
+        _ sound: WorkspaceNotificationSound
+    ) {
+        var updated = notificationConfiguration
+        updated.attentionSound = sound
+        notificationConfiguration = updated
+        userDefaults.set(
+            sound.rawValue,
+            forKey: DefaultsKey.attentionSound
+        )
+    }
+
+    public func setTerminalTheme(_ theme: TerminalTheme) {
+        updateTerminalAppearancePreferences { preferences in
+            preferences.theme = theme
+        }
+        persistTerminalAppearanceDefaults()
+        persistTerminalAppearancePreferences()
+    }
+
+    public func setUseCustomTerminalFont(_ enabled: Bool) {
+        updateTerminalAppearancePreferences { preferences in
+            preferences.usesCustomFont = enabled
+            if enabled {
+                seedFontFromGhosttyConfig(&preferences)
+            }
+        }
+        persistTerminalAppearanceDefaults()
+        persistTerminalAppearancePreferences()
+    }
+
+    private func seedFontFromGhosttyConfig(
+        _ preferences: inout TerminalAppearancePreferences
+    ) {
+        let defaults = Self.defaultTerminalAppearancePreferences
+        let familyIsDefault =
+            preferences.fontFamily == defaults.fontFamily
+        let sizeIsDefault =
+            preferences.fontSize == defaults.fontSize
+        guard familyIsDefault || sizeIsDefault else { return }
+
+        guard let contents = try? String(
+            contentsOf: terminalConfigFile,
+            encoding: .utf8
+        ) else { return }
+
+        if familyIsDefault,
+           let raw = TOMLConfigParser.parseConfigValue(
+               for: "font-family", in: contents
+           ) {
+            let family = TOMLConfigParser.unquoteTOMLString(raw)
+            if !family.isEmpty {
+                preferences.fontFamily = family
+            }
+        }
+        if sizeIsDefault,
+           let sizeStr = TOMLConfigParser.parseConfigValue(
+               for: "font-size", in: contents
+           ),
+           let size = Double(sizeStr) {
+            preferences.fontSize = min(
+                max(size.roundedFontSize, 8), 32
+            )
+        }
+    }
+
+    public func setTerminalFontFamily(_ family: String) {
+        updateTerminalAppearancePreferences { preferences in
+            preferences.fontFamily = family
+        }
+        persistTerminalAppearanceDefaults()
+        persistTerminalAppearancePreferences()
+    }
+
+    public func setTerminalFontSize(_ size: Double) {
+        updateTerminalAppearancePreferences { preferences in
+            preferences.fontSize = min(max(size.roundedFontSize, 8), 32)
+        }
+        persistTerminalAppearanceDefaults()
+        persistTerminalAppearancePreferences()
+    }
+
+    public func setCursorStyle(_ cursorStyle: CursorStyle) {
+        updateTerminalPreferences { preferences in
+            preferences.cursorStyle = cursorStyle
+        }
+        persistTerminalPreferences()
+    }
+
+    public func setAllowShellIntegrationToControlCursor(_ enabled: Bool) {
+        updateTerminalPreferences { preferences in
+            preferences.allowShellIntegrationToControlCursor = enabled
+        }
+        persistTerminalPreferences()
+    }
+
+    public func setHideMouseWhileTyping(_ enabled: Bool) {
+        updateTerminalPreferences { preferences in
+            preferences.hideMouseWhileTyping = enabled
+        }
+        persistTerminalPreferences()
+    }
+
+    public func setCopySelectionToClipboard(_ enabled: Bool) {
+        updateTerminalPreferences { preferences in
+            preferences.copySelectionToClipboard = enabled
+        }
+        persistTerminalPreferences()
+    }
+
+    public func setShowPaneResourceUsage(_ enabled: Bool) {
+        updateTerminalPreferences { preferences in
+            preferences.showPaneResourceUsage = enabled
+        }
+        userDefaults.set(enabled, forKey: DefaultsKey.showPaneResourceUsage)
+    }
+
+    public func setConfirmPaneClose(_ enabled: Bool) {
+        updateTerminalPreferences { preferences in
+            preferences.confirmPaneClose = enabled
+        }
+        userDefaults.set(enabled, forKey: DefaultsKey.confirmPaneClose)
+    }
+
+    public func setHideRootCheckout(_ enabled: Bool) {
+        updateWorktreePreferences { preferences in
+            preferences.hideRootCheckout = enabled
+        }
+        userDefaults.set(enabled, forKey: DefaultsKey.hideRootCheckout)
+    }
+
+    public func setShowHiddenWorktreesByDefault(_ enabled: Bool) {
+        updateWorktreePreferences { preferences in
+            preferences.showHiddenWorktreesByDefault = enabled
+        }
+        userDefaults.set(enabled, forKey: DefaultsKey.showHiddenWorktreesByDefault)
+    }
+
+    public func setSSHHosts(_ sshHosts: [SSHHost]) {
+        self.sshHosts =
+            SSHHostSanitizer.sshHosts(sshHosts)
+        persistSSHHosts()
+    }
+
+    private func updateTerminalPreferences(
+        _ update: (inout TerminalPreferences) -> Void
+    ) {
+        var updated = terminalPreferences
+        update(&updated)
+        terminalPreferences = updated
+    }
+
+    private func updateTerminalAppearancePreferences(
+        _ update: (inout TerminalAppearancePreferences) -> Void
+    ) {
+        var updated = terminalAppearancePreferences
+        update(&updated)
+        terminalAppearancePreferences = updated
+    }
+
+    private func updateWorktreePreferences(
+        _ update: (inout WorktreePreferences) -> Void
+    ) {
+        var updated = worktreePreferences
+        update(&updated)
+        worktreePreferences = updated
+    }
+
+    private func updateAgentPreferences(
+        _ update: (inout AgentPreferences) -> Void
+    ) {
+        var updated = agentPreferences
+        update(&updated)
+        agentPreferences = updated
+    }
+
+    private func persistTerminalPreferences() {
+        do {
+            let didCreate = try configPipeline.prepareGlobalConfig()
+            var contents = try String(
+                contentsOf: terminalConfigFile,
+                encoding: .utf8
+            )
+
+            if didCreate, contents.isEmpty {
+                contents = GhosttyConfigPipeline.defaultGlobalConfigContents
+            }
+
+            let managedBlock = ManagedBlockEditor.renderManagedTerminalBlock(
+                for: terminalPreferences
+            )
+            contents = ManagedBlockEditor.replacingManagedTerminalBlock(
+                in: contents,
+                with: managedBlock
+            )
+
+            try contents.write(
+                to: terminalConfigFile,
+                atomically: true,
+                encoding: .utf8
+            )
+            lastErrorMessage = nil
+        } catch {
+            lastErrorMessage = error.localizedDescription
+        }
+    }
+
+    private func persistTerminalAppearancePreferences() {
+        do {
+            try configPipeline.fileManager.createDirectory(
+                at: configPipeline.paths.configDirectory,
+                withIntermediateDirectories: true,
+                attributes: nil
+            )
+            let overlay = ConfigSectionEditor.renderTerminalAppearanceOverlay(
+                for: terminalAppearancePreferences
+            )
+            let overlayFile = terminalAppearanceConfigFile
+            if let overlay {
+                try overlay.write(
+                    to: overlayFile,
+                    atomically: true,
+                    encoding: .utf8
+                )
+            } else if configPipeline.fileManager.fileExists(
+                atPath: overlayFile.path
+            ) {
+                try configPipeline.fileManager.removeItem(at: overlayFile)
+            }
+            lastErrorMessage = nil
+        } catch {
+            lastErrorMessage = error.localizedDescription
+        }
+    }
+
+    /// Persist the app-native terminal appearance values to
+    /// UserDefaults.
+    private func persistTerminalAppearanceDefaults() {
+        let ta = terminalAppearancePreferences
+        userDefaults.set(
+            ta.theme.rawValue,
+            forKey: DefaultsKey.terminalTheme
+        )
+        userDefaults.set(
+            ta.usesCustomFont,
+            forKey: DefaultsKey.terminalUsesCustomFont
+        )
+        userDefaults.set(
+            ta.fontFamily,
+            forKey: DefaultsKey.terminalFontFamily
+        )
+        userDefaults.set(
+            ta.fontSize.roundedFontSize,
+            forKey: DefaultsKey.terminalFontSize
+        )
+    }
+
+    private func persistSSHHosts() {
+        do {
+            let data = try JSONEncoder().encode(sshHosts)
+            userDefaults.set(data, forKey: DefaultsKey.sshHosts)
+            lastErrorMessage = nil
+        } catch {
+            lastErrorMessage = error.localizedDescription
+        }
+    }
+
+    private static func loadSSHHosts(
+        using userDefaults: UserDefaults
+    ) -> [SSHHost] {
+        guard let data = userDefaults.data(forKey: DefaultsKey.sshHosts),
+              let hosts = try? JSONDecoder().decode(
+                  [SSHHost].self,
+                  from: data
+              )
+        else { return [] }
+        return SSHHostSanitizer.sshHosts(hosts)
+    }
+
+    private static func loadTerminalPreferences(
+        using configPipeline: GhosttyConfigPipeline,
+        userDefaults: UserDefaults
+    ) -> TerminalPreferences {
+        let defaults = defaultTerminalPreferences
+        let confirmPaneClose = userDefaults.object(
+            forKey: DefaultsKey.confirmPaneClose
+        ) as? Bool ?? defaults.confirmPaneClose
+        let contents: String
+        do {
+            _ = try configPipeline.prepareGlobalConfig()
+            contents = try String(
+                contentsOf: configPipeline.paths.globalConfigFile,
+                encoding: .utf8
+            )
+        } catch {
+            return TerminalPreferences(
+                cursorStyle: defaults.cursorStyle,
+                allowShellIntegrationToControlCursor: defaults.allowShellIntegrationToControlCursor,
+                hideMouseWhileTyping: defaults.hideMouseWhileTyping,
+                copySelectionToClipboard: defaults.copySelectionToClipboard,
+                showPaneResourceUsage: defaults.showPaneResourceUsage,
+                confirmPaneClose: confirmPaneClose
+            )
+        }
+
+        let cursorStyle = TOMLConfigParser.parseConfigValue(
+            for: "cursor-style",
+            in: contents
+        )
+        .flatMap(CursorStyle.init(rawValue:))
+        ?? defaults.cursorStyle
+        let allowShellIntegrationToControlCursor =
+            TOMLConfigParser.parseShellIntegrationCursorBehavior(
+                in: contents
+            ) ?? defaults.allowShellIntegrationToControlCursor
+        let hideMouseWhileTyping = TOMLConfigParser.parseBoolConfigValue(
+            for: "mouse-hide-while-typing",
+            in: contents
+        ) ?? defaults.hideMouseWhileTyping
+        let copySelectionToClipboard = TOMLConfigParser.parseCopyOnSelect(
+            in: contents
+        ) ?? defaults.copySelectionToClipboard
+        let showPaneResourceUsage = userDefaults.object(
+            forKey: DefaultsKey.showPaneResourceUsage
+        ) as? Bool ?? defaults.showPaneResourceUsage
+
+        return TerminalPreferences(
+            cursorStyle: cursorStyle,
+            allowShellIntegrationToControlCursor: allowShellIntegrationToControlCursor,
+            hideMouseWhileTyping: hideMouseWhileTyping,
+            copySelectionToClipboard: copySelectionToClipboard,
+            showPaneResourceUsage: showPaneResourceUsage,
+            confirmPaneClose: confirmPaneClose
+        )
+    }
+
+    private static func loadInterfaceAppearance(
+        using userDefaults: UserDefaults
+    ) -> AppearancePreference {
+        userDefaults.string(
+            forKey: DefaultsKey.interfaceAppearance
+        )
+        .flatMap(AppearancePreference.init(rawValue:))
+        ?? .system
+    }
+
+    private static func loadNotificationConfiguration(
+        using userDefaults: UserDefaults
+    ) -> NotificationsConfiguration {
+        var configuration =
+            WorkspaceConfiguration.defaults().notifications
+        if let showMacOS = userDefaults.object(
+            forKey: DefaultsKey.showMacOSNotifications
+        ) as? Bool {
+            configuration.showMacOSNotifications = showMacOS
+            configuration.showDockBadge = showMacOS
+        }
+        if let sound = userDefaults.string(
+            forKey: DefaultsKey.attentionSound
+        )
+        .flatMap(WorkspaceNotificationSound.init(rawValue:)) {
+            configuration.attentionSound = sound
+        }
+        return configuration
+    }
+
+    private static func loadTerminalAppearancePreferences(
+        using userDefaults: UserDefaults
+    ) -> TerminalAppearancePreferences {
+        var preferences = defaultTerminalAppearancePreferences
+        if let theme = userDefaults.string(
+            forKey: DefaultsKey.terminalTheme
+        )
+        .flatMap(TerminalTheme.init(rawValue:)) {
+            preferences.theme = theme
+        }
+        if let usesCustomFont = userDefaults.object(
+            forKey: DefaultsKey.terminalUsesCustomFont
+        ) as? Bool {
+            preferences.usesCustomFont = usesCustomFont
+        }
+        if let family = userDefaults.string(
+            forKey: DefaultsKey.terminalFontFamily
+        ), !family.isEmpty {
+            preferences.fontFamily = family
+        }
+        if let size = userDefaults.object(
+            forKey: DefaultsKey.terminalFontSize
+        ) as? Double, size > 0 {
+            preferences.fontSize = min(
+                max(size.roundedFontSize, 8), 32
+            )
+        }
+        return preferences
+    }
+
+    private static func loadWorktreePreferences(
+        using userDefaults: UserDefaults
+    ) -> WorktreePreferences {
+        let defaults = defaultWorktreePreferences
+        return WorktreePreferences(
+            hideRootCheckout: userDefaults.object(
+                forKey: DefaultsKey.hideRootCheckout
+            ) as? Bool ?? defaults.hideRootCheckout,
+            showHiddenWorktreesByDefault: userDefaults.object(
+                forKey: DefaultsKey.showHiddenWorktreesByDefault
+            ) as? Bool ?? defaults.showHiddenWorktreesByDefault
+        )
+    }
+
+    private static func loadAgentPreferences(
+        using _: UserDefaults
+    ) -> AgentPreferences {
+        AgentPreferences()
+    }
+
+}
+
+extension WorkspaceConfiguration {
+    /// Build the workspace configuration from the app-native
+    /// settings store. Presets remain built in while notification
+    /// preferences come from UserDefaults.
+    @MainActor
+    public static func fromSettings(
+        _ store: SettingsStore
+    ) -> WorkspaceConfiguration {
+        var configuration = WorkspaceConfiguration.defaults()
+        configuration.notifications =
+            store.notificationConfiguration
+        return configuration
+    }
+}

@@ -1,0 +1,149 @@
+import Foundation
+import GhosthubTestSupport
+import GhosthubWorkspace
+@testable import GhosthubApp
+@testable import GhosthubTerminal
+@testable import GhosthubTerminalSupport
+import XCTest
+
+// MARK: - Skip Guard
+
+func skipUnlessGhosttyReady() throws {
+    guard GhosttyBootstrap.status().isReady else {
+        throw XCTSkip("libghostty not bootstrapped")
+    }
+}
+
+extension XCTestCase {
+    func makeTemporaryDirectory() -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                UUID().uuidString, isDirectory: true
+            )
+        try! FileManager.default.createDirectory(
+            at: url, withIntermediateDirectories: true
+        )
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: url)
+        }
+        return url
+    }
+}
+
+// MARK: - Isolated Pipeline
+
+func makeIsolatedPipeline() -> (GhosttyConfigPipeline, URL) {
+    let tempRoot = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try! FileManager.default.createDirectory(
+        at: tempRoot,
+        withIntermediateDirectories: true
+    )
+    let configDirectory = tempRoot
+        .appendingPathComponent(".config", isDirectory: true)
+        .appendingPathComponent("ghosthub", isDirectory: true)
+    return (
+        GhosttyConfigPipeline(
+            paths: .init(configDirectory: configDirectory)
+        ),
+        tempRoot
+    )
+}
+
+func withIsolatedPipeline<T>(
+    _ block: (GhosttyConfigPipeline, URL) throws -> T
+) throws -> T {
+    try withTemporaryDirectory { tempRoot in
+        let configDirectory = tempRoot
+            .appendingPathComponent(".config", isDirectory: true)
+            .appendingPathComponent("ghosthub", isDirectory: true)
+        let pipeline = GhosttyConfigPipeline(
+            paths: .init(configDirectory: configDirectory)
+        )
+        return try block(pipeline, tempRoot)
+    }
+}
+
+// MARK: - Model Fixtures
+
+extension WorkspaceSnapshot {
+    static func singleWorktreeFixture(
+        hostID: UUID = UUID(),
+        projectID: UUID = UUID(),
+        worktreeID: UUID = UUID(),
+        hostName: String = "This Mac",
+        projectName: String = "ghosthub",
+        projectRootPath: String? = nil,
+        worktreeName: String = "root",
+        worktreePath: String = "/tmp/ghosthub",
+        worktreeBranch: String = "main"
+    ) -> WorkspaceSnapshot {
+        WorkspaceSnapshot(
+            hosts: [
+                HostSummary(
+                    id: hostID, name: hostName,
+                    kind: .selfHost, platform: .macOS
+                ),
+            ],
+            projects: [
+                ProjectSummary(
+                    id: projectID, hostID: hostID,
+                    name: projectName,
+                    rootPath: projectRootPath ?? worktreePath
+                ),
+            ],
+            worktrees: [
+                WorktreeSummary(
+                    id: worktreeID, hostID: hostID,
+                    projectID: projectID, name: worktreeName,
+                    path: worktreePath, branch: worktreeBranch
+                ),
+            ]
+        )
+    }
+}
+
+// MARK: - Workspace Test Context
+
+struct WorkspaceTestContext {
+    let hostID = UUID()
+    let projectID = UUID()
+    let worktreeID = UUID()
+    let leafID = UUID()
+
+    var snapshot: WorkspaceSnapshot {
+        WorkspaceSnapshot.singleWorktreeFixture(
+            hostID: hostID,
+            projectID: projectID,
+            worktreeID: worktreeID
+        )
+    }
+
+    func surfaceKey(
+        target: TerminalSurfaceTarget = .worktreeShell,
+        leafID: UUID? = nil
+    ) -> SurfaceKey {
+        SurfaceKey.fixture(
+            worktreeID: worktreeID,
+            hostID: hostID,
+            target: target,
+            leafID: leafID
+        )
+    }
+}
+
+extension SurfaceKey {
+    static func fixture(
+        worktreeID: UUID? = UUID(),
+        hostID: UUID = UUID(),
+        target: TerminalSurfaceTarget = .worktreeShell,
+        leafID: UUID? = nil
+    ) -> SurfaceKey {
+        SurfaceKey(
+            worktreeID: worktreeID,
+            hostID: hostID,
+            target: target,
+            leafID: leafID
+        )
+    }
+}
