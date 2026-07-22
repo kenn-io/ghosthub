@@ -314,7 +314,7 @@ public enum CommandPaletteModel {
         selection: WorkspaceSelection
     ) -> [WorkspaceCommandItem] {
         orderedSidebarProjects(in: snapshot, selection: selection)
-            .filter { !$0.project.isSynthesized }
+            .filter { snapshot.canCreateWorktree(in: $0.project) }
             .map { sidebarProject in
                 let project = sidebarProject.project
                 let projectName = sidebarProject.row.title

@@ -370,7 +370,10 @@ enum KwtSnapshotMerger {
 enum HostInventoryOverlay {
     static func apply(
         kwtInventoriesByHost: [UUID: KwtHostInventory],
+        kwtAvailabilityByHost: [UUID: Bool] = [:],
         tmuxSessionsByHost: [UUID: [TmuxSessionSummary]],
+        tmuxReachabilityByHost: [UUID: Bool] = [:],
+        tmuxLastSeenByHost: [UUID: Date] = [:],
         to source: WorkspaceSnapshot
     ) -> WorkspaceSnapshot {
         var updated = kwtInventoriesByHost.reduce(source) { partial, entry in
@@ -385,6 +388,42 @@ enum HostInventoryOverlay {
                 $0.id == hostID
             }) else { continue }
             updated.hosts[index].tmuxSessions = sessions
+        }
+        for (hostID, isAvailable) in kwtAvailabilityByHost {
+            guard let index = updated.hosts.firstIndex(where: {
+                $0.id == hostID
+            }) else { continue }
+            updated.hosts[index].remoteDiagnostics.removeAll {
+                $0.code == .missingKwt
+            }
+            if !isAvailable {
+                updated.hosts[index].remoteDiagnostics.append(
+                    .missingKwtCapability
+                )
+            }
+        }
+        for (hostID, isReachable) in tmuxReachabilityByHost {
+            guard let index = updated.hosts.firstIndex(where: {
+                $0.id == hostID
+            }) else { continue }
+            updated.hosts[index].lastKnownReachable = isReachable
+            guard updated.hosts[index].kind == .remote else { continue }
+            updated.hosts[index].remoteDiagnostics.removeAll {
+                $0.code == .probeFailure
+            }
+            if !isReachable {
+                updated.hosts[index].remoteDiagnostics.append(
+                    .tmuxDiscoveryUnavailable
+                )
+            }
+        }
+        for (hostID, reachedAt) in tmuxLastSeenByHost {
+            guard let index = updated.hosts.firstIndex(where: {
+                $0.id == hostID
+            }) else { continue }
+            if updated.hosts[index].lastSeenAt.map({ $0 < reachedAt }) ?? true {
+                updated.hosts[index].lastSeenAt = reachedAt
+            }
         }
         return updated
     }

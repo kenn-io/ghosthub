@@ -131,7 +131,9 @@ struct WorkspaceSidebarView: View {
                                                     onNewWorktree(project.project)
                                                 }
                                                 .disabled(
-                                                    project.project.isSynthesized
+                                                    !snapshot.canCreateWorktree(
+                                                        in: project.project
+                                                    )
                                                 )
                                             }
                                             if isExpanded(projectKey) {
@@ -198,10 +200,11 @@ struct WorkspaceSidebarView: View {
     }
 
     private var selectedProject: ProjectSummary? {
-        WorkspaceSelectionResolver.selectedProject(
+        guard let project = WorkspaceSelectionResolver.selectedProject(
             in: snapshot,
             selection: selection
-        )
+        ), snapshot.canCreateWorktree(in: project) else { return nil }
+        return project
     }
 
     private var preferredNewSessionHost: HostSummary? {

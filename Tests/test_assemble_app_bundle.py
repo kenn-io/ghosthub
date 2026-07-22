@@ -7,6 +7,12 @@ from pathlib import Path
 import pytest
 
 
+COPYRIGHT_NOTICE = (
+    "Copyright © 2026 Kenn Software LLC. "
+    "Licensed under the GNU AGPL v3.0 or later."
+)
+
+
 def load_module():
     repo_root = Path(__file__).resolve().parents[1]
     module_path = repo_root / "tools" / "assemble_app_bundle.py"
@@ -149,7 +155,7 @@ def test_assemble_app_bundle_stages_icon_and_binary(tmp_path):
         app_license_path=app_license,
         kwt_binary=kwt_binary,
         third_party_licenses_dir=licenses_dir,
-        copyright="Copyright © 2026 Kenn Software LLC. All rights reserved.",
+        copyright=COPYRIGHT_NOTICE,
         kwt_version="0.1.0",
         kwt_source_revision="abc123",
     )
@@ -223,7 +229,7 @@ def test_info_plist_contains_icon_key_and_bundle_metadata(tmp_path):
         app_license_path=app_license,
         kwt_binary=kwt_binary,
         third_party_licenses_dir=licenses_dir,
-        copyright="Copyright © 2026 Kenn Software LLC. All rights reserved.",
+        copyright=COPYRIGHT_NOTICE,
         kwt_version="0.1.0",
         kwt_source_revision="abc123",
     )
@@ -237,9 +243,7 @@ def test_info_plist_contains_icon_key_and_bundle_metadata(tmp_path):
     assert plist["CFBundleShortVersionString"] == "0.1.0"
     assert plist["CFBundleVersion"] == "123"
     assert plist["CFBundleIconFile"] == "Ghosthub.icns"
-    assert plist["NSHumanReadableCopyright"] == (
-        "Copyright © 2026 Kenn Software LLC. All rights reserved."
-    )
+    assert plist["NSHumanReadableCopyright"] == COPYRIGHT_NOTICE
     assert plist["GhosthubKwtVersion"] == "0.1.0"
     assert plist["GhosthubKwtSourceRevision"] == "abc123"
 
@@ -283,7 +287,7 @@ def test_assemble_app_bundle_replaces_existing_bundle_contents(tmp_path):
         app_license_path=app_license,
         kwt_binary=kwt_binary,
         third_party_licenses_dir=licenses_dir,
-        copyright="Copyright © 2026 Kenn Software LLC. All rights reserved.",
+        copyright=COPYRIGHT_NOTICE,
         kwt_version="0.1.0",
         kwt_source_revision="abc123",
     )

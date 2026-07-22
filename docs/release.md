@@ -135,7 +135,8 @@ Inspect the run and install the candidate on a Mac where Ghosthub has not been
 locally built. Verify at minimum:
 
 - Gatekeeper opens the app without a quarantine override.
-- About Ghosthub reports version 0.1.0 and Kenn Software LLC copyright.
+- About Ghosthub reports version 0.1.0, Kenn Software LLC copyright, and the
+  GNU AGPL v3.0-or-later license notice.
 - Local kwt projects and worktrees load without a system kwt on `PATH`.
 - Existing local tmux sessions remain discoverable and attach normally.
 - A configured SSH host uses its remote kwt and tmux installations.

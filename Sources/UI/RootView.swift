@@ -505,7 +505,7 @@ public struct RootView: View {
     }
 
     private var creatableProjects: [ProjectSummary] {
-        snapshot.projects.filter { !$0.isSynthesized && !$0.isStale }
+        snapshot.projects.filter(snapshot.canCreateWorktree(in:))
     }
 
     private func displayName(
@@ -663,7 +663,9 @@ public struct RootView: View {
     }
 
     private func openNewWorktree(_ project: ProjectSummary) {
-        guard handlers.createWorktree != nil, !project.isSynthesized else {
+        guard handlers.createWorktree != nil,
+              snapshot.canCreateWorktree(in: project)
+        else {
             return
         }
         newWorktreeProject = project

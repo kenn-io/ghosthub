@@ -101,6 +101,7 @@ public enum RemoteHostDiagnosticSeverity: String, Codable, Equatable, Sendable {
 public enum RemoteHostDiagnosticCode: String, Codable, Equatable, Sendable {
     case missingGit
     case missingGh
+    case missingKwt
     case ghNotAuthenticated
     case missingTmux
     case missingInstallDependencies
@@ -135,6 +136,7 @@ public struct RemoteHostDiagnostic: Codable, Equatable, Sendable, Identifiable {
     public var blocksWorktreeCreate: Bool {
         switch code {
         case .missingGit,
+             .missingKwt,
              .missingInstallDependencies,
              .bootstrapFailure,
              .configurationFailure,
@@ -159,9 +161,31 @@ public struct RemoteHostDiagnostic: Codable, Equatable, Sendable, Identifiable {
              .sshConnectionFailed,
              .probeFailure:
             return true
-        case .missingGit, .missingGh, .ghNotAuthenticated:
+        case .missingGit, .missingGh, .missingKwt, .ghNotAuthenticated:
             return false
         }
+    }
+
+    public static var missingKwtCapability: Self {
+        RemoteHostDiagnostic(
+            code: .missingKwt,
+            severity: .warning,
+            summary: "kwt is not available (optional).",
+            recoverySuggestion:
+                "Install kwt to show projects and worktrees from this host. "
+                + "Tmux sessions remain available."
+        )
+    }
+
+    public static var tmuxDiscoveryUnavailable: Self {
+        RemoteHostDiagnostic(
+            code: .probeFailure,
+            severity: .error,
+            summary: "Tmux could not be reached.",
+            recoverySuggestion:
+                "Verify the SSH destination and that tmux is installed, "
+                + "then retry workspace discovery."
+        )
     }
 }
 
@@ -421,11 +445,6 @@ public struct HostSummary: Identifiable, Equatable, Sendable {
     }
 
     public var canCreateWorktree: Bool {
-        if let avail = operationAvailability?[
-            "worktreeCreate"
-        ] {
-            return avail.available
-        }
         if kind == .remote, connectionState == .offline {
             return false
         }
@@ -433,6 +452,11 @@ public struct HostSummary: Identifiable, Equatable, Sendable {
             where: \.blocksWorktreeCreate
         ) {
             return false
+        }
+        if let avail = operationAvailability?[
+            "worktreeCreate"
+        ] {
+            return avail.available
         }
         return remoteCapabilities?.commands
             .worktreeCreate ?? true

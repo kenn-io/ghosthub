@@ -276,6 +276,10 @@ func makeModel(
     },
     tmuxSessionDiscovery: @escaping
         WorkspaceSceneModel.TmuxSessionDiscovery = { _ in .success([]) },
+    sshHostProbeRunner: @escaping
+        WorkspaceSceneModel.SSHHostProbeRunner = { _, _ in
+            (status: 255, stdout: "")
+        },
     configuredSSHHostsProvider: @escaping () -> [SSHHost] = { [] },
     configuredSSHHostsPublisher: AnyPublisher<[SSHHost], Never> =
         Empty(completeImmediately: false).eraseToAnyPublisher(),
@@ -298,6 +302,7 @@ func makeModel(
         kwtInventoryLoader: kwtInventoryLoader,
         kwtWorktreeCreator: kwtWorktreeCreator,
         tmuxSessionDiscovery: tmuxSessionDiscovery,
+        sshHostProbeRunner: sshHostProbeRunner,
         configuredSSHHostsProvider: configuredSSHHostsProvider,
         configuredSSHHostsPublisher: configuredSSHHostsPublisher,
         sceneSettings: sceneSettings,

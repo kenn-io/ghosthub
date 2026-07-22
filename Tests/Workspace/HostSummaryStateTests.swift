@@ -67,4 +67,16 @@ struct HostSummaryStateTests {
         host.decodedConnectionState = .online
         #expect(host.connectionState == .online)
     }
+
+    @Test("missing kwt overrides stale worktree availability")
+    func missingKwtBlocksWorktreeCreation() {
+        var host = HostSummary.onlineRemoteFixture()
+        host.operationAvailability = [
+            "worktreeCreate": OperationAvailabilityEntry(available: true),
+        ]
+        host.remoteDiagnostics = [.missingKwtCapability]
+
+        #expect(!host.canCreateWorktree)
+        #expect(host.primaryDiagnostic?.blocksDurableSessions == false)
+    }
 }

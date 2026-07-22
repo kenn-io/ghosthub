@@ -49,6 +49,9 @@ final class WorkspaceSceneModel: ObservableObject {
     typealias TmuxSessionDiscovery = @Sendable (
         TmuxHost
     ) -> Result<[DiscoveredTmuxSession], TmuxBinaryError>
+    typealias SSHHostProbeRunner = @Sendable (
+        SSHHostInfo, String
+    ) -> (status: Int32, stdout: String)
 
     @Published var snapshot: WorkspaceSnapshot {
         didSet {
@@ -59,6 +62,8 @@ final class WorkspaceSceneModel: ObservableObject {
     private var isApplyingInventoryOverlay = false
     private var inventoryHosts: [UUID: TmuxHost] = [:]
     private var tmuxSessionsByHost: [UUID: [TmuxSessionSummary]] = [:]
+    private var tmuxReachabilityByHost: [UUID: Bool] = [:]
+    private var tmuxLastSeenByHost: [UUID: Date] = [:]
     private var tmuxDiscoveryFailuresByHost: [UUID: String] = [:]
     private var isTmuxDiscoveryLoading = false
     private var tmuxDiscoveryGeneration = 0
@@ -76,6 +81,7 @@ final class WorkspaceSceneModel: ObservableObject {
     private var kwtInventoryGeneration = 0
     private var kwtInventoryTask: Task<Void, Never>?
     private var kwtInventoriesByHost: [UUID: KwtHostInventory] = [:]
+    private var kwtAvailabilityByHost: [UUID: Bool] = [:]
     private var kwtInventoryFailuresByHost: [UUID: String] = [:]
     private var isKwtInventoryLoading = false
     private var isWorktreeCreationInProgress = false
@@ -191,6 +197,7 @@ final class WorkspaceSceneModel: ObservableObject {
     private let kwtInventoryLoader: KwtInventoryLoader
     private let kwtWorktreeCreator: KwtWorktreeCreator
     private let tmuxSessionDiscovery: TmuxSessionDiscovery
+    private let sshHostProbeRunner: SSHHostProbeRunner
     private let configuredSSHHostsProvider: () -> [SSHHost]
     private var configuredSSHHostsCancellable: AnyCancellable?
     private var activityControllerBacking: ActivityMonitoringController?
@@ -289,6 +296,13 @@ final class WorkspaceSceneModel: ObservableObject {
                 resolver.discoverSessions(on: info)
             }
         },
+        sshHostProbeRunner: @escaping SSHHostProbeRunner = { host, command in
+            TmuxBinaryResolver.runRemoteLoginShell(
+                host: host,
+                command: command,
+                timeout: 10
+            )
+        },
         configuredSSHHostsProvider: @escaping () -> [SSHHost] = {
             SettingsStore.shared.sshHosts
         },
@@ -315,6 +329,7 @@ final class WorkspaceSceneModel: ObservableObject {
         self.kwtInventoryLoader = kwtInventoryLoader
         self.kwtWorktreeCreator = kwtWorktreeCreator
         self.tmuxSessionDiscovery = tmuxSessionDiscovery
+        self.sshHostProbeRunner = sshHostProbeRunner
         self.createdSessionDiscoveryDelays =
             createdSessionDiscoveryDelays
         self.configuredSSHHostsProvider = configuredSSHHostsProvider
@@ -583,7 +598,7 @@ final class WorkspaceSceneModel: ObservableObject {
             throw KwtWorktreeError.invalidBranchName
         }
         guard let project = snapshot.project(id: request.projectID),
-              !project.isSynthesized,
+              snapshot.canCreateWorktree(in: project),
               let hostSummary = snapshot.host(id: project.hostID),
               let host = TmuxHostResolver.resolve(hostSummary)
         else {
@@ -592,18 +607,36 @@ final class WorkspaceSceneModel: ObservableObject {
 
         isWorktreeCreationInProgress = true
         invalidateKwtInventoryRefresh()
-        defer { isWorktreeCreationInProgress = false }
+        var shouldRefreshKwtInventory = false
+        defer {
+            isWorktreeCreationInProgress = false
+            if shouldRefreshKwtInventory {
+                scheduleKwtInventory()
+            }
+        }
 
-        try await kwtWorktreeCreator(request, project.rootPath, host)
+        do {
+            try await kwtWorktreeCreator(request, project.rootPath, host)
 
-        let refreshed = try await kwtInventoryLoader(host)
-        let previous = kwtInventoriesByHost[project.hostID]
-        kwtInventoriesByHost[project.hostID] =
-            refreshed.retainingFailedProjectWorktrees(from: previous)
-        kwtInventoryFailuresByHost.removeValue(forKey: project.hostID)
-        applyInventoryOverlayIfNeeded()
-        updateWorkspaceInventoryState()
-        scheduleTmuxSessionDiscovery()
+            let refreshed = try await kwtInventoryLoader(host)
+            let previous = kwtInventoriesByHost[project.hostID]
+            kwtInventoriesByHost[project.hostID] =
+                refreshed.retainingFailedProjectWorktrees(from: previous)
+            kwtAvailabilityByHost[project.hostID] = true
+            kwtInventoryFailuresByHost.removeValue(forKey: project.hostID)
+            applyInventoryOverlayIfNeeded()
+            updateWorkspaceInventoryState()
+            scheduleTmuxSessionDiscovery()
+        } catch {
+            if isRemoteKwtUnavailable(error, hostID: project.hostID) {
+                kwtAvailabilityByHost[project.hostID] = false
+                kwtInventoryFailuresByHost.removeValue(forKey: project.hostID)
+                applyInventoryOverlayIfNeeded()
+                updateWorkspaceInventoryState()
+                shouldRefreshKwtInventory = true
+            }
+            throw error
+        }
 
         guard let created = snapshot.worktrees.first(where: {
             $0.projectID == project.id && $0.branch == request.branchName
@@ -637,10 +670,19 @@ final class WorkspaceSceneModel: ObservableObject {
         kwtInventoriesByHost = kwtInventoriesByHost.filter {
             retainedHostIDs.contains($0.key)
         }
+        kwtAvailabilityByHost = kwtAvailabilityByHost.filter {
+            retainedHostIDs.contains($0.key)
+        }
         kwtInventoryFailuresByHost = kwtInventoryFailuresByHost.filter {
             retainedHostIDs.contains($0.key)
         }
         tmuxSessionsByHost = tmuxSessionsByHost.filter {
+            retainedHostIDs.contains($0.key)
+        }
+        tmuxReachabilityByHost = tmuxReachabilityByHost.filter {
+            retainedHostIDs.contains($0.key)
+        }
+        tmuxLastSeenByHost = tmuxLastSeenByHost.filter {
             retainedHostIDs.contains($0.key)
         }
         tmuxDiscoveryFailuresByHost = tmuxDiscoveryFailuresByHost.filter {
@@ -701,6 +743,7 @@ final class WorkspaceSceneModel: ObservableObject {
                             inventory.retainingFailedProjectWorktrees(
                                 from: previous
                             )
+                        self.kwtAvailabilityByHost[hostID] = true
                         // A host inventory is useful even when one project
                         // cannot be read. Retain that project's cached
                         // worktrees and keep other hosts available.
@@ -708,8 +751,22 @@ final class WorkspaceSceneModel: ObservableObject {
                             forKey: hostID
                         )
                     case let .failure(error):
-                        self.kwtInventoryFailuresByHost[hostID] =
-                            error.localizedDescription
+                        if self.isRemoteKwtUnavailable(
+                            error,
+                            hostID: hostID
+                        ) {
+                            // SSH hosts remain useful for ordinary tmux even
+                            // when kwt is not installed. Keep any last-known
+                            // project inventory without presenting the absent
+                            // optional capability as a host failure.
+                            self.kwtInventoryFailuresByHost.removeValue(
+                                forKey: hostID
+                            )
+                            self.kwtAvailabilityByHost[hostID] = false
+                        } else {
+                            self.kwtInventoryFailuresByHost[hostID] =
+                                error.localizedDescription
+                        }
                     }
                     self.applyInventoryOverlayIfNeeded()
                     self.updateWorkspaceInventoryState()
@@ -730,12 +787,31 @@ final class WorkspaceSceneModel: ObservableObject {
         updateWorkspaceInventoryState()
     }
 
+    private func isRemoteKwtUnavailable(
+        _ error: Error,
+        hostID: UUID
+    ) -> Bool {
+        guard inventoryHosts[hostID]?.isRemote == true else { return false }
+        if let inventoryError = error as? KwtInventoryError,
+           case .commandFailed(_, 127) = inventoryError {
+            return true
+        }
+        if let worktreeError = error as? KwtWorktreeError,
+           case .commandFailed(_, 127) = worktreeError {
+            return true
+        }
+        return false
+    }
+
     private func applyingCachedInventories(
         to source: WorkspaceSnapshot
     ) -> WorkspaceSnapshot {
         HostInventoryOverlay.apply(
             kwtInventoriesByHost: kwtInventoriesByHost,
+            kwtAvailabilityByHost: kwtAvailabilityByHost,
             tmuxSessionsByHost: tmuxSessionsByHost,
+            tmuxReachabilityByHost: tmuxReachabilityByHost,
+            tmuxLastSeenByHost: tmuxLastSeenByHost,
             to: source
         )
     }
@@ -780,15 +856,19 @@ final class WorkspaceSceneModel: ObservableObject {
                     }
                     guard case let .success(discovered) = result else {
                         if case let .failure(error) = result {
+                            self.tmuxReachabilityByHost[hostID] = false
                             let hostName = self.snapshot.host(id: hostID)?.name
                                 ?? "Unknown host"
                             self.tmuxDiscoveryFailuresByHost[hostID] =
                                 "\(hostName): \(error.localizedDescription)"
                         }
+                        self.applyInventoryOverlayIfNeeded()
                         self.updateWorkspaceInventoryState()
                         continue
                     }
                     self.tmuxDiscoveryFailuresByHost.removeValue(forKey: hostID)
+                    self.tmuxReachabilityByHost[hostID] = true
+                    self.tmuxLastSeenByHost[hostID] = Date()
                     self.tmuxSessionsByHost[hostID] =
                         self.reconciledTmuxSessions(
                             discovered,
@@ -842,10 +922,6 @@ final class WorkspaceSceneModel: ObservableObject {
         workspaceInventoryWarning = uniqueProjectWarnings.isEmpty
             ? nil
             : uniqueProjectWarnings.joined(separator: "\n")
-        let allWarnings = Array(Set(
-            uniqueProjectWarnings
-                + Array(workspaceInventoryWarningsByHost.values)
-        )).sorted()
         let hasVisibleInventory = !snapshot.projects.isEmpty
             || snapshot.hosts.contains { !$0.tmuxSessions.isEmpty }
         let hasCachedInventory = hasVisibleInventory
@@ -857,18 +933,20 @@ final class WorkspaceSceneModel: ObservableObject {
             workspaceInventoryState = .loading
             return
         }
+        let localWarnings = [
+            kwtInventoryFailuresByHost[localHostID],
+            tmuxDiscoveryFailuresByHost[localHostID],
+        ].compactMap { $0 }
         if !hasPendingSources,
            !hasCachedInventory,
-           !workspaceInventoryWarningsByHost.isEmpty {
+           !localWarnings.isEmpty {
             workspaceInventoryState = .failed(
-                allWarnings.isEmpty
-                    ? "No host inventory source could be reached."
-                    : allWarnings.joined(separator: "\n")
+                Array(Set(localWarnings)).sorted().joined(separator: "\n")
             )
             return
         }
-        // Host discovery is additive. A failed source must never replace
-        // healthy or cached local/remote inventory with a blocking error.
+        // Remote discovery is additive. Its failure belongs to that host and
+        // must never replace the workspace with a blocking error.
         workspaceInventoryState = .loaded
     }
 
@@ -1006,22 +1084,33 @@ final class WorkspaceSceneModel: ObservableObject {
         ) else {
             return .failure(.message("Enter a valid SSH destination."))
         }
+        let sshHostProbeRunner = sshHostProbeRunner
         return await Task.detached {
-            let result = TmuxBinaryResolver.runRemoteLoginShell(
-                host: sshHost,
-                command: "command -v tmux >/dev/null && command -v kwt >/dev/null",
-                timeout: 10
+            let result = sshHostProbeRunner(
+                sshHost,
+                "command -v tmux >/dev/null || exit $?; "
+                    + "if command -v kwt >/dev/null; then "
+                    + "printf 'GHOSTHUB_KWT_AVAILABLE\\n'; "
+                    + "else printf 'GHOSTHUB_KWT_UNAVAILABLE\\n'; fi"
             )
             let reachable = result.status == 0
-            let diagnostics: [RemoteHostDiagnostic] = reachable ? [] : [
-                RemoteHostDiagnostic(
+            let kwtAvailable = result.stdout.contains(
+                "GHOSTHUB_KWT_AVAILABLE"
+            )
+            let diagnostics: [RemoteHostDiagnostic]
+            if !reachable {
+                diagnostics = [RemoteHostDiagnostic(
                     code: .probeFailure,
                     severity: .error,
-                    summary: "SSH, tmux, or kwt could not be reached.",
+                    summary: "SSH or tmux could not be reached.",
                     recoverySuggestion:
-                        "Verify the SSH destination and install tmux and kwt on the host."
-                ),
-            ]
+                        "Verify the SSH destination and install tmux on the host."
+                )]
+            } else if !kwtAvailable {
+                diagnostics = [.missingKwtCapability]
+            } else {
+                diagnostics = []
+            }
             return .success(HostProbeSummary(
                 host: HostSummary(
                     id: UUID(),

@@ -315,6 +315,40 @@ struct CommandPaletteModelTests {
         commands.expectCommandNotContains(title: "Create Worktree in orphan")
     }
 
+    @Test("command palette omits worktree creation when kwt is unavailable")
+    func commandPaletteOmitsCreateWorktreeWithoutKwt() {
+        var host = HostSummary.fixture(
+            id: UUID(uuidString: "6F0934D0-7D80-45AE-BDB4-13A765827902")!,
+            name: "Build Box",
+            kind: .remote,
+            platform: .linux,
+            sshDestination: "build-box"
+        )
+        host.remoteDiagnostics = [.missingKwtCapability]
+        let project = ProjectSummary.fixture(
+            id: UUID(uuidString: "BF0A2603-9C1C-4757-9002-4A45AB83C841")!,
+            hostID: host.id,
+            name: "docbank",
+            rootPath: "/srv/docbank"
+        )
+        let snapshot = WorkspaceSnapshot(
+            hosts: [host],
+            projects: [project],
+            worktrees: []
+        )
+        let selection = WorkspaceSelection(
+            selectedHostID: host.id,
+            selectedProjectID: project.id
+        )
+
+        let commands = makeCommandPaletteCommands(
+            snapshot: snapshot,
+            selection: selection
+        )
+
+        commands.expectCommandNotContains(title: "New Worktree in docbank")
+    }
+
     @Test("command palette omits layout commands without a launch target")
     func commandPaletteOmitsLayoutCommandsWithoutLaunchTarget() {
         let bootstrap = WorkspaceBootstrap.preview()

@@ -42,6 +42,12 @@ public struct WorkspaceSnapshot: Equatable, Sendable {
         worktrees.first { $0.id == id }
     }
 
+    public func canCreateWorktree(in project: ProjectSummary) -> Bool {
+        !project.isSynthesized
+            && !project.isStale
+            && host(id: project.hostID)?.canCreateWorktree == true
+    }
+
     public func sessions(
         for worktreeID: UUID
     ) -> [TerminalSessionSummary] {
