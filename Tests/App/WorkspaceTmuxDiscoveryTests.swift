@@ -28,6 +28,44 @@ struct WorkspaceTmuxDiscoveryTests {
         }
     }
 
+    private final class KwtAvailabilityState: @unchecked Sendable {
+        private let lock = NSLock()
+        private let remoteInventory: KwtHostInventory
+        private var remoteKwtAvailable = true
+
+        init(remoteInventory: KwtHostInventory) {
+            self.remoteInventory = remoteInventory
+        }
+
+        func load(_ host: TmuxHost) throws -> KwtHostInventory {
+            guard host.isRemote else {
+                return KwtHostInventory(projects: [])
+            }
+            lock.lock()
+            let isAvailable = remoteKwtAvailable
+            lock.unlock()
+            guard isAvailable else {
+                throw KwtInventoryError.commandFailed(
+                    host: host.displayName,
+                    status: 127
+                )
+            }
+            return remoteInventory
+        }
+
+        func markRemoteKwtUnavailable() {
+            lock.lock()
+            remoteKwtAvailable = false
+            lock.unlock()
+        }
+
+        func markRemoteKwtAvailable() {
+            lock.lock()
+            remoteKwtAvailable = true
+            lock.unlock()
+        }
+    }
+
     private final class DelayedTmuxPathState: @unchecked Sendable {
         private let lock = NSLock()
         private let gate = DispatchSemaphore(value: 0)
@@ -813,8 +851,8 @@ struct WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
-    @Test("missing kwt on an SSH host is an optional capability")
-    func remoteWithoutKwtDoesNotWarnOrBlock() async throws {
+    @Test("missing kwt does not block an SSH host's tmux inventory")
+    func remoteWithoutKwtDoesNotBlockTmux() async throws {
         let environment = try setupStandardEnvironment()
         let remote = SSHHost(
             configKey: "tmux-only",
@@ -850,6 +888,113 @@ struct WorkspaceTmuxDiscoveryTests {
             model.snapshot.hosts.first { $0.configKey == remote.configKey }?.id
         )
         #expect(model.workspaceInventoryWarningsByHost[remoteHostID] == nil)
+        let remoteSummary = try #require(
+            model.snapshot.host(id: remoteHostID)
+        )
+        #expect(remoteSummary.primaryDiagnostic?.code == .missingKwt)
+        #expect(!remoteSummary.canCreateWorktree)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("losing remote kwt retains cached inventory but disables creation")
+    func remoteKwtLossDisablesCreation() async throws {
+        let environment = try setupStandardEnvironment()
+        let remote = SSHHost(
+            configKey: "build-box",
+            name: "Build Box",
+            platform: .linux,
+            sshDestination: "build-box"
+        )
+        let configuredHosts = CurrentValueSubject<[SSHHost], Never>([remote])
+        let availability = KwtAvailabilityState(
+            remoteInventory: KwtHostInventory(projects: [
+                KwtProjectInventory(
+                    project: KwtProjectRecord(
+                        repository: "github.com/kenn-io/docbank",
+                        name: "docbank",
+                        path: "/srv/docbank",
+                        lastTouched: nil
+                    ),
+                    worktrees: [],
+                    warning: nil
+                ),
+            ])
+        )
+        let creationAttempts = Counter()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            kwtInventoryLoader: { host in
+                try availability.load(host)
+            },
+            kwtWorktreeCreator: { _, _, _ in
+                _ = creationAttempts.increment()
+            },
+            tmuxSessionDiscovery: { host in
+                .success(host.isRemote ? [
+                    DiscoveredTmuxSession(
+                        name: "docbank",
+                        windowCount: 1,
+                        createdAt: "1721552400",
+                        managed: false
+                    ),
+                ] : [])
+            },
+            configuredSSHHostsProvider: { configuredHosts.value },
+            configuredSSHHostsPublisher:
+                configuredHosts.eraseToAnyPublisher(),
+            startServices: true
+        )
+
+        await waitUntilMainActor {
+            model.snapshot.projects.contains { $0.name == "docbank" }
+                && model.snapshot.hosts.contains {
+                    $0.configKey == remote.configKey
+                        && $0.tmuxSessions.contains { $0.name == "docbank" }
+                }
+        }
+        let cachedProject = try #require(
+            model.snapshot.projects.first { $0.name == "docbank" }
+        )
+        #expect(model.snapshot.canCreateWorktree(in: cachedProject))
+
+        availability.markRemoteKwtUnavailable()
+        model.refreshKwtInventory()
+        await waitUntilMainActor {
+            model.snapshot.host(id: cachedProject.hostID)?
+                .primaryDiagnostic?.code == .missingKwt
+        }
+
+        let unavailableHost = try #require(
+            model.snapshot.host(id: cachedProject.hostID)
+        )
+        #expect(!unavailableHost.canCreateWorktree)
+        #expect(!model.snapshot.canCreateWorktree(in: cachedProject))
+        #expect(model.snapshot.project(id: cachedProject.id) != nil)
+        #expect(unavailableHost.tmuxSessions.map(\.name) == ["docbank"])
+        #expect(model.workspaceInventoryWarningsByHost[unavailableHost.id] == nil)
+
+        do {
+            try await model.createWorktree(WorktreeCreateRequest(
+                projectID: cachedProject.id,
+                branchName: "feature/should-not-run",
+                createsBranch: true
+            ))
+            Issue.record("Expected unavailable kwt to reject creation")
+        } catch let error as KwtWorktreeError {
+            #expect(error == .projectUnavailable)
+        }
+        #expect(creationAttempts.count == 0)
+
+        availability.markRemoteKwtAvailable()
+        model.refreshKwtInventory()
+        await waitUntilMainActor {
+            let host = model.snapshot.host(id: cachedProject.hostID)
+            return host?.primaryDiagnostic?.code != .missingKwt
+                && host?.canCreateWorktree == true
+        }
+        #expect(model.snapshot.canCreateWorktree(in: cachedProject))
         await model.shutdown()
     }
 

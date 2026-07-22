@@ -5,10 +5,11 @@ import GhosthubWorkspace
 extension WorkspaceSceneModel {
 
     var selectedProject: ProjectSummary? {
-        WorkspaceSelectionResolver.selectedProject(
+        guard let project = WorkspaceSelectionResolver.selectedProject(
             in: snapshot,
             selection: selection
-        )
+        ), snapshot.canCreateWorktree(in: project) else { return nil }
+        return project
     }
 
     func installShortcutMonitor() {

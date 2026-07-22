@@ -574,6 +574,6 @@ struct WorkspaceWindow: View {
             in: sceneModel.snapshot,
             selection: sceneModel.selection
         ) else { return false }
-        return !project.isSynthesized && !project.isStale
+        return sceneModel.snapshot.canCreateWorktree(in: project)
     }
 }

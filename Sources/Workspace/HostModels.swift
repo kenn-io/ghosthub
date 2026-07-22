@@ -165,6 +165,17 @@ public struct RemoteHostDiagnostic: Codable, Equatable, Sendable, Identifiable {
             return false
         }
     }
+
+    public static var missingKwtCapability: Self {
+        RemoteHostDiagnostic(
+            code: .missingKwt,
+            severity: .warning,
+            summary: "kwt is not available (optional).",
+            recoverySuggestion:
+                "Install kwt to show projects and worktrees from this host. "
+                + "Tmux sessions remain available."
+        )
+    }
 }
 
 public struct RemoteHostCommandCapabilities: Codable, Equatable, Sendable {
@@ -423,11 +434,6 @@ public struct HostSummary: Identifiable, Equatable, Sendable {
     }
 
     public var canCreateWorktree: Bool {
-        if let avail = operationAvailability?[
-            "worktreeCreate"
-        ] {
-            return avail.available
-        }
         if kind == .remote, connectionState == .offline {
             return false
         }
@@ -435,6 +441,11 @@ public struct HostSummary: Identifiable, Equatable, Sendable {
             where: \.blocksWorktreeCreate
         ) {
             return false
+        }
+        if let avail = operationAvailability?[
+            "worktreeCreate"
+        ] {
+            return avail.available
         }
         return remoteCapabilities?.commands
             .worktreeCreate ?? true

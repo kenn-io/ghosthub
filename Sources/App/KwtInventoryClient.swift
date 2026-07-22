@@ -370,6 +370,7 @@ enum KwtSnapshotMerger {
 enum HostInventoryOverlay {
     static func apply(
         kwtInventoriesByHost: [UUID: KwtHostInventory],
+        kwtAvailabilityByHost: [UUID: Bool] = [:],
         tmuxSessionsByHost: [UUID: [TmuxSessionSummary]],
         to source: WorkspaceSnapshot
     ) -> WorkspaceSnapshot {
@@ -385,6 +386,19 @@ enum HostInventoryOverlay {
                 $0.id == hostID
             }) else { continue }
             updated.hosts[index].tmuxSessions = sessions
+        }
+        for (hostID, isAvailable) in kwtAvailabilityByHost {
+            guard let index = updated.hosts.firstIndex(where: {
+                $0.id == hostID
+            }) else { continue }
+            updated.hosts[index].remoteDiagnostics.removeAll {
+                $0.code == .missingKwt
+            }
+            if !isAvailable {
+                updated.hosts[index].remoteDiagnostics.append(
+                    .missingKwtCapability
+                )
+            }
         }
         return updated
     }

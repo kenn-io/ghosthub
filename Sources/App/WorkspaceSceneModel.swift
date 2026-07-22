@@ -79,6 +79,7 @@ final class WorkspaceSceneModel: ObservableObject {
     private var kwtInventoryGeneration = 0
     private var kwtInventoryTask: Task<Void, Never>?
     private var kwtInventoriesByHost: [UUID: KwtHostInventory] = [:]
+    private var kwtAvailabilityByHost: [UUID: Bool] = [:]
     private var kwtInventoryFailuresByHost: [UUID: String] = [:]
     private var isKwtInventoryLoading = false
     private var isWorktreeCreationInProgress = false
@@ -595,7 +596,7 @@ final class WorkspaceSceneModel: ObservableObject {
             throw KwtWorktreeError.invalidBranchName
         }
         guard let project = snapshot.project(id: request.projectID),
-              !project.isSynthesized,
+              snapshot.canCreateWorktree(in: project),
               let hostSummary = snapshot.host(id: project.hostID),
               let host = TmuxHostResolver.resolve(hostSummary)
         else {
@@ -612,6 +613,7 @@ final class WorkspaceSceneModel: ObservableObject {
         let previous = kwtInventoriesByHost[project.hostID]
         kwtInventoriesByHost[project.hostID] =
             refreshed.retainingFailedProjectWorktrees(from: previous)
+        kwtAvailabilityByHost[project.hostID] = true
         kwtInventoryFailuresByHost.removeValue(forKey: project.hostID)
         applyInventoryOverlayIfNeeded()
         updateWorkspaceInventoryState()
@@ -647,6 +649,9 @@ final class WorkspaceSceneModel: ObservableObject {
             inventoryHosts[hostID] == target ? hostID : nil
         })
         kwtInventoriesByHost = kwtInventoriesByHost.filter {
+            retainedHostIDs.contains($0.key)
+        }
+        kwtAvailabilityByHost = kwtAvailabilityByHost.filter {
             retainedHostIDs.contains($0.key)
         }
         kwtInventoryFailuresByHost = kwtInventoryFailuresByHost.filter {
@@ -713,6 +718,7 @@ final class WorkspaceSceneModel: ObservableObject {
                             inventory.retainingFailedProjectWorktrees(
                                 from: previous
                             )
+                        self.kwtAvailabilityByHost[hostID] = true
                         // A host inventory is useful even when one project
                         // cannot be read. Retain that project's cached
                         // worktrees and keep other hosts available.
@@ -731,6 +737,7 @@ final class WorkspaceSceneModel: ObservableObject {
                             self.kwtInventoryFailuresByHost.removeValue(
                                 forKey: hostID
                             )
+                            self.kwtAvailabilityByHost[hostID] = false
                         } else {
                             self.kwtInventoryFailuresByHost[hostID] =
                                 error.localizedDescription
@@ -771,6 +778,7 @@ final class WorkspaceSceneModel: ObservableObject {
     ) -> WorkspaceSnapshot {
         HostInventoryOverlay.apply(
             kwtInventoriesByHost: kwtInventoriesByHost,
+            kwtAvailabilityByHost: kwtAvailabilityByHost,
             tmuxSessionsByHost: tmuxSessionsByHost,
             to: source
         )
@@ -1063,13 +1071,7 @@ final class WorkspaceSceneModel: ObservableObject {
                         "Verify the SSH destination and install tmux on the host."
                 )]
             } else if !kwtAvailable {
-                diagnostics = [RemoteHostDiagnostic(
-                    code: .missingKwt,
-                    severity: .warning,
-                    summary: "kwt is not available (optional).",
-                    recoverySuggestion:
-                        "Install kwt to show projects and worktrees from this host. Tmux sessions remain available."
-                )]
+                diagnostics = [.missingKwtCapability]
             } else {
                 diagnostics = []
             }
