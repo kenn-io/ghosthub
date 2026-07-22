@@ -513,6 +513,7 @@ final class ApplicationDelegateTests: XCTestCase {
         )
         window.toolbar = NSToolbar(identifier: "test-toolbar")
         window.titlebarAppearsTransparent = true
+        window.contentMinSize = NSSize(width: 960, height: 640)
 
         WorkspaceWindowChrome.apply(to: window)
         WorkspaceWindowChrome.apply(to: window)
@@ -523,6 +524,11 @@ final class ApplicationDelegateTests: XCTestCase {
             "The uniform workspace surface should continue into the titlebar"
         )
         XCTAssertEqual(window.titleVisibility, .hidden)
+        XCTAssertEqual(
+            window.contentMinSize,
+            .zero,
+            "A terminal window must not inherit a workspace-sized minimum"
+        )
 
         let titlebar = try XCTUnwrap(
             window.standardWindowButton(.closeButton)?.superview

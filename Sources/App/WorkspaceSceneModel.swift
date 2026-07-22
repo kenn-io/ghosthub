@@ -708,8 +708,21 @@ final class WorkspaceSceneModel: ObservableObject {
                             forKey: hostID
                         )
                     case let .failure(error):
-                        self.kwtInventoryFailuresByHost[hostID] =
-                            error.localizedDescription
+                        if self.isOptionalRemoteKwtUnavailable(
+                            error,
+                            hostID: hostID
+                        ) {
+                            // SSH hosts remain useful for ordinary tmux even
+                            // when kwt is not installed. Keep any last-known
+                            // project inventory without presenting the absent
+                            // optional capability as a host failure.
+                            self.kwtInventoryFailuresByHost.removeValue(
+                                forKey: hostID
+                            )
+                        } else {
+                            self.kwtInventoryFailuresByHost[hostID] =
+                                error.localizedDescription
+                        }
                     }
                     self.applyInventoryOverlayIfNeeded()
                     self.updateWorkspaceInventoryState()
@@ -728,6 +741,17 @@ final class WorkspaceSceneModel: ObservableObject {
         kwtInventoryTask = nil
         isKwtInventoryLoading = false
         updateWorkspaceInventoryState()
+    }
+
+    private func isOptionalRemoteKwtUnavailable(
+        _ error: Error,
+        hostID: UUID
+    ) -> Bool {
+        guard inventoryHosts[hostID]?.isRemote == true,
+              let inventoryError = error as? KwtInventoryError,
+              case .commandFailed(_, 127) = inventoryError
+        else { return false }
+        return true
     }
 
     private func applyingCachedInventories(
@@ -842,10 +866,6 @@ final class WorkspaceSceneModel: ObservableObject {
         workspaceInventoryWarning = uniqueProjectWarnings.isEmpty
             ? nil
             : uniqueProjectWarnings.joined(separator: "\n")
-        let allWarnings = Array(Set(
-            uniqueProjectWarnings
-                + Array(workspaceInventoryWarningsByHost.values)
-        )).sorted()
         let hasVisibleInventory = !snapshot.projects.isEmpty
             || snapshot.hosts.contains { !$0.tmuxSessions.isEmpty }
         let hasCachedInventory = hasVisibleInventory
@@ -857,18 +877,20 @@ final class WorkspaceSceneModel: ObservableObject {
             workspaceInventoryState = .loading
             return
         }
+        let localWarnings = [
+            kwtInventoryFailuresByHost[localHostID],
+            tmuxDiscoveryFailuresByHost[localHostID],
+        ].compactMap { $0 }
         if !hasPendingSources,
            !hasCachedInventory,
-           !workspaceInventoryWarningsByHost.isEmpty {
+           !localWarnings.isEmpty {
             workspaceInventoryState = .failed(
-                allWarnings.isEmpty
-                    ? "No host inventory source could be reached."
-                    : allWarnings.joined(separator: "\n")
+                Array(Set(localWarnings)).sorted().joined(separator: "\n")
             )
             return
         }
-        // Host discovery is additive. A failed source must never replace
-        // healthy or cached local/remote inventory with a blocking error.
+        // Remote discovery is additive. Its failure belongs to that host and
+        // must never replace the workspace with a blocking error.
         workspaceInventoryState = .loaded
     }
 

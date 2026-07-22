@@ -90,6 +90,11 @@ flashes before existing workspaces are known. That loaded empty state is
 informational: kwt owns project registration, and Ghosthub does not expose a
 retired repository-intake path as a nonfunctional substitute.
 
+Inventory degrades per host. An unavailable remote host retains its cached
+inventory and exposes a retry warning on that host without blocking the rest of
+the workspace. Remote hosts where kwt is absent remain available for direct
+tmux discovery and attachment.
+
 Kwt session names are removed from the generic session group and rendered
 under their project/worktree. Every remaining tmux session is shown in the
 host-level session group. No naming convention or ownership marker is used to

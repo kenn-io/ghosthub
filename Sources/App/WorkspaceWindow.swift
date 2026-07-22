@@ -35,6 +35,10 @@ enum WorkspaceWindowChrome {
         window.toolbar = nil
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
+        // SwiftUI otherwise derives a workspace-sized floor from the root
+        // view hierarchy. A terminal window must remain free to shrink to the
+        // compact dimensions AppKit's standard titlebar permits.
+        window.contentMinSize = .zero
         window.backgroundColor = WorkspaceSurfaceColor.nsColor
         guard let closeButton = window.standardWindowButton(.closeButton),
             let titlebar = closeButton.superview
@@ -505,7 +509,6 @@ struct WorkspaceWindow: View {
             )
         )
         .focusedSceneValue(\.sceneModel, sceneModel)
-        .frame(minWidth: 960, minHeight: 640)
         .background(WorkspaceSurfaceColor.color.ignoresSafeArea())
         #if canImport(AppKit)
             .background(

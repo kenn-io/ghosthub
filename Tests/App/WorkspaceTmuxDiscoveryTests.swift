@@ -813,6 +813,98 @@ struct WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("missing kwt on an SSH host is an optional capability")
+    func remoteWithoutKwtDoesNotWarnOrBlock() async throws {
+        let environment = try setupStandardEnvironment()
+        let remote = SSHHost(
+            configKey: "tmux-only",
+            name: "Tmux Only",
+            platform: .linux,
+            sshDestination: "tmux-only"
+        )
+        let configuredHosts = CurrentValueSubject<[SSHHost], Never>([remote])
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            kwtInventoryLoader: { host in
+                guard host.isRemote else {
+                    return KwtHostInventory(projects: [])
+                }
+                throw KwtInventoryError.commandFailed(
+                    host: host.displayName,
+                    status: 127
+                )
+            },
+            tmuxSessionDiscovery: { _ in .success([]) },
+            configuredSSHHostsProvider: { configuredHosts.value },
+            configuredSSHHostsPublisher:
+                configuredHosts.eraseToAnyPublisher(),
+            startServices: true
+        )
+
+        await waitUntilMainActor {
+            model.workspaceInventoryState == .loaded
+        }
+
+        let remoteHostID = try #require(
+            model.snapshot.hosts.first { $0.configKey == remote.configKey }?.id
+        )
+        #expect(model.workspaceInventoryWarningsByHost[remoteHostID] == nil)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("remote failures do not enter the workspace-wide error")
+    func remoteFailureStaysHostScopedWhenLocalAlsoFails() async throws {
+        let environment = try setupStandardEnvironment()
+        let remote = SSHHost(
+            configKey: "offline",
+            name: "Offline Host",
+            platform: .linux,
+            sshDestination: "offline"
+        )
+        let configuredHosts = CurrentValueSubject<[SSHHost], Never>([remote])
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            kwtInventoryLoader: { host in
+                throw KwtInventoryError.commandFailed(
+                    host: host.displayName,
+                    status: host.isRemote ? 127 : 1
+                )
+            },
+            tmuxSessionDiscovery: { host in
+                .failure(.shellFailed(status: host.isRemote ? 255 : 1))
+            },
+            configuredSSHHostsProvider: { configuredHosts.value },
+            configuredSSHHostsPublisher:
+                configuredHosts.eraseToAnyPublisher(),
+            startServices: true
+        )
+
+        await waitUntilMainActor {
+            if case .failed = model.workspaceInventoryState { return true }
+            return false
+        }
+
+        guard case let .failed(message) = model.workspaceInventoryState else {
+            Issue.record("Expected local inventory failure")
+            await model.shutdown()
+            return
+        }
+        let remoteHostID = try #require(
+            model.snapshot.hosts.first { $0.configKey == remote.configKey }?.id
+        )
+        #expect(!message.contains("Offline Host"))
+        #expect(!message.contains("255"))
+        #expect(
+            model.workspaceInventoryWarningsByHost[remoteHostID]?
+                .contains("255") == true
+        )
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("duplicate project warnings appear once")
     func duplicateProjectWarningsAreDeduplicated() async throws {
         let environment = try setupStandardEnvironment()
