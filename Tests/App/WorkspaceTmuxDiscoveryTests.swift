@@ -843,6 +843,12 @@ struct WorkspaceTmuxDiscoveryTests {
         let remoteHostID = try #require(
             model.snapshot.hosts.first { $0.configKey == remote.configKey }?.id
         )
+        let remoteSummary = try #require(
+            model.snapshot.host(id: remoteHostID)
+        )
+        #expect(remoteSummary.connectionState == .offline)
+        #expect(remoteSummary.primaryDiagnostic?.code == .probeFailure)
+        #expect(remoteSummary.lastSeenAt == nil)
         #expect(
             model.workspaceInventoryWarningsByHost[remoteHostID]?
                 .contains("status 255") == true

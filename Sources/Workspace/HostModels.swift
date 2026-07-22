@@ -176,6 +176,17 @@ public struct RemoteHostDiagnostic: Codable, Equatable, Sendable, Identifiable {
                 + "Tmux sessions remain available."
         )
     }
+
+    public static var tmuxDiscoveryUnavailable: Self {
+        RemoteHostDiagnostic(
+            code: .probeFailure,
+            severity: .error,
+            summary: "Tmux could not be reached.",
+            recoverySuggestion:
+                "Verify the SSH destination and that tmux is installed, "
+                + "then retry workspace discovery."
+        )
+    }
 }
 
 public struct RemoteHostCommandCapabilities: Codable, Equatable, Sendable {
