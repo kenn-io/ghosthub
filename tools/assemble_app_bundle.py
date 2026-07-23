@@ -42,6 +42,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--copyright", required=True)
     parser.add_argument("--kwt-version", required=True)
     parser.add_argument("--kwt-source-revision", required=True)
+    parser.add_argument(
+        "--include-updates",
+        action="store_true",
+        help="Embed the production Sparkle update channel.",
+    )
     return parser.parse_args()
 
 
@@ -62,6 +67,7 @@ def assemble_app_bundle(
     copyright: str,
     kwt_version: str,
     kwt_source_revision: str,
+    include_updates: bool = False,
 ) -> Path:
     if not kwt_binary.is_file() or not kwt_binary.stat().st_mode & 0o111:
         raise ValueError(f"kwt binary is missing or not executable: {kwt_binary}")
@@ -132,14 +138,21 @@ def assemble_app_bundle(
         "NSHighResolutionCapable": True,
         "NSHumanReadableCopyright": copyright,
         "NSPrincipalClass": "NSApplication",
-        "SUAllowsAutomaticUpdates": True,
-        "SUEnableAutomaticChecks": True,
-        "SUFeedURL": SPARKLE_FEED_URL,
-        "SUPublicEDKey": SPARKLE_PUBLIC_ED_KEY,
-        "SURequireSignedFeed": True,
-        "SUSignedFeedFailureExpirationInterval": 0,
-        "SUVerifyUpdateBeforeExtraction": True,
     }
+    if include_updates:
+        plist.update(
+            {
+                "SUAllowsAutomaticUpdates": True,
+                "SUEnableAutomaticChecks": True,
+                "SUFeedURL": SPARKLE_FEED_URL,
+                "SUPublicEDKey": SPARKLE_PUBLIC_ED_KEY,
+                "SURequireSignedFeed": True,
+                # This exact key is declared by Sparkle 2.9.4 as
+                # SUSignedFeedFailureExpirationIntervalKey.
+                "SUSignedFeedFailureExpirationInterval": 0,
+                "SUVerifyUpdateBeforeExtraction": True,
+            }
+        )
     with plist_path.open("wb") as handle:
         plistlib.dump(plist, handle, sort_keys=False)
 
@@ -168,6 +181,7 @@ def main() -> int:
         copyright=args.copyright,
         kwt_version=args.kwt_version,
         kwt_source_revision=args.kwt_source_revision,
+        include_updates=args.include_updates,
     )
     print(app_root)
     return 0

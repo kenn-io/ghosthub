@@ -97,7 +97,8 @@ def test_release_signs_nested_code_before_the_app_and_validates_notarization():
     assert "XPCServices/Downloader.xpc" in text
     assert "XPCServices/Installer.xpc" in text
     assert "Versions/B/Updater.app" in text
-    assert "--preserve-metadata=identifier,entitlements,requirements" in text
+    assert "--preserve-metadata=identifier,entitlements" in text
+    assert "entitlements,requirements" not in text
     assert 'codesign --verify --strict --verbose=2 "$KWT_HELPER_PATH"' in text
     assert 'xcrun stapler validate "$RELEASE_DMG_PATH"' in text
     assert "spctl --assess --type open" in text

@@ -267,7 +267,8 @@ release-app: build-release
 		--third-party-licenses-dir "$(THIRD_PARTY_LICENSES_DIR)" \
 		--copyright "$(APP_COPYRIGHT)" \
 		--kwt-version "$(KWT_VERSION)" \
-		--kwt-source-revision "$(KWT_SOURCE_REVISION)" >/dev/null; \
+		--kwt-source-revision "$(KWT_SOURCE_REVISION)" \
+		--include-updates >/dev/null; \
 	printf 'Built release app bundle: %s\n' "$(RELEASE_APP_PATH)"
 
 run-release-app: release-app

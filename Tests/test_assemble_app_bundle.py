@@ -217,9 +217,22 @@ def test_assemble_app_bundle_stages_icon_and_binary(tmp_path):
     assert (sparkle / "Sparkle").is_symlink()
     assert (sparkle / "Versions" / "Current").is_symlink()
     assert (sparkle / "Versions" / "B" / "Sparkle").exists()
+    plist = plistlib.loads(
+        (app_root / "Contents" / "Info.plist").read_bytes()
+    )
+    update_keys = {
+        "SUAllowsAutomaticUpdates",
+        "SUEnableAutomaticChecks",
+        "SUFeedURL",
+        "SUPublicEDKey",
+        "SURequireSignedFeed",
+        "SUSignedFeedFailureExpirationInterval",
+        "SUVerifyUpdateBeforeExtraction",
+    }
+    assert update_keys.isdisjoint(plist)
 
 
-def test_info_plist_contains_icon_key_and_bundle_metadata(tmp_path):
+def test_release_info_plist_contains_update_configuration(tmp_path):
     assemble = load_module()
     source_bin_dir = tmp_path / "bin"
     app_binary = make_executable(source_bin_dir / "Ghosthub")
@@ -258,6 +271,7 @@ def test_info_plist_contains_icon_key_and_bundle_metadata(tmp_path):
         copyright=COPYRIGHT_NOTICE,
         kwt_version="0.1.0",
         kwt_source_revision="abc123",
+        include_updates=True,
     )
 
     plist = plistlib.loads(
@@ -279,6 +293,17 @@ def test_info_plist_contains_icon_key_and_bundle_metadata(tmp_path):
     assert plist["SUVerifyUpdateBeforeExtraction"] is True
     assert plist["SURequireSignedFeed"] is True
     assert plist["SUSignedFeedFailureExpirationInterval"] == 0
+
+
+def test_makefile_enables_updates_only_for_release_bundles():
+    repo_root = Path(__file__).resolve().parents[1]
+    makefile = (repo_root / "Makefile").read_text()
+    debug_recipe, release_recipe = makefile.split(
+        "release-app: LIBGHOSTTY_OPTIMIZE", maxsplit=1
+    )
+
+    assert "--include-updates" not in debug_recipe
+    assert "--include-updates" in release_recipe
 
 
 def test_assemble_app_bundle_replaces_existing_bundle_contents(tmp_path):

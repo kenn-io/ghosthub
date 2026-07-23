@@ -52,7 +52,7 @@ if [[ -n "$APPLE_SIGNING_IDENTITY" ]]; then
     codesign \
       --force \
       --options runtime \
-      --preserve-metadata=identifier,entitlements,requirements \
+      --preserve-metadata=identifier,entitlements \
       --timestamp \
       --sign "$APPLE_SIGNING_IDENTITY" \
       "$path"

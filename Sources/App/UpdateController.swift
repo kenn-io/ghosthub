@@ -6,6 +6,8 @@ struct UpdateConfiguration: Equatable {
     static let feedURLKey = "SUFeedURL"
     static let publicKeyKey = "SUPublicEDKey"
     static let requireSignedFeedKey = "SURequireSignedFeed"
+    // Sparkle 2.9.4 declares this exact Info.plist key as
+    // SUSignedFeedFailureExpirationIntervalKey in SUConstants.m.
     static let signedFeedFailureExpirationKey =
         "SUSignedFeedFailureExpirationInterval"
     static let verifyBeforeExtractionKey =

@@ -191,8 +191,11 @@ The appcast contains only the current full DMG, embeds a link to the GitHub
 release notes, and uses the tag-specific asset URL. The stable `latest/download`
 feed redirects clients to this release's appcast. Publishing is aborted if the
 protected private key does not match the public key embedded in the app.
-Packaged apps set `SUSignedFeedFailureExpirationInterval` to `0`, so an invalid
-feed never ages into Sparkle's key-rotation fallback.
+Release bundles set `SUSignedFeedFailureExpirationInterval` to `0`, so an
+invalid feed never ages into Sparkle's key-rotation fallback. This is the exact
+Info.plist key declared by Sparkle 2.9.4's
+`SUSignedFeedFailureExpirationIntervalKey`; debug bundles omit the production
+feed, public key, and automatic-update settings entirely.
 
 Publishing is safe to rerun after a partial GitHub release failure. The
 workflow reuses an existing release for the tag, refreshes its title and notes,
