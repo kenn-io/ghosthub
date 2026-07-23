@@ -92,25 +92,21 @@ private struct WindowFocusTracker: NSViewRepresentable {
             onNewWorktree: onNewWorktree
         )
         if let window = view.window {
-            installCloseConfirmation(on: window)
             view.titlebarController.install(on: window)
         }
     }
 
-    private func installCloseConfirmation(on window: NSWindow) {
-        applicationDelegate.installCloseConfirmation(on: window)
-    }
-
     private final class FocusTrackingView: NSView {
-        private weak var applicationDelegate: ApplicationDelegate?
         nonisolated(unsafe) var onFocusChanged:
             ((Bool) -> Void)?
         private nonisolated(unsafe) var observers:
             [NSObjectProtocol] = []
-        let titlebarController = CompactWorkspaceTitlebarController()
+        let titlebarController: CompactWorkspaceTitlebarController
 
         init(applicationDelegate: ApplicationDelegate) {
-            self.applicationDelegate = applicationDelegate
+            titlebarController = CompactWorkspaceTitlebarController(
+                applicationDelegate: applicationDelegate
+            )
             super.init(frame: .zero)
         }
 
@@ -129,13 +125,8 @@ private struct WindowFocusTracker: NSViewRepresentable {
                 return
             }
             window.tabbingMode = .disallowed
-            applicationDelegate?.installCloseConfirmation(on: window)
             titlebarController.install(on: window)
             DispatchQueue.main.async { [weak self] in
-                if let window = self?.window {
-                    self?.applicationDelegate?
-                        .installCloseConfirmation(on: window)
-                }
                 self?.titlebarController.install(on: window)
                 self?.onFocusChanged?(
                     self?.window?.isKeyWindow ?? false
@@ -191,6 +182,16 @@ private final class DraggableTitlebarHostingView: NSHostingView<AnyView> {
 }
 
 @MainActor
+private final class WorkspaceWindowCloseController: NSObject {
+    weak var applicationDelegate: ApplicationDelegate?
+    weak var window: NSWindow?
+
+    @objc func requestClose(_ sender: Any?) {
+        applicationDelegate?.requestWorkspaceWindowClose(window)
+    }
+}
+
+@MainActor
 final class CompactWorkspaceTitlebarController {
     private static let sidebarIdentifier = NSUserInterfaceItemIdentifier(
         "GhosthubCompactSidebarControl"
@@ -207,6 +208,7 @@ final class CompactWorkspaceTitlebarController {
         rootView: AnyView(EmptyView())
     )
     private let actionsHost = NSHostingView(rootView: AnyView(EmptyView()))
+    private let closeController = WorkspaceWindowCloseController()
     private weak var installedWindow: NSWindow?
     private var isSidebarVisible = true
     private var canCreateWorktree = false
@@ -216,7 +218,8 @@ final class CompactWorkspaceTitlebarController {
     private var onSettings: () -> Void = {}
     private var onNewWorktree: () -> Void = {}
 
-    init() {
+    init(applicationDelegate: ApplicationDelegate? = nil) {
+        closeController.applicationDelegate = applicationDelegate
         sidebarHost.identifier = Self.sidebarIdentifier
         titleHost.identifier = Self.titleIdentifier
         actionsHost.identifier = Self.actionsIdentifier
@@ -237,6 +240,13 @@ final class CompactWorkspaceTitlebarController {
               let zoomButton = window.standardWindowButton(.zoomButton),
               let titlebar = closeButton.superview
         else { return }
+        if closeController.applicationDelegate != nil {
+            closeController.window = window
+            closeButton.target = closeController
+            closeButton.action = #selector(
+                WorkspaceWindowCloseController.requestClose(_:)
+            )
+        }
         guard installedWindow !== window
                 || sidebarHost.superview !== titlebar
                 || titleHost.superview !== titlebar
@@ -491,6 +501,11 @@ struct WorkspaceWindow: View {
                 }
             ),
             handlers: InteractionHandlers(
+                closeWindow: { [applicationDelegate] in
+                    applicationDelegate.requestWorkspaceWindowClose(
+                        NSApplication.shared.keyWindow
+                    )
+                },
                 dismissLogViewer: { [sceneModel] in
                     sceneModel.dismissLogViewer()
                 },

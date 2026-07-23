@@ -39,51 +39,8 @@ private func presentApplicationAlertAsync(
 }
 
 @MainActor
-private final class WorkspaceWindowDelegateProxy: NSObject,
-    NSWindowDelegate {
-    weak var owner: ApplicationDelegate?
-    nonisolated(unsafe) weak var downstream: (any NSWindowDelegate)?
-
-    init(
-        owner: ApplicationDelegate,
-        downstream: (any NSWindowDelegate)?
-    ) {
-        self.owner = owner
-        self.downstream = downstream
-    }
-
-    func windowShouldClose(_ sender: NSWindow) -> Bool {
-        if downstream?.windowShouldClose?(sender) == false {
-            return false
-        }
-        return owner?.windowShouldClose(sender) ?? true
-    }
-
-    func windowWillClose(_ notification: Notification) {
-        downstream?.windowWillClose?(notification)
-        guard let window = notification.object as? NSWindow else {
-            return
-        }
-        owner?.workspaceWindowDidClose(window)
-    }
-
-    override func responds(to selector: Selector!) -> Bool {
-        super.responds(to: selector)
-            || downstream?.responds(to: selector) == true
-    }
-
-    override func forwardingTarget(for selector: Selector!) -> Any? {
-        guard downstream?.responds(to: selector) == true else {
-            return super.forwardingTarget(for: selector)
-        }
-        return downstream
-    }
-}
-
-@MainActor
 final class ApplicationDelegate: NSObject,
-    NSApplicationDelegate,
-    NSWindowDelegate {
+    NSApplicationDelegate {
     var confirmTermination: () -> Bool
 
     var requestTerminationConfirmation: (
@@ -93,9 +50,6 @@ final class ApplicationDelegate: NSObject,
     var needsConfirmQuit: () -> Bool = { true }
 
     private(set) var terminationConfirmed = false
-
-    private var workspaceWindowDelegates:
-        [ObjectIdentifier: WorkspaceWindowDelegateProxy] = [:]
 
     override init() {
         confirmTermination = { false }
@@ -197,59 +151,26 @@ final class ApplicationDelegate: NSObject,
         terminationConfirmed
     }
 
-    func installCloseConfirmation(on window: NSWindow) {
-        guard !window.isSheet else { return }
-        let identifier = ObjectIdentifier(window)
-        if let proxy = workspaceWindowDelegates[identifier] {
-            guard window.delegate !== proxy else { return }
-            proxy.downstream = window.delegate === self
-                ? nil : window.delegate
-            window.delegate = proxy
+    func requestWorkspaceWindowClose(_ window: NSWindow?) {
+        guard let window, !window.isSheet else { return }
+        guard shouldCloseWorkspaceWindow(
+            hasOtherWorkspaceWindows:
+            WindowRegistry.shared.workspaceWindowCount > 1
+        ) else {
             return
         }
-
-        let downstream = window.delegate === self
-            ? nil : window.delegate
-        let proxy = WorkspaceWindowDelegateProxy(
-            owner: self,
-            downstream: downstream
-        )
-        workspaceWindowDelegates[identifier] = proxy
-        window.delegate = proxy
+        // Confirmation is complete. Calling `close()` here avoids re-entering
+        // SwiftUI's independent windowShouldClose path.
+        window.close()
     }
 
-    fileprivate func workspaceWindowDidClose(_ window: NSWindow) {
-        workspaceWindowDelegates.removeValue(
-            forKey: ObjectIdentifier(window)
-        )
-    }
-
-    func windowShouldClose(_ sender: NSWindow) -> Bool {
-        let hasOtherManagedWindows = NSApplication.shared.windows
-            .contains {
-                $0 !== sender
-                    && !$0.isSheet
-                    && isManagedWorkspaceWindow($0)
-            }
-
-        if !hasOtherManagedWindows {
-            guard prepareUserInitiatedTermination() else {
-                return false
-            }
-        }
-        return true
-    }
-
-    private func isManagedWorkspaceWindow(_ window: NSWindow) -> Bool {
-        if window.delegate === self {
+    func shouldCloseWorkspaceWindow(
+        hasOtherWorkspaceWindows: Bool
+    ) -> Bool {
+        if hasOtherWorkspaceWindows {
             return true
         }
-        guard let proxy = workspaceWindowDelegates[
-            ObjectIdentifier(window)
-        ] else {
-            return false
-        }
-        return window.delegate === proxy
+        return prepareUserInitiatedTermination()
     }
 
     private func makeTerminationAlert() -> NSAlert {

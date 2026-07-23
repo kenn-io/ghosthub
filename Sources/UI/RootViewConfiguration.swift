@@ -78,6 +78,7 @@ public struct ContentBuilders {
 
 /// Action callbacks consumed by RootView.
 public struct InteractionHandlers {
+    public let closeWindow: (() -> Void)?
     public let dismissLogViewer: (() -> Void)?
     public let openTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)?
     public let closeTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)?
@@ -87,6 +88,7 @@ public struct InteractionHandlers {
         ((WorktreeCreateRequest) async throws -> Void)?
 
     public init(
+        closeWindow: (() -> Void)? = nil,
         dismissLogViewer: (() -> Void)? = nil,
         openTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)? = nil,
         closeTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)? = nil,
@@ -95,6 +97,7 @@ public struct InteractionHandlers {
         createWorktree:
             ((WorktreeCreateRequest) async throws -> Void)? = nil
     ) {
+        self.closeWindow = closeWindow
         self.dismissLogViewer = dismissLogViewer
         self.openTmuxSession = openTmuxSession
         self.closeTmuxSession = closeTmuxSession

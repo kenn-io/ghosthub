@@ -112,21 +112,11 @@ extension ApplicationDelegate {
 
 @MainActor
 final class ApplicationDelegateTests: XCTestCase {
-    private final class WindowDelegateSpy: NSObject, NSWindowDelegate {
-        var shouldCloseCallCount = 0
-        var shouldClose = true
+    private final class CloseSpyWindow: NSWindow {
+        private(set) var closeCallCount = 0
 
-        func windowShouldClose(_ sender: NSWindow) -> Bool {
-            shouldCloseCallCount += 1
-            return shouldClose
-        }
-    }
-
-    private final class PerformCloseSpyWindow: NSWindow {
-        private(set) var performCloseCallCount = 0
-
-        override func performClose(_ sender: Any?) {
-            performCloseCallCount += 1
+        override func close() {
+            closeCallCount += 1
         }
     }
 
@@ -441,41 +431,27 @@ final class ApplicationDelegateTests: XCTestCase {
         )
     }
 
-    func testCloseWindowCommandUsesPreCloseDelegatePath() {
-        let window = PerformCloseSpyWindow()
-
-        WorkspaceWindowCloser.close(window)
-
-        XCTAssertEqual(window.performCloseCallCount, 1)
-    }
-
-    func testCloseConfirmationWrapsExistingSwiftUIWindowDelegate() {
+    func testLastWindowStaysOpenWhenConfirmationCancels() {
         let delegate = ApplicationDelegate.forTesting(
             confirmTerminationResult: false
         )
-        let downstream = WindowDelegateSpy()
-        let window = NSWindow()
-        window.delegate = downstream
+        let window = CloseSpyWindow()
 
-        delegate.installCloseConfirmation(on: window)
-        let shouldClose = window.delegate?.windowShouldClose?(window)
+        delegate.requestWorkspaceWindowClose(window)
 
-        XCTAssertFalse(shouldClose ?? true)
-        XCTAssertEqual(downstream.shouldCloseCallCount, 1)
-        XCTAssertTrue(window.delegate !== downstream)
+        XCTAssertEqual(window.closeCallCount, 0)
         XCTAssertFalse(delegate.terminationConfirmed)
     }
 
-    func testWindowShouldCloseShowsConfirmationBeforeClosing() {
-        let delegate = ApplicationDelegate()
-        let window = NSWindow()
+    func testLastWindowClosesAfterConfirmation() {
+        let delegate = ApplicationDelegate.forTesting(
+            confirmTerminationResult: true
+        )
+        let window = CloseSpyWindow()
 
-        delegate.confirmTermination = { false }
-        XCTAssertFalse(delegate.windowShouldClose(window))
-        XCTAssertFalse(delegate.terminationConfirmed)
+        delegate.requestWorkspaceWindowClose(window)
 
-        delegate.confirmTermination = { true }
-        XCTAssertTrue(delegate.windowShouldClose(window))
+        XCTAssertEqual(window.closeCallCount, 1)
         XCTAssertTrue(delegate.terminationConfirmed)
 
         // After confirmation, termination proceeds without
@@ -493,7 +469,7 @@ final class ApplicationDelegateTests: XCTestCase {
 
     func testWindowCloseSkipsConfirmWhenNoActiveSessions() {
         let delegate = ApplicationDelegate()
-        let window = NSWindow()
+        let window = CloseSpyWindow()
         delegate.needsConfirmQuit = { false }
 
         var confirmCalled = false
@@ -502,7 +478,9 @@ final class ApplicationDelegateTests: XCTestCase {
             return false
         }
 
-        XCTAssertTrue(delegate.windowShouldClose(window))
+        delegate.requestWorkspaceWindowClose(window)
+
+        XCTAssertEqual(window.closeCallCount, 1)
         XCTAssertFalse(confirmCalled)
         XCTAssertTrue(delegate.terminationConfirmed)
     }
@@ -512,17 +490,9 @@ final class ApplicationDelegateTests: XCTestCase {
             confirmTerminationResult: true
         )
 
-        let windowA = NSWindow()
-        let windowB = NSWindow()
-        windowA.delegate = delegate
-        windowB.delegate = delegate
-
-        // Make both windows part of the app's window list
-        windowA.orderBack(nil)
-        windowB.orderBack(nil)
-
-        // Close windowA — windowB is still managed by delegate
-        let shouldClose = delegate.windowShouldClose(windowA)
+        let shouldClose = delegate.shouldCloseWorkspaceWindow(
+            hasOtherWorkspaceWindows: true
+        )
         XCTAssertTrue(
             shouldClose,
             "Non-last window should be allowed to close"
@@ -584,6 +554,37 @@ final class ApplicationDelegateTests: XCTestCase {
             titlebar.layer?.backgroundColor,
             "The titlebar color cannot depend on underlying terminal content"
         )
+    }
+
+    func testStandardCloseButtonUsesGhosthubConfirmation() throws {
+        let delegate = ApplicationDelegate.forTesting(
+            confirmTerminationResult: false
+        )
+        let window = CloseSpyWindow(
+            contentRect: NSRect(
+                x: 0,
+                y: 0,
+                width: 800,
+                height: 600
+            ),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        let controller = CompactWorkspaceTitlebarController(
+            applicationDelegate: delegate
+        )
+        controller.install(on: window)
+        let closeButton = try XCTUnwrap(
+            window.standardWindowButton(.closeButton)
+        )
+
+        closeButton.performClick(nil)
+        XCTAssertEqual(window.closeCallCount, 0)
+
+        delegate.confirmTermination = { true }
+        closeButton.performClick(nil)
+        XCTAssertEqual(window.closeCallCount, 1)
     }
 
     func testCompactTitlebarInstallsActiveSessionIdentityWithoutToolbar() throws {

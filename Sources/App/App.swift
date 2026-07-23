@@ -16,17 +16,6 @@ enum QuitPolicy {
     }
 }
 
-#if canImport(AppKit)
-@MainActor
-enum WorkspaceWindowCloser {
-    static func close(_ window: NSWindow?) {
-        // `close()` bypasses NSWindowDelegate.windowShouldClose(_:)
-        // and would remove the final workspace before quit confirmation.
-        window?.performClose(nil)
-    }
-}
-#endif
-
 @main
 struct GhosthubApp: App {
     @StateObject private var terminalRuntime = GhosttyRuntime.shared
@@ -234,7 +223,7 @@ struct GhosthubApp: App {
             .keyboardShortcut("w")
 
             Button("Close Window") {
-                WorkspaceWindowCloser.close(
+                appDelegate.requestWorkspaceWindowClose(
                     NSApplication.shared.keyWindow
                 )
             }
