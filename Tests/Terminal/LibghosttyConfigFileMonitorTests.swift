@@ -174,4 +174,58 @@ struct LibghosttyConfigFileMonitorTests {
 
         #expect(changed.wait(timeout: .now() + 2) == .success)
     }
+
+    @Test("monitor rebinds when an ancestor symlink changes targets")
+    func monitorRebindsAfterAncestorSymlinkRetargeting() throws {
+        let fixture = try TemporaryConfigMonitorFixture.create()
+        let firstDirectory = fixture.tempDirectory
+            .appendingPathComponent("first", isDirectory: true)
+        let secondDirectory = fixture.tempDirectory
+            .appendingPathComponent("second", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: firstDirectory,
+            withIntermediateDirectories: false
+        )
+        try FileManager.default.createDirectory(
+            at: secondDirectory,
+            withIntermediateDirectories: false
+        )
+        let first = firstDirectory.appendingPathComponent("terminal.conf")
+        let second = secondDirectory.appendingPathComponent("terminal.conf")
+        try fixture.writeConfig("font-size = 13\n", to: first)
+        try fixture.writeConfig("font-size = 14\n", to: second)
+
+        let current = fixture.tempDirectory
+            .appendingPathComponent("current", isDirectory: true)
+        try FileManager.default.createSymbolicLink(
+            at: current,
+            withDestinationURL: firstDirectory
+        )
+        let config = current.appendingPathComponent("terminal.conf")
+        let changed = DispatchSemaphore(value: 0)
+        let monitor = LibghosttyConfigFileMonitor(
+            fileURLs: [config],
+            debounceInterval: .milliseconds(25)
+        ) {
+            changed.signal()
+        }
+        try monitor.start()
+        defer { monitor.stop() }
+
+        try FileManager.default.removeItem(at: current)
+        try FileManager.default.createSymbolicLink(
+            at: current,
+            withDestinationURL: secondDirectory
+        )
+        #expect(changed.wait(timeout: .now() + 2) == .success)
+        while changed.wait(timeout: .now()) == .success {}
+
+        try fixture.writeConfig("font-size = 15\n", to: first)
+        #expect(
+            changed.wait(timeout: .now() + 0.25) == .timedOut
+        )
+
+        try fixture.writeConfig("font-size = 16\n", to: second)
+        #expect(changed.wait(timeout: .now() + 2) == .success)
+    }
 }

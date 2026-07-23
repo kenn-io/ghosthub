@@ -40,6 +40,7 @@ public final class LibghosttyConfigFileMonitor {
         [URL: DispatchSourceFileSystemObject] = [:]
     private var directorySources:
         [URL: DispatchSourceFileSystemObject] = [:]
+    private var knownDirectoryIdentity: [URL: FileIdentity] = [:]
     private var pendingChange: DispatchWorkItem?
     private var isStarted = false
 
@@ -120,6 +121,7 @@ public final class LibghosttyConfigFileMonitor {
         fileSources.removeAll()
         directorySources.values.forEach { $0.cancel() }
         directorySources.removeAll()
+        knownDirectoryIdentity.removeAll()
         knownIdentity.removeAll()
         isStarted = false
     }
@@ -129,6 +131,7 @@ public final class LibghosttyConfigFileMonitor {
         fileSources.removeAll()
         directorySources.values.forEach { $0.cancel() }
         directorySources.removeAll()
+        knownDirectoryIdentity.removeAll()
 
         knownIdentity = Dictionary(
             uniqueKeysWithValues: desiredFiles.map {
@@ -182,13 +185,25 @@ public final class LibghosttyConfigFileMonitor {
     }
 
     private func rebuildDirectoryWatchesLocked() throws {
-        let directories = Set(desiredFiles.map(nearestExistingDirectory))
-        guard directories != Set(directorySources.keys) else { return }
+        let directories = watchedDirectories()
+        let retainExtraSources = desiredFiles.contains {
+            fileIdentity(for: $0).exists == false
+        }
 
-        directorySources.values.forEach { $0.cancel() }
-        directorySources.removeAll()
+        for directory in Set(directorySources.keys) {
+            let isNoLongerNeeded = !directories.contains(directory)
+            let identityChanged = directories.contains(directory)
+                && knownDirectoryIdentity[directory]
+                    != fileIdentity(for: directory)
+            guard identityChanged
+                || (isNoLongerNeeded && !retainExtraSources)
+            else { continue }
+            directorySources[directory]?.cancel()
+            directorySources[directory] = nil
+            knownDirectoryIdentity[directory] = nil
+        }
 
-        for directory in directories {
+        for directory in directories where directorySources[directory] == nil {
             let descriptor = open(directory.path, O_EVTONLY)
             guard descriptor >= 0 else {
                 if requiringExistingFiles {
@@ -213,17 +228,34 @@ public final class LibghosttyConfigFileMonitor {
                 close(descriptor)
             }
             directorySources[directory] = source
+            knownDirectoryIdentity[directory] = fileIdentity(
+                for: directory
+            )
             source.resume()
         }
     }
 
     private func refreshAfterDirectoryChangeLocked() {
         guard isStarted else { return }
-        var identityChanged = false
+        var identityChanged = reconcileFileSourcesLocked()
+        try? rebuildDirectoryWatchesLocked()
+        let changedDuringRebind = reconcileFileSourcesLocked()
+        identityChanged = identityChanged || changedDuringRebind
+        if changedDuringRebind {
+            try? rebuildDirectoryWatchesLocked()
+        }
+        if identityChanged {
+            scheduleChangeLocked()
+        }
+    }
 
+    private func reconcileFileSourcesLocked() -> Bool {
+        var identityChanged = false
         for file in desiredFiles {
             let identity = fileIdentity(for: file)
             if knownIdentity[file] != identity {
+                fileSources[file]?.cancel()
+                fileSources[file] = nil
                 knownIdentity[file] = identity
                 identityChanged = true
             }
@@ -231,11 +263,39 @@ public final class LibghosttyConfigFileMonitor {
                 try? startFileWatchLocked(file)
             }
         }
+        return identityChanged
+    }
 
-        try? rebuildDirectoryWatchesLocked()
-        if identityChanged {
-            scheduleChangeLocked()
+    private func watchedDirectories() -> Set<URL> {
+        var directories = Set(
+            desiredFiles.map(nearestExistingDirectory)
+        )
+        for file in desiredFiles {
+            var component = URL(
+                fileURLWithPath: "/",
+                isDirectory: true
+            )
+            for pathComponent in file.pathComponents
+                .dropFirst()
+                .dropLast() {
+                component.appendPathComponent(
+                    pathComponent,
+                    isDirectory: true
+                )
+                guard isSymbolicLink(component) else { continue }
+                directories.insert(
+                    component.deletingLastPathComponent()
+                        .standardizedFileURL
+                )
+            }
         }
+        return directories
+    }
+
+    private func isSymbolicLink(_ url: URL) -> Bool {
+        var metadata = stat()
+        guard lstat(url.path, &metadata) == 0 else { return false }
+        return metadata.st_mode & S_IFMT == S_IFLNK
     }
 
     private func nearestExistingDirectory(for file: URL) -> URL {
