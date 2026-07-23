@@ -137,6 +137,7 @@ def assemble_app_bundle(
         "SUFeedURL": SPARKLE_FEED_URL,
         "SUPublicEDKey": SPARKLE_PUBLIC_ED_KEY,
         "SURequireSignedFeed": True,
+        "SUSignedFeedFailureExpirationInterval": 0,
         "SUVerifyUpdateBeforeExtraction": True,
     }
     with plist_path.open("wb") as handle:

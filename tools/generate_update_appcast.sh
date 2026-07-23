@@ -14,6 +14,7 @@ RELEASE_DMG_NAME="${RELEASE_DMG_NAME:-${APP_NAME}_${RELEASE_APP_VERSION}_macos_$
 RELEASE_APP_PATH="${RELEASE_APP_PATH:-$RELEASE_ROOT/${APP_NAME}.app}"
 RELEASE_DMG_PATH="${RELEASE_DMG_PATH:-$RELEASE_ROOT/$RELEASE_DMG_NAME}"
 SPARKLE_GENERATE_APPCAST="${SPARKLE_GENERATE_APPCAST:-.build/artifacts/sparkle/Sparkle/bin/generate_appcast}"
+SPARKLE_DERIVE_PUBLIC_KEY="${SPARKLE_DERIVE_PUBLIC_KEY:-tools/derive_sparkle_public_key.swift}"
 SPARKLE_PUBLIC_ED_KEY="${SPARKLE_PUBLIC_ED_KEY:-}"
 SPARKLE_ED_PRIVATE_KEY="${SPARKLE_ED_PRIVATE_KEY:-}"
 RELEASE_REPOSITORY="${RELEASE_REPOSITORY:-kenn-io/ghosthub}"
@@ -30,6 +31,10 @@ if [[ ! -x "$SPARKLE_GENERATE_APPCAST" ]]; then
   echo "Sparkle generate_appcast is missing: $SPARKLE_GENERATE_APPCAST" >&2
   exit 1
 fi
+if [[ ! -f "$SPARKLE_DERIVE_PUBLIC_KEY" ]]; then
+  echo "Sparkle public-key derivation tool is missing: $SPARKLE_DERIVE_PUBLIC_KEY" >&2
+  exit 1
+fi
 if [[ ! -d "$RELEASE_APP_PATH" ]]; then
   echo "Release app is missing: $RELEASE_APP_PATH" >&2
   exit 1
@@ -43,6 +48,22 @@ INFO_PLIST="$RELEASE_APP_PATH/Contents/Info.plist"
 EMBEDDED_PUBLIC_KEY="$(plutil -extract SUPublicEDKey raw -o - "$INFO_PLIST")"
 if [[ "$EMBEDDED_PUBLIC_KEY" != "$SPARKLE_PUBLIC_ED_KEY" ]]; then
   echo "The protected Sparkle public key does not match the app bundle." >&2
+  exit 1
+fi
+
+if [[ -x "$SPARKLE_DERIVE_PUBLIC_KEY" ]]; then
+  DERIVED_PUBLIC_KEY="$(
+    printf '%s' "$SPARKLE_ED_PRIVATE_KEY" \
+      | "$SPARKLE_DERIVE_PUBLIC_KEY"
+  )"
+else
+  DERIVED_PUBLIC_KEY="$(
+    printf '%s' "$SPARKLE_ED_PRIVATE_KEY" \
+      | swift "$SPARKLE_DERIVE_PUBLIC_KEY"
+  )"
+fi
+if [[ "$DERIVED_PUBLIC_KEY" != "$EMBEDDED_PUBLIC_KEY" ]]; then
+  echo "The protected Sparkle private key does not match the app bundle." >&2
   exit 1
 fi
 

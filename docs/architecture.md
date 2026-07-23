@@ -44,10 +44,14 @@ feed and public key disable the update command instead of contacting a release
 service.
 
 The release workflow generates the appcast only after the DMG is Developer ID
-signed, notarized, stapled, and checksummed. Both the update archive and the
-appcast are signed with Ghosthub's separate Sparkle Ed25519 key. The reviewed
-public key is embedded in `Info.plist`; its private counterpart exists only in
-1Password and the protected `release-signing` GitHub environment.
+signed, notarized, stapled, and checksummed. The update archive and appcast are
+authorized by Ghosthub's Sparkle Ed25519 key. Apple Developer ID signing and
+notarization provide an independent platform integrity check, but stock Sparkle
+allows either identity to authorize key rotation; they are not an AND gate.
+Ghosthub disables signed-feed failure expiration and does not intentionally use
+that rotation path. The reviewed public key is embedded in `Info.plist`; its
+private counterpart exists only in 1Password and the protected
+`release-signing` GitHub environment.
 
 ### External State
 

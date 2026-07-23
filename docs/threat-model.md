@@ -21,8 +21,8 @@ Ghosthub aims to protect:
   session, but does not structurally mutate or destroy tmux sessions
 - app-owned settings and persistence from unintended cross-host or
   cross-worktree mutation
-- application-update integrity, so an update must be authorized by both the
-  reviewed Sparkle key and Ghosthub's Apple signing identity
+- application-update integrity, rooted in the reviewed Sparkle Ed25519 key,
+  with Apple Developer ID signing and notarization as independent defenses
 
 The main security goals are to use the system SSH trust and encryption model,
 avoid sending local data to a remote pane except through an intentional
@@ -92,10 +92,18 @@ structurally mutate sessions.
 
 GitHub release hosting and the network path used to fetch an appcast or DMG are
 not trusted to authorize executable code. Packaged Ghosthub releases require an
-HTTPS appcast signed with the embedded Sparkle Ed25519 public key, verify the
-update archive before extraction, and retain Apple Developer ID validation.
-Changing an asset or feed after publication without the private Sparkle key
-must therefore fail closed.
+HTTPS appcast signed with the embedded Sparkle Ed25519 public key and verify the
+update archive before extraction. Signed-feed failures never expire into
+Sparkle's rotation fallback. Changing an asset or feed after publication
+without the private Sparkle key must therefore fail closed.
+
+Release artifacts are also Apple Developer ID signed and notarized. This is an
+independent platform integrity check, not a second mandatory authorization
+factor: Sparkle intentionally accepts either a valid Ed25519 chain or a
+matching Apple identity so applications can rotate a lost key or certificate.
+Ghosthub does not intentionally use that rotation path. Compromise of the
+trusted Sparkle private key can authorize an update and is therefore a release
+incident, not a failure this model claims the client can contain.
 
 The protected GitHub `release-signing` environment, its independent approval
 policy, the organization-controlled 1Password vault, the Sparkle private key,

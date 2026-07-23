@@ -1,3 +1,4 @@
+import base64
 import os
 import plistlib
 import stat
@@ -33,6 +34,22 @@ archive = next(release_root.glob("*.dmg"))
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
 
+def write_fake_deriver(path: Path) -> None:
+    path.write_text(
+        f"""#!/usr/bin/env python3
+import sys
+
+private_key = sys.stdin.read()
+if private_key == "private-seed":
+    print("{PUBLIC_KEY}")
+else:
+    print("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+""",
+        encoding="utf-8",
+    )
+    path.chmod(path.stat().st_mode | stat.S_IXUSR)
+
+
 def make_release(tmp_path: Path, public_key: str = PUBLIC_KEY) -> dict[str, str]:
     release_root = tmp_path / "release"
     app_path = release_root / "Ghosthub.app"
@@ -45,6 +62,8 @@ def make_release(tmp_path: Path, public_key: str = PUBLIC_KEY) -> dict[str, str]
     (release_root / dmg_name).write_bytes(b"dmg")
     generator = tmp_path / "generate_appcast"
     write_fake_generator(generator)
+    deriver = tmp_path / "derive_public_key"
+    write_fake_deriver(deriver)
 
     return {
         **os.environ,
@@ -56,6 +75,7 @@ def make_release(tmp_path: Path, public_key: str = PUBLIC_KEY) -> dict[str, str]
         "RELEASE_DMG_PATH": str(release_root / dmg_name),
         "RELEASE_TAG": "v0.1.2",
         "SPARKLE_GENERATE_APPCAST": str(generator),
+        "SPARKLE_DERIVE_PUBLIC_KEY": str(deriver),
         "SPARKLE_ED_PRIVATE_KEY": "private-seed",
         "SPARKLE_PUBLIC_ED_KEY": PUBLIC_KEY,
     }
@@ -98,3 +118,44 @@ def test_rejects_a_public_key_that_does_not_match_the_app(tmp_path):
 
     assert result.returncode != 0
     assert "does not match the app bundle" in result.stderr
+
+
+def test_rejects_a_private_key_that_does_not_match_the_app(tmp_path):
+    repo_root = Path(__file__).resolve().parents[1]
+    env = make_release(tmp_path)
+    env["SPARKLE_ED_PRIVATE_KEY"] = "wrong-private-seed"
+    result = subprocess.run(
+        [repo_root / "tools" / "generate_update_appcast.sh"],
+        cwd=repo_root,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "private key does not match the app bundle" in result.stderr
+
+
+def test_public_key_derivation_matches_the_ed25519_test_vector():
+    repo_root = Path(__file__).resolve().parents[1]
+    seed = bytes.fromhex(
+        "9d61b19deffd5a60ba844af492ec2cc4"
+        "4449c5697b326919703bac031cae7f60"
+    )
+    expected_public_key = bytes.fromhex(
+        "d75a980182b10ab7d54bfed3c964073a"
+        "0ee172f3daa62325af021a68f707511a"
+    )
+
+    result = subprocess.run(
+        ["swift", repo_root / "tools" / "derive_sparkle_public_key.swift"],
+        cwd=repo_root,
+        input=base64.b64encode(seed).decode(),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == base64.b64encode(expected_public_key).decode()

@@ -65,8 +65,10 @@ workflow. Configure it with:
 The same environment has a non-secret variable named
 `SPARKLE_PUBLIC_ED_KEY`. Its value must match the reviewed `SUPublicEDKey`
 embedded by `tools/assemble_app_bundle.py`; appcast generation fails on a
-mismatch. The private key's durable source of truth is the shared Kenn Software
-LLC 1Password vault. Generation, custody, restoration, and rotation follow the
+mismatch. It also derives the public key from the protected private seed and
+refuses to publish if the pair does not match. The private key's durable source
+of truth is the shared Kenn Software LLC 1Password vault. Generation, custody,
+restoration, and rotation follow the
 [Kenn operations runbook](https://github.com/kenn-io/kenn-ops/blob/main/docs/runbooks/sparkle-update-signing.md).
 
 Environment protection must pass before GitHub sends the job to a runner or
@@ -182,6 +184,8 @@ The appcast contains only the current full DMG, embeds a link to the GitHub
 release notes, and uses the tag-specific asset URL. The stable `latest/download`
 feed redirects clients to this release's appcast. Publishing is aborted if the
 protected private key does not match the public key embedded in the app.
+Packaged apps set `SUSignedFeedFailureExpirationInterval` to `0`, so an invalid
+feed never ages into Sparkle's key-rotation fallback.
 
 Publishing is safe to rerun after a partial GitHub release failure. The
 workflow reuses an existing release for the tag, refreshes its title and notes,

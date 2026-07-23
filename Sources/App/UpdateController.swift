@@ -5,9 +5,17 @@ import Sparkle
 struct UpdateConfiguration: Equatable {
     static let feedURLKey = "SUFeedURL"
     static let publicKeyKey = "SUPublicEDKey"
+    static let requireSignedFeedKey = "SURequireSignedFeed"
+    static let signedFeedFailureExpirationKey =
+        "SUSignedFeedFailureExpirationInterval"
+    static let verifyBeforeExtractionKey =
+        "SUVerifyUpdateBeforeExtraction"
 
     let feedURL: URL?
     let publicKey: Data?
+    let requiresSignedFeed: Bool
+    let signedFeedFailureExpirationDisabled: Bool
+    let verifiesBeforeExtraction: Bool
 
     init(infoDictionary: [String: Any]) {
         if let rawURL = infoDictionary[Self.feedURLKey] as? String,
@@ -25,10 +33,23 @@ struct UpdateConfiguration: Equatable {
         } else {
             publicKey = nil
         }
+
+        requiresSignedFeed =
+            infoDictionary[Self.requireSignedFeedKey] as? Bool == true
+        signedFeedFailureExpirationDisabled =
+            (infoDictionary[Self.signedFeedFailureExpirationKey]
+                as? NSNumber)?.doubleValue == 0
+        verifiesBeforeExtraction =
+            infoDictionary[Self.verifyBeforeExtractionKey] as? Bool
+                == true
     }
 
     var isReady: Bool {
-        feedURL != nil && publicKey != nil
+        feedURL != nil
+            && publicKey != nil
+            && requiresSignedFeed
+            && signedFeedFailureExpirationDisabled
+            && verifiesBeforeExtraction
     }
 }
 

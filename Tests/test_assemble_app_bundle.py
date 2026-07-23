@@ -278,6 +278,7 @@ def test_info_plist_contains_icon_key_and_bundle_metadata(tmp_path):
     assert plist["SUAllowsAutomaticUpdates"] is True
     assert plist["SUVerifyUpdateBeforeExtraction"] is True
     assert plist["SURequireSignedFeed"] is True
+    assert plist["SUSignedFeedFailureExpirationInterval"] == 0
 
 
 def test_assemble_app_bundle_replaces_existing_bundle_contents(tmp_path):
