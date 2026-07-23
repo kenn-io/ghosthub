@@ -244,6 +244,55 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
         )
     }
 
+    func testSilentSuccessfulReloadClearsFailureNotice() throws {
+        try skipUnlessLibghosttyReady()
+        let (pipeline, tempRoot) = makeIsolatedPipeline()
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: tempRoot)
+        }
+        try FileManager.default.createDirectory(
+            at: pipeline.paths.configDirectory,
+            withIntermediateDirectories: true
+        )
+        try "font-size = 13\n".write(
+            to: pipeline.paths.globalConfigFile,
+            atomically: true,
+            encoding: .utf8
+        )
+        let runtime = LibghosttyRuntime(
+            pipeline: pipeline,
+            configMonitorFactory: { request in
+                LibghosttyConfigFileMonitor(
+                    fileURLs: request.files,
+                    errorHandler: request.errorHandler,
+                    changeHandler: {}
+                )
+            }
+        )
+        try "font-size = definitely-not-a-number\n".write(
+            to: pipeline.paths.globalConfigFile,
+            atomically: true,
+            encoding: .utf8
+        )
+        guard case .rejected = runtime.reloadActiveConfig() else {
+            return XCTFail("Expected invalid configuration rejection")
+        }
+        XCTAssertEqual(runtime.configReloadNotice?.kind, .error)
+
+        try "font-size = 15\n".write(
+            to: pipeline.paths.globalConfigFile,
+            atomically: true,
+            encoding: .utf8
+        )
+        let result = runtime.reloadConfig(
+            projectRoot: nil,
+            force: true
+        )
+
+        XCTAssertEqual(result, .applied)
+        XCTAssertNil(runtime.configReloadNotice)
+    }
+
     func testMonitorUpdateFailurePublishesDegradedReload() throws {
         try skipUnlessLibghosttyReady()
         let (pipeline, tempRoot) = makeIsolatedPipeline()

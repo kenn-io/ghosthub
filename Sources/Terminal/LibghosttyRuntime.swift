@@ -212,6 +212,7 @@ public final class LibghosttyRuntime: ObservableObject {
             }
             clearMonitorFailure()
             diagnostics = []
+            configReloadNotice = nil
             if notifyOnSuccess {
                 configReloadNotice = LibghosttyConfigReloadNotice(
                     kind: .success,

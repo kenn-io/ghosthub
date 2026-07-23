@@ -381,6 +381,94 @@ struct LibghosttyConfigFileMonitorTests {
         #expect(changed.wait(timeout: .now() + 2) == .success)
     }
 
+    @Test("directory disappearance falls back to an existing ancestor")
+    func directoryDisappearanceFallsBackToExistingAncestor() throws {
+        let fixture = try TemporaryConfigMonitorFixture.create()
+        let transientDirectory = fixture.tempDirectory.appendingPathComponent(
+            "transient",
+            isDirectory: true
+        )
+        let config = transientDirectory.appendingPathComponent(
+            "terminal.conf"
+        )
+        try FileManager.default.createDirectory(
+            at: transientDirectory,
+            withIntermediateDirectories: false
+        )
+        var removedTransientDirectory = false
+        let changed = DispatchSemaphore(value: 0)
+        let monitor = LibghosttyConfigFileMonitor(
+            fileURLs: [config],
+            queue: DispatchQueue(
+                label: "com.ghosthub.terminal.config-monitor-test"
+            ),
+            debounceInterval: .milliseconds(25),
+            requiringExistingFiles: false,
+            openHandler: { path, flags in
+                if !removedTransientDirectory,
+                   path == transientDirectory.path {
+                    removedTransientDirectory = true
+                    try? FileManager.default.removeItem(
+                        at: transientDirectory
+                    )
+                }
+                return open(path, flags)
+            },
+            changeHandler: {
+                changed.signal()
+            }
+        )
+        try monitor.start()
+        defer { monitor.stop() }
+        #expect(
+            monitor.activeWatchedDirectories().contains(
+                fixture.tempDirectory.standardizedFileURL
+            )
+        )
+
+        try FileManager.default.createDirectory(
+            at: transientDirectory,
+            withIntermediateDirectories: false
+        )
+        try fixture.writeConfig("font-size = 14\n", to: config)
+
+        #expect(changed.wait(timeout: .now() + 2) == .success)
+    }
+
+    @Test("unstable directory coverage is reported")
+    func unstableDirectoryCoverageIsReported() throws {
+        let fixture = try TemporaryConfigMonitorFixture.create()
+        let missingConfig = fixture.tempDirectory.appendingPathComponent(
+            "terminal.conf"
+        )
+        let blockedDirectory = fixture.tempDirectory.standardizedFileURL
+        let monitor = LibghosttyConfigFileMonitor(
+            fileURLs: [missingConfig],
+            queue: DispatchQueue(
+                label: "com.ghosthub.terminal.config-monitor-test"
+            ),
+            debounceInterval: .milliseconds(25),
+            requiringExistingFiles: false,
+            openHandler: { path, flags in
+                guard path == blockedDirectory.path else {
+                    return open(path, flags)
+                }
+                errno = ENOENT
+                return -1
+            },
+            changeHandler: {}
+        )
+
+        expectThrowsEqual(
+            LibghosttyConfigFileMonitorError.openFile(
+                blockedDirectory,
+                ENOENT
+            )
+        ) {
+            try monitor.start()
+        }
+    }
+
     @Test("monitor replaces its watched config graph")
     func monitorUpdatesConfigGraph() throws {
         let fixture = try TemporaryConfigMonitorFixture.create()

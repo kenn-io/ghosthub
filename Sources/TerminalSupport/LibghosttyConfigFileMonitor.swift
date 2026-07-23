@@ -19,6 +19,7 @@ public final class LibghosttyConfigFileMonitor {
         LibghosttyConfigFileMonitorError
     ) -> Void
     typealias OpenHandler = (_ path: String, _ flags: Int32) -> Int32
+    private static let coverageRetryLimit = 4
     private static let symlinkTraversalLimit = 64
 
     private struct FileIdentity: Equatable {
@@ -229,7 +230,8 @@ public final class LibghosttyConfigFileMonitor {
     private func reconfigureSourcesLocked(
         to updatedFiles: Set<URL>,
         keepStagedSourcesOnFailure: Bool = false,
-        recheckAfterInstall: Bool = true
+        remainingCoverageRetries: Int =
+            LibghosttyConfigFileMonitor.coverageRetryLimit
     ) throws {
         let updatedIdentities = Dictionary(
             uniqueKeysWithValues: updatedFiles.map {
@@ -292,31 +294,47 @@ public final class LibghosttyConfigFileMonitor {
             stagedDirectories: stagedDirectories
         )
 
-        if recheckAfterInstall {
-            let changedDuringInstall = updatedFiles.contains {
-                fileIdentity(for: $0) != updatedIdentities[$0]
-            }
-            if changedDuringInstall {
-                try reconfigureSourcesLocked(
-                    to: updatedFiles,
-                    recheckAfterInstall: false
-                )
-            }
+        // Paths can disappear or be replaced between discovery and open.
+        // Success means the freshly observed graph is fully covered, not
+        // merely that every open attempted from the older snapshot returned.
+        guard let uncovered = coverageGapLocked(
+            for: updatedFiles
+        ) else { return }
+        guard remainingCoverageRetries > 0 else {
+            throw LibghosttyConfigFileMonitorError.openFile(
+                uncovered,
+                ENOENT
+            )
         }
+        try reconfigureSourcesLocked(
+            to: updatedFiles,
+            keepStagedSourcesOnFailure: keepStagedSourcesOnFailure,
+            remainingCoverageRetries: remainingCoverageRetries - 1
+        )
     }
 
     private func sourcesAreCurrentLocked(
         for files: Set<URL>
     ) -> Bool {
+        coverageGapLocked(for: files) == nil
+    }
+
+    private func coverageGapLocked(
+        for files: Set<URL>
+    ) -> URL? {
         let identities = Dictionary(
             uniqueKeysWithValues: files.map {
                 ($0, fileIdentity(for: $0))
             }
         )
-        guard knownIdentity == identities else { return false }
+        if knownIdentity != identities {
+            return files.first {
+                knownIdentity[$0] != identities[$0]
+            }
+        }
         for (file, identity) in identities
         where identity.exists && fileSources[file] == nil {
-            return false
+            return file
         }
 
         let directories = watchedDirectories(for: files)
@@ -324,9 +342,9 @@ public final class LibghosttyConfigFileMonitor {
             guard directorySources[directory] != nil,
                   knownDirectoryIdentity[directory]
                     == fileIdentity(for: directory)
-            else { return false }
+            else { return directory }
         }
-        return true
+        return nil
     }
 
     private func applyStagedSourcesLocked(
