@@ -135,6 +135,23 @@ session model and die with the app process.
 - Do not disable libghostty shell integration to work around keybinding
   bugs.
 
+## Configuration Reloading
+
+Ghosthub automatically watches the complete active terminal-configuration
+graph: `~/.config/ghosthub/ghostty.conf`, the selected local project's
+`.ghosthub/terminal.conf`, the app-owned appearance overlay, and recursive
+`config-file` includes. Missing optional includes and absent project or
+appearance files remain watched so creating them triggers a reload. Filesystem
+events are debounced before rebuilding the graph.
+
+Reloading is transactional. A candidate with diagnostics is rejected and the
+last valid libghostty configuration remains active. The app presents the result
+of automatic and explicit reloads; errors remain visible until dismissed or
+superseded. **Ghosthub → Reload Configuration**, Quick Launch, and
+<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>,</kbd> all provide the explicit path.
+Options that libghostty cannot apply to existing surfaces retain their upstream
+restart or new-surface semantics.
+
 ## Verification
 
 For terminal startup, environment, config layering, libghostty bootstrap, key

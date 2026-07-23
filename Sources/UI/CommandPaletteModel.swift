@@ -5,6 +5,7 @@ import GhosthubWorkspace
 public enum WorkspaceCommandShortcut: Equatable, Sendable {
     case commandB
     case commandShiftP
+    case commandShiftComma
     case commandShiftN
     case commandShiftI
     case commandShiftDelete
@@ -18,6 +19,8 @@ public enum WorkspaceCommandShortcut: Equatable, Sendable {
             return "Cmd+B"
         case .commandShiftP:
             return "Cmd+Shift+P"
+        case .commandShiftComma:
+            return "Cmd+Shift+,"
         case .commandShiftN:
             return "Cmd+Shift+N"
         case .commandShiftI:
@@ -37,6 +40,7 @@ public enum WorkspaceCommandShortcut: Equatable, Sendable {
 public enum WorkspaceCommandAction: Equatable, Sendable {
     case toggleSidebar
     case openConfigDirectory
+    case reloadTerminalConfig
     case previousWorktree
     case nextWorktree
     case newWorktree(UUID)
@@ -130,6 +134,16 @@ public enum CommandPaletteModel {
                 subtitle: "Open ~/.config/ghosthub in Finder.",
                 keywords: ["open", "ghosthub", "config", "directory", "finder", "settings"],
                 action: .openConfigDirectory
+            ),
+            WorkspaceCommandItem(
+                id: "reload-terminal-config",
+                title: "Reload Configuration",
+                subtitle: "Reload the active Ghosthub terminal configuration.",
+                keywords: [
+                    "reload", "terminal", "config", "ghostty.conf",
+                ],
+                shortcut: .commandShiftComma,
+                action: .reloadTerminalConfig
             ),
             WorkspaceCommandItem(
                 id: "show-log-viewer",

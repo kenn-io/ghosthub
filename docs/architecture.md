@@ -98,6 +98,12 @@ once kwt exposes one; until then project registration remains in kwt itself.
 | `tools/` | Python bootstrap and packaging automation |
 | `Tests/` | Swift and Python tests |
 
+Terminal configuration is Ghosthub-owned and applied transactionally through
+libghostty. The runtime watches the active base, project, appearance, and
+recursive include graph with debouncing. Invalid candidates never replace the
+last valid configuration, and both automatic and explicit reloads publish a
+user-visible result.
+
 ## Session Attachment
 
 Kwt workspaces and otherwise-unbound host sessions use the same native tmux

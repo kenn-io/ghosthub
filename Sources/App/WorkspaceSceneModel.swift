@@ -134,7 +134,12 @@ final class WorkspaceSceneModel: ObservableObject {
     /// window is the key window.  Used to disambiguate app-wide
     /// events (keyboard shortcuts, split actions without source
     /// identity) so only the focused window handles them.
-    var isFocusedWindow = false
+    var isFocusedWindow = false {
+        didSet {
+            guard isFocusedWindow, !oldValue else { return }
+            syncTerminalConfig()
+        }
+    }
     @Published var selection: WorkspaceSelection {
         didSet {
             syncTerminalConfig()
@@ -1178,10 +1183,21 @@ final class WorkspaceSceneModel: ObservableObject {
     }
 
     private func syncTerminalConfig() {
+        guard isFocusedWindow else { return }
         terminalRuntime.reloadConfig(
             projectRoot: selection.terminalConfigRoot(
                 in: snapshot
             )
+        )
+    }
+
+    func reloadTerminalConfig() {
+        terminalRuntime.reloadConfig(
+            projectRoot: selection.terminalConfigRoot(
+                in: snapshot
+            ),
+            force: true,
+            notifyOnSuccess: true
         )
     }
 

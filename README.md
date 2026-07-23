@@ -155,7 +155,10 @@ The file uses
 [Ghostty's configuration format](https://ghostty.org/docs/config/reference),
 but remains separate from Ghostty.app so the two applications can evolve
 independently. Appearance, keyboard, worktree, agent, and host preferences are
-also available in **Settings**.
+also available in **Settings**. Ghosthub automatically reloads the active
+configuration when the base file, a project override, or a recursively included
+file changes. Use **Ghosthub → Reload Configuration** when you want an explicit
+reload and diagnostic result.
 
 ## Useful shortcuts
 
@@ -164,6 +167,7 @@ also available in **Settings**.
 | <kbd>⌘</kbd><kbd>⇧</kbd><kbd>P</kbd> | Open Quick Launch |
 | <kbd>⌘</kbd><kbd>B</kbd> | Show or hide the sidebar |
 | <kbd>⌘</kbd><kbd>⇧</kbd><kbd>N</kbd> | Create a worktree in the selected project |
+| <kbd>⌘</kbd><kbd>⇧</kbd><kbd>,</kbd> | Reload terminal configuration |
 | <kbd>⌘</kbd><kbd>,</kbd> | Open Settings |
 | <kbd>⌘</kbd><kbd>W</kbd> | Detach the current presentation |
 

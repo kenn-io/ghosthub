@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 import GhosttyKit
 import GhosthubWorkspace
@@ -6,6 +7,10 @@ import XCTest
 @testable import GhosthubApp
 @testable import GhosthubTerminal
 @testable import GhosthubTerminalSupport
+
+private final class MonitorErrorHandlerBox: @unchecked Sendable {
+    var handler: LibghosttyConfigFileMonitor.ErrorHandler?
+}
 
 @MainActor
 final class LibghosttyRuntimeSmokeTests: XCTestCase {
@@ -147,6 +152,62 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
         )
     }
 
+    func testStartupInstallsWatcherBeforeReadingInitialConfig() throws {
+        try skipUnlessLibghosttyReady()
+        let (pipeline, tempRoot) = makeIsolatedPipeline()
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: tempRoot)
+        }
+        try FileManager.default.createDirectory(
+            at: pipeline.paths.configDirectory,
+            withIntermediateDirectories: true
+        )
+        try "font-size = 13\n".write(
+            to: pipeline.paths.globalConfigFile,
+            atomically: true,
+            encoding: .utf8
+        )
+        var didRewrite = false
+
+        let runtime = LibghosttyRuntime(
+            pipeline: pipeline,
+            configMonitorFactory: { request in
+                LibghosttyConfigFileMonitor(
+                    fileURLs: request.files,
+                    queue: DispatchQueue(
+                        label: "com.ghosthub.terminal.config-monitor-test"
+                    ),
+                    debounceInterval: .milliseconds(25),
+                    requiringExistingFiles: false,
+                    openHandler: { path, flags in
+                        let descriptor = open(path, flags)
+                        guard path
+                            == pipeline.paths.globalConfigFile.path,
+                            !didRewrite
+                        else {
+                            return descriptor
+                        }
+                        try? "font-size = not-a-number\n".write(
+                            to: pipeline.paths.globalConfigFile,
+                            atomically: false,
+                            encoding: .utf8
+                        )
+                        didRewrite = true
+                        return descriptor
+                    },
+                    errorHandler: request.errorHandler,
+                    changeHandler: {}
+                )
+            }
+        )
+
+        XCTAssertTrue(
+            runtime.diagnostics.contains {
+                $0.contains("font-size")
+            }
+        )
+    }
+
     func testAppHandleIsNonNil() throws {
         let ctx = try makeIsolatedRuntime()
 
@@ -203,6 +264,482 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
             ctx.runtime.phase, .ready,
             "Phase should remain .ready after project-override reload"
         )
+    }
+
+    func testReloadInstallsProjectWatcherBeforeReadingCandidate() throws {
+        try skipUnlessLibghosttyReady()
+        let (pipeline, tempRoot) = makeIsolatedPipeline()
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: tempRoot)
+        }
+        try FileManager.default.createDirectory(
+            at: pipeline.paths.configDirectory,
+            withIntermediateDirectories: true
+        )
+        try "font-size = 13\n".write(
+            to: pipeline.paths.globalConfigFile,
+            atomically: true,
+            encoding: .utf8
+        )
+        var rewritePath: String?
+        var didRewrite = false
+        let runtime = LibghosttyRuntime(
+            pipeline: pipeline,
+            configMonitorFactory: { request in
+                LibghosttyConfigFileMonitor(
+                    fileURLs: request.files,
+                    queue: DispatchQueue(
+                        label: "com.ghosthub.terminal.config-monitor-test"
+                    ),
+                    debounceInterval: .milliseconds(25),
+                    requiringExistingFiles: false,
+                    openHandler: { path, flags in
+                        let descriptor = open(path, flags)
+                        guard path == rewritePath, !didRewrite else {
+                            return descriptor
+                        }
+                        try? "font-size = not-a-number\n".write(
+                            to: URL(fileURLWithPath: path),
+                            atomically: false,
+                            encoding: .utf8
+                        )
+                        didRewrite = true
+                        return descriptor
+                    },
+                    errorHandler: request.errorHandler,
+                    changeHandler: {}
+                )
+            }
+        )
+        let projectRoot = tempRoot.appendingPathComponent(
+            "project",
+            isDirectory: true
+        )
+        let projectConfig = pipeline.paths.projectConfigFile(
+            for: projectRoot
+        )
+        try FileManager.default.createDirectory(
+            at: projectConfig.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try "font-size = 15\n".write(
+            to: projectConfig,
+            atomically: true,
+            encoding: .utf8
+        )
+        rewritePath = projectConfig.path
+
+        let result = runtime.reloadConfig(
+            projectRoot: projectRoot,
+            force: true
+        )
+
+        guard case .rejected = result else {
+            return XCTFail(
+                "Expected the post-watch invalid config to be rejected, got \(result)"
+            )
+        }
+    }
+
+    func testInvalidConfigReloadKeepsLastValidConfig() throws {
+        let ctx = try makeIsolatedRuntime()
+        let originalHandle = try XCTUnwrap(
+            ctx.runtime.unsafeConfigHandle
+        )
+        try "font-size = definitely-not-a-number\n".write(
+            to: ctx.pipeline.paths.globalConfigFile,
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let result = ctx.runtime.reloadActiveConfig()
+
+        guard case let .rejected(messages) = result else {
+            return XCTFail(
+                "Expected invalid configuration to be rejected, got \(result)"
+            )
+        }
+        XCTAssertFalse(messages.isEmpty)
+        XCTAssertEqual(ctx.runtime.phase, .ready)
+        let retainedHandle = try XCTUnwrap(
+            ctx.runtime.unsafeConfigHandle
+        )
+        XCTAssertEqual(
+            UInt(bitPattern: retainedHandle),
+            UInt(bitPattern: originalHandle),
+            "A rejected reload must retain the last valid config handle."
+        )
+        XCTAssertEqual(
+            ctx.runtime.configReloadNotice?.kind,
+            .error
+        )
+    }
+
+    func testSilentSuccessfulReloadClearsFailureNotice() throws {
+        try skipUnlessLibghosttyReady()
+        let (pipeline, tempRoot) = makeIsolatedPipeline()
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: tempRoot)
+        }
+        try FileManager.default.createDirectory(
+            at: pipeline.paths.configDirectory,
+            withIntermediateDirectories: true
+        )
+        try "font-size = 13\n".write(
+            to: pipeline.paths.globalConfigFile,
+            atomically: true,
+            encoding: .utf8
+        )
+        let runtime = LibghosttyRuntime(
+            pipeline: pipeline,
+            configMonitorFactory: { request in
+                LibghosttyConfigFileMonitor(
+                    fileURLs: request.files,
+                    errorHandler: request.errorHandler,
+                    changeHandler: {}
+                )
+            }
+        )
+        try "font-size = definitely-not-a-number\n".write(
+            to: pipeline.paths.globalConfigFile,
+            atomically: true,
+            encoding: .utf8
+        )
+        guard case .rejected = runtime.reloadActiveConfig() else {
+            return XCTFail("Expected invalid configuration rejection")
+        }
+        XCTAssertEqual(runtime.configReloadNotice?.kind, .error)
+
+        try "font-size = 15\n".write(
+            to: pipeline.paths.globalConfigFile,
+            atomically: true,
+            encoding: .utf8
+        )
+        let result = runtime.reloadConfig(
+            projectRoot: nil,
+            force: true
+        )
+
+        XCTAssertEqual(result, .applied)
+        XCTAssertNil(runtime.configReloadNotice)
+    }
+
+    func testMonitorUpdateFailurePublishesDegradedReload() throws {
+        try skipUnlessLibghosttyReady()
+        let (pipeline, tempRoot) = makeIsolatedPipeline()
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: tempRoot)
+        }
+        try FileManager.default.createDirectory(
+            at: pipeline.paths.configDirectory,
+            withIntermediateDirectories: true
+        )
+        try "font-size = 13\n".write(
+            to: pipeline.paths.globalConfigFile,
+            atomically: true,
+            encoding: .utf8
+        )
+        var blockedPath: String?
+        let runtime = LibghosttyRuntime(
+            pipeline: pipeline,
+            configMonitorFactory: { request in
+                LibghosttyConfigFileMonitor(
+                    fileURLs: request.files,
+                    queue: DispatchQueue(
+                        label: "com.ghosthub.terminal.config-monitor-test"
+                    ),
+                    debounceInterval: .milliseconds(25),
+                    requiringExistingFiles: false,
+                    openHandler: { path, flags in
+                        guard path == blockedPath else {
+                            return open(path, flags)
+                        }
+                        errno = EMFILE
+                        return -1
+                    },
+                    errorHandler: request.errorHandler,
+                    changeHandler: request.changeHandler
+                )
+            }
+        )
+        let projectRoot = tempRoot.appendingPathComponent(
+            "project",
+            isDirectory: true
+        )
+        let projectConfig = pipeline.paths.projectConfigFile(
+            for: projectRoot
+        )
+        try FileManager.default.createDirectory(
+            at: projectConfig.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try "font-size = 15\n".write(
+            to: projectConfig,
+            atomically: true,
+            encoding: .utf8
+        )
+        blockedPath = projectConfig.path
+
+        let result = runtime.reloadConfig(
+            projectRoot: projectRoot,
+            force: true
+        )
+
+        guard case let .appliedWithWarnings(warnings) = result else {
+            return XCTFail(
+                "Expected degraded monitoring warning, got \(result)"
+            )
+        }
+        XCTAssertEqual(runtime.diagnostics, warnings)
+        XCTAssertTrue(
+            warnings.contains {
+                $0.contains("errno \(EMFILE)")
+            }
+        )
+        XCTAssertEqual(runtime.configReloadNotice?.kind, .error)
+        XCTAssertTrue(
+            runtime.configReloadNotice?.message.lowercased().contains(
+                "reload monitoring is degraded"
+            ) == true
+        )
+        XCTAssertTrue(
+            runtime.configPlan?.watchedConfigFiles.contains(
+                projectConfig
+            ) == true
+        )
+    }
+
+    func testMonitorFailureRepublishesAfterConfigErrorNotice() throws {
+        try skipUnlessLibghosttyReady()
+        let (pipeline, tempRoot) = makeIsolatedPipeline()
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: tempRoot)
+        }
+        try FileManager.default.createDirectory(
+            at: pipeline.paths.configDirectory,
+            withIntermediateDirectories: true
+        )
+        try "font-size = 13\n".write(
+            to: pipeline.paths.globalConfigFile,
+            atomically: true,
+            encoding: .utf8
+        )
+        var blockedPath: String?
+        let runtime = LibghosttyRuntime(
+            pipeline: pipeline,
+            configMonitorFactory: { request in
+                LibghosttyConfigFileMonitor(
+                    fileURLs: request.files,
+                    queue: DispatchQueue(
+                        label: "com.ghosthub.terminal.config-monitor-test"
+                    ),
+                    debounceInterval: .milliseconds(25),
+                    requiringExistingFiles: false,
+                    openHandler: { path, flags in
+                        guard path == blockedPath else {
+                            return open(path, flags)
+                        }
+                        errno = EMFILE
+                        return -1
+                    },
+                    errorHandler: request.errorHandler,
+                    changeHandler: request.changeHandler
+                )
+            }
+        )
+        let projectRoot = tempRoot.appendingPathComponent(
+            "project",
+            isDirectory: true
+        )
+        let projectConfig = pipeline.paths.projectConfigFile(
+            for: projectRoot
+        )
+        try FileManager.default.createDirectory(
+            at: projectConfig.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try "font-size = definitely-not-a-number\n".write(
+            to: projectConfig,
+            atomically: true,
+            encoding: .utf8
+        )
+        blockedPath = projectConfig.path
+
+        let rejected = runtime.reloadConfig(
+            projectRoot: projectRoot,
+            force: true
+        )
+        guard case .rejected = rejected else {
+            return XCTFail(
+                "Expected invalid configuration rejection, got \(rejected)"
+            )
+        }
+        XCTAssertTrue(
+            runtime.configReloadNotice?.message.hasPrefix(
+                "Configuration not reloaded:"
+            ) == true
+        )
+        let rejectedNoticeID = runtime.configReloadNotice?.id
+
+        try "font-size = 15\n".write(
+            to: projectConfig,
+            atomically: true,
+            encoding: .utf8
+        )
+        let applied = runtime.reloadConfig(
+            projectRoot: projectRoot,
+            force: true
+        )
+
+        guard case .appliedWithWarnings = applied else {
+            return XCTFail(
+                "Expected degraded reload success, got \(applied)"
+            )
+        }
+        XCTAssertNotEqual(runtime.configReloadNotice?.id, rejectedNoticeID)
+        XCTAssertTrue(
+            runtime.configReloadNotice?.message.hasPrefix(
+                "Automatic terminal configuration reload monitoring is degraded:"
+            ) == true
+        )
+    }
+
+    func testInitialMonitorFailurePublishesDegradedNotice() throws {
+        try skipUnlessLibghosttyReady()
+        let (pipeline, tempRoot) = makeIsolatedPipeline()
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: tempRoot)
+        }
+        try FileManager.default.createDirectory(
+            at: pipeline.paths.configDirectory,
+            withIntermediateDirectories: true
+        )
+        try "font-size = 13\n".write(
+            to: pipeline.paths.globalConfigFile,
+            atomically: true,
+            encoding: .utf8
+        )
+        let runtime = LibghosttyRuntime(
+            pipeline: pipeline,
+            configMonitorFactory: { request in
+                LibghosttyConfigFileMonitor(
+                    fileURLs: request.files,
+                    queue: DispatchQueue(
+                        label: "com.ghosthub.terminal.config-monitor-test"
+                    ),
+                    debounceInterval: .milliseconds(25),
+                    requiringExistingFiles: false,
+                    openHandler: { path, flags in
+                        guard path == pipeline.paths.globalConfigFile.path
+                        else {
+                            return open(path, flags)
+                        }
+                        errno = EMFILE
+                        return -1
+                    },
+                    errorHandler: request.errorHandler,
+                    changeHandler: request.changeHandler
+                )
+            }
+        )
+
+        XCTAssertEqual(runtime.configReloadNotice?.kind, .error)
+        XCTAssertTrue(
+            runtime.configReloadNotice?.message.contains(
+                "errno \(EMFILE)"
+            ) == true
+        )
+        XCTAssertEqual(
+            runtime.diagnostics.filter {
+                $0.contains("errno \(EMFILE)")
+            }.count,
+            1
+        )
+    }
+
+    func testAsyncMonitorFailuresPublishOnceUntilRecovery() throws {
+        try skipUnlessLibghosttyReady()
+        let (pipeline, tempRoot) = makeIsolatedPipeline()
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: tempRoot)
+        }
+        let handlerBox = MonitorErrorHandlerBox()
+        let runtime = LibghosttyRuntime(
+            pipeline: pipeline,
+            configMonitorFactory: { request in
+                handlerBox.handler = request.errorHandler
+                return LibghosttyConfigFileMonitor(
+                    fileURLs: request.files,
+                    errorHandler: request.errorHandler,
+                    changeHandler: request.changeHandler
+                )
+            }
+        )
+        let error = LibghosttyConfigFileMonitorError.openFile(
+            pipeline.paths.globalConfigFile,
+            EMFILE
+        )
+        let handler = try XCTUnwrap(handlerBox.handler)
+
+        handler(error)
+        waitUntil {
+            runtime.configReloadNotice?.message.contains(
+                "errno \(EMFILE)"
+            ) == true
+        }
+        let firstNoticeID = runtime.configReloadNotice?.id
+
+        handler(error)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+
+        XCTAssertEqual(runtime.configReloadNotice?.id, firstNoticeID)
+        XCTAssertEqual(
+            runtime.diagnostics.filter {
+                $0.contains("errno \(EMFILE)")
+            }.count,
+            1
+        )
+    }
+
+    func testIncludedConfigAutomaticallyReloads() throws {
+        try skipUnlessLibghosttyReady()
+        let (pipeline, tempRoot) = makeIsolatedPipeline()
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: tempRoot)
+        }
+        _ = try pipeline.prepareGlobalConfig()
+        let included = pipeline.paths.configDirectory
+            .appendingPathComponent("colors.conf")
+        try "foreground = ffffff\n".write(
+            to: included,
+            atomically: true,
+            encoding: .utf8
+        )
+        try """
+        config-file = colors.conf
+        font-size = 13
+        """.write(
+            to: pipeline.paths.globalConfigFile,
+            atomically: true,
+            encoding: .utf8
+        )
+        let runtime = LibghosttyRuntime(pipeline: pipeline)
+        XCTAssertEqual(runtime.phase, .ready)
+        XCTAssertTrue(
+            runtime.configPlan?.watchedConfigFiles.contains(included)
+                == true
+        )
+
+        try "foreground = eeeeee\n".write(
+            to: included,
+            atomically: true,
+            encoding: .utf8
+        )
+
+        waitUntil(timeout: 3) {
+            runtime.configReloadNotice?.kind == .success
+        }
+        XCTAssertEqual(runtime.diagnostics, [])
     }
 
     func testPasteboardTypeMappingPreservesMimeSpecificTypes() {

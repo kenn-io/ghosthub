@@ -1,6 +1,7 @@
 import SwiftUI
 import GhosthubSettings
 import GhosthubTerminal
+import GhosthubTerminalSupport
 import GhosthubUI
 import GhosthubWorkspace
 #if canImport(AppKit)
@@ -420,6 +421,8 @@ struct WorkspaceWindow: View {
     @StateObject private var sceneModel = WorkspaceSceneModel()
     @EnvironmentObject private var terminalRuntime: LibghosttyRuntime
     @ObservedObject private var settingsStore = SettingsStore.shared
+    @State private var visibleConfigReloadNotice:
+        LibghosttyConfigReloadNotice?
     private let registry = WindowRegistry.shared
 
     var body: some View {
@@ -490,7 +493,7 @@ struct WorkspaceWindow: View {
                                         .peerLoadResult
                                 },
                                 reloadTerminalConfig: {
-                                    terminalRuntime.reloadActiveConfig()
+                                    sceneModel.reloadTerminalConfig()
                                 }
                             )
                         )
@@ -508,6 +511,9 @@ struct WorkspaceWindow: View {
                 },
                 dismissLogViewer: { [sceneModel] in
                     sceneModel.dismissLogViewer()
+                },
+                reloadTerminalConfig: {
+                    sceneModel.reloadTerminalConfig()
                 },
                 openTmuxSession: { [sceneModel] selection in
                     sceneModel.openBorrowedTmuxSession(selection)
@@ -552,6 +558,23 @@ struct WorkspaceWindow: View {
         )
         .focusedSceneValue(\.sceneModel, sceneModel)
         .background(WorkspaceSurfaceColor.color.ignoresSafeArea())
+        .overlay(alignment: .top) {
+            if let notice = visibleConfigReloadNotice {
+                ConfigReloadNoticeView(
+                    notice: notice,
+                    onDismiss: {
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            visibleConfigReloadNotice = nil
+                        }
+                    }
+                )
+                .padding(.top, 8)
+                .padding(.horizontal, 12)
+                .transition(
+                    .move(edge: .top).combined(with: .opacity)
+                )
+            }
+        }
         #if canImport(AppKit)
             .background(
                 WindowFocusTracker(
@@ -594,6 +617,24 @@ struct WorkspaceWindow: View {
             .onAppear {
                 registry.register(sceneModel)
             }
+            .onReceive(
+                terminalRuntime.$configReloadNotice
+            ) { notice in
+                withAnimation(.easeOut(duration: 0.15)) {
+                    visibleConfigReloadNotice = notice
+                }
+            }
+            .task(id: visibleConfigReloadNotice?.id) {
+                guard visibleConfigReloadNotice?.kind == .success
+                else { return }
+                try? await Task.sleep(
+                    nanoseconds: 2_500_000_000
+                )
+                guard !Task.isCancelled else { return }
+                withAnimation(.easeOut(duration: 0.15)) {
+                    visibleConfigReloadNotice = nil
+                }
+            }
             .onDisappear {
                 registry.unregister(sceneModel)
                 Task { [sceneModel] in
@@ -608,5 +649,47 @@ struct WorkspaceWindow: View {
             selection: sceneModel.selection
         ) else { return false }
         return sceneModel.snapshot.canCreateWorktree(in: project)
+    }
+}
+
+private struct ConfigReloadNoticeView: View {
+    let notice: LibghosttyConfigReloadNotice
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(
+                systemName: notice.kind == .success
+                    ? "checkmark.circle.fill"
+                    : "exclamationmark.triangle.fill"
+            )
+            .foregroundStyle(
+                notice.kind == .success ? .green : .orange
+            )
+
+            Text(notice.message)
+                .font(.system(size: 12, weight: .medium))
+                .lineLimit(3)
+
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .semibold))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Dismiss configuration message")
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(.regularMaterial, in: RoundedRectangle(
+            cornerRadius: 8,
+            style: .continuous
+        ))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(.separator.opacity(0.7), lineWidth: 0.5)
+        }
+        .shadow(color: .black.opacity(0.15), radius: 8, y: 3)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(notice.message)
     }
 }

@@ -48,6 +48,10 @@ struct CommandPaletteModelTests {
             title: "Open Ghosthub config directory",
             expectNilShortcut: true
         )
+        commands.expectCommandContains(
+            title: "Reload Configuration",
+            shortcut: .commandShiftComma
+        )
         commands.expectCommandNotContains(title: "Launch Layout: Claude Driver")
         commands.expectCommandNotContains(title: "Focus Worktree Shell")
         commands.expectCommandNotContains(title: "Focus Agent Session")

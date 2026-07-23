@@ -523,6 +523,8 @@ public struct RootView: View {
             toggleSidebar()
         case .openConfigDirectory:
             openConfigDirectory()
+        case .reloadTerminalConfig:
+            handlers.reloadTerminalConfig?()
         case .previousWorktree:
             if let updatedSelection = KeyboardNavigationModel.steppedSelection(
                 from: selection,
