@@ -157,6 +157,8 @@ jobs:
           APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+          SPARKLE_PUBLIC_ED_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY }}
         shell: bash
         run: |
           for name in \
@@ -165,7 +167,9 @@ jobs:
             APPLE_SIGNING_IDENTITY \
             APPLE_API_KEY \
             APPLE_API_ISSUER \
-            APPLE_API_KEY_CONTENT
+            APPLE_API_KEY_CONTENT \
+            SPARKLE_ED_PRIVATE_KEY \
+            SPARKLE_PUBLIC_ED_KEY
           do
             if [[ -z "${!name:-}" ]]; then
               echo "Required GitHub Actions secret $name is missing." >&2
@@ -222,6 +226,16 @@ jobs:
           shasum -a 256 ./*.dmg > SHA256SUMS
           cat SHA256SUMS
 
+      - name: Generate signed update appcast
+        env:
+          RELEASE_APP_VERSION: ${{ steps.release.outputs.version }}
+          RELEASE_DMG_NAME: ${{ steps.release.outputs.dmg_name }}
+          RELEASE_ROOT: ${{ env.RELEASE_ROOT }}
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+          SPARKLE_PUBLIC_ED_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY }}
+        shell: bash
+        run: ./tools/generate_update_appcast.sh
+
       - name: Upload notarized artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -230,6 +244,7 @@ jobs:
             .dist/release/*.dmg
             .dist/release/*.dmg.sha256
             .dist/release/SHA256SUMS
+            .dist/release/appcast.xml
           include-hidden-files: true
           overwrite: true
           if-no-files-found: error
@@ -305,5 +320,6 @@ jobs:
             .dist/release/*.dmg \
             .dist/release/*.dmg.sha256 \
             .dist/release/SHA256SUMS \
+            .dist/release/appcast.xml \
             --repo "$GITHUB_REPOSITORY" \
             --clobber

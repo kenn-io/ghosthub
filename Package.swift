@@ -161,9 +161,16 @@ targets.append(
             "GhosthubTerminalSupport",
             "GhosthubPersistence",
             "GhosthubTmux",
+            .product(name: "Sparkle", package: "Sparkle"),
         ],
 
-        path: "Sources/App"
+        path: "Sources/App",
+        linkerSettings: [
+            .unsafeFlags([
+                "-Xlinker", "-rpath",
+                "-Xlinker", "@executable_path/../Frameworks",
+            ]),
+        ]
     )
 )
 
@@ -295,6 +302,10 @@ let package = Package(
     products: products,
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.10.0"),
+        .package(
+            url: "https://github.com/sparkle-project/Sparkle.git",
+            exact: "2.9.4"
+        ),
     ],
     targets: targets
 )

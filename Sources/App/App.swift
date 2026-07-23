@@ -20,6 +20,9 @@ enum QuitPolicy {
 struct GhosthubApp: App {
     @StateObject private var terminalRuntime = GhosttyRuntime.shared
     @StateObject private var settingsStore = SettingsStore.shared
+    #if canImport(AppKit)
+    private let updateController = UpdateController()
+    #endif
     @FocusedValue(\.sceneModel) private var focusedSceneModel
     @Environment(\.openWindow) private var openWindow
     @State private var didRequestLaunchActivation = false
@@ -53,6 +56,7 @@ struct GhosthubApp: App {
                                 .totalOpenTerminalSurfaceCount
                         )
                     }
+                    updateController.start()
                     requestLaunchActivationIfNeeded()
                     #endif
                 }
@@ -79,6 +83,11 @@ struct GhosthubApp: App {
                 .keyboardShortcut("q")
             }
             CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") {
+                    updateController.checkForUpdates()
+                }
+                .disabled(!updateController.isAvailable)
+                Divider()
                 Button("Settings...") {
                     focusedSceneModel?
                         .isSettingsPresented = true

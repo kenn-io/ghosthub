@@ -46,7 +46,10 @@ def make_executable(path: Path, contents: str = "#!/bin/sh\nexit 0\n") -> Path:
     return path
 
 
-def make_release_inputs(tmp_path: Path) -> tuple[Path, Path, Path]:
+def make_release_inputs(
+    tmp_path: Path,
+    source_bin_dir: Path,
+) -> tuple[Path, Path, Path]:
     app_license = tmp_path / "Ghosthub-LICENSE"
     app_license.write_text("GNU AGPL version 3", encoding="utf-8")
     kwt_binary = make_executable(tmp_path / "kwt")
@@ -59,6 +62,7 @@ def make_release_inputs(tmp_path: Path) -> tuple[Path, Path, Path]:
     grdb_license = licenses_dir / "GRDB-MIT.txt"
     inventory = licenses_dir / "THIRD-PARTY-NOTICES.md"
     marked_license = licenses_dir / "Marked-MIT.txt"
+    sparkle_license = licenses_dir / "Sparkle-LICENSE.txt"
     kwt_license.write_text("Apache License 2.0", encoding="utf-8")
     kwt_notice.write_text("Copyright 2026 Kenn Software LLC", encoding="utf-8")
     fantastty_license.write_text("MIT License", encoding="utf-8")
@@ -66,6 +70,18 @@ def make_release_inputs(tmp_path: Path) -> tuple[Path, Path, Path]:
     grdb_license.write_text("GRDB MIT License", encoding="utf-8")
     inventory.write_text("# Third-party notices", encoding="utf-8")
     marked_license.write_text("Marked MIT License", encoding="utf-8")
+    sparkle_license.write_text("Sparkle licenses", encoding="utf-8")
+
+    sparkle_version = (
+        source_bin_dir / "Sparkle.framework" / "Versions" / "B"
+    )
+    sparkle_binary = make_executable(sparkle_version / "Sparkle")
+    current = sparkle_version.parent / "Current"
+    current.symlink_to("B")
+    (source_bin_dir / "Sparkle.framework" / "Sparkle").symlink_to(
+        "Versions/Current/Sparkle"
+    )
+    assert sparkle_binary.exists()
     return app_license, kwt_binary, licenses_dir
 
 
@@ -110,6 +126,7 @@ def test_release_license_inventory_covers_compiled_dependencies():
         "kwt-NOTICE.txt",
         "fantastty-MIT.txt",
         "Marked-MIT.txt",
+        "Sparkle-LICENSE.txt",
     }
 
     missing = required - {path.name for path in licenses_dir.iterdir()}
@@ -128,7 +145,8 @@ def test_assemble_app_bundle_stages_icon_and_binary(tmp_path):
     icon_path = tmp_path / "Ghosthub.icns"
     icon_path.write_bytes(b"icns")
     app_license, kwt_binary, licenses_dir = make_release_inputs(
-        tmp_path
+        tmp_path,
+        source_bin_dir,
     )
 
     write_bundle(
@@ -180,6 +198,9 @@ def test_assemble_app_bundle_stages_icon_and_binary(tmp_path):
         "# Third-party notices"
     )
     assert (licenses / "Marked-MIT.txt").read_text() == "Marked MIT License"
+    assert (licenses / "Sparkle-LICENSE.txt").read_text() == (
+        "Sparkle licenses"
+    )
     assert (
         app_root / "Contents" / "Resources" / "Ghosthub.icns"
     ).read_bytes() == b"icns"
@@ -192,6 +213,10 @@ def test_assemble_app_bundle_stages_icon_and_binary(tmp_path):
         / "Assets"
         / "example.txt"
     ).read_text() == "ui"
+    sparkle = app_root / "Contents" / "Frameworks" / "Sparkle.framework"
+    assert (sparkle / "Sparkle").is_symlink()
+    assert (sparkle / "Versions" / "Current").is_symlink()
+    assert (sparkle / "Versions" / "B" / "Sparkle").exists()
 
 
 def test_info_plist_contains_icon_key_and_bundle_metadata(tmp_path):
@@ -202,7 +227,8 @@ def test_info_plist_contains_icon_key_and_bundle_metadata(tmp_path):
     icon_path = tmp_path / "Ghosthub.icns"
     icon_path.write_bytes(b"icns")
     app_license, kwt_binary, licenses_dir = make_release_inputs(
-        tmp_path
+        tmp_path,
+        source_bin_dir,
     )
 
     write_bundle(
@@ -246,6 +272,12 @@ def test_info_plist_contains_icon_key_and_bundle_metadata(tmp_path):
     assert plist["NSHumanReadableCopyright"] == COPYRIGHT_NOTICE
     assert plist["GhosthubKwtVersion"] == "0.1.0"
     assert plist["GhosthubKwtSourceRevision"] == "abc123"
+    assert plist["SUFeedURL"] == assemble.SPARKLE_FEED_URL
+    assert plist["SUPublicEDKey"] == assemble.SPARKLE_PUBLIC_ED_KEY
+    assert plist["SUEnableAutomaticChecks"] is True
+    assert plist["SUAllowsAutomaticUpdates"] is True
+    assert plist["SUVerifyUpdateBeforeExtraction"] is True
+    assert plist["SURequireSignedFeed"] is True
 
 
 def test_assemble_app_bundle_replaces_existing_bundle_contents(tmp_path):
@@ -256,7 +288,8 @@ def test_assemble_app_bundle_replaces_existing_bundle_contents(tmp_path):
     icon_path = tmp_path / "Ghosthub.icns"
     icon_path.write_bytes(b"new-icon")
     app_license, kwt_binary, licenses_dir = make_release_inputs(
-        tmp_path
+        tmp_path,
+        source_bin_dir,
     )
 
     write_bundle(

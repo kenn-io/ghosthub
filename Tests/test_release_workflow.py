@@ -55,10 +55,21 @@ def test_release_workflow_supports_candidates_and_same_repo_releases():
     assert "--clobber" in text
     assert "GH_TOKEN: ${{ github.token }}" in text
     assert ".dist/release/SHA256SUMS" in text
+    assert ".dist/release/appcast.xml" in text
     assert "softprops/action-gh-release@" not in text
     assert "BETA_RELEASE_TOKEN" not in text
     assert "wesm/ghosthub" not in text
     assert "repository: ${{ env.RELEASE_REPOSITORY }}" not in text
+
+
+def test_release_workflow_signs_updates_with_the_protected_sparkle_key():
+    text = workflow_text()
+
+    assert "SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}" in text
+    assert "SPARKLE_PUBLIC_ED_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY }}" in text
+    assert "run: ./tools/generate_update_appcast.sh" in text
+    assert "gh release upload" in text
+    assert ".dist/release/appcast.xml" in text
 
 
 def test_release_signing_is_restricted_to_trusted_refs_and_environment():
@@ -73,14 +84,20 @@ def test_release_signing_is_restricted_to_trusted_refs_and_environment():
     assert "if: github.ref_type == 'tag'" not in text
 
 
-def test_release_signs_nested_kwt_before_the_app_and_validates_notarization():
+def test_release_signs_nested_code_before_the_app_and_validates_notarization():
     text = release_script_text()
 
     assert 'xattr -cr "$RELEASE_APP_PATH"' in text
     assert 'xattr -cr "$RELEASE_APP_PATH" || true' not in text
+    sparkle_sign = text.index("Codesigning Sparkle component")
     helper_sign = text.index("Codesigning kwt helper")
     app_sign = text.index("Codesigning app bundle")
-    assert helper_sign < app_sign
+    assert sparkle_sign < helper_sign < app_sign
+    assert "Versions/B/Autoupdate" in text
+    assert "XPCServices/Downloader.xpc" in text
+    assert "XPCServices/Installer.xpc" in text
+    assert "Versions/B/Updater.app" in text
+    assert "--preserve-metadata=identifier,entitlements,requirements" in text
     assert 'codesign --verify --strict --verbose=2 "$KWT_HELPER_PATH"' in text
     assert 'xcrun stapler validate "$RELEASE_DMG_PATH"' in text
     assert "spctl --assess --type open" in text

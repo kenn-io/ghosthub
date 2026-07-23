@@ -30,7 +30,7 @@ KWT_VERSION ?= development
 KWT_SOURCE_REVISION ?= unpinned
 SWIFT_TEST_FILTER ?=
 
-.PHONY: help bootstrap-libghostty bootstrap-libghostty-release check-libghostty check-libghostty-release test-libghostty-bootstrap test-terminal-fallback test-stage-release-app-bundles test-assemble-app-bundle test-essential-workflows build swift-warning-check build-release debug-app release-app release-dmg run-release-app run-app swift-test test-tmux-attach python-test test smoke-test docs-build docs-serve reset-app-state install-hooks
+.PHONY: help bootstrap-libghostty bootstrap-libghostty-release check-libghostty check-libghostty-release test-libghostty-bootstrap test-terminal-fallback test-stage-release-app-bundles test-assemble-app-bundle test-essential-workflows build swift-warning-check build-release debug-app release-app release-dmg release-appcast run-release-app run-app swift-test test-tmux-attach python-test test smoke-test docs-build docs-serve reset-app-state install-hooks
 
 help:
 	@printf '%s\n' \
@@ -237,6 +237,8 @@ debug-app: bootstrap-libghostty
 		--copyright "$(APP_COPYRIGHT)" \
 		--kwt-version "$(KWT_VERSION)" \
 		--kwt-source-revision "$(KWT_SOURCE_REVISION)" >/dev/null; \
+	codesign --force --deep --sign - "$(DEBUG_APP_PATH)" >/dev/null; \
+	codesign --verify --deep --strict "$(DEBUG_APP_PATH)"; \
 	printf 'Built debug app bundle: %s\n' "$(DEBUG_APP_PATH)"
 
 release-app: LIBGHOSTTY_OPTIMIZE = ReleaseFast
@@ -274,6 +276,9 @@ run-release-app: release-app
 release-dmg: LIBGHOSTTY_OPTIMIZE = ReleaseFast
 release-dmg:
 	@./tools/build_release_dmg.sh
+
+release-appcast:
+	@./tools/generate_update_appcast.sh
 
 run-app: debug-app
 	@set -euo pipefail; \

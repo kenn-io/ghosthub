@@ -34,6 +34,21 @@ Swift should stay focused on native app behavior and terminal hosting. Shared
 pure domain models belong in `Sources/Workspace`; external worktree state is
 consumed through kwt's machine-readable CLI surfaces.
 
+### Application Updates
+
+Packaged releases embed Sparkle 2 and check a stable HTTPS appcast published as
+an asset of the latest GitHub release. The app menu exposes **Check for
+Updates…**, and Sparkle performs automatic background checks using its standard
+native UI and installation flow. Development binaries without the packaged
+feed and public key disable the update command instead of contacting a release
+service.
+
+The release workflow generates the appcast only after the DMG is Developer ID
+signed, notarized, stapled, and checksummed. Both the update archive and the
+appcast are signed with Ghosthub's separate Sparkle Ed25519 key. The reviewed
+public key is embedded in `Info.plist`; its private counterpart exists only in
+1Password and the protected `release-signing` GitHub environment.
+
 ### External State
 
 Ghosthub bundles a revision-pinned kwt CLI for local project and worktree
