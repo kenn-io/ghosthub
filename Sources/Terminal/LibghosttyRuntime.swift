@@ -323,7 +323,12 @@ public final class LibghosttyRuntime: ObservableObject {
         guard configMonitor == nil else { return }
 
         let monitor = LibghosttyConfigFileMonitor(
-            fileURLs: plan.watchedConfigFiles
+            fileURLs: plan.watchedConfigFiles,
+            errorHandler: { [weak self] error in
+                Task { @MainActor in
+                    self?.diagnostics.append(error.localizedDescription)
+                }
+            }
         ) { [weak self] in
                 guard let self else { return }
                 Task { @MainActor in
@@ -339,6 +344,7 @@ public final class LibghosttyRuntime: ObservableObject {
             configMonitor = monitor
         } catch {
             diagnostics.append(error.localizedDescription)
+            configMonitor = monitor
         }
     }
 

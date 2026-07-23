@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import GhosthubTestSupport
 import Testing
@@ -40,6 +41,76 @@ struct LibghosttyConfigFileMonitorTests {
                 try monitor.start()
             }
         }
+    }
+
+    @Test(
+        "runtime monitor surfaces non-missing open failures",
+        arguments: [Int32(EACCES), Int32(EMFILE)]
+    )
+    func runtimeMonitorSurfacesOpenFailure(openError: Int32) throws {
+        let fixture = try TemporaryConfigMonitorFixture.create()
+        try fixture.writeConfig("font-size = 13\n")
+        let monitor = LibghosttyConfigFileMonitor(
+            fileURLs: [fixture.configFile],
+            queue: DispatchQueue(
+                label: "com.ghosthub.terminal.config-monitor-test"
+            ),
+            debounceInterval: .milliseconds(25),
+            requiringExistingFiles: false,
+            openHandler: { path, flags in
+                guard path == fixture.configFile.path else {
+                    return open(path, flags)
+                }
+                errno = openError
+                return -1
+            },
+            changeHandler: {}
+        )
+
+        expectThrowsEqual(
+            LibghosttyConfigFileMonitorError.openFile(
+                fixture.configFile, openError
+            )
+        ) {
+            try monitor.start()
+        }
+    }
+
+    @Test("monitor retains successful sources after a later open failure")
+    func monitorRetainsSuccessfulSourcesAfterOpenFailure() throws {
+        let fixture = try TemporaryConfigMonitorFixture.create()
+        try fixture.writeConfig("font-size = 13\n")
+        let changed = DispatchSemaphore(value: 0)
+        let blockedDirectory = fixture.tempDirectory.standardizedFileURL
+        let monitor = LibghosttyConfigFileMonitor(
+            fileURLs: [fixture.configFile],
+            queue: DispatchQueue(
+                label: "com.ghosthub.terminal.config-monitor-test"
+            ),
+            debounceInterval: .milliseconds(25),
+            requiringExistingFiles: false,
+            openHandler: { path, flags in
+                guard path == blockedDirectory.path else {
+                    return open(path, flags)
+                }
+                errno = EACCES
+                return -1
+            }
+        ) {
+            changed.signal()
+        }
+        defer { monitor.stop() }
+
+        expectThrowsEqual(
+            LibghosttyConfigFileMonitorError.openFile(
+                blockedDirectory, EACCES
+            )
+        ) {
+            try monitor.start()
+        }
+
+        try fixture.writeConfig("font-size = 14\n")
+        #expect(changed.wait(timeout: .now() + 2) == .success)
     }
 
     @Test("monitor reattaches after delete and recreate")
