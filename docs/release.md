@@ -71,6 +71,11 @@ of truth is the shared Kenn Software LLC 1Password vault. Generation, custody,
 restoration, and rotation follow the
 [Kenn operations runbook](https://github.com/kenn-io/kenn-ops/blob/main/docs/runbooks/sparkle-update-signing.md).
 
+The derivation guard accepts Sparkle's current exported-key format (a
+base64-encoded 32-byte seed) and its legacy format (64 bytes of private material
+followed by the 32-byte public key). Sparkle 2.9.4's own
+`decodePrivateAndPublicKeys` routine defines those formats.
+
 Environment protection must pass before GitHub sends the job to a runner or
 makes its environment secrets available. Manual candidate jobs also enforce
 `refs/heads/main` in the workflow, and publication requires a tag push rather
