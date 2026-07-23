@@ -252,6 +252,36 @@ struct LibghosttyConfigFileMonitorTests {
         #expect(changed.wait(timeout: .now() + 2) == .success)
     }
 
+    @Test("watch graph processes more than 64 desired files")
+    func watchGraphDoesNotSpendSymlinkBudgetOnDesiredFiles() throws {
+        let fixture = try TemporaryConfigMonitorFixture.create()
+        var configFiles: [URL] = []
+        var expectedDirectories: Set<URL> = []
+
+        for index in 0..<80 {
+            let directory = fixture.tempDirectory.appendingPathComponent(
+                "config-\(index)",
+                isDirectory: true
+            )
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: false
+            )
+            expectedDirectories.insert(directory.standardizedFileURL)
+            configFiles.append(
+                directory.appendingPathComponent("terminal.conf")
+            )
+        }
+
+        let monitor = LibghosttyConfigFileMonitor(
+            fileURLs: configFiles,
+            changeHandler: {}
+        )
+        let watchedDirectories = monitor.watchedDirectories()
+
+        #expect(expectedDirectories.isSubset(of: watchedDirectories))
+    }
+
     @Test("monitor rebinds when an ancestor symlink changes targets")
     func monitorRebindsAfterAncestorSymlinkRetargeting() throws {
         let fixture = try TemporaryConfigMonitorFixture.create()

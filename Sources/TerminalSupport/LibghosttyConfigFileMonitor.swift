@@ -29,6 +29,11 @@ public final class LibghosttyConfigFileMonitor {
         )
     }
 
+    private struct SymlinkCandidate {
+        let file: URL
+        let expansionDepth: Int
+    }
+
     private let queue: DispatchQueue
     private let queueKey = DispatchSpecificKey<UInt8>()
     private let changeHandler: ChangeHandler
@@ -267,44 +272,56 @@ public final class LibghosttyConfigFileMonitor {
         return identityChanged
     }
 
-    private func watchedDirectories() -> Set<URL> {
+    func watchedDirectories() -> Set<URL> {
         var directories: Set<URL> = []
-        var pending = Array(desiredFiles)
-        var visited: Set<URL> = []
-
-        while let file = pending.popLast() {
-            guard visited.count < Self.symlinkTraversalLimit else {
-                break
-            }
-            let standardizedFile = file.standardizedFileURL
-            guard visited.insert(standardizedFile).inserted else {
-                continue
-            }
-            directories.insert(
-                nearestExistingDirectory(for: standardizedFile)
-            )
-
-            var component = URL(
-                fileURLWithPath: "/",
-                isDirectory: true
-            )
-            let pathComponents = Array(
-                standardizedFile.pathComponents.dropFirst()
-            )
-            for (index, pathComponent) in pathComponents.enumerated() {
-                component.appendPathComponent(pathComponent)
-                guard isSymbolicLink(component) else { continue }
-                directories.insert(
-                    component.deletingLastPathComponent()
-                        .standardizedFileURL
+        for desiredFile in desiredFiles {
+            var pending = [
+                SymlinkCandidate(
+                    file: desiredFile,
+                    expansionDepth: 0
                 )
-                guard var destination = symlinkDestination(
-                    for: component
-                ) else { continue }
-                for remaining in pathComponents.dropFirst(index + 1) {
-                    destination.appendPathComponent(remaining)
+            ]
+            var visited: Set<URL> = []
+
+            while let candidate = pending.popLast() {
+                let standardizedFile = candidate.file.standardizedFileURL
+                guard visited.insert(standardizedFile).inserted else {
+                    continue
                 }
-                pending.append(destination.standardizedFileURL)
+                directories.insert(
+                    nearestExistingDirectory(for: standardizedFile)
+                )
+
+                var component = URL(
+                    fileURLWithPath: "/",
+                    isDirectory: true
+                )
+                let pathComponents = Array(
+                    standardizedFile.pathComponents.dropFirst()
+                )
+                for (index, pathComponent) in pathComponents.enumerated() {
+                    component.appendPathComponent(pathComponent)
+                    guard isSymbolicLink(component) else { continue }
+                    directories.insert(
+                        component.deletingLastPathComponent()
+                            .standardizedFileURL
+                    )
+                    guard candidate.expansionDepth
+                        < Self.symlinkTraversalLimit,
+                        var destination = symlinkDestination(
+                            for: component
+                        )
+                    else { continue }
+                    for remaining in pathComponents.dropFirst(index + 1) {
+                        destination.appendPathComponent(remaining)
+                    }
+                    pending.append(
+                        SymlinkCandidate(
+                            file: destination.standardizedFileURL,
+                            expansionDepth: candidate.expansionDepth + 1
+                        )
+                    )
+                }
             }
         }
         return directories
