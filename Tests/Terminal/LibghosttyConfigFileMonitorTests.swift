@@ -342,6 +342,45 @@ struct LibghosttyConfigFileMonitorTests {
         #expect(changed.wait(timeout: .now() + 2) == .success)
     }
 
+    @Test("new config reloads even when its watcher cannot be installed")
+    func newConfigReloadsWhenWatcherInstallFails() throws {
+        let fixture = try TemporaryConfigMonitorFixture.create()
+        var blocksConfig = false
+        let changed = DispatchSemaphore(value: 0)
+        let failed = DispatchSemaphore(value: 0)
+        let monitor = LibghosttyConfigFileMonitor(
+            fileURLs: [fixture.configFile],
+            queue: DispatchQueue(
+                label: "com.ghosthub.terminal.config-monitor-test"
+            ),
+            debounceInterval: .milliseconds(25),
+            requiringExistingFiles: false,
+            openHandler: { path, flags in
+                guard blocksConfig,
+                      path == fixture.configFile.path
+                else {
+                    return open(path, flags)
+                }
+                errno = EMFILE
+                return -1
+            },
+            errorHandler: { _ in
+                failed.signal()
+            },
+            changeHandler: {
+                changed.signal()
+            }
+        )
+        try monitor.start()
+        defer { monitor.stop() }
+
+        blocksConfig = true
+        try fixture.writeConfig("font-size = 14\n")
+
+        #expect(failed.wait(timeout: .now() + 2) == .success)
+        #expect(changed.wait(timeout: .now() + 2) == .success)
+    }
+
     @Test("monitor replaces its watched config graph")
     func monitorUpdatesConfigGraph() throws {
         let fixture = try TemporaryConfigMonitorFixture.create()
@@ -471,10 +510,20 @@ struct LibghosttyConfigFileMonitorTests {
         }
         try monitor.start()
         defer { monitor.stop() }
+        #expect(
+            monitor.activeWatchedDirectories().contains(
+                targetDirectory.standardizedFileURL
+            )
+        )
 
         try FileManager.default.removeItem(at: target)
         #expect(changed.wait(timeout: .now() + 2) == .success)
         while changed.wait(timeout: .now()) == .success {}
+        #expect(
+            monitor.activeWatchedDirectories().contains(
+                targetDirectory.standardizedFileURL
+            )
+        )
 
         try fixture.writeConfig("font-size = 14\n", to: target)
         #expect(changed.wait(timeout: .now() + 2) == .success)

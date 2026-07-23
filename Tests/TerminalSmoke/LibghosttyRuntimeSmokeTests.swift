@@ -329,6 +329,101 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
         )
     }
 
+    func testMonitorFailureRepublishesAfterConfigErrorNotice() throws {
+        try skipUnlessLibghosttyReady()
+        let (pipeline, tempRoot) = makeIsolatedPipeline()
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: tempRoot)
+        }
+        try FileManager.default.createDirectory(
+            at: pipeline.paths.configDirectory,
+            withIntermediateDirectories: true
+        )
+        try "font-size = 13\n".write(
+            to: pipeline.paths.globalConfigFile,
+            atomically: true,
+            encoding: .utf8
+        )
+        var blockedPath: String?
+        let runtime = LibghosttyRuntime(
+            pipeline: pipeline,
+            configMonitorFactory: { request in
+                LibghosttyConfigFileMonitor(
+                    fileURLs: request.files,
+                    queue: DispatchQueue(
+                        label: "com.ghosthub.terminal.config-monitor-test"
+                    ),
+                    debounceInterval: .milliseconds(25),
+                    requiringExistingFiles: false,
+                    openHandler: { path, flags in
+                        guard path == blockedPath else {
+                            return open(path, flags)
+                        }
+                        errno = EMFILE
+                        return -1
+                    },
+                    errorHandler: request.errorHandler,
+                    changeHandler: request.changeHandler
+                )
+            }
+        )
+        let projectRoot = tempRoot.appendingPathComponent(
+            "project",
+            isDirectory: true
+        )
+        let projectConfig = pipeline.paths.projectConfigFile(
+            for: projectRoot
+        )
+        try FileManager.default.createDirectory(
+            at: projectConfig.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try "font-size = definitely-not-a-number\n".write(
+            to: projectConfig,
+            atomically: true,
+            encoding: .utf8
+        )
+        blockedPath = projectConfig.path
+
+        let rejected = runtime.reloadConfig(
+            projectRoot: projectRoot,
+            force: true
+        )
+        guard case .rejected = rejected else {
+            return XCTFail(
+                "Expected invalid configuration rejection, got \(rejected)"
+            )
+        }
+        XCTAssertTrue(
+            runtime.configReloadNotice?.message.hasPrefix(
+                "Configuration not reloaded:"
+            ) == true
+        )
+        let rejectedNoticeID = runtime.configReloadNotice?.id
+
+        try "font-size = 15\n".write(
+            to: projectConfig,
+            atomically: true,
+            encoding: .utf8
+        )
+        let applied = runtime.reloadConfig(
+            projectRoot: projectRoot,
+            force: true
+        )
+
+        guard case .appliedWithWarnings = applied else {
+            return XCTFail(
+                "Expected degraded reload success, got \(applied)"
+            )
+        }
+        XCTAssertNotEqual(runtime.configReloadNotice?.id, rejectedNoticeID)
+        XCTAssertTrue(
+            runtime.configReloadNotice?.message.hasPrefix(
+                "Automatic terminal configuration reload monitoring is degraded:"
+            ) == true
+        )
+    }
+
     func testInitialMonitorFailurePublishesDegradedNotice() throws {
         try skipUnlessLibghosttyReady()
         let (pipeline, tempRoot) = makeIsolatedPipeline()

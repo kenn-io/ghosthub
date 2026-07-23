@@ -53,6 +53,7 @@ public final class LibghosttyConfigFileMonitor {
     private var directorySources:
         [URL: DispatchSourceFileSystemObject] = [:]
     private var knownDirectoryIdentity: [URL: FileIdentity] = [:]
+    private var pendingDirectoryRecheck: DispatchWorkItem?
     private var pendingChange: DispatchWorkItem?
     private var isStarted = false
 
@@ -158,6 +159,8 @@ public final class LibghosttyConfigFileMonitor {
     }
 
     private func stopLocked() {
+        pendingDirectoryRecheck?.cancel()
+        pendingDirectoryRecheck = nil
         pendingChange?.cancel()
         pendingChange = nil
         fileSources.values.forEach { $0.cancel() }
@@ -334,6 +337,14 @@ public final class LibghosttyConfigFileMonitor {
         stagedFiles: [URL: Int32],
         stagedDirectories: [URL: Int32]
     ) {
+        let missingFiles = Set(
+            identities.compactMap { file, identity in
+                identity.exists ? nil : file
+            }
+        )
+        let missingDirectories = watchedDirectories(
+            for: missingFiles
+        )
         for file in Set(fileSources.keys) {
             let shouldRemove = !files.contains(file)
                 || knownIdentity[file] != identities[file]
@@ -348,7 +359,11 @@ public final class LibghosttyConfigFileMonitor {
             let identityChanged = directories.contains(directory)
                 && knownDirectoryIdentity[directory]
                     != directoryIdentities[directory]
-            guard identityChanged || isNoLongerNeeded
+            let isRequiredAncestor = missingDirectories.contains {
+                isAncestor(directory, of: $0)
+            }
+            guard identityChanged
+                || (isNoLongerNeeded && !isRequiredAncestor)
             else { continue }
             directorySources[directory]?.cancel()
             directorySources[directory] = nil
@@ -373,15 +388,69 @@ public final class LibghosttyConfigFileMonitor {
         }
     }
 
+    private func isAncestor(
+        _ candidate: URL,
+        of descendant: URL
+    ) -> Bool {
+        let candidateComponents = candidate.standardizedFileURL
+            .pathComponents
+        let descendantComponents = descendant.standardizedFileURL
+            .pathComponents
+        guard candidateComponents.count <= descendantComponents.count
+        else { return false }
+        return zip(
+            candidateComponents,
+            descendantComponents
+        ).allSatisfy { candidate, descendant in
+            candidate == descendant
+        }
+    }
+
     private func refreshAfterDirectoryChangeLocked() {
         guard isStarted else { return }
         let previousIdentity = knownIdentity
+        let observedIdentity = Dictionary(
+            uniqueKeysWithValues: desiredFiles.map {
+                ($0, fileIdentity(for: $0))
+            }
+        )
         reportingErrors {
             try reconfigureSourcesLocked(to: desiredFiles)
         }
-        if previousIdentity != knownIdentity {
+        if previousIdentity != observedIdentity
+            || previousIdentity != knownIdentity {
             scheduleChangeLocked()
+        } else {
+            scheduleDirectoryRecheckLocked()
         }
+    }
+
+    private func scheduleDirectoryRecheckLocked() {
+        pendingDirectoryRecheck?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingDirectoryRecheck = nil
+            let previousIdentity = self.knownIdentity
+            let observedIdentity = Dictionary(
+                uniqueKeysWithValues: self.desiredFiles.map {
+                    ($0, self.fileIdentity(for: $0))
+                }
+            )
+            self.reportingErrors {
+                try self.reconfigureSourcesLocked(
+                    to: self.desiredFiles
+                )
+            }
+            if previousIdentity != observedIdentity
+                || previousIdentity != self.knownIdentity {
+                self.scheduleChangeLocked()
+            }
+        }
+        pendingDirectoryRecheck = work
+        queue.asyncAfter(
+            deadline: .now() + debounceInterval,
+            execute: work
+        )
     }
 
     private func openDescriptor(for url: URL) throws -> Int32? {

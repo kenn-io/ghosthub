@@ -448,6 +448,7 @@ public final class LibghosttyRuntime: ObservableObject {
         publishNotice: Bool = true
     ) {
         let isDuplicate = monitorFailureMessage == message
+            && configReloadNotice?.id == monitorFailureNoticeID
         if let previous = monitorFailureMessage,
            previous != message {
             diagnostics.removeAll { $0 == previous }
