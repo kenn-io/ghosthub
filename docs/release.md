@@ -145,9 +145,10 @@ builds the pinned kwt helper, verifies that it is an Apple Silicon Mach-O,
 builds release-optimized libghostty and Ghosthub, re-signs Sparkle's nested
 helpers and framework with Ghosthub's Developer ID identity, signs kwt and the
 enclosing app, signs the DMG, submits it to Apple, staples and validates the
-ticket, and generates an Ed25519-signed appcast. It uploads a seven-day
-candidate artifact but does not create a tag or GitHub release. Both checksum
-files name the DMG by basename, so they remain valid after download.
+ticket, and uploads a seven-day candidate artifact. It does not consume the
+production Sparkle private key, generate an appcast, create a tag, or create a
+GitHub release. Both checksum files name the DMG by basename, so they remain
+valid after download.
 
 Download the candidate and verify either checksum from the directory that
 contains the three artifact files:
@@ -179,7 +180,8 @@ Only publish after the candidate succeeds. From a clean `main` checkout:
 ```
 
 The script creates and pushes annotated tag `v0.1.0`. The tag workflow rebuilds
-from source, repeats signing and notarization, and creates
+from source, repeats signing and notarization, generates the production-signed
+appcast, and creates
 `https://github.com/kenn-io/ghosthub/releases/tag/v0.1.0` with:
 
 - `Ghosthub_0.1.0_macos_arm64.dmg`

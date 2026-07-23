@@ -64,12 +64,43 @@ def test_release_workflow_supports_candidates_and_same_repo_releases():
 
 def test_release_workflow_signs_updates_with_the_protected_sparkle_key():
     text = workflow_text()
+    prepare_start = text.index("- name: Prepare Apple signing credentials")
+    prepare_end = text.index("- name: Build signed and notarized DMG")
+    appcast_start = text.index("- name: Generate signed update appcast")
+    appcast_end = text.index("- name: Upload notarized candidate")
+    candidate_start = appcast_end
+    candidate_end = text.index("- name: Upload notarized release")
+    release_upload_start = candidate_end
+    release_upload_end = text.index("- name: Clean up signing credentials")
 
-    assert "SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}" in text
-    assert "SPARKLE_PUBLIC_ED_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY }}" in text
-    assert "run: ./tools/generate_update_appcast.sh" in text
+    prepare = text[prepare_start:prepare_end]
+    appcast = text[appcast_start:appcast_end]
+    candidate = text[candidate_start:candidate_end]
+    release_upload = text[release_upload_start:release_upload_end]
+
+    assert "SPARKLE_ED_PRIVATE_KEY" not in prepare
+    assert "SPARKLE_PUBLIC_ED_KEY" not in prepare
+    assert (
+        "if: github.event_name == 'push' && github.ref_type == 'tag'"
+        in appcast
+    )
+    assert (
+        "SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}"
+        in appcast
+    )
+    assert (
+        "SPARKLE_PUBLIC_ED_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY }}"
+        in appcast
+    )
+    assert "run: ./tools/generate_update_appcast.sh" in appcast
+    assert "if: github.event_name == 'workflow_dispatch'" in candidate
+    assert ".dist/release/appcast.xml" not in candidate
+    assert (
+        "if: github.event_name == 'push' && github.ref_type == 'tag'"
+        in release_upload
+    )
+    assert ".dist/release/appcast.xml" in release_upload
     assert "gh release upload" in text
-    assert ".dist/release/appcast.xml" in text
 
 
 def test_release_signing_is_restricted_to_trusted_refs_and_environment():
