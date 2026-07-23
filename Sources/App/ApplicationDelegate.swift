@@ -40,8 +40,7 @@ private func presentApplicationAlertAsync(
 
 @MainActor
 final class ApplicationDelegate: NSObject,
-    NSApplicationDelegate,
-    NSWindowDelegate {
+    NSApplicationDelegate {
     var confirmTermination: () -> Bool
 
     var requestTerminationConfirmation: (
@@ -50,7 +49,16 @@ final class ApplicationDelegate: NSObject,
 
     var needsConfirmQuit: () -> Bool = { true }
 
+    var terminateApplication: () -> Void = {
+        NSApplication.shared.terminate(nil)
+    }
+
+    var workspaceWindowCount: () -> Int = {
+        WindowRegistry.shared.workspaceWindowCount
+    }
+
     private(set) var terminationConfirmed = false
+    private(set) var terminationConfirmationPending = false
 
     override init() {
         confirmTermination = { false }
@@ -112,10 +120,19 @@ final class ApplicationDelegate: NSObject,
             onConfirm()
             return
         }
+        guard !terminationConfirmationPending else {
+            AppLogger.shared.info(
+                "quit: confirmation already pending"
+            )
+            return
+        }
+        terminationConfirmationPending = true
 
         if let requestTerminationConfirmation {
             requestTerminationConfirmation { [weak self] confirmed in
-                guard let self, confirmed else { return }
+                guard let self else { return }
+                terminationConfirmationPending = false
+                guard confirmed else { return }
                 terminationConfirmed = true
                 onConfirm()
             }
@@ -123,22 +140,29 @@ final class ApplicationDelegate: NSObject,
         }
 
         presentApplicationAlertAsync(makeTerminationAlert()) { [weak self] response in
-            guard let self,
-                  response == .alertFirstButtonReturn
-            else {
-                return
-            }
+            guard let self else { return }
+            terminationConfirmationPending = false
+            guard response == .alertFirstButtonReturn else { return }
             terminationConfirmed = true
             onConfirm()
+        }
+    }
+
+    func requestApplicationTermination() {
+        requestUserInitiatedTermination { [weak self] in
+            self?.terminateApplication()
         }
     }
 
     func applicationShouldTerminate(
         _ sender: NSApplication
     ) -> NSApplication.TerminateReply {
-        if terminationConfirmed || isSystemTermination {
+        if terminationConfirmed {
             return .terminateNow
         }
+        // Shutdown, restart, logout, and system-update requests intentionally
+        // use the same confirmation gate. Ghosthub must not silently disappear
+        // while terminal presentations are still open.
         return prepareUserInitiatedTermination()
             ? .terminateNow : .terminateCancel
     }
@@ -149,33 +173,16 @@ final class ApplicationDelegate: NSObject,
         terminationConfirmed
     }
 
-    func windowShouldClose(_ sender: NSWindow) -> Bool {
-        let hasOtherManagedWindows = NSApplication.shared.windows
-            .contains {
-                $0 !== sender
-                    && !$0.isSheet
-                    && $0.delegate === self
-            }
-
-        if !hasOtherManagedWindows {
-            guard prepareUserInitiatedTermination() else {
-                return false
-            }
+    func requestWorkspaceWindowClose(_ window: NSWindow?) {
+        guard let window, !window.isSheet else { return }
+        guard workspaceWindowCount() <= 1 else {
+            window.close()
+            return
         }
-        return true
-    }
-
-    /// kAEQuitReason ('why?') is present on system-initiated
-    /// quit events (shutdown, restart, logout). Allow these
-    /// without prompting.
-    private var isSystemTermination: Bool {
-        guard let event = NSAppleEventManager.shared()
-            .currentAppleEvent
-        else { return false }
-        let aeQuitReason: AEKeyword = 0x7768_793F
-        return event.attributeDescriptor(
-            forKeyword: aeQuitReason
-        ) != nil
+        // The final red close button follows the same asynchronous path as
+        // Command-Q. Keeping the window open while the sheet is presented
+        // avoids a nested run loop and never re-enters NSWindow.close().
+        requestApplicationTermination()
     }
 
     private func makeTerminationAlert() -> NSAlert {

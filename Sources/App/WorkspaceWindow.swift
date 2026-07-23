@@ -55,6 +55,7 @@ enum WorkspaceWindowChrome {
 /// status via a binding, so SwiftUI can track which window
 /// is focused.
 private struct WindowFocusTracker: NSViewRepresentable {
+    let applicationDelegate: ApplicationDelegate
     @Binding var isFocused: Bool
     var isSidebarVisible: Bool
     var canCreateWorktree: Bool
@@ -65,7 +66,9 @@ private struct WindowFocusTracker: NSViewRepresentable {
     var onNewWorktree: () -> Void
 
     func makeNSView(context: Context) -> NSView {
-        let view = FocusTrackingView()
+        let view = FocusTrackingView(
+            applicationDelegate: applicationDelegate
+        )
         view.onFocusChanged = { [self] focused in
             isFocused = focused
         }
@@ -98,7 +101,19 @@ private struct WindowFocusTracker: NSViewRepresentable {
             ((Bool) -> Void)?
         private nonisolated(unsafe) var observers:
             [NSObjectProtocol] = []
-        let titlebarController = CompactWorkspaceTitlebarController()
+        let titlebarController: CompactWorkspaceTitlebarController
+
+        init(applicationDelegate: ApplicationDelegate) {
+            titlebarController = CompactWorkspaceTitlebarController(
+                applicationDelegate: applicationDelegate
+            )
+            super.init(frame: .zero)
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) {
+            fatalError("init(coder:) is unavailable")
+        }
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
@@ -167,6 +182,16 @@ private final class DraggableTitlebarHostingView: NSHostingView<AnyView> {
 }
 
 @MainActor
+private final class WorkspaceWindowCloseController: NSObject {
+    weak var applicationDelegate: ApplicationDelegate?
+    weak var window: NSWindow?
+
+    @objc func requestClose(_ sender: Any?) {
+        applicationDelegate?.requestWorkspaceWindowClose(window)
+    }
+}
+
+@MainActor
 final class CompactWorkspaceTitlebarController {
     private static let sidebarIdentifier = NSUserInterfaceItemIdentifier(
         "GhosthubCompactSidebarControl"
@@ -183,6 +208,7 @@ final class CompactWorkspaceTitlebarController {
         rootView: AnyView(EmptyView())
     )
     private let actionsHost = NSHostingView(rootView: AnyView(EmptyView()))
+    private let closeController = WorkspaceWindowCloseController()
     private weak var installedWindow: NSWindow?
     private var isSidebarVisible = true
     private var canCreateWorktree = false
@@ -192,7 +218,8 @@ final class CompactWorkspaceTitlebarController {
     private var onSettings: () -> Void = {}
     private var onNewWorktree: () -> Void = {}
 
-    init() {
+    init(applicationDelegate: ApplicationDelegate? = nil) {
+        closeController.applicationDelegate = applicationDelegate
         sidebarHost.identifier = Self.sidebarIdentifier
         titleHost.identifier = Self.titleIdentifier
         actionsHost.identifier = Self.actionsIdentifier
@@ -213,6 +240,13 @@ final class CompactWorkspaceTitlebarController {
               let zoomButton = window.standardWindowButton(.zoomButton),
               let titlebar = closeButton.superview
         else { return }
+        if closeController.applicationDelegate != nil {
+            closeController.window = window
+            closeButton.target = closeController
+            closeButton.action = #selector(
+                WorkspaceWindowCloseController.requestClose(_:)
+            )
+        }
         guard installedWindow !== window
                 || sidebarHost.superview !== titlebar
                 || titleHost.superview !== titlebar
@@ -380,6 +414,9 @@ private struct CompactToolbarButton: View {
 // MARK: - Per-window view
 
 struct WorkspaceWindow: View {
+    #if canImport(AppKit)
+    let applicationDelegate: ApplicationDelegate
+    #endif
     @StateObject private var sceneModel = WorkspaceSceneModel()
     @EnvironmentObject private var terminalRuntime: GhosttyRuntime
     @ObservedObject private var settingsStore = SettingsStore.shared
@@ -464,6 +501,11 @@ struct WorkspaceWindow: View {
                 }
             ),
             handlers: InteractionHandlers(
+                closeWindow: { [applicationDelegate] in
+                    applicationDelegate.requestWorkspaceWindowClose(
+                        NSApplication.shared.keyWindow
+                    )
+                },
                 dismissLogViewer: { [sceneModel] in
                     sceneModel.dismissLogViewer()
                 },
@@ -513,6 +555,7 @@ struct WorkspaceWindow: View {
         #if canImport(AppKit)
             .background(
                 WindowFocusTracker(
+                    applicationDelegate: applicationDelegate,
                     isFocused: Binding(
                         get: { sceneModel.isFocusedWindow },
                         set: { sceneModel.isFocusedWindow = $0 }
@@ -550,16 +593,6 @@ struct WorkspaceWindow: View {
         #endif
             .onAppear {
                 registry.register(sceneModel)
-                #if canImport(AppKit)
-                if let delegate = NSApp.delegate
-                    as? ApplicationDelegate {
-                    for window in NSApplication.shared.windows
-                        where window.delegate == nil {
-                        window.title = "Ghosthub"
-                        window.delegate = delegate
-                    }
-                }
-                #endif
             }
             .onDisappear {
                 registry.unregister(sceneModel)

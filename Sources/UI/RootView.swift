@@ -688,9 +688,7 @@ public struct RootView: View {
         ) {
             return
         }
-        #if canImport(AppKit)
-        NSApplication.shared.keyWindow?.performClose(nil)
-        #endif
+        handlers.closeWindow?()
     }
 
     /// Borrowed sessions are presentation attachments rather than owned tmux

@@ -20,4 +20,8 @@ final class WindowRegistry: ObservableObject {
     var totalOpenTerminalSurfaceCount: Int {
         sceneModels.values.reduce(0) { $0 + $1.openTerminalSurfaceCount }
     }
+
+    var workspaceWindowCount: Int {
+        sceneModels.count
+    }
 }

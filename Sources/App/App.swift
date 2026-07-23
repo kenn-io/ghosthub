@@ -39,7 +39,7 @@ struct GhosthubApp: App {
 
     var body: some Scene {
         WindowGroup("Ghosthub", id: "workspace") {
-            WorkspaceWindow()
+            WorkspaceWindow(applicationDelegate: appDelegate)
                 .environmentObject(terminalRuntime)
                 .onAppear {
                     #if canImport(AppKit)
@@ -74,11 +74,7 @@ struct GhosthubApp: App {
             #if canImport(AppKit)
             CommandGroup(replacing: .appTermination) {
                 Button("Quit Ghosthub") {
-                    appDelegate
-                        .requestUserInitiatedTermination {
-                            NSApplication.shared
-                                .terminate(nil)
-                        }
+                    appDelegate.requestApplicationTermination()
                 }
                 .keyboardShortcut("q")
             }
@@ -223,7 +219,9 @@ struct GhosthubApp: App {
             .keyboardShortcut("w")
 
             Button("Close Window") {
-                NSApplication.shared.keyWindow?.close()
+                appDelegate.requestWorkspaceWindowClose(
+                    NSApplication.shared.keyWindow
+                )
             }
             .keyboardShortcut(
                 "w",

@@ -122,8 +122,8 @@ struct WorkspaceSidebarView: View {
                                             let projectKey =
                                                 WorkspaceSidebarDisclosureState
                                                     .project(project.project.id)
-                                            hierarchyRow(
-                                                project.row,
+                                            projectHierarchyRow(
+                                                project,
                                                 disclosureKey: projectKey
                                             )
                                             .contextMenu {
@@ -345,29 +345,10 @@ struct WorkspaceSidebarView: View {
         addHelp: String? = nil,
         inventoryWarning: String? = nil
     ) -> some View {
-        let expanded = isExpanded(disclosureKey)
         return HStack(spacing: 0) {
-            Button {
-                toggle(disclosureKey)
-            } label: {
-                Image(
-                    systemName: expanded
-                        ? "chevron.down" : "chevron.right"
-                )
-                .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(
-                    colorSchemeContrast == .increased
-                        ? Color.primary : Color.secondary
-                )
-                .frame(width: 20, height: 30)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .workspaceAccessibility(
-                WorkspaceAccessibilityModel.disclosureDescriptor(
-                    title: row.title,
-                    isExpanded: expanded
-                )
+            hierarchyDisclosureButton(
+                row,
+                disclosureKey: disclosureKey
             )
 
             sidebarButton(row)
@@ -394,6 +375,85 @@ struct WorkspaceSidebarView: View {
                 .accessibilityIdentifier("new-tmux-session")
             }
         }
+    }
+
+    private func projectHierarchyRow(
+        _ project: WorkspaceSidebarProject,
+        disclosureKey: String
+    ) -> some View {
+        let canCreate = snapshot.canCreateWorktree(in: project.project)
+        return HStack(spacing: 0) {
+            hierarchyDisclosureButton(
+                project.row,
+                disclosureKey: disclosureKey
+            )
+
+            sidebarButton(project.row)
+
+            Menu {
+                Button("New Worktree…") {
+                    onNewWorktree(project.project)
+                }
+                .disabled(!canCreate)
+            } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 24, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .foregroundStyle(.secondary)
+            .help(projectActionHelp(for: project.project))
+            .accessibilityLabel(
+                "Project actions for \(project.project.sidebarTitle)"
+            )
+            .accessibilityHint(
+                canCreate
+                    ? "Create a kwt worktree."
+                    : projectActionHelp(for: project.project)
+            )
+            .accessibilityIdentifier("project-actions")
+        }
+    }
+
+    private func hierarchyDisclosureButton(
+        _ row: WorkspaceSidebarRow,
+        disclosureKey: String
+    ) -> some View {
+        let expanded = isExpanded(disclosureKey)
+        return Button {
+            toggle(disclosureKey)
+        } label: {
+            Image(
+                systemName: expanded
+                    ? "chevron.down" : "chevron.right"
+            )
+            .font(.system(size: 11, weight: .bold))
+            .foregroundStyle(
+                colorSchemeContrast == .increased
+                    ? Color.primary : Color.secondary
+            )
+            .frame(width: 20, height: 30)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .workspaceAccessibility(
+            WorkspaceAccessibilityModel.disclosureDescriptor(
+                title: row.title,
+                isExpanded: expanded
+            )
+        )
+    }
+
+    private func projectActionHelp(
+        for project: ProjectSummary
+    ) -> String {
+        if snapshot.canCreateWorktree(in: project) {
+            return "Project actions for \(project.sidebarTitle)"
+        }
+        return snapshot.host(id: project.hostID)?
+            .createWorktreeUnavailableReason
+            ?? "This project cannot create worktrees."
     }
 
     private func inventoryWarningButton(
