@@ -74,11 +74,7 @@ struct GhosthubApp: App {
             #if canImport(AppKit)
             CommandGroup(replacing: .appTermination) {
                 Button("Quit Ghosthub") {
-                    appDelegate
-                        .requestUserInitiatedTermination {
-                            NSApplication.shared
-                                .terminate(nil)
-                        }
+                    appDelegate.requestApplicationTermination()
                 }
                 .keyboardShortcut("q")
             }

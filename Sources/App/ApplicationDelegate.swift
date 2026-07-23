@@ -49,7 +49,16 @@ final class ApplicationDelegate: NSObject,
 
     var needsConfirmQuit: () -> Bool = { true }
 
+    var terminateApplication: () -> Void = {
+        NSApplication.shared.terminate(nil)
+    }
+
+    var workspaceWindowCount: () -> Int = {
+        WindowRegistry.shared.workspaceWindowCount
+    }
+
     private(set) var terminationConfirmed = false
+    private(set) var terminationConfirmationPending = false
 
     override init() {
         confirmTermination = { false }
@@ -111,10 +120,19 @@ final class ApplicationDelegate: NSObject,
             onConfirm()
             return
         }
+        guard !terminationConfirmationPending else {
+            AppLogger.shared.info(
+                "quit: confirmation already pending"
+            )
+            return
+        }
+        terminationConfirmationPending = true
 
         if let requestTerminationConfirmation {
             requestTerminationConfirmation { [weak self] confirmed in
-                guard let self, confirmed else { return }
+                guard let self else { return }
+                terminationConfirmationPending = false
+                guard confirmed else { return }
                 terminationConfirmed = true
                 onConfirm()
             }
@@ -122,13 +140,17 @@ final class ApplicationDelegate: NSObject,
         }
 
         presentApplicationAlertAsync(makeTerminationAlert()) { [weak self] response in
-            guard let self,
-                  response == .alertFirstButtonReturn
-            else {
-                return
-            }
+            guard let self else { return }
+            terminationConfirmationPending = false
+            guard response == .alertFirstButtonReturn else { return }
             terminationConfirmed = true
             onConfirm()
+        }
+    }
+
+    func requestApplicationTermination() {
+        requestUserInitiatedTermination { [weak self] in
+            self?.terminateApplication()
         }
     }
 
@@ -153,24 +175,14 @@ final class ApplicationDelegate: NSObject,
 
     func requestWorkspaceWindowClose(_ window: NSWindow?) {
         guard let window, !window.isSheet else { return }
-        guard shouldCloseWorkspaceWindow(
-            hasOtherWorkspaceWindows:
-            WindowRegistry.shared.workspaceWindowCount > 1
-        ) else {
+        guard workspaceWindowCount() <= 1 else {
+            window.close()
             return
         }
-        // Confirmation is complete. Calling `close()` here avoids re-entering
-        // SwiftUI's independent windowShouldClose path.
-        window.close()
-    }
-
-    func shouldCloseWorkspaceWindow(
-        hasOtherWorkspaceWindows: Bool
-    ) -> Bool {
-        if hasOtherWorkspaceWindows {
-            return true
-        }
-        return prepareUserInitiatedTermination()
+        // The final red close button follows the same asynchronous path as
+        // Command-Q. Keeping the window open while the sheet is presented
+        // avoids a nested run loop and never re-enters NSWindow.close().
+        requestApplicationTermination()
     }
 
     private func makeTerminationAlert() -> NSAlert {

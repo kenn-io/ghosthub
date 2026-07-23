@@ -104,6 +104,9 @@ extension ApplicationDelegate {
         let delegate = ApplicationDelegate()
         delegate.needsConfirmQuit = { needsConfirmQuit }
         delegate.confirmTermination = { confirmTerminationResult }
+        delegate.requestTerminationConfirmation = { completion in
+            completion(confirmTerminationResult)
+        }
         return delegate
     }
 }
@@ -421,6 +424,33 @@ final class ApplicationDelegateTests: XCTestCase {
         XCTAssertFalse(delegate.terminationConfirmed)
     }
 
+    func testRepeatedTerminationRequestsSharePendingConfirmation() {
+        let delegate = ApplicationDelegate()
+        var completion: ((Bool) -> Void)?
+        var confirmationRequests = 0
+        var terminationRequests = 0
+        delegate.requestTerminationConfirmation = { callback in
+            confirmationRequests += 1
+            completion = callback
+        }
+        delegate.terminateApplication = {
+            terminationRequests += 1
+        }
+
+        delegate.requestApplicationTermination()
+        delegate.requestApplicationTermination()
+
+        XCTAssertEqual(confirmationRequests, 1)
+        XCTAssertEqual(terminationRequests, 0)
+        XCTAssertTrue(delegate.terminationConfirmationPending)
+
+        completion?(true)
+
+        XCTAssertEqual(terminationRequests, 1)
+        XCTAssertFalse(delegate.terminationConfirmationPending)
+        XCTAssertTrue(delegate.terminationConfirmed)
+    }
+
     func testApplicationWaitsForPreCloseConfirmation() {
         let delegate = ApplicationDelegate.forTesting()
 
@@ -436,22 +466,32 @@ final class ApplicationDelegateTests: XCTestCase {
             confirmTerminationResult: false
         )
         let window = CloseSpyWindow()
+        var terminationRequests = 0
+        delegate.terminateApplication = {
+            terminationRequests += 1
+        }
 
         delegate.requestWorkspaceWindowClose(window)
 
         XCTAssertEqual(window.closeCallCount, 0)
+        XCTAssertEqual(terminationRequests, 0)
         XCTAssertFalse(delegate.terminationConfirmed)
     }
 
-    func testLastWindowClosesAfterConfirmation() {
+    func testLastWindowRequestsTerminationAfterConfirmation() {
         let delegate = ApplicationDelegate.forTesting(
             confirmTerminationResult: true
         )
         let window = CloseSpyWindow()
+        var terminationRequests = 0
+        delegate.terminateApplication = {
+            terminationRequests += 1
+        }
 
         delegate.requestWorkspaceWindowClose(window)
 
-        XCTAssertEqual(window.closeCallCount, 1)
+        XCTAssertEqual(window.closeCallCount, 0)
+        XCTAssertEqual(terminationRequests, 1)
         XCTAssertTrue(delegate.terminationConfirmed)
 
         // After confirmation, termination proceeds without
@@ -471,6 +511,10 @@ final class ApplicationDelegateTests: XCTestCase {
         let delegate = ApplicationDelegate()
         let window = CloseSpyWindow()
         delegate.needsConfirmQuit = { false }
+        var terminationRequests = 0
+        delegate.terminateApplication = {
+            terminationRequests += 1
+        }
 
         var confirmCalled = false
         delegate.confirmTermination = {
@@ -480,7 +524,8 @@ final class ApplicationDelegateTests: XCTestCase {
 
         delegate.requestWorkspaceWindowClose(window)
 
-        XCTAssertEqual(window.closeCallCount, 1)
+        XCTAssertEqual(window.closeCallCount, 0)
+        XCTAssertEqual(terminationRequests, 1)
         XCTAssertFalse(confirmCalled)
         XCTAssertTrue(delegate.terminationConfirmed)
     }
@@ -489,14 +534,17 @@ final class ApplicationDelegateTests: XCTestCase {
         let delegate = ApplicationDelegate.forTesting(
             confirmTerminationResult: true
         )
+        let window = CloseSpyWindow()
+        delegate.workspaceWindowCount = { 2 }
+        var terminationRequests = 0
+        delegate.terminateApplication = {
+            terminationRequests += 1
+        }
 
-        let shouldClose = delegate.shouldCloseWorkspaceWindow(
-            hasOtherWorkspaceWindows: true
-        )
-        XCTAssertTrue(
-            shouldClose,
-            "Non-last window should be allowed to close"
-        )
+        delegate.requestWorkspaceWindowClose(window)
+
+        XCTAssertEqual(window.closeCallCount, 1)
+        XCTAssertEqual(terminationRequests, 0)
         XCTAssertFalse(
             delegate.terminationConfirmed,
             "terminationConfirmed must not be set when other managed windows remain"
@@ -560,6 +608,10 @@ final class ApplicationDelegateTests: XCTestCase {
         let delegate = ApplicationDelegate.forTesting(
             confirmTerminationResult: false
         )
+        var terminationRequests = 0
+        delegate.terminateApplication = {
+            terminationRequests += 1
+        }
         let window = CloseSpyWindow(
             contentRect: NSRect(
                 x: 0,
@@ -581,10 +633,14 @@ final class ApplicationDelegateTests: XCTestCase {
 
         closeButton.performClick(nil)
         XCTAssertEqual(window.closeCallCount, 0)
+        XCTAssertEqual(terminationRequests, 0)
 
-        delegate.confirmTermination = { true }
+        delegate.requestTerminationConfirmation = { completion in
+            completion(true)
+        }
         closeButton.performClick(nil)
-        XCTAssertEqual(window.closeCallCount, 1)
+        XCTAssertEqual(window.closeCallCount, 0)
+        XCTAssertEqual(terminationRequests, 1)
     }
 
     func testCompactTitlebarInstallsActiveSessionIdentityWithoutToolbar() throws {
