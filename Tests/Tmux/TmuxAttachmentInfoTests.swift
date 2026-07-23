@@ -35,7 +35,6 @@ struct TmuxAttachmentInfoTests {
         #expect(command.contains("status-style"))
         #expect(command.contains("message-style"))
         #expect(command.contains("message-command-style"))
-        #expect(command.contains("default"))
         #expect(command.contains("reverse"))
         #expect(command.contains("exec"))
         #expect(command.contains("attach-session"))

@@ -45,9 +45,10 @@ The one presentation exception is color normalization. Before attachment,
 Ghosthub resets the selected session's `status-style`, `message-style`, and
 `message-command-style` to terminal-default colors so tmux chrome follows
 Ghosthub's configured foreground and background instead of tmux's built-in
-green/black and yellow/black defaults. These best-effort style commands do not
-change tmux interaction: prefix and key tables, mouse behavior, windows,
-panes, history, and layout remain untouched.
+green/black and yellow/black defaults. Reversed terminal colors highlight the
+status and message areas without introducing a second fixed palette. These
+best-effort style commands do not change tmux interaction: prefix and key
+tables, mouse behavior, windows, panes, history, and layout remain untouched.
 
 For explicit local and remote creation, Ghosthub performs a one-shot
 `has-session`/detached `new-session` phase before ordinary attachment. The

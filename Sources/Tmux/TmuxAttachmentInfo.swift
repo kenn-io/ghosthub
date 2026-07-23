@@ -225,7 +225,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
     /// configured by Ghosthub.
     private func presentationSetupCommand(tmuxPath: String) -> String {
         let options = [
-            ("status-style", "default"),
+            ("status-style", "reverse"),
             ("message-style", "reverse"),
             ("message-command-style", "reverse"),
         ]

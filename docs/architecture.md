@@ -109,10 +109,11 @@ and server-side lifetime.
 
 Ghosthub normalizes only tmux's session-scoped visual chrome before attaching:
 the status and message styles resolve through the foreground and background
-from Ghosthub's Ghostty-format terminal configuration. This styling is
-best-effort and can never prevent attachment. Tmux still owns all interaction
-behavior; Ghosthub does not modify its prefix, key tables, mouse mode,
-window/pane commands, history, or layout.
+from Ghosthub's Ghostty-format terminal configuration, with reversed terminal
+colors highlighting the status line. This styling is best-effort and can never
+prevent attachment. Tmux still owns all interaction behavior; Ghosthub does
+not modify its prefix, key tables, mouse mode, window/pane commands, history,
+or layout.
 
 An explicit New Tmux Session action is the sole session-creation boundary.
 For a user-supplied exact name, local and remote presentation perform one
