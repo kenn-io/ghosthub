@@ -50,7 +50,7 @@ struct GhosthubApp: App {
 
     var body: some Scene {
         WindowGroup("Ghosthub", id: "workspace") {
-            WorkspaceWindow()
+            WorkspaceWindow(applicationDelegate: appDelegate)
                 .environmentObject(terminalRuntime)
                 .onAppear {
                     #if canImport(AppKit)

@@ -112,6 +112,16 @@ extension ApplicationDelegate {
 
 @MainActor
 final class ApplicationDelegateTests: XCTestCase {
+    private final class WindowDelegateSpy: NSObject, NSWindowDelegate {
+        var shouldCloseCallCount = 0
+        var shouldClose = true
+
+        func windowShouldClose(_ sender: NSWindow) -> Bool {
+            shouldCloseCallCount += 1
+            return shouldClose
+        }
+    }
+
     private final class PerformCloseSpyWindow: NSWindow {
         private(set) var performCloseCallCount = 0
 
@@ -437,6 +447,23 @@ final class ApplicationDelegateTests: XCTestCase {
         WorkspaceWindowCloser.close(window)
 
         XCTAssertEqual(window.performCloseCallCount, 1)
+    }
+
+    func testCloseConfirmationWrapsExistingSwiftUIWindowDelegate() {
+        let delegate = ApplicationDelegate.forTesting(
+            confirmTerminationResult: false
+        )
+        let downstream = WindowDelegateSpy()
+        let window = NSWindow()
+        window.delegate = downstream
+
+        delegate.installCloseConfirmation(on: window)
+        let shouldClose = window.delegate?.windowShouldClose?(window)
+
+        XCTAssertFalse(shouldClose ?? true)
+        XCTAssertEqual(downstream.shouldCloseCallCount, 1)
+        XCTAssertTrue(window.delegate !== downstream)
+        XCTAssertFalse(delegate.terminationConfirmed)
     }
 
     func testWindowShouldCloseShowsConfirmationBeforeClosing() {

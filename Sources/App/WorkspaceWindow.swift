@@ -55,6 +55,7 @@ enum WorkspaceWindowChrome {
 /// status via a binding, so SwiftUI can track which window
 /// is focused.
 private struct WindowFocusTracker: NSViewRepresentable {
+    let applicationDelegate: ApplicationDelegate
     @Binding var isFocused: Bool
     var isSidebarVisible: Bool
     var canCreateWorktree: Bool
@@ -65,7 +66,9 @@ private struct WindowFocusTracker: NSViewRepresentable {
     var onNewWorktree: () -> Void
 
     func makeNSView(context: Context) -> NSView {
-        let view = FocusTrackingView()
+        let view = FocusTrackingView(
+            applicationDelegate: applicationDelegate
+        )
         view.onFocusChanged = { [self] focused in
             isFocused = focused
         }
@@ -89,16 +92,32 @@ private struct WindowFocusTracker: NSViewRepresentable {
             onNewWorktree: onNewWorktree
         )
         if let window = view.window {
+            installCloseConfirmation(on: window)
             view.titlebarController.install(on: window)
         }
     }
 
+    private func installCloseConfirmation(on window: NSWindow) {
+        applicationDelegate.installCloseConfirmation(on: window)
+    }
+
     private final class FocusTrackingView: NSView {
+        private weak var applicationDelegate: ApplicationDelegate?
         nonisolated(unsafe) var onFocusChanged:
             ((Bool) -> Void)?
         private nonisolated(unsafe) var observers:
             [NSObjectProtocol] = []
         let titlebarController = CompactWorkspaceTitlebarController()
+
+        init(applicationDelegate: ApplicationDelegate) {
+            self.applicationDelegate = applicationDelegate
+            super.init(frame: .zero)
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) {
+            fatalError("init(coder:) is unavailable")
+        }
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
@@ -110,8 +129,13 @@ private struct WindowFocusTracker: NSViewRepresentable {
                 return
             }
             window.tabbingMode = .disallowed
+            applicationDelegate?.installCloseConfirmation(on: window)
             titlebarController.install(on: window)
             DispatchQueue.main.async { [weak self] in
+                if let window = self?.window {
+                    self?.applicationDelegate?
+                        .installCloseConfirmation(on: window)
+                }
                 self?.titlebarController.install(on: window)
                 self?.onFocusChanged?(
                     self?.window?.isKeyWindow ?? false
@@ -380,6 +404,9 @@ private struct CompactToolbarButton: View {
 // MARK: - Per-window view
 
 struct WorkspaceWindow: View {
+    #if canImport(AppKit)
+    let applicationDelegate: ApplicationDelegate
+    #endif
     @StateObject private var sceneModel = WorkspaceSceneModel()
     @EnvironmentObject private var terminalRuntime: GhosttyRuntime
     @ObservedObject private var settingsStore = SettingsStore.shared
@@ -513,6 +540,7 @@ struct WorkspaceWindow: View {
         #if canImport(AppKit)
             .background(
                 WindowFocusTracker(
+                    applicationDelegate: applicationDelegate,
                     isFocused: Binding(
                         get: { sceneModel.isFocusedWindow },
                         set: { sceneModel.isFocusedWindow = $0 }
@@ -550,16 +578,6 @@ struct WorkspaceWindow: View {
         #endif
             .onAppear {
                 registry.register(sceneModel)
-                #if canImport(AppKit)
-                if let delegate = NSApp.delegate
-                    as? ApplicationDelegate {
-                    for window in NSApplication.shared.windows
-                        where window.delegate == nil {
-                        window.title = "Ghosthub"
-                        window.delegate = delegate
-                    }
-                }
-                #endif
             }
             .onDisappear {
                 registry.unregister(sceneModel)
