@@ -185,6 +185,48 @@ struct LibghosttyConfigFileMonitorTests {
         #expect(openCount == startOpenCount)
     }
 
+    @Test("in-place writes invalidate a staged file snapshot")
+    func inPlaceWriteInvalidatesStagedSnapshot() throws {
+        let fixture = try TemporaryConfigMonitorFixture.create()
+        let replacement = fixture.tempDirectory
+            .appendingPathComponent("replacement.conf")
+        try fixture.writeConfig("font-size = 13\n")
+        try fixture.writeConfig("font-size = 14\n", to: replacement)
+        var replacementOpenCount = 0
+        var didRewriteReplacement = false
+        let monitor = LibghosttyConfigFileMonitor(
+            fileURLs: [fixture.configFile],
+            queue: DispatchQueue(
+                label: "com.ghosthub.terminal.config-monitor-test"
+            ),
+            debounceInterval: .milliseconds(25),
+            requiringExistingFiles: false,
+            openHandler: { path, flags in
+                let descriptor = open(path, flags)
+                guard path == replacement.path else {
+                    return descriptor
+                }
+                replacementOpenCount += 1
+                if !didRewriteReplacement {
+                    try? "font-size = 123\n".write(
+                        to: replacement,
+                        atomically: false,
+                        encoding: .utf8
+                    )
+                    didRewriteReplacement = true
+                }
+                return descriptor
+            },
+            changeHandler: {}
+        )
+        try monitor.start()
+        defer { monitor.stop() }
+
+        try monitor.update(fileURLs: [replacement])
+
+        #expect(replacementOpenCount == 2)
+    }
+
     @Test("failed graph replacement retains the previous watch graph")
     func failedGraphReplacementRetainsExistingSources() throws {
         let fixture = try TemporaryConfigMonitorFixture.create()

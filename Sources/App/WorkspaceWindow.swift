@@ -493,7 +493,7 @@ struct WorkspaceWindow: View {
                                         .peerLoadResult
                                 },
                                 reloadTerminalConfig: {
-                                    terminalRuntime.reloadActiveConfig()
+                                    sceneModel.reloadTerminalConfig()
                                 }
                             )
                         )
@@ -513,7 +513,7 @@ struct WorkspaceWindow: View {
                     sceneModel.dismissLogViewer()
                 },
                 reloadTerminalConfig: {
-                    terminalRuntime.reloadActiveConfig()
+                    sceneModel.reloadTerminalConfig()
                 },
                 openTmuxSession: { [sceneModel] selection in
                     sceneModel.openBorrowedTmuxSession(selection)

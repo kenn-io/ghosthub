@@ -59,7 +59,8 @@ public final class LibghosttyRuntime: ObservableObject {
     @discardableResult
     public func reloadConfig(
         projectRoot: URL? = nil,
-        force: Bool = false
+        force: Bool = false,
+        notifyOnSuccess: Bool = false
     ) -> LibghosttyConfigReloadResult {
         guard force || activeConfigRoot != projectRoot else {
             return .unchanged

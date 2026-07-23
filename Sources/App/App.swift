@@ -90,7 +90,7 @@ struct GhosthubApp: App {
                 }
                 .keyboardShortcut(",")
                 Button("Reload Configuration") {
-                    terminalRuntime.reloadActiveConfig()
+                    focusedSceneModel?.reloadTerminalConfig()
                 }
                 .keyboardShortcut(
                     ",",

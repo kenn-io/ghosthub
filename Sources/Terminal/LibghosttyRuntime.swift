@@ -128,13 +128,14 @@ public final class LibghosttyRuntime: ObservableObject {
     @discardableResult
     public func reloadConfig(
         projectRoot: URL? = nil,
-        force: Bool = false
+        force: Bool = false,
+        notifyOnSuccess: Bool = false
     ) -> LibghosttyConfigReloadResult {
         reloadConfig(
             target: nil,
             projectRoot: projectRoot,
             force: force,
-            notifyOnSuccess: false
+            notifyOnSuccess: notifyOnSuccess
         )
     }
 
@@ -167,16 +168,13 @@ public final class LibghosttyRuntime: ObservableObject {
         activeConfigRoot = projectRoot
 
         do {
-            let plan = try pipeline.loadPlan(projectRoot: projectRoot)
+            let prepared = try prepareConfigLoad(
+                projectRoot: projectRoot
+            )
+            let plan = prepared.plan
+            let monitorFailure = prepared.monitorFailure
             let config = try loadConfig(plan: plan)
             let candidateDiagnostics = readDiagnostics(from: config)
-            let monitorFailure: String?
-            do {
-                try updateConfigMonitor(for: plan)
-                monitorFailure = nil
-            } catch {
-                monitorFailure = error.localizedDescription
-            }
 
             guard candidateDiagnostics.isEmpty else {
                 ghostty_config_free(config)
@@ -225,6 +223,44 @@ public final class LibghosttyRuntime: ObservableObject {
             diagnostics = [error.localizedDescription]
             publishReloadFailure(diagnostics)
             return .failed(error.localizedDescription)
+        }
+    }
+
+    private func prepareConfigLoad(
+        projectRoot: URL?
+    ) throws -> (
+        plan: LibghosttyConfigLoadPlan,
+        monitorFailure: String?
+    ) {
+        var plan = try pipeline.loadPlan(projectRoot: projectRoot)
+        var remainingAttempts = 4
+
+        while true {
+            let monitorFailure: String?
+            do {
+                try updateConfigMonitor(for: plan)
+                monitorFailure = nil
+            } catch {
+                monitorFailure = error.localizedDescription
+            }
+
+            let refreshedPlan = try pipeline.loadPlan(
+                projectRoot: projectRoot
+            )
+            let graphIsStable =
+                plan.orderedConfigFiles
+                    == refreshedPlan.orderedConfigFiles
+                && plan.watchedConfigFiles
+                    == refreshedPlan.watchedConfigFiles
+            if graphIsStable {
+                return (refreshedPlan, monitorFailure)
+            }
+            guard remainingAttempts > 0 else {
+                throw LibghosttyInitializationError
+                    .unstableConfigGraph
+            }
+            remainingAttempts -= 1
+            plan = refreshedPlan
         }
     }
 
@@ -1002,6 +1038,7 @@ private func resizeSplitDirection(
 private enum LibghosttyInitializationError: LocalizedError {
     case createConfig
     case createApp
+    case unstableConfigGraph
 
     var errorDescription: String? {
         switch self {
@@ -1009,6 +1046,8 @@ private enum LibghosttyInitializationError: LocalizedError {
             return "ghostty_config_new failed"
         case .createApp:
             return "ghostty_app_new failed"
+        case .unstableConfigGraph:
+            return "Terminal configuration changed repeatedly while reloading."
         }
     }
 }

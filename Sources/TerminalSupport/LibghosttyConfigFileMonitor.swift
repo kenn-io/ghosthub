@@ -26,11 +26,17 @@ public final class LibghosttyConfigFileMonitor {
         let exists: Bool
         let resolvedPath: String
         let resourceIdentifier: String
+        let modificationSeconds: Int64
+        let modificationNanoseconds: Int64
+        let fileSize: Int64
 
         static let missing = FileIdentity(
             exists: false,
             resolvedPath: "",
-            resourceIdentifier: ""
+            resourceIdentifier: "",
+            modificationSeconds: 0,
+            modificationNanoseconds: 0,
+            fileSize: 0
         )
     }
 
@@ -672,18 +678,27 @@ public final class LibghosttyConfigFileMonitor {
     }
 
     private func fileIdentity(for file: URL) -> FileIdentity {
-        guard FileManager.default.fileExists(atPath: file.path) else {
+        var metadata = stat()
+        guard stat(file.path, &metadata) == 0 else {
             return .missing
         }
         let values = try? file.resourceValues(
             forKeys: [.fileResourceIdentifierKey]
         )
+        let isRegularFile = metadata.st_mode & S_IFMT == S_IFREG
         return FileIdentity(
             exists: true,
             resolvedPath: file.resolvingSymlinksInPath().path,
             resourceIdentifier: String(
                 describing: values?.fileResourceIdentifier
-            )
+            ),
+            modificationSeconds: isRegularFile
+                ? Int64(metadata.st_mtimespec.tv_sec)
+                : 0,
+            modificationNanoseconds: isRegularFile
+                ? Int64(metadata.st_mtimespec.tv_nsec)
+                : 0,
+            fileSize: isRegularFile ? Int64(metadata.st_size) : 0
         )
     }
 

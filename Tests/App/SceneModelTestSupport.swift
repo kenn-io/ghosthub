@@ -254,6 +254,7 @@ func makeModel(
     localHostID: UUID,
     snapshot: WorkspaceSnapshot? = nil,
     configuration: WorkspaceConfiguration = .defaults(),
+    terminalRuntime: LibghosttyRuntime = .shared,
     notificationService: any NotificationService = NotificationServiceStub(),
     nativeTmuxSurfaceStore: (any TmuxSurfaceStoring)? = nil,
     nativeTmuxPathProvider:
@@ -295,6 +296,7 @@ func makeModel(
     return try WorkspaceSceneModel(
         database: database,
         workspaceConfiguration: configuration,
+        terminalRuntime: terminalRuntime,
         notificationService: notificationService,
         nativeTmuxSurfaceStore: nativeTmuxSurfaceStore,
         nativeTmuxPathProvider: nativeTmuxPathProvider,

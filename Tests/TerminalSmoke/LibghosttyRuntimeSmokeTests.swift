@@ -210,6 +210,81 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
         )
     }
 
+    func testReloadInstallsProjectWatcherBeforeReadingCandidate() throws {
+        try skipUnlessLibghosttyReady()
+        let (pipeline, tempRoot) = makeIsolatedPipeline()
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: tempRoot)
+        }
+        try FileManager.default.createDirectory(
+            at: pipeline.paths.configDirectory,
+            withIntermediateDirectories: true
+        )
+        try "font-size = 13\n".write(
+            to: pipeline.paths.globalConfigFile,
+            atomically: true,
+            encoding: .utf8
+        )
+        var rewritePath: String?
+        var didRewrite = false
+        let runtime = LibghosttyRuntime(
+            pipeline: pipeline,
+            configMonitorFactory: { request in
+                LibghosttyConfigFileMonitor(
+                    fileURLs: request.files,
+                    queue: DispatchQueue(
+                        label: "com.ghosthub.terminal.config-monitor-test"
+                    ),
+                    debounceInterval: .milliseconds(25),
+                    requiringExistingFiles: false,
+                    openHandler: { path, flags in
+                        let descriptor = open(path, flags)
+                        guard path == rewritePath, !didRewrite else {
+                            return descriptor
+                        }
+                        try? "font-size = not-a-number\n".write(
+                            to: URL(fileURLWithPath: path),
+                            atomically: false,
+                            encoding: .utf8
+                        )
+                        didRewrite = true
+                        return descriptor
+                    },
+                    errorHandler: request.errorHandler,
+                    changeHandler: {}
+                )
+            }
+        )
+        let projectRoot = tempRoot.appendingPathComponent(
+            "project",
+            isDirectory: true
+        )
+        let projectConfig = pipeline.paths.projectConfigFile(
+            for: projectRoot
+        )
+        try FileManager.default.createDirectory(
+            at: projectConfig.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try "font-size = 15\n".write(
+            to: projectConfig,
+            atomically: true,
+            encoding: .utf8
+        )
+        rewritePath = projectConfig.path
+
+        let result = runtime.reloadConfig(
+            projectRoot: projectRoot,
+            force: true
+        )
+
+        guard case .rejected = result else {
+            return XCTFail(
+                "Expected the post-watch invalid config to be rejected, got \(result)"
+            )
+        }
+    }
+
     func testInvalidConfigReloadKeepsLastValidConfig() throws {
         let ctx = try makeIsolatedRuntime()
         let originalHandle = try XCTUnwrap(
