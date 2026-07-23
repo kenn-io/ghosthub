@@ -74,7 +74,9 @@ restoration, and rotation follow the
 The derivation guard accepts Sparkle's current exported-key format (a
 base64-encoded 32-byte seed) and its legacy format (64 bytes of private material
 followed by the 32-byte public key). Sparkle 2.9.4's own
-`decodePrivateAndPublicKeys` routine defines those formats.
+`decodePrivateAndPublicKeys` routine defines those formats. Legacy records are
+accepted only after the private material signs a challenge that the appended
+public key successfully verifies.
 
 Environment protection must pass before GitHub sends the job to a runner or
 makes its environment secrets available. Manual candidate jobs also enforce

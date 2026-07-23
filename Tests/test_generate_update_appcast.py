@@ -11,6 +11,26 @@ import pytest
 
 
 PUBLIC_KEY = "MKL5y44upnEoZrnm3VLLDocsBTD+3DgnH161eEQPhMQ="
+LEGACY_PRIVATE_KEY = bytes(
+    [
+        200, 238, 135, 84, 10, 189, 3, 193,
+        61, 208, 203, 30, 133, 47, 12, 22,
+        19, 52, 252, 99, 110, 205, 209, 94,
+        215, 144, 201, 70, 27, 162, 163, 108,
+        0, 164, 68, 184, 226, 93, 121, 199,
+        172, 17, 26, 64, 89, 68, 232, 41,
+        2, 26, 245, 175, 158, 165, 42, 55,
+        5, 97, 8, 243, 251, 164, 93, 9,
+    ]
+)
+LEGACY_PUBLIC_KEY = bytes(
+    [
+        121, 17, 79, 45, 155, 141, 51, 169,
+        188, 110, 91, 102, 182, 147, 215, 225,
+        252, 202, 110, 231, 200, 215, 62, 171,
+        40, 145, 237, 128, 130, 44, 150, 89,
+    ]
+)
 
 
 def write_fake_generator(path: Path) -> None:
@@ -167,20 +187,41 @@ def test_public_key_derivation_matches_the_ed25519_test_vector():
 
 def test_public_key_derivation_accepts_sparkles_legacy_export():
     repo_root = Path(__file__).resolve().parents[1]
-    private_key = bytes(range(64))
-    public_key = bytes(range(64, 96))
 
     result = subprocess.run(
         ["swift", repo_root / "tools" / "derive_sparkle_public_key.swift"],
         cwd=repo_root,
-        input=base64.b64encode(private_key + public_key).decode(),
+        input=base64.b64encode(
+            LEGACY_PRIVATE_KEY + LEGACY_PUBLIC_KEY
+        ).decode(),
         text=True,
         capture_output=True,
         check=False,
     )
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == base64.b64encode(public_key).decode()
+    assert result.stdout.strip() == base64.b64encode(
+        LEGACY_PUBLIC_KEY
+    ).decode()
+
+
+def test_public_key_derivation_rejects_a_mismatched_legacy_pair():
+    repo_root = Path(__file__).resolve().parents[1]
+    mismatched_public_key = bytes(32)
+
+    result = subprocess.run(
+        ["swift", repo_root / "tools" / "derive_sparkle_public_key.swift"],
+        cwd=repo_root,
+        input=base64.b64encode(
+            LEGACY_PRIVATE_KEY + mismatched_public_key
+        ).decode(),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "do not match" in result.stderr
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="Sparkle tooling targets macOS")
