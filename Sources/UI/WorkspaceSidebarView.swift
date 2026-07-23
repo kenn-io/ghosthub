@@ -113,8 +113,8 @@ struct WorkspaceSidebarView: View {
                                     let projectsKey =
                                         WorkspaceSidebarDisclosureState
                                             .projects(section.host.id)
-                                    sidebarGroupLabel(
-                                        "Projects",
+                                    projectsGroupLabel(
+                                        section,
                                         disclosureKey: projectsKey
                                     )
                                     if isExpanded(projectsKey) {
@@ -420,6 +420,73 @@ struct WorkspaceSidebarView: View {
         _ title: String,
         disclosureKey: String
     ) -> some View {
+        sidebarGroupDisclosureButton(
+            title,
+            disclosureKey: disclosureKey
+        )
+    }
+
+    private func projectsGroupLabel(
+        _ section: WorkspaceSidebarSection,
+        disclosureKey: String
+    ) -> some View {
+        let project = WorkspaceSidebarModel.preferredCreatableProject(
+            in: section,
+            snapshot: snapshot,
+            selectedProjectID: selection.selectedProjectID
+        )
+        return HStack(spacing: 0) {
+            sidebarGroupDisclosureButton(
+                "Projects",
+                disclosureKey: disclosureKey
+            )
+
+            Menu {
+                Button("New Worktree…") {
+                    guard let project else { return }
+                    onNewWorktree(project)
+                }
+                .disabled(project == nil)
+            } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 24, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .foregroundStyle(.secondary)
+            .help(projectsActionHelp(for: section.host, project: project))
+            .accessibilityLabel(
+                "Project actions for \(section.host.sidebarTitle)"
+            )
+            .accessibilityHint(
+                project == nil
+                    ? projectsActionHelp(
+                        for: section.host,
+                        project: project
+                    )
+                    : "Create a kwt worktree."
+            )
+            .accessibilityIdentifier("project-actions")
+            .disabled(project == nil)
+        }
+    }
+
+    private func projectsActionHelp(
+        for host: HostSummary,
+        project: ProjectSummary?
+    ) -> String {
+        if project != nil {
+            return "Project actions on \(host.sidebarTitle)"
+        }
+        return host.createWorktreeUnavailableReason
+            ?? "No projects on \(host.sidebarTitle) can create worktrees."
+    }
+
+    private func sidebarGroupDisclosureButton(
+        _ title: String,
+        disclosureKey: String
+    ) -> some View {
         let expanded = isExpanded(disclosureKey)
         return Button {
             toggle(disclosureKey)
@@ -446,6 +513,7 @@ struct WorkspaceSidebarView: View {
             .padding(.bottom, 4)
             .frame(minHeight: 30)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .buttonStyle(.plain)
         .workspaceAccessibility(
             WorkspaceAccessibilityModel.disclosureDescriptor(

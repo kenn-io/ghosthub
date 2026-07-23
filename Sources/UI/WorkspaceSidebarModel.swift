@@ -111,6 +111,19 @@ public struct WorkspaceSidebarProject: Equatable, Identifiable, Sendable {
 }
 
 public enum WorkspaceSidebarModel {
+    public static func preferredCreatableProject(
+        in section: WorkspaceSidebarSection,
+        snapshot: WorkspaceSnapshot,
+        selectedProjectID: UUID?
+    ) -> ProjectSummary? {
+        let creatableProjects = section.projects
+            .map(\.project)
+            .filter { snapshot.canCreateWorktree(in: $0) }
+        return creatableProjects.first {
+            $0.id == selectedProjectID
+        } ?? creatableProjects.first
+    }
+
     public static func tmuxSessionSelection(
         for selection: WorkspaceSelection,
         in snapshot: WorkspaceSnapshot
