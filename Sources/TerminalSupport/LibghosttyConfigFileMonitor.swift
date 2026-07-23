@@ -131,17 +131,23 @@ public final class LibghosttyConfigFileMonitor {
                 )
             }
             isStarted = true
-            try configureSourcesLocked()
+            try reconfigureSourcesLocked(
+                to: desiredFiles,
+                keepStagedSourcesOnFailure: true
+            )
         }
     }
 
     public func update(fileURLs: [URL]) throws {
         try synchronized {
-            desiredFiles = Set(
+            let updatedFiles = Set(
                 fileURLs.map(\.standardizedFileURL)
             )
             guard isStarted else { return }
-            try configureSourcesLocked()
+            guard updatedFiles != desiredFiles
+                || !sourcesAreCurrentLocked(for: updatedFiles)
+            else { return }
+            try reconfigureSourcesLocked(to: updatedFiles)
         }
     }
 
@@ -163,31 +169,10 @@ public final class LibghosttyConfigFileMonitor {
         isStarted = false
     }
 
-    private func configureSourcesLocked() throws {
-        fileSources.values.forEach { $0.cancel() }
-        fileSources.removeAll()
-        directorySources.values.forEach { $0.cancel() }
-        directorySources.removeAll()
-        knownDirectoryIdentity.removeAll()
-
-        knownIdentity = Dictionary(
-            uniqueKeysWithValues: desiredFiles.map {
-                ($0, fileIdentity(for: $0))
-            }
-        )
-
-        for file in desiredFiles
-        where knownIdentity[file]?.exists == true {
-            try startFileWatchLocked(file)
-        }
-        try rebuildDirectoryWatchesLocked()
-    }
-
-    private func startFileWatchLocked(_ file: URL) throws {
-        guard fileSources[file] == nil else { return }
-        guard let descriptor = try openDescriptor(for: file)
-        else { return }
-
+    private func installFileSourceLocked(
+        for file: URL,
+        descriptor: Int32
+    ) {
         let source = DispatchSource.makeFileSystemObjectSource(
             fileDescriptor: descriptor,
             eventMask: [.write, .delete, .rename],
@@ -214,85 +199,196 @@ public final class LibghosttyConfigFileMonitor {
         source.resume()
     }
 
-    private func rebuildDirectoryWatchesLocked() throws {
-        let directories = watchedDirectories()
-        let retainExtraSources = desiredFiles.contains {
-            fileIdentity(for: $0).exists == false
+    private func installDirectorySourceLocked(
+        for directory: URL,
+        descriptor: Int32,
+        identity: FileIdentity
+    ) {
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: descriptor,
+            eventMask: [.write, .delete, .rename],
+            queue: queue
+        )
+        source.setEventHandler { [weak self, weak source] in
+            guard let self, let source,
+                  self.directorySources[directory] === source
+            else { return }
+            self.refreshAfterDirectoryChangeLocked()
+        }
+        source.setCancelHandler { [descriptor] in
+            close(descriptor)
+        }
+        directorySources[directory] = source
+        knownDirectoryIdentity[directory] = identity
+        source.resume()
+    }
+
+    private func reconfigureSourcesLocked(
+        to updatedFiles: Set<URL>,
+        keepStagedSourcesOnFailure: Bool = false,
+        recheckAfterInstall: Bool = true
+    ) throws {
+        let updatedIdentities = Dictionary(
+            uniqueKeysWithValues: updatedFiles.map {
+                ($0, fileIdentity(for: $0))
+            }
+        )
+        let updatedDirectories = watchedDirectories(
+            for: updatedFiles
+        )
+        let updatedDirectoryIdentities = Dictionary(
+            uniqueKeysWithValues: updatedDirectories.map {
+                ($0, fileIdentity(for: $0))
+            }
+        )
+        var stagedFiles: [URL: Int32] = [:]
+        var stagedDirectories: [URL: Int32] = [:]
+
+        do {
+            for file in updatedFiles
+            where updatedIdentities[file]?.exists == true {
+                let sourceIsCurrent = fileSources[file] != nil
+                    && knownIdentity[file] == updatedIdentities[file]
+                guard !sourceIsCurrent,
+                      let descriptor = try openDescriptor(for: file)
+                else { continue }
+                stagedFiles[file] = descriptor
+            }
+            for directory in updatedDirectories {
+                let sourceIsCurrent = directorySources[directory] != nil
+                    && knownDirectoryIdentity[directory]
+                        == updatedDirectoryIdentities[directory]
+                guard !sourceIsCurrent,
+                      let descriptor = try openDescriptor(for: directory)
+                else { continue }
+                stagedDirectories[directory] = descriptor
+            }
+        } catch {
+            if keepStagedSourcesOnFailure {
+                applyStagedSourcesLocked(
+                    files: updatedFiles,
+                    identities: updatedIdentities,
+                    directories: updatedDirectories,
+                    directoryIdentities: updatedDirectoryIdentities,
+                    stagedFiles: stagedFiles,
+                    stagedDirectories: stagedDirectories
+                )
+            } else {
+                stagedFiles.values.forEach { close($0) }
+                stagedDirectories.values.forEach { close($0) }
+            }
+            throw error
         }
 
+        applyStagedSourcesLocked(
+            files: updatedFiles,
+            identities: updatedIdentities,
+            directories: updatedDirectories,
+            directoryIdentities: updatedDirectoryIdentities,
+            stagedFiles: stagedFiles,
+            stagedDirectories: stagedDirectories
+        )
+
+        if recheckAfterInstall {
+            let changedDuringInstall = updatedFiles.contains {
+                fileIdentity(for: $0) != updatedIdentities[$0]
+            }
+            if changedDuringInstall {
+                try reconfigureSourcesLocked(
+                    to: updatedFiles,
+                    recheckAfterInstall: false
+                )
+            }
+        }
+    }
+
+    private func sourcesAreCurrentLocked(
+        for files: Set<URL>
+    ) -> Bool {
+        let identities = Dictionary(
+            uniqueKeysWithValues: files.map {
+                ($0, fileIdentity(for: $0))
+            }
+        )
+        guard knownIdentity == identities else { return false }
+        for (file, identity) in identities
+        where identity.exists && fileSources[file] == nil {
+            return false
+        }
+
+        let directories = watchedDirectories(for: files)
+        for directory in directories {
+            guard directorySources[directory] != nil,
+                  knownDirectoryIdentity[directory]
+                    == fileIdentity(for: directory)
+            else { return false }
+        }
+        return true
+    }
+
+    private func applyStagedSourcesLocked(
+        files: Set<URL>,
+        identities: [URL: FileIdentity],
+        directories: Set<URL>,
+        directoryIdentities: [URL: FileIdentity],
+        stagedFiles: [URL: Int32],
+        stagedDirectories: [URL: Int32]
+    ) {
+        let retainExtraDirectories = identities.values.contains {
+            !$0.exists
+        }
+        for file in Set(fileSources.keys) {
+            let shouldRemove = !files.contains(file)
+                || knownIdentity[file] != identities[file]
+            guard shouldRemove else { continue }
+            fileSources[file]?.cancel()
+            fileSources[file] = nil
+        }
         for directory in Set(directorySources.keys) {
-            let isNoLongerNeeded = !directories.contains(directory)
+            let isNoLongerNeeded = !directories.contains(
+                directory
+            )
             let identityChanged = directories.contains(directory)
                 && knownDirectoryIdentity[directory]
-                    != fileIdentity(for: directory)
+                    != directoryIdentities[directory]
             guard identityChanged
-                || (isNoLongerNeeded && !retainExtraSources)
+                || (
+                    isNoLongerNeeded
+                        && !retainExtraDirectories
+                )
             else { continue }
             directorySources[directory]?.cancel()
             directorySources[directory] = nil
             knownDirectoryIdentity[directory] = nil
         }
 
-        for directory in directories where directorySources[directory] == nil {
-            guard let descriptor = try openDescriptor(for: directory)
-            else { continue }
-            let source = DispatchSource.makeFileSystemObjectSource(
-                fileDescriptor: descriptor,
-                eventMask: [.write, .delete, .rename],
-                queue: queue
+        desiredFiles = files
+        knownIdentity = identities
+
+        for (file, descriptor) in stagedFiles {
+            installFileSourceLocked(
+                for: file,
+                descriptor: descriptor
             )
-            source.setEventHandler { [weak self, weak source] in
-                guard let self, let source,
-                      self.directorySources[directory] === source
-                else { return }
-                self.refreshAfterDirectoryChangeLocked()
-            }
-            source.setCancelHandler { [descriptor] in
-                close(descriptor)
-            }
-            directorySources[directory] = source
-            knownDirectoryIdentity[directory] = fileIdentity(
-                for: directory
+        }
+        for (directory, descriptor) in stagedDirectories {
+            installDirectorySourceLocked(
+                for: directory,
+                descriptor: descriptor,
+                identity: directoryIdentities[directory] ?? .missing
             )
-            source.resume()
         }
     }
 
     private func refreshAfterDirectoryChangeLocked() {
         guard isStarted else { return }
-        var identityChanged = reconcileFileSourcesLocked()
+        let previousIdentity = knownIdentity
         reportingErrors {
-            try rebuildDirectoryWatchesLocked()
+            try reconfigureSourcesLocked(to: desiredFiles)
         }
-        let changedDuringRebind = reconcileFileSourcesLocked()
-        identityChanged = identityChanged || changedDuringRebind
-        if changedDuringRebind {
-            reportingErrors {
-                try rebuildDirectoryWatchesLocked()
-            }
-        }
-        if identityChanged {
+        if previousIdentity != knownIdentity {
             scheduleChangeLocked()
         }
-    }
-
-    private func reconcileFileSourcesLocked() -> Bool {
-        var identityChanged = false
-        for file in desiredFiles {
-            let identity = fileIdentity(for: file)
-            if knownIdentity[file] != identity {
-                fileSources[file]?.cancel()
-                fileSources[file] = nil
-                knownIdentity[file] = identity
-                identityChanged = true
-            }
-            if identity.exists, fileSources[file] == nil {
-                reportingErrors {
-                    try startFileWatchLocked(file)
-                }
-            }
-        }
-        return identityChanged
     }
 
     private func openDescriptor(for url: URL) throws -> Int32? {
@@ -316,8 +412,14 @@ public final class LibghosttyConfigFileMonitor {
     }
 
     func watchedDirectories() -> Set<URL> {
+        watchedDirectories(for: desiredFiles)
+    }
+
+    private func watchedDirectories(
+        for files: Set<URL>
+    ) -> Set<URL> {
         var directories: Set<URL> = []
-        for desiredFile in desiredFiles {
+        for desiredFile in files {
             var pending = [
                 SymlinkCandidate(
                     file: desiredFile,

@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 import GhosttyKit
 import GhosthubWorkspace
@@ -236,6 +237,91 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
         XCTAssertEqual(
             ctx.runtime.configReloadNotice?.kind,
             .error
+        )
+    }
+
+    func testMonitorUpdateFailurePublishesDegradedReload() throws {
+        try skipUnlessLibghosttyReady()
+        let (pipeline, tempRoot) = makeIsolatedPipeline()
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: tempRoot)
+        }
+        try FileManager.default.createDirectory(
+            at: pipeline.paths.configDirectory,
+            withIntermediateDirectories: true
+        )
+        try "font-size = 13\n".write(
+            to: pipeline.paths.globalConfigFile,
+            atomically: true,
+            encoding: .utf8
+        )
+        var blockedPath: String?
+        let runtime = LibghosttyRuntime(
+            pipeline: pipeline,
+            configMonitorFactory: { request in
+                LibghosttyConfigFileMonitor(
+                    fileURLs: request.files,
+                    queue: DispatchQueue(
+                        label: "com.ghosthub.terminal.config-monitor-test"
+                    ),
+                    debounceInterval: .milliseconds(25),
+                    requiringExistingFiles: false,
+                    openHandler: { path, flags in
+                        guard path == blockedPath else {
+                            return open(path, flags)
+                        }
+                        errno = EMFILE
+                        return -1
+                    },
+                    errorHandler: request.errorHandler,
+                    changeHandler: request.changeHandler
+                )
+            }
+        )
+        let projectRoot = tempRoot.appendingPathComponent(
+            "project",
+            isDirectory: true
+        )
+        let projectConfig = pipeline.paths.projectConfigFile(
+            for: projectRoot
+        )
+        try FileManager.default.createDirectory(
+            at: projectConfig.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try "font-size = 15\n".write(
+            to: projectConfig,
+            atomically: true,
+            encoding: .utf8
+        )
+        blockedPath = projectConfig.path
+
+        let result = runtime.reloadConfig(
+            projectRoot: projectRoot,
+            force: true
+        )
+
+        guard case let .appliedWithWarnings(warnings) = result else {
+            return XCTFail(
+                "Expected degraded monitoring warning, got \(result)"
+            )
+        }
+        XCTAssertEqual(runtime.diagnostics, warnings)
+        XCTAssertTrue(
+            warnings.contains {
+                $0.contains("errno \(EMFILE)")
+            }
+        )
+        XCTAssertEqual(runtime.configReloadNotice?.kind, .error)
+        XCTAssertTrue(
+            runtime.configReloadNotice?.message.contains(
+                "automatic reload monitoring is degraded"
+            ) == true
+        )
+        XCTAssertTrue(
+            runtime.configPlan?.watchedConfigFiles.contains(
+                projectConfig
+            ) == true
         )
     }
 

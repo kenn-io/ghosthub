@@ -113,6 +113,129 @@ struct LibghosttyConfigFileMonitorTests {
         #expect(changed.wait(timeout: .now() + 2) == .success)
     }
 
+    @Test("unchanged update retries a degraded watch graph")
+    func unchangedUpdateRetriesMissingSources() throws {
+        let fixture = try TemporaryConfigMonitorFixture.create()
+        try fixture.writeConfig("font-size = 13\n")
+        let blockedDirectory = fixture.tempDirectory.standardizedFileURL
+        var blocksDirectory = true
+        let changed = DispatchSemaphore(value: 0)
+        let monitor = LibghosttyConfigFileMonitor(
+            fileURLs: [fixture.configFile],
+            queue: DispatchQueue(
+                label: "com.ghosthub.terminal.config-monitor-test"
+            ),
+            debounceInterval: .milliseconds(25),
+            requiringExistingFiles: false,
+            openHandler: { path, flags in
+                guard blocksDirectory,
+                      path == blockedDirectory.path
+                else {
+                    return open(path, flags)
+                }
+                errno = EMFILE
+                return -1
+            }
+        ) {
+            changed.signal()
+        }
+        defer { monitor.stop() }
+        expectThrowsEqual(
+            LibghosttyConfigFileMonitorError.openFile(
+                blockedDirectory, EMFILE
+            )
+        ) {
+            try monitor.start()
+        }
+
+        blocksDirectory = false
+        try monitor.update(fileURLs: [fixture.configFile])
+        try FileManager.default.removeItem(at: fixture.configFile)
+        #expect(changed.wait(timeout: .now() + 2) == .success)
+        while changed.wait(timeout: .now()) == .success {}
+
+        try fixture.writeConfig("font-size = 14\n")
+        #expect(changed.wait(timeout: .now() + 2) == .success)
+    }
+
+    @Test("unchanged graph updates do not reopen descriptors")
+    func unchangedGraphUpdateIsNoOp() throws {
+        let fixture = try TemporaryConfigMonitorFixture.create()
+        try fixture.writeConfig("font-size = 13\n")
+        var openCount = 0
+        let monitor = LibghosttyConfigFileMonitor(
+            fileURLs: [fixture.configFile],
+            queue: DispatchQueue(
+                label: "com.ghosthub.terminal.config-monitor-test"
+            ),
+            debounceInterval: .milliseconds(25),
+            requiringExistingFiles: false,
+            openHandler: { path, flags in
+                openCount += 1
+                return open(path, flags)
+            },
+            changeHandler: {}
+        )
+        try monitor.start()
+        defer { monitor.stop() }
+        let startOpenCount = openCount
+
+        try monitor.update(fileURLs: [fixture.configFile])
+
+        #expect(openCount == startOpenCount)
+    }
+
+    @Test("failed graph replacement retains the previous watch graph")
+    func failedGraphReplacementRetainsExistingSources() throws {
+        let fixture = try TemporaryConfigMonitorFixture.create()
+        let replacement = fixture.tempDirectory
+            .appendingPathComponent("replacement.conf")
+        try fixture.writeConfig("font-size = 13\n")
+        try fixture.writeConfig("font-size = 14\n", to: replacement)
+        var blockedPath: String?
+        let changed = DispatchSemaphore(value: 0)
+        let monitor = LibghosttyConfigFileMonitor(
+            fileURLs: [fixture.configFile],
+            queue: DispatchQueue(
+                label: "com.ghosthub.terminal.config-monitor-test"
+            ),
+            debounceInterval: .milliseconds(25),
+            requiringExistingFiles: false,
+            openHandler: { path, flags in
+                guard path == blockedPath else {
+                    return open(path, flags)
+                }
+                errno = EMFILE
+                return -1
+            }
+        ) {
+            changed.signal()
+        }
+        try monitor.start()
+        defer { monitor.stop() }
+
+        blockedPath = replacement.path
+        expectThrowsEqual(
+            LibghosttyConfigFileMonitorError.openFile(
+                replacement, EMFILE
+            )
+        ) {
+            try monitor.update(fileURLs: [replacement])
+        }
+
+        try fixture.writeConfig("font-size = 15\n")
+        #expect(changed.wait(timeout: .now() + 2) == .success)
+
+        blockedPath = nil
+        try monitor.update(fileURLs: [replacement])
+        try fixture.writeConfig("font-size = 16\n")
+        #expect(
+            changed.wait(timeout: .now() + 0.25) == .timedOut
+        )
+        try fixture.writeConfig("font-size = 17\n", to: replacement)
+        #expect(changed.wait(timeout: .now() + 2) == .success)
+    }
+
     @Test("monitor reattaches after delete and recreate")
     func monitorReattachesAfterFileIsDeletedAndRecreatedLater()
         throws {

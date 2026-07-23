@@ -8,6 +8,16 @@ import UniformTypeIdentifiers
 
 @MainActor
 public final class LibghosttyRuntime: ObservableObject {
+    struct ConfigMonitorRequest {
+        let files: [URL]
+        let errorHandler: LibghosttyConfigFileMonitor.ErrorHandler
+        let changeHandler: LibghosttyConfigFileMonitor.ChangeHandler
+    }
+
+    typealias ConfigMonitorFactory = (
+        ConfigMonitorRequest
+    ) -> LibghosttyConfigFileMonitor
+
     struct ClipboardWriteEntry: Equatable {
         let mime: String
         let data: String
@@ -34,6 +44,7 @@ public final class LibghosttyRuntime: ObservableObject {
     public let renderTracker = SurfaceRenderTracker()
 
     private let pipeline: LibghosttyConfigPipeline
+    private let configMonitorFactory: ConfigMonitorFactory
     private nonisolated(unsafe) var appHandle: ghostty_app_t?
     private nonisolated(unsafe) var configHandle: ghostty_config_t?
     private var activeConfigRoot: URL?
@@ -58,11 +69,30 @@ public final class LibghosttyRuntime: ObservableObject {
         configHandle
     }
 
-    public init(
+    public convenience init(
         pipeline: LibghosttyConfigPipeline = .live,
         runtimeState: LibghosttyRuntimeState? = nil
     ) {
+        self.init(
+            pipeline: pipeline,
+            runtimeState: runtimeState,
+            configMonitorFactory: { request in
+                LibghosttyConfigFileMonitor(
+                    fileURLs: request.files,
+                    errorHandler: request.errorHandler,
+                    changeHandler: request.changeHandler
+                )
+            }
+        )
+    }
+
+    init(
+        pipeline: LibghosttyConfigPipeline,
+        runtimeState: LibghosttyRuntimeState? = nil,
+        configMonitorFactory: @escaping ConfigMonitorFactory
+    ) {
         self.pipeline = pipeline
+        self.configMonitorFactory = configMonitorFactory
         self.runtimeState = runtimeState ?? LibghosttyRuntimeState()
         bootstrapStatus = .ready()
         phase = .loadingConfig
@@ -138,14 +168,23 @@ public final class LibghosttyRuntime: ObservableObject {
             let plan = try pipeline.loadPlan(projectRoot: projectRoot)
             let config = try loadConfig(plan: plan)
             let candidateDiagnostics = readDiagnostics(from: config)
-            updateConfigMonitor(for: plan)
+            let monitorFailure: String?
+            do {
+                try updateConfigMonitor(for: plan)
+                monitorFailure = nil
+            } catch {
+                monitorFailure = error.localizedDescription
+            }
 
             guard candidateDiagnostics.isEmpty else {
                 ghostty_config_free(config)
                 diagnostics = candidateDiagnostics
+                if let monitorFailure {
+                    diagnostics.append(monitorFailure)
+                }
                 phase = .ready
-                publishReloadFailure(candidateDiagnostics)
-                return .rejected(candidateDiagnostics)
+                publishReloadFailure(diagnostics)
+                return .rejected(diagnostics)
             }
 
             if let target,
@@ -158,8 +197,13 @@ public final class LibghosttyRuntime: ObservableObject {
                 replaceConfigHandle(with: config)
             }
             configPlan = plan
-            diagnostics = []
             phase = .ready
+            if let monitorFailure {
+                diagnostics = [monitorFailure]
+                publishMonitorFailure(monitorFailure)
+                return .appliedWithWarnings(diagnostics)
+            }
+            diagnostics = []
             if notifyOnSuccess {
                 configReloadNotice = LibghosttyConfigReloadNotice(
                     kind: .success,
@@ -321,23 +365,7 @@ public final class LibghosttyRuntime: ObservableObject {
         plan: LibghosttyConfigLoadPlan
     ) {
         guard configMonitor == nil else { return }
-
-        let monitor = LibghosttyConfigFileMonitor(
-            fileURLs: plan.watchedConfigFiles,
-            errorHandler: { [weak self] error in
-                Task { @MainActor in
-                    self?.diagnostics.append(error.localizedDescription)
-                }
-            }
-        ) { [weak self] in
-                guard let self else { return }
-                Task { @MainActor in
-                    self.reloadActiveConfig(
-                        force: true,
-                        notifyOnSuccess: true
-                    )
-                }
-            }
+        let monitor = makeConfigMonitor(for: plan)
 
         do {
             try monitor.start()
@@ -350,18 +378,48 @@ public final class LibghosttyRuntime: ObservableObject {
 
     private func updateConfigMonitor(
         for plan: LibghosttyConfigLoadPlan
-    ) {
-        guard let configMonitor else {
-            installConfigMonitorIfNeeded(plan: plan)
-            return
-        }
-        do {
+    ) throws {
+        if let configMonitor {
             try configMonitor.update(
                 fileURLs: plan.watchedConfigFiles
             )
-        } catch {
-            diagnostics.append(error.localizedDescription)
+            return
         }
+
+        let monitor = makeConfigMonitor(for: plan)
+        do {
+            try monitor.start()
+            configMonitor = monitor
+        } catch {
+            configMonitor = monitor
+            throw error
+        }
+    }
+
+    private func makeConfigMonitor(
+        for plan: LibghosttyConfigLoadPlan
+    ) -> LibghosttyConfigFileMonitor {
+        configMonitorFactory(
+            ConfigMonitorRequest(
+                files: plan.watchedConfigFiles,
+                errorHandler: { [weak self] error in
+                    Task { @MainActor in
+                        self?.diagnostics.append(
+                            error.localizedDescription
+                        )
+                    }
+                },
+                changeHandler: { [weak self] in
+                    guard let self else { return }
+                    Task { @MainActor in
+                        self.reloadActiveConfig(
+                            force: true,
+                            notifyOnSuccess: true
+                        )
+                    }
+                }
+            )
+        )
     }
 
     private func publishReloadFailure(_ messages: [String]) {
@@ -373,6 +431,16 @@ public final class LibghosttyRuntime: ObservableObject {
         configReloadNotice = LibghosttyConfigReloadNotice(
             kind: .error,
             message: "Configuration not reloaded: \(first)\(suffix)"
+        )
+    }
+
+    private func publishMonitorFailure(_ message: String) {
+        configReloadNotice = LibghosttyConfigReloadNotice(
+            kind: .error,
+            message: """
+            Terminal configuration reloaded, but automatic reload monitoring \
+            is degraded: \(message)
+            """
         )
     }
 

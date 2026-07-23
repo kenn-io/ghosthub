@@ -3,6 +3,7 @@ import Foundation
 public enum LibghosttyConfigReloadResult: Equatable, Sendable {
     case unchanged
     case applied
+    case appliedWithWarnings([String])
     case rejected([String])
     case failed(String)
 }
