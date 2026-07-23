@@ -63,8 +63,10 @@ the user did not enable. In particular, remote surfaces never service OSC 52
 clipboard reads or writes, regardless of the `clipboard-read` or
 `clipboard-write` values in the user's Ghostty-format configuration. The
 generic Ghostty clipboard callback receives no local clipboard data for a
-remote surface. A locally generated explicit paste action reads the pasteboard
-and sends that value through Ghostty's paste encoder; selecting Copy may
+remote surface. A locally generated explicit paste action grants one
+synchronous clipboard read while invoking Ghostty's semantic paste state
+machine. Bracketed-paste framing remains authoritative, and unsafe unbracketed
+text requires user confirmation before reaching the PTY. Selecting Copy may
 similarly write the user's chosen terminal selection. Those intentional
 interactions necessarily disclose their selected contents to the attached
 pane.
@@ -87,13 +89,14 @@ state is outside the security model.
 Names in the user's shared tmux server are identifiers, not credentials.
 Ghosthub attaches to the exact session name reported by kwt or selected from
 direct discovery. When the user explicitly requests a new named session,
-Ghosthub may run one local or remote create-if-absent phase using `has-session`
-and detached `new-session`. The name is validated as a single command argument
-and the selected host identity is fixed before launch. Remote creation
-authority is one-shot: after it succeeds, transport recovery can only rerun
-`attach-session`. Existing same-named sessions are attached without modifying
-their panes or windows. Creation never grants authority to kill, rename,
-split, resize, or otherwise structurally mutate sessions.
+Ghosthub may run one create-or-attach phase. Local creation uses an atomic
+`new-session -A` client invocation; remote creation uses `has-session` and
+detached `new-session` before attachment. The name is validated as a single
+command argument and the selected host identity is fixed before launch.
+Remote creation authority is one-shot: after it succeeds, transport recovery
+can only rerun `attach-session`. Existing same-named sessions are attached
+without modifying their panes or windows. Creation never grants authority to
+kill, rename, split, resize, or otherwise structurally mutate sessions.
 
 Attachment may reset a small, documented set of session-scoped tmux visual
 styles so status and message chrome use Ghosthub's terminal colors. This

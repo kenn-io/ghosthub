@@ -50,14 +50,16 @@ status and message areas without introducing a second fixed palette. These
 best-effort style commands do not change tmux interaction: prefix and key
 tables, mouse behavior, windows, panes, history, and layout remain untouched.
 
-For explicit local and remote creation, Ghosthub performs a one-shot
-`has-session`/detached `new-session` phase before ordinary attachment. The
-remote process then enters the attach-only SSH reconnect loop, so a later
+Explicit local creation uses one atomic `new-session -A` create-or-attach
+client invocation. This closes the detached-session race when the user's tmux
+server has `destroy-unattached` enabled. Explicit remote creation performs a
+one-shot `has-session`/detached `new-session` phase before ordinary attachment.
+The remote process then enters the attach-only SSH reconnect loop, so a later
 transport reconnect can never rerun creation. The session name is validated
 before launch and passed as one shell-quoted argument. If the exact name
-already exists, it is attached without creating or structurally changing
-panes or windows. Ordinary kwt worktree and discovered-session opens always
-use `attach-session`; explicit named creation is the only exception to the
+already exists, it is attached without creating or structurally changing panes
+or windows. Ordinary kwt worktree and discovered-session opens always use
+`attach-session`; explicit named creation is the only exception to the
 otherwise presentation-only boundary. Ghosthub does not expose rename, split,
 resize, window, pane, or kill operations.
 
@@ -89,8 +91,10 @@ connectivity returns, the client reattaches to the same exact session and tmux
 renders its authoritative state. Remote terminal surfaces cannot read the
 local Mac clipboard through terminal escape sequences, regardless of the
 user's `clipboard-read` or `clipboard-write` configuration. Explicit
-Command-V reads the pasteboard only from the locally generated shortcut and
-sends it directly through Ghostty's normal paste encoder.
+Command-V gives Ghostty one synchronous, locally initiated clipboard-read
+authorization and invokes Ghostty's normal paste action. Ghostty retains
+bracketed-paste framing and requires confirmation before unsafe unbracketed
+text can reach the PTY.
 
 ## Inventory and Startup
 

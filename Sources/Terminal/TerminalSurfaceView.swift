@@ -59,6 +59,14 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
         surface, width, height in
         ghostty_surface_set_size(surface, width, height)
     }
+    typealias ClipboardConfirmationPresenter = (
+        _ view: TerminalSurfaceView,
+        _ contents: String,
+        _ request: ghostty_clipboard_request_e,
+        _ completion: @escaping (Bool) -> Void
+    ) -> Void
+    static var clipboardConfirmationPresenter:
+        ClipboardConfirmationPresenter?
 
     private final class WeakSurfaceReference {
         weak var view: TerminalSurfaceView?
@@ -154,10 +162,16 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     /// the pane application's bracketed-paste mode.
     public var tmuxPanePasteSink: ((Data) -> Void)?
     /// Remote tmux surfaces must not read from or write to the local Mac
-    /// clipboard through terminal escape sequences. Explicit user paste is
-    /// routed directly through Ghostty's paste encoder so Cmd-V remains
-    /// available without exposing the pasteboard to OSC 52.
+    /// clipboard through terminal escape sequences. Explicit user paste
+    /// invokes Ghostty's semantic paste action under a one-shot local
+    /// authorization so Cmd-V remains available without exposing the
+    /// pasteboard to OSC 52.
     public var blocksClipboardAccess = false
+    private var explicitClipboardReadDepth = 0
+    private var isClipboardConfirmationPending = false
+    var allowsExplicitClipboardRead: Bool {
+        explicitClipboardReadDepth > 0
+    }
     private var tmuxTerminalModeTracker = AttachedTmuxTerminalModeTracker()
     /// The surface's grid dimensions (columns, rows) changed. Task-8 addition:
     /// control mode uses this to feed pane resizes back to tmux (per-pane
@@ -1230,24 +1244,16 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     ) -> Bool {
         guard let surface else { return false }
 
-        // Remote surfaces receive an empty value from Ghostty's generic
-        // clipboard callback regardless of `clipboard-read` config. Handle
-        // the locally generated paste shortcut here so user intent, rather
-        // than a terminal escape sequence, is the only path that reads the
-        // Mac pasteboard. ghostty_surface_text applies Ghostty's normal
-        // bracketed-paste and newline encoding.
+        // Remote surfaces normally receive an empty value from Ghostty's
+        // generic clipboard callback regardless of `clipboard-read` config.
+        // Invoke Ghostty's real paste action inside a synchronous one-shot
+        // authorization so only this locally generated shortcut may read the
+        // pasteboard. This preserves Ghostty's unsafe-paste confirmation and
+        // bracketed-paste framing without making OSC 52 eligible.
         if blocksClipboardAccess,
            action != GHOSTTY_ACTION_RELEASE,
            isPasteShortcut(event),
-           let data = Self.explicitPasteData(from: .general) {
-            data.withUnsafeBytes { bytes in
-                guard let baseAddress = bytes.baseAddress else { return }
-                ghostty_surface_text(
-                    surface,
-                    baseAddress.assumingMemoryBound(to: CChar.self),
-                    UInt(data.count)
-                )
-            }
+           performExplicitClipboardPaste(on: surface) {
             return true
         }
 
@@ -1469,6 +1475,68 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
             && !flags.contains(.option)
             && !flags.contains(.control)
             && event.charactersIgnoringModifiers?.lowercased() == "v"
+    }
+
+    private func performExplicitClipboardPaste(
+        on surface: ghostty_surface_t
+    ) -> Bool {
+        explicitClipboardReadDepth += 1
+        defer { explicitClipboardReadDepth -= 1 }
+
+        let action = "paste_from_clipboard"
+        return action.withCString { pointer in
+            ghostty_surface_binding_action(
+                surface,
+                pointer,
+                UInt(action.lengthOfBytes(using: .utf8))
+            )
+        }
+    }
+
+    func requestClipboardConfirmation(
+        contents: String,
+        request: ghostty_clipboard_request_e,
+        completion: @escaping (Bool) -> Void
+    ) {
+        guard !isClipboardConfirmationPending else {
+            completion(false)
+            return
+        }
+        isClipboardConfirmationPending = true
+        let finish: (Bool) -> Void = { [self] approved in
+            isClipboardConfirmationPending = false
+            completion(approved)
+        }
+
+        if let presenter = Self.clipboardConfirmationPresenter {
+            presenter(self, contents, request, finish)
+            return
+        }
+
+        let isPaste = request == GHOSTTY_CLIPBOARD_REQUEST_PASTE
+        let alert = NSAlert()
+        alert.messageText = isPaste
+            ? "Paste potentially unsafe text?"
+            : "Allow terminal clipboard access?"
+        alert.informativeText = isPaste
+            ? "This text contains line breaks or control sequences and may execute commands immediately."
+            : "A terminal process requested the contents of the Mac clipboard."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: isPaste ? "Paste" : "Allow")
+        alert.addButton(withTitle: isPaste ? "Cancel" : "Deny")
+
+        let handleResponse: (NSApplication.ModalResponse) -> Void = {
+            response in
+            finish(response == .alertFirstButtonReturn)
+        }
+        if let window {
+            alert.beginSheetModal(
+                for: window,
+                completionHandler: handleResponse
+            )
+        } else {
+            handleResponse(alert.runModal())
+        }
     }
 
     /// Diverges from fantastty: fantastty reads the pasteboard through its

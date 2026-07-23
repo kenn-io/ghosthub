@@ -67,6 +67,37 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         )
     }
 
+    private func makeBracketedPasteProbeScript(
+        readBytes: Int
+    ) -> URL {
+        makeExecutableScript(
+            """
+            #!/usr/bin/env python3
+            import os
+            import sys
+            import termios
+            import tty
+
+            fd = sys.stdin.fileno()
+            old = termios.tcgetattr(fd)
+            os.write(sys.stdout.fileno(), b"\\x1b[?2004h")
+            print("<READY>", flush=True)
+            try:
+                tty.setraw(fd)
+                data = bytearray()
+                while len(data) < \(readBytes):
+                    chunk = os.read(fd, \(readBytes) - len(data))
+                    if not chunk:
+                        break
+                    data.extend(chunk)
+                print(f"<RAW:{data.hex()}>", flush=True)
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+                os.write(sys.stdout.fileno(), b"\\x1b[?2004l")
+            """
+        )
+    }
+
     private func makeOSC52ReadProbeScript() -> URL {
         makeExecutableScript(
             """
@@ -2153,7 +2184,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         )
     }
 
-    func testCmdVPastesIntoClipboardIsolatedNativeTmuxSurface() throws {
+    func testUnsafeCmdVRequiresConfirmationBeforeRemotePaste() throws {
         let runtime = try runtimeWithClipboardReadsAllowed()
         let appHandle = try requireAppHandle(from: runtime)
         let pastedText = "remote-paste\n"
@@ -2172,6 +2203,101 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             )
         )
         view.blocksClipboardAccess = true
+        let previousPresenter =
+            TerminalSurfaceView.clipboardConfirmationPresenter
+        var confirmation: ((Bool) -> Void)?
+        var confirmationContents: String?
+        var confirmationRequest: ghostty_clipboard_request_e?
+        TerminalSurfaceView.clipboardConfirmationPresenter = {
+            _, contents, request, completion in
+            confirmationContents = contents
+            confirmationRequest = request
+            confirmation = completion
+        }
+        defer {
+            TerminalSurfaceView.clipboardConfirmationPresenter =
+                previousPresenter
+        }
+        let window = hostInWindow(view)
+        waitUntil(timeout: 5.0) { view.error == nil }
+        waitForProbeReady(in: view)
+
+        let pasteboard = NSPasteboard.general
+        let priorContents = pasteboard.string(forType: .string)
+        pasteboard.clearContents()
+        pasteboard.setString(pastedText, forType: .string)
+        defer {
+            pasteboard.clearContents()
+            if let priorContents {
+                pasteboard.setString(priorContents, forType: .string)
+            }
+        }
+
+        dispatch(
+            makeKeyEvent(
+                characters: "v",
+                charactersIgnoringModifiers: "v",
+                modifiers: [.command],
+                keyCode: 9,
+                windowNumber: window.windowNumber
+            ),
+            to: window,
+            route: .application
+        )
+
+        waitUntil(timeout: 2.0) { confirmation != nil }
+        XCTAssertEqual(confirmationContents, pastedText)
+        XCTAssertEqual(
+            confirmationRequest,
+            GHOSTTY_CLIPBOARD_REQUEST_PASTE
+        )
+        XCTAssertFalse(
+            readViewportText(from: view).contains("<RAW:"),
+            "Unsafe multiline paste must not reach the PTY before approval."
+        )
+
+        confirmation?(true)
+        waitForViewportText("<RAW:\(expectedRaw)>", in: view)
+        let contents = readViewportText(from: view)
+        XCTAssertTrue(
+            contents.contains("<RAW:\(expectedRaw)>"),
+            "Approved Cmd-V must paste through a remote native tmux surface."
+                + " Contents: \(contents)"
+        )
+    }
+
+    func testCmdVPreservesBracketedPasteFramingOnRemoteSurface() throws {
+        let runtime = try runtimeWithClipboardReadsAllowed()
+        let appHandle = try requireAppHandle(from: runtime)
+        let pastedText = "first\nsecond"
+        let expectedData = Data(
+            "\u{1b}[200~\(pastedText)\u{1b}[201~".utf8
+        )
+        let expectedRaw = expectedData
+            .map { String(format: "%02x", $0) }
+            .joined()
+        let scriptURL = makeBracketedPasteProbeScript(
+            readBytes: expectedData.count
+        )
+        let view = TerminalSurfaceView(
+            app: appHandle,
+            configuration: TerminalSurfaceConfiguration(
+                command: "python3 '\(scriptURL.path)'"
+            )
+        )
+        view.blocksClipboardAccess = true
+
+        let previousPresenter =
+            TerminalSurfaceView.clipboardConfirmationPresenter
+        var confirmationRequests = 0
+        TerminalSurfaceView.clipboardConfirmationPresenter = {
+            _, _, _, _ in confirmationRequests += 1
+        }
+        defer {
+            TerminalSurfaceView.clipboardConfirmationPresenter =
+                previousPresenter
+        }
+
         let window = hostInWindow(view)
         waitUntil(timeout: 5.0) { view.error == nil }
         waitForProbeReady(in: view)
@@ -2200,11 +2326,10 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         )
 
         waitForViewportText("<RAW:\(expectedRaw)>", in: view)
-        let contents = readViewportText(from: view)
+        XCTAssertEqual(confirmationRequests, 0)
         XCTAssertTrue(
-            contents.contains("<RAW:\(expectedRaw)>"),
-            "Explicit Cmd-V must paste through a remote native tmux surface."
-                + " Contents: \(contents)"
+            readViewportText(from: view).contains("<RAW:\(expectedRaw)>"),
+            "Cmd-V must retain Ghostty's bracketed-paste fenceposts."
         )
     }
 

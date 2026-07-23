@@ -116,9 +116,11 @@ not modify its prefix, key tables, mouse mode, window/pane commands, history,
 or layout.
 
 An explicit New Tmux Session action is the sole session-creation boundary.
-For a user-supplied exact name, local and remote presentation perform one
-idempotent, detached create-if-absent phase before ordinary attachment. Remote
-presentation then permanently enters the attach-only SSH reconnect loop.
+For a user-supplied exact name, local presentation uses one atomic
+`new-session -A` create-or-attach invocation so `destroy-unattached` cannot
+remove a newly created session before the client arrives. Remote presentation
+performs one idempotent, detached create-if-absent phase before ordinary
+attachment, then permanently enters the attach-only SSH reconnect loop.
 Ordinary worktree and discovered-session navigation is attach-only. Existing
 same-named sessions are attached without changing their windows or panes.
 

@@ -114,8 +114,8 @@ struct TmuxAttachmentInfoTests {
         #expect(command.contains("'ProxyJump=none'"))
     }
 
-    @Test("explicit named creation uses create-or-attach mode")
-    func explicitCreateOrAttachCommand() {
+    @Test("local creation atomically attaches under destroy-unattached")
+    func localCreationIsAtomic() {
         let info = TmuxAttachmentInfo(
             sessionName: "release-work",
             host: .local,
@@ -127,11 +127,15 @@ struct TmuxAttachmentInfoTests {
         )
 
         #expect(command.contains("new-session"))
-        #expect(command.contains("'-d'"))
+        #expect(command.contains("'-A'"))
         #expect(command.contains("'-E'"))
         #expect(command.contains("release-work"))
-        #expect(command.contains("attach-session"))
         #expect(command.contains("status-style"))
+        #expect(!command.contains("'-d'"))
+        #expect(!command.contains("attach-session"))
+        #expect(
+            command.components(separatedBy: "new-session").count == 2
+        )
     }
 
     @Test("remote named creation becomes attach-only after one create phase")

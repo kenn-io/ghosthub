@@ -132,20 +132,68 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         var commands = ["unset TMUX TMUX_PANE"]
         switch launchMode {
         case .attach:
-            break
+            commands.append(presentationSetupCommand(tmuxPath: tmuxPath))
+            commands.append("exec \(attach)")
         case .create:
-            commands.append(
-                createIfAbsentCommand(
-                    tmuxPath: tmuxPath,
-                    workingDirectory: workingDirectory
-                )
+            let createAndAttach = localCreateAndAttachCommand(
+                tmuxPath: tmuxPath,
+                workingDirectory: workingDirectory
             )
+            commands.append("exec \(createAndAttach)")
         }
-        commands.append(presentationSetupCommand(tmuxPath: tmuxPath))
-        commands.append("exec \(attach)")
         return shellCommand([
             "/bin/sh", "-c", commands.joined(separator: "; "),
         ])
+    }
+
+    /// A single tmux client invocation atomically creates or attaches the
+    /// local session. Keeping new-session and attachment together prevents a
+    /// server with destroy-unattached enabled from removing a detached
+    /// session in the gap before Ghosthub attaches.
+    private func localCreateAndAttachCommand(
+        tmuxPath: String,
+        workingDirectory: String?
+    ) -> String {
+        var arguments = [
+            tmuxPath, "new-session", "-A", "-E", "-s", sessionName,
+        ] + (workingDirectory.map { ["-c", $0] } ?? [])
+        for (option, value) in presentationOptions {
+            arguments += [
+                ";", "set-option", "-t",
+                presentationTarget, option, value,
+            ]
+        }
+        return arguments
+            .map(shellQuotedCommandArgument)
+            .joined(separator: " ")
+    }
+
+    private var presentationTarget: String {
+        // set-option parses a bare session name as a prefix target. The
+        // trailing colon makes tmux interpret `=name:` as an exact session
+        // target, so a disappeared "alpha" cannot style "alphabet".
+        "=\(sessionName):"
+    }
+
+    private var presentationOptions: [(String, String)] {
+        [
+            ("status-style", "reverse"),
+            ("message-style", "reverse"),
+            ("message-command-style", "reverse"),
+        ]
+    }
+
+    /// Tmux behavior remains user-owned. These session-scoped style resets
+    /// only make tmux chrome resolve through the foreground and background
+    /// configured by Ghosthub.
+    private func presentationSetupCommand(tmuxPath: String) -> String {
+        presentationOptions.map { option, value in
+            let command = [
+                tmuxPath, "set-option", "-t",
+                presentationTarget, option, value,
+            ].map(shellQuotedCommandArgument).joined(separator: " ")
+            return "\(command) >/dev/null 2>&1 || :"
+        }.joined(separator: "; ")
     }
 
     private func remoteAttachCommand(
@@ -218,27 +266,6 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
             .map(shellQuotedCommandArgument).joined(separator: " ")
         return "\(hasSession) 2>/dev/null || "
             + "\(createSession) || \(hasSession)"
-    }
-
-    /// Tmux behavior remains user-owned. These session-scoped style resets
-    /// only make tmux chrome resolve through the foreground and background
-    /// configured by Ghosthub.
-    private func presentationSetupCommand(tmuxPath: String) -> String {
-        // set-option parses a bare session name as a prefix target. The
-        // trailing colon makes tmux interpret `=name:` as an exact session
-        // target, so a disappeared "alpha" cannot style "alphabet".
-        let target = "=\(sessionName):"
-        let options = [
-            ("status-style", "reverse"),
-            ("message-style", "reverse"),
-            ("message-command-style", "reverse"),
-        ]
-        return options.map { option, value in
-            let command = [
-                tmuxPath, "set-option", "-t", target, option, value,
-            ].map(shellQuotedCommandArgument).joined(separator: " ")
-            return "\(command) >/dev/null 2>&1 || :"
-        }.joined(separator: "; ")
     }
 
     private func sshArguments(

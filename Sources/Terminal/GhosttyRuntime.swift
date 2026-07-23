@@ -522,6 +522,8 @@ public final class GhosttyRuntime: ObservableObject {
             // handled directly by TerminalSurfaceView instead.
             let contents = clipboardReadContents(
                 blocked: surfaceView.blocksClipboardAccess,
+                explicitlyAuthorized:
+                surfaceView.allowsExplicitClipboardRead,
                 contents: NSPasteboard.general.string(forType: .string)
             )
             contents.withCString { ptr in
@@ -559,11 +561,19 @@ public final class GhosttyRuntime: ObservableObject {
                 return
             }
             guard let stringValue else { return }
-
-            stringValue.withCString { buffer in
-                ghostty_surface_complete_clipboard_request(
-                    surfaceHandle, buffer, requestState, true
-                )
+            surfaceView.requestClipboardConfirmation(
+                contents: stringValue,
+                request: request
+            ) { [surfaceView] approved in
+                guard let surfaceHandle = surfaceView.surfaceHandle else {
+                    return
+                }
+                let result = approved ? stringValue : ""
+                result.withCString { buffer in
+                    ghostty_surface_complete_clipboard_request(
+                        surfaceHandle, buffer, requestState, true
+                    )
+                }
             }
         }
     }
@@ -617,12 +627,13 @@ public final class GhosttyRuntime: ObservableObject {
 
     static func clipboardReadContents(
         blocked: Bool,
+        explicitlyAuthorized: Bool = false,
         contents: @autoclosure () -> String?
     ) -> String {
         // Do not even evaluate the pasteboard read for a remote surface.
         // Supplying an empty value here makes the boundary independent of
         // Ghostty's user-configurable clipboard confirmation policy.
-        guard !blocked else { return "" }
+        guard !blocked || explicitlyAuthorized else { return "" }
         return contents() ?? ""
     }
 

@@ -30,6 +30,17 @@ struct ClipboardAccessPolicyTests {
         #expect(!didReadPasteboard)
     }
 
+    @Test("a one-shot user paste may supply clipboard contents")
+    func explicitPasteMayReadClipboardContents() {
+        #expect(
+            GhosttyRuntime.clipboardReadContents(
+                blocked: true,
+                explicitlyAuthorized: true,
+                contents: "user-selected text"
+            ) == "user-selected text"
+        )
+    }
+
     @Test("remote surfaces allow explicit paste confirmation")
     func blockedSurfaceAllowsPaste() {
         #expect(
