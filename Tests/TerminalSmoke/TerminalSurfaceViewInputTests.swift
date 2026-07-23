@@ -67,6 +67,31 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         )
     }
 
+    private func makeOSC52ReadProbeScript() -> URL {
+        makeExecutableScript(
+            """
+            #!/usr/bin/env python3
+            import os
+            import select
+            import sys
+            import termios
+            import tty
+
+            fd = sys.stdin.fileno()
+            old = termios.tcgetattr(fd)
+            print("<READY>", flush=True)
+            try:
+                tty.setraw(fd)
+                os.write(sys.stdout.fileno(), b"\\x1b]52;c;?\\x07")
+                readable, _, _ = select.select([fd], [], [], 3)
+                data = os.read(fd, 256) if readable else b""
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+            print(f"<OSC52:{data.hex()}>", flush=True)
+            """
+        )
+    }
+
     private func makeEnvironmentProbeScript(_ names: [String]) -> URL {
         let body = names.map { name in
             "print(\(name.debugDescription) + '=' + os.environ.get(\(name.debugDescription), ''))"
@@ -2107,6 +2132,102 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         XCTAssertNil(
             localResult,
             "Cmd-V must still be consumed locally by the terminal when no tmux pane sink is attached."
+        )
+    }
+
+    func testCmdVPastesIntoClipboardIsolatedNativeTmuxSurface() throws {
+        let appHandle = try requireAppHandle()
+        let pastedText = "remote-paste\n"
+        // Ghostty's paste encoder normalizes a line feed to the terminal's
+        // carriage-return input outside bracketed-paste mode.
+        let expectedRaw = Data("remote-paste\r".utf8)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        let scriptURL = makeRawInputProbeScript(
+            readBytes: pastedText.utf8.count
+        )
+        let view = TerminalSurfaceView(
+            app: appHandle,
+            configuration: TerminalSurfaceConfiguration(
+                command: "python3 '\(scriptURL.path)'"
+            )
+        )
+        view.blocksClipboardAccess = true
+        let window = hostInWindow(view)
+        waitUntil(timeout: 5.0) { view.error == nil }
+        waitForProbeReady(in: view)
+
+        let pasteboard = NSPasteboard.general
+        let priorContents = pasteboard.string(forType: .string)
+        pasteboard.clearContents()
+        pasteboard.setString(pastedText, forType: .string)
+        defer {
+            pasteboard.clearContents()
+            if let priorContents {
+                pasteboard.setString(priorContents, forType: .string)
+            }
+        }
+
+        dispatch(
+            makeKeyEvent(
+                characters: "v",
+                charactersIgnoringModifiers: "v",
+                modifiers: [.command],
+                keyCode: 9,
+                windowNumber: window.windowNumber
+            ),
+            to: window,
+            route: .application
+        )
+
+        waitForViewportText("<RAW:\(expectedRaw)>", in: view)
+        let contents = readViewportText(from: view)
+        XCTAssertTrue(
+            contents.contains("<RAW:\(expectedRaw)>"),
+            "Explicit Cmd-V must paste through a remote native tmux surface."
+                + " Contents: \(contents)"
+        )
+    }
+
+    func testClipboardIsolatedSurfaceReturnsNoDataToOSC52Read() throws {
+        let appHandle = try requireAppHandle()
+        let scriptURL = makeOSC52ReadProbeScript()
+        let view = TerminalSurfaceView(
+            app: appHandle,
+            configuration: TerminalSurfaceConfiguration(
+                command: "python3 '\(scriptURL.path)'"
+            )
+        )
+        view.blocksClipboardAccess = true
+
+        let pasteboard = NSPasteboard.general
+        let priorContents = pasteboard.string(forType: .string)
+        pasteboard.clearContents()
+        pasteboard.setString("local-secret", forType: .string)
+        defer {
+            pasteboard.clearContents()
+            if let priorContents {
+                pasteboard.setString(priorContents, forType: .string)
+            }
+        }
+
+        _ = hostInWindow(view)
+        waitUntil(timeout: 5.0) { view.error == nil }
+        waitForProbeReady(in: view)
+        let emptyOSC52Response = "<OSC52:1b5d35323b633b1b5c>"
+        waitForViewportText(emptyOSC52Response, in: view)
+
+        let contents = readViewportText(from: view)
+        XCTAssertTrue(
+            contents.contains(emptyOSC52Response),
+            "Remote OSC 52 reads must receive an empty clipboard response."
+                + " Contents: \(contents)"
+        )
+        XCTAssertFalse(
+            contents.contains(
+                Data("local-secret".utf8).base64EncodedString()
+            ),
+            "Remote OSC 52 reads must never receive local clipboard data."
         )
     }
 

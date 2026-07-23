@@ -153,9 +153,9 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     /// Routes clipboard paste through tmux's paste buffer so tmux can honor
     /// the pane application's bracketed-paste mode.
     public var tmuxPanePasteSink: ((Data) -> Void)?
-    /// Remote control-mode panes must not read from or write to the local Mac
-    /// clipboard through terminal escape sequences. Explicit user paste still
-    /// travels through `tmuxPanePasteSink` and is unaffected by this boundary.
+    /// Remote tmux surfaces must not read from or write to the local Mac
+    /// clipboard through terminal escape sequences. Ghostty identifies an
+    /// explicit user paste separately, so Cmd-V remains available.
     public var blocksClipboardAccess = false
     private var tmuxTerminalModeTracker = AttachedTmuxTerminalModeTracker()
     /// The surface's grid dimensions (columns, rows) changed. Task-8 addition:

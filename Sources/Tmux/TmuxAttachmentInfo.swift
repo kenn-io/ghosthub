@@ -101,14 +101,10 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
     ) -> String {
         switch host {
         case .local:
-            let tmuxArguments = tmuxArguments(
+            return localAttachCommand(
                 tmuxPath: tmuxPath,
                 workingDirectory: workingDirectory
             )
-            return ([
-                "/usr/bin/env", "-u", "TMUX", "-u", "TMUX_PANE",
-            ] + tmuxArguments)
-                .map(shellQuotedCommandArgument).joined(separator: " ")
         case let .ssh(info):
             if launchMode == .create {
                 return remoteCreateThenAttachCommand(
@@ -126,20 +122,30 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         }
     }
 
-    private func tmuxArguments(
+    private func localAttachCommand(
         tmuxPath: String,
         workingDirectory: String?
-    ) -> [String] {
+    ) -> String {
+        let attach = [
+            tmuxPath, "attach-session", "-E", "-t", "=\(sessionName)",
+        ].map(shellQuotedCommandArgument).joined(separator: " ")
+        var commands = ["unset TMUX TMUX_PANE"]
         switch launchMode {
         case .attach:
-            return [
-                tmuxPath, "attach-session", "-E", "-t", "=\(sessionName)",
-            ]
+            break
         case .create:
-            return [
-                tmuxPath, "new-session", "-A", "-E", "-s", sessionName,
-            ] + (workingDirectory.map { ["-c", $0] } ?? [])
+            commands.append(
+                createIfAbsentCommand(
+                    tmuxPath: tmuxPath,
+                    workingDirectory: workingDirectory
+                )
+            )
         }
+        commands.append(presentationSetupCommand(tmuxPath: tmuxPath))
+        commands.append("exec \(attach)")
+        return shellCommand([
+            "/bin/sh", "-c", commands.joined(separator: "; "),
+        ])
     }
 
     private func remoteAttachCommand(
@@ -147,10 +153,14 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         tmuxPath: String,
         sshConnectionArguments: [String]
     ) -> String {
-        let remoteAttach = "unset TMUX TMUX_PANE; exec "
-            + [
-                tmuxPath, "attach-session", "-E", "-t", "=\(sessionName)",
-            ].map(shellQuotedCommandArgument).joined(separator: " ")
+        let attach = [
+            tmuxPath, "attach-session", "-E", "-t", "=\(sessionName)",
+        ].map(shellQuotedCommandArgument).joined(separator: " ")
+        let remoteAttach = [
+            "unset TMUX TMUX_PANE",
+            presentationSetupCommand(tmuxPath: tmuxPath),
+            "exec \(attach)",
+        ].joined(separator: "; ")
         return shellCommand(
             [
                 "/bin/sh", "-c", Self.sshReconnectScript,
@@ -170,17 +180,11 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         workingDirectory: String?,
         sshConnectionArguments: [String]
     ) -> String {
-        let target = "=\(sessionName)"
-        let hasSession = [
-            tmuxPath, "has-session", "-t", target,
-        ].map(shellQuotedCommandArgument).joined(separator: " ")
-        let createSession = ([
-            tmuxPath, "new-session", "-d", "-E", "-s", sessionName,
-        ] + (workingDirectory.map { ["-c", $0] } ?? []))
-            .map(shellQuotedCommandArgument).joined(separator: " ")
         let remoteCreate = "unset TMUX TMUX_PANE; "
-            + "\(hasSession) 2>/dev/null || "
-            + "\(createSession) || \(hasSession)"
+            + createIfAbsentCommand(
+                tmuxPath: tmuxPath,
+                workingDirectory: workingDirectory
+            )
         let createOnce = shellCommand(
             sshArguments(
                 info: info,
@@ -198,6 +202,39 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
             "/bin/sh", "-c", Self.remoteCreateThenAttachScript,
             "ghosthub-ssh-tmux-create-once", createOnce, attach,
         ])
+    }
+
+    private func createIfAbsentCommand(
+        tmuxPath: String,
+        workingDirectory: String?
+    ) -> String {
+        let target = "=\(sessionName)"
+        let hasSession = [
+            tmuxPath, "has-session", "-t", target,
+        ].map(shellQuotedCommandArgument).joined(separator: " ")
+        let createSession = ([
+            tmuxPath, "new-session", "-d", "-E", "-s", sessionName,
+        ] + (workingDirectory.map { ["-c", $0] } ?? []))
+            .map(shellQuotedCommandArgument).joined(separator: " ")
+        return "\(hasSession) 2>/dev/null || "
+            + "\(createSession) || \(hasSession)"
+    }
+
+    /// Tmux behavior remains user-owned. These session-scoped style resets
+    /// only make tmux chrome resolve through the foreground and background
+    /// configured by Ghosthub.
+    private func presentationSetupCommand(tmuxPath: String) -> String {
+        let options = [
+            ("status-style", "default"),
+            ("message-style", "reverse"),
+            ("message-command-style", "reverse"),
+        ]
+        return options.map { option, value in
+            let command = [
+                tmuxPath, "set-option", "-t", sessionName, option, value,
+            ].map(shellQuotedCommandArgument).joined(separator: " ")
+            return "\(command) >/dev/null 2>&1 || :"
+        }.joined(separator: "; ")
     }
 
     private func sshArguments(

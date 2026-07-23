@@ -41,8 +41,12 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(states.filter { $0 == .connected }.count == 1)
 
         let command = try #require(store.requestedConfigurations.last?.command)
-        #expect(command.contains("'new-session' '-A' '-E'"))
-        #expect(command.contains("'-s' 'release-work'"))
+        #expect(command.contains("new-session"))
+        #expect(command.contains("'-d'"))
+        #expect(command.contains("'-E'"))
+        #expect(command.contains("release-work"))
+        #expect(command.contains("attach-session"))
+        #expect(command.contains("status-style"))
     }
 
     @Test("endpoint changes replace provisioning and active handles")

@@ -19,7 +19,7 @@ struct TmuxAttachmentInfoTests {
         #expect(TmuxHost.local.displayName == "localhost")
     }
 
-    @Test("local attachment leaves all rendering to tmux")
+    @Test("local attachment normalizes only tmux presentation styles")
     func localAttachCommand() {
         let info = TmuxAttachmentInfo(
             sessionName: "doc bank's work",
@@ -30,12 +30,21 @@ struct TmuxAttachmentInfoTests {
             tmuxPath: "/Applications/My Tools/tmux"
         )
 
-        #expect(
-            command
-                == "'/usr/bin/env' '-u' 'TMUX' '-u' 'TMUX_PANE' '/Applications/My Tools/tmux' 'attach-session' '-E' '-t' '=doc bank'\\''s work'"
-        )
+        #expect(command.contains("unset TMUX TMUX_PANE"))
+        #expect(command.contains("set-option"))
+        #expect(command.contains("status-style"))
+        #expect(command.contains("message-style"))
+        #expect(command.contains("message-command-style"))
+        #expect(command.contains("default"))
+        #expect(command.contains("reverse"))
+        #expect(command.contains("exec"))
+        #expect(command.contains("attach-session"))
+        #expect(command.contains("=doc bank"))
         #expect(!command.contains("-CC"))
         #expect(!command.contains("capture-pane"))
+        #expect(!command.contains("bind-key"))
+        #expect(!command.contains("unbind-key"))
+        #expect(!command.contains("'mouse'"))
     }
 
     @Test("remote attachment adds keepalives and transport-only retry")
@@ -57,9 +66,14 @@ struct TmuxAttachmentInfoTests {
         #expect(command.contains("'attach-session'"))
         #expect(command.contains("'-E'"))
         #expect(command.contains("=docbank"))
+        #expect(command.contains("status-style"))
+        #expect(command.contains("message-style"))
+        #expect(command.contains("message-command-style"))
         #expect(command.contains("[ \"$status\" -eq 255 ] || exit \"$status\""))
         #expect(!command.contains("-CC"))
         #expect(!command.contains("KexAlgorithms"))
+        #expect(!command.contains("bind-key"))
+        #expect(!command.contains("unbind-key"))
     }
 
     @Test("demo SSH arguments isolate config, trust, and routing")
@@ -101,10 +115,12 @@ struct TmuxAttachmentInfoTests {
             tmuxPath: "/opt/bin/tmux"
         )
 
-        #expect(command.contains("'new-session' '-A' '-E'"))
-        #expect(command.contains("'-s' 'release-work'"))
-        #expect(!command.contains("'-c'"))
-        #expect(!command.contains("attach-session"))
+        #expect(command.contains("new-session"))
+        #expect(command.contains("'-d'"))
+        #expect(command.contains("'-E'"))
+        #expect(command.contains("release-work"))
+        #expect(command.contains("attach-session"))
+        #expect(command.contains("status-style"))
     }
 
     @Test("remote named creation becomes attach-only after one create phase")

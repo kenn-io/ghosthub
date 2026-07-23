@@ -515,8 +515,11 @@ public final class GhosttyRuntime: ObservableObject {
             guard let surfaceHandle = surfaceView.surfaceHandle else { return }
             let requestState = stateValue.flatMap(UnsafeMutableRawPointer.init(bitPattern:))
 
+            // Ghostty identifies the request type only in the confirmation
+            // callback. Stage the clipboard value here, then enforce the
+            // remote-surface boundary once Ghostty distinguishes an explicit
+            // paste from an OSC 52 read.
             let contents = clipboardReadContents(
-                blocked: surfaceView.blocksClipboardAccess,
                 contents: NSPasteboard.general.string(forType: .string)
             )
             contents.withCString { ptr in
@@ -542,10 +545,13 @@ public final class GhosttyRuntime: ObservableObject {
             guard let surfaceView = surfaceView(from: userdataValue) else { return }
             guard let surfaceHandle = surfaceView.surfaceHandle else { return }
             let requestState = stateValue.flatMap(UnsafeMutableRawPointer.init(bitPattern:))
-            if surfaceView.blocksClipboardAccess {
+            if !allowsClipboardConfirmation(
+                blocked: surfaceView.blocksClipboardAccess,
+                request: request
+            ) {
                 "".withCString { buffer in
                     ghostty_surface_complete_clipboard_request(
-                        surfaceHandle, buffer, requestState, false
+                        surfaceHandle, buffer, requestState, true
                     )
                 }
                 return
@@ -608,10 +614,16 @@ public final class GhosttyRuntime: ObservableObject {
     }
 
     static func clipboardReadContents(
-        blocked: Bool,
         contents: @autoclosure () -> String?
     ) -> String {
-        blocked ? "" : contents() ?? ""
+        contents() ?? ""
+    }
+
+    static func allowsClipboardConfirmation(
+        blocked: Bool,
+        request: ghostty_clipboard_request_e
+    ) -> Bool {
+        !blocked || request == GHOSTTY_CLIPBOARD_REQUEST_PASTE
     }
 
     static func acceptedClipboardWriteEntries(

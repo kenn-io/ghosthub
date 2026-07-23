@@ -1,32 +1,45 @@
 import Testing
 @testable import GhosthubTerminal
+import GhosttyKit
 
 @MainActor
 struct ClipboardAccessPolicyTests {
-    @Test("blocked surfaces never expose clipboard contents")
-    func blockedReadReturnsEmptyContents() {
-        var didRead = false
-        func readClipboard() -> String? {
-            didRead = true
-            return "local secret"
-        }
-
+    @Test("clipboard reads stage contents until Ghostty identifies the request")
+    func readStagesClipboardContents() {
         #expect(
             GhosttyRuntime.clipboardReadContents(
-                blocked: true,
-                contents: readClipboard()
-            ).isEmpty
-        )
-        #expect(!didRead)
-    }
-
-    @Test("ordinary surfaces retain clipboard reads")
-    func ordinaryReadReturnsClipboardContents() {
-        #expect(
-            GhosttyRuntime.clipboardReadContents(
-                blocked: false,
                 contents: "local text"
             ) == "local text"
+        )
+    }
+
+    @Test("remote surfaces allow explicit paste confirmation")
+    func blockedSurfaceAllowsPaste() {
+        #expect(
+            GhosttyRuntime.allowsClipboardConfirmation(
+                blocked: true,
+                request: GHOSTTY_CLIPBOARD_REQUEST_PASTE
+            )
+        )
+    }
+
+    @Test("remote surfaces deny OSC 52 clipboard reads")
+    func blockedSurfaceDeniesOSC52Read() {
+        #expect(
+            !GhosttyRuntime.allowsClipboardConfirmation(
+                blocked: true,
+                request: GHOSTTY_CLIPBOARD_REQUEST_OSC_52_READ
+            )
+        )
+    }
+
+    @Test("ordinary surfaces retain OSC 52 clipboard behavior")
+    func ordinarySurfaceAllowsOSC52Read() {
+        #expect(
+            GhosttyRuntime.allowsClipboardConfirmation(
+                blocked: false,
+                request: GHOSTTY_CLIPBOARD_REQUEST_OSC_52_READ
+            )
         )
     }
 

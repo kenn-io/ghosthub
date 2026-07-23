@@ -79,14 +79,18 @@ state is outside the security model.
 Names in the user's shared tmux server are identifiers, not credentials.
 Ghosthub attaches to the exact session name reported by kwt or selected from
 direct discovery. When the user explicitly requests a new named session,
-Ghosthub may run local `tmux new-session -A -s <name>`, or one remote
-create-if-absent phase using `has-session` and detached `new-session`. The name
-is validated as a single command argument and the selected host identity is
-fixed before launch. The remote creation authority is one-shot: after it
-succeeds, transport recovery can only rerun `attach-session`. Existing
-same-named sessions are attached without modifying their panes or windows.
-Creation never grants authority to kill, rename, split, resize, or otherwise
-structurally mutate sessions.
+Ghosthub may run one local or remote create-if-absent phase using `has-session`
+and detached `new-session`. The name is validated as a single command argument
+and the selected host identity is fixed before launch. Remote creation
+authority is one-shot: after it succeeds, transport recovery can only rerun
+`attach-session`. Existing same-named sessions are attached without modifying
+their panes or windows. Creation never grants authority to kill, rename,
+split, resize, or otherwise structurally mutate sessions.
+
+Attachment may reset a small, documented set of session-scoped tmux visual
+styles so status and message chrome use Ghosthub's terminal colors. This
+presentation-only exception does not authorize changes to tmux key tables,
+prefixes, mouse behavior, windows, panes, layout, history, or process state.
 
 ### Release distribution
 

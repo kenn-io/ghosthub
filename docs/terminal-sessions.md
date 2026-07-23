@@ -41,15 +41,22 @@ and connection state. Navigating away, pressing Cmd-W, closing a window, or
 quitting Ghosthub detaches the client and never runs `kill-pane`,
 `kill-window`, or `kill-session`.
 
-For explicit local creation, the client starts with `tmux new-session -A -E -s
-<name>`. For explicit remote creation, Ghosthub performs a one-shot
-`has-session`/detached `new-session` phase and then replaces that process with
-the ordinary attach-only SSH reconnect loop. A later transport reconnect can
-therefore never rerun creation. The session name is validated before launch
-and passed as one shell-quoted argument. If the exact name already exists, it
-is attached without creating or structurally changing panes or windows.
-Ordinary kwt worktree and discovered-session opens always use
-`attach-session`; explicit named creation is the only exception to the
+The one presentation exception is color normalization. Before attachment,
+Ghosthub resets the selected session's `status-style`, `message-style`, and
+`message-command-style` to terminal-default colors so tmux chrome follows
+Ghosthub's configured foreground and background instead of tmux's built-in
+green/black and yellow/black defaults. These best-effort style commands do not
+change tmux interaction: prefix and key tables, mouse behavior, windows,
+panes, history, and layout remain untouched.
+
+For explicit local and remote creation, Ghosthub performs a one-shot
+`has-session`/detached `new-session` phase before ordinary attachment. The
+remote process then enters the attach-only SSH reconnect loop, so a later
+transport reconnect can never rerun creation. The session name is validated
+before launch and passed as one shell-quoted argument. If the exact name
+already exists, it is attached without creating or structurally changing
+panes or windows. Ordinary kwt worktree and discovered-session opens always
+use `attach-session`; explicit named creation is the only exception to the
 otherwise presentation-only boundary. Ghosthub does not expose rename, split,
 resize, window, pane, or kill operations.
 
