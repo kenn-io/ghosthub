@@ -89,6 +89,13 @@ struct GhosthubApp: App {
                         .isSettingsPresented = true
                 }
                 .keyboardShortcut(",")
+                Button("Reload Configuration") {
+                    terminalRuntime.reloadActiveConfig()
+                }
+                .keyboardShortcut(
+                    ",",
+                    modifiers: [.command, .shift]
+                )
                 Divider()
                 Button("Application Log") {
                     focusedSceneModel?

@@ -136,6 +136,7 @@ public struct LibghosttyConfigLoadPlan: Equatable, Sendable {
     public var projectConfigFile: URL?
     public var terminalAppearanceConfigFile: URL?
     public var orderedConfigFiles: [URL]
+    public var watchedConfigFiles: [URL]
     public var createdGlobalConfig: Bool
 
     public init(
@@ -143,12 +144,14 @@ public struct LibghosttyConfigLoadPlan: Equatable, Sendable {
         projectConfigFile: URL?,
         terminalAppearanceConfigFile: URL?,
         orderedConfigFiles: [URL],
+        watchedConfigFiles: [URL],
         createdGlobalConfig: Bool
     ) {
         self.globalConfigFile = globalConfigFile
         self.projectConfigFile = projectConfigFile
         self.terminalAppearanceConfigFile = terminalAppearanceConfigFile
         self.orderedConfigFiles = orderedConfigFiles
+        self.watchedConfigFiles = watchedConfigFiles
         self.createdGlobalConfig = createdGlobalConfig
     }
 }
@@ -328,12 +331,108 @@ public struct LibghosttyConfigPipeline {
             orderedConfigFiles.append(existingAppearanceConfig)
         }
 
+        let watchedConfigFiles = resolveWatchedConfigFiles(
+            roots: [
+                paths.globalConfigFile,
+                projectConfigFile,
+                paths.terminalAppearanceConfigFile,
+            ].compactMap { $0 }
+        )
+
         return LibghosttyConfigLoadPlan(
             globalConfigFile: paths.globalConfigFile,
             projectConfigFile: existingProjectConfig,
             terminalAppearanceConfigFile: existingAppearanceConfig,
             orderedConfigFiles: orderedConfigFiles,
+            watchedConfigFiles: watchedConfigFiles,
             createdGlobalConfig: createdGlobalConfig
         )
+    }
+
+    /// Resolve the complete active `config-file` graph plus absent candidate
+    /// files whose later creation should trigger a reload.
+    ///
+    /// libghostty remains authoritative for parsing configuration values.
+    /// This lightweight traversal recognizes only the documented
+    /// `config-file = path` directive so filesystem watching follows the same
+    /// relative-path, optional-file, and recursive-include semantics.
+    private func resolveWatchedConfigFiles(roots: [URL]) -> [URL] {
+        var watched = Set<URL>()
+        var parsed = Set<URL>()
+        var ordered: [URL] = []
+
+        func visit(_ input: URL) {
+            let file = input.standardizedFileURL
+            if watched.insert(file).inserted {
+                ordered.append(file)
+            }
+            let canonicalFile = file.resolvingSymlinksInPath()
+                .standardizedFileURL
+            guard parsed.insert(canonicalFile).inserted else {
+                return
+            }
+
+            guard let contents = try? String(
+                contentsOf: file,
+                encoding: .utf8
+            ) else { return }
+
+            for line in contents.split(
+                omittingEmptySubsequences: false,
+                whereSeparator: \.isNewline
+            ) {
+                guard let included = includedConfigFile(
+                    from: String(line),
+                    relativeTo: file
+                ) else { continue }
+                visit(included)
+            }
+        }
+
+        roots.forEach(visit)
+        return ordered
+    }
+
+    private func includedConfigFile(
+        from line: String,
+        relativeTo containingFile: URL
+    ) -> URL? {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty, !trimmed.hasPrefix("#"),
+              let equals = trimmed.firstIndex(of: "=")
+        else { return nil }
+
+        let key = trimmed[..<equals]
+            .trimmingCharacters(in: .whitespaces)
+        guard key == "config-file" else { return nil }
+
+        var value = trimmed[trimmed.index(after: equals)...]
+            .trimmingCharacters(in: .whitespaces)
+        guard !value.isEmpty else { return nil }
+
+        let isQuoted = value.count >= 2
+            && ((value.first == "\"" && value.last == "\"")
+                || (value.first == "'" && value.last == "'"))
+        if isQuoted {
+            value.removeFirst()
+            value.removeLast()
+        } else if value.hasPrefix("?") {
+            value.removeFirst()
+        }
+        guard !value.isEmpty else { return nil }
+
+        if value == "~" {
+            return fileManager.homeDirectoryForCurrentUser
+        }
+        if value.hasPrefix("~/") {
+            return fileManager.homeDirectoryForCurrentUser
+                .appendingPathComponent(String(value.dropFirst(2)))
+        }
+
+        if value.hasPrefix("/") {
+            return URL(fileURLWithPath: value)
+        }
+        return containingFile.deletingLastPathComponent()
+            .appendingPathComponent(value)
     }
 }

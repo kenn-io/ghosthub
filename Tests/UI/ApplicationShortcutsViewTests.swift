@@ -14,5 +14,6 @@ struct ApplicationShortcutsViewTests {
         #expect(shortcuts["Previous worktree"] == "⌥⌘↑")
         #expect(shortcuts["Next worktree"] == "⌥⌘↓")
         #expect(shortcuts["New worktree"] == "⇧⌘N")
+        #expect(shortcuts["Reload configuration"] == "⇧⌘,")
     }
 }

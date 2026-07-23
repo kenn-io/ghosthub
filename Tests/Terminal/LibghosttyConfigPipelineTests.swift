@@ -14,6 +14,12 @@ struct LibghosttyConfigPipelineTests {
         #expect(plan.globalConfigFile == fixture.paths.globalConfigFile)
         #expect(plan.projectConfigFile == nil)
         #expect(plan.orderedConfigFiles == [fixture.paths.globalConfigFile])
+        #expect(
+            plan.watchedConfigFiles == [
+                fixture.paths.globalConfigFile,
+                fixture.paths.terminalAppearanceConfigFile,
+            ]
+        )
         #expect(FileManager.default.fileExists(
             atPath: fixture.paths.globalConfigFile.path
         ))
@@ -29,6 +35,92 @@ struct LibghosttyConfigPipelineTests {
             "shell-integration = detect",
         ], omits: [
             "shell-integration-features",
+        ])
+    }
+
+    @Test("loadPlan watches recursive and absent optional config files")
+    func loadPlanWatchesCompleteConfigGraph() throws {
+        let fixture = try ConfigPipelineFixture.create()
+        let nestedDirectory = fixture.paths.configDirectory
+            .appendingPathComponent("nested", isDirectory: true)
+        let nestedConfig = nestedDirectory
+            .appendingPathComponent("base.conf")
+        let optionalConfig = nestedDirectory
+            .appendingPathComponent("machine.conf")
+        let literalQuestionConfig = nestedDirectory
+            .appendingPathComponent("?literal.conf")
+
+        try FileManager.default.createDirectory(
+            at: nestedDirectory,
+            withIntermediateDirectories: true
+        )
+        try """
+        config-file = ?machine.conf
+        config-file = "?literal.conf"
+        font-size = 14
+        """.write(
+            to: nestedConfig,
+            atomically: true,
+            encoding: .utf8
+        )
+        try fixture.writeGlobalConfig(
+            """
+            config-file = nested/base.conf
+            font-family = Berkeley Mono
+            """
+        )
+
+        let plan = try fixture.pipeline.loadPlan()
+
+        #expect(plan.watchedConfigFiles == [
+            fixture.paths.globalConfigFile,
+            nestedConfig,
+            optionalConfig,
+            literalQuestionConfig,
+            fixture.paths.terminalAppearanceConfigFile,
+        ])
+    }
+
+    @Test("loadPlan watches a project override before it exists")
+    func loadPlanWatchesAbsentProjectOverride() throws {
+        let fixture = try ConfigPipelineFixture.create()
+        let projectRoot = fixture.tempRoot
+            .appendingPathComponent("project", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: projectRoot,
+            withIntermediateDirectories: true
+        )
+        let candidate = fixture.paths.projectConfigFile(
+            for: projectRoot
+        )
+
+        let plan = try fixture.pipeline.loadPlan(
+            projectRoot: projectRoot
+        )
+
+        #expect(plan.projectConfigFile == nil)
+        #expect(plan.watchedConfigFiles.contains(candidate))
+    }
+
+    @Test("loadPlan bounds recursive includes through symlink aliases")
+    func loadPlanBoundsSymlinkIncludeCycles() throws {
+        let fixture = try ConfigPipelineFixture.create()
+        let loop = fixture.paths.configDirectory
+            .appendingPathComponent("loop")
+        try FileManager.default.createSymbolicLink(
+            at: loop,
+            withDestinationURL: fixture.paths.configDirectory
+        )
+        try fixture.writeGlobalConfig(
+            "config-file = loop/ghostty.conf\n"
+        )
+
+        let plan = try fixture.pipeline.loadPlan()
+
+        #expect(plan.watchedConfigFiles == [
+            fixture.paths.globalConfigFile,
+            loop.appendingPathComponent("ghostty.conf"),
+            fixture.paths.terminalAppearanceConfigFile,
         ])
     }
 

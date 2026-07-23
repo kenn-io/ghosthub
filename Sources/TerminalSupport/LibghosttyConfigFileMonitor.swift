@@ -1,6 +1,6 @@
+import Darwin
 import Dispatch
 import Foundation
-import Darwin
 
 public enum LibghosttyConfigFileMonitorError: LocalizedError, Equatable {
     case openFile(URL, Int32)
@@ -16,25 +16,65 @@ public enum LibghosttyConfigFileMonitorError: LocalizedError, Equatable {
 public final class LibghosttyConfigFileMonitor {
     public typealias ChangeHandler = @Sendable () -> Void
 
-    private let fileURL: URL
-    private let directoryURL: URL
+    private struct FileIdentity: Equatable {
+        let exists: Bool
+        let resolvedPath: String
+        let resourceIdentifier: String
+
+        static let missing = FileIdentity(
+            exists: false,
+            resolvedPath: "",
+            resourceIdentifier: ""
+        )
+    }
+
     private let queue: DispatchQueue
+    private let queueKey = DispatchSpecificKey<UInt8>()
     private let changeHandler: ChangeHandler
+    private let debounceInterval: DispatchTimeInterval
+    private let requiringExistingFiles: Bool
 
-    private var fileDescriptor: Int32 = -1
-    private var fileSource: DispatchSourceFileSystemObject?
-    private var directoryDescriptor: Int32 = -1
-    private var directorySource: DispatchSourceFileSystemObject?
+    private var desiredFiles: Set<URL>
+    private var knownIdentity: [URL: FileIdentity] = [:]
+    private var fileSources:
+        [URL: DispatchSourceFileSystemObject] = [:]
+    private var directorySources:
+        [URL: DispatchSourceFileSystemObject] = [:]
+    private var pendingChange: DispatchWorkItem?
+    private var isStarted = false
 
-    public init(
+    public convenience init(
         fileURL: URL,
-        queue: DispatchQueue = DispatchQueue(label: "com.ghosthub.terminal.config-monitor"),
+        queue: DispatchQueue = DispatchQueue(
+            label: "com.ghosthub.terminal.config-monitor"
+        ),
+        debounceInterval: DispatchTimeInterval = .milliseconds(150),
         changeHandler: @escaping ChangeHandler
     ) {
-        self.fileURL = fileURL
-        directoryURL = fileURL.deletingLastPathComponent()
+        self.init(
+            fileURLs: [fileURL],
+            queue: queue,
+            debounceInterval: debounceInterval,
+            requiringExistingFiles: true,
+            changeHandler: changeHandler
+        )
+    }
+
+    public init(
+        fileURLs: [URL],
+        queue: DispatchQueue = DispatchQueue(
+            label: "com.ghosthub.terminal.config-monitor"
+        ),
+        debounceInterval: DispatchTimeInterval = .milliseconds(150),
+        requiringExistingFiles: Bool = false,
+        changeHandler: @escaping ChangeHandler
+    ) {
+        desiredFiles = Set(fileURLs.map(\.standardizedFileURL))
         self.queue = queue
+        self.debounceInterval = debounceInterval
+        self.requiringExistingFiles = requiringExistingFiles
         self.changeHandler = changeHandler
+        queue.setSpecific(key: queueKey, value: 1)
     }
 
     deinit {
@@ -42,26 +82,75 @@ public final class LibghosttyConfigFileMonitor {
     }
 
     public func start() throws {
-        stop()
-        try startDirectoryWatch()
-        try startFileWatch(requiringExistingFile: true)
+        try synchronized {
+            stopLocked()
+            if requiringExistingFiles,
+               let missing = desiredFiles.first(where: {
+                   !fileIdentity(for: $0).exists
+               }) {
+                throw LibghosttyConfigFileMonitorError.openFile(
+                    missing, ENOENT
+                )
+            }
+            isStarted = true
+            try configureSourcesLocked()
+        }
+    }
+
+    public func update(fileURLs: [URL]) throws {
+        try synchronized {
+            desiredFiles = Set(
+                fileURLs.map(\.standardizedFileURL)
+            )
+            guard isStarted else { return }
+            try configureSourcesLocked()
+        }
     }
 
     public func stop() {
-        fileSource?.cancel()
-        fileSource = nil
-        fileDescriptor = -1
-
-        directorySource?.cancel()
-        directorySource = nil
-        directoryDescriptor = -1
+        synchronized {
+            stopLocked()
+        }
     }
 
-    private func startFileWatch(requiringExistingFile: Bool) throws {
-        let descriptor = open(fileURL.path, O_EVTONLY)
+    private func stopLocked() {
+        pendingChange?.cancel()
+        pendingChange = nil
+        fileSources.values.forEach { $0.cancel() }
+        fileSources.removeAll()
+        directorySources.values.forEach { $0.cancel() }
+        directorySources.removeAll()
+        knownIdentity.removeAll()
+        isStarted = false
+    }
+
+    private func configureSourcesLocked() throws {
+        fileSources.values.forEach { $0.cancel() }
+        fileSources.removeAll()
+        directorySources.values.forEach { $0.cancel() }
+        directorySources.removeAll()
+
+        knownIdentity = Dictionary(
+            uniqueKeysWithValues: desiredFiles.map {
+                ($0, fileIdentity(for: $0))
+            }
+        )
+
+        for file in desiredFiles
+        where knownIdentity[file]?.exists == true {
+            try startFileWatchLocked(file)
+        }
+        try rebuildDirectoryWatchesLocked()
+    }
+
+    private func startFileWatchLocked(_ file: URL) throws {
+        guard fileSources[file] == nil else { return }
+        let descriptor = open(file.path, O_EVTONLY)
         guard descriptor >= 0 else {
-            if requiringExistingFile {
-                throw LibghosttyConfigFileMonitorError.openFile(fileURL, errno)
+            if requiringExistingFiles {
+                throw LibghosttyConfigFileMonitorError.openFile(
+                    file, errno
+                )
             }
             return
         }
@@ -71,69 +160,133 @@ public final class LibghosttyConfigFileMonitor {
             eventMask: [.write, .delete, .rename],
             queue: queue
         )
-
         source.setEventHandler { [weak self, weak source] in
-            guard let self, let source else { return }
+            guard let self, let source,
+                  self.fileSources[file] === source
+            else { return }
             let events = source.data
-
             if events.contains(.delete) || events.contains(.rename) {
-                handleWatchedFileReplaced()
+                source.cancel()
+                self.fileSources[file] = nil
+                self.refreshAfterDirectoryChangeLocked()
+                self.scheduleChangeLocked()
             } else {
-                changeHandler()
+                self.scheduleChangeLocked()
+            }
+        }
+        source.setCancelHandler { [descriptor] in
+            close(descriptor)
+        }
+        fileSources[file] = source
+        source.resume()
+    }
+
+    private func rebuildDirectoryWatchesLocked() throws {
+        let directories = Set(desiredFiles.map(nearestExistingDirectory))
+        guard directories != Set(directorySources.keys) else { return }
+
+        directorySources.values.forEach { $0.cancel() }
+        directorySources.removeAll()
+
+        for directory in directories {
+            let descriptor = open(directory.path, O_EVTONLY)
+            guard descriptor >= 0 else {
+                if requiringExistingFiles {
+                    throw LibghosttyConfigFileMonitorError.openFile(
+                        directory, errno
+                    )
+                }
+                continue
+            }
+            let source = DispatchSource.makeFileSystemObjectSource(
+                fileDescriptor: descriptor,
+                eventMask: [.write, .delete, .rename],
+                queue: queue
+            )
+            source.setEventHandler { [weak self, weak source] in
+                guard let self, let source,
+                      self.directorySources[directory] === source
+                else { return }
+                self.refreshAfterDirectoryChangeLocked()
+            }
+            source.setCancelHandler { [descriptor] in
+                close(descriptor)
+            }
+            directorySources[directory] = source
+            source.resume()
+        }
+    }
+
+    private func refreshAfterDirectoryChangeLocked() {
+        guard isStarted else { return }
+        var identityChanged = false
+
+        for file in desiredFiles {
+            let identity = fileIdentity(for: file)
+            if knownIdentity[file] != identity {
+                knownIdentity[file] = identity
+                identityChanged = true
+            }
+            if identity.exists, fileSources[file] == nil {
+                try? startFileWatchLocked(file)
             }
         }
 
-        source.setCancelHandler { [descriptor] in
-            close(descriptor)
+        try? rebuildDirectoryWatchesLocked()
+        if identityChanged {
+            scheduleChangeLocked()
         }
-
-        fileDescriptor = descriptor
-        fileSource = source
-        source.resume()
     }
 
-    private func startDirectoryWatch() throws {
-        let descriptor = open(directoryURL.path, O_EVTONLY)
-        guard descriptor >= 0 else {
-            throw LibghosttyConfigFileMonitorError.openFile(directoryURL, errno)
+    private func nearestExistingDirectory(for file: URL) -> URL {
+        var directory = file.deletingLastPathComponent()
+            .standardizedFileURL
+        while !FileManager.default.fileExists(
+            atPath: directory.path
+        ) {
+            let parent = directory.deletingLastPathComponent()
+            guard parent.path != directory.path else { break }
+            directory = parent
         }
+        return directory
+    }
 
-        let source = DispatchSource.makeFileSystemObjectSource(
-            fileDescriptor: descriptor,
-            eventMask: [.write, .delete, .rename],
-            queue: queue
+    private func fileIdentity(for file: URL) -> FileIdentity {
+        guard FileManager.default.fileExists(atPath: file.path) else {
+            return .missing
+        }
+        let values = try? file.resourceValues(
+            forKeys: [.fileResourceIdentifierKey]
         )
-
-        source.setEventHandler { [weak self] in
-            self?.reattachFileWatchIfNeeded()
-        }
-
-        source.setCancelHandler { [descriptor] in
-            close(descriptor)
-        }
-
-        directoryDescriptor = descriptor
-        directorySource = source
-        source.resume()
+        return FileIdentity(
+            exists: true,
+            resolvedPath: file.resolvingSymlinksInPath().path,
+            resourceIdentifier: String(
+                describing: values?.fileResourceIdentifier
+            )
+        )
     }
 
-    private func handleWatchedFileReplaced() {
-        fileSource?.cancel()
-        fileSource = nil
-        fileDescriptor = -1
-        reattachFileWatchIfNeeded()
+    private func scheduleChangeLocked() {
+        pendingChange?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingChange = nil
+            self.changeHandler()
+        }
+        pendingChange = work
+        queue.asyncAfter(
+            deadline: .now() + debounceInterval,
+            execute: work
+        )
     }
 
-    private func reattachFileWatchIfNeeded() {
-        guard fileSource == nil else {
-            return
+    private func synchronized<T>(
+        _ operation: () throws -> T
+    ) rethrows -> T {
+        if DispatchQueue.getSpecific(key: queueKey) != nil {
+            return try operation()
         }
-
-        guard FileManager.default.fileExists(atPath: fileURL.path) else {
-            return
-        }
-
-        try? startFileWatch(requiringExistingFile: false)
-        changeHandler()
+        return try queue.sync(execute: operation)
     }
 }

@@ -80,6 +80,7 @@ public struct ContentBuilders {
 public struct InteractionHandlers {
     public let closeWindow: (() -> Void)?
     public let dismissLogViewer: (() -> Void)?
+    public let reloadTerminalConfig: (() -> Void)?
     public let openTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)?
     public let closeTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)?
     public let createTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)?
@@ -90,6 +91,7 @@ public struct InteractionHandlers {
     public init(
         closeWindow: (() -> Void)? = nil,
         dismissLogViewer: (() -> Void)? = nil,
+        reloadTerminalConfig: (() -> Void)? = nil,
         openTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)? = nil,
         closeTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)? = nil,
         createTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)? = nil,
@@ -99,6 +101,7 @@ public struct InteractionHandlers {
     ) {
         self.closeWindow = closeWindow
         self.dismissLogViewer = dismissLogViewer
+        self.reloadTerminalConfig = reloadTerminalConfig
         self.openTmuxSession = openTmuxSession
         self.closeTmuxSession = closeTmuxSession
         self.createTmuxSession = createTmuxSession

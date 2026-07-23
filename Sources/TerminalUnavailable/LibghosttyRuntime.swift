@@ -17,6 +17,8 @@ public final class LibghosttyRuntime: ObservableObject {
     @Published public private(set) var phase: LibghosttyRuntimePhase
     @Published public private(set) var configPlan: LibghosttyConfigLoadPlan?
     @Published public private(set) var diagnostics: [String]
+    @Published public private(set) var configReloadNotice:
+        LibghosttyConfigReloadNotice?
 
     public let runtimeState: LibghosttyRuntimeState
     public let renderTracker = SurfaceRenderTracker()
@@ -41,8 +43,9 @@ public final class LibghosttyRuntime: ObservableObject {
         self.bootstrapStatus = bootstrapStatus
         phase = .unavailable
         diagnostics = bootstrapStatus.message.map { [$0] } ?? []
+        configReloadNotice = nil
         configPlan = try? pipeline.loadPlan()
-        installConfigMonitorIfNeeded()
+        installConfigMonitorIfNeeded(plan: configPlan)
     }
 
     public func preconditionReady(file: StaticString = #file, line: UInt = #line) {
@@ -53,24 +56,42 @@ public final class LibghosttyRuntime: ObservableObject {
         )
     }
 
-    public func reloadConfig(projectRoot: URL? = nil, force: Bool = false) {
-        guard force || activeConfigRoot != projectRoot else { return }
+    @discardableResult
+    public func reloadConfig(
+        projectRoot: URL? = nil,
+        force: Bool = false
+    ) -> LibghosttyConfigReloadResult {
+        guard force || activeConfigRoot != projectRoot else {
+            return .unchanged
+        }
         activeConfigRoot = projectRoot
         configPlan = try? pipeline.loadPlan(projectRoot: projectRoot)
+        if let configPlan {
+            updateConfigMonitor(for: configPlan)
+        }
+        return .failed("libghostty is unavailable.")
     }
 
-    public func reloadActiveConfig(force: Bool = true) {
+    @discardableResult
+    public func reloadActiveConfig(
+        force: Bool = true,
+        notifyOnSuccess: Bool = true
+    ) -> LibghosttyConfigReloadResult {
         reloadConfig(projectRoot: activeConfigRoot, force: force)
     }
 
-    private func installConfigMonitorIfNeeded() {
+    private func installConfigMonitorIfNeeded(
+        plan: LibghosttyConfigLoadPlan?
+    ) {
         guard configMonitor == nil else { return }
+        guard let plan else { return }
 
-        let monitor = LibghosttyConfigFileMonitor(fileURL: configPaths
-            .globalConfigFile) { [weak self] in
+        let monitor = LibghosttyConfigFileMonitor(
+            fileURLs: plan.watchedConfigFiles
+        ) { [weak self] in
                 guard let self else { return }
                 Task { @MainActor in
-                    self.reloadConfig(projectRoot: self.activeConfigRoot, force: true)
+                    self.reloadActiveConfig(force: true)
                 }
             }
 
@@ -80,5 +101,15 @@ public final class LibghosttyRuntime: ObservableObject {
         } catch {
             diagnostics.append(error.localizedDescription)
         }
+    }
+
+    private func updateConfigMonitor(
+        for plan: LibghosttyConfigLoadPlan
+    ) {
+        guard let configMonitor else {
+            installConfigMonitorIfNeeded(plan: plan)
+            return
+        }
+        try? configMonitor.update(fileURLs: plan.watchedConfigFiles)
     }
 }

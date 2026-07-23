@@ -205,6 +205,81 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
         )
     }
 
+    func testInvalidConfigReloadKeepsLastValidConfig() throws {
+        let ctx = try makeIsolatedRuntime()
+        let originalHandle = try XCTUnwrap(
+            ctx.runtime.unsafeConfigHandle
+        )
+        try "font-size = definitely-not-a-number\n".write(
+            to: ctx.pipeline.paths.globalConfigFile,
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let result = ctx.runtime.reloadActiveConfig()
+
+        guard case let .rejected(messages) = result else {
+            return XCTFail(
+                "Expected invalid configuration to be rejected, got \(result)"
+            )
+        }
+        XCTAssertFalse(messages.isEmpty)
+        XCTAssertEqual(ctx.runtime.phase, .ready)
+        let retainedHandle = try XCTUnwrap(
+            ctx.runtime.unsafeConfigHandle
+        )
+        XCTAssertEqual(
+            UInt(bitPattern: retainedHandle),
+            UInt(bitPattern: originalHandle),
+            "A rejected reload must retain the last valid config handle."
+        )
+        XCTAssertEqual(
+            ctx.runtime.configReloadNotice?.kind,
+            .error
+        )
+    }
+
+    func testIncludedConfigAutomaticallyReloads() throws {
+        try skipUnlessLibghosttyReady()
+        let (pipeline, tempRoot) = makeIsolatedPipeline()
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: tempRoot)
+        }
+        _ = try pipeline.prepareGlobalConfig()
+        let included = pipeline.paths.configDirectory
+            .appendingPathComponent("colors.conf")
+        try "foreground = ffffff\n".write(
+            to: included,
+            atomically: true,
+            encoding: .utf8
+        )
+        try """
+        config-file = colors.conf
+        font-size = 13
+        """.write(
+            to: pipeline.paths.globalConfigFile,
+            atomically: true,
+            encoding: .utf8
+        )
+        let runtime = LibghosttyRuntime(pipeline: pipeline)
+        XCTAssertEqual(runtime.phase, .ready)
+        XCTAssertTrue(
+            runtime.configPlan?.watchedConfigFiles.contains(included)
+                == true
+        )
+
+        try "foreground = eeeeee\n".write(
+            to: included,
+            atomically: true,
+            encoding: .utf8
+        )
+
+        waitUntil(timeout: 3) {
+            runtime.configReloadNotice?.kind == .success
+        }
+        XCTAssertEqual(runtime.diagnostics, [])
+    }
+
     func testPasteboardTypeMappingPreservesMimeSpecificTypes() {
         XCTAssertEqual(
             LibghosttyRuntime.pasteboardType(forMIMEType: "text/plain"),

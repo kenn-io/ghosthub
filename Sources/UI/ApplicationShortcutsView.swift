@@ -10,6 +10,7 @@ enum ApplicationShortcutReference {
 
     static let shortcuts = [
         Shortcut(title: "Settings", keys: "⌘,"),
+        Shortcut(title: "Reload configuration", keys: "⇧⌘,"),
         Shortcut(title: "Command palette", keys: "⇧⌘P"),
         Shortcut(title: "Toggle sidebar", keys: "⌘B"),
         Shortcut(title: "Select worktree 1–9", keys: "⌘1–⌘9"),
