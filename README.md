@@ -54,7 +54,7 @@ macOS interface that makes the whole fleet easy to navigate.
 - **SSH that handles real life.** Keepalives and automatic reconnect let a
   remote tmux session survive Wi-Fi changes, sleep, and airplane mode.
 - **Worktree-native navigation with
-  [kwt](https://github.com/kenn-io/kwt).** Kwt is a cross-platform Git
+  [kwt](https://kwt.sh).** Kwt is a cross-platform Git
   worktree manager written in Go for tmux-backed development. Its projects and
   worktrees appear alongside ordinary tmux sessions, with exact
   workspace-to-session mapping.
@@ -87,7 +87,7 @@ brew install tmux
 ```
 
 Remote hosts only need working SSH access and tmux. Installing
-[kwt](https://github.com/kenn-io/kwt) remotely is optional unless you want
+[kwt](https://kwt.sh) remotely is optional unless you want
 that host's projects and worktrees in the sidebar.
 
 ## Five-minute guide
@@ -118,7 +118,7 @@ not block local sessions or the rest of your fleet.
 
 ### 3. Add project and worktree context with kwt
 
-[Kwt](https://github.com/kenn-io/kwt) is a cross-platform Git worktree manager
+[Kwt](https://kwt.sh) is a cross-platform Git worktree manager
 written in Go for tmux-backed development and coding-agent workflows. The same
 CLI runs on macOS and Linux, so it can supply workspace context on both the
 local Mac and remote hosts while Ghosthub remains a native Swift macOS app.
@@ -170,7 +170,7 @@ also available in **Settings**.
 **Tmux owns the session.** Ghosthub never rebuilds or replaces tmux windows,
 panes, history, or process management.
 
-**[Kwt](https://github.com/kenn-io/kwt) owns worktree identity.** It tells
+**[Kwt](https://kwt.sh) owns worktree identity.** It tells
 Ghosthub which projects and worktrees exist and the exact tmux session
 associated with each workspace. Kwt is optional if you only want Ghosthub as a
 local and remote tmux session switcher.
