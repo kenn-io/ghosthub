@@ -330,6 +330,41 @@ struct LibghosttyConfigFileMonitorTests {
         }
     }
 
+    @Test("deeper missing graphs prune obsolete ancestor fallbacks")
+    func deeperMissingGraphsPruneObsoleteAncestorFallbacks() throws {
+        let fixture = try TemporaryConfigMonitorFixture.create()
+        var directory = fixture.tempDirectory
+        var missingConfigs: [URL] = []
+        for index in 0..<8 {
+            directory = directory.appendingPathComponent(
+                "level-\(index)",
+                isDirectory: true
+            )
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: false
+            )
+            missingConfigs.append(
+                directory.appendingPathComponent("terminal.conf")
+            )
+        }
+        let monitor = LibghosttyConfigFileMonitor(
+            fileURLs: [missingConfigs[0]],
+            debounceInterval: .milliseconds(25),
+            changeHandler: {}
+        )
+        try monitor.start()
+        defer { monitor.stop() }
+
+        for config in missingConfigs.dropFirst() {
+            try monitor.update(fileURLs: [config])
+            #expect(
+                monitor.activeWatchedDirectories()
+                    == monitor.watchedDirectories()
+            )
+        }
+    }
+
     @Test("monitor reattaches after delete and recreate")
     func monitorReattachesAfterFileIsDeletedAndRecreatedLater()
         throws {

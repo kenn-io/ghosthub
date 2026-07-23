@@ -272,7 +272,8 @@ public final class LibghosttyConfigFileMonitor {
                     directories: graph.directories,
                     directoryIdentities: graph.directoryIdentities,
                     stagedFiles: stagedFiles,
-                    stagedDirectories: stagedDirectories
+                    stagedDirectories: stagedDirectories,
+                    retainFallbackAncestors: true
                 )
             } else {
                 closeStagedDescriptors(
@@ -321,7 +322,8 @@ public final class LibghosttyConfigFileMonitor {
             directories: graph.directories,
             directoryIdentities: graph.directoryIdentities,
             stagedFiles: stagedFiles,
-            stagedDirectories: stagedDirectories
+            stagedDirectories: stagedDirectories,
+            retainFallbackAncestors: false
         )
     }
 
@@ -433,16 +435,17 @@ public final class LibghosttyConfigFileMonitor {
         directories: Set<URL>,
         directoryIdentities: [URL: FileIdentity],
         stagedFiles: [URL: Int32],
-        stagedDirectories: [URL: Int32]
+        stagedDirectories: [URL: Int32],
+        retainFallbackAncestors: Bool
     ) {
         let missingFiles = Set(
             identities.compactMap { file, identity in
                 identity.exists ? nil : file
             }
         )
-        let missingDirectories = watchedDirectories(
-            for: missingFiles
-        )
+        let fallbackDirectories = retainFallbackAncestors
+            ? watchedDirectories(for: missingFiles)
+            : []
         for file in Set(fileSources.keys) {
             let shouldRemove = !files.contains(file)
                 || knownIdentity[file] != identities[file]
@@ -457,7 +460,7 @@ public final class LibghosttyConfigFileMonitor {
             let identityChanged = directories.contains(directory)
                 && knownDirectoryIdentity[directory]
                     != directoryIdentities[directory]
-            let isRequiredAncestor = missingDirectories.contains {
+            let isRequiredAncestor = fallbackDirectories.contains {
                 isAncestor(directory, of: $0)
             }
             guard identityChanged

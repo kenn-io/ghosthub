@@ -620,7 +620,6 @@ struct WorkspaceWindow: View {
             .onReceive(
                 terminalRuntime.$configReloadNotice
             ) { notice in
-                guard let notice else { return }
                 withAnimation(.easeOut(duration: 0.15)) {
                     visibleConfigReloadNotice = notice
                 }
