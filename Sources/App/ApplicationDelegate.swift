@@ -136,9 +136,12 @@ final class ApplicationDelegate: NSObject,
     func applicationShouldTerminate(
         _ sender: NSApplication
     ) -> NSApplication.TerminateReply {
-        if terminationConfirmed || isSystemTermination {
+        if terminationConfirmed {
             return .terminateNow
         }
+        // Shutdown, restart, logout, and system-update requests intentionally
+        // use the same confirmation gate. Ghosthub must not silently disappear
+        // while terminal presentations are still open.
         return prepareUserInitiatedTermination()
             ? .terminateNow : .terminateCancel
     }
@@ -146,7 +149,7 @@ final class ApplicationDelegate: NSObject,
     func applicationShouldTerminateAfterLastWindowClosed(
         _ sender: NSApplication
     ) -> Bool {
-        true
+        terminationConfirmed
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
@@ -163,19 +166,6 @@ final class ApplicationDelegate: NSObject,
             }
         }
         return true
-    }
-
-    /// kAEQuitReason ('why?') is present on system-initiated
-    /// quit events (shutdown, restart, logout). Allow these
-    /// without prompting.
-    private var isSystemTermination: Bool {
-        guard let event = NSAppleEventManager.shared()
-            .currentAppleEvent
-        else { return false }
-        let aeQuitReason: AEKeyword = 0x7768_793F
-        return event.attributeDescriptor(
-            forKeyword: aeQuitReason
-        ) != nil
     }
 
     private func makeTerminationAlert() -> NSAlert {

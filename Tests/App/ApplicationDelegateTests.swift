@@ -112,6 +112,14 @@ extension ApplicationDelegate {
 
 @MainActor
 final class ApplicationDelegateTests: XCTestCase {
+    private final class PerformCloseSpyWindow: NSWindow {
+        private(set) var performCloseCallCount = 0
+
+        override func performClose(_ sender: Any?) {
+            performCloseCallCount += 1
+        }
+    }
+
     private final class NotificationCenterSpy: UserNotificationCentering {
         private(set) var requestAuthorizationCallCount = 0
         private(set) var addedRequests: [UNNotificationRequest] = []
@@ -413,14 +421,22 @@ final class ApplicationDelegateTests: XCTestCase {
         XCTAssertFalse(delegate.terminationConfirmed)
     }
 
-    func testApplicationTerminatesAfterLastWindowClosed() {
+    func testApplicationWaitsForPreCloseConfirmation() {
         let delegate = ApplicationDelegate.forTesting()
 
-        XCTAssertTrue(
+        XCTAssertFalse(
             delegate.applicationShouldTerminateAfterLastWindowClosed(
                 NSApplication.shared
             )
         )
+    }
+
+    func testCloseWindowCommandUsesPreCloseDelegatePath() {
+        let window = PerformCloseSpyWindow()
+
+        WorkspaceWindowCloser.close(window)
+
+        XCTAssertEqual(window.performCloseCallCount, 1)
     }
 
     func testWindowShouldCloseShowsConfirmationBeforeClosing() {
