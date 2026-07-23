@@ -8,6 +8,10 @@ import XCTest
 @testable import GhosthubTerminal
 @testable import GhosthubTerminalSupport
 
+private final class MonitorErrorHandlerBox: @unchecked Sendable {
+    var handler: LibghosttyConfigFileMonitor.ErrorHandler?
+}
+
 @MainActor
 final class LibghosttyRuntimeSmokeTests: XCTestCase {
 
@@ -314,14 +318,111 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
         )
         XCTAssertEqual(runtime.configReloadNotice?.kind, .error)
         XCTAssertTrue(
-            runtime.configReloadNotice?.message.contains(
-                "automatic reload monitoring is degraded"
+            runtime.configReloadNotice?.message.lowercased().contains(
+                "reload monitoring is degraded"
             ) == true
         )
         XCTAssertTrue(
             runtime.configPlan?.watchedConfigFiles.contains(
                 projectConfig
             ) == true
+        )
+    }
+
+    func testInitialMonitorFailurePublishesDegradedNotice() throws {
+        try skipUnlessLibghosttyReady()
+        let (pipeline, tempRoot) = makeIsolatedPipeline()
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: tempRoot)
+        }
+        try FileManager.default.createDirectory(
+            at: pipeline.paths.configDirectory,
+            withIntermediateDirectories: true
+        )
+        try "font-size = 13\n".write(
+            to: pipeline.paths.globalConfigFile,
+            atomically: true,
+            encoding: .utf8
+        )
+        let runtime = LibghosttyRuntime(
+            pipeline: pipeline,
+            configMonitorFactory: { request in
+                LibghosttyConfigFileMonitor(
+                    fileURLs: request.files,
+                    queue: DispatchQueue(
+                        label: "com.ghosthub.terminal.config-monitor-test"
+                    ),
+                    debounceInterval: .milliseconds(25),
+                    requiringExistingFiles: false,
+                    openHandler: { path, flags in
+                        guard path == pipeline.paths.globalConfigFile.path
+                        else {
+                            return open(path, flags)
+                        }
+                        errno = EMFILE
+                        return -1
+                    },
+                    errorHandler: request.errorHandler,
+                    changeHandler: request.changeHandler
+                )
+            }
+        )
+
+        XCTAssertEqual(runtime.configReloadNotice?.kind, .error)
+        XCTAssertTrue(
+            runtime.configReloadNotice?.message.contains(
+                "errno \(EMFILE)"
+            ) == true
+        )
+        XCTAssertEqual(
+            runtime.diagnostics.filter {
+                $0.contains("errno \(EMFILE)")
+            }.count,
+            1
+        )
+    }
+
+    func testAsyncMonitorFailuresPublishOnceUntilRecovery() throws {
+        try skipUnlessLibghosttyReady()
+        let (pipeline, tempRoot) = makeIsolatedPipeline()
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: tempRoot)
+        }
+        let handlerBox = MonitorErrorHandlerBox()
+        let runtime = LibghosttyRuntime(
+            pipeline: pipeline,
+            configMonitorFactory: { request in
+                handlerBox.handler = request.errorHandler
+                return LibghosttyConfigFileMonitor(
+                    fileURLs: request.files,
+                    errorHandler: request.errorHandler,
+                    changeHandler: request.changeHandler
+                )
+            }
+        )
+        let error = LibghosttyConfigFileMonitorError.openFile(
+            pipeline.paths.globalConfigFile,
+            EMFILE
+        )
+        let handler = try XCTUnwrap(handlerBox.handler)
+
+        handler(error)
+        waitUntil {
+            runtime.configReloadNotice?.message.contains(
+                "errno \(EMFILE)"
+            ) == true
+        }
+        let firstNoticeID = runtime.configReloadNotice?.id
+
+        handler(error)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+
+        XCTAssertEqual(runtime.configReloadNotice?.id, firstNoticeID)
+        XCTAssertEqual(
+            runtime.diagnostics.filter {
+                $0.contains("errno \(EMFILE)")
+            }.count,
+            1
         )
     }
 

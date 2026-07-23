@@ -49,6 +49,8 @@ public final class LibghosttyRuntime: ObservableObject {
     private nonisolated(unsafe) var configHandle: ghostty_config_t?
     private var activeConfigRoot: URL?
     private var configMonitor: LibghosttyConfigFileMonitor?
+    private var monitorFailureMessage: String?
+    private var monitorFailureNoticeID: UUID?
     private nonisolated(unsafe) var notificationObservers: [NSObjectProtocol] = []
     private static var didInitializeLibrary = false
 
@@ -180,7 +182,12 @@ public final class LibghosttyRuntime: ObservableObject {
                 ghostty_config_free(config)
                 diagnostics = candidateDiagnostics
                 if let monitorFailure {
-                    diagnostics.append(monitorFailure)
+                    recordMonitorFailure(
+                        monitorFailure,
+                        publishNotice: false
+                    )
+                } else {
+                    clearMonitorFailure()
                 }
                 phase = .ready
                 publishReloadFailure(diagnostics)
@@ -199,10 +206,11 @@ public final class LibghosttyRuntime: ObservableObject {
             configPlan = plan
             phase = .ready
             if let monitorFailure {
-                diagnostics = [monitorFailure]
-                publishMonitorFailure(monitorFailure)
+                diagnostics = []
+                recordMonitorFailure(monitorFailure)
                 return .appliedWithWarnings(diagnostics)
             }
+            clearMonitorFailure()
             diagnostics = []
             if notifyOnSuccess {
                 configReloadNotice = LibghosttyConfigReloadNotice(
@@ -370,9 +378,10 @@ public final class LibghosttyRuntime: ObservableObject {
         do {
             try monitor.start()
             configMonitor = monitor
+            clearMonitorFailure()
         } catch {
-            diagnostics.append(error.localizedDescription)
             configMonitor = monitor
+            recordMonitorFailure(error.localizedDescription)
         }
     }
 
@@ -404,7 +413,7 @@ public final class LibghosttyRuntime: ObservableObject {
                 files: plan.watchedConfigFiles,
                 errorHandler: { [weak self] error in
                     Task { @MainActor in
-                        self?.diagnostics.append(
+                        self?.recordMonitorFailure(
                             error.localizedDescription
                         )
                     }
@@ -434,14 +443,40 @@ public final class LibghosttyRuntime: ObservableObject {
         )
     }
 
-    private func publishMonitorFailure(_ message: String) {
-        configReloadNotice = LibghosttyConfigReloadNotice(
+    private func recordMonitorFailure(
+        _ message: String,
+        publishNotice: Bool = true
+    ) {
+        let isDuplicate = monitorFailureMessage == message
+        if let previous = monitorFailureMessage,
+           previous != message {
+            diagnostics.removeAll { $0 == previous }
+        }
+        monitorFailureMessage = message
+        if !diagnostics.contains(message) {
+            diagnostics.append(message)
+        }
+        guard publishNotice, !isDuplicate else { return }
+
+        let notice = LibghosttyConfigReloadNotice(
             kind: .error,
             message: """
-            Terminal configuration reloaded, but automatic reload monitoring \
-            is degraded: \(message)
+            Automatic terminal configuration reload monitoring is degraded: \
+            \(message)
             """
         )
+        monitorFailureNoticeID = notice.id
+        configReloadNotice = notice
+    }
+
+    private func clearMonitorFailure() {
+        guard let message = monitorFailureMessage else { return }
+        diagnostics.removeAll { $0 == message }
+        monitorFailureMessage = nil
+        if configReloadNotice?.id == monitorFailureNoticeID {
+            configReloadNotice = nil
+        }
+        monitorFailureNoticeID = nil
     }
 
     private static func ensureLibraryInitialized() -> Bool {

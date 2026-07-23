@@ -334,9 +334,6 @@ public final class LibghosttyConfigFileMonitor {
         stagedFiles: [URL: Int32],
         stagedDirectories: [URL: Int32]
     ) {
-        let retainExtraDirectories = identities.values.contains {
-            !$0.exists
-        }
         for file in Set(fileSources.keys) {
             let shouldRemove = !files.contains(file)
                 || knownIdentity[file] != identities[file]
@@ -351,11 +348,7 @@ public final class LibghosttyConfigFileMonitor {
             let identityChanged = directories.contains(directory)
                 && knownDirectoryIdentity[directory]
                     != directoryIdentities[directory]
-            guard identityChanged
-                || (
-                    isNoLongerNeeded
-                        && !retainExtraDirectories
-                )
+            guard identityChanged || isNoLongerNeeded
             else { continue }
             directorySources[directory]?.cancel()
             directorySources[directory] = nil
@@ -413,6 +406,12 @@ public final class LibghosttyConfigFileMonitor {
 
     func watchedDirectories() -> Set<URL> {
         watchedDirectories(for: desiredFiles)
+    }
+
+    func activeWatchedDirectories() -> Set<URL> {
+        synchronized {
+            Set(directorySources.keys)
+        }
     }
 
     private func watchedDirectories(
