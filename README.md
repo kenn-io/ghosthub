@@ -31,7 +31,7 @@
 
 <p align="center">
   <img
-    src="docs/assets/ghosthub-hero.png"
+    src="https://raw.githubusercontent.com/kenn-io/ghosthub/website-assets/hero.png"
     width="960"
     alt="Ghosthub showing local and remote tmux sessions and kwt worktrees in its sidebar"
   >
@@ -72,7 +72,7 @@ Ghosthub currently requires:
 
 - an Apple Silicon Mac
 - macOS 26 (Tahoe) or newer
-- `tmux` on each machine whose sessions you want to use
+- tmux 3.2 or newer on each machine whose sessions you want to use
 
 1. Download the latest notarized
    [Ghosthub DMG](https://github.com/kenn-io/ghosthub/releases).
@@ -86,9 +86,11 @@ Install tmux on the local Mac with Homebrew if needed:
 brew install tmux
 ```
 
-Remote hosts only need working SSH access and tmux. Installing
-[kwt](https://kwt.sh) remotely is optional unless you want
-that host's projects and worktrees in the sidebar.
+Remote hosts need tmux 3.2 or newer and non-interactive SSH authentication
+backed by a key or SSH agent. Ghosthub discovers remote inventory with
+`BatchMode=yes`, so password-only hosts cannot populate the sidebar. Installing
+[kwt](https://kwt.sh) remotely is optional unless you want that host's projects
+and worktrees in the sidebar.
 
 ## Five-minute guide
 
