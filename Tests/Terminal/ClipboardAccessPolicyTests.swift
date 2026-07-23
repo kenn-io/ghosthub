@@ -7,8 +7,9 @@ struct ClipboardAccessPolicyTests {
     @Test("ordinary clipboard reads supply local contents")
     func ordinaryReadSuppliesClipboardContents() {
         #expect(
-            GhosttyRuntime.clipboardReadContents(
+            LibghosttyRuntime.clipboardReadContents(
                 blocked: false,
+                request: GHOSTTY_CLIPBOARD_REQUEST_OSC_52_READ,
                 contents: "local text"
             ) == "local text"
         )
@@ -18,8 +19,9 @@ struct ClipboardAccessPolicyTests {
     func blockedReadNeverTouchesClipboardContents() {
         var didReadPasteboard = false
 
-        let contents = GhosttyRuntime.clipboardReadContents(
+        let contents = LibghosttyRuntime.clipboardReadContents(
             blocked: true,
+            request: GHOSTTY_CLIPBOARD_REQUEST_OSC_52_READ,
             contents: {
                 didReadPasteboard = true
                 return "local secret"
@@ -30,12 +32,12 @@ struct ClipboardAccessPolicyTests {
         #expect(!didReadPasteboard)
     }
 
-    @Test("a one-shot user paste may supply clipboard contents")
-    func explicitPasteMayReadClipboardContents() {
+    @Test("a semantic paste request may supply clipboard contents")
+    func semanticPasteMayReadClipboardContents() {
         #expect(
-            GhosttyRuntime.clipboardReadContents(
+            LibghosttyRuntime.clipboardReadContents(
                 blocked: true,
-                explicitlyAuthorized: true,
+                request: GHOSTTY_CLIPBOARD_REQUEST_PASTE,
                 contents: "user-selected text"
             ) == "user-selected text"
         )
@@ -44,7 +46,7 @@ struct ClipboardAccessPolicyTests {
     @Test("remote surfaces allow explicit paste confirmation")
     func blockedSurfaceAllowsPaste() {
         #expect(
-            GhosttyRuntime.allowsClipboardConfirmation(
+            LibghosttyRuntime.allowsClipboardConfirmation(
                 blocked: true,
                 request: GHOSTTY_CLIPBOARD_REQUEST_PASTE
             )
@@ -54,7 +56,7 @@ struct ClipboardAccessPolicyTests {
     @Test("remote surfaces deny OSC 52 clipboard reads")
     func blockedSurfaceDeniesOSC52Read() {
         #expect(
-            !GhosttyRuntime.allowsClipboardConfirmation(
+            !LibghosttyRuntime.allowsClipboardConfirmation(
                 blocked: true,
                 request: GHOSTTY_CLIPBOARD_REQUEST_OSC_52_READ
             )
@@ -64,7 +66,7 @@ struct ClipboardAccessPolicyTests {
     @Test("ordinary surfaces retain OSC 52 clipboard behavior")
     func ordinarySurfaceAllowsOSC52Read() {
         #expect(
-            GhosttyRuntime.allowsClipboardConfirmation(
+            LibghosttyRuntime.allowsClipboardConfirmation(
                 blocked: false,
                 request: GHOSTTY_CLIPBOARD_REQUEST_OSC_52_READ
             )
@@ -74,18 +76,18 @@ struct ClipboardAccessPolicyTests {
     @Test("remote OSC 52 writes are rejected before touching the pasteboard")
     func blockedOSC52WriteIsRejected() {
         let entries = [
-            GhosttyRuntime.ClipboardWriteEntry(
+            LibghosttyRuntime.ClipboardWriteEntry(
                 mime: "text/plain",
                 data: "remote payload"
             ),
-            GhosttyRuntime.ClipboardWriteEntry(
-                mime: GhosttyRuntime.osc52ClipboardWriteMIME,
+            LibghosttyRuntime.ClipboardWriteEntry(
+                mime: LibghosttyRuntime.osc52ClipboardWriteMIME,
                 data: ""
             ),
         ]
 
         #expect(
-            GhosttyRuntime.acceptedClipboardWriteEntries(
+            LibghosttyRuntime.acceptedClipboardWriteEntries(
                 blocked: true,
                 entries: entries
             ) == nil
@@ -94,13 +96,13 @@ struct ClipboardAccessPolicyTests {
 
     @Test("user-initiated copy remains available on remote surfaces")
     func blockedSurfaceAcceptsOrdinaryCopy() {
-        let copy = GhosttyRuntime.ClipboardWriteEntry(
+        let copy = LibghosttyRuntime.ClipboardWriteEntry(
             mime: "text/plain",
             data: "selected text"
         )
 
         #expect(
-            GhosttyRuntime.acceptedClipboardWriteEntries(
+            LibghosttyRuntime.acceptedClipboardWriteEntries(
                 blocked: true,
                 entries: [copy]
             ) == [copy]
@@ -109,17 +111,17 @@ struct ClipboardAccessPolicyTests {
 
     @Test("local OSC 52 writes discard the private origin marker")
     func ordinarySurfaceAcceptsOSC52WithoutMarker() {
-        let payload = GhosttyRuntime.ClipboardWriteEntry(
+        let payload = LibghosttyRuntime.ClipboardWriteEntry(
             mime: "text/plain",
             data: "local payload"
         )
-        let marker = GhosttyRuntime.ClipboardWriteEntry(
-            mime: GhosttyRuntime.osc52ClipboardWriteMIME,
+        let marker = LibghosttyRuntime.ClipboardWriteEntry(
+            mime: LibghosttyRuntime.osc52ClipboardWriteMIME,
             data: ""
         )
 
         #expect(
-            GhosttyRuntime.acceptedClipboardWriteEntries(
+            LibghosttyRuntime.acceptedClipboardWriteEntries(
                 blocked: false,
                 entries: [payload, marker]
             ) == [payload]

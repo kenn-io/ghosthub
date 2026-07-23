@@ -6,9 +6,9 @@ struct ConfigSectionEditorTests {
 
     // MARK: - renderTerminalAppearanceOverlay
 
-    @Test func renderTerminalAppearanceOverlay_nilForFollowGhostty() {
+    @Test func renderTerminalAppearanceOverlay_nilForConfig() {
         let prefs = TerminalAppearancePreferences(
-            theme: .followGhostty,
+            theme: .followConfig,
             usesCustomFont: false,
             fontFamily: "Berkeley Mono",
             fontSize: 13
@@ -22,7 +22,7 @@ struct ConfigSectionEditorTests {
 
     @Test func renderTerminalAppearanceOverlay_includesCustomFont() {
         let prefs = TerminalAppearancePreferences(
-            theme: .followGhostty,
+            theme: .followConfig,
             usesCustomFont: true,
             fontFamily: "Monaco",
             fontSize: 14.5

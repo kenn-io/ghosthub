@@ -3,7 +3,7 @@ import GhosthubTestSupport
 import Testing
 @testable import GhosthubTerminalSupport
 
-struct GhosttyConfigFileMonitorTests {
+struct LibghosttyConfigFileMonitorTests {
     @Test("monitor fires when the config file changes")
     func monitorFiresWhenConfigFileChanges() throws {
         try TemporaryConfigMonitorFixture.withFixture(
@@ -27,13 +27,13 @@ struct GhosttyConfigFileMonitorTests {
                     "missing.conf",
                     isDirectory: false
                 )
-            let monitor = GhosttyConfigFileMonitor(
+            let monitor = LibghosttyConfigFileMonitor(
                 fileURL: missingFile,
                 changeHandler: {}
             )
 
             expectThrowsEqual(
-                GhosttyConfigFileMonitorError.openFile(
+                LibghosttyConfigFileMonitorError.openFile(
                     missingFile, ENOENT
                 )
             ) {

@@ -50,10 +50,10 @@ extension WorkspaceSceneModel {
     }
 
     private func handleChildExit(
-        _ action: GhosttyRuntimeActionEvent
+        _ action: LibghosttyRuntimeActionEvent
     ) {
         guard case .childExited = action else { return }
-        // TODO: Ghostty's child-exit action does not yet carry
+        // TODO: libghostty's child-exit action does not yet carry
         // surface identity, so we cannot determine which worktree
         // the exited process belonged to. Once upstream attaches
         // surface metadata, re-enable notifications here:

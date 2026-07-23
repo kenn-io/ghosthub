@@ -91,7 +91,7 @@ enum AttachedTmuxInputEncoder {
         guard let text, !text.isEmpty else { return nil }
         let encoded = Data(text.utf8)
 
-        // Ghostty's translation-modifier result is authoritative for
+        // libghostty's translation-modifier result is authoritative for
         // macos-option-as-alt. Text comparison is not: dead keys and input
         // methods may also transform text while Option remains ordinary
         // character input.

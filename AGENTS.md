@@ -51,7 +51,9 @@ Ghosthub is a **worktree-centric terminal multiplexer** for macOS.
 - Avoid ceremonial naming. Prefer the shortest name that is still clear.
 - Do not prefix files, types, tests, helpers, or fixtures with `Ghosthub` when the surrounding module or directory already provides that context.
 - Prefer names like `HostProtocolTests` over `GhosthubHostProtocolTests`.
-- Keep product or integration prefixes only when they add real disambiguation, such as `Ghostty...` for Ghostty-specific integration surfaces.
+- Use `Libghostty...` for Ghosthub-owned wrappers around the embedded terminal library.
+- Use `Ghostty` only when referring specifically to the upstream Ghostty project or source tree, Ghostty.app, its license, its configuration format, or upstream API/module names such as `GhosttyKit` and `ghostty_surface_t`.
+- Never describe Ghosthub as embedding or running Ghostty. It embeds `libghostty`; Ghostty.app is a separate application.
 - When touching existing code, clean up obviously redundant naming drift instead of extending it.
 
 ## Terminal Parity Rules
@@ -59,9 +61,9 @@ Ghosthub is a **worktree-centric terminal multiplexer** for macOS.
 This is the most failure-prone part of the project. Treat it as a hard constraint.
 
 - Ghosthub must behave like a normal macOS terminal app for shell startup and keybindings.
-- Ghosthub is isolated from Ghostty.app configuration and state, but it should preserve Ghostty-style shell startup semantics inside the embedded terminal.
-- Do not disable shell integration to work around keybinding bugs. Ghosthub relies on Ghostty-style shell integration for correct zsh startup behavior.
-- Do not force a custom local shell command unless there is a very strong reason. Let the embedded Ghostty runtime launch the user shell using its normal macOS login-shell path.
+- Ghosthub is isolated from Ghostty.app configuration and state, but its embedded libghostty runtime should preserve the upstream library's macOS shell-startup semantics.
+- Do not disable shell integration to work around keybinding bugs. Ghosthub relies on libghostty's shell integration for correct zsh startup behavior.
+- Do not force a custom local shell command unless there is a very strong reason. Let libghostty launch the user shell using its normal macOS login-shell path.
 - Do not leak launcher-terminal environment into embedded shells. In particular, `EDITOR` and `VISUAL` from the terminal used to launch Ghosthub can change zsh keymaps and break `Ctrl-A`, `Ctrl-E`, `Ctrl-K`, and `Option-D`.
 - Keep `TERM_PROGRAM` Ghosthub-specific (`ghosthub`), but preserve working shell behavior.
 - Do not pin `shell-integration-features` to work around cursor or keybinding issues unless Ghosthub exposes that behavior as a deliberate user setting.
@@ -81,7 +83,7 @@ If you touch terminal startup, shell environment, config layering, embedded libg
 If the change is specifically about interactive shell behavior, also verify the existing smoke coverage around:
 
 - dirty launcher env not breaking default shell bindings
-- default Ghostty shell integration loading user zsh startup files
+- default libghostty shell integration loading user zsh startup files
 - `Ctrl-A` / `Option-D` behavior through the workspace-hosted terminal path
 
 ## Practical Guardrails
@@ -98,7 +100,7 @@ If the change is specifically about interactive shell behavior, also verify the 
 - `Sources/Workspace/`: Pure workspace, host, project, worktree, and session models.
 - `Sources/Settings/`: Native settings and preferences.
 - `Sources/Terminal/`: `libghostty` integration and surface management.
-- `Sources/TerminalSupport/`: Ghostty config/bootstrap support that can compile without libghostty.
+- `Sources/TerminalSupport/`: libghostty config/bootstrap support that can compile without the linked library.
 - `Sources/Persistence/`: Database schema, models, and GRDB repositories.
 - `tools/`: Python-based build, bootstrap, and packaging automation.
 - `Tests/`: Swift and Python test suites.

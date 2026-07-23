@@ -61,7 +61,7 @@ macOS interface that makes the whole fleet easy to navigate.
 - **Native tmux behavior.** Use the tmux window, pane, keybinding, history, and
   plugin setup you already trust. Closing Ghosthub detaches; it does not kill
   the session.
-- **Powered by libghostty.** GPU-accelerated terminal rendering and Ghostty's
+- **Powered by libghostty.** GPU-accelerated terminal rendering and the library's
   configuration format, with an isolated Ghosthub-owned config.
 - **Built for macOS.** A lightweight SwiftUI/AppKit application—no Electron
   and no background daemon.

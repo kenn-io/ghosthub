@@ -33,8 +33,8 @@ public final class SettingsStore: ObservableObject {
     }
 
     public static let shared = SettingsStore(
-        configPipeline: GhosttyConfigPipeline(
-            paths: GhosttyConfigPaths(
+        configPipeline: LibghosttyConfigPipeline(
+            paths: LibghosttyConfigPaths(
                 configDirectory: ConfigHome.resolved()
             )
         )
@@ -51,7 +51,7 @@ public final class SettingsStore: ObservableObject {
 
     public static let defaultTerminalAppearancePreferences =
         TerminalAppearancePreferences(
-            theme: .followGhostty,
+            theme: .followConfig,
             usesCustomFont: false,
             fontFamily: "Berkeley Mono",
             fontSize: 13
@@ -76,7 +76,7 @@ public final class SettingsStore: ObservableObject {
     @Published public private(set) var sshHosts: [SSHHost]
     @Published public private(set) var lastErrorMessage: String?
 
-    private let configPipeline: GhosttyConfigPipeline
+    private let configPipeline: LibghosttyConfigPipeline
     private let userDefaults: UserDefaults
 
     public var terminalConfigFile: URL {
@@ -88,7 +88,7 @@ public final class SettingsStore: ObservableObject {
     }
 
     public init(
-        configPipeline: GhosttyConfigPipeline = .live,
+        configPipeline: LibghosttyConfigPipeline = .live,
         userDefaults: UserDefaults = .standard
     ) {
         self.configPipeline = configPipeline
@@ -195,14 +195,14 @@ public final class SettingsStore: ObservableObject {
         updateTerminalAppearancePreferences { preferences in
             preferences.usesCustomFont = enabled
             if enabled {
-                seedFontFromGhosttyConfig(&preferences)
+                seedFontFromTerminalConfig(&preferences)
             }
         }
         persistTerminalAppearanceDefaults()
         persistTerminalAppearancePreferences()
     }
 
-    private func seedFontFromGhosttyConfig(
+    private func seedFontFromTerminalConfig(
         _ preferences: inout TerminalAppearancePreferences
     ) {
         let defaults = Self.defaultTerminalAppearancePreferences
@@ -356,7 +356,7 @@ public final class SettingsStore: ObservableObject {
             )
 
             if didCreate, contents.isEmpty {
-                contents = GhosttyConfigPipeline.defaultGlobalConfigContents
+                contents = LibghosttyConfigPipeline.defaultGlobalConfigContents
             }
 
             let managedBlock = ManagedBlockEditor.renderManagedTerminalBlock(
@@ -451,7 +451,7 @@ public final class SettingsStore: ObservableObject {
     }
 
     private static func loadTerminalPreferences(
-        using configPipeline: GhosttyConfigPipeline,
+        using configPipeline: LibghosttyConfigPipeline,
         userDefaults: UserDefaults
     ) -> TerminalPreferences {
         let defaults = defaultTerminalPreferences

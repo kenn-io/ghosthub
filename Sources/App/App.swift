@@ -18,7 +18,7 @@ enum QuitPolicy {
 
 @main
 struct GhosthubApp: App {
-    @StateObject private var terminalRuntime = GhosttyRuntime.shared
+    @StateObject private var terminalRuntime = LibghosttyRuntime.shared
     @StateObject private var settingsStore = SettingsStore.shared
     #if canImport(AppKit)
     private let updateController = UpdateController()
@@ -32,7 +32,7 @@ struct GhosthubApp: App {
     #endif
 
     init() {
-        GhosttyBootstrap.preconditionReady()
+        LibghosttyBootstrap.preconditionReady()
         AppLogger.shared.info("Ghosthub launched")
         WorkspaceSceneBootstrap.ensureBootstrapped()
     }

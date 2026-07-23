@@ -77,7 +77,7 @@ public enum TmuxAttachmentLaunchMode: String, Codable, Equatable, Sendable {
     case create
 }
 
-/// An ordinary tmux client launched inside a Ghostty terminal surface.
+/// An ordinary tmux client launched inside a libghostty terminal surface.
 /// Tmux owns rendering, windows, panes, history, input, and process lifetime.
 public struct TmuxAttachmentInfo: Equatable, Sendable {
     public let sessionName: String

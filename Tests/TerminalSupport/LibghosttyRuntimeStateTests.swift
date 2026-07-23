@@ -3,9 +3,9 @@ import Foundation
 import Testing
 @testable import GhosthubTerminalSupport
 
-private extension GhosttyRuntimeState {
+private extension LibghosttyRuntimeState {
     func recordActions(
-        _ actions: GhosttyRuntimeActionEvent...
+        _ actions: LibghosttyRuntimeActionEvent...
     ) {
         for action in actions {
             recordAction(action)
@@ -14,8 +14,8 @@ private extension GhosttyRuntimeState {
 }
 
 @MainActor
-struct GhosttyRuntimeStateTests {
-    var state = GhosttyRuntimeState()
+struct LibghosttyRuntimeStateTests {
+    var state = LibghosttyRuntimeState()
 
     @Test("recordAction updates the last action")
     func recordActionUpdatesLastAction() {
@@ -39,7 +39,7 @@ struct GhosttyRuntimeStateTests {
 
     @Test("childExitSubject receives childExited actions")
     func childExitSubjectReceivesChildExitedAction() {
-        let action = GhosttyRuntimeActionEvent.childExited(
+        let action = LibghosttyRuntimeActionEvent.childExited(
             exitCode: 0,
             runtimeMS: 5000
         )
@@ -74,15 +74,15 @@ struct GhosttyRuntimeStateTests {
             state.recordAction(.toggleSplitZoom)
         }
 
-        let expected: [GhosttyRuntimeSplitAction] = [
-            GhosttyRuntimeSplitAction(
+        let expected: [LibghosttyRuntimeSplitAction] = [
+            LibghosttyRuntimeSplitAction(
                 action: .newSplit(.right),
                 sourceSurfaceIdentity: 41
             ),
-            GhosttyRuntimeSplitAction(action: .gotoSplit(.left)),
-            GhosttyRuntimeSplitAction(action: .resizeSplit(.up, 10)),
-            GhosttyRuntimeSplitAction(action: .equalizeSplits),
-            GhosttyRuntimeSplitAction(action: .toggleSplitZoom),
+            LibghosttyRuntimeSplitAction(action: .gotoSplit(.left)),
+            LibghosttyRuntimeSplitAction(action: .resizeSplit(.up, 10)),
+            LibghosttyRuntimeSplitAction(action: .equalizeSplits),
+            LibghosttyRuntimeSplitAction(action: .toggleSplitZoom),
         ]
         #expect(received == expected)
     }

@@ -14,7 +14,7 @@ and configured SSH hosts. There are two inventory sources:
 - **unbound sessions:** every other session returned by direct `tmux
   list-sessions` discovery on the host.
 
-Both open through the same ordinary tmux client in one Ghostty surface. A
+Both open through the same ordinary tmux client in one libghostty surface. A
 session created by Middleman is visible when it exists on the host tmux server,
 but Ghosthub does not consult Middleman to identify, create, attach, mutate, or
 destroy it.
@@ -90,11 +90,11 @@ Tmux remains alive on the remote host while the network is unavailable. After
 connectivity returns, the client reattaches to the same exact session and tmux
 renders its authoritative state. Remote terminal surfaces cannot read the
 local Mac clipboard through terminal escape sequences, regardless of the
-user's `clipboard-read` or `clipboard-write` configuration. Explicit
-Command-V gives Ghostty one synchronous, locally initiated clipboard-read
-authorization and invokes Ghostty's normal paste action. Ghostty retains
-bracketed-paste framing and requires confirmation before unsafe unbracketed
-text can reach the PTY.
+user's `clipboard-read` or `clipboard-write` configuration. libghostty exposes
+the semantic type of every clipboard request: Ghosthub supplies clipboard
+contents only for a configured `paste_from_clipboard` action, independent of
+which key triggers it. libghostty retains bracketed-paste framing and requires
+confirmation before unsafe unbracketed text can reach the PTY.
 
 ## Inventory and Startup
 
@@ -132,7 +132,7 @@ session model and die with the app process.
 - Do not read or depend on Ghostty.app global config.
 - Do not install Ghosthub split, zoom, or tab keybindings. Native tmux owns
   those interactions and receives the terminal's ordinary input unchanged.
-- Do not disable Ghostty-style shell integration to work around keybinding
+- Do not disable libghostty shell integration to work around keybinding
   bugs.
 
 ## Verification

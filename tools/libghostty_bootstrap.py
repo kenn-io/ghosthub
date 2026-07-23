@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-GHOSTHUB_BOOTSTRAP_VERSION = 19
+GHOSTHUB_BOOTSTRAP_VERSION = 20
 GHOSTHUB_GHOSTTY_BUNDLE_ID = "com.ghosthub"
 GHOSTHUB_TERM_PROGRAM = "ghosthub"
 
@@ -270,6 +270,9 @@ def apply_ghosthub_source_patches(paths: BootstrapPaths) -> None:
     patch_surface_inject_output_export(
         paths.source_checkout_root / "src" / "apprt" / "embedded.zig"
     )
+    patch_clipboard_request_type_export(
+        paths.source_checkout_root / "src" / "apprt" / "embedded.zig"
+    )
     patch_child_write_header(paths.source_checkout_root / "include" / "ghostty.h")
     patch_child_write_message(paths.source_checkout_root / "src" / "apprt" / "surface.zig")
     patch_child_write_dispatch(paths.source_checkout_root / "src" / "Surface.zig")
@@ -395,6 +398,23 @@ void ghostty_surface_preedit(ghostty_surface_t, const char*, uintptr_t);
 """,
         already_applied="void ghostty_surface_inject_output(ghostty_surface_t, const char*, uintptr_t);",
         description="Ghostty public inject-output declaration",
+    )
+
+    patch_source_file(
+        path,
+        original="""void ghostty_surface_complete_clipboard_request(ghostty_surface_t,
+                                                const char*,
+                                                void*,
+                                                bool);
+""",
+        replacement="""ghostty_clipboard_request_e ghostty_clipboard_request_type(void*);
+void ghostty_surface_complete_clipboard_request(ghostty_surface_t,
+                                                const char*,
+                                                void*,
+                                                bool);
+""",
+        already_applied="ghostty_clipboard_request_e ghostty_clipboard_request_type(void*);",
+        description="libghostty clipboard request-type declaration",
     )
 
 
@@ -590,6 +610,31 @@ def patch_surface_inject_output_export(path: Path) -> None:
 """,
         already_applied="export fn ghostty_surface_inject_output(",
         description="Ghostty surface inject-output export",
+    )
+
+
+def patch_clipboard_request_type_export(path: Path) -> None:
+    patch_source_file(
+        path,
+        original="""    /// Complete a clipboard read request started via the read callback.
+    /// This can only be called once for a given request. Once it is called
+    /// with a request the request pointer will be invalidated.
+    export fn ghostty_surface_complete_clipboard_request(
+""",
+        replacement="""    /// Return the semantic type of an active clipboard request.
+    export fn ghostty_clipboard_request_type(
+        state: *apprt.ClipboardRequest,
+    ) c_int {
+        return @intCast(@intFromEnum(std.meta.activeTag(state.*)));
+    }
+
+    /// Complete a clipboard read request started via the read callback.
+    /// This can only be called once for a given request. Once it is called
+    /// with a request the request pointer will be invalidated.
+    export fn ghostty_surface_complete_clipboard_request(
+""",
+        already_applied="export fn ghostty_clipboard_request_type(",
+        description="libghostty clipboard request-type export",
     )
 
 

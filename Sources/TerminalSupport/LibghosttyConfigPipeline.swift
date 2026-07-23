@@ -1,13 +1,13 @@
 import Foundation
 
-public enum GhosttyRuntimePhase: Equatable, Sendable {
+public enum LibghosttyRuntimePhase: Equatable, Sendable {
     case unavailable
     case loadingConfig
     case ready
     case failed(String)
 }
 
-public struct GhosttyConfigPaths: Equatable, Sendable {
+public struct LibghosttyConfigPaths: Equatable, Sendable {
     public var configDirectory: URL
 
     public init(configDirectory: URL) {
@@ -131,7 +131,7 @@ public struct GhosttyConfigPaths: Equatable, Sendable {
     }
 }
 
-public struct GhosttyConfigLoadPlan: Equatable, Sendable {
+public struct LibghosttyConfigLoadPlan: Equatable, Sendable {
     public var globalConfigFile: URL
     public var projectConfigFile: URL?
     public var terminalAppearanceConfigFile: URL?
@@ -153,7 +153,7 @@ public struct GhosttyConfigLoadPlan: Equatable, Sendable {
     }
 }
 
-public enum GhosttyConfigPipelineError: LocalizedError, Equatable {
+public enum LibghosttyConfigPipelineError: LocalizedError, Equatable {
     case createConfigDirectory(URL, String)
     case writeDefaultConfig(URL, String)
 
@@ -167,7 +167,7 @@ public enum GhosttyConfigPipelineError: LocalizedError, Equatable {
     }
 }
 
-public struct GhosttyConfigPipeline {
+public struct LibghosttyConfigPipeline {
     public static let defaultGlobalConfigContents = """
     # ~/.config/ghosthub/ghostty.conf
     # Terminal configuration for Ghosthub (standard Ghostty config format)
@@ -192,10 +192,10 @@ public struct GhosttyConfigPipeline {
         Self(paths: .live)
     }
 
-    public var paths: GhosttyConfigPaths
+    public var paths: LibghosttyConfigPaths
     public var fileManager: FileManager
 
-    public init(paths: GhosttyConfigPaths = .live, fileManager: FileManager = .default) {
+    public init(paths: LibghosttyConfigPaths = .live, fileManager: FileManager = .default) {
         self.paths = paths
         self.fileManager = fileManager
     }
@@ -215,7 +215,7 @@ public struct GhosttyConfigPipeline {
                 attributes: nil
             )
         } catch {
-            throw GhosttyConfigPipelineError.createConfigDirectory(
+            throw LibghosttyConfigPipelineError.createConfigDirectory(
                 paths.configDirectory,
                 error.localizedDescription
             )
@@ -228,7 +228,7 @@ public struct GhosttyConfigPipeline {
                 encoding: .utf8
             )
         } catch {
-            throw GhosttyConfigPipelineError.writeDefaultConfig(
+            throw LibghosttyConfigPipelineError.writeDefaultConfig(
                 configFile,
                 error.localizedDescription
             )
@@ -309,7 +309,7 @@ public struct GhosttyConfigPipeline {
         )
     }
 
-    public func loadPlan(projectRoot: URL? = nil) throws -> GhosttyConfigLoadPlan {
+    public func loadPlan(projectRoot: URL? = nil) throws -> LibghosttyConfigLoadPlan {
         let createdGlobalConfig = try prepareGlobalConfig()
         let projectConfigFile = projectRoot.map(paths.projectConfigFile(for:))
         let existingProjectConfig = projectConfigFile.flatMap { candidate in
@@ -328,7 +328,7 @@ public struct GhosttyConfigPipeline {
             orderedConfigFiles.append(existingAppearanceConfig)
         }
 
-        return GhosttyConfigLoadPlan(
+        return LibghosttyConfigLoadPlan(
             globalConfigFile: paths.globalConfigFile,
             projectConfigFile: existingProjectConfig,
             terminalAppearanceConfigFile: existingAppearanceConfig,

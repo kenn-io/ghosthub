@@ -56,7 +56,7 @@ private struct NativeTmuxAttachment {
 
 /// Hosts ordinary tmux clients for kwt workspaces and unbound sessions.
 /// Tmux owns every window, pane, and byte of history; this coordinator owns
-/// only binary resolution and the disposable local Ghostty presentation.
+/// only binary resolution and the disposable local libghostty presentation.
 @MainActor
 final class NativeTmuxSessionCoordinator {
     private let terminalCoordinator: any TmuxSurfaceStoring

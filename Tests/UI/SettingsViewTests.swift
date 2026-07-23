@@ -20,8 +20,8 @@ final class SettingsViewTests: XCTestCase {
         let suiteName = "ghosthub.settings.view.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         let store = SettingsStore(
-            configPipeline: GhosttyConfigPipeline(
-                paths: GhosttyConfigPaths(
+            configPipeline: LibghosttyConfigPipeline(
+                paths: LibghosttyConfigPaths(
                     configDirectory: tempRoot.appendingPathComponent(
                         ".config",
                         isDirectory: true

@@ -418,7 +418,7 @@ struct WorkspaceWindow: View {
     let applicationDelegate: ApplicationDelegate
     #endif
     @StateObject private var sceneModel = WorkspaceSceneModel()
-    @EnvironmentObject private var terminalRuntime: GhosttyRuntime
+    @EnvironmentObject private var terminalRuntime: LibghosttyRuntime
     @ObservedObject private var settingsStore = SettingsStore.shared
     private let registry = WindowRegistry.shared
 

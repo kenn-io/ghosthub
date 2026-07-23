@@ -339,7 +339,7 @@ final class AttachedTmuxInputTests: XCTestCase {
     }
 
     /// With macos-option-as-alt enabled, translated text differs from the
-    /// original Option glyph. Pane routing must preserve Ghostty's Meta prefix.
+    /// original Option glyph. Pane routing must preserve libghostty's Meta prefix.
     func testAttachedTmuxInputOptionDWithMetaTranslationSendsEscapeD() {
         let data = AttachedTmuxInputEncoder.inputData(
             isRelease: false,

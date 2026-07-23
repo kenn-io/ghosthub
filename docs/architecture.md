@@ -91,7 +91,7 @@ once kwt exposes one; until then project registration remains in kwt itself.
 | `Sources/UI/` | Reusable SwiftUI/AppKit presentation components |
 | `Sources/Settings/` | Native settings and preferences |
 | `Sources/Terminal/` | libghostty-backed terminal runtime and surface views |
-| `Sources/TerminalSupport/` | Ghostty config/bootstrap support that can compile without libghostty |
+| `Sources/TerminalSupport/` | libghostty config/bootstrap support that can compile without the linked library |
 | `Sources/TmuxControl/` | Small native tmux/SSH attachment command model |
 | `Sources/Workspace/` | Pure workspace, host, project, worktree, and session models |
 | `Sources/Persistence/` | GRDB repositories for app-local state |
@@ -109,7 +109,7 @@ and server-side lifetime.
 
 Ghosthub normalizes only tmux's session-scoped visual chrome before attaching:
 the status and message styles resolve through the foreground and background
-from Ghosthub's Ghostty-format terminal configuration, with reversed terminal
+from Ghosthub's Ghostty-compatible terminal configuration, with reversed terminal
 colors highlighting the status line. This styling is best-effort and can never
 prevent attachment. Tmux still owns all interaction behavior; Ghosthub does
 not modify its prefix, key tables, mouse mode, window/pane commands, history,

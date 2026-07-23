@@ -8,36 +8,36 @@ import XCTest
 @testable import GhosthubTerminalSupport
 
 @MainActor
-final class GhosttyRuntimeSmokeTests: XCTestCase {
+final class LibghosttyRuntimeSmokeTests: XCTestCase {
 
     /// Retained across the entire test suite so ghostty_app_free is
     /// never called while deferred ghostty_surface_free tasks are
     /// still pending. The process exits after testing, so this is
     /// never explicitly freed.
-    private static var retainedRuntime: GhosttyRuntime?
+    private static var retainedRuntime: LibghosttyRuntime?
 
     // MARK: - Helpers
 
     /// Creates an isolated runtime with automatic temp directory
     /// cleanup registered via `addTeardownBlock`.
     private func makeIsolatedRuntime() throws -> (
-        runtime: GhosttyRuntime,
-        pipeline: GhosttyConfigPipeline,
+        runtime: LibghosttyRuntime,
+        pipeline: LibghosttyConfigPipeline,
         tempRoot: URL
     ) {
-        try skipUnlessGhosttyReady()
+        try skipUnlessLibghosttyReady()
         let (pipeline, tempRoot) = makeIsolatedPipeline()
         addTeardownBlock {
             try? FileManager.default.removeItem(at: tempRoot)
         }
-        let runtime = GhosttyRuntime(pipeline: pipeline)
+        let runtime = LibghosttyRuntime(pipeline: pipeline)
         return (runtime, pipeline, tempRoot)
     }
 
-    private func retainedRuntime() -> GhosttyRuntime {
+    private func retainedRuntime() -> LibghosttyRuntime {
         if Self.retainedRuntime == nil {
             let (pipeline, _) = makeIsolatedPipeline()
-            Self.retainedRuntime = GhosttyRuntime(pipeline: pipeline)
+            Self.retainedRuntime = LibghosttyRuntime(pipeline: pipeline)
         }
         return Self.retainedRuntime!
     }
@@ -46,7 +46,7 @@ final class GhosttyRuntimeSmokeTests: XCTestCase {
         coordinator: TerminalSurfaceCoordinator,
         config: TerminalSurfaceConfiguration
     ) {
-        try skipUnlessGhosttyReady()
+        try skipUnlessLibghosttyReady()
         let runtime = retainedRuntime()
         return (
             TerminalSurfaceCoordinator(runtime: runtime),
@@ -207,17 +207,17 @@ final class GhosttyRuntimeSmokeTests: XCTestCase {
 
     func testPasteboardTypeMappingPreservesMimeSpecificTypes() {
         XCTAssertEqual(
-            GhosttyRuntime.pasteboardType(forMIMEType: "text/plain"),
+            LibghosttyRuntime.pasteboardType(forMIMEType: "text/plain"),
             .string
         )
         XCTAssertEqual(
-            GhosttyRuntime.pasteboardType(
+            LibghosttyRuntime.pasteboardType(
                 forMIMEType: "text/html"
             )?.rawValue,
             "public.html"
         )
         XCTAssertNotNil(
-            GhosttyRuntime.pasteboardType(
+            LibghosttyRuntime.pasteboardType(
                 forMIMEType: "application/x-ghosthub-custom"
             ),
             "Unknown MIME types should still map to a usable pasteboard type"
@@ -225,7 +225,7 @@ final class GhosttyRuntimeSmokeTests: XCTestCase {
     }
 
     func testRemoteClipboardPolicyAllowsCopyButRejectsOSC52Write() throws {
-        try skipUnlessGhosttyReady()
+        try skipUnlessLibghosttyReady()
         let runtime = retainedRuntime()
         let appHandle = try XCTUnwrap(runtime.unsafeAppHandle)
         let view = TerminalSurfaceView(
@@ -250,7 +250,7 @@ final class GhosttyRuntimeSmokeTests: XCTestCase {
                     data: data
                 )]
                 contents.withUnsafeBufferPointer { buffer in
-                    GhosttyRuntime.handleWriteClipboard(
+                    LibghosttyRuntime.handleWriteClipboard(
                         userdata: userdata,
                         location: GHOSTTY_CLIPBOARD_STANDARD,
                         content: buffer.baseAddress,
@@ -267,14 +267,14 @@ final class GhosttyRuntimeSmokeTests: XCTestCase {
 
         "text/plain".withCString { mime in
             "remote payload".withCString { data in
-                GhosttyRuntime.osc52ClipboardWriteMIME.withCString { marker in
+                LibghosttyRuntime.osc52ClipboardWriteMIME.withCString { marker in
                     "".withCString { empty in
                         let contents = [
                             ghostty_clipboard_content_s(mime: mime, data: data),
                             ghostty_clipboard_content_s(mime: marker, data: empty),
                         ]
                         contents.withUnsafeBufferPointer { buffer in
-                            GhosttyRuntime.handleWriteClipboard(
+                            LibghosttyRuntime.handleWriteClipboard(
                                 userdata: userdata,
                                 location: GHOSTTY_CLIPBOARD_STANDARD,
                                 content: buffer.baseAddress,
@@ -537,13 +537,13 @@ final class GhosttyRuntimeSmokeTests: XCTestCase {
     }
 
     func testSurfaceCreationProducesValidHandle() throws {
-        try skipUnlessGhosttyReady()
+        try skipUnlessLibghosttyReady()
 
         let runtime = retainedRuntime()
         XCTAssertEqual(runtime.phase, .ready)
 
         guard let appHandle = runtime.unsafeAppHandle else {
-            return XCTFail("Expected Ghostty runtime app handle")
+            return XCTFail("Expected libghostty runtime app handle")
         }
 
         let view = TerminalSurfaceView(

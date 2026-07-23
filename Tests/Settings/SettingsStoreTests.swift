@@ -10,7 +10,7 @@ final class SettingsStoreTests {
     private let tempRoot: URL
     private let suiteName: String
     private let defaults: UserDefaults
-    private let paths: GhosttyConfigPaths
+    private let paths: LibghosttyConfigPaths
 
     init() throws {
         tempRoot = FileManager.default.temporaryDirectory
@@ -23,7 +23,7 @@ final class SettingsStoreTests {
         let configDir = tempRoot
             .appendingPathComponent(".config", isDirectory: true)
             .appendingPathComponent("ghosthub", isDirectory: true)
-        paths = GhosttyConfigPaths(configDirectory: configDir)
+        paths = LibghosttyConfigPaths(configDirectory: configDir)
 
         suiteName = "ghosthub.settings.tests.\(UUID().uuidString)"
         defaults = try #require(
@@ -41,7 +41,7 @@ final class SettingsStoreTests {
 
     private func makeSUT() -> SettingsStore {
         SettingsStore(
-            configPipeline: GhosttyConfigPipeline(paths: paths),
+            configPipeline: LibghosttyConfigPipeline(paths: paths),
             userDefaults: defaults
         )
     }
@@ -191,7 +191,7 @@ final class SettingsStoreTests {
     }
 
     @Test
-    func testUpdatingTerminalAppearanceWritesGhosthubOverlayInsteadOfGhosttyConfig() throws {
+    func testUpdatingTerminalAppearanceWritesOverlayWithoutMutatingConfig() throws {
         let store = makeSUT()
 
         store.setTerminalTheme(.homebrew)
@@ -221,7 +221,7 @@ final class SettingsStoreTests {
     }
 
     @Test
-    func testFollowingGhosttyConfigRemovesTerminalAppearanceOverlay() {
+    func testFollowingTerminalConfigRemovesTerminalAppearanceOverlay() {
         let store = makeSUT()
 
         store.setTerminalTheme(.ocean)
@@ -231,7 +231,7 @@ final class SettingsStoreTests {
             )
         )
 
-        store.setTerminalTheme(.followGhostty)
+        store.setTerminalTheme(.followConfig)
         store.setUseCustomTerminalFont(false)
 
         #expect(
@@ -243,7 +243,7 @@ final class SettingsStoreTests {
 
     @Test
     func testWorktreePreferencesPersistAcrossStoreReload() {
-        let pipeline = GhosttyConfigPipeline(paths: paths)
+        let pipeline = LibghosttyConfigPipeline(paths: paths)
         let store = SettingsStore(
             configPipeline: pipeline,
             userDefaults: defaults
@@ -475,7 +475,7 @@ final class SettingsStoreTests {
 
     @Test
     func testManagedBlockOverridesTrailingManualSettings() throws {
-        let pipeline = GhosttyConfigPipeline(paths: paths)
+        let pipeline = LibghosttyConfigPipeline(paths: paths)
 
         // Bootstrap the config file with a managed block, then
         // append a manual override after it.
@@ -519,7 +519,7 @@ final class SettingsStoreTests {
     }
 
     @Test
-    func testEnablingFontOverrideSeedsFromGhosttyConfig() throws {
+    func testEnablingFontOverrideSeedsFromTerminalConfig() throws {
         try writeGlobalConfig("""
         font-family = JetBrains Mono
         font-size = 16
@@ -552,7 +552,7 @@ final class SettingsStoreTests {
     }
 
     @Test
-    func testEnablingFontOverrideSeedsFromQuotedGhosttyConfig() throws {
+    func testEnablingFontOverrideSeedsFromQuotedTerminalConfig() throws {
         try writeGlobalConfig("""
         font-family = "Fira Code"
         font-size = 14
@@ -574,7 +574,7 @@ final class SettingsStoreTests {
     }
 
     @Test
-    func testEnablingFontOverrideSeedsFromSingleQuotedGhosttyConfig() throws {
+    func testEnablingFontOverrideSeedsFromSingleQuotedTerminalConfig() throws {
         try writeGlobalConfig("""
         font-family = 'IBM Plex Mono'
         font-size = 15

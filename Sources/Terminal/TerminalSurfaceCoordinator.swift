@@ -3,7 +3,7 @@ import GhosthubWorkspace
 
 @MainActor
 public final class TerminalSurfaceCoordinator: ObservableObject {
-    private let runtime: GhosttyRuntime
+    private let runtime: LibghosttyRuntime
     private var surfaces: [SurfaceKey: TerminalSurfaceView] = [:]
     private var surfaceKeyMap: [ObjectIdentifier: SurfaceKey] = [:]
     private var surfaceIdentityMap: [UInt: SurfaceKey] = [:]
@@ -11,7 +11,7 @@ public final class TerminalSurfaceCoordinator: ObservableObject {
 
     public var onSurfaceCreated: ((SurfaceKey, TerminalSurfaceView) -> Void)?
 
-    public init(runtime: GhosttyRuntime) {
+    public init(runtime: LibghosttyRuntime) {
         self.runtime = runtime
     }
 

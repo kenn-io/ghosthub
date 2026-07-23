@@ -16,21 +16,21 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
     // Retained across the entire test suite so ghostty_app_free is
     // never called while deferred ghostty_surface_free tasks are
     // still pending.
-    private static var retainedRuntime: GhosttyRuntime?
-    private static var transientRuntimes: [GhosttyRuntime] = []
+    private static var retainedRuntime: LibghosttyRuntime?
+    private static var transientRuntimes: [LibghosttyRuntime] = []
 
     override func setUpWithError() throws {
         try super.setUpWithError()
-        try skipUnlessGhosttyReady()
+        try skipUnlessLibghosttyReady()
     }
 
     private func requireAppHandle(
-        from runtime: GhosttyRuntime? = nil
+        from runtime: LibghosttyRuntime? = nil
     ) throws -> ghostty_app_t {
         let r = runtime ?? retainedRuntime()
         return try XCTUnwrap(
             r.unsafeAppHandle,
-            "Ghostty runtime app handle unavailable"
+            "libghostty runtime app handle unavailable"
         )
     }
 
@@ -137,30 +137,36 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         )
     }
 
-    private func retainedRuntime() -> GhosttyRuntime {
+    private func retainedRuntime() -> LibghosttyRuntime {
         if Self.retainedRuntime == nil {
             let (pipeline, _) = makeIsolatedPipeline()
-            Self.retainedRuntime = GhosttyRuntime(pipeline: pipeline)
+            Self.retainedRuntime = LibghosttyRuntime(pipeline: pipeline)
         }
         return Self.retainedRuntime!
     }
 
-    private func runtimeWithClipboardReadsAllowed() throws -> GhosttyRuntime {
+    private func runtimeWithTerminalConfig(
+        _ contents: String
+    ) throws -> LibghosttyRuntime {
         let (pipeline, _) = makeIsolatedPipeline()
         try FileManager.default.createDirectory(
             at: pipeline.paths.configDirectory,
             withIntermediateDirectories: true
         )
-        try "clipboard-read = allow\n".write(
+        try contents.write(
             to: pipeline.paths.globalConfigFile,
             atomically: true,
             encoding: .utf8
         )
 
-        let runtime = GhosttyRuntime(pipeline: pipeline)
+        let runtime = LibghosttyRuntime(pipeline: pipeline)
         XCTAssertEqual(runtime.phase, .ready)
         Self.transientRuntimes.append(runtime)
         return runtime
+    }
+
+    private func runtimeWithClipboardReadsAllowed() throws -> LibghosttyRuntime {
+        try runtimeWithTerminalConfig("clipboard-read = allow\n")
     }
 
     private func makeShellHome(
@@ -712,7 +718,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         XCTAssertEqual(
             interpretedEvents,
             1,
-            "Embedded Ghostty should use the standard AppKit translation path for control chords"
+            "libghostty should use the standard AppKit translation path for control chords"
         )
     }
 
@@ -1142,7 +1148,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         XCTAssertEqual(
             reportedProcessAlive,
             false,
-            "Surface close observers should be notified when Ghostty closes a shell surface."
+            "Surface close observers should be notified when libghostty closes a shell surface."
         )
     }
 
@@ -1318,7 +1324,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         )
     }
 
-    func testDefaultGhosttyShellIntegrationLoadsUserZshrc() throws {
+    func testDefaultLibghosttyShellIntegrationLoadsUserZshrc() throws {
         let appHandle = try requireAppHandle()
 
         let homeDirectory = makeTemporaryDirectory()
@@ -1429,7 +1435,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
 
         XCTAssertNotNil(
             view.childProcessID,
-            "Expected the embedded Ghostty surface to expose a live child PID for resource attribution."
+            "Expected the libghostty surface to expose a live child PID for resource attribution."
         )
     }
 
@@ -1918,7 +1924,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         )
     }
 
-    /// Pane-routed input preserves the same Meta-D bytes as Ghostty's local
+    /// Pane-routed input preserves the same Meta-D bytes as libghostty's local
     /// encoder when macos-option-as-alt translates Option-D to plain "d".
     func testTmuxPaneInputSinkOptionDSendsMetaEscape() throws {
         let appHandle = try requireAppHandle()
@@ -2045,7 +2051,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
     /// Regression coverage for the dead-code paste chokepoint: fantastty's
     /// Cmd+V reaches its paste override through a menu re-dispatch inside
     /// performKeyEquivalent, but Ghosthub's local NSEvent monitor consumes
-    /// Cmd+V and calls keyDown directly whenever the shortcut has a Ghostty
+    /// Cmd+V and calls keyDown directly whenever the shortcut has a libghostty
     /// key binding (paste is bound by default) — so performKeyEquivalent
     /// never runs for it. This test dispatches through `.application`
     /// specifically to exercise that local-monitor precedence; it fails if
@@ -2188,7 +2194,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         let runtime = try runtimeWithClipboardReadsAllowed()
         let appHandle = try requireAppHandle(from: runtime)
         let pastedText = "remote-paste\n"
-        // Ghostty's paste encoder normalizes a line feed to the terminal's
+        // libghostty's paste encoder normalizes a line feed to the terminal's
         // carriage-return input outside bracketed-paste mode.
         let expectedRaw = Data("remote-paste\r".utf8)
             .map { String(format: "%02x", $0) }
@@ -2329,7 +2335,80 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         XCTAssertEqual(confirmationRequests, 0)
         XCTAssertTrue(
             readViewportText(from: view).contains("<RAW:\(expectedRaw)>"),
-            "Cmd-V must retain Ghostty's bracketed-paste fenceposts."
+            "Cmd-V must retain libghostty's bracketed-paste fenceposts."
+        )
+    }
+
+    func testRemotePasteFollowsReboundSemanticShortcut() throws {
+        let runtime = try runtimeWithTerminalConfig(
+            """
+            clipboard-read = allow
+            keybind = super+v=unbind
+            keybind = super+shift+v=paste_from_clipboard
+            """
+        )
+        let appHandle = try requireAppHandle(from: runtime)
+        let pastedText = "rebound paste"
+        let expectedData = Data(pastedText.utf8)
+        let expectedRaw = expectedData
+            .map { String(format: "%02x", $0) }
+            .joined()
+        let scriptURL = makeRawInputProbeScript(
+            readBytes: expectedData.count
+        )
+        let view = TerminalSurfaceView(
+            app: appHandle,
+            configuration: TerminalSurfaceConfiguration(
+                command: "python3 '\(scriptURL.path)'"
+            )
+        )
+        view.blocksClipboardAccess = true
+        let window = hostInWindow(view)
+        waitUntil(timeout: 5.0) { view.error == nil }
+        waitForProbeReady(in: view)
+
+        let pasteboard = NSPasteboard.general
+        let priorContents = pasteboard.string(forType: .string)
+        pasteboard.clearContents()
+        pasteboard.setString(pastedText, forType: .string)
+        defer {
+            pasteboard.clearContents()
+            if let priorContents {
+                pasteboard.setString(priorContents, forType: .string)
+            }
+        }
+
+        let oldShortcut = makeKeyEvent(
+            characters: "v",
+            charactersIgnoringModifiers: "v",
+            modifiers: [.command],
+            keyCode: 9,
+            windowNumber: window.windowNumber
+        )
+        let reboundShortcut = makeKeyEvent(
+            characters: "V",
+            charactersIgnoringModifiers: "v",
+            modifiers: [.command, .shift],
+            keyCode: 9,
+            windowNumber: window.windowNumber
+        )
+
+        XCTAssertFalse(view.hasLibghosttyKeyBinding(for: oldShortcut))
+        XCTAssertTrue(view.hasLibghosttyKeyBinding(for: reboundShortcut))
+
+        dispatch(oldShortcut, to: window, route: .application)
+        settleInputPipeline()
+        XCTAssertFalse(
+            readViewportText(from: view).contains("<RAW:"),
+            "An unbound Cmd-V must not read or paste clipboard contents."
+        )
+
+        dispatch(reboundShortcut, to: window, route: .application)
+
+        waitForViewportText("<RAW:\(expectedRaw)>", in: view)
+        XCTAssertTrue(
+            readViewportText(from: view).contains("<RAW:\(expectedRaw)>"),
+            "Remote paste must follow libghostty's configured binding."
         )
     }
 

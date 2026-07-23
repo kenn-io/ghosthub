@@ -8,8 +8,8 @@ import XCTest
 
 // MARK: - Skip Guard
 
-func skipUnlessGhosttyReady() throws {
-    guard GhosttyBootstrap.status().isReady else {
+func skipUnlessLibghosttyReady() throws {
+    guard LibghosttyBootstrap.status().isReady else {
         throw XCTSkip("libghostty not bootstrapped")
     }
 }
@@ -32,7 +32,7 @@ extension XCTestCase {
 
 // MARK: - Isolated Pipeline
 
-func makeIsolatedPipeline() -> (GhosttyConfigPipeline, URL) {
+func makeIsolatedPipeline() -> (LibghosttyConfigPipeline, URL) {
     let tempRoot = FileManager.default.temporaryDirectory
         .appendingPathComponent(UUID().uuidString, isDirectory: true)
     try! FileManager.default.createDirectory(
@@ -43,7 +43,7 @@ func makeIsolatedPipeline() -> (GhosttyConfigPipeline, URL) {
         .appendingPathComponent(".config", isDirectory: true)
         .appendingPathComponent("ghosthub", isDirectory: true)
     return (
-        GhosttyConfigPipeline(
+        LibghosttyConfigPipeline(
             paths: .init(configDirectory: configDirectory)
         ),
         tempRoot
@@ -51,13 +51,13 @@ func makeIsolatedPipeline() -> (GhosttyConfigPipeline, URL) {
 }
 
 func withIsolatedPipeline<T>(
-    _ block: (GhosttyConfigPipeline, URL) throws -> T
+    _ block: (LibghosttyConfigPipeline, URL) throws -> T
 ) throws -> T {
     try withTemporaryDirectory { tempRoot in
         let configDirectory = tempRoot
             .appendingPathComponent(".config", isDirectory: true)
             .appendingPathComponent("ghosthub", isDirectory: true)
-        let pipeline = GhosttyConfigPipeline(
+        let pipeline = LibghosttyConfigPipeline(
             paths: .init(configDirectory: configDirectory)
         )
         return try block(pipeline, tempRoot)

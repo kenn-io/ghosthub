@@ -14,7 +14,7 @@ struct SettingsDomainTests {
             (
                 .terminal,
                 "Terminal",
-                "Terminal interaction and Ghostty configuration."
+                "Terminal interaction and ghostty.conf configuration."
             ),
             (
                 .keyboard,

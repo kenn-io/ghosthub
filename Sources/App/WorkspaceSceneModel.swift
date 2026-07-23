@@ -190,7 +190,7 @@ final class WorkspaceSceneModel: ObservableObject {
     private let panelPreferenceStore: PanelPreferenceStore
     private var workspaceConfiguration: WorkspaceConfiguration
     private let sceneSettings: WorkspaceSceneSettings
-    let terminalRuntime: GhosttyRuntime
+    let terminalRuntime: LibghosttyRuntime
     let terminalCoordinator: TerminalSurfaceCoordinator
     let localHostID: UUID
     private let notificationService: NotificationService
@@ -246,7 +246,7 @@ final class WorkspaceSceneModel: ObservableObject {
     var defaultIdleThresholdSeconds: Int {
         workspaceConfiguration.notifications.idleThresholdSeconds
     }
-    convenience init(terminalRuntime: GhosttyRuntime = .shared) {
+    convenience init(terminalRuntime: LibghosttyRuntime = .shared) {
         do {
             let boot = try WorkspaceSceneBootstrap.resources()
             try self.init(
@@ -267,7 +267,7 @@ final class WorkspaceSceneModel: ObservableObject {
     init(
         database: WorkspaceDatabase,
         workspaceConfiguration: WorkspaceConfiguration = .defaults(),
-        terminalRuntime: GhosttyRuntime = .shared,
+        terminalRuntime: LibghosttyRuntime = .shared,
         notificationService: NotificationService,
         nativeTmuxSurfaceStore: (any TmuxSurfaceStoring)? = nil,
         nativeTmuxPathProvider:
