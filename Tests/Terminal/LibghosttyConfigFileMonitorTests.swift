@@ -236,6 +236,66 @@ struct LibghosttyConfigFileMonitorTests {
         #expect(changed.wait(timeout: .now() + 2) == .success)
     }
 
+    @Test("failed retry does not commit an unstable staged graph")
+    func failedRetryPreservesPreviousGraph() throws {
+        let fixture = try TemporaryConfigMonitorFixture.create()
+        let replacementDirectory = fixture.tempDirectory
+            .appendingPathComponent("replacement", isDirectory: true)
+        let replacement = replacementDirectory
+            .appendingPathComponent("terminal.conf")
+        try FileManager.default.createDirectory(
+            at: replacementDirectory,
+            withIntermediateDirectories: false
+        )
+        try fixture.writeConfig("font-size = 13\n")
+        try fixture.writeConfig("font-size = 14\n", to: replacement)
+        var didInvalidateSnapshot = false
+        var replacementDirectoryOpenCount = 0
+        let changed = DispatchSemaphore(value: 0)
+        let monitor = LibghosttyConfigFileMonitor(
+            fileURLs: [fixture.configFile],
+            queue: DispatchQueue(
+                label: "com.ghosthub.terminal.config-monitor-test"
+            ),
+            debounceInterval: .milliseconds(25),
+            requiringExistingFiles: false,
+            openHandler: { path, flags in
+                if path == replacement.path,
+                   !didInvalidateSnapshot {
+                    let descriptor = open(path, flags)
+                    try? FileManager.default.removeItem(at: replacement)
+                    didInvalidateSnapshot = true
+                    return descriptor
+                }
+                if path == replacementDirectory.path {
+                    replacementDirectoryOpenCount += 1
+                    if replacementDirectoryOpenCount > 1 {
+                        errno = EACCES
+                        return -1
+                    }
+                }
+                return open(path, flags)
+            },
+            changeHandler: {
+                changed.signal()
+            }
+        )
+        try monitor.start()
+        defer { monitor.stop() }
+
+        expectThrowsEqual(
+            LibghosttyConfigFileMonitorError.openFile(
+                replacementDirectory,
+                EACCES
+            )
+        ) {
+            try monitor.update(fileURLs: [replacement])
+        }
+
+        try fixture.writeConfig("font-size = 15\n")
+        #expect(changed.wait(timeout: .now() + 2) == .success)
+    }
+
     @Test("missing graph replacements prune obsolete directories")
     func missingGraphReplacementsPruneObsoleteDirectories() throws {
         let fixture = try TemporaryConfigMonitorFixture.create()

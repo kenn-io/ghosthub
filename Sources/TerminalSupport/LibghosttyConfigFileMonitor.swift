@@ -34,6 +34,13 @@ public final class LibghosttyConfigFileMonitor {
         )
     }
 
+    private struct WatchGraph: Equatable {
+        let files: Set<URL>
+        let fileIdentities: [URL: FileIdentity]
+        let directories: Set<URL>
+        let directoryIdentities: [URL: FileIdentity]
+    }
+
     private struct SymlinkCandidate {
         let file: URL
         let expansionDepth: Int
@@ -233,36 +240,25 @@ public final class LibghosttyConfigFileMonitor {
         remainingCoverageRetries: Int =
             LibghosttyConfigFileMonitor.coverageRetryLimit
     ) throws {
-        let updatedIdentities = Dictionary(
-            uniqueKeysWithValues: updatedFiles.map {
-                ($0, fileIdentity(for: $0))
-            }
-        )
-        let updatedDirectories = watchedDirectories(
-            for: updatedFiles
-        )
-        let updatedDirectoryIdentities = Dictionary(
-            uniqueKeysWithValues: updatedDirectories.map {
-                ($0, fileIdentity(for: $0))
-            }
-        )
+        let graph = watchGraphLocked(for: updatedFiles)
         var stagedFiles: [URL: Int32] = [:]
         var stagedDirectories: [URL: Int32] = [:]
 
         do {
-            for file in updatedFiles
-            where updatedIdentities[file]?.exists == true {
+            for file in graph.files
+            where graph.fileIdentities[file]?.exists == true {
                 let sourceIsCurrent = fileSources[file] != nil
-                    && knownIdentity[file] == updatedIdentities[file]
+                    && knownIdentity[file]
+                        == graph.fileIdentities[file]
                 guard !sourceIsCurrent,
                       let descriptor = try openDescriptor(for: file)
                 else { continue }
                 stagedFiles[file] = descriptor
             }
-            for directory in updatedDirectories {
+            for directory in graph.directories {
                 let sourceIsCurrent = directorySources[directory] != nil
                     && knownDirectoryIdentity[directory]
-                        == updatedDirectoryIdentities[directory]
+                        == graph.directoryIdentities[directory]
                 guard !sourceIsCurrent,
                       let descriptor = try openDescriptor(for: directory)
                 else { continue }
@@ -271,46 +267,136 @@ public final class LibghosttyConfigFileMonitor {
         } catch {
             if keepStagedSourcesOnFailure {
                 applyStagedSourcesLocked(
-                    files: updatedFiles,
-                    identities: updatedIdentities,
-                    directories: updatedDirectories,
-                    directoryIdentities: updatedDirectoryIdentities,
+                    files: graph.files,
+                    identities: graph.fileIdentities,
+                    directories: graph.directories,
+                    directoryIdentities: graph.directoryIdentities,
                     stagedFiles: stagedFiles,
                     stagedDirectories: stagedDirectories
                 )
             } else {
-                stagedFiles.values.forEach { close($0) }
-                stagedDirectories.values.forEach { close($0) }
+                closeStagedDescriptors(
+                    files: stagedFiles,
+                    directories: stagedDirectories
+                )
             }
             throw error
         }
 
-        applyStagedSourcesLocked(
-            files: updatedFiles,
-            identities: updatedIdentities,
-            directories: updatedDirectories,
-            directoryIdentities: updatedDirectoryIdentities,
+        let refreshedGraph = watchGraphLocked(for: updatedFiles)
+        let uncovered = proposedCoverageGapLocked(
+            graph: graph,
             stagedFiles: stagedFiles,
             stagedDirectories: stagedDirectories
         )
-
-        // Paths can disappear or be replaced between discovery and open.
-        // Success means the freshly observed graph is fully covered, not
-        // merely that every open attempted from the older snapshot returned.
-        guard let uncovered = coverageGapLocked(
-            for: updatedFiles
-        ) else { return }
-        guard remainingCoverageRetries > 0 else {
-            throw LibghosttyConfigFileMonitorError.openFile(
-                uncovered,
-                ENOENT
+        guard graph == refreshedGraph, uncovered == nil else {
+            closeStagedDescriptors(
+                files: stagedFiles,
+                directories: stagedDirectories
             )
+            guard remainingCoverageRetries > 0 else {
+                throw LibghosttyConfigFileMonitorError.openFile(
+                    uncovered
+                        ?? graphDifferenceURL(
+                            graph,
+                            refreshedGraph
+                        ),
+                    ENOENT
+                )
+            }
+            try reconfigureSourcesLocked(
+                to: updatedFiles,
+                keepStagedSourcesOnFailure: keepStagedSourcesOnFailure,
+                remainingCoverageRetries:
+                    remainingCoverageRetries - 1
+            )
+            return
         }
-        try reconfigureSourcesLocked(
-            to: updatedFiles,
-            keepStagedSourcesOnFailure: keepStagedSourcesOnFailure,
-            remainingCoverageRetries: remainingCoverageRetries - 1
+
+        // No live source is cancelled until the proposed graph has complete
+        // coverage and the filesystem snapshot is stable.
+        applyStagedSourcesLocked(
+            files: graph.files,
+            identities: graph.fileIdentities,
+            directories: graph.directories,
+            directoryIdentities: graph.directoryIdentities,
+            stagedFiles: stagedFiles,
+            stagedDirectories: stagedDirectories
         )
+    }
+
+    private func watchGraphLocked(
+        for files: Set<URL>
+    ) -> WatchGraph {
+        let fileIdentities = Dictionary(
+            uniqueKeysWithValues: files.map {
+                ($0, fileIdentity(for: $0))
+            }
+        )
+        let directories = watchedDirectories(for: files)
+        let directoryIdentities = Dictionary(
+            uniqueKeysWithValues: directories.map {
+                ($0, fileIdentity(for: $0))
+            }
+        )
+        return WatchGraph(
+            files: files,
+            fileIdentities: fileIdentities,
+            directories: directories,
+            directoryIdentities: directoryIdentities
+        )
+    }
+
+    private func proposedCoverageGapLocked(
+        graph: WatchGraph,
+        stagedFiles: [URL: Int32],
+        stagedDirectories: [URL: Int32]
+    ) -> URL? {
+        for (file, identity) in graph.fileIdentities
+        where identity.exists {
+            let existingSourceIsCurrent = fileSources[file] != nil
+                && knownIdentity[file] == identity
+            if !existingSourceIsCurrent, stagedFiles[file] == nil {
+                return file
+            }
+        }
+        for directory in graph.directories {
+            let existingSourceIsCurrent =
+                directorySources[directory] != nil
+                    && knownDirectoryIdentity[directory]
+                        == graph.directoryIdentities[directory]
+            if !existingSourceIsCurrent,
+               stagedDirectories[directory] == nil {
+                return directory
+            }
+        }
+        return nil
+    }
+
+    private func graphDifferenceURL(
+        _ first: WatchGraph,
+        _ second: WatchGraph
+    ) -> URL {
+        for file in first.files.union(second.files)
+        where first.fileIdentities[file] != second.fileIdentities[file] {
+            return file
+        }
+        for directory in first.directories.union(second.directories)
+        where first.directoryIdentities[directory]
+            != second.directoryIdentities[directory] {
+            return directory
+        }
+        return first.files.first
+            ?? first.directories.first
+            ?? URL(fileURLWithPath: "/")
+    }
+
+    private func closeStagedDescriptors(
+        files: [URL: Int32],
+        directories: [URL: Int32]
+    ) {
+        files.values.forEach { close($0) }
+        directories.values.forEach { close($0) }
     }
 
     private func sourcesAreCurrentLocked(
@@ -322,26 +408,20 @@ public final class LibghosttyConfigFileMonitor {
     private func coverageGapLocked(
         for files: Set<URL>
     ) -> URL? {
-        let identities = Dictionary(
-            uniqueKeysWithValues: files.map {
-                ($0, fileIdentity(for: $0))
-            }
-        )
-        if knownIdentity != identities {
+        let graph = watchGraphLocked(for: files)
+        if knownIdentity != graph.fileIdentities {
             return files.first {
-                knownIdentity[$0] != identities[$0]
+                knownIdentity[$0] != graph.fileIdentities[$0]
             }
         }
-        for (file, identity) in identities
+        for (file, identity) in graph.fileIdentities
         where identity.exists && fileSources[file] == nil {
             return file
         }
-
-        let directories = watchedDirectories(for: files)
-        for directory in directories {
+        for directory in graph.directories {
             guard directorySources[directory] != nil,
                   knownDirectoryIdentity[directory]
-                    == fileIdentity(for: directory)
+                    == graph.directoryIdentities[directory]
             else { return directory }
         }
         return nil
