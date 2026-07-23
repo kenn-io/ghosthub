@@ -413,10 +413,10 @@ final class ApplicationDelegateTests: XCTestCase {
         XCTAssertFalse(delegate.terminationConfirmed)
     }
 
-    func testApplicationShouldTerminateAfterLastWindowClosed() {
+    func testApplicationTerminatesAfterLastWindowClosed() {
         let delegate = ApplicationDelegate.forTesting()
 
-        XCTAssertFalse(
+        XCTAssertTrue(
             delegate.applicationShouldTerminateAfterLastWindowClosed(
                 NSApplication.shared
             )

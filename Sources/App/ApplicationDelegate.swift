@@ -146,7 +146,7 @@ final class ApplicationDelegate: NSObject,
     func applicationShouldTerminateAfterLastWindowClosed(
         _ sender: NSApplication
     ) -> Bool {
-        terminationConfirmed
+        true
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
