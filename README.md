@@ -53,9 +53,10 @@ macOS interface that makes the whole fleet easy to navigate.
   and worktree sessions together—even when they were created outside Ghosthub.
 - **SSH that handles real life.** Keepalives and automatic reconnect let a
   remote tmux session survive Wi-Fi changes, sleep, and airplane mode.
-- **Worktree-native navigation.** Projects and worktrees reported by
-  [kwt](https://github.com/kenn-io/kwt) appear alongside ordinary tmux
-  sessions, with exact workspace-to-session mapping.
+- **Worktree-native navigation with
+  [kwt](https://github.com/kenn-io/kwt).** Kwt is a focused Git worktree
+  manager for tmux-backed development. Its projects and worktrees appear
+  alongside ordinary tmux sessions, with exact workspace-to-session mapping.
 - **Native tmux behavior.** Use the tmux window, pane, keybinding, history, and
   plugin setup you already trust. Closing Ghosthub detaches; it does not kill
   the session.
@@ -84,8 +85,9 @@ Install tmux on the local Mac with Homebrew if needed:
 brew install tmux
 ```
 
-Remote hosts only need working SSH access and tmux. Installing kwt remotely is
-optional unless you want that host's projects and worktrees in the sidebar.
+Remote hosts only need working SSH access and tmux. Installing
+[kwt](https://github.com/kenn-io/kwt) remotely is optional unless you want
+that host's projects and worktrees in the sidebar.
 
 ## Five-minute guide
 
@@ -113,11 +115,12 @@ Use **Test Connection**, then close Settings. The host's tmux sessions will
 appear in the sidebar. A temporarily unreachable host stays isolated; it does
 not block local sessions or the rest of your fleet.
 
-### 3. Add project and worktree context
+### 3. Add project and worktree context with kwt
 
-Ghosthub ships with its own pinned kwt for reliable local integration. To
-register repositories or manage them from the command line, install the kwt
-CLI:
+[Kwt](https://github.com/kenn-io/kwt) is a Git worktree manager built for
+tmux-backed development and coding-agent workflows. Ghosthub ships with a
+pinned kwt helper for reliable local integration. To register repositories or
+manage them from the command line, install the kwt CLI:
 
 ```sh
 go install go.kenn.io/kwt/cmd/kwt@latest
@@ -163,8 +166,10 @@ also available in **Settings**.
 **Tmux owns the session.** Ghosthub never rebuilds or replaces tmux windows,
 panes, history, or process management.
 
-**Kwt owns worktree identity.** It tells Ghosthub which projects and worktrees
-exist and the exact tmux session associated with each workspace.
+**[Kwt](https://github.com/kenn-io/kwt) owns worktree identity.** It tells
+Ghosthub which projects and worktrees exist and the exact tmux session
+associated with each workspace. Kwt is optional if you only want Ghosthub as a
+local and remote tmux session switcher.
 
 **Ghosthub owns the experience.** It discovers sessions, organizes the fleet,
 presents native terminal clients, and supervises SSH keepalive and reconnect.
