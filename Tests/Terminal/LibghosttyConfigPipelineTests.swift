@@ -3,7 +3,7 @@ import GhosthubTestSupport
 import Testing
 @testable import GhosthubTerminalSupport
 
-struct GhosttyConfigPipelineTests {
+struct LibghosttyConfigPipelineTests {
     @Test("loadPlan creates the default global config when it is missing")
     func loadPlanCreatesDefaultGlobalConfigWhenMissing() throws {
         let fixture = try ConfigPipelineFixture.create(createConfigDirectory: false)
@@ -231,7 +231,7 @@ struct GhosttyConfigPipelineTests {
 
         try fixture.writeInitToml(content)
 
-        let result = GhosttyConfigPaths.resolveInitTomlRedirect(
+        let result = LibghosttyConfigPaths.resolveInitTomlRedirect(
             in: fixture.paths.configDirectory
         )
 
@@ -250,7 +250,7 @@ struct GhosttyConfigPipelineTests {
             "config_home = \(redirectDir.path)\n"
         )
 
-        let result = GhosttyConfigPaths.resolveInitTomlRedirect(
+        let result = LibghosttyConfigPaths.resolveInitTomlRedirect(
             in: fixture.paths.configDirectory
         )
 
@@ -258,11 +258,11 @@ struct GhosttyConfigPipelineTests {
     }
 }
 
-private extension GhosttyConfigPipelineTests {
+private extension LibghosttyConfigPipelineTests {
     struct ConfigPipelineFixture {
         let tempRoot: URL
-        let paths: GhosttyConfigPaths
-        let pipeline: GhosttyConfigPipeline
+        let paths: LibghosttyConfigPaths
+        let pipeline: LibghosttyConfigPipeline
         let tempDir: TempDirectoryFixture
 
         static func create(createConfigDirectory: Bool = true) throws -> ConfigPipelineFixture {
@@ -278,12 +278,12 @@ private extension GhosttyConfigPipelineTests {
                 )
             }
 
-            let paths = GhosttyConfigPaths(configDirectory: configDirectory)
+            let paths = LibghosttyConfigPaths(configDirectory: configDirectory)
 
             return ConfigPipelineFixture(
                 tempRoot: tempDir.url,
                 paths: paths,
-                pipeline: GhosttyConfigPipeline(paths: paths),
+                pipeline: LibghosttyConfigPipeline(paths: paths),
                 tempDir: tempDir
             )
         }

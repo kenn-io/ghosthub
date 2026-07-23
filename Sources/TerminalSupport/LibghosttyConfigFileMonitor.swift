@@ -2,18 +2,18 @@ import Dispatch
 import Foundation
 import Darwin
 
-public enum GhosttyConfigFileMonitorError: LocalizedError, Equatable {
+public enum LibghosttyConfigFileMonitorError: LocalizedError, Equatable {
     case openFile(URL, Int32)
 
     public var errorDescription: String? {
         switch self {
         case let .openFile(url, errnoValue):
-            return "Failed to watch Ghostty config file at \(url.path): errno \(errnoValue)"
+            return "Failed to watch Ghosthub terminal config at \(url.path): errno \(errnoValue)"
         }
     }
 }
 
-public final class GhosttyConfigFileMonitor {
+public final class LibghosttyConfigFileMonitor {
     public typealias ChangeHandler = @Sendable () -> Void
 
     private let fileURL: URL
@@ -61,7 +61,7 @@ public final class GhosttyConfigFileMonitor {
         let descriptor = open(fileURL.path, O_EVTONLY)
         guard descriptor >= 0 else {
             if requiringExistingFile {
-                throw GhosttyConfigFileMonitorError.openFile(fileURL, errno)
+                throw LibghosttyConfigFileMonitorError.openFile(fileURL, errno)
             }
             return
         }
@@ -95,7 +95,7 @@ public final class GhosttyConfigFileMonitor {
     private func startDirectoryWatch() throws {
         let descriptor = open(directoryURL.path, O_EVTONLY)
         guard descriptor >= 0 else {
-            throw GhosttyConfigFileMonitorError.openFile(directoryURL, errno)
+            throw LibghosttyConfigFileMonitorError.openFile(directoryURL, errno)
         }
 
         let source = DispatchSource.makeFileSystemObjectSource(

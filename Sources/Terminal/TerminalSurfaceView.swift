@@ -5,7 +5,7 @@ import Darwin
 import GhosttyKit
 import GhosthubTerminalSupport
 
-private struct PendingGhosttyKeyInput: @unchecked Sendable {
+private struct PendingLibghosttyKeyInput: @unchecked Sendable {
     let surfaceAddress: UInt
     let keyEvent: ghostty_input_key_s
     let text: String?
@@ -27,7 +27,7 @@ private struct PendingGhosttyKeyInput: @unchecked Sendable {
     }
 }
 
-/// Stable, per-surface identity handed to Ghostty as the callback
+/// Stable, per-surface identity handed to libghostty as the callback
 /// `userdata`. Unlike a raw view address, a freshly allocated token is
 /// unique for its view's lifetime and stays alive until after
 /// `ghostty_surface_free` returns, so a queued callback can never resolve
@@ -59,6 +59,14 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
         surface, width, height in
         ghostty_surface_set_size(surface, width, height)
     }
+    typealias ClipboardConfirmationPresenter = (
+        _ view: TerminalSurfaceView,
+        _ contents: String,
+        _ request: ghostty_clipboard_request_e,
+        _ completion: @escaping (Bool) -> Void
+    ) -> Void
+    static var clipboardConfirmationPresenter:
+        ClipboardConfirmationPresenter?
 
     private final class WeakSurfaceReference {
         weak var view: TerminalSurfaceView?
@@ -104,7 +112,7 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     /// leaf is no longer focused.
     public var suppressAutoFocus: Bool = false
 
-    /// Unique per-surface identity handed to Ghostty as `userdata`. Held
+    /// Unique per-surface identity handed to libghostty as `userdata`. Held
     /// strongly here for the view's lifetime and re-captured by the
     /// deferred teardown Task so it outlives the last possible callback.
     private(set) nonisolated(unsafe) var callbackToken: SurfaceCallbackToken!
@@ -153,10 +161,12 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     /// Routes clipboard paste through tmux's paste buffer so tmux can honor
     /// the pane application's bracketed-paste mode.
     public var tmuxPanePasteSink: ((Data) -> Void)?
-    /// Remote control-mode panes must not read from or write to the local Mac
-    /// clipboard through terminal escape sequences. Explicit user paste still
-    /// travels through `tmuxPanePasteSink` and is unaffected by this boundary.
+    /// Remote tmux surfaces must not read from or write to the local Mac
+    /// clipboard through terminal escape sequences. Explicit user paste
+    /// remains available because libghostty labels semantic paste requests
+    /// before the runtime reads the pasteboard.
     public var blocksClipboardAccess = false
+    private var isClipboardConfirmationPending = false
     private var tmuxTerminalModeTracker = AttachedTmuxTerminalModeTracker()
     /// The surface's grid dimensions (columns, rows) changed. Task-8 addition:
     /// control mode uses this to feed pane resizes back to tmux (per-pane
@@ -807,7 +817,7 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
         if isReservedApplicationShortcut(event) {
             return event
         }
-        guard wasConsumedCommandChord || hasGhosttyKeyBinding(for: event) else {
+        guard wasConsumedCommandChord || hasLibghosttyKeyBinding(for: event) else {
             return event
         }
         consumedCommandKeyCodes.remove(event.keyCode)
@@ -827,11 +837,11 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
             return event
         }
         if let zoomCommand = fontZoomCommand(for: event),
-           hasGhosttyKeyBinding(for: event),
+           hasLibghosttyKeyBinding(for: event),
            fontZoomShortcutHandler?(zoomCommand) == true {
             return nil
         }
-        guard hasGhosttyKeyBinding(for: event) else { return event }
+        guard hasLibghosttyKeyBinding(for: event) else { return event }
         consumedCommandKeyCodes.insert(event.keyCode)
         keyDown(with: event)
         return nil
@@ -993,11 +1003,11 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
             return
         }
 
-        let translationModsGhostty = ghostty_surface_key_translation_mods(
+        let translationModsLibghostty = ghostty_surface_key_translation_mods(
             surface,
             TerminalInputHelpers.ghosttyMods(event.modifierFlags)
         )
-        let translationModsNS = ghosttyModsToNSFlags(translationModsGhostty)
+        let translationModsNS = ghosttyModsToNSFlags(translationModsLibghostty)
 
         var translationMods = event.modifierFlags
         for flag: NSEvent.ModifierFlags in [.shift, .control, .option, .command] {
@@ -1097,13 +1107,13 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
         }
 
         if let zoomCommand = fontZoomCommand(for: event),
-           hasGhosttyKeyBinding(for: event),
+           hasLibghosttyKeyBinding(for: event),
            fontZoomShortcutHandler?(zoomCommand) == true {
             lastPerformKeyEvent = nil
             return true
         }
 
-        if hasGhosttyKeyBinding(for: event) {
+        if hasLibghosttyKeyBinding(for: event) {
             if event.modifierFlags.contains(.command) {
                 consumedCommandKeyCodes.insert(event.keyCode)
             }
@@ -1235,12 +1245,12 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
         // branches exist to keep that pointer's lifetime scoped correctly).
         // Ghosthub's keyAction never touches the C key event when
         // pane-routed — it dispatches to `ghostty_surface_key` asynchronously
-        // via `PendingGhosttyKeyInput` below, so routing can be decided
+        // via `PendingLibghosttyKeyInput` below, so routing can be decided
         // entirely up front from `event`/`text` alone.
         if let sink = tmuxPaneInputSink {
             // AppKit sends physical key events while an IME/dead key is still
             // building marked text, then delivers the committed text through
-            // insertText. The local Ghostty core understands `composing`, but
+            // insertText. The local libghostty core understands `composing`, but
             // the pane encoder only deals in final terminal bytes. Consume
             // the in-progress event here so the eventual insertText payload
             // is the only text forwarded to tmux.
@@ -1255,13 +1265,13 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
             // selector on the first responder before the event reaches
             // keyDown. Ghosthub's local NSEvent monitor (`localEventKeyDown`)
             // consumes Cmd+V directly and calls `keyDown(with:)` itself
-            // whenever the shortcut has a Ghostty key binding (paste is
+            // whenever the shortcut has a libghostty key binding (paste is
             // bound by default), so `performKeyEquivalent` never runs for
             // it — this chokepoint must live here instead, ahead of the
             // "Cmd-held stays local" rule below, or paste silently goes to
             // the local core even when a pane sink is attached.
             if action != GHOSTTY_ACTION_RELEASE, isPasteShortcut(event) {
-                if let data = Self.remotePanePasteData(from: .general) {
+                if let data = Self.explicitPasteData(from: .general) {
                     if let pasteSink = tmuxPanePasteSink {
                         pasteSink(data)
                     } else {
@@ -1318,12 +1328,12 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
         keyEvent.composing = composing
 
         // Dispatch key events off the main thread to prevent
-        // deadlocking when Ghostty's internal message queue is
+        // deadlocking when libghostty's internal message queue is
         // full due to heavy output (e.g. cat /dev/urandom).
-        // The main thread must stay free to drain Ghostty's
+        // The main thread must stay free to drain libghostty's
         // response queue; blocking here creates circular
         // backpressure that beachballs the app.
-        let input = PendingGhosttyKeyInput(
+        let input = PendingLibghosttyKeyInput(
             surfaceAddress: UInt(bitPattern: surface),
             keyEvent: keyEvent,
             text: text
@@ -1414,7 +1424,7 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
         }
     }
 
-    func hasGhosttyKeyBinding(for event: NSEvent) -> Bool {
+    func hasLibghosttyKeyBinding(for event: NSEvent) -> Bool {
         guard let surface else { return false }
 
         var ghosttyEvent = TerminalInputHelpers.ghosttyKeyEvent(
@@ -1449,10 +1459,56 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
             && event.charactersIgnoringModifiers?.lowercased() == "v"
     }
 
+    func requestClipboardConfirmation(
+        contents: String,
+        request: ghostty_clipboard_request_e,
+        completion: @escaping (Bool) -> Void
+    ) {
+        guard !isClipboardConfirmationPending else {
+            completion(false)
+            return
+        }
+        isClipboardConfirmationPending = true
+        let finish: (Bool) -> Void = { [self] approved in
+            isClipboardConfirmationPending = false
+            completion(approved)
+        }
+
+        if let presenter = Self.clipboardConfirmationPresenter {
+            presenter(self, contents, request, finish)
+            return
+        }
+
+        let isPaste = request == GHOSTTY_CLIPBOARD_REQUEST_PASTE
+        let alert = NSAlert()
+        alert.messageText = isPaste
+            ? "Paste potentially unsafe text?"
+            : "Allow terminal clipboard access?"
+        alert.informativeText = isPaste
+            ? "This text contains line breaks or control sequences and may execute commands immediately."
+            : "A terminal process requested the contents of the Mac clipboard."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: isPaste ? "Paste" : "Allow")
+        alert.addButton(withTitle: isPaste ? "Cancel" : "Deny")
+
+        let handleResponse: (NSApplication.ModalResponse) -> Void = {
+            response in
+            finish(response == .alertFirstButtonReturn)
+        }
+        if let window {
+            alert.beginSheetModal(
+                for: window,
+                completionHandler: handleResponse
+            )
+        } else {
+            handleResponse(alert.runModal())
+        }
+    }
+
     /// Diverges from fantastty: fantastty reads the pasteboard through its
     /// own `NSPasteboard.getOpinionatedStringContents()` extension (not
     /// ported here). This uses the standard `.string` pasteboard type.
-    static func remotePanePasteData(from pasteboard: NSPasteboard) -> Data? {
+    static func explicitPasteData(from pasteboard: NSPasteboard) -> Data? {
         guard let string = pasteboard.string(forType: .string),
               !string.isEmpty
         else { return nil }

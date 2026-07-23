@@ -1,12 +1,12 @@
-public struct GhosttyBootstrapStatus: Equatable, Sendable {
+public struct LibghosttyBootstrapStatus: Equatable, Sendable {
     public var isReady: Bool
     public var artifactRoot: String
     public var bootstrapCommand: String
     public var message: String?
 
     public static func ready(
-        artifactRoot: String = GhosttyBootstrapSupport.artifactRoot,
-        bootstrapCommand: String = GhosttyBootstrapSupport.bootstrapCommand
+        artifactRoot: String = LibghosttyBootstrapSupport.artifactRoot,
+        bootstrapCommand: String = LibghosttyBootstrapSupport.bootstrapCommand
     ) -> Self {
         Self(
             isReady: true,
@@ -17,9 +17,9 @@ public struct GhosttyBootstrapStatus: Equatable, Sendable {
     }
 
     public static func missing(
-        artifactRoot: String = GhosttyBootstrapSupport.artifactRoot,
-        bootstrapCommand: String = GhosttyBootstrapSupport.bootstrapCommand,
-        message: String = GhosttyBootstrapSupport.missingArtifactsMessage
+        artifactRoot: String = LibghosttyBootstrapSupport.artifactRoot,
+        bootstrapCommand: String = LibghosttyBootstrapSupport.bootstrapCommand,
+        message: String = LibghosttyBootstrapSupport.missingArtifactsMessage
     ) -> Self {
         Self(
             isReady: false,
@@ -30,7 +30,7 @@ public struct GhosttyBootstrapStatus: Equatable, Sendable {
     }
 }
 
-public enum GhosttyBootstrapSupport {
+public enum LibghosttyBootstrapSupport {
     public static let artifactRoot = ".build/libghostty"
     public static let bootstrapCommand = "make bootstrap-libghostty"
     public static let missingArtifactsMessage =

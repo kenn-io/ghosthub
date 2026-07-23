@@ -1,6 +1,6 @@
 import Foundation
 
-public enum GhosttyEmbeddedResourcesLocator {
+public enum LibghosttyEmbeddedResourcesLocator {
     private static let relativeResourcePath = [
         ".build",
         "libghostty",

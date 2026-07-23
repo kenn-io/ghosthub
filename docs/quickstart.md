@@ -43,7 +43,7 @@ make python-test
 make docs-build
 ```
 
-For changes touching terminal startup, shell environment, Ghostty config,
+For changes touching terminal startup, shell environment, terminal config,
 embedded libghostty bootstrap, key handling, or remote terminal logic, run the
 full terminal regression set listed in `AGENTS.md`.
 

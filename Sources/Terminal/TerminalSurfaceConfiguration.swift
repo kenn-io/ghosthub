@@ -30,7 +30,7 @@ public struct TerminalSurfaceConfiguration: Equatable, Sendable {
         body: (inout ghostty_surface_config_s) throws -> T
     ) rethrows -> T {
         var config = ghostty_surface_config_new()
-        // Hand Ghostty the surface's unique callback token as `userdata`,
+        // Hand libghostty the surface's unique callback token as `userdata`,
         // not the reusable view address, so callbacks route by identity.
         config.userdata = Unmanaged.passUnretained(view.callbackToken).toOpaque()
         config.platform_tag = GHOSTTY_PLATFORM_MACOS

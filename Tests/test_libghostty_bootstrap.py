@@ -163,6 +163,10 @@ bool ghostty_surface_process_exited(ghostty_surface_t);
 void ghostty_surface_refresh(ghostty_surface_t);
 void ghostty_surface_text(ghostty_surface_t, const char*, uintptr_t);
 void ghostty_surface_preedit(ghostty_surface_t, const char*, uintptr_t);
+void ghostty_surface_complete_clipboard_request(ghostty_surface_t,
+                                                const char*,
+                                                void*,
+                                                bool);
 """
             )
 
@@ -464,6 +468,10 @@ bool ghostty_surface_process_exited(ghostty_surface_t);
 void ghostty_surface_refresh(ghostty_surface_t);
 void ghostty_surface_text(ghostty_surface_t, const char*, uintptr_t);
 void ghostty_surface_preedit(ghostty_surface_t, const char*, uintptr_t);
+void ghostty_surface_complete_clipboard_request(ghostty_surface_t,
+                                                const char*,
+                                                void*,
+                                                bool);
 typedef void (*ghostty_runtime_close_surface_cb)(void*, bool);
 typedef struct {
   ghostty_runtime_close_surface_cb close_surface_cb;
@@ -513,6 +521,16 @@ typedef struct {
     ) void {
         surface.textCallback(ptr[0..len]);
     }
+
+    /// Complete a clipboard read request started via the read callback.
+    /// This can only be called once for a given request. Once it is called
+    /// with a request the request pointer will be invalidated.
+    export fn ghostty_surface_complete_clipboard_request(
+        ptr: *Surface,
+        str: [*:0]const u8,
+        state: *apprt.ClipboardRequest,
+        confirmed: bool,
+    ) void {}
 
         /// Close the current surface given by this function.
         close_surface: ?*const fn (SurfaceUD, bool) callconv(.c) void = null,
@@ -817,6 +835,37 @@ pub fn init() void {
                 embedded.read_text().count("ghostty_surface_inject_output"), 1
             )
 
+    def test_patch_clipboard_request_type_export_adds_capi_function(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            embedded = Path(tmp) / "embedded.zig"
+            embedded.write_text(
+                """    /// Complete a clipboard read request started via the read callback.
+    /// This can only be called once for a given request. Once it is called
+    /// with a request the request pointer will be invalidated.
+    export fn ghostty_surface_complete_clipboard_request(
+        ptr: *Surface,
+        str: [*:0]const u8,
+        state: *apprt.ClipboardRequest,
+        confirmed: bool,
+    ) void {}
+"""
+            )
+
+            bootstrap.patch_clipboard_request_type_export(embedded)
+            contents = embedded.read_text()
+            self.assertIn(
+                "export fn ghostty_clipboard_request_type(", contents
+            )
+            self.assertIn("std.meta.activeTag(state.*)", contents)
+
+            bootstrap.patch_clipboard_request_type_export(embedded)
+            self.assertEqual(
+                embedded.read_text().count(
+                    "export fn ghostty_clipboard_request_type("
+                ),
+                1,
+            )
+
     def test_patch_public_header_declares_inject_output(self):
         with tempfile.TemporaryDirectory() as tmp:
             header = Path(tmp) / "ghostty.h"
@@ -834,6 +883,10 @@ pub fn init() void {
                 "void ghostty_surface_refresh(ghostty_surface_t);\n"
                 "void ghostty_surface_text(ghostty_surface_t, const char*, uintptr_t);\n"
                 "void ghostty_surface_preedit(ghostty_surface_t, const char*, uintptr_t);\n"
+                "void ghostty_surface_complete_clipboard_request(ghostty_surface_t,\n"
+                "                                                const char*,\n"
+                "                                                void*,\n"
+                "                                                bool);\n"
             )
             bootstrap.patch_public_header(header)
             contents = header.read_text()
@@ -849,6 +902,10 @@ pub fn init() void {
             self.assertLess(
                 contents.index("ghostty_surface_inject_output("),
                 contents.index("ghostty_surface_preedit("),
+            )
+            self.assertIn(
+                "ghostty_clipboard_request_e ghostty_clipboard_request_type(void*);",
+                contents,
             )
 
     def test_patch_child_write_header_adds_typedef_and_field(self):

@@ -106,8 +106,8 @@ struct SettingsViewDraftTests {
             suiteName: "ghosthub.settings.draft.\(UUID().uuidString)"
         )!
         return SettingsStore(
-            configPipeline: GhosttyConfigPipeline(
-                paths: GhosttyConfigPaths(configDirectory: tempRoot)
+            configPipeline: LibghosttyConfigPipeline(
+                paths: LibghosttyConfigPaths(configDirectory: tempRoot)
             ),
             userDefaults: defaults
         )

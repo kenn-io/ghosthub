@@ -10,7 +10,7 @@ enum ConfigSectionEditor {
 
     /// Render the terminal appearance overlay file content.
     ///
-    /// Returns `nil` when no overlay is needed (followGhostty theme
+    /// Returns `nil` when no overlay is needed (followConfig theme
     /// with no custom font), which signals the caller to delete the
     /// overlay file.
     static func renderTerminalAppearanceOverlay(

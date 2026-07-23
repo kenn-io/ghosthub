@@ -190,11 +190,11 @@ extension TerminalSurfaceView {
 
 @MainActor
 public final class TerminalSurfaceCoordinator: ObservableObject {
-    private let runtime: GhosttyRuntime
+    private let runtime: LibghosttyRuntime
     private var surfaces: [(key: SurfaceKey, view: TerminalSurfaceView)] = []
     public var onSurfaceCreated: ((SurfaceKey, TerminalSurfaceView) -> Void)?
 
-    public init(runtime: GhosttyRuntime) {
+    public init(runtime: LibghosttyRuntime) {
         self.runtime = runtime
     }
 

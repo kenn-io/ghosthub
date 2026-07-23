@@ -2,7 +2,7 @@ import Testing
 @testable import GhosthubTerminalSupport
 
 @MainActor
-struct GhosttySurfaceRuntimeCallbacksTests {
+struct LibghosttySurfaceRuntimeCallbacksTests {
     @Test("surface runtime callbacks invoke configured closures")
     func surfaceRuntimeCallbacksInvokeConfiguredClosures() {
         let spy = RuntimeCallbacksSpy()

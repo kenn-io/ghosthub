@@ -1,16 +1,16 @@
 import Combine
 import Foundation
 
-public enum GhosttyRuntimeActionEvent: Equatable, Sendable {
+public enum LibghosttyRuntimeActionEvent: Equatable, Sendable {
     case quit
     case openConfig
     case reloadConfig(soft: Bool)
     case ringBell
     case setTitle(String)
     case workingDirectory(String)
-    case newSplit(GhosttySplitDirection)
-    case gotoSplit(GhosttySplitDirection)
-    case resizeSplit(GhosttySplitDirection, UInt16)
+    case newSplit(LibghosttySplitDirection)
+    case gotoSplit(LibghosttySplitDirection)
+    case resizeSplit(LibghosttySplitDirection, UInt16)
     case equalizeSplits
     case toggleSplitZoom
     case render
@@ -18,12 +18,12 @@ public enum GhosttyRuntimeActionEvent: Equatable, Sendable {
     case unhandled(rawTag: Int32)
 }
 
-public struct GhosttyRuntimeSplitAction: Equatable, Sendable {
-    public let action: GhosttyRuntimeActionEvent
+public struct LibghosttyRuntimeSplitAction: Equatable, Sendable {
+    public let action: LibghosttyRuntimeActionEvent
     public let sourceSurfaceIdentity: UInt?
 
     public init(
-        action: GhosttyRuntimeActionEvent,
+        action: LibghosttyRuntimeActionEvent,
         sourceSurfaceIdentity: UInt? = nil
     ) {
         self.action = action
@@ -31,7 +31,7 @@ public struct GhosttyRuntimeSplitAction: Equatable, Sendable {
     }
 }
 
-public enum GhosttySplitDirection: String, Equatable, Sendable {
+public enum LibghosttySplitDirection: String, Equatable, Sendable {
     case right
     case left
     case up
@@ -39,7 +39,7 @@ public enum GhosttySplitDirection: String, Equatable, Sendable {
     case unknown
 }
 
-public struct GhosttySurfaceCloseEvent: Equatable, Sendable {
+public struct LibghosttySurfaceCloseEvent: Equatable, Sendable {
     public var processAlive: Bool
 
     public init(processAlive: Bool) {
@@ -47,17 +47,17 @@ public struct GhosttySurfaceCloseEvent: Equatable, Sendable {
     }
 }
 
-public enum GhosttyClipboardLocation: Equatable, Sendable {
+public enum LibghosttyClipboardLocation: Equatable, Sendable {
     case standard
     case selection
     case unknown(Int32)
 }
 
-public final class GhosttySurfaceRuntimeCallbacks {
-    public typealias ReadClipboardHandler = (GhosttyClipboardLocation, UnsafeMutableRawPointer?)
+public final class LibghosttySurfaceRuntimeCallbacks {
+    public typealias ReadClipboardHandler = (LibghosttyClipboardLocation, UnsafeMutableRawPointer?)
         -> Void
     public typealias ConfirmReadClipboardHandler = (String, UnsafeMutableRawPointer?, Int32) -> Void
-    public typealias WriteClipboardHandler = (String, GhosttyClipboardLocation, Bool) -> Void
+    public typealias WriteClipboardHandler = (String, LibghosttyClipboardLocation, Bool) -> Void
     public typealias CloseSurfaceHandler = (Bool) -> Void
 
     public var readClipboard: ReadClipboardHandler?
@@ -79,13 +79,13 @@ public final class GhosttySurfaceRuntimeCallbacks {
 }
 
 @MainActor
-public final class GhosttyRuntimeState: ObservableObject {
+public final class LibghosttyRuntimeState: ObservableObject {
     public private(set) var wakeupCount = 0
-    @Published public private(set) var lastAction: GhosttyRuntimeActionEvent?
-    @Published public private(set) var closeEvents: [GhosttySurfaceCloseEvent] = []
+    @Published public private(set) var lastAction: LibghosttyRuntimeActionEvent?
+    @Published public private(set) var closeEvents: [LibghosttySurfaceCloseEvent] = []
 
-    public let splitActionSubject = PassthroughSubject<GhosttyRuntimeSplitAction, Never>()
-    public let childExitSubject = PassthroughSubject<GhosttyRuntimeActionEvent, Never>()
+    public let splitActionSubject = PassthroughSubject<LibghosttyRuntimeSplitAction, Never>()
+    public let childExitSubject = PassthroughSubject<LibghosttyRuntimeActionEvent, Never>()
 
     public init() {}
 
@@ -94,7 +94,7 @@ public final class GhosttyRuntimeState: ObservableObject {
     }
 
     public func recordAction(
-        _ action: GhosttyRuntimeActionEvent,
+        _ action: LibghosttyRuntimeActionEvent,
         sourceSurfaceIdentity: UInt? = nil
     ) {
         lastAction = action
@@ -102,7 +102,7 @@ public final class GhosttyRuntimeState: ObservableObject {
         case .newSplit, .gotoSplit, .resizeSplit, .equalizeSplits,
              .toggleSplitZoom:
             splitActionSubject.send(
-                GhosttyRuntimeSplitAction(
+                LibghosttyRuntimeSplitAction(
                     action: action,
                     sourceSurfaceIdentity: sourceSurfaceIdentity
                 )
@@ -115,6 +115,6 @@ public final class GhosttyRuntimeState: ObservableObject {
     }
 
     public func recordClose(processAlive: Bool) {
-        closeEvents.append(GhosttySurfaceCloseEvent(processAlive: processAlive))
+        closeEvents.append(LibghosttySurfaceCloseEvent(processAlive: processAlive))
     }
 }

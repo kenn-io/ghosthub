@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import GhosthubTerminalSupport
 
-struct GhosttyEmbeddedResourcesLocatorTests {
+struct LibghosttyEmbeddedResourcesLocatorTests {
     private func assertResolvesToLayoutResources(
         executablePath: (MockLibghosttyLayout) -> String,
         currentDirectoryPath: (MockLibghosttyLayout) -> String
@@ -10,7 +10,7 @@ struct GhosttyEmbeddedResourcesLocatorTests {
         let layout = try MockLibghosttyLayout.create()
 
         let resolved =
-            GhosttyEmbeddedResourcesLocator.resolveResourcesDirectory(
+            LibghosttyEmbeddedResourcesLocator.resolveResourcesDirectory(
                 executablePath: executablePath(layout),
                 currentDirectoryPath: currentDirectoryPath(layout)
             )

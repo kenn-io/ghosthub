@@ -2,29 +2,29 @@ import Testing
 import GhosthubTerminal
 @testable import GhosthubTerminalSupport
 
-struct GhosttyBootstrapTests {
+struct LibghosttyBootstrapTests {
     @Test("ready status has the shared default values")
     func readyStatusHasExpectedDefaults() {
-        let status = GhosttyBootstrapStatus.ready()
+        let status = LibghosttyBootstrapStatus.ready()
         expectSharedConstants(in: status)
         expectReadyState(for: status)
     }
 
     @Test("missing status has the shared default values")
     func missingStatusHasExpectedDefaults() {
-        let status = GhosttyBootstrapStatus.missing()
+        let status = LibghosttyBootstrapStatus.missing()
         expectSharedConstants(in: status)
         expectMissingState(for: status)
     }
 
     @Test("status uses the shared support constants")
     func statusUsesSharedSupportConstants() {
-        expectSharedConstants(in: GhosttyBootstrap.status())
+        expectSharedConstants(in: LibghosttyBootstrap.status())
     }
 
     @Test("status matches the compiled target")
     func statusMatchesCompiledTarget() {
-        let status = GhosttyBootstrap.status()
+        let status = LibghosttyBootstrap.status()
 
         #if canImport(GhosttyKit)
         expectReadyState(for: status)
@@ -37,22 +37,22 @@ struct GhosttyBootstrapTests {
 // MARK: - Assertion Helpers
 
 private func expectSharedConstants(
-    in status: GhosttyBootstrapStatus,
+    in status: LibghosttyBootstrapStatus,
     sourceLocation: SourceLocation = #_sourceLocation
 ) {
     #expect(
         status.bootstrapCommand
-            == GhosttyBootstrapSupport.bootstrapCommand,
+            == LibghosttyBootstrapSupport.bootstrapCommand,
         sourceLocation: sourceLocation
     )
     #expect(
-        status.artifactRoot == GhosttyBootstrapSupport.artifactRoot,
+        status.artifactRoot == LibghosttyBootstrapSupport.artifactRoot,
         sourceLocation: sourceLocation
     )
 }
 
 private func expectReadyState(
-    for status: GhosttyBootstrapStatus,
+    for status: LibghosttyBootstrapStatus,
     sourceLocation: SourceLocation = #_sourceLocation
 ) {
     #expect(status.isReady, sourceLocation: sourceLocation)
@@ -60,13 +60,13 @@ private func expectReadyState(
 }
 
 private func expectMissingState(
-    for status: GhosttyBootstrapStatus,
+    for status: LibghosttyBootstrapStatus,
     sourceLocation: SourceLocation = #_sourceLocation
 ) {
     #expect(!status.isReady, sourceLocation: sourceLocation)
     #expect(
         status.message
-            == GhosttyBootstrapSupport.missingArtifactsMessage,
+            == LibghosttyBootstrapSupport.missingArtifactsMessage,
         sourceLocation: sourceLocation
     )
 }

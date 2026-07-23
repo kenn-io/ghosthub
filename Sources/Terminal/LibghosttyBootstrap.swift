@@ -3,8 +3,8 @@ import GhosttyKit
 
 private let ghosttyLinkAnchor = ghostty_init
 
-public enum GhosttyBootstrap {
-    public static func status() -> GhosttyBootstrapStatus {
+public enum LibghosttyBootstrap {
+    public static func status() -> LibghosttyBootstrapStatus {
         _ = ghosttyLinkAnchor
         return .ready()
     }

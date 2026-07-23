@@ -59,7 +59,18 @@ a supported security boundary.
 Trusting a host does not grant it every local app capability. Ghosthub still
 applies its clipboard policy and other explicit terminal-integration controls
 so routine remote programs cannot silently exercise local UI capabilities that
-the user did not enable.
+the user did not enable. In particular, remote surfaces never service OSC 52
+clipboard reads or writes, regardless of the `clipboard-read` or
+`clipboard-write` values in the user's Ghostty-compatible configuration.
+Ghosthub reads libghostty's semantic request type before touching the Mac
+pasteboard. Only `paste_from_clipboard` may receive clipboard contents;
+OSC 52 reads receive an empty value. This follows the configured binding
+instead of assuming a physical shortcut. Bracketed-paste framing remains
+authoritative, and unsafe unbracketed text requires user confirmation before
+reaching the PTY. Selecting Copy may
+similarly write the user's chosen terminal selection. Those intentional
+interactions necessarily disclose their selected contents to the attached
+pane.
 
 ### Network
 
@@ -79,14 +90,20 @@ state is outside the security model.
 Names in the user's shared tmux server are identifiers, not credentials.
 Ghosthub attaches to the exact session name reported by kwt or selected from
 direct discovery. When the user explicitly requests a new named session,
-Ghosthub may run local `tmux new-session -A -s <name>`, or one remote
-create-if-absent phase using `has-session` and detached `new-session`. The name
-is validated as a single command argument and the selected host identity is
-fixed before launch. The remote creation authority is one-shot: after it
-succeeds, transport recovery can only rerun `attach-session`. Existing
-same-named sessions are attached without modifying their panes or windows.
-Creation never grants authority to kill, rename, split, resize, or otherwise
-structurally mutate sessions.
+Ghosthub may run one create-or-attach phase. Local creation uses an atomic
+`new-session -A` client invocation; remote creation uses `has-session` and
+detached `new-session` before attachment. The name is validated as a single
+command argument and the selected host identity is fixed before launch.
+Remote creation authority is one-shot: after it succeeds, transport recovery
+can only rerun `attach-session`. Existing same-named sessions are attached
+without modifying their panes or windows. Creation never grants authority to
+kill, rename, split, resize, or otherwise structurally mutate sessions.
+
+Attachment may reset a small, documented set of session-scoped tmux visual
+styles so status and message chrome use Ghosthub's terminal colors. This
+presentation-only exception targets the exact selected session and does not
+authorize changes to tmux key tables, prefixes, mouse behavior, windows, panes,
+layout, history, or process state.
 
 ### Release distribution
 
@@ -147,6 +164,12 @@ not security-boundary violations.
 - sandboxing commands the user chooses to run in a terminal pane
 - availability of the network, SSH service, tmux server, or external state
   provider
+
+The configured-host assumption does not waive the explicit local-capability
+boundaries above. A remote pane that obtains the Mac clipboard through OSC 52,
+or mutates a different tmux session through ambiguous targeting, is an
+in-scope boundary failure even if the triggering bytes originated on a trusted
+peer.
 
 ## Review Classification
 

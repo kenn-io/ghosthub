@@ -13,7 +13,7 @@ final class TmuxInjectionSmokeTests: XCTestCase {
     // Retained across the entire test suite so ghostty_app_free is
     // never called while deferred ghostty_surface_free tasks are
     // still pending.
-    private static var retainedRuntime: GhosttyRuntime?
+    private static var retainedRuntime: LibghosttyRuntime?
     // Windows must stay alive for the duration of the surface's
     // lifetime, or the surface tears down before the test can
     // exercise it.
@@ -21,13 +21,13 @@ final class TmuxInjectionSmokeTests: XCTestCase {
 
     override func setUpWithError() throws {
         try super.setUpWithError()
-        try skipUnlessGhosttyReady()
+        try skipUnlessLibghosttyReady()
     }
 
-    private func retainedRuntime() -> GhosttyRuntime {
+    private func retainedRuntime() -> LibghosttyRuntime {
         if Self.retainedRuntime == nil {
             let (pipeline, _) = makeIsolatedPipeline()
-            Self.retainedRuntime = GhosttyRuntime(pipeline: pipeline)
+            Self.retainedRuntime = LibghosttyRuntime(pipeline: pipeline)
         }
         return Self.retainedRuntime!
     }
@@ -135,7 +135,7 @@ final class TmuxInjectionSmokeTests: XCTestCase {
     }
 
     /// Regression test for callback misdelivery via reused view
-    /// addresses. Each surface now hands Ghostty a uniquely allocated
+    /// addresses. Each surface now hands libghostty a uniquely allocated
     /// `SurfaceCallbackToken` as its `userdata` (not the reusable view
     /// object address), and the token is kept alive until after
     /// `ghostty_surface_free` returns. Because the token is unique per

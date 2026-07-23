@@ -14,7 +14,7 @@ and configured SSH hosts. There are two inventory sources:
 - **unbound sessions:** every other session returned by direct `tmux
   list-sessions` discovery on the host.
 
-Both open through the same ordinary tmux client in one Ghostty surface. A
+Both open through the same ordinary tmux client in one libghostty surface. A
 session created by Middleman is visible when it exists on the host tmux server,
 but Ghosthub does not consult Middleman to identify, create, attach, mutate, or
 destroy it.
@@ -41,14 +41,24 @@ and connection state. Navigating away, pressing Cmd-W, closing a window, or
 quitting Ghosthub detaches the client and never runs `kill-pane`,
 `kill-window`, or `kill-session`.
 
-For explicit local creation, the client starts with `tmux new-session -A -E -s
-<name>`. For explicit remote creation, Ghosthub performs a one-shot
-`has-session`/detached `new-session` phase and then replaces that process with
-the ordinary attach-only SSH reconnect loop. A later transport reconnect can
-therefore never rerun creation. The session name is validated before launch
-and passed as one shell-quoted argument. If the exact name already exists, it
-is attached without creating or structurally changing panes or windows.
-Ordinary kwt worktree and discovered-session opens always use
+The one presentation exception is color normalization. Before attachment,
+Ghosthub resets the selected session's `status-style`, `message-style`, and
+`message-command-style` to terminal-default colors so tmux chrome follows
+Ghosthub's configured foreground and background instead of tmux's built-in
+green/black and yellow/black defaults. Reversed terminal colors highlight the
+status and message areas without introducing a second fixed palette. These
+best-effort style commands do not change tmux interaction: prefix and key
+tables, mouse behavior, windows, panes, history, and layout remain untouched.
+
+Explicit local creation uses one atomic `new-session -A` create-or-attach
+client invocation. This closes the detached-session race when the user's tmux
+server has `destroy-unattached` enabled. Explicit remote creation performs a
+one-shot `has-session`/detached `new-session` phase before ordinary attachment.
+The remote process then enters the attach-only SSH reconnect loop, so a later
+transport reconnect can never rerun creation. The session name is validated
+before launch and passed as one shell-quoted argument. If the exact name
+already exists, it is attached without creating or structurally changing panes
+or windows. Ordinary kwt worktree and discovered-session opens always use
 `attach-session`; explicit named creation is the only exception to the
 otherwise presentation-only boundary. Ghosthub does not expose rename, split,
 resize, window, pane, or kill operations.
@@ -79,7 +89,12 @@ normal tmux detach or a missing session does not create a reconnect loop.
 Tmux remains alive on the remote host while the network is unavailable. After
 connectivity returns, the client reattaches to the same exact session and tmux
 renders its authoritative state. Remote terminal surfaces cannot read the
-local Mac clipboard through terminal escape sequences.
+local Mac clipboard through terminal escape sequences, regardless of the
+user's `clipboard-read` or `clipboard-write` configuration. libghostty exposes
+the semantic type of every clipboard request: Ghosthub supplies clipboard
+contents only for a configured `paste_from_clipboard` action, independent of
+which key triggers it. libghostty retains bracketed-paste framing and requires
+confirmation before unsafe unbracketed text can reach the PTY.
 
 ## Inventory and Startup
 
@@ -117,7 +132,7 @@ session model and die with the app process.
 - Do not read or depend on Ghostty.app global config.
 - Do not install Ghosthub split, zoom, or tab keybindings. Native tmux owns
   those interactions and receives the terminal's ordinary input unchanged.
-- Do not disable Ghostty-style shell integration to work around keybinding
+- Do not disable libghostty shell integration to work around keybinding
   bugs.
 
 ## Verification

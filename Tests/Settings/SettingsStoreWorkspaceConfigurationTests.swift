@@ -25,8 +25,8 @@ struct SettingsStoreWorkspaceConfigurationTests {
         }
 
         let store = SettingsStore(
-            configPipeline: GhosttyConfigPipeline(
-                paths: GhosttyConfigPaths(configDirectory: tempRoot)
+            configPipeline: LibghosttyConfigPipeline(
+                paths: LibghosttyConfigPaths(configDirectory: tempRoot)
             ),
             userDefaults: defaults
         )

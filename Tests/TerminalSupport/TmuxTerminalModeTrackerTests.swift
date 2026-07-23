@@ -25,7 +25,7 @@ struct TmuxTerminalModeTrackerTests {
         #expect(tracker.mouseModes.sgr)
     }
 
-    @Test("mouse mode families retain only the live Ghostty state")
+    @Test("mouse mode families retain only the live libghostty state")
     func mutuallyExclusiveMouseModes() {
         var tracker = TmuxTerminalModeTracker()
 

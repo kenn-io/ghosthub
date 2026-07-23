@@ -91,7 +91,7 @@ once kwt exposes one; until then project registration remains in kwt itself.
 | `Sources/UI/` | Reusable SwiftUI/AppKit presentation components |
 | `Sources/Settings/` | Native settings and preferences |
 | `Sources/Terminal/` | libghostty-backed terminal runtime and surface views |
-| `Sources/TerminalSupport/` | Ghostty config/bootstrap support that can compile without libghostty |
+| `Sources/TerminalSupport/` | libghostty config/bootstrap support that can compile without the linked library |
 | `Sources/TmuxControl/` | Small native tmux/SSH attachment command model |
 | `Sources/Workspace/` | Pure workspace, host, project, worktree, and session models |
 | `Sources/Persistence/` | GRDB repositories for app-local state |
@@ -107,12 +107,22 @@ it never runs `kill-session`. For SSH, Ghosthub supplies keepalives and retries
 transport status 255. Tmux owns all windows, panes, history, input, rendering,
 and server-side lifetime.
 
+Ghosthub normalizes only tmux's session-scoped visual chrome before attaching:
+the status and message styles resolve through the foreground and background
+from Ghosthub's Ghostty-compatible terminal configuration, with reversed terminal
+colors highlighting the status line. This styling is best-effort and can never
+prevent attachment. Tmux still owns all interaction behavior; Ghosthub does
+not modify its prefix, key tables, mouse mode, window/pane commands, history,
+or layout.
+
 An explicit New Tmux Session action is the sole session-creation boundary.
-For a user-supplied exact name, local presentation uses `tmux new-session -A`.
-Remote presentation performs one idempotent, detached create-if-absent phase,
-then permanently enters the ordinary attach-only SSH reconnect loop. Ordinary
-worktree and discovered-session navigation is attach-only. Existing same-named
-sessions are attached without changing their windows or panes.
+For a user-supplied exact name, local presentation uses one atomic
+`new-session -A` create-or-attach invocation so `destroy-unattached` cannot
+remove a newly created session before the client arrives. Remote presentation
+performs one idempotent, detached create-if-absent phase before ordinary
+attachment, then permanently enters the attach-only SSH reconnect loop.
+Ordinary worktree and discovered-session navigation is attach-only. Existing
+same-named sessions are attached without changing their windows or panes.
 
 Ghosthub publishes the requested name optimistically. Reconciliation starts
 only after the terminal runtime accepts the command, then checks direct tmux

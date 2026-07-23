@@ -1,7 +1,7 @@
 import Foundation
 
 public enum TerminalTheme: String, CaseIterable, Identifiable, Sendable {
-    case followGhostty
+    case followConfig
     case pro
     case homebrew
     case clearDark
@@ -13,7 +13,7 @@ public enum TerminalTheme: String, CaseIterable, Identifiable, Sendable {
 
     public var title: String {
         switch self {
-        case .followGhostty:
+        case .followConfig:
             return "Follow ghostty.conf"
         case .pro:
             return "Pro"
@@ -32,7 +32,7 @@ public enum TerminalTheme: String, CaseIterable, Identifiable, Sendable {
 
     public var summary: String {
         switch self {
-        case .followGhostty:
+        case .followConfig:
             return "Do not apply a Ghosthub theme overlay."
         case .pro:
             return "Monaco-inspired black glass with bright monochrome text."
@@ -51,7 +51,7 @@ public enum TerminalTheme: String, CaseIterable, Identifiable, Sendable {
 
     public var spec: TerminalThemeSpec? {
         switch self {
-        case .followGhostty:
+        case .followConfig:
             return nil
         case .pro:
             return TerminalThemeSpec(

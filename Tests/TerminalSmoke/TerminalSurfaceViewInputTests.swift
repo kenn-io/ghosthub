@@ -16,21 +16,21 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
     // Retained across the entire test suite so ghostty_app_free is
     // never called while deferred ghostty_surface_free tasks are
     // still pending.
-    private static var retainedRuntime: GhosttyRuntime?
-    private static var transientRuntimes: [GhosttyRuntime] = []
+    private static var retainedRuntime: LibghosttyRuntime?
+    private static var transientRuntimes: [LibghosttyRuntime] = []
 
     override func setUpWithError() throws {
         try super.setUpWithError()
-        try skipUnlessGhosttyReady()
+        try skipUnlessLibghosttyReady()
     }
 
     private func requireAppHandle(
-        from runtime: GhosttyRuntime? = nil
+        from runtime: LibghosttyRuntime? = nil
     ) throws -> ghostty_app_t {
         let r = runtime ?? retainedRuntime()
         return try XCTUnwrap(
             r.unsafeAppHandle,
-            "Ghostty runtime app handle unavailable"
+            "libghostty runtime app handle unavailable"
         )
     }
 
@@ -67,6 +67,62 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         )
     }
 
+    private func makeBracketedPasteProbeScript(
+        readBytes: Int
+    ) -> URL {
+        makeExecutableScript(
+            """
+            #!/usr/bin/env python3
+            import os
+            import sys
+            import termios
+            import tty
+
+            fd = sys.stdin.fileno()
+            old = termios.tcgetattr(fd)
+            os.write(sys.stdout.fileno(), b"\\x1b[?2004h")
+            print("<READY>", flush=True)
+            try:
+                tty.setraw(fd)
+                data = bytearray()
+                while len(data) < \(readBytes):
+                    chunk = os.read(fd, \(readBytes) - len(data))
+                    if not chunk:
+                        break
+                    data.extend(chunk)
+                print(f"<RAW:{data.hex()}>", flush=True)
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+                os.write(sys.stdout.fileno(), b"\\x1b[?2004l")
+            """
+        )
+    }
+
+    private func makeOSC52ReadProbeScript() -> URL {
+        makeExecutableScript(
+            """
+            #!/usr/bin/env python3
+            import os
+            import select
+            import sys
+            import termios
+            import tty
+
+            fd = sys.stdin.fileno()
+            old = termios.tcgetattr(fd)
+            print("<READY>", flush=True)
+            try:
+                tty.setraw(fd)
+                os.write(sys.stdout.fileno(), b"\\x1b]52;c;?\\x07")
+                readable, _, _ = select.select([fd], [], [], 3)
+                data = os.read(fd, 256) if readable else b""
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+            print(f"<OSC52:{data.hex()}>", flush=True)
+            """
+        )
+    }
+
     private func makeEnvironmentProbeScript(_ names: [String]) -> URL {
         let body = names.map { name in
             "print(\(name.debugDescription) + '=' + os.environ.get(\(name.debugDescription), ''))"
@@ -81,12 +137,36 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         )
     }
 
-    private func retainedRuntime() -> GhosttyRuntime {
+    private func retainedRuntime() -> LibghosttyRuntime {
         if Self.retainedRuntime == nil {
             let (pipeline, _) = makeIsolatedPipeline()
-            Self.retainedRuntime = GhosttyRuntime(pipeline: pipeline)
+            Self.retainedRuntime = LibghosttyRuntime(pipeline: pipeline)
         }
         return Self.retainedRuntime!
+    }
+
+    private func runtimeWithTerminalConfig(
+        _ contents: String
+    ) throws -> LibghosttyRuntime {
+        let (pipeline, _) = makeIsolatedPipeline()
+        try FileManager.default.createDirectory(
+            at: pipeline.paths.configDirectory,
+            withIntermediateDirectories: true
+        )
+        try contents.write(
+            to: pipeline.paths.globalConfigFile,
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let runtime = LibghosttyRuntime(pipeline: pipeline)
+        XCTAssertEqual(runtime.phase, .ready)
+        Self.transientRuntimes.append(runtime)
+        return runtime
+    }
+
+    private func runtimeWithClipboardReadsAllowed() throws -> LibghosttyRuntime {
+        try runtimeWithTerminalConfig("clipboard-read = allow\n")
     }
 
     private func makeShellHome(
@@ -638,7 +718,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         XCTAssertEqual(
             interpretedEvents,
             1,
-            "Embedded Ghostty should use the standard AppKit translation path for control chords"
+            "libghostty should use the standard AppKit translation path for control chords"
         )
     }
 
@@ -1068,7 +1148,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         XCTAssertEqual(
             reportedProcessAlive,
             false,
-            "Surface close observers should be notified when Ghostty closes a shell surface."
+            "Surface close observers should be notified when libghostty closes a shell surface."
         )
     }
 
@@ -1244,7 +1324,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         )
     }
 
-    func testDefaultGhosttyShellIntegrationLoadsUserZshrc() throws {
+    func testDefaultLibghosttyShellIntegrationLoadsUserZshrc() throws {
         let appHandle = try requireAppHandle()
 
         let homeDirectory = makeTemporaryDirectory()
@@ -1355,7 +1435,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
 
         XCTAssertNotNil(
             view.childProcessID,
-            "Expected the embedded Ghostty surface to expose a live child PID for resource attribution."
+            "Expected the libghostty surface to expose a live child PID for resource attribution."
         )
     }
 
@@ -1844,7 +1924,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         )
     }
 
-    /// Pane-routed input preserves the same Meta-D bytes as Ghostty's local
+    /// Pane-routed input preserves the same Meta-D bytes as libghostty's local
     /// encoder when macos-option-as-alt translates Option-D to plain "d".
     func testTmuxPaneInputSinkOptionDSendsMetaEscape() throws {
         let appHandle = try requireAppHandle()
@@ -1971,7 +2051,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
     /// Regression coverage for the dead-code paste chokepoint: fantastty's
     /// Cmd+V reaches its paste override through a menu re-dispatch inside
     /// performKeyEquivalent, but Ghosthub's local NSEvent monitor consumes
-    /// Cmd+V and calls keyDown directly whenever the shortcut has a Ghostty
+    /// Cmd+V and calls keyDown directly whenever the shortcut has a libghostty
     /// key binding (paste is bound by default) — so performKeyEquivalent
     /// never runs for it. This test dispatches through `.application`
     /// specifically to exercise that local-monitor precedence; it fails if
@@ -2107,6 +2187,271 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         XCTAssertNil(
             localResult,
             "Cmd-V must still be consumed locally by the terminal when no tmux pane sink is attached."
+        )
+    }
+
+    func testUnsafeCmdVRequiresConfirmationBeforeRemotePaste() throws {
+        let runtime = try runtimeWithClipboardReadsAllowed()
+        let appHandle = try requireAppHandle(from: runtime)
+        let pastedText = "remote-paste\n"
+        // libghostty's paste encoder normalizes a line feed to the terminal's
+        // carriage-return input outside bracketed-paste mode.
+        let expectedRaw = Data("remote-paste\r".utf8)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        let scriptURL = makeRawInputProbeScript(
+            readBytes: pastedText.utf8.count
+        )
+        let view = TerminalSurfaceView(
+            app: appHandle,
+            configuration: TerminalSurfaceConfiguration(
+                command: "python3 '\(scriptURL.path)'"
+            )
+        )
+        view.blocksClipboardAccess = true
+        let previousPresenter =
+            TerminalSurfaceView.clipboardConfirmationPresenter
+        var confirmation: ((Bool) -> Void)?
+        var confirmationContents: String?
+        var confirmationRequest: ghostty_clipboard_request_e?
+        TerminalSurfaceView.clipboardConfirmationPresenter = {
+            _, contents, request, completion in
+            confirmationContents = contents
+            confirmationRequest = request
+            confirmation = completion
+        }
+        defer {
+            TerminalSurfaceView.clipboardConfirmationPresenter =
+                previousPresenter
+        }
+        let window = hostInWindow(view)
+        waitUntil(timeout: 5.0) { view.error == nil }
+        waitForProbeReady(in: view)
+
+        let pasteboard = NSPasteboard.general
+        let priorContents = pasteboard.string(forType: .string)
+        pasteboard.clearContents()
+        pasteboard.setString(pastedText, forType: .string)
+        defer {
+            pasteboard.clearContents()
+            if let priorContents {
+                pasteboard.setString(priorContents, forType: .string)
+            }
+        }
+
+        dispatch(
+            makeKeyEvent(
+                characters: "v",
+                charactersIgnoringModifiers: "v",
+                modifiers: [.command],
+                keyCode: 9,
+                windowNumber: window.windowNumber
+            ),
+            to: window,
+            route: .application
+        )
+
+        waitUntil(timeout: 2.0) { confirmation != nil }
+        XCTAssertEqual(confirmationContents, pastedText)
+        XCTAssertEqual(
+            confirmationRequest,
+            GHOSTTY_CLIPBOARD_REQUEST_PASTE
+        )
+        XCTAssertFalse(
+            readViewportText(from: view).contains("<RAW:"),
+            "Unsafe multiline paste must not reach the PTY before approval."
+        )
+
+        confirmation?(true)
+        waitForViewportText("<RAW:\(expectedRaw)>", in: view)
+        let contents = readViewportText(from: view)
+        XCTAssertTrue(
+            contents.contains("<RAW:\(expectedRaw)>"),
+            "Approved Cmd-V must paste through a remote native tmux surface."
+                + " Contents: \(contents)"
+        )
+    }
+
+    func testCmdVPreservesBracketedPasteFramingOnRemoteSurface() throws {
+        let runtime = try runtimeWithClipboardReadsAllowed()
+        let appHandle = try requireAppHandle(from: runtime)
+        let pastedText = "first\nsecond"
+        let expectedData = Data(
+            "\u{1b}[200~\(pastedText)\u{1b}[201~".utf8
+        )
+        let expectedRaw = expectedData
+            .map { String(format: "%02x", $0) }
+            .joined()
+        let scriptURL = makeBracketedPasteProbeScript(
+            readBytes: expectedData.count
+        )
+        let view = TerminalSurfaceView(
+            app: appHandle,
+            configuration: TerminalSurfaceConfiguration(
+                command: "python3 '\(scriptURL.path)'"
+            )
+        )
+        view.blocksClipboardAccess = true
+
+        let previousPresenter =
+            TerminalSurfaceView.clipboardConfirmationPresenter
+        var confirmationRequests = 0
+        TerminalSurfaceView.clipboardConfirmationPresenter = {
+            _, _, _, _ in confirmationRequests += 1
+        }
+        defer {
+            TerminalSurfaceView.clipboardConfirmationPresenter =
+                previousPresenter
+        }
+
+        let window = hostInWindow(view)
+        waitUntil(timeout: 5.0) { view.error == nil }
+        waitForProbeReady(in: view)
+
+        let pasteboard = NSPasteboard.general
+        let priorContents = pasteboard.string(forType: .string)
+        pasteboard.clearContents()
+        pasteboard.setString(pastedText, forType: .string)
+        defer {
+            pasteboard.clearContents()
+            if let priorContents {
+                pasteboard.setString(priorContents, forType: .string)
+            }
+        }
+
+        dispatch(
+            makeKeyEvent(
+                characters: "v",
+                charactersIgnoringModifiers: "v",
+                modifiers: [.command],
+                keyCode: 9,
+                windowNumber: window.windowNumber
+            ),
+            to: window,
+            route: .application
+        )
+
+        waitForViewportText("<RAW:\(expectedRaw)>", in: view)
+        XCTAssertEqual(confirmationRequests, 0)
+        XCTAssertTrue(
+            readViewportText(from: view).contains("<RAW:\(expectedRaw)>"),
+            "Cmd-V must retain libghostty's bracketed-paste fenceposts."
+        )
+    }
+
+    func testRemotePasteFollowsReboundSemanticShortcut() throws {
+        let runtime = try runtimeWithTerminalConfig(
+            """
+            clipboard-read = allow
+            keybind = super+v=unbind
+            keybind = super+shift+v=paste_from_clipboard
+            """
+        )
+        let appHandle = try requireAppHandle(from: runtime)
+        let pastedText = "rebound paste"
+        let expectedData = Data(pastedText.utf8)
+        let expectedRaw = expectedData
+            .map { String(format: "%02x", $0) }
+            .joined()
+        let scriptURL = makeRawInputProbeScript(
+            readBytes: expectedData.count
+        )
+        let view = TerminalSurfaceView(
+            app: appHandle,
+            configuration: TerminalSurfaceConfiguration(
+                command: "python3 '\(scriptURL.path)'"
+            )
+        )
+        view.blocksClipboardAccess = true
+        let window = hostInWindow(view)
+        waitUntil(timeout: 5.0) { view.error == nil }
+        waitForProbeReady(in: view)
+
+        let pasteboard = NSPasteboard.general
+        let priorContents = pasteboard.string(forType: .string)
+        pasteboard.clearContents()
+        pasteboard.setString(pastedText, forType: .string)
+        defer {
+            pasteboard.clearContents()
+            if let priorContents {
+                pasteboard.setString(priorContents, forType: .string)
+            }
+        }
+
+        let oldShortcut = makeKeyEvent(
+            characters: "v",
+            charactersIgnoringModifiers: "v",
+            modifiers: [.command],
+            keyCode: 9,
+            windowNumber: window.windowNumber
+        )
+        let reboundShortcut = makeKeyEvent(
+            characters: "V",
+            charactersIgnoringModifiers: "v",
+            modifiers: [.command, .shift],
+            keyCode: 9,
+            windowNumber: window.windowNumber
+        )
+
+        XCTAssertFalse(view.hasLibghosttyKeyBinding(for: oldShortcut))
+        XCTAssertTrue(view.hasLibghosttyKeyBinding(for: reboundShortcut))
+
+        dispatch(oldShortcut, to: window, route: .application)
+        settleInputPipeline()
+        XCTAssertFalse(
+            readViewportText(from: view).contains("<RAW:"),
+            "An unbound Cmd-V must not read or paste clipboard contents."
+        )
+
+        dispatch(reboundShortcut, to: window, route: .application)
+
+        waitForViewportText("<RAW:\(expectedRaw)>", in: view)
+        XCTAssertTrue(
+            readViewportText(from: view).contains("<RAW:\(expectedRaw)>"),
+            "Remote paste must follow libghostty's configured binding."
+        )
+    }
+
+    func testClipboardIsolatedSurfaceReturnsNoDataToOSC52ReadWhenAllowedByConfig() throws {
+        let runtime = try runtimeWithClipboardReadsAllowed()
+        let appHandle = try requireAppHandle(from: runtime)
+        let scriptURL = makeOSC52ReadProbeScript()
+        let view = TerminalSurfaceView(
+            app: appHandle,
+            configuration: TerminalSurfaceConfiguration(
+                command: "python3 '\(scriptURL.path)'"
+            )
+        )
+        view.blocksClipboardAccess = true
+
+        let pasteboard = NSPasteboard.general
+        let priorContents = pasteboard.string(forType: .string)
+        pasteboard.clearContents()
+        pasteboard.setString("local-secret", forType: .string)
+        defer {
+            pasteboard.clearContents()
+            if let priorContents {
+                pasteboard.setString(priorContents, forType: .string)
+            }
+        }
+
+        _ = hostInWindow(view)
+        waitUntil(timeout: 5.0) { view.error == nil }
+        waitForProbeReady(in: view)
+        let emptyOSC52Response = "<OSC52:1b5d35323b633b1b5c>"
+        waitForViewportText(emptyOSC52Response, in: view)
+
+        let contents = readViewportText(from: view)
+        XCTAssertTrue(
+            contents.contains(emptyOSC52Response),
+            "Remote OSC 52 reads must receive an empty clipboard response."
+                + " Contents: \(contents)"
+        )
+        XCTAssertFalse(
+            contents.contains(
+                Data("local-secret".utf8).base64EncodedString()
+            ),
+            "Remote OSC 52 reads must never receive local clipboard data."
         )
     }
 

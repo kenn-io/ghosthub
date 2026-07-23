@@ -7,7 +7,7 @@ import GhosttyKit
 import UniformTypeIdentifiers
 
 @MainActor
-public final class GhosttyRuntime: ObservableObject {
+public final class LibghosttyRuntime: ObservableObject {
     struct ClipboardWriteEntry: Equatable {
         let mime: String
         let data: String
@@ -15,31 +15,31 @@ public final class GhosttyRuntime: ObservableObject {
 
     static let osc52ClipboardWriteMIME = "application/x-ghosthub-osc52"
 
-    public static let shared = GhosttyRuntime(
-        pipeline: GhosttyConfigPipeline(
-            paths: GhosttyConfigPaths(
+    public static let shared = LibghosttyRuntime(
+        pipeline: LibghosttyConfigPipeline(
+            paths: LibghosttyConfigPaths(
                 configDirectory: ConfigHome.resolved()
             )
         )
     )
 
-    @Published public private(set) var bootstrapStatus: GhosttyBootstrapStatus
-    @Published public private(set) var phase: GhosttyRuntimePhase
-    @Published public private(set) var configPlan: GhosttyConfigLoadPlan?
+    @Published public private(set) var bootstrapStatus: LibghosttyBootstrapStatus
+    @Published public private(set) var phase: LibghosttyRuntimePhase
+    @Published public private(set) var configPlan: LibghosttyConfigLoadPlan?
     @Published public private(set) var diagnostics: [String]
 
-    public let runtimeState: GhosttyRuntimeState
+    public let runtimeState: LibghosttyRuntimeState
     public let renderTracker = SurfaceRenderTracker()
 
-    private let pipeline: GhosttyConfigPipeline
+    private let pipeline: LibghosttyConfigPipeline
     private nonisolated(unsafe) var appHandle: ghostty_app_t?
     private nonisolated(unsafe) var configHandle: ghostty_config_t?
     private var activeConfigRoot: URL?
-    private var configMonitor: GhosttyConfigFileMonitor?
+    private var configMonitor: LibghosttyConfigFileMonitor?
     private nonisolated(unsafe) var notificationObservers: [NSObjectProtocol] = []
     private static var didInitializeLibrary = false
 
-    public var configPaths: GhosttyConfigPaths {
+    public var configPaths: LibghosttyConfigPaths {
         pipeline.paths
     }
 
@@ -53,16 +53,16 @@ public final class GhosttyRuntime: ObservableObject {
     }
 
     public init(
-        pipeline: GhosttyConfigPipeline = .live,
-        runtimeState: GhosttyRuntimeState? = nil
+        pipeline: LibghosttyConfigPipeline = .live,
+        runtimeState: LibghosttyRuntimeState? = nil
     ) {
         self.pipeline = pipeline
-        self.runtimeState = runtimeState ?? GhosttyRuntimeState()
+        self.runtimeState = runtimeState ?? LibghosttyRuntimeState()
         bootstrapStatus = .ready()
         phase = .loadingConfig
         diagnostics = []
 
-        initializeGhostty()
+        initializeLibghostty()
     }
 
     deinit {
@@ -81,7 +81,7 @@ public final class GhosttyRuntime: ObservableObject {
 
     public func preconditionReady(file: StaticString = #file, line: UInt = #line) {
         guard bootstrapStatus.isReady, phase == .ready else {
-            let message = bootstrapStatus.message ?? "Ghostty failed to initialize."
+            let message = bootstrapStatus.message ?? "libghostty failed to initialize."
             preconditionFailure(message, file: file, line: line)
         }
     }
@@ -125,7 +125,7 @@ public final class GhosttyRuntime: ObservableObject {
         }
     }
 
-    private func initializeGhostty() {
+    private func initializeLibghostty() {
         guard Self.ensureLibraryInitialized() else {
             bootstrapStatus = .missing(
                 message: "libghostty failed to initialize. Re-run `make bootstrap-libghostty` and relaunch Ghosthub."
@@ -152,7 +152,7 @@ public final class GhosttyRuntime: ObservableObject {
             runtimeConfig.child_write_cb = ghosttyRuntimeChildWriteCallback
 
             guard let appHandle = ghostty_app_new(&runtimeConfig, config) else {
-                throw GhosttyInitializationError.createApp
+                throw LibghosttyInitializationError.createApp
             }
 
             self.appHandle = appHandle
@@ -170,9 +170,9 @@ public final class GhosttyRuntime: ObservableObject {
         }
     }
 
-    private func loadConfig(plan: GhosttyConfigLoadPlan) throws -> ghostty_config_t {
+    private func loadConfig(plan: LibghosttyConfigLoadPlan) throws -> ghostty_config_t {
         guard let config = ghostty_config_new() else {
-            throw GhosttyInitializationError.createConfig
+            throw LibghosttyInitializationError.createConfig
         }
 
         try loadConfigFiles(plan: plan, into: config)
@@ -181,7 +181,7 @@ public final class GhosttyRuntime: ObservableObject {
     }
 
     private func loadConfigFiles(
-        plan: GhosttyConfigLoadPlan,
+        plan: LibghosttyConfigLoadPlan,
         into config: ghostty_config_t
     ) throws {
         let shimDir = pipeline.paths.configDirectory
@@ -197,7 +197,7 @@ public final class GhosttyRuntime: ObservableObject {
         // Load only Ghosthub-owned terminal config. The shim file
         // contains config-file directives pointing at the real files,
         // and the bootstrap patch exports ghostty_config_load_file so
-        // we do not need Ghostty's default file discovery at all.
+        // we do not need libghostty's default file discovery at all.
         var shimContent = ""
         for url in plan.orderedConfigFiles {
             shimContent += "config-file = \(url.path)\n"
@@ -270,7 +270,7 @@ public final class GhosttyRuntime: ObservableObject {
     private func installConfigMonitorIfNeeded() {
         guard configMonitor == nil else { return }
 
-        let monitor = GhosttyConfigFileMonitor(fileURL: configPaths
+        let monitor = LibghosttyConfigFileMonitor(fileURL: configPaths
             .globalConfigFile) { [weak self] in
                 guard let self else { return }
                 Task { @MainActor in
@@ -291,7 +291,7 @@ public final class GhosttyRuntime: ObservableObject {
             return true
         }
 
-        _ = GhosttyEmbeddedResourcesLocator.configureEnvironmentIfNeeded()
+        _ = LibghosttyEmbeddedResourcesLocator.configureEnvironmentIfNeeded()
         let result = ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv)
         guard result == GHOSTTY_SUCCESS else {
             return false
@@ -466,7 +466,7 @@ public final class GhosttyRuntime: ObservableObject {
                 let userdata = UnsafeMutableRawPointer(
                     bitPattern: userdataValue
                 )!
-                let tracker = Unmanaged<GhosttyRuntime>
+                let tracker = Unmanaged<LibghosttyRuntime>
                     .fromOpaque(userdata)
                     .takeUnretainedValue()
                     .renderTracker
@@ -514,9 +514,14 @@ public final class GhosttyRuntime: ObservableObject {
             guard let surfaceView = surfaceView(from: userdataValue) else { return }
             guard let surfaceHandle = surfaceView.surfaceHandle else { return }
             let requestState = stateValue.flatMap(UnsafeMutableRawPointer.init(bitPattern:))
+            let request = requestState.map(ghostty_clipboard_request_type)
 
+            // libghostty's semantic request is the authorization boundary.
+            // User-configured paste bindings may read the clipboard, while
+            // OSC 52 reads remain empty regardless of `clipboard-read`.
             let contents = clipboardReadContents(
                 blocked: surfaceView.blocksClipboardAccess,
+                request: request,
                 contents: NSPasteboard.general.string(forType: .string)
             )
             contents.withCString { ptr in
@@ -542,20 +547,31 @@ public final class GhosttyRuntime: ObservableObject {
             guard let surfaceView = surfaceView(from: userdataValue) else { return }
             guard let surfaceHandle = surfaceView.surfaceHandle else { return }
             let requestState = stateValue.flatMap(UnsafeMutableRawPointer.init(bitPattern:))
-            if surfaceView.blocksClipboardAccess {
+            if !allowsClipboardConfirmation(
+                blocked: surfaceView.blocksClipboardAccess,
+                request: request
+            ) {
                 "".withCString { buffer in
                     ghostty_surface_complete_clipboard_request(
-                        surfaceHandle, buffer, requestState, false
+                        surfaceHandle, buffer, requestState, true
                     )
                 }
                 return
             }
             guard let stringValue else { return }
-
-            stringValue.withCString { buffer in
-                ghostty_surface_complete_clipboard_request(
-                    surfaceHandle, buffer, requestState, true
-                )
+            surfaceView.requestClipboardConfirmation(
+                contents: stringValue,
+                request: request
+            ) { [surfaceView] approved in
+                guard let surfaceHandle = surfaceView.surfaceHandle else {
+                    return
+                }
+                let result = approved ? stringValue : ""
+                result.withCString { buffer in
+                    ghostty_surface_complete_clipboard_request(
+                        surfaceHandle, buffer, requestState, true
+                    )
+                }
             }
         }
     }
@@ -609,9 +625,23 @@ public final class GhosttyRuntime: ObservableObject {
 
     static func clipboardReadContents(
         blocked: Bool,
+        request: ghostty_clipboard_request_e?,
         contents: @autoclosure () -> String?
     ) -> String {
-        blocked ? "" : contents() ?? ""
+        // Do not even evaluate the pasteboard read for a remote surface.
+        // Semantic paste is the sole exception; physical shortcuts are
+        // resolved by libghostty before this callback is made.
+        guard !blocked || request == GHOSTTY_CLIPBOARD_REQUEST_PASTE else {
+            return ""
+        }
+        return contents() ?? ""
+    }
+
+    static func allowsClipboardConfirmation(
+        blocked: Bool,
+        request: ghostty_clipboard_request_e
+    ) -> Bool {
+        !blocked || request == GHOSTTY_CLIPBOARD_REQUEST_PASTE
     }
 
     static func acceptedClipboardWriteEntries(
@@ -697,9 +727,9 @@ public final class GhosttyRuntime: ObservableObject {
     }
 
     @MainActor
-    private static func runtime(from userdataValue: UInt) -> GhosttyRuntime {
+    private static func runtime(from userdataValue: UInt) -> LibghosttyRuntime {
         let userdata = UnsafeMutableRawPointer(bitPattern: userdataValue)!
-        return Unmanaged<GhosttyRuntime>.fromOpaque(userdata).takeUnretainedValue()
+        return Unmanaged<LibghosttyRuntime>.fromOpaque(userdata).takeUnretainedValue()
     }
 
     private nonisolated static func surfaceIdentity(
@@ -740,7 +770,7 @@ public final class GhosttyRuntime: ObservableObject {
 
 private func splitDirection(
     from raw: ghostty_action_split_direction_e
-) -> GhosttySplitDirection {
+) -> LibghosttySplitDirection {
     switch raw {
     case GHOSTTY_SPLIT_DIRECTION_RIGHT: return .right
     case GHOSTTY_SPLIT_DIRECTION_DOWN: return .down
@@ -752,7 +782,7 @@ private func splitDirection(
 
 private func gotoSplitDirection(
     from raw: ghostty_action_goto_split_e
-) -> GhosttySplitDirection {
+) -> LibghosttySplitDirection {
     switch raw {
     case GHOSTTY_GOTO_SPLIT_UP: return .up
     case GHOSTTY_GOTO_SPLIT_LEFT: return .left
@@ -764,7 +794,7 @@ private func gotoSplitDirection(
 
 private func resizeSplitDirection(
     from raw: ghostty_action_resize_split_direction_e
-) -> GhosttySplitDirection {
+) -> LibghosttySplitDirection {
     switch raw {
     case GHOSTTY_RESIZE_SPLIT_UP: return .up
     case GHOSTTY_RESIZE_SPLIT_DOWN: return .down
@@ -774,7 +804,7 @@ private func resizeSplitDirection(
     }
 }
 
-private enum GhosttyInitializationError: LocalizedError {
+private enum LibghosttyInitializationError: LocalizedError {
     case createConfig
     case createApp
 
@@ -789,7 +819,7 @@ private enum GhosttyInitializationError: LocalizedError {
 }
 
 private func ghosttyRuntimeWakeupCallback(_ userdata: UnsafeMutableRawPointer?) {
-    GhosttyRuntime.handleWakeup(userdata)
+    LibghosttyRuntime.handleWakeup(userdata)
 }
 
 private func ghosttyRuntimeActionCallback(
@@ -797,7 +827,7 @@ private func ghosttyRuntimeActionCallback(
     _ target: ghostty_target_s,
     _ action: ghostty_action_s
 ) -> Bool {
-    GhosttyRuntime.handleAction(app: app, target: target, action: action)
+    LibghosttyRuntime.handleAction(app: app, target: target, action: action)
 }
 
 private func ghosttyRuntimeReadClipboardCallback(
@@ -805,7 +835,7 @@ private func ghosttyRuntimeReadClipboardCallback(
     _ location: ghostty_clipboard_e,
     _ state: UnsafeMutableRawPointer?
 ) -> Bool {
-    GhosttyRuntime.handleReadClipboard(userdata: userdata, location: location, state: state)
+    LibghosttyRuntime.handleReadClipboard(userdata: userdata, location: location, state: state)
 }
 
 private func ghosttyRuntimeConfirmReadClipboardCallback(
@@ -814,7 +844,7 @@ private func ghosttyRuntimeConfirmReadClipboardCallback(
     _ state: UnsafeMutableRawPointer?,
     _ request: ghostty_clipboard_request_e
 ) {
-    GhosttyRuntime.handleConfirmReadClipboard(
+    LibghosttyRuntime.handleConfirmReadClipboard(
         userdata: userdata,
         string: string,
         state: state,
@@ -829,7 +859,7 @@ private func ghosttyRuntimeWriteClipboardCallback(
     _ len: Int,
     _ confirm: Bool
 ) {
-    GhosttyRuntime.handleWriteClipboard(
+    LibghosttyRuntime.handleWriteClipboard(
         userdata: userdata,
         location: location,
         content: content,
@@ -842,7 +872,7 @@ private func ghosttyRuntimeCloseSurfaceCallback(
     _ userdata: UnsafeMutableRawPointer?,
     _ processAlive: Bool
 ) {
-    GhosttyRuntime.handleCloseSurface(userdata: userdata, processAlive: processAlive)
+    LibghosttyRuntime.handleCloseSurface(userdata: userdata, processAlive: processAlive)
 }
 
 private func ghosttyRuntimeChildWriteCallback(
@@ -850,5 +880,5 @@ private func ghosttyRuntimeChildWriteCallback(
     _ bytes: UnsafePointer<CChar>?,
     _ length: UInt
 ) {
-    GhosttyRuntime.handleChildWrite(userdata: userdata, bytes: bytes, length: length)
+    LibghosttyRuntime.handleChildWrite(userdata: userdata, bytes: bytes, length: length)
 }

@@ -7,11 +7,11 @@ import Testing
 // MARK: - Runtime Callbacks Spy
 
 final class RuntimeCallbacksSpy {
-    var recordedClipboardLocation: GhosttyClipboardLocation?
+    var recordedClipboardLocation: LibghosttyClipboardLocation?
     var recordedCloseProcessAlive: Bool?
 
-    var callbacks: GhosttySurfaceRuntimeCallbacks {
-        GhosttySurfaceRuntimeCallbacks(
+    var callbacks: LibghosttySurfaceRuntimeCallbacks {
+        LibghosttySurfaceRuntimeCallbacks(
             readClipboard: { [weak self] loc, _ in
                 self?.recordedClipboardLocation = loc
             },
@@ -24,8 +24,8 @@ final class RuntimeCallbacksSpy {
 
 // MARK: - Dummy Runtime Callbacks
 
-extension GhosttySurfaceRuntimeCallbacks {
-    static var dummy: GhosttySurfaceRuntimeCallbacks {
+extension LibghosttySurfaceRuntimeCallbacks {
+    static var dummy: LibghosttySurfaceRuntimeCallbacks {
         .init(
             readClipboard: { _, _ in },
             closeSurface: { _ in }
@@ -109,8 +109,8 @@ struct TemporaryConfigMonitorFixture {
     func startMonitor(
         fileURL: URL? = nil,
         changeHandler: @escaping @Sendable () -> Void
-    ) throws -> GhosttyConfigFileMonitor {
-        let monitor = GhosttyConfigFileMonitor(
+    ) throws -> LibghosttyConfigFileMonitor {
+        let monitor = LibghosttyConfigFileMonitor(
             fileURL: fileURL ?? configFile,
             changeHandler: changeHandler
         )

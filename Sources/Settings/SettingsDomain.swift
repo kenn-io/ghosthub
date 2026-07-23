@@ -33,7 +33,7 @@ public enum SettingsDomain: String, CaseIterable, Identifiable, Sendable {
             return "App chrome, built-in terminal themes,"
                 + " font overrides, and cursor styling."
         case .terminal:
-            return "Terminal interaction and Ghostty configuration."
+            return "Terminal interaction and ghostty.conf configuration."
         case .keyboard:
             return "Application and workspace navigation shortcuts."
         case .worktrees:
