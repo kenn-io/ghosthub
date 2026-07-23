@@ -46,6 +46,18 @@ struct TmuxAttachmentInfoTests {
         #expect(!command.contains("'mouse'"))
     }
 
+    @Test("presentation styles target only the exact selected session")
+    func presentationStylesUseExactSessionTarget() {
+        let command = TmuxAttachmentInfo(
+            sessionName: "alpha",
+            host: .local
+        ).attachCommand(tmuxPath: "/opt/homebrew/bin/tmux")
+
+        #expect(
+            command.components(separatedBy: "=alpha:").count - 1 == 3
+        )
+    }
+
     @Test("remote attachment adds keepalives and transport-only retry")
     func remoteAttachCommand() {
         let info = TmuxAttachmentInfo(

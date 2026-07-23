@@ -4,13 +4,30 @@ import GhosttyKit
 
 @MainActor
 struct ClipboardAccessPolicyTests {
-    @Test("clipboard reads stage contents until Ghostty identifies the request")
-    func readStagesClipboardContents() {
+    @Test("ordinary clipboard reads supply local contents")
+    func ordinaryReadSuppliesClipboardContents() {
         #expect(
             GhosttyRuntime.clipboardReadContents(
+                blocked: false,
                 contents: "local text"
             ) == "local text"
         )
+    }
+
+    @Test("remote clipboard reads do not evaluate the pasteboard supplier")
+    func blockedReadNeverTouchesClipboardContents() {
+        var didReadPasteboard = false
+
+        let contents = GhosttyRuntime.clipboardReadContents(
+            blocked: true,
+            contents: {
+                didReadPasteboard = true
+                return "local secret"
+            }()
+        )
+
+        #expect(contents.isEmpty)
+        #expect(!didReadPasteboard)
     }
 
     @Test("remote surfaces allow explicit paste confirmation")

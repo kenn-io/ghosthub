@@ -515,11 +515,13 @@ public final class GhosttyRuntime: ObservableObject {
             guard let surfaceHandle = surfaceView.surfaceHandle else { return }
             let requestState = stateValue.flatMap(UnsafeMutableRawPointer.init(bitPattern:))
 
-            // Ghostty identifies the request type only in the confirmation
-            // callback. Stage the clipboard value here, then enforce the
-            // remote-surface boundary once Ghostty distinguishes an explicit
-            // paste from an OSC 52 read.
+            // Ghostty identifies the request type only after this callback.
+            // A config such as `clipboard-read = allow` can skip the later
+            // confirmation callback entirely, so a remote surface must never
+            // receive the real pasteboard value here. Explicit user paste is
+            // handled directly by TerminalSurfaceView instead.
             let contents = clipboardReadContents(
+                blocked: surfaceView.blocksClipboardAccess,
                 contents: NSPasteboard.general.string(forType: .string)
             )
             contents.withCString { ptr in
@@ -614,9 +616,14 @@ public final class GhosttyRuntime: ObservableObject {
     }
 
     static func clipboardReadContents(
+        blocked: Bool,
         contents: @autoclosure () -> String?
     ) -> String {
-        contents() ?? ""
+        // Do not even evaluate the pasteboard read for a remote surface.
+        // Supplying an empty value here makes the boundary independent of
+        // Ghostty's user-configurable clipboard confirmation policy.
+        guard !blocked else { return "" }
+        return contents() ?? ""
     }
 
     static func allowsClipboardConfirmation(

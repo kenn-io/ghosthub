@@ -87,7 +87,10 @@ normal tmux detach or a missing session does not create a reconnect loop.
 Tmux remains alive on the remote host while the network is unavailable. After
 connectivity returns, the client reattaches to the same exact session and tmux
 renders its authoritative state. Remote terminal surfaces cannot read the
-local Mac clipboard through terminal escape sequences.
+local Mac clipboard through terminal escape sequences, regardless of the
+user's `clipboard-read` or `clipboard-write` configuration. Explicit
+Command-V reads the pasteboard only from the locally generated shortcut and
+sends it directly through Ghostty's normal paste encoder.
 
 ## Inventory and Startup
 

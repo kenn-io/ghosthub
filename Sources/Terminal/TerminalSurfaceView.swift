@@ -154,8 +154,9 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     /// the pane application's bracketed-paste mode.
     public var tmuxPanePasteSink: ((Data) -> Void)?
     /// Remote tmux surfaces must not read from or write to the local Mac
-    /// clipboard through terminal escape sequences. Ghostty identifies an
-    /// explicit user paste separately, so Cmd-V remains available.
+    /// clipboard through terminal escape sequences. Explicit user paste is
+    /// routed directly through Ghostty's paste encoder so Cmd-V remains
+    /// available without exposing the pasteboard to OSC 52.
     public var blocksClipboardAccess = false
     private var tmuxTerminalModeTracker = AttachedTmuxTerminalModeTracker()
     /// The surface's grid dimensions (columns, rows) changed. Task-8 addition:
@@ -1229,6 +1230,27 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     ) -> Bool {
         guard let surface else { return false }
 
+        // Remote surfaces receive an empty value from Ghostty's generic
+        // clipboard callback regardless of `clipboard-read` config. Handle
+        // the locally generated paste shortcut here so user intent, rather
+        // than a terminal escape sequence, is the only path that reads the
+        // Mac pasteboard. ghostty_surface_text applies Ghostty's normal
+        // bracketed-paste and newline encoding.
+        if blocksClipboardAccess,
+           action != GHOSTTY_ACTION_RELEASE,
+           isPasteShortcut(event),
+           let data = Self.explicitPasteData(from: .general) {
+            data.withUnsafeBytes { bytes in
+                guard let baseAddress = bytes.baseAddress else { return }
+                ghostty_surface_text(
+                    surface,
+                    baseAddress.assumingMemoryBound(to: CChar.self),
+                    UInt(data.count)
+                )
+            }
+            return true
+        }
+
         // Diverges from fantastty: fantastty's keyAction builds the C key
         // event first and threads pane routing through the `withCString`
         // closure that supplies `key_ev.text` (its dual with-text/without-text
@@ -1261,7 +1283,7 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
             // "Cmd-held stays local" rule below, or paste silently goes to
             // the local core even when a pane sink is attached.
             if action != GHOSTTY_ACTION_RELEASE, isPasteShortcut(event) {
-                if let data = Self.remotePanePasteData(from: .general) {
+                if let data = Self.explicitPasteData(from: .general) {
                     if let pasteSink = tmuxPanePasteSink {
                         pasteSink(data)
                     } else {
@@ -1452,7 +1474,7 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     /// Diverges from fantastty: fantastty reads the pasteboard through its
     /// own `NSPasteboard.getOpinionatedStringContents()` extension (not
     /// ported here). This uses the standard `.string` pasteboard type.
-    static func remotePanePasteData(from pasteboard: NSPasteboard) -> Data? {
+    static func explicitPasteData(from pasteboard: NSPasteboard) -> Data? {
         guard let string = pasteboard.string(forType: .string),
               !string.isEmpty
         else { return nil }

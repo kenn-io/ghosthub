@@ -114,6 +114,24 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         return Self.retainedRuntime!
     }
 
+    private func runtimeWithClipboardReadsAllowed() throws -> GhosttyRuntime {
+        let (pipeline, _) = makeIsolatedPipeline()
+        try FileManager.default.createDirectory(
+            at: pipeline.paths.configDirectory,
+            withIntermediateDirectories: true
+        )
+        try "clipboard-read = allow\n".write(
+            to: pipeline.paths.globalConfigFile,
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let runtime = GhosttyRuntime(pipeline: pipeline)
+        XCTAssertEqual(runtime.phase, .ready)
+        Self.transientRuntimes.append(runtime)
+        return runtime
+    }
+
     private func makeShellHome(
         rcFileName: String? = nil,
         rcContents: String? = nil
@@ -2136,7 +2154,8 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
     }
 
     func testCmdVPastesIntoClipboardIsolatedNativeTmuxSurface() throws {
-        let appHandle = try requireAppHandle()
+        let runtime = try runtimeWithClipboardReadsAllowed()
+        let appHandle = try requireAppHandle(from: runtime)
         let pastedText = "remote-paste\n"
         // Ghostty's paste encoder normalizes a line feed to the terminal's
         // carriage-return input outside bracketed-paste mode.
@@ -2189,8 +2208,9 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         )
     }
 
-    func testClipboardIsolatedSurfaceReturnsNoDataToOSC52Read() throws {
-        let appHandle = try requireAppHandle()
+    func testClipboardIsolatedSurfaceReturnsNoDataToOSC52ReadWhenAllowedByConfig() throws {
+        let runtime = try runtimeWithClipboardReadsAllowed()
+        let appHandle = try requireAppHandle(from: runtime)
         let scriptURL = makeOSC52ReadProbeScript()
         let view = TerminalSurfaceView(
             app: appHandle,

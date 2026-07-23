@@ -59,7 +59,15 @@ a supported security boundary.
 Trusting a host does not grant it every local app capability. Ghosthub still
 applies its clipboard policy and other explicit terminal-integration controls
 so routine remote programs cannot silently exercise local UI capabilities that
-the user did not enable.
+the user did not enable. In particular, remote surfaces never service OSC 52
+clipboard reads or writes, regardless of the `clipboard-read` or
+`clipboard-write` values in the user's Ghostty-format configuration. The
+generic Ghostty clipboard callback receives no local clipboard data for a
+remote surface. A locally generated explicit paste action reads the pasteboard
+and sends that value through Ghostty's paste encoder; selecting Copy may
+similarly write the user's chosen terminal selection. Those intentional
+interactions necessarily disclose their selected contents to the attached
+pane.
 
 ### Network
 
@@ -89,8 +97,9 @@ split, resize, or otherwise structurally mutate sessions.
 
 Attachment may reset a small, documented set of session-scoped tmux visual
 styles so status and message chrome use Ghosthub's terminal colors. This
-presentation-only exception does not authorize changes to tmux key tables,
-prefixes, mouse behavior, windows, panes, layout, history, or process state.
+presentation-only exception targets the exact selected session and does not
+authorize changes to tmux key tables, prefixes, mouse behavior, windows, panes,
+layout, history, or process state.
 
 ### Release distribution
 
@@ -151,6 +160,12 @@ not security-boundary violations.
 - sandboxing commands the user chooses to run in a terminal pane
 - availability of the network, SSH service, tmux server, or external state
   provider
+
+The configured-host assumption does not waive the explicit local-capability
+boundaries above. A remote pane that obtains the Mac clipboard through OSC 52,
+or mutates a different tmux session through ambiguous targeting, is an
+in-scope boundary failure even if the triggering bytes originated on a trusted
+peer.
 
 ## Review Classification
 

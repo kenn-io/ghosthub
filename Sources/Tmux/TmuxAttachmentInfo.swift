@@ -224,6 +224,10 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
     /// only make tmux chrome resolve through the foreground and background
     /// configured by Ghosthub.
     private func presentationSetupCommand(tmuxPath: String) -> String {
+        // set-option parses a bare session name as a prefix target. The
+        // trailing colon makes tmux interpret `=name:` as an exact session
+        // target, so a disappeared "alpha" cannot style "alphabet".
+        let target = "=\(sessionName):"
         let options = [
             ("status-style", "reverse"),
             ("message-style", "reverse"),
@@ -231,7 +235,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         ]
         return options.map { option, value in
             let command = [
-                tmuxPath, "set-option", "-t", sessionName, option, value,
+                tmuxPath, "set-option", "-t", target, option, value,
             ].map(shellQuotedCommandArgument).joined(separator: " ")
             return "\(command) >/dev/null 2>&1 || :"
         }.joined(separator: "; ")
