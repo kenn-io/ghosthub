@@ -275,7 +275,8 @@ public final class LibghosttyRuntime: ObservableObject {
         }
 
         do {
-            let plan = try pipeline.loadPlan()
+            let prepared = try prepareConfigLoad(projectRoot: nil)
+            let plan = prepared.plan
             let config = try loadConfig(plan: plan)
             var runtimeConfig = ghostty_runtime_config_s()
             runtimeConfig.userdata = Unmanaged.passUnretained(self).toOpaque()
@@ -301,7 +302,11 @@ public final class LibghosttyRuntime: ObservableObject {
             configPlan = plan
             diagnostics = readDiagnostics(from: config)
             installApplicationObservers()
-            installConfigMonitorIfNeeded(plan: plan)
+            if let monitorFailure = prepared.monitorFailure {
+                recordMonitorFailure(monitorFailure)
+            } else {
+                clearMonitorFailure()
+            }
             phase = .ready
         } catch {
             phase = .failed(error.localizedDescription)
@@ -404,22 +409,6 @@ public final class LibghosttyRuntime: ObservableObject {
                 ghostty_app_set_focus(appHandle, false)
             }
         )
-    }
-
-    private func installConfigMonitorIfNeeded(
-        plan: LibghosttyConfigLoadPlan
-    ) {
-        guard configMonitor == nil else { return }
-        let monitor = makeConfigMonitor(for: plan)
-
-        do {
-            try monitor.start()
-            configMonitor = monitor
-            clearMonitorFailure()
-        } catch {
-            configMonitor = monitor
-            recordMonitorFailure(error.localizedDescription)
-        }
     }
 
     private func updateConfigMonitor(

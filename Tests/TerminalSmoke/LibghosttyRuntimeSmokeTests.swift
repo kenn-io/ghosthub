@@ -152,6 +152,62 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
         )
     }
 
+    func testStartupInstallsWatcherBeforeReadingInitialConfig() throws {
+        try skipUnlessLibghosttyReady()
+        let (pipeline, tempRoot) = makeIsolatedPipeline()
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: tempRoot)
+        }
+        try FileManager.default.createDirectory(
+            at: pipeline.paths.configDirectory,
+            withIntermediateDirectories: true
+        )
+        try "font-size = 13\n".write(
+            to: pipeline.paths.globalConfigFile,
+            atomically: true,
+            encoding: .utf8
+        )
+        var didRewrite = false
+
+        let runtime = LibghosttyRuntime(
+            pipeline: pipeline,
+            configMonitorFactory: { request in
+                LibghosttyConfigFileMonitor(
+                    fileURLs: request.files,
+                    queue: DispatchQueue(
+                        label: "com.ghosthub.terminal.config-monitor-test"
+                    ),
+                    debounceInterval: .milliseconds(25),
+                    requiringExistingFiles: false,
+                    openHandler: { path, flags in
+                        let descriptor = open(path, flags)
+                        guard path
+                            == pipeline.paths.globalConfigFile.path,
+                            !didRewrite
+                        else {
+                            return descriptor
+                        }
+                        try? "font-size = not-a-number\n".write(
+                            to: pipeline.paths.globalConfigFile,
+                            atomically: false,
+                            encoding: .utf8
+                        )
+                        didRewrite = true
+                        return descriptor
+                    },
+                    errorHandler: request.errorHandler,
+                    changeHandler: {}
+                )
+            }
+        )
+
+        XCTAssertTrue(
+            runtime.diagnostics.contains {
+                $0.contains("font-size")
+            }
+        )
+    }
+
     func testAppHandleIsNonNil() throws {
         let ctx = try makeIsolatedRuntime()
 
