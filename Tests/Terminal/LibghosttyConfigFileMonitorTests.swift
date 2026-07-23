@@ -175,6 +175,83 @@ struct LibghosttyConfigFileMonitorTests {
         #expect(changed.wait(timeout: .now() + 2) == .success)
     }
 
+    @Test("monitor notices creation of a dangling symlink target")
+    func monitorNoticesDanglingSymlinkTargetCreation() throws {
+        let fixture = try TemporaryConfigMonitorFixture.create()
+        let lexicalDirectory = fixture.tempDirectory
+            .appendingPathComponent("lexical", isDirectory: true)
+        let targetDirectory = fixture.tempDirectory
+            .appendingPathComponent("targets", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: lexicalDirectory,
+            withIntermediateDirectories: false
+        )
+        try FileManager.default.createDirectory(
+            at: targetDirectory,
+            withIntermediateDirectories: false
+        )
+        let config = lexicalDirectory.appendingPathComponent("terminal.conf")
+        let target = targetDirectory.appendingPathComponent("terminal.conf")
+        try FileManager.default.createSymbolicLink(
+            at: config,
+            withDestinationURL: target
+        )
+
+        let changed = DispatchSemaphore(value: 0)
+        let monitor = LibghosttyConfigFileMonitor(
+            fileURLs: [config],
+            debounceInterval: .milliseconds(25)
+        ) {
+            changed.signal()
+        }
+        try monitor.start()
+        defer { monitor.stop() }
+
+        try fixture.writeConfig("font-size = 14\n", to: target)
+        #expect(changed.wait(timeout: .now() + 2) == .success)
+    }
+
+    @Test("monitor notices recreation of a deleted symlink target")
+    func monitorNoticesDelayedSymlinkTargetRecreation() throws {
+        let fixture = try TemporaryConfigMonitorFixture.create()
+        let lexicalDirectory = fixture.tempDirectory
+            .appendingPathComponent("lexical", isDirectory: true)
+        let targetDirectory = fixture.tempDirectory
+            .appendingPathComponent("targets", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: lexicalDirectory,
+            withIntermediateDirectories: false
+        )
+        try FileManager.default.createDirectory(
+            at: targetDirectory,
+            withIntermediateDirectories: false
+        )
+        let config = lexicalDirectory.appendingPathComponent("terminal.conf")
+        let target = targetDirectory.appendingPathComponent("terminal.conf")
+        try fixture.writeConfig("font-size = 13\n", to: target)
+        try FileManager.default.createSymbolicLink(
+            at: config,
+            withDestinationURL: target
+        )
+
+        let changed = DispatchSemaphore(value: 0)
+        let monitor = LibghosttyConfigFileMonitor(
+            fileURLs: [config],
+            debounceInterval: .milliseconds(25)
+        ) {
+            changed.signal()
+        }
+        try monitor.start()
+        defer { monitor.stop() }
+
+        try FileManager.default.removeItem(at: target)
+        #expect(changed.wait(timeout: .now() + 2) == .success)
+        while changed.wait(timeout: .now()) == .success {}
+
+        try fixture.writeConfig("font-size = 14\n", to: target)
+        #expect(changed.wait(timeout: .now() + 2) == .success)
+    }
+
     @Test("monitor rebinds when an ancestor symlink changes targets")
     func monitorRebindsAfterAncestorSymlinkRetargeting() throws {
         let fixture = try TemporaryConfigMonitorFixture.create()

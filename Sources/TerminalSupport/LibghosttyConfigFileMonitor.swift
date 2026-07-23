@@ -15,6 +15,7 @@ public enum LibghosttyConfigFileMonitorError: LocalizedError, Equatable {
 
 public final class LibghosttyConfigFileMonitor {
     public typealias ChangeHandler = @Sendable () -> Void
+    private static let symlinkTraversalLimit = 64
 
     private struct FileIdentity: Equatable {
         let exists: Bool
@@ -267,29 +268,57 @@ public final class LibghosttyConfigFileMonitor {
     }
 
     private func watchedDirectories() -> Set<URL> {
-        var directories = Set(
-            desiredFiles.map(nearestExistingDirectory)
-        )
-        for file in desiredFiles {
+        var directories: Set<URL> = []
+        var pending = Array(desiredFiles)
+        var visited: Set<URL> = []
+
+        while let file = pending.popLast() {
+            guard visited.count < Self.symlinkTraversalLimit else {
+                break
+            }
+            let standardizedFile = file.standardizedFileURL
+            guard visited.insert(standardizedFile).inserted else {
+                continue
+            }
+            directories.insert(
+                nearestExistingDirectory(for: standardizedFile)
+            )
+
             var component = URL(
                 fileURLWithPath: "/",
                 isDirectory: true
             )
-            for pathComponent in file.pathComponents
-                .dropFirst()
-                .dropLast() {
-                component.appendPathComponent(
-                    pathComponent,
-                    isDirectory: true
-                )
+            let pathComponents = Array(
+                standardizedFile.pathComponents.dropFirst()
+            )
+            for (index, pathComponent) in pathComponents.enumerated() {
+                component.appendPathComponent(pathComponent)
                 guard isSymbolicLink(component) else { continue }
                 directories.insert(
                     component.deletingLastPathComponent()
                         .standardizedFileURL
                 )
+                guard var destination = symlinkDestination(
+                    for: component
+                ) else { continue }
+                for remaining in pathComponents.dropFirst(index + 1) {
+                    destination.appendPathComponent(remaining)
+                }
+                pending.append(destination.standardizedFileURL)
             }
         }
         return directories
+    }
+
+    private func symlinkDestination(for url: URL) -> URL? {
+        guard let destination = try? FileManager.default
+            .destinationOfSymbolicLink(atPath: url.path)
+        else { return nil }
+        if destination.hasPrefix("/") {
+            return URL(fileURLWithPath: destination)
+        }
+        return url.deletingLastPathComponent()
+            .appendingPathComponent(destination)
     }
 
     private func isSymbolicLink(_ url: URL) -> Bool {
