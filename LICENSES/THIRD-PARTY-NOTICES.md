@@ -12,6 +12,7 @@ revisions and is copied verbatim into `Ghosthub.app/Contents/Resources/Licenses`
 | kwt | `kwt-Apache-2.0.txt`, `kwt-NOTICE.txt` |
 | Fantastty-derived terminal integration | `fantastty-MIT.txt` |
 | Marked 15.0.7 | `Marked-MIT.txt` |
+| Sparkle 2.9.4 | `Sparkle-LICENSE.txt` |
 | Zig compiler runtime and standard library | `Zig-MIT.txt` |
 | zlib | `zlib.txt` |
 | libpng | `libpng.txt` |

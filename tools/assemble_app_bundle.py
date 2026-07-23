@@ -15,6 +15,12 @@ if str(TOOLS_DIR) not in sys.path:
 from stage_release_app_bundles import stage_bundles
 
 
+SPARKLE_FEED_URL = (
+    "https://github.com/kenn-io/ghosthub/releases/latest/download/appcast.xml"
+)
+SPARKLE_PUBLIC_ED_KEY = "MKL5y44upnEoZrnm3VLLDocsBTD+3DgnH161eEQPhMQ="
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Assemble a Ghosthub.app bundle with icon, plist, and SwiftPM resources."
@@ -36,6 +42,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--copyright", required=True)
     parser.add_argument("--kwt-version", required=True)
     parser.add_argument("--kwt-source-revision", required=True)
+    parser.add_argument(
+        "--include-updates",
+        action="store_true",
+        help="Embed the production Sparkle update channel.",
+    )
     return parser.parse_args()
 
 
@@ -56,6 +67,7 @@ def assemble_app_bundle(
     copyright: str,
     kwt_version: str,
     kwt_source_revision: str,
+    include_updates: bool = False,
 ) -> Path:
     if not kwt_binary.is_file() or not kwt_binary.stat().st_mode & 0o111:
         raise ValueError(f"kwt binary is missing or not executable: {kwt_binary}")
@@ -75,9 +87,11 @@ def assemble_app_bundle(
     macos_dir = contents_dir / "MacOS"
     resources_dir = contents_dir / "Resources"
     helpers_dir = contents_dir / "Helpers"
+    frameworks_dir = contents_dir / "Frameworks"
     licenses_dir = resources_dir / "Licenses"
     macos_dir.mkdir(parents=True, exist_ok=True)
     helpers_dir.mkdir(parents=True, exist_ok=True)
+    frameworks_dir.mkdir(parents=True, exist_ok=True)
     licenses_dir.mkdir(parents=True, exist_ok=True)
 
     bundled_binary = macos_dir / app_binary.name
@@ -90,6 +104,17 @@ def assemble_app_bundle(
     bundled_kwt = helpers_dir / "kwt"
     shutil.copy2(kwt_binary, bundled_kwt)
     bundled_kwt.chmod(0o755)
+
+    sparkle_framework = source_bin_dir / "Sparkle.framework"
+    if not sparkle_framework.is_dir():
+        raise FileNotFoundError(
+            f"missing expected Sparkle framework: {sparkle_framework}"
+        )
+    shutil.copytree(
+        sparkle_framework,
+        frameworks_dir / sparkle_framework.name,
+        symlinks=True,
+    )
 
     shutil.copy2(app_license_path, licenses_dir / "Ghosthub-AGPL-3.0.txt")
     for license_path in third_party_license_paths:
@@ -114,6 +139,20 @@ def assemble_app_bundle(
         "NSHumanReadableCopyright": copyright,
         "NSPrincipalClass": "NSApplication",
     }
+    if include_updates:
+        plist.update(
+            {
+                "SUAllowsAutomaticUpdates": True,
+                "SUEnableAutomaticChecks": True,
+                "SUFeedURL": SPARKLE_FEED_URL,
+                "SUPublicEDKey": SPARKLE_PUBLIC_ED_KEY,
+                "SURequireSignedFeed": True,
+                # This exact key is declared by Sparkle 2.9.4 as
+                # SUSignedFeedFailureExpirationIntervalKey.
+                "SUSignedFeedFailureExpirationInterval": 0,
+                "SUVerifyUpdateBeforeExtraction": True,
+            }
+        )
     with plist_path.open("wb") as handle:
         plistlib.dump(plist, handle, sort_keys=False)
 
@@ -142,6 +181,7 @@ def main() -> int:
         copyright=args.copyright,
         kwt_version=args.kwt_version,
         kwt_source_revision=args.kwt_source_revision,
+        include_updates=args.include_updates,
     )
     print(app_root)
     return 0

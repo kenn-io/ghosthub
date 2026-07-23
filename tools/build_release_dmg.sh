@@ -40,6 +40,35 @@ make release-app \
 xattr -cr "$RELEASE_APP_PATH"
 
 if [[ -n "$APPLE_SIGNING_IDENTITY" ]]; then
+  SPARKLE_FRAMEWORK_PATH="$RELEASE_APP_PATH/Contents/Frameworks/Sparkle.framework"
+  if [[ ! -d "$SPARKLE_FRAMEWORK_PATH" ]]; then
+    echo "Sparkle framework is missing from the release app." >&2
+    exit 1
+  fi
+
+  sign_sparkle_component() {
+    local path="$1"
+    printf 'Codesigning Sparkle component: %s\n' "$path"
+    codesign \
+      --force \
+      --options runtime \
+      --preserve-metadata=identifier,entitlements \
+      --timestamp \
+      --sign "$APPLE_SIGNING_IDENTITY" \
+      "$path"
+    codesign --verify --strict --verbose=2 "$path"
+  }
+
+  sign_sparkle_component \
+    "$SPARKLE_FRAMEWORK_PATH/Versions/B/Autoupdate"
+  sign_sparkle_component \
+    "$SPARKLE_FRAMEWORK_PATH/Versions/B/XPCServices/Downloader.xpc"
+  sign_sparkle_component \
+    "$SPARKLE_FRAMEWORK_PATH/Versions/B/XPCServices/Installer.xpc"
+  sign_sparkle_component \
+    "$SPARKLE_FRAMEWORK_PATH/Versions/B/Updater.app"
+  sign_sparkle_component "$SPARKLE_FRAMEWORK_PATH"
+
   KWT_HELPER_PATH="$RELEASE_APP_PATH/Contents/Helpers/kwt"
   printf 'Codesigning kwt helper: %s\n' "$KWT_HELPER_PATH"
   codesign \
