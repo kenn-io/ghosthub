@@ -4,6 +4,8 @@ SHELL = /bin/bash
 PYTHON ?= python3
 UV ?= uv
 SWIFT ?= swift
+PNPM ?= pnpm
+VERCEL ?= vercel
 GHOSTHUB_APP ?= Ghosthub
 HOST_KEY ?= local
 LIBGHOSTTY_ZIG ?=
@@ -30,7 +32,7 @@ KWT_VERSION ?= development
 KWT_SOURCE_REVISION ?= unpinned
 SWIFT_TEST_FILTER ?=
 
-.PHONY: help bootstrap-libghostty bootstrap-libghostty-release check-libghostty check-libghostty-release test-libghostty-bootstrap test-terminal-fallback test-stage-release-app-bundles test-assemble-app-bundle test-essential-workflows build swift-warning-check build-release debug-app release-app release-dmg release-appcast run-release-app run-app swift-test test-tmux-attach python-test test smoke-test docs-build docs-serve reset-app-state install-hooks
+.PHONY: help bootstrap-libghostty bootstrap-libghostty-release check-libghostty check-libghostty-release test-libghostty-bootstrap test-terminal-fallback test-stage-release-app-bundles test-assemble-app-bundle test-essential-workflows build swift-warning-check build-release debug-app release-app release-dmg release-appcast run-release-app run-app swift-test test-tmux-attach python-test test smoke-test docs-build docs-serve site-deploy reset-app-state install-hooks
 
 help:
 	@printf '%s\n' \
@@ -77,6 +79,8 @@ help:
 		'      Build the Zensical documentation site under docs/site.' \
 		'  make docs-serve' \
 		'      Serve the Zensical documentation site locally.' \
+		'  make site-deploy' \
+		'      Build the marketing site and deploy it to production with Vercel.' \
 		'  make reset-app-state' \
 		'      Delete all Ghosthub preferences, database, config, and window state to simulate a first-run experience.' \
 		'' \
@@ -322,6 +326,10 @@ docs-build:
 
 docs-serve:
 	@cd docs && $(UV) run --frozen ./zensical-docs.sh serve
+
+site-deploy:
+	@cd website && $(PNPM) build
+	@$(VERCEL) deploy --prod
 
 reset-app-state:
 	@set -euo pipefail; \

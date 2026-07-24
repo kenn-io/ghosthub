@@ -1,0 +1,23 @@
+# The Vercel project is linked at the repository root but builds from website/.
+/*
+!website
+
+# Build and machine-local state under the allowed website tree.
+website/node_modules
+website/dist
+website/.astro
+website/.env*
+website/**/.env*
+website/.vercel
+
+# Editor state and backup files at any website depth.
+website/.idea
+website/**/.idea/**
+website/.vscode
+website/**/.vscode/**
+website/*.swp
+website/**/*.swp
+website/*~
+website/**/*~
+website/.DS_Store
+website/**/.DS_Store
