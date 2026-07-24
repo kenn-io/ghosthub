@@ -50,6 +50,39 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(command.contains("status-style"))
     }
 
+    @Test("isolated session socket participates in command routing")
+    func isolatedSessionUsesReturnedSocket() async throws {
+        let store = TmuxSurfaceStoreStub()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { .success("/usr/bin/tmux") },
+            localKwtPathProvider: {
+                "/Applications/Ghosthub.app/Contents/Helpers/kwt"
+            }
+        )
+        var isReady = false
+        coordinator.onSurfaceReady = { _ in isReady = true }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "pr-32",
+            host: .local,
+            socketName: "kwt-pr-0123456789abcdef",
+            workingDirectory: "/worktrees/pr-32"
+        )
+
+        await waitUntilMainActor { isReady }
+        _ = coordinator.surface(handle: handle)
+
+        let command = try #require(
+            store.requestedConfigurations.last?.command
+        )
+        #expect(command.contains(
+            "/Applications/Ghosthub.app/Contents/Helpers/kwt"
+        ))
+        #expect(command.contains("/worktrees/pr-32"))
+        #expect(command.contains("kwt-pr-0123456789abcdef"))
+    }
+
     @Test("endpoint changes replace provisioning and active handles")
     func endpointChangesReplaceHandles() async throws {
         let store = TmuxSurfaceStoreStub()

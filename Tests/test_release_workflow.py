@@ -16,8 +16,8 @@ def test_release_workflow_bundles_a_revision_pinned_kwt():
 
     assert "repository: ${{ env.KWT_REPOSITORY }}" in text
     assert "KWT_REPOSITORY: kenn-io/kwt" in text
-    assert "KWT_REF: d55475048921f98e80ccf009b9c9ff4f8b7a810a" in text
-    assert "ref: ${{ env.KWT_REF }}" in text
+    assert 'revision="$(tr -d \'[:space:]\' < KWT_REVISION)"' in text
+    assert "ref: ${{ steps.kwt-pin.outputs.revision }}" in text
     assert "path: .release-inputs/kwt-source" in text
     assert "actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16" in text
     assert "KWT_BINARY_PATH=$kwt_binary" in text

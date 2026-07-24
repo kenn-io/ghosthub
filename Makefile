@@ -26,19 +26,24 @@ RELEASE_MIN_MACOS ?= 26.0
 APP_ICON_PATH ?= Resources/AppIcon/Ghosthub.icns
 APP_COPYRIGHT ?= Copyright © 2026 Kenn Software LLC. Licensed under the GNU AGPL v3.0 or later.
 APP_LICENSE_PATH ?= LICENSE
-KWT_BINARY_PATH ?= $(shell command -v kwt 2>/dev/null)
+KWT_REPOSITORY ?= https://github.com/kenn-io/kwt.git
+KWT_REF ?= $(shell tr -d '[:space:]' < KWT_REVISION)
+KWT_SOURCE_DIR ?= $(abspath .build/kwt-source)
+KWT_BINARY_PATH ?= $(abspath .build/kwt/kwt)
 THIRD_PARTY_LICENSES_DIR ?= LICENSES
-KWT_VERSION ?= development
-KWT_SOURCE_REVISION ?= unpinned
+KWT_VERSION ?= $(KWT_REF)
+KWT_SOURCE_REVISION ?= $(KWT_REF)
 SWIFT_TEST_FILTER ?=
 
-.PHONY: help bootstrap-libghostty bootstrap-libghostty-release check-libghostty check-libghostty-release test-libghostty-bootstrap test-terminal-fallback test-stage-release-app-bundles test-assemble-app-bundle test-essential-workflows build swift-warning-check build-release debug-app release-app release-dmg release-appcast run-release-app run-app swift-test test-tmux-attach python-test test smoke-test docs-build docs-serve site-deploy reset-app-state install-hooks
+.PHONY: help bootstrap-kwt ensure-kwt bootstrap-libghostty bootstrap-libghostty-release check-libghostty check-libghostty-release test-libghostty-bootstrap test-terminal-fallback test-stage-release-app-bundles test-assemble-app-bundle test-essential-workflows build swift-warning-check build-release debug-app release-app release-dmg release-appcast run-release-app run-app swift-test test-tmux-attach python-test test smoke-test docs-build docs-serve site-deploy reset-app-state install-hooks
 
 help:
 	@printf '%s\n' \
 		'Ghosthub developer shortcuts' \
 		'' \
 		'Targets:' \
+		'  make bootstrap-kwt' \
+		'      Build the exact kwt revision embedded by local debug app bundles.' \
 		'  make bootstrap-libghostty' \
 		'      Fetch the pinned Ghostty source, build libghostty, and stage the local artifacts.' \
 		'  make check-libghostty' \
@@ -103,6 +108,21 @@ help:
 		'  Debug and release libghostty variants are cached separately; switching LIBGHOSTTY_OPTIMIZE modes re-activates the requested variant into .build/libghostty and only rebuilds when that cached variant is missing or stale.' \
 		'  bootstrap-libghostty and check-libghostty prefer LIBGHOSTTY_ZIG first, then ~/.local/bin/zig-0.15.2-x86_64, then zig from PATH, and finally /opt/homebrew/bin/zig as a fallback.' \
 		'  libghostty bootstrap requires a full Xcode install and the Metal Toolchain, not just Command Line Tools.'
+
+bootstrap-kwt:
+	@tools/build_pinned_kwt.sh \
+		"$(KWT_REPOSITORY)" \
+		"$(KWT_REF)" \
+		"$(KWT_SOURCE_DIR)" \
+		"$(KWT_BINARY_PATH)"
+
+ensure-kwt:
+	@if [[ "$(origin KWT_BINARY_PATH)" == "file" ]]; then \
+		$(MAKE) --no-print-directory bootstrap-kwt; \
+	elif [[ ! -x "$(KWT_BINARY_PATH)" ]]; then \
+		printf 'KWT_BINARY_PATH must name an existing executable kwt binary.\n' >&2; \
+		exit 1; \
+	fi
 
 bootstrap-libghostty:
 	@set -euo pipefail; \
@@ -215,7 +235,7 @@ build-release: bootstrap-libghostty-release
 	@$(SWIFT) build --configuration release --product "$(GHOSTHUB_APP)"
 
 debug-app: LIBGHOSTTY_QUIET_NOOP = 1
-debug-app: bootstrap-libghostty
+debug-app: ensure-kwt bootstrap-libghostty
 	@set -euo pipefail; \
 	kwt_bin="$(KWT_BINARY_PATH)"; \
 	if [[ -z "$$kwt_bin" || ! -x "$$kwt_bin" ]]; then \
@@ -246,7 +266,7 @@ debug-app: bootstrap-libghostty
 	printf 'Built debug app bundle: %s\n' "$(DEBUG_APP_PATH)"
 
 release-app: LIBGHOSTTY_OPTIMIZE = ReleaseFast
-release-app: build-release
+release-app: ensure-kwt build-release
 	@set -euo pipefail; \
 	kwt_bin="$(KWT_BINARY_PATH)"; \
 	if [[ -z "$$kwt_bin" || ! -x "$$kwt_bin" ]]; then \

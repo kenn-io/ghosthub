@@ -21,7 +21,7 @@ struct KwtInventoryClientTests {
                 return (
                     0,
                     "GHOSTHUB_KWT_JSON\n" +
-                        #"[{"path":"/code/docbank","branch":"main","commit_hash":"abc","is_main":true,"repository":"github.com/kenn-io/docbank","session_name":"kwt-docbank-main"}]"#
+                        #"[{"path":"/code/docbank","branch":"main","commit_hash":"abc","is_main":true,"repository":"github.com/kenn-io/docbank","session_name":"kwt-docbank-main","tmux_socket_name":"kwt-pr-0123456789abcdef"}]"#
                 )
             },
             localBinaryPath: "/Applications/Ghost Hub/kwt",
@@ -34,6 +34,10 @@ struct KwtInventoryClientTests {
         #expect(
             inventory.projects[0].worktrees.map(\.sessionName)
                 == ["kwt-docbank-main"]
+        )
+        #expect(
+            inventory.projects[0].worktrees.map(\.tmuxSocketName)
+                == ["kwt-pr-0123456789abcdef"]
         )
         #expect(inventory.projects[0].warning == nil)
     }

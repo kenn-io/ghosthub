@@ -6,17 +6,20 @@ public struct WorkspaceTmuxSessionSelection: Equatable, Sendable {
     public var name: String
     public var worktreeID: UUID?
     public var worktreePath: String?
+    public var socketName: String?
 
     public init(
         hostID: UUID,
         name: String,
         worktreeID: UUID? = nil,
-        worktreePath: String? = nil
+        worktreePath: String? = nil,
+        socketName: String? = nil
     ) {
         self.hostID = hostID
         self.name = name
         self.worktreeID = worktreeID
         self.worktreePath = worktreePath
+        self.socketName = socketName
     }
 }
 
@@ -132,7 +135,8 @@ public enum WorkspaceSidebarModel {
             hostID: worktree.hostID,
             name: name,
             worktreeID: worktree.id,
-            worktreePath: worktree.path
+            worktreePath: worktree.path,
+            socketName: worktree.tmuxSocketName
         )
     }
 

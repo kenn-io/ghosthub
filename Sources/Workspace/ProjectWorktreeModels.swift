@@ -299,6 +299,8 @@ public struct WorktreeSummary: Identifiable, Equatable, Sendable {
     /// Exact tmux session identity reported by kwt for this worktree.
     /// Ghosthub borrows this session through its ordinary tmux client.
     public var tmuxSessionName: String?
+    /// Named tmux socket returned by kwt for an isolated PR workspace.
+    public var tmuxSocketName: String?
     public var sessionBackend: SessionBackendKind
     public var pullRequestReviewDecision: PullRequestReviewDecision?
     public var pullRequestMergeable: PullRequestMergeable?
@@ -334,6 +336,7 @@ public struct WorktreeSummary: Identifiable, Equatable, Sendable {
         lastAgentActivity: Date? = nil,
         lastViewedAt: Date? = nil,
         tmuxSessionName: String? = nil,
+        tmuxSocketName: String? = nil,
         sessionBackend: SessionBackendKind = .localPTY,
         pullRequestReviewDecision: PullRequestReviewDecision? = nil,
         pullRequestMergeable: PullRequestMergeable? = nil,
@@ -368,6 +371,7 @@ public struct WorktreeSummary: Identifiable, Equatable, Sendable {
         self.lastAgentActivity = lastAgentActivity
         self.lastViewedAt = lastViewedAt
         self.tmuxSessionName = tmuxSessionName
+        self.tmuxSocketName = tmuxSocketName
         self.sessionBackend = sessionBackend
         self.pullRequestReviewDecision = pullRequestReviewDecision
         self.pullRequestMergeable = pullRequestMergeable

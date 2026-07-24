@@ -29,6 +29,7 @@ struct KwtWorktreeRecord: Codable, Equatable, Sendable {
     var createdAt: String?
     var repository: String
     var sessionName: String
+    var tmuxSocketName: String?
 
     private enum CodingKeys: String, CodingKey {
         case path, branch, repository
@@ -36,6 +37,7 @@ struct KwtWorktreeRecord: Codable, Equatable, Sendable {
         case isMain = "is_main"
         case createdAt = "created_at"
         case sessionName = "session_name"
+        case tmuxSocketName = "tmux_socket_name"
     }
 }
 
@@ -331,6 +333,7 @@ enum KwtSnapshotMerger {
                 worktree.isPrimary = record.isMain
                 worktree.isStale = false
                 worktree.tmuxSessionName = record.sessionName
+                worktree.tmuxSocketName = record.tmuxSocketName
                 worktree.sessionBackend = snapshot.host(id: hostID)?.kind == .remote
                     ? .remoteTmux : .localTmux
                 worktrees.append(worktree)

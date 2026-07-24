@@ -73,6 +73,27 @@ Kwt also owns pull-request provider integration: authentication, repository
 identity, candidate discovery, and worktree import. Ghosthub may present a
 machine-readable candidate list and submit the user's selection through a
 supported kwt command, but it does not query GitHub or another forge directly.
+Candidate discovery begins only after the user opens the pull-request import
+surface for a project; startup inventory must not issue one provider request
+per project. The opaque candidate ID returned by kwt is passed back unchanged,
+and the successful import response supplies the canonical worktree path,
+branch, tmux session name, and isolated tmux socket name. Ghosthub requests
+kwt's nonattaching session start as part of that explicit import. Kwt
+establishes its configured layout and workspace bootstrap on that
+workspace-specific server before returning. If runtime session startup fails
+after the import is durable, kwt returns the workspace with an explicit
+partial-success error; Ghosthub retains and selects the imported worktree
+before presenting that error. A successful result is presented through kwt's
+protected attach command. That command verifies persisted workspace provenance
+and the current tmux state before executing an ordinary client with
+environment updates disabled. Other workspaces and unbound sessions continue
+to attach directly to the host's normal tmux server.
+
+Remote kwt installation is not currently implicit. A future managed-helper
+flow may upload a Ghosthub-pinned build into a per-user directory after an
+explicit Install or Update action, then invoke that exact path without
+replacing the host's system kwt. Ordinary inventory and tmux attachment must
+remain non-mutating, and a remote host without kwt remains tmux-only.
 
 ## Startup and Onboarding
 

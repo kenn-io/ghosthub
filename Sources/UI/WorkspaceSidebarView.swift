@@ -15,6 +15,7 @@ struct WorkspaceSidebarView: View {
     let onOpenTmuxSession: (WorkspaceTmuxSessionSelection) -> Void
     let onNavigateAwayFromTmuxSession: () -> Void
     let onNewWorktree: (ProjectSummary) -> Void
+    let onImportPullRequest: (ProjectSummary) -> Void
     let onNewTmuxSession: (HostSummary) -> Void
     let onRefreshInventory: () -> Void
     let inventoryWarning: String?
@@ -34,6 +35,7 @@ struct WorkspaceSidebarView: View {
         ) -> Void = { _ in },
         onNavigateAwayFromTmuxSession: @escaping () -> Void = {},
         onNewWorktree: @escaping (ProjectSummary) -> Void = { _ in },
+        onImportPullRequest: @escaping (ProjectSummary) -> Void = { _ in },
         onNewTmuxSession: @escaping (HostSummary) -> Void = { _ in },
         onRefreshInventory: @escaping () -> Void = {},
         inventoryWarning: String? = nil,
@@ -47,6 +49,7 @@ struct WorkspaceSidebarView: View {
         self.onOpenTmuxSession = onOpenTmuxSession
         self.onNavigateAwayFromTmuxSession = onNavigateAwayFromTmuxSession
         self.onNewWorktree = onNewWorktree
+        self.onImportPullRequest = onImportPullRequest
         self.onNewTmuxSession = onNewTmuxSession
         self.onRefreshInventory = onRefreshInventory
         self.inventoryWarning = inventoryWarning
@@ -135,6 +138,16 @@ struct WorkspaceSidebarView: View {
                                                         in: project.project
                                                     )
                                                 )
+                                                Button("Import Pull Request…") {
+                                                    onImportPullRequest(
+                                                        project.project
+                                                    )
+                                                }
+                                                .disabled(
+                                                    !snapshot.canImportPullRequest(
+                                                        in: project.project
+                                                    )
+                                                )
                                             }
                                             if isExpanded(projectKey) {
                                                 ForEach(
@@ -186,6 +199,13 @@ struct WorkspaceSidebarView: View {
                     onNewWorktree(project)
                 }
                 .disabled(selectedProject == nil)
+                Button("Import pull request…") {
+                    guard let project = selectedImportProject else {
+                        return
+                    }
+                    onImportPullRequest(project)
+                }
+                .disabled(selectedImportProject == nil)
             } label: {
                 Image(systemName: "plus")
             }
@@ -204,6 +224,14 @@ struct WorkspaceSidebarView: View {
             in: snapshot,
             selection: selection
         ), snapshot.canCreateWorktree(in: project) else { return nil }
+        return project
+    }
+
+    private var selectedImportProject: ProjectSummary? {
+        guard let project = WorkspaceSelectionResolver.selectedProject(
+            in: snapshot,
+            selection: selection
+        ), snapshot.canImportPullRequest(in: project) else { return nil }
         return project
     }
 
@@ -382,6 +410,7 @@ struct WorkspaceSidebarView: View {
         disclosureKey: String
     ) -> some View {
         let canCreate = snapshot.canCreateWorktree(in: project.project)
+        let canImport = snapshot.canImportPullRequest(in: project.project)
         return HStack(spacing: 0) {
             hierarchyDisclosureButton(
                 project.row,
@@ -395,6 +424,10 @@ struct WorkspaceSidebarView: View {
                     onNewWorktree(project.project)
                 }
                 .disabled(!canCreate)
+                Button("Import Pull Request…") {
+                    onImportPullRequest(project.project)
+                }
+                .disabled(!canImport)
             } label: {
                 Image(systemName: "plus")
                     .font(.system(size: 11, weight: .semibold))
@@ -408,8 +441,8 @@ struct WorkspaceSidebarView: View {
                 "Project actions for \(project.project.sidebarTitle)"
             )
             .accessibilityHint(
-                canCreate
-                    ? "Create a kwt worktree."
+                canCreate || canImport
+                    ? "Create a kwt worktree or import a pull request."
                     : projectActionHelp(for: project.project)
             )
             .accessibilityIdentifier("project-actions")
@@ -448,11 +481,13 @@ struct WorkspaceSidebarView: View {
     private func projectActionHelp(
         for project: ProjectSummary
     ) -> String {
-        if snapshot.canCreateWorktree(in: project) {
+        if snapshot.canCreateWorktree(in: project)
+            || snapshot.canImportPullRequest(in: project) {
             return "Project actions for \(project.sidebarTitle)"
         }
-        return snapshot.host(id: project.hostID)?
-            .createWorktreeUnavailableReason
+        let host = snapshot.host(id: project.hostID)
+        return host?.createWorktreeUnavailableReason
+            ?? host?.importPullRequestUnavailableReason
             ?? "This project cannot create worktrees."
     }
 
@@ -617,9 +652,20 @@ struct WorkspaceSidebarView: View {
         if status.showsSecondLine {
             HStack(spacing: 4) {
                 if let num = status.prNumber {
-                    Text("#\(num)")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
+                    Label {
+                        Text("PR #\(num)")
+                            .monospacedDigit()
+                    } icon: {
+                        Image(systemName: "arrow.triangle.branch")
+                    }
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .background(
+                        Color.accentColor.opacity(0.14),
+                        in: Capsule()
+                    )
                 }
                 if let title = status.prTitle {
                     Text(title)

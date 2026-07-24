@@ -48,6 +48,13 @@ public struct WorkspaceSnapshot: Equatable, Sendable {
             && host(id: project.hostID)?.canCreateWorktree == true
     }
 
+    public func canImportPullRequest(in project: ProjectSummary) -> Bool {
+        !project.isSynthesized
+            && !project.isStale
+            && project.scopedKey.lowercased().hasPrefix("github.com/")
+            && host(id: project.hostID)?.canImportPullRequest == true
+    }
+
     public func sessions(
         for worktreeID: UUID
     ) -> [TerminalSessionSummary] {

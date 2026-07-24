@@ -529,6 +529,12 @@ struct WorkspaceWindow: View {
                 },
                 createWorktree: { [sceneModel] request in
                     try await sceneModel.createWorktree(request)
+                },
+                listPullRequests: { [sceneModel] projectID in
+                    try await sceneModel.pullRequests(for: projectID)
+                },
+                importPullRequest: { [sceneModel] request in
+                    try await sceneModel.importPullRequest(request)
                 }
             ),
             settingsStore: settingsStore,

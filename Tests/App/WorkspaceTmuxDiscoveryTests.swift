@@ -426,6 +426,39 @@ struct WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("protected workspaces never inherit default-server creation")
+    func protectedWorkspaceDoesNotReusePendingDefaultSession() throws {
+        let environment = try setupStandardEnvironment()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            nativeTmuxPathProvider: {
+                .failure(.notFound(shell: "test"))
+            },
+            createdSessionDiscoveryDelays: [.seconds(10)]
+        )
+        let defaultSelection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "kwt-workspace-pr-32"
+        )
+        let protectedSelection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: defaultSelection.name,
+            worktreeID: environment.worktree.id,
+            worktreePath: environment.worktree.path,
+            socketName: "kwt-pr-0123456789abcdef"
+        )
+
+        model.createTmuxSession(defaultSelection)
+        #expect(model.activeBorrowedTmuxLaunchMode == .create)
+
+        model.openBorrowedTmuxSession(protectedSelection)
+
+        #expect(model.activeBorrowedTmuxLaunchMode == .attach)
+        #expect(model.pendingCreatedTmuxSessionCount == 0)
+    }
+
+    @MainActor
     @Test("creation discovery waits for terminal command launch")
     func createdSessionDoesNotReconcileBeforeLaunch() async throws {
         let environment = try setupStandardEnvironment()

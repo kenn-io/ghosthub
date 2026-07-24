@@ -118,6 +118,16 @@ under their project/worktree. Every remaining tmux session is shown in the
 host-level session group. No naming convention or ownership marker is used to
 hide Middleman-created sessions.
 
+Pull-request imports are the one alternate-socket case. Kwt returns the named
+socket for the workspace-specific server it established, and Ghosthub carries
+that identity with the worktree selection. A successful import without a
+nonempty socket identity is rejected as malformed rather than treated as a
+default-server session. Ghosthub supplies `-L <socket>` to its best-effort
+presentation commands, but launches the client through `kwt pr attach
+<workspace-path>`. Kwt verifies and repairs protected state before executing
+`attach-session -E`, including on every SSH reconnect. Ghosthub never falls
+back to creation or a direct/default-server attach for that imported workspace.
+
 ## Local PTY
 
 App-owned local PTY surfaces remain only for host-scoped utility surfaces such

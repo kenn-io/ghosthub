@@ -11,6 +11,25 @@ struct NewWorktreeSheetTests {
         #expect(!NewWorktreeSheetPolicy.canDismiss(isCreating: true))
     }
 
+    @Test(
+        "pull request selectors accept numbers and pull URLs",
+        arguments: [
+            ("#32", "32"),
+            (" 32 ", "32"),
+            (
+                "https://github.com/kenn-io/kwt/pull/32",
+                "https://github.com/kenn-io/kwt/pull/32"
+            ),
+            ("PR import work", nil),
+        ]
+    )
+    func pullRequestSelectors(
+        input: String,
+        expected: String?
+    ) {
+        #expect(PullRequestSelector.normalized(input) == expected)
+    }
+
     @Test("duplicate project names include host and repository location")
     func duplicateProjectNamesAreDisambiguated() {
         let firstHost = HostSummary.fixture(

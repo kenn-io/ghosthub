@@ -46,6 +46,12 @@ final class WorkspaceSceneModel: ObservableObject {
     typealias KwtWorktreeCreator = @Sendable (
         WorktreeCreateRequest, String, TmuxHost
     ) async throws -> Void
+    typealias KwtPullRequestLister = @Sendable (
+        String, TmuxHost
+    ) async throws -> [PullRequestCandidate]
+    typealias KwtPullRequestImporter = @Sendable (
+        String, String, TmuxHost
+    ) async throws -> KwtPullRequestImportResult
     typealias TmuxSessionDiscovery = @Sendable (
         TmuxHost
     ) -> Result<[DiscoveredTmuxSession], TmuxBinaryError>
@@ -85,6 +91,7 @@ final class WorkspaceSceneModel: ObservableObject {
     private var kwtInventoryFailuresByHost: [UUID: String] = [:]
     private var isKwtInventoryLoading = false
     private var isWorktreeCreationInProgress = false
+    private var isPullRequestImportInProgress = false
 
     var workspaceResourceSummary: WorkspaceResourceSummary {
         activityController.workspaceResourceSummary
@@ -201,6 +208,8 @@ final class WorkspaceSceneModel: ObservableObject {
     private let notificationService: NotificationService
     private let kwtInventoryLoader: KwtInventoryLoader
     private let kwtWorktreeCreator: KwtWorktreeCreator
+    private let kwtPullRequestLister: KwtPullRequestLister
+    private let kwtPullRequestImporter: KwtPullRequestImporter
     private let tmuxSessionDiscovery: TmuxSessionDiscovery
     private let sshHostProbeRunner: SSHHostProbeRunner
     private let configuredSSHHostsProvider: () -> [SSHHost]
@@ -292,6 +301,21 @@ final class WorkspaceSceneModel: ObservableObject {
                 on: host
             )
         },
+        kwtPullRequestLister: @escaping KwtPullRequestLister = {
+            projectIdentity, host in
+            try await KwtPullRequestClient().list(
+                projectIdentity: projectIdentity,
+                on: host
+            )
+        },
+        kwtPullRequestImporter: @escaping KwtPullRequestImporter = {
+            id, projectIdentity, host in
+            try await KwtPullRequestClient().importPullRequest(
+                id: id,
+                projectIdentity: projectIdentity,
+                on: host
+            )
+        },
         tmuxSessionDiscovery: @escaping TmuxSessionDiscovery = { host in
             let resolver = TmuxBinaryResolver()
             return switch host {
@@ -333,6 +357,8 @@ final class WorkspaceSceneModel: ObservableObject {
         self.terminalRuntime = terminalRuntime
         self.kwtInventoryLoader = kwtInventoryLoader
         self.kwtWorktreeCreator = kwtWorktreeCreator
+        self.kwtPullRequestLister = kwtPullRequestLister
+        self.kwtPullRequestImporter = kwtPullRequestImporter
         self.tmuxSessionDiscovery = tmuxSessionDiscovery
         self.sshHostProbeRunner = sshHostProbeRunner
         self.createdSessionDiscoveryDelays =
@@ -657,6 +683,200 @@ final class WorkspaceSceneModel: ObservableObject {
         )
     }
 
+    func pullRequests(
+        for projectID: UUID
+    ) async throws -> [PullRequestCandidate] {
+        guard let project = snapshot.project(id: projectID),
+              snapshot.canImportPullRequest(in: project),
+              let hostSummary = snapshot.host(id: project.hostID),
+              let host = TmuxHostResolver.resolve(hostSummary)
+        else {
+            throw KwtPullRequestError.projectUnavailable
+        }
+        do {
+            return try await kwtPullRequestLister(
+                project.scopedKey,
+                host
+            )
+        } catch {
+            if isRemoteKwtUnavailable(error, hostID: project.hostID) {
+                kwtAvailabilityByHost[project.hostID] = false
+                applyInventoryOverlayIfNeeded()
+                updateWorkspaceInventoryState()
+            }
+            throw error
+        }
+    }
+
+    func importPullRequest(
+        _ request: PullRequestImportRequest
+    ) async throws {
+        guard !isPullRequestImportInProgress else {
+            throw KwtPullRequestError.importInProgress
+        }
+        guard let project = snapshot.project(id: request.projectID),
+              snapshot.canImportPullRequest(in: project),
+              let hostSummary = snapshot.host(id: project.hostID),
+              let host = TmuxHostResolver.resolve(hostSummary)
+        else {
+            throw KwtPullRequestError.projectUnavailable
+        }
+
+        isPullRequestImportInProgress = true
+        invalidateKwtInventoryRefresh()
+        var shouldRefreshKwtInventory = false
+        defer {
+            isPullRequestImportInProgress = false
+            if shouldRefreshKwtInventory {
+                scheduleKwtInventory()
+            }
+        }
+
+        let result: KwtPullRequestImportResult
+        do {
+            result = try await kwtPullRequestImporter(
+                request.pullRequestID,
+                project.scopedKey,
+                host
+            )
+        } catch {
+            if isRemoteKwtUnavailable(error, hostID: project.hostID) {
+                kwtAvailabilityByHost[project.hostID] = false
+                kwtInventoryFailuresByHost.removeValue(
+                    forKey: project.hostID
+                )
+                applyInventoryOverlayIfNeeded()
+                updateWorkspaceInventoryState()
+                shouldRefreshKwtInventory = true
+            }
+            throw error
+        }
+
+        do {
+            let refreshed = try await kwtInventoryLoader(host)
+            let previous = kwtInventoriesByHost[project.hostID]
+            kwtInventoriesByHost[project.hostID] =
+                refreshed.retainingFailedProjectWorktrees(from: previous)
+            kwtInventoryFailuresByHost.removeValue(forKey: project.hostID)
+        } catch {
+            kwtInventoryFailuresByHost[project.hostID] =
+                error.localizedDescription
+            shouldRefreshKwtInventory = true
+        }
+
+        mergeImportedWorkspace(
+            result.workspace,
+            project: project
+        )
+        kwtAvailabilityByHost[project.hostID] = true
+        applyInventoryOverlayIfNeeded()
+        annotateImportedPullRequest(
+            result.pullRequest,
+            workspace: result.workspace,
+            hostID: project.hostID
+        )
+        updateWorkspaceInventoryState()
+        scheduleTmuxSessionDiscovery()
+
+        guard let imported = snapshot.worktrees.first(where: {
+            $0.hostID == project.hostID
+                && normalizedWorkspacePath($0.path)
+                    == normalizedWorkspacePath(result.workspace.path)
+        }) else {
+            throw KwtPullRequestError.importedWorkspaceMissing(
+                path: result.workspace.path
+            )
+        }
+        selection.select(
+            .worktree(imported.id),
+            in: snapshot,
+            visibility: worktreeVisibility
+        )
+        if let sessionError = result.sessionStartError {
+            throw KwtPullRequestError.sessionStartFailed(
+                host: host.displayName,
+                code: sessionError.code,
+                message: sessionError.message,
+                retryable: sessionError.retryable
+            )
+        }
+    }
+
+    private func mergeImportedWorkspace(
+        _ workspace: PullRequestWorkspace,
+        project: ProjectSummary
+    ) {
+        var inventory = kwtInventoriesByHost[project.hostID]
+            ?? KwtHostInventory(projects: [])
+        let projectIndex = inventory.projects.firstIndex {
+            $0.project.repository == project.scopedKey
+                || normalizedWorkspacePath($0.project.path)
+                    == normalizedWorkspacePath(project.rootPath)
+        }
+        let worktree = KwtWorktreeRecord(
+            path: workspace.path,
+            branch: workspace.branch,
+            commitHash: "",
+            isMain: false,
+            createdAt: nil,
+            repository: workspace.repository,
+            sessionName: workspace.sessionName,
+            tmuxSocketName: workspace.tmuxSocketName
+        )
+        if let projectIndex {
+            if let worktreeIndex = inventory.projects[
+                projectIndex
+            ].worktrees.firstIndex(where: {
+                normalizedWorkspacePath($0.path)
+                    == normalizedWorkspacePath(workspace.path)
+            }) {
+                inventory.projects[projectIndex].worktrees[
+                    worktreeIndex
+                ].sessionName = workspace.sessionName
+                inventory.projects[projectIndex].worktrees[
+                    worktreeIndex
+                ].tmuxSocketName = workspace.tmuxSocketName
+            } else {
+                inventory.projects[projectIndex].worktrees.append(worktree)
+            }
+        } else {
+            inventory.projects.append(KwtProjectInventory(
+                project: KwtProjectRecord(
+                    repository: project.scopedKey,
+                    name: project.name,
+                    path: project.rootPath,
+                    lastTouched: nil
+                ),
+                worktrees: [worktree],
+                warning: nil
+            ))
+        }
+        kwtInventoriesByHost[project.hostID] = inventory
+    }
+
+    private func annotateImportedPullRequest(
+        _ pullRequest: PullRequestCandidate,
+        workspace: PullRequestWorkspace,
+        hostID: UUID
+    ) {
+        guard let index = snapshot.worktrees.firstIndex(where: {
+            $0.hostID == hostID
+                && normalizedWorkspacePath($0.path)
+                    == normalizedWorkspacePath(workspace.path)
+        }) else { return }
+        snapshot.worktrees[index].linkedPullRequestNumber =
+            pullRequest.number
+        snapshot.worktrees[index].pullRequestTitle = pullRequest.title
+        snapshot.worktrees[index].pullRequestURL = pullRequest.url
+        snapshot.worktrees[index].pullRequestState = pullRequest.isDraft
+            ? .draft
+            : PRState(rawValue: pullRequest.state)
+    }
+
+    private func normalizedWorkspacePath(_ path: String) -> String {
+        URL(fileURLWithPath: path).standardizedFileURL.path
+    }
+
     private func reconcileInventoryHosts() {
         guard !isApplyingInventoryOverlay else { return }
         let resolved = Dictionary(
@@ -803,6 +1023,10 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         if let worktreeError = error as? KwtWorktreeError,
            case .commandFailed(_, 127) = worktreeError {
+            return true
+        }
+        if let pullRequestError = error as? KwtPullRequestError,
+           case .commandFailed(_, 127, _, _, _) = pullRequestError {
             return true
         }
         return false
@@ -1282,7 +1506,9 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         presentTmuxSession(
             selection,
-            launchMode: hasPendingCreation ? .create : .attach
+            launchMode: selection.socketName == nil && hasPendingCreation
+                ? .create
+                : .attach
         )
     }
 
@@ -1296,8 +1522,13 @@ final class WorkspaceSceneModel: ObservableObject {
         let sessionAlreadyKnown = knownSessions.contains {
             $0.name == selection.name
         }
-        let launchMode: TmuxAttachmentLaunchMode =
-            !hasPendingCreation && sessionAlreadyKnown ? .attach : .create
+        let launchMode: TmuxAttachmentLaunchMode
+        if selection.socketName != nil {
+            launchMode = .attach
+        } else {
+            launchMode =
+                !hasPendingCreation && sessionAlreadyKnown ? .attach : .create
+        }
         guard let handle = presentTmuxSession(
             selection,
             launchMode: launchMode
@@ -1313,6 +1544,8 @@ final class WorkspaceSceneModel: ObservableObject {
         _ selection: WorkspaceTmuxSessionSelection,
         launchMode: TmuxAttachmentLaunchMode
     ) -> BorrowedTmuxSessionHandle? {
+        let effectiveLaunchMode: TmuxAttachmentLaunchMode =
+            selection.socketName == nil ? launchMode : .attach
         if let active = activeBorrowedTmuxSelection, active != selection {
             closeBorrowedTmuxSession(active)
         }
@@ -1321,21 +1554,22 @@ final class WorkspaceSceneModel: ObservableObject {
         else {
             activeBorrowedTmuxSelection = selection
             activeBorrowedTmuxHandle = nil
-            activeBorrowedTmuxLaunchMode = launchMode
+            activeBorrowedTmuxLaunchMode = effectiveLaunchMode
             return nil
         }
         let handle = nativeTmuxSessionCoordinator.attach(
             hostID: selection.hostID,
             name: selection.name,
             host: attachmentHost,
-            launchMode: launchMode,
+            socketName: selection.socketName,
+            launchMode: effectiveLaunchMode,
             workingDirectory: selection.worktreePath
         )
         activeBorrowedTmuxSelection = selection
         activeBorrowedTmuxHandle = handle
-        activeBorrowedTmuxLaunchMode = launchMode
+        activeBorrowedTmuxLaunchMode = effectiveLaunchMode
         borrowedTmuxConnectionStates[handle.id] = .connecting
-        if launchMode == .create {
+        if effectiveLaunchMode == .create {
             transferPendingCreation(for: selection, to: handle)
         }
         return handle
@@ -1345,7 +1579,9 @@ final class WorkspaceSceneModel: ObservableObject {
         _ lhs: WorkspaceTmuxSessionSelection,
         _ rhs: WorkspaceTmuxSessionSelection
     ) -> Bool {
-        lhs.hostID == rhs.hostID && lhs.name == rhs.name
+        lhs.hostID == rhs.hostID
+            && lhs.name == rhs.name
+            && lhs.socketName == rhs.socketName
     }
 
     private func transferPendingCreation(
@@ -1396,7 +1632,8 @@ final class WorkspaceSceneModel: ObservableObject {
         activeBorrowedTmuxLaunchMode = nil
         nativeTmuxSessionCoordinator.detach(
             hostID: selection.hostID,
-            name: selection.name
+            name: selection.name,
+            socketName: selection.socketName
         )
     }
 

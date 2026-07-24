@@ -275,6 +275,23 @@ func makeModel(
             on: host
         )
     },
+    kwtPullRequestLister:
+        @escaping WorkspaceSceneModel.KwtPullRequestLister = {
+            projectIdentity, host in
+            try await KwtPullRequestClient().list(
+                projectIdentity: projectIdentity,
+                on: host
+            )
+        },
+    kwtPullRequestImporter:
+        @escaping WorkspaceSceneModel.KwtPullRequestImporter = {
+            id, projectIdentity, host in
+            try await KwtPullRequestClient().importPullRequest(
+                id: id,
+                projectIdentity: projectIdentity,
+                on: host
+            )
+        },
     tmuxSessionDiscovery: @escaping
         WorkspaceSceneModel.TmuxSessionDiscovery = { _ in .success([]) },
     sshHostProbeRunner: @escaping
@@ -303,6 +320,8 @@ func makeModel(
         remoteTmuxPathProvider: remoteTmuxPathProvider,
         kwtInventoryLoader: kwtInventoryLoader,
         kwtWorktreeCreator: kwtWorktreeCreator,
+        kwtPullRequestLister: kwtPullRequestLister,
+        kwtPullRequestImporter: kwtPullRequestImporter,
         tmuxSessionDiscovery: tmuxSessionDiscovery,
         sshHostProbeRunner: sshHostProbeRunner,
         configuredSSHHostsProvider: configuredSSHHostsProvider,

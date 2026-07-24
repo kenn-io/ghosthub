@@ -13,6 +13,11 @@ local project inventory and worktree operations. It does not resolve a local
 local operation fails instead of drifting to another installation. Remote
 hosts continue to execute their own `kwt` through a login shell.
 
+`make run-app` follows the same rule. Its `bootstrap-kwt` dependency builds and
+caches `KWT_REF` under `.build`, then stages that exact helper into the debug
+app. A developer can override the repository, revision, source directory, or
+binary path deliberately, but the default never embeds the system kwt.
+
 Every packaged app also carries Ghosthub's AGPL-3.0 license and all notices in
 the repository's `LICENSES` directory under `Contents/Resources/Licenses`.
 `LICENSES/THIRD-PARTY-NOTICES.md` is the audited inventory for GRDB, Sparkle,
@@ -22,10 +27,10 @@ dependency is not part of Ghosthub's app binary or release obligations.
 
 ## Reproducible inputs
 
-`.github/workflows/release.yml` pins the release inputs that must move
-deliberately:
+The root `KWT_REVISION` file and `.github/workflows/release.yml` pin the
+release inputs that must move deliberately:
 
-- the full `kenn-io/kwt` source revision in `KWT_REF`
+- the full `kenn-io/kwt` source revision in `KWT_REVISION`
 - Sparkle 2.9.4 as an exact Swift package dependency
 - Xcode 26.0.1
 - Zig 0.15.2 and its archive checksum
@@ -35,13 +40,39 @@ The embedded kwt revision and release-facing version are written into
 `Info.plist` as `GhosthubKwtSourceRevision` and `GhosthubKwtVersion`. The
 revision is also included in GitHub release notes. Kwt is part of Ghosthub's
 signed code, but it remains an ordinary CLI rather than a daemon or state
-authority of its own.
+authority of its own. The pinned revision must support the complete automation
+contract consumed by the app, including the isolated tmux socket identity
+returned by `pr import --start-session`, the protected `pr attach` command,
+and refusal to open protected imports through kwt's ordinary default-server
+open paths.
 
 Because a separately installed kwt can access the same user-owned kwt state,
 kwt must preserve backward compatibility for supported on-disk state and
 machine-readable commands. Before advancing `KWT_REF`, test the new revision
 both through Ghosthub and as a standalone CLI against representative existing
-state.
+state. The current pin includes kwt's provider-neutral `pr list`, `pr import
+--start-session`, and `pr attach` contract; changing that contract requires
+exercising candidate discovery, an idempotent existing-import result, creation
+of the exact returned tmux session, partial-success reporting when runtime
+session startup fails after a durable import, and a protected attach before
+release. Imports originating in an unregistered repository must remain
+attachable when the recorded clone agrees with its live Git identity, while
+ambiguous or conflicting registrations must fail closed.
+The pinned implementation removes `KWT_GITHUB_TOKEN`, `KWT_FLEET_TOKEN`, and
+the configured fleet token variable from tmux subprocess and session
+environments before imported workspace panes start, while preserving
+operational state such as `KWT_HOME`. Protected attachment verifies the
+isolated server and workspace marker, repairs the session policy, and uses
+`attach-session -E` so a mutable `update-environment` option cannot restore
+credentials. It removes the caller's parent tmux identity so the isolated
+cross-server attachment also works when invoked from an existing tmux pane.
+Attachment validates the recorded project clone and exact live worktree
+identity, honoring registered upstream identity for fork-origin checkouts while
+excluding prunable or missing worktrees. Unreadable provenance makes inventory
+fail instead of omitting the protected socket marker.
+Session-start safety and configuration failures are non-retryable. Kwt also
+resolves a session-local `default-shell` before falling back to the
+server-global value, so every pane follows the same tmux shell policy.
 
 ## Protected signing environment
 
@@ -210,8 +241,9 @@ unsigned or unnotarized fallback artifact.
 ## Local packaging
 
 Both debug and release app bundles require the kwt binary that will be embedded.
-`KWT_BINARY_PATH` defaults to the developer shell's `kwt`, but an explicit path
-is preferred when validating a release revision:
+With the default `.build/kwt/kwt`, the app packaging targets verify and build
+the exact `KWT_REVISION` automatically. Set `KWT_BINARY_PATH` to an existing
+executable only when deliberately packaging a separately prepared build:
 
 ```bash
 make release-app \

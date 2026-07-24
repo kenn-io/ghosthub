@@ -82,20 +82,27 @@ public enum TmuxAttachmentLaunchMode: String, Codable, Equatable, Sendable {
 public struct TmuxAttachmentInfo: Equatable, Sendable {
     public let sessionName: String
     public let host: TmuxHost
+    public let socketName: String?
+    public let protectedWorkspacePath: String?
     public var launchMode: TmuxAttachmentLaunchMode
 
     public init(
         sessionName: String,
         host: TmuxHost,
+        socketName: String? = nil,
+        protectedWorkspacePath: String? = nil,
         launchMode: TmuxAttachmentLaunchMode = .attach
     ) {
         self.sessionName = sessionName
         self.host = host
+        self.socketName = socketName
+        self.protectedWorkspacePath = protectedWorkspacePath
         self.launchMode = launchMode
     }
 
     public func attachCommand(
         tmuxPath: String = "tmux",
+        kwtPath: String? = nil,
         workingDirectory: String? = nil,
         sshConnectionArguments: [String] = tmuxSSHConnectionArguments()
     ) -> String {
@@ -103,6 +110,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         case .local:
             return localAttachCommand(
                 tmuxPath: tmuxPath,
+                kwtPath: kwtPath,
                 workingDirectory: workingDirectory
             )
         case let .ssh(info):
@@ -124,16 +132,32 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
 
     private func localAttachCommand(
         tmuxPath: String,
+        kwtPath: String?,
         workingDirectory: String?
     ) -> String {
-        let attach = [
-            tmuxPath, "attach-session", "-E", "-t", "=\(sessionName)",
-        ].map(shellQuotedCommandArgument).joined(separator: " ")
+        let attach = tmuxArguments(
+            tmuxPath,
+            "attach-session", "-E", "-t", "=\(sessionName)"
+        ).map(shellQuotedCommandArgument).joined(separator: " ")
         var commands = ["unset TMUX TMUX_PANE"]
         switch launchMode {
         case .attach:
             commands.append(presentationSetupCommand(tmuxPath: tmuxPath))
-            commands.append("exec \(attach)")
+            if let protectedWorkspacePath {
+                guard let kwtPath, !kwtPath.isEmpty else {
+                    commands.append(
+                        "printf 'Ghosthub: bundled kwt is unavailable\\n' >&2"
+                    )
+                    commands.append("exit 127")
+                    break
+                }
+                let protectedAttach = [
+                    kwtPath, "pr", "attach", protectedWorkspacePath,
+                ].map(shellQuotedCommandArgument).joined(separator: " ")
+                commands.append("exec \(protectedAttach)")
+            } else {
+                commands.append("exec \(attach)")
+            }
         case .create:
             let createAndAttach = localCreateAndAttachCommand(
                 tmuxPath: tmuxPath,
@@ -154,9 +178,10 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         tmuxPath: String,
         workingDirectory: String?
     ) -> String {
-        var arguments = [
-            tmuxPath, "new-session", "-A", "-E", "-s", sessionName,
-        ] + (workingDirectory.map { ["-c", $0] } ?? [])
+        var arguments = tmuxArguments(
+            tmuxPath,
+            "new-session", "-A", "-E", "-s", sessionName
+        ) + (workingDirectory.map { ["-c", $0] } ?? [])
         for (option, value) in presentationOptions {
             arguments += [
                 ";", "set-option", "-t",
@@ -188,10 +213,10 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
     /// configured by Ghosthub.
     private func presentationSetupCommand(tmuxPath: String) -> String {
         presentationOptions.map { option, value in
-            let command = [
-                tmuxPath, "set-option", "-t",
-                presentationTarget, option, value,
-            ].map(shellQuotedCommandArgument).joined(separator: " ")
+            let command = tmuxArguments(
+                tmuxPath,
+                "set-option", "-t", presentationTarget, option, value
+            ).map(shellQuotedCommandArgument).joined(separator: " ")
             return "\(command) >/dev/null 2>&1 || :"
         }.joined(separator: "; ")
     }
@@ -201,13 +226,22 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         tmuxPath: String,
         sshConnectionArguments: [String]
     ) -> String {
-        let attach = [
-            tmuxPath, "attach-session", "-E", "-t", "=\(sessionName)",
-        ].map(shellQuotedCommandArgument).joined(separator: " ")
+        let attach: String
+        if let protectedWorkspacePath {
+            attach = "ghosthub_kwt_path=$(command -v kwt) || exit 127; "
+                + "exec \"$ghosthub_kwt_path\" 'pr' 'attach' "
+                + shellQuotedCommandArgument(protectedWorkspacePath)
+        } else {
+            let tmuxAttach = tmuxArguments(
+                tmuxPath,
+                "attach-session", "-E", "-t", "=\(sessionName)"
+            ).map(shellQuotedCommandArgument).joined(separator: " ")
+            attach = "exec \(tmuxAttach)"
+        }
         let remoteAttach = [
             "unset TMUX TMUX_PANE",
             presentationSetupCommand(tmuxPath: tmuxPath),
-            "exec \(attach)",
+            attach,
         ].joined(separator: "; ")
         return shellCommand(
             [
@@ -257,15 +291,28 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         workingDirectory: String?
     ) -> String {
         let target = "=\(sessionName)"
-        let hasSession = [
-            tmuxPath, "has-session", "-t", target,
-        ].map(shellQuotedCommandArgument).joined(separator: " ")
-        let createSession = ([
-            tmuxPath, "new-session", "-d", "-E", "-s", sessionName,
-        ] + (workingDirectory.map { ["-c", $0] } ?? []))
+        let hasSession = tmuxArguments(
+            tmuxPath,
+            "has-session", "-t", target
+        ).map(shellQuotedCommandArgument).joined(separator: " ")
+        let createSession = (tmuxArguments(
+            tmuxPath,
+            "new-session", "-d", "-E", "-s", sessionName
+        ) + (workingDirectory.map { ["-c", $0] } ?? []))
             .map(shellQuotedCommandArgument).joined(separator: " ")
         return "\(hasSession) 2>/dev/null || "
             + "\(createSession) || \(hasSession)"
+    }
+
+    private func tmuxArguments(
+        _ tmuxPath: String,
+        _ arguments: String...
+    ) -> [String] {
+        var result = [tmuxPath]
+        if let socketName, !socketName.isEmpty {
+            result.append(contentsOf: ["-L", socketName])
+        }
+        return result + arguments
     }
 
     private func sshArguments(

@@ -17,8 +17,10 @@ Launch the app (assembles and opens `dist/debug/Ghosthub.app`):
 make run-app
 ```
 
-The packaged debug app embeds kwt. `KWT_BINARY_PATH` defaults to the developer
-login shell's `kwt`; override it to test an exact build:
+The packaged debug app embeds kwt. By default, `make run-app` verifies and
+builds the exact revision in `KWT_REVISION` at `.build/kwt/kwt`. Point
+`KWT_BINARY_PATH` at an existing executable to test a separately prepared
+build:
 
 ```bash
 make run-app KWT_BINARY_PATH=/absolute/path/to/kwt
@@ -104,9 +106,9 @@ make release-app \
   RELEASE_BUILD_VERSION=0.1.0
 ```
 
-Ghosthub bundles the kwt CLI helper but no daemon. `KWT_BINARY_PATH` must name
-the executable to embed; the default is the developer shell's `kwt`. Outputs
-land in `dist/release/`.
+Ghosthub bundles the kwt CLI helper but no daemon. A clean `make release-app`
+builds the pinned helper automatically; `KWT_BINARY_PATH` may name an existing
+executable instead. Outputs land in `dist/release/`.
 
 DMG build:
 
