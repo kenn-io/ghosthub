@@ -265,7 +265,7 @@ struct TmuxBinaryResolver: Sendable {
     ) -> (status: Int32, stdout: String) {
         runProcess(
             executable: shell,
-            arguments: ["-lc", command],
+            arguments: ["-lc", posixCommand(command)],
             timeout: timeout
         )
     }
@@ -281,14 +281,22 @@ struct TmuxBinaryResolver: Sendable {
             arguments.append(contentsOf: ["-p", String(port)])
         }
         let target = host.user.map { "\($0)@\(host.hostname)" } ?? host.hostname
-        let loginCommand = "exec \"${SHELL:-/bin/sh}\" -lc "
-            + shellQuotedCommandArgument(command)
+        let accountShellCommand = "exec \"${SHELL:-/bin/sh}\" -lc "
+            + shellQuotedCommandArgument(posixCommand(command))
+        let loginCommand = posixCommand(accountShellCommand)
         arguments.append(contentsOf: ["--", target, loginCommand])
         return runProcess(
             executable: "/usr/bin/ssh",
             arguments: arguments,
             timeout: timeout
         )
+    }
+
+    /// The account shell owns login-environment initialization, but Ghosthub's
+    /// command language is POSIX shell. Keep the command handed to fish, zsh,
+    /// or another account shell to one portable simple-command invocation.
+    private static func posixCommand(_ command: String) -> String {
+        "exec /bin/sh -c " + shellQuotedCommandArgument(command)
     }
 
     private static func runProcess(

@@ -31,6 +31,45 @@ struct TmuxBinaryResolverTests {
         #expect(try resolver.resolveTmuxPath().get() == "/opt/homebrew/bin/tmux")
     }
 
+    @Test("account shell initializes PATH without interpreting probe syntax")
+    func supportsNonPOSIXLoginShells() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ghosthub-login-shell-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let tmux = directory.appendingPathComponent("tmux")
+        try "#!/bin/sh\nprintf 'tmux 3.6a\\n'\n".write(
+            to: tmux, atomically: true, encoding: .utf8
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755], ofItemAtPath: tmux.path
+        )
+
+        let shell = directory.appendingPathComponent("account-shell")
+        try """
+        #!/bin/sh
+        case "$2" in
+          "exec /bin/sh -c "*) ;;
+          *) exit 97 ;;
+        esac
+        PATH=\(shellQuotedCommandArgument(directory.path)):/usr/bin:/bin
+        export PATH
+        exec /bin/sh -c "$2"
+        """.write(to: shell, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755], ofItemAtPath: shell.path
+        )
+
+        let resolver = TmuxBinaryResolver(
+            loginShellProvider: { shell.path }
+        )
+
+        #expect(resolver.resolveTmuxPath() == .success(tmux.path))
+    }
+
     @Test("rejects unsupported tmux versions")
     func rejectsOldVersion() {
         let resolver = TmuxBinaryResolver(processRunner: { _, _ in
