@@ -6,7 +6,7 @@
 website/node_modules
 website/dist
 website/.astro
-website/.env*.local
+website/.env*
 website/.vercel
 
 # Editor state and backup files at any website depth.
