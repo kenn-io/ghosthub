@@ -32,3 +32,5 @@ test-results/
 # Claude Code local state (agent worktrees, personal settings)
 .claude/worktrees/
 .claude/settings.local.json
+.vercel
+.env*
