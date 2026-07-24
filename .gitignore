@@ -26,6 +26,9 @@ test-results/
 # roborev snapshots
 /.roborev/
 
+# Vercel CLI project link
+/.vercel/
+
 # Claude Code local state (agent worktrees, personal settings)
 .claude/worktrees/
 .claude/settings.local.json

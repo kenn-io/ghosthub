@@ -1,8 +1,8 @@
 # ghosthub.ai
 
 Marketing site for Ghosthub. Astro static site, deployed through Vercel's
-Git integration. `.github/workflows/website.yml` is CI only (check, lint,
-test, build); it does not deploy.
+CLI. `.github/workflows/website.yml` is CI only (check, lint, test, build); it
+does not deploy.
 
     pnpm install
     pnpm dev        # local dev server
@@ -12,6 +12,21 @@ test, build); it does not deploy.
     pnpm build      # production build to dist/
 
 Constants (repo slug, Discord invite) live in `src/config.ts`.
+
+## Deployment
+
+Link the repository root to the Vercel project once. Keep the Vercel project
+root directory set to `website`; do not link from inside `website/`:
+
+    vercel link
+
+Then deploy the current workspace to production from the repository root:
+
+    make site-deploy
+
+The target builds the site first, which hydrates the hero screenshot from the
+`website-assets` branch, then runs `vercel deploy --prod`. The repository-root
+`.vercelignore` limits the upload to the website project.
 
 ## Hero screenshot
 
