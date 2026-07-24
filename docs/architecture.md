@@ -61,6 +61,9 @@ exact bundle path; Ghosthub does not select a different local kwt from `PATH`.
 This is a CLI boundary, not a vendored daemon or submodule. Remote hosts execute
 their own kwt from the remote login-shell `PATH`. Kwt's machine-readable CLI
 provides project identity, worktree metadata, and exact tmux session names.
+The account login shell initializes the command environment, while Ghosthub's
+own inventory and discovery commands execute under the host's POSIX `/bin/sh`;
+non-POSIX account shells such as fish are not asked to interpret those commands.
 Direct tmux discovery provides every otherwise-unbound session. A remote host
 without kwt remains a valid tmux-only host; remote inventory failures stay
 attached to that host and never replace usable local or cached inventory with a

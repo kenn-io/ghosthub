@@ -75,6 +75,9 @@ owning window shuts down.
 
 Before discovery or attachment, Ghosthub resolves an absolute tmux path
 through the target host's login shell and verifies tmux 3.2 or newer.
+The login shell initializes its environment, then delegates Ghosthub's probe
+to `/bin/sh`; fish and other non-POSIX account shells never interpret the
+POSIX probe itself.
 Successful paths are cached per host; lookup and version failures remain
 retryable and are presented to the user.
 
