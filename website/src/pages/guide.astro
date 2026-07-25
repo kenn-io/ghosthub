@@ -10,8 +10,8 @@ import { RELEASES_URL } from '../config';
 
 const title = 'How to use Ghosthub';
 const description =
-  'A visual guide to opening tmux sessions, connecting SSH hosts, creating worktrees, '
-  + 'using Quick Launch, and configuring the Ghosthub terminal.';
+  'A visual guide to tmux sessions, automatic SSH reconnect, worktrees, '
+  + 'Quick Launch, and configuring the Ghosthub terminal.';
 
 const imageWidths = [640, 960, 1280, 1600];
 const imageSizes = '(max-width: 900px) calc(100vw - 3rem), 900px';
@@ -51,7 +51,7 @@ const imageSizes = '(max-width: 900px) calc(100vw - 3rem), 900px';
         <div>
           <h2>Open a tmux session</h2>
           <p>
-            Launch Ghosthub and expand your Mac under
+            Launch Ghosthub and expand your Mac under{' '}
             <strong>Hosts</strong>. Existing tmux sessions appear
             automatically alongside projects and worktrees. Select one to
             attach with an ordinary tmux client.
@@ -82,7 +82,7 @@ const imageSizes = '(max-width: 900px) calc(100vw - 3rem), 900px';
           <h2>Add an SSH host</h2>
           <p>
             Open <strong>Settings → Hosts</strong> and add any destination
-            accepted by your SSH configuration, such as
+            accepted by your SSH configuration, such as{' '}
             <code>devbox</code> or <code>alice@build-server</code>.
           </p>
           <p>
@@ -90,6 +90,15 @@ const imageSizes = '(max-width: 900px) calc(100vw - 3rem), 900px';
             backed by a key or SSH agent. Ghosthub keeps each host isolated,
             so an unreachable machine never blocks the rest of your fleet.
           </p>
+          <aside class="reconnect">
+            <span aria-hidden="true">↻</span>
+            <p>
+              <strong>Lose your connection?</strong> Ghosthub retries SSH with
+              keepalives and bounded backoff. When connectivity returns, it
+              automatically reattaches to the same exact tmux session, with
+              the server-side process state still intact.
+            </p>
+          </aside>
         </div>
       </div>
       <figure class="container window">
@@ -167,15 +176,13 @@ const imageSizes = '(max-width: 900px) calc(100vw - 3rem), 900px';
           <h2>Make the terminal yours</h2>
           <p>
             Terminal preferences live in Ghosthub Settings. For the full
-            configuration surface, edit
+            configuration surface, edit{' '}
             <code>~/.config/ghosthub/ghostty.conf</code>.
           </p>
           <p>
-            The file uses
-            <a href="https://ghostty.org/docs/config/reference">
-              Ghostty’s configuration format
-            </a>, but is isolated from Ghostty.app. Ghosthub reloads the
-            active configuration when it changes.
+            The file uses{' '}<a href="https://ghostty.org/docs/config/reference">Ghostty’s
+              configuration format</a>, but is isolated from Ghostty.app.
+            Ghosthub reloads the active configuration when it changes.
           </p>
         </div>
       </div>
@@ -197,8 +204,9 @@ const imageSizes = '(max-width: 900px) calc(100vw - 3rem), 900px';
       <h2>Your sessions keep running</h2>
       <p>
         Ghosthub never replaces tmux windows, panes, history, or plugins.
-        Quit the app, change networks, or close a presentation—the sessions
-        remain where you left them.
+        Quit the app or close a presentation and the sessions remain where
+        you left them. Lose the network and Ghosthub automatically reconnects
+        and reattaches when it returns.
       </p>
       <a data-download href={RELEASES_URL}>Download Ghosthub <span aria-hidden="true">&rarr;</span></a>
     </div>
@@ -352,6 +360,28 @@ const imageSizes = '(max-width: 900px) calc(100vw - 3rem), 900px';
 
   .step-copy strong {
     color: var(--text);
+  }
+
+  .reconnect {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0.8rem;
+    margin-top: 1.4rem;
+    border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--accent) 6%, var(--bg));
+    padding: 1rem;
+  }
+
+  .reconnect > span {
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 1.25rem;
+    line-height: 1.25;
+  }
+
+  .reconnect p {
+    margin: 0;
   }
 
   .step-copy a {
