@@ -160,6 +160,10 @@ graph: `~/.config/ghosthub/ghostty.conf`, the selected local project's
 appearance files remain watched so creating them triggers a reload. Filesystem
 events are debounced before rebuilding the graph.
 
+An imported pull-request workspace is contributor-authored source, so its
+`.ghosthub/terminal.conf` is never loaded. Selecting one uses the project's
+own checkout instead.
+
 Reloading is transactional. A candidate with diagnostics is rejected and the
 last valid libghostty configuration remains active. The app presents the result
 of automatic and explicit reloads; errors remain visible until dismissed or

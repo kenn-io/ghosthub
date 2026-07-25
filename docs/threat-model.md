@@ -125,6 +125,18 @@ Kwt unconditionally protects `KWT_GITHUB_TOKEN` and `KWT_FLEET_TOKEN` as well
 as the configured fleet token name. Non-secret kwt state such as `KWT_HOME`
 remains available inside panes.
 
+Because import selects the new workspace, inert attachment is not by itself
+enough: any file Ghosthub reads from the imported checkout is contributor
+input. A project's `.ghosthub/terminal.conf` is loaded into the app-wide
+libghostty configuration, where keybindings and terminal behavior apply to
+every surface rather than only the selected worktree. Ghosthub therefore
+treats project terminal configuration as trusted user authorship and reads it
+only from checkouts the user controls. Selecting an imported pull-request
+workspace, identified by its protected tmux socket, falls back to the
+project's own checkout. This is a trust boundary, not a sandbox: Ghosthub
+still does not constrain a configuration the user wrote, nor commands the
+user runs inside a pane.
+
 Names in the user's shared tmux server are identifiers, not credentials.
 Ghosthub attaches to the exact session name reported by kwt or selected from
 direct discovery. When the user explicitly requests a new named session,

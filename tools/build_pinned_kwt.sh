@@ -12,8 +12,14 @@ source_dir="$3"
 output="$4"
 stamp="${output}.revision"
 
+# The stamp records intent; only the binary can say which revision it is.
+reported_version() {
+  "$output" --version 2>&1 || true
+}
+
 if [[ -x "$output" && -f "$stamp" ]] \
-  && [[ "$(<"$stamp")" == "$revision" ]]; then
+  && [[ "$(<"$stamp")" == "$revision" ]] \
+  && [[ "$(reported_version)" == *"$revision"* ]]; then
   exit 0
 fi
 
@@ -58,7 +64,7 @@ mkdir -p "$(dirname "$output")"
 
 # The linker silently ignores -X for a symbol it cannot find, so an unstamped
 # binary is the only evidence that kwt has moved its version variable.
-version_output="$("$output" --version 2>&1 || true)"
+version_output="$(reported_version)"
 if [[ "$version_output" != *"$revision"* ]]; then
   printf 'Built kwt reports %s instead of the pinned revision %s.\n' \
     "${version_output:-no version output}" "$revision" >&2

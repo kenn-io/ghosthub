@@ -637,13 +637,13 @@ final class WorkspaceSceneModel: ObservableObject {
         }
 
         isWorktreeCreationInProgress = true
+        // The scene-wide refresh is cancelled so it cannot race the mutation,
+        // and only the mutated host is reloaded inline. Every exit therefore
+        // owes the remaining hosts a fresh sweep.
         invalidateKwtInventoryRefresh()
-        var shouldRefreshKwtInventory = false
         defer {
             isWorktreeCreationInProgress = false
-            if shouldRefreshKwtInventory {
-                scheduleKwtInventory()
-            }
+            scheduleKwtInventory()
         }
 
         do {
@@ -664,7 +664,6 @@ final class WorkspaceSceneModel: ObservableObject {
                 kwtInventoryFailuresByHost.removeValue(forKey: project.hostID)
                 applyInventoryOverlayIfNeeded()
                 updateWorkspaceInventoryState()
-                shouldRefreshKwtInventory = true
             }
             throw error
         }
@@ -723,13 +722,12 @@ final class WorkspaceSceneModel: ObservableObject {
         }
 
         isPullRequestImportInProgress = true
+        // See `createWorktree`: cancelling the scene-wide refresh leaves every
+        // host but this one stale, including on the success path.
         invalidateKwtInventoryRefresh()
-        var shouldRefreshKwtInventory = false
         defer {
             isPullRequestImportInProgress = false
-            if shouldRefreshKwtInventory {
-                scheduleKwtInventory()
-            }
+            scheduleKwtInventory()
         }
 
         let result: KwtPullRequestImportResult
@@ -747,7 +745,6 @@ final class WorkspaceSceneModel: ObservableObject {
                 )
                 applyInventoryOverlayIfNeeded()
                 updateWorkspaceInventoryState()
-                shouldRefreshKwtInventory = true
             }
             throw error
         }
@@ -761,7 +758,6 @@ final class WorkspaceSceneModel: ObservableObject {
         } catch {
             kwtInventoryFailuresByHost[project.hostID] =
                 error.localizedDescription
-            shouldRefreshKwtInventory = true
         }
 
         mergeImportedWorkspace(

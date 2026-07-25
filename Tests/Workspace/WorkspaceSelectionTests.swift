@@ -280,6 +280,35 @@ struct WorkspaceSelectionTests {
         )
     }
 
+    @Test("terminal config root skips an imported pull request checkout")
+    func terminalConfigRootSkipsProtectedWorktree() {
+        let host = HostSummary.fixture(
+            name: "This Mac", kind: .selfHost, platform: .macOS
+        )
+        let project = ProjectSummary.fixture(
+            hostID: host.id,
+            name: "ghosthub",
+            rootPath: "/Users/wesm/code/ghosthub",
+            repositoryKind: .standard
+        )
+        var worktree = WorktreeSummary.fixture(
+            hostID: host.id,
+            projectID: project.id,
+            name: "pr-32",
+            path: "/Users/wesm/code/ghosthub-pr-32",
+            branch: "contributor/pr-32"
+        )
+        worktree.tmuxSocketName = "kwt-pr-0123456789abcdef"
+        let (snapshot, selection) = makeSnapshotAndSelection(
+            host: host, project: project, worktree: worktree
+        )
+
+        #expect(
+            selection.terminalConfigRoot(in: snapshot)?.path
+                == "/Users/wesm/code/ghosthub"
+        )
+    }
+
     @Test("terminal config root falls back to the standard project root")
     func terminalConfigRootFallsBackToStandardProjectRoot() {
         let host = HostSummary.fixture(
