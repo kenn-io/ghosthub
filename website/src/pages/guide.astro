@@ -23,9 +23,16 @@ const imageSizes = '(max-width: 900px) calc(100vw - 3rem), 900px';
       <p class="eyebrow">Five-minute guide</p>
       <h1>How to use Ghosthub</h1>
       <p class="lead">
-        Ghosthub puts the tmux sessions behind your projects and coding
-        agents into one native macOS workspace. Tmux keeps owning the
-        sessions; Ghosthub makes the whole fleet easy to find and enter.
+        Ghosthub keeps the tmux sessions behind your projects and coding
+        agents connected in one native macOS workspace. If SSH drops, it
+        retries and reattaches to the same exact session automatically.
+        Tmux keeps owning the windows, panes, history, and process state.
+      </p>
+      <p class="promise" aria-label="Automatic SSH reconnect and exact-session reattach">
+        <span class="promise-icon" aria-hidden="true">↻</span>
+        <span>Automatic SSH reconnect</span>
+        <i aria-hidden="true">&middot;</i>
+        <span>Exact-session reattach</span>
       </p>
       <div class="requirements" aria-label="Requirements">
         <span>Apple Silicon</span>
@@ -253,6 +260,33 @@ const imageSizes = '(max-width: 900px) calc(100vw - 3rem), 900px';
     margin: 1rem auto 0;
     max-width: 64ch;
     text-wrap: balance;
+  }
+
+  .promise {
+    display: inline-flex;
+    align-items: center;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0.55rem;
+    max-width: calc(100% - 1rem);
+    margin: 1.4rem 0 0;
+    border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line));
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--accent) 7%, transparent);
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    padding: 0.45rem 0.75rem;
+  }
+
+  .promise-icon {
+    color: var(--accent);
+    font-size: 1rem;
+  }
+
+  .promise i {
+    color: var(--text-faint);
+    font-style: normal;
   }
 
   .requirements {
