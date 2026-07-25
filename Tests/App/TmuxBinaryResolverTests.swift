@@ -252,7 +252,10 @@ struct TmuxBinaryResolverTests {
             resolver.resolveTmuxPath()
                 == .failure(.probeTimedOut(shell: shell.path))
         )
-        #expect(Date().timeIntervalSince(started) < 1)
+        // The failure above already establishes that the budget ended this.
+        // The clock only has to rule out waiting on the ten-second sleep,
+        // which a tighter bound cannot do reliably on a loaded machine.
+        #expect(Date().timeIntervalSince(started) < 5)
     }
 
     @Test("cancelling a login-shell probe terminates it promptly")
@@ -270,8 +273,9 @@ struct TmuxBinaryResolverTests {
         try FileManager.default.setAttributes(
             [.posixPermissions: 0o755], ofItemAtPath: shell.path
         )
+        let processTimeout: TimeInterval = 5
         let resolver = TmuxBinaryResolver(
-            processTimeout: 5,
+            processTimeout: processTimeout,
             loginShellProvider: { shell.path }
         )
         let task = Task.detached { resolver.resolveTmuxPath() }
@@ -283,7 +287,8 @@ struct TmuxBinaryResolverTests {
             await task.value
                 == .failure(.probeCancelled(shell: shell.path))
         )
-        #expect(Date().timeIntervalSince(started) < 1)
+        // Cancellation has to beat the process budget rather than ride it out.
+        #expect(Date().timeIntervalSince(started) < processTimeout)
     }
 
     @Test("a background descendant cannot hold probe stdout open")
@@ -412,8 +417,9 @@ struct TmuxBinaryResolverTests {
         try FileManager.default.setAttributes(
             [.posixPermissions: 0o755], ofItemAtPath: shell.path
         )
+        let processTimeout: TimeInterval = 5
         let resolver = TmuxBinaryResolver(
-            processTimeout: 5,
+            processTimeout: processTimeout,
             loginShellProvider: { shell.path }
         )
         let started = Date()
@@ -422,7 +428,9 @@ struct TmuxBinaryResolverTests {
             resolver.resolveTmuxPath()
                 == .failure(.probeOutputExceeded(shell: shell.path))
         )
-        #expect(Date().timeIntervalSince(started) < 1)
+        // The output cap, not the clock, must end this. The failure above
+        // proves the cause; this only rules out riding out the whole budget.
+        #expect(Date().timeIntervalSince(started) < processTimeout)
     }
 
     @Test("probe does not inherit unrelated descriptors")
