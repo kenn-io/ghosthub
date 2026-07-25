@@ -333,7 +333,15 @@ enum KwtSnapshotMerger {
                 worktree.isPrimary = record.isMain
                 worktree.isStale = false
                 worktree.tmuxSessionName = record.sessionName
+                // The protected socket is a fail-closed marker: it keeps
+                // contributor-authored terminal configuration out of the app
+                // config and routes attachment through kwt's protected
+                // command. A refresh that omits it is never evidence that the
+                // workspace stopped being protected, so it cannot clear it.
+                // Deleting the workspace drops the record entirely, which is
+                // how a protected marker is actually retired.
                 worktree.tmuxSocketName = record.tmuxSocketName
+                    ?? existing?.tmuxSocketName
                 worktree.sessionBackend = snapshot.host(id: hostID)?.kind == .remote
                     ? .remoteTmux : .localTmux
                 worktrees.append(worktree)

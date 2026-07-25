@@ -37,6 +37,9 @@ jobs:
       name: release-signing
     outputs:
       version: ${{ steps.release.outputs.version }}
+      # $GITHUB_ENV does not cross jobs, so the revision this job actually
+      # built has to be handed to publish-release explicitly.
+      kwt-revision: ${{ steps.kwt-pin.outputs.revision }}
 
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -312,7 +315,13 @@ jobs:
 
       - name: Build release notes
         shell: bash
+        env:
+          KWT_REF: ${{ needs.macos-release.outputs.kwt-revision }}
         run: |
+          if [[ ! "$KWT_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "The build job did not report an embedded kwt revision." >&2
+            exit 1
+          fi
           SOURCE_SHA=$(git rev-parse "${GITHUB_REF_NAME}^{}")
           TAG_BODY=$(git tag -l --format='%(contents:body)' "$GITHUB_REF_NAME")
           BODY_PATH="$RUNNER_TEMP/release-body.md"

@@ -185,6 +185,71 @@ struct KwtInventoryClientTests {
         #expect(merged.worktrees[0].sessionBackend == .localTmux)
     }
 
+    @Test("a refresh without a socket cannot unprotect a workspace")
+    func retainsProtectedSocketWhenRefreshOmitsIt() {
+        let hostID = UUID()
+        let projectID = UUID()
+        let worktreeID = UUID()
+        let snapshot = WorkspaceSnapshot(
+            hosts: [HostSummary(
+                id: hostID,
+                name: "This Mac",
+                kind: .selfHost,
+                platform: .macOS
+            )],
+            projects: [ProjectSummary(
+                id: projectID,
+                hostID: hostID,
+                scopedKey: "repo",
+                name: "repo",
+                rootPath: "/repo"
+            )],
+            worktrees: [WorktreeSummary(
+                id: worktreeID,
+                hostID: hostID,
+                projectID: projectID,
+                scopedKey: "/repo-pr-32",
+                name: "pr-32",
+                path: "/repo-pr-32",
+                branch: "contributor/pr-32",
+                tmuxSessionName: "kwt-repo-pr-32",
+                tmuxSocketName: "kwt-pr-0123456789abcdef"
+            )]
+        )
+        let inventory = KwtHostInventory(projects: [
+            KwtProjectInventory(
+                project: KwtProjectRecord(
+                    repository: "repo",
+                    name: "repo",
+                    path: "/repo",
+                    lastTouched: nil
+                ),
+                worktrees: [KwtWorktreeRecord(
+                    path: "/repo-pr-32",
+                    branch: "contributor/pr-32",
+                    commitHash: "abc",
+                    isMain: false,
+                    createdAt: nil,
+                    repository: "repo",
+                    sessionName: "kwt-repo-pr-32",
+                    tmuxSocketName: nil
+                )],
+                warning: nil
+            ),
+        ])
+
+        let merged = KwtSnapshotMerger.merge(
+            inventory,
+            hostID: hostID,
+            into: snapshot
+        )
+
+        #expect(merged.worktrees.count == 1)
+        #expect(
+            merged.worktrees[0].tmuxSocketName == "kwt-pr-0123456789abcdef"
+        )
+    }
+
     @Test("a failed project listing preserves its last successful worktrees")
     func preservesProjectWorktreesAcrossTransientFailure() {
         let hostID = UUID()
