@@ -3,12 +3,13 @@
 # src/assets/. Screenshot binaries live there so refreshes never bloat
 # main's history.
 #
-# Resolution order: git fetch (local dev, CI with credentials), local
-# branch, raw.githubusercontent.com (Vercel builds have no usable .git;
-# works once the repo is public), pre-existing verified file. Generated
+# Resolution order: fetched git ref (local dev, CI with credentials), then
+# complete offline sources when fetch is unavailable: local branch,
+# raw.githubusercontent.com, or the pre-existing verified set. Generated
 # placeholders are a last resort and only when
 # SYNC_ASSETS_ALLOW_PLACEHOLDER is set, so production can never silently
-# deploy without the real asset set.
+# deploy without the real asset set. Every source is staged as a complete
+# generation before any destination file is replaced.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p src/assets
@@ -24,15 +25,12 @@ assets=(
 )
 raw_root="https://raw.githubusercontent.com/kenn-io/ghosthub/website-assets"
 fetched_ref=""
+stage_root="$(mktemp -d "src/.asset-sync.XXXXXX")"
+trap 'rm -rf "$stage_root"' EXIT
 
 if git fetch --depth=1 origin website-assets 2>/dev/null; then
   fetched_ref="FETCH_HEAD"
 fi
-
-record_synced_asset() {
-  local path="$1"
-  shasum -a 256 "$path" > "$path.synced"
-}
 
 asset_is_synced() {
   local path="$1"
@@ -40,13 +38,41 @@ asset_is_synced() {
     && shasum -a 256 -c "$path.synced" >/dev/null 2>&1
 }
 
-show_asset() {
-  local ref="$1" asset="$2" destination="$3"
-  git show "$ref:$asset" > "$destination.tmp" 2>/dev/null || {
-    rm -f "$destination.tmp"
-    return 1
-  }
-  mv -f "$destination.tmp" "$destination"
+git_ref_has_complete_set() {
+  local ref="$1" asset
+  for asset in "${assets[@]}"; do
+    if ! git cat-file -e "$ref:$asset" 2>/dev/null; then
+      missing_asset="$asset"
+      return 1
+    fi
+  done
+}
+
+stage_git_ref() {
+  local ref="$1" destination="$2" asset
+  mkdir "$destination"
+  for asset in "${assets[@]}"; do
+    git show "$ref:$asset" > "$destination/$asset" 2>/dev/null || return 1
+  done
+}
+
+stage_raw_assets() {
+  local destination="$1" asset
+  mkdir "$destination"
+  for asset in "${assets[@]}"; do
+    curl -fsSL --max-time 30 \
+      -o "$destination/$asset" "$raw_root/$asset" 2>/dev/null || return 1
+  done
+}
+
+stage_cached_assets() {
+  local destination="$1" asset path
+  mkdir "$destination"
+  for asset in "${assets[@]}"; do
+    path="src/assets/$asset"
+    asset_is_synced "$path" || return 1
+    cp "$path" "$destination/$asset"
+  done
 }
 
 generate_placeholder() {
@@ -67,49 +93,78 @@ generate_placeholder() {
   ' "$path"
 }
 
-sync_asset() {
-  local asset="$1"
-  local path="src/assets/$asset"
-  local placeholder="$path.placeholder"
-
-  if [[ -n "$fetched_ref" ]] \
-    && show_asset "$fetched_ref" "$asset" "$path"; then
-    rm -f "$placeholder"
-    record_synced_asset "$path"
-    echo "synced $path from origin/website-assets"
-  elif git rev-parse --verify --quiet website-assets >/dev/null 2>&1 \
-    && show_asset website-assets "$asset" "$path"; then
-    rm -f "$placeholder"
-    record_synced_asset "$path"
-    echo "synced $path from local website-assets"
-  elif curl -fsSL --max-time 30 \
-    -o "$path.tmp" "$raw_root/$asset" 2>/dev/null; then
-    mv -f "$path.tmp" "$path"
-    rm -f "$placeholder"
-    record_synced_asset "$path"
-    echo "synced $path from raw.githubusercontent.com"
-  elif [[ -f "$path" && ! -f "$placeholder" ]] \
-    && asset_is_synced "$path"; then
-    echo "warning: could not reach website-assets; keeping $path" >&2
-  elif [[ -f "$path" \
-    && -n "${SYNC_ASSETS_ALLOW_PLACEHOLDER:-}" ]]; then
-    echo "warning: could not sync $asset; keeping placeholder" >&2
-    rm -f "$path.synced"
-    touch "$placeholder"
-  elif [[ -n "${SYNC_ASSETS_ALLOW_PLACEHOLDER:-}" ]]; then
-    echo "warning: website-assets unreachable; generating $asset placeholder" >&2
-    generate_placeholder "$asset" "$path"
-    rm -f "$path.synced"
-    touch "$placeholder"
-  else
-    rm -f "$path.tmp"
-    echo "error: could not sync $asset from website-assets and $path" >&2
-    echo "       is missing or stale. Set SYNC_ASSETS_ALLOW_PLACEHOLDER=1" >&2
-    echo "       for CI/dev placeholders, or publish the complete asset set." >&2
-    exit 1
-  fi
+stage_placeholders() {
+  local destination="$1" asset
+  mkdir "$destination"
+  for asset in "${assets[@]}"; do
+    generate_placeholder "$asset" "$destination/$asset"
+  done
 }
 
-for asset in "${assets[@]}"; do
-  sync_asset "$asset"
-done
+publish_assets() {
+  local source="$1" label="$2" placeholders="${3:-}" asset path digest
+  for asset in "${assets[@]}"; do
+    path="src/assets/$asset"
+    mv -f "$source/$asset" "$path"
+    if [[ -n "$placeholders" ]]; then
+      rm -f "$path.synced"
+      touch "$path.placeholder"
+    else
+      digest="$(shasum -a 256 "$path" | awk '{print $1}')"
+      printf '%s  %s\n' "$digest" "$path" > "$path.synced"
+      rm -f "$path.placeholder"
+    fi
+    echo "synced $path from $label"
+  done
+}
+
+if [[ -n "$fetched_ref" ]]; then
+  missing_asset=""
+  if ! git_ref_has_complete_set "$fetched_ref"; then
+    echo "error: fetched website-assets is incomplete; missing $missing_asset" >&2
+    exit 1
+  fi
+  fetched_stage="$stage_root/fetched"
+  if ! stage_git_ref "$fetched_ref" "$fetched_stage"; then
+    echo "error: could not stage the complete fetched website-assets ref" >&2
+    exit 1
+  fi
+  publish_assets "$fetched_stage" "origin/website-assets"
+  exit 0
+fi
+
+missing_asset=""
+local_stage="$stage_root/local"
+if git rev-parse --verify --quiet website-assets >/dev/null 2>&1 \
+  && git_ref_has_complete_set website-assets \
+  && stage_git_ref website-assets "$local_stage"; then
+  publish_assets "$local_stage" "local website-assets"
+  exit 0
+fi
+
+raw_stage="$stage_root/raw"
+if stage_raw_assets "$raw_stage"; then
+  publish_assets "$raw_stage" "raw.githubusercontent.com"
+  exit 0
+fi
+
+cached_stage="$stage_root/cached"
+if stage_cached_assets "$cached_stage"; then
+  echo "warning: could not reach website-assets; keeping verified asset set" >&2
+  publish_assets "$cached_stage" "verified local cache"
+  exit 0
+fi
+
+if [[ -n "${SYNC_ASSETS_ALLOW_PLACEHOLDER:-}" ]]; then
+  placeholder_stage="$stage_root/placeholders"
+  stage_placeholders "$placeholder_stage"
+  echo "warning: website-assets unreachable; generating placeholder set" >&2
+  publish_assets "$placeholder_stage" "generated placeholders" placeholder
+  exit 0
+fi
+
+echo "error: could not sync the complete website-assets set" >&2
+echo "       and the local cache is missing or stale." >&2
+echo "       Set SYNC_ASSETS_ALLOW_PLACEHOLDER=1 for CI/dev placeholders," >&2
+echo "       or publish the complete asset set." >&2
+exit 1

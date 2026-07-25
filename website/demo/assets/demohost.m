@@ -124,6 +124,87 @@ static CGRect DemoWindowBounds(CGWindowID windowID) {
   return bounds;
 }
 
+static CFArrayRef DemoOwnedWindowIDs(CGRect captureBounds) {
+  CFArrayRef info = CGWindowListCopyWindowInfo(
+      kCGWindowListOptionOnScreenOnly, kCGNullWindowID);
+  CFMutableArrayRef windowIDs = CFArrayCreateMutable(
+      kCFAllocatorDefault, 0, &kCFTypeArrayCallBacks);
+  if (info == NULL) return windowIDs;
+
+  pid_t demoPID = getpid();
+  for (CFIndex index = 0; index < CFArrayGetCount(info); index++) {
+    CFDictionaryRef entry = CFArrayGetValueAtIndex(info, index);
+    CFNumberRef owner = CFDictionaryGetValue(entry, kCGWindowOwnerPID);
+    int ownerPID = 0;
+    if (owner == NULL ||
+        !CFNumberGetValue(owner, kCFNumberIntType, &ownerPID) ||
+        ownerPID != demoPID) {
+      continue;
+    }
+
+    CFDictionaryRef rawBounds =
+        CFDictionaryGetValue(entry, kCGWindowBounds);
+    CGRect windowBounds = CGRectNull;
+    if (rawBounds == NULL ||
+        !CGRectMakeWithDictionaryRepresentation(rawBounds, &windowBounds) ||
+        CGRectIsNull(CGRectIntersection(captureBounds, windowBounds))) {
+      continue;
+    }
+
+    CFNumberRef windowID =
+        CFDictionaryGetValue(entry, kCGWindowNumber);
+    if (windowID != NULL) CFArrayAppendValue(windowIDs, windowID);
+  }
+  CFRelease(info);
+  return windowIDs;
+}
+
+typedef CGImageRef (*DemoCreateWindowImage)(
+    CGRect, CGWindowListOption, CGWindowID, CGWindowImageOption);
+
+static CGImageRef DemoCreateOwnedWindowComposite(
+    CGRect captureBounds, CFArrayRef windowIDs,
+    DemoCreateWindowImage createImage) {
+  size_t width = (size_t)ceil(CGRectGetWidth(captureBounds));
+  size_t height = (size_t)ceil(CGRectGetHeight(captureBounds));
+  CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+  CGContextRef context = CGBitmapContextCreate(
+      NULL, width, height, 8, width * 4, colorSpace,
+      (CGBitmapInfo)kCGImageAlphaPremultipliedLast);
+  CGColorSpaceRelease(colorSpace);
+  if (context == NULL) return NULL;
+
+  CGWindowImageOption imageOptions =
+      kCGWindowImageBoundsIgnoreFraming | kCGWindowImageNominalResolution;
+  for (CFIndex index = CFArrayGetCount(windowIDs); index > 0; index--) {
+    CFNumberRef rawWindowID = CFArrayGetValueAtIndex(windowIDs, index - 1);
+    CGWindowID windowID = kCGNullWindowID;
+    if (!CFNumberGetValue(
+            rawWindowID, kCGWindowIDCFNumberType, &windowID)) {
+      continue;
+    }
+    CGRect windowBounds = DemoWindowBounds(windowID);
+    if (CGRectIsNull(windowBounds)) continue;
+    CGImageRef windowImage = createImage(
+        windowBounds, kCGWindowListOptionIncludingWindow, windowID,
+        imageOptions);
+    if (windowImage == NULL) continue;
+
+    CGRect destination = CGRectMake(
+        CGRectGetMinX(windowBounds) - CGRectGetMinX(captureBounds),
+        CGRectGetHeight(captureBounds) -
+            (CGRectGetMinY(windowBounds) - CGRectGetMinY(captureBounds)) -
+            CGRectGetHeight(windowBounds),
+        CGRectGetWidth(windowBounds), CGRectGetHeight(windowBounds));
+    CGContextDrawImage(context, destination, windowImage);
+    CGImageRelease(windowImage);
+  }
+
+  CGImageRef composite = CGBitmapContextCreateImage(context);
+  CGContextRelease(context);
+  return composite;
+}
+
 static BOOL DemoCaptureWindow(NSWindow *window, NSString *path,
                               BOOL exactWindow) {
   if (window == nil) return NO;
@@ -134,17 +215,25 @@ static BOOL DemoCaptureWindow(NSWindow *window, NSString *path,
    * but the runtime retains it for binary compatibility. Resolving it here
    * lets the injected process capture only its existing on-screen demo
    * window without ScreenCaptureKit's system-wide recording permission. */
-  typedef CGImageRef (*CreateWindowImage)(
-      CGRect, CGWindowListOption, CGWindowID, CGWindowImageOption);
-  CreateWindowImage createImage =
-      (CreateWindowImage)dlsym(RTLD_DEFAULT, "CGWindowListCreateImage");
+  DemoCreateWindowImage createImage =
+      (DemoCreateWindowImage)dlsym(
+          RTLD_DEFAULT, "CGWindowListCreateImage");
   if (createImage == NULL) return NO;
-  CGImageRef image = createImage(
-      bounds,
-      exactWindow ? kCGWindowListOptionIncludingWindow
-                  : kCGWindowListOptionOnScreenOnly,
-      exactWindow ? (CGWindowID)window.windowNumber : kCGNullWindowID,
-      kCGWindowImageBoundsIgnoreFraming | kCGWindowImageNominalResolution);
+  CGImageRef image = NULL;
+  CGWindowImageOption imageOptions =
+      kCGWindowImageBoundsIgnoreFraming | kCGWindowImageNominalResolution;
+  if (exactWindow) {
+    image = createImage(
+        bounds, kCGWindowListOptionIncludingWindow,
+        (CGWindowID)window.windowNumber, imageOptions);
+  } else {
+    CFArrayRef windowIDs = DemoOwnedWindowIDs(bounds);
+    if (CFArrayGetCount(windowIDs) > 0) {
+      image = DemoCreateOwnedWindowComposite(
+          bounds, windowIDs, createImage);
+    }
+    CFRelease(windowIDs);
+  }
   if (image == NULL) return NO;
 
   BOOL wrote = NO;

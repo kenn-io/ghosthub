@@ -889,3 +889,72 @@ def test_offline_asset_reuse_requires_synced_provenance(
     assert result.returncode == expected_code
     if not trusted:
         assert "is missing or stale" in result.stderr
+
+
+def test_fetched_asset_ref_is_authoritative_and_atomic(tmp_path: Path) -> None:
+    website = tmp_path / "website"
+    scripts = website / "scripts"
+    assets = website / "src" / "assets"
+    fake_bin = tmp_path / "bin"
+    scripts.mkdir(parents=True)
+    assets.mkdir(parents=True)
+    fake_bin.mkdir()
+    shutil.copy2(ROOT / "website" / "scripts" / "sync-assets.sh", scripts)
+    asset_names = (
+        "hero.png",
+        "guide-sessions.png",
+        "guide-hosts.png",
+        "guide-worktree.png",
+        "guide-quick-launch.png",
+        "guide-terminal.png",
+        "guide-command-center.png",
+    )
+    originals = {}
+    for asset_name in asset_names:
+        content = f"original-{asset_name}".encode()
+        originals[asset_name] = content
+        (assets / asset_name).write_bytes(content)
+
+    git = fake_bin / "git"
+    git.write_text(
+        "#!/usr/bin/env bash\n"
+        "case \"$1\" in\n"
+        "  fetch) exit 0 ;;\n"
+        "  cat-file)\n"
+        "    [[ \"$3\" == \"FETCH_HEAD:guide-worktree.png\" ]] && exit 1\n"
+        "    exit 0\n"
+        "    ;;\n"
+        "  show) printf 'fetched-%s' \"${2#*:}\"; exit 0 ;;\n"
+        "esac\n"
+        "exit 1\n"
+    )
+    git.chmod(0o755)
+    curl_marker = tmp_path / "curl-called"
+    curl = fake_bin / "curl"
+    curl.write_text(
+        "#!/usr/bin/env bash\n"
+        "touch \"$CURL_MARKER\"\n"
+        "exit 0\n"
+    )
+    curl.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+        "CURL_MARKER": str(curl_marker),
+    }
+
+    result = subprocess.run(
+        ["bash", str(scripts / "sync-assets.sh")],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "fetched website-assets is incomplete" in result.stderr
+    assert not curl_marker.exists()
+    assert {
+        asset_name: (assets / asset_name).read_bytes()
+        for asset_name in asset_names
+    } == originals
