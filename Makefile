@@ -238,8 +238,13 @@ test-essential-workflows:
 build: bootstrap-libghostty
 	@$(SWIFT) build
 
+# This gate is about warnings in Ghosthub's own Swift code. Ghostty's umbrella
+# header deliberately omits the ghostty/vt headers, and clang only reports that
+# while building the GhosttyKit module, so leaving it fatal made the gate pass
+# or fail on whether the module cache happened to be warm.
 swift-warning-check: bootstrap-libghostty
-	@$(SWIFT) build --build-tests -Xswiftc -warnings-as-errors
+	@$(SWIFT) build --build-tests -Xswiftc -warnings-as-errors \
+		-Xcc -Wno-incomplete-umbrella
 
 bootstrap-libghostty-release: LIBGHOSTTY_OPTIMIZE = ReleaseFast
 bootstrap-libghostty-release: bootstrap-libghostty
