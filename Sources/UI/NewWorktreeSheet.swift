@@ -36,6 +36,56 @@ enum PullRequestSelector {
     }
 }
 
+enum PullRequestQuery {
+    /// Ranks an exact pull request number ahead of incidental substring hits.
+    /// Without this, "32" matches "#132" as readily as "#32" and resolves to
+    /// whichever kwt happened to list first.
+    static func matches(
+        in pullRequests: [PullRequestCandidate],
+        query: String
+    ) -> [PullRequestCandidate] {
+        let tokens = query.lowercased()
+            .split(whereSeparator: \.isWhitespace)
+            .map(String.init)
+        guard !tokens.isEmpty else { return pullRequests }
+        let matched = pullRequests.filter { pullRequest in
+            let haystack = [
+                "#\(pullRequest.number)",
+                pullRequest.title,
+                pullRequest.author,
+                pullRequest.sourceBranch,
+                pullRequest.targetBranch,
+            ].joined(separator: " ").lowercased()
+            return tokens.allSatisfy(haystack.contains)
+        }
+        guard let number = requestedNumber(query),
+              let exact = matched.firstIndex(where: { $0.number == number })
+        else { return matched }
+        var ranked = matched
+        ranked.insert(ranked.remove(at: exact), at: 0)
+        return ranked
+    }
+
+    /// The candidate a query implies. An exact number wins outright, including
+    /// when it is already imported, because that is still the one the user
+    /// named. Otherwise prefer a candidate that is not yet imported.
+    static func impliedSelectionID(
+        in candidates: [PullRequestCandidate],
+        query: String
+    ) -> String? {
+        if let number = requestedNumber(query),
+           let exact = candidates.first(where: { $0.number == number }) {
+            return exact.id
+        }
+        return candidates.first(where: { !$0.isImported })?.id
+            ?? candidates.first?.id
+    }
+
+    private static func requestedNumber(_ query: String) -> Int? {
+        PullRequestSelector.normalized(query).flatMap(Int.init)
+    }
+}
+
 enum NewWorktreeProjectLabel {
     static func menuTitle(
         project: ProjectSummary,
@@ -137,20 +187,7 @@ struct NewWorktreeSheet: View {
     }
 
     private var filteredPullRequests: [PullRequestCandidate] {
-        let tokens = query.lowercased()
-            .split(whereSeparator: \.isWhitespace)
-            .map(String.init)
-        guard !tokens.isEmpty else { return pullRequests }
-        return pullRequests.filter { pullRequest in
-            let haystack = [
-                "#\(pullRequest.number)",
-                pullRequest.title,
-                pullRequest.author,
-                pullRequest.sourceBranch,
-                pullRequest.targetBranch,
-            ].joined(separator: " ").lowercased()
-            return tokens.allSatisfy(haystack.contains)
-        }
+        PullRequestQuery.matches(in: pullRequests, query: query)
     }
 
     private var pullRequestLoadID: String {
@@ -187,7 +224,10 @@ struct NewWorktreeSheet: View {
         }
         .onChange(of: query) { _, _ in
             guard selectedMode == .pullRequest else { return }
-            selectedPullRequestID = filteredPullRequests.first?.id
+            selectedPullRequestID = PullRequestQuery.impliedSelectionID(
+                in: filteredPullRequests,
+                query: query
+            )
         }
         .task(id: pullRequestLoadID) {
             guard selectedMode == .pullRequest else { return }
@@ -583,12 +623,16 @@ struct NewWorktreeSheet: View {
             let loaded = try await onListPullRequests(selectedProject.id)
             guard !Task.isCancelled else { return }
             pullRequests = loaded
-            if !loaded.contains(where: {
+            // Selecting out of the whole list would ignore a number typed
+            // while the list was still loading.
+            let candidates = filteredPullRequests
+            if !candidates.contains(where: {
                 $0.id == selectedPullRequestID
             }) {
-                selectedPullRequestID =
-                    loaded.first(where: { !$0.isImported })?.id
-                        ?? loaded.first?.id
+                selectedPullRequestID = PullRequestQuery.impliedSelectionID(
+                    in: candidates,
+                    query: query
+                )
             }
         } catch is CancellationError {
             return
