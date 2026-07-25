@@ -1,6 +1,7 @@
 ---
 import { Image } from 'astro:assets';
 import SiteLayout from '../layouts/SiteLayout.astro';
+import ZoomableImage from '../components/ZoomableImage.astro';
 import commandCenter from '../assets/guide-command-center.png';
 import hosts from '../assets/guide-hosts.png';
 import quickLaunch from '../assets/guide-quick-launch.png';
@@ -16,6 +17,18 @@ const description =
 
 const imageWidths = [640, 960, 1280, 1600];
 const imageSizes = '(max-width: 900px) calc(100vw - 3rem), 900px';
+const imageAlt = {
+  sessions:
+    'Ghosthub workspace showing local sessions, projects, worktrees, and a remote host in the sidebar',
+  hosts: 'Ghosthub Hosts settings with a configured remote GPU host',
+  worktree:
+    'Ghosthub new worktree sheet ready to create a feature branch with kwt',
+  quickLaunch: 'Ghosthub Quick Launch filtered to a reconnect worktree',
+  commandCenter:
+    'Six real Ghosthub windows arranged in a tight three-by-two matrix, each attached to a different tmux session with its sidebar collapsed',
+  terminal:
+    'Ghosthub Terminal settings showing interaction and configuration options',
+};
 ---
 
 <SiteLayout title={title} description={description} path="/guide/">
@@ -74,13 +87,15 @@ const imageSizes = '(max-width: 900px) calc(100vw - 3rem), 900px';
       </div>
       <figure class="container window">
         <div class="titlebar" aria-hidden="true"><i></i><i></i><i></i></div>
-        <Image
-          src={sessions}
-          alt="Ghosthub workspace showing local sessions, projects, worktrees, and a remote host in the sidebar"
-          widths={imageWidths}
-          sizes={imageSizes}
-          loading="eager"
-        />
+        <ZoomableImage label={imageAlt.sessions}>
+          <Image
+            src={sessions}
+            alt={imageAlt.sessions}
+            widths={imageWidths}
+            sizes={imageSizes}
+            loading="eager"
+          />
+        </ZoomableImage>
       </figure>
     </li>
 
@@ -112,12 +127,14 @@ const imageSizes = '(max-width: 900px) calc(100vw - 3rem), 900px';
       </div>
       <figure class="container window">
         <div class="titlebar" aria-hidden="true"><i></i><i></i><i></i></div>
-        <Image
-          src={hosts}
-          alt="Ghosthub Hosts settings with a configured remote GPU host"
-          widths={imageWidths}
-          sizes={imageSizes}
-        />
+        <ZoomableImage label={imageAlt.hosts}>
+          <Image
+            src={hosts}
+            alt={imageAlt.hosts}
+            widths={imageWidths}
+            sizes={imageSizes}
+          />
+        </ZoomableImage>
       </figure>
     </li>
 
@@ -140,12 +157,14 @@ const imageSizes = '(max-width: 900px) calc(100vw - 3rem), 900px';
       </div>
       <figure class="container window">
         <div class="titlebar" aria-hidden="true"><i></i><i></i><i></i></div>
-        <Image
-          src={worktree}
-          alt="Ghosthub new worktree sheet ready to create a feature branch with kwt"
-          widths={imageWidths}
-          sizes={imageSizes}
-        />
+        <ZoomableImage label={imageAlt.worktree}>
+          <Image
+            src={worktree}
+            alt={imageAlt.worktree}
+            widths={imageWidths}
+            sizes={imageSizes}
+          />
+        </ZoomableImage>
       </figure>
     </li>
 
@@ -169,12 +188,14 @@ const imageSizes = '(max-width: 900px) calc(100vw - 3rem), 900px';
       </div>
       <figure class="container window">
         <div class="titlebar" aria-hidden="true"><i></i><i></i><i></i></div>
-        <Image
-          src={quickLaunch}
-          alt="Ghosthub Quick Launch filtered to a reconnect worktree"
-          widths={imageWidths}
-          sizes={imageSizes}
-        />
+        <ZoomableImage label={imageAlt.quickLaunch}>
+          <Image
+            src={quickLaunch}
+            alt={imageAlt.quickLaunch}
+            widths={imageWidths}
+            sizes={imageSizes}
+          />
+        </ZoomableImage>
       </figure>
     </li>
 
@@ -197,12 +218,14 @@ const imageSizes = '(max-width: 900px) calc(100vw - 3rem), 900px';
         </div>
       </div>
       <figure class="container command-matrix">
-        <Image
-          src={commandCenter}
-          alt="Six real Ghosthub windows arranged in a tight three-by-two matrix, each attached to a different tmux session with its sidebar collapsed"
-          widths={[640, 960, 1280, 1800]}
-          sizes="(max-width: 1200px) calc(100vw - 3rem), 1160px"
-        />
+        <ZoomableImage label={imageAlt.commandCenter}>
+          <Image
+            src={commandCenter}
+            alt={imageAlt.commandCenter}
+            widths={[640, 960, 1280, 1800]}
+            sizes="(max-width: 1200px) calc(100vw - 3rem), 1160px"
+          />
+        </ZoomableImage>
       </figure>
     </li>
 
@@ -225,12 +248,14 @@ const imageSizes = '(max-width: 900px) calc(100vw - 3rem), 900px';
       </div>
       <figure class="container window">
         <div class="titlebar" aria-hidden="true"><i></i><i></i><i></i></div>
-        <Image
-          src={terminal}
-          alt="Ghosthub Terminal settings showing interaction and configuration options"
-          widths={imageWidths}
-          sizes={imageSizes}
-        />
+        <ZoomableImage label={imageAlt.terminal}>
+          <Image
+            src={terminal}
+            alt={imageAlt.terminal}
+            widths={imageWidths}
+            sizes={imageSizes}
+          />
+        </ZoomableImage>
       </figure>
     </li>
   </ol>

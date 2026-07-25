@@ -44,6 +44,25 @@ const canonical = new URL(path, Astro.site);
       <slot />
     </main>
     <Footer />
+    <dialog
+      id="image-lightbox"
+      class="image-lightbox"
+      data-image-lightbox
+      aria-label="Enlarged screenshot"
+    >
+      <div class="image-lightbox-frame" data-image-lightbox-frame>
+        <img data-image-lightbox-image alt="" />
+        <button
+          class="image-lightbox-close"
+          type="button"
+          data-image-lightbox-close
+          aria-label="Close enlarged screenshot"
+          autofocus
+        >
+          <span aria-hidden="true">&times;</span>
+        </button>
+      </div>
+    </dialog>
     <script>
       // oxlint-disable-next-line import/no-unassigned-import -- side-effect module, no export
       import '../scripts/site';

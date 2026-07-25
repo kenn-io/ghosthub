@@ -2,7 +2,12 @@
 import { Image } from 'astro:assets';
 import { GITHUB_URL, RELEASES_URL } from '../config';
 import AppIcon from './AppIcon.astro';
+import ZoomableImage from './ZoomableImage.astro';
 import hero from '../assets/hero.png';
+
+const heroAlt =
+  'Ghosthub main window: sidebar with local and remote tmux sessions and kwt '
+  + 'worktrees, and an attached session running a Claude Code investigation';
 ---
 
 <section class="hero">
@@ -28,14 +33,16 @@ import hero from '../assets/hero.png';
     </p>
     <figure class="window">
       <div class="titlebar" aria-hidden="true"><i></i><i></i><i></i></div>
-      <Image
-        src={hero}
-        alt="Ghosthub main window: sidebar with local and remote tmux sessions and kwt worktrees, and an attached session running a Claude Code investigation"
-        widths={[640, 960, 1280, 1920, 2400]}
-        sizes="(max-width: 1000px) 100vw, 960px"
-        loading="eager"
-        fetchpriority="high"
-      />
+      <ZoomableImage label={heroAlt}>
+        <Image
+          src={hero}
+          alt={heroAlt}
+          widths={[640, 960, 1280, 1920, 2400]}
+          sizes="(max-width: 1000px) 100vw, 960px"
+          loading="eager"
+          fetchpriority="high"
+        />
+      </ZoomableImage>
     </figure>
   </div>
 </section>
