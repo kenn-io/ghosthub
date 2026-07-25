@@ -165,6 +165,17 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                     commands.append("exit 127")
                     break
                 }
+                // Unlike an ordinary attach, this hands off to kwt, which
+                // finds tmux by name on PATH. A Ghosthub launched from Finder
+                // inherits the GUI session's PATH, which routinely omits
+                // Homebrew, so lead with the tmux Ghosthub already resolved
+                // and version-checked through the login shell.
+                if let directory = resolvedBinaryDirectory(tmuxPath) {
+                    commands.append(
+                        "PATH=\(shellQuotedCommandArgument(directory)):$PATH"
+                    )
+                    commands.append("export PATH")
+                }
                 let protectedAttach = [
                     kwtPath, "pr", "attach", protectedWorkspacePath,
                 ].map(shellQuotedCommandArgument).joined(separator: " ")
@@ -356,6 +367,16 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
 
     private func shellCommand(_ arguments: [String]) -> String {
         arguments.map(shellQuotedCommandArgument).joined(separator: " ")
+    }
+
+    /// The directory holding an absolute binary path. A bare command name
+    /// carries no location worth putting on PATH.
+    private func resolvedBinaryDirectory(_ path: String) -> String? {
+        guard path.hasPrefix("/") else { return nil }
+        let directory = URL(fileURLWithPath: path)
+            .deletingLastPathComponent()
+            .path
+        return directory.isEmpty || directory == "/" ? nil : directory
     }
 
     /// Runs creation once and, after success, permanently switches this

@@ -58,6 +58,52 @@ struct TmuxAttachmentInfoTests {
         )
     }
 
+    @Test("protected attachment leads kwt to the resolved tmux")
+    func protectedAttachExportsResolvedTmuxDirectory() {
+        let command = TmuxAttachmentInfo(
+            sessionName: "pr-32",
+            host: .local,
+            socketName: "kwt-pr-0123456789abcdef",
+            protectedWorkspacePath: "/worktrees/pr-32"
+        ).attachCommand(
+            tmuxPath: "/opt/homebrew/bin/tmux",
+            kwtPath: "/Applications/Ghosthub.app/Contents/Helpers/kwt"
+        )
+
+        // kwt looks tmux up by name, so the directory has to precede whatever
+        // PATH a Finder-launched app inherited.
+        #expect(command.contains("/opt/homebrew/bin"))
+        let beforeKwt = command
+            .components(separatedBy: "Helpers/kwt")
+            .first ?? ""
+        #expect(beforeKwt.contains("export PATH"))
+    }
+
+    @Test("an unresolved tmux name contributes no PATH entry")
+    func protectedAttachSkipsPathForBareTmuxName() {
+        let command = TmuxAttachmentInfo(
+            sessionName: "pr-32",
+            host: .local,
+            socketName: "kwt-pr-0123456789abcdef",
+            protectedWorkspacePath: "/worktrees/pr-32"
+        ).attachCommand(
+            tmuxPath: "tmux",
+            kwtPath: "/Applications/Ghosthub.app/Contents/Helpers/kwt"
+        )
+
+        #expect(!command.contains("export PATH"))
+    }
+
+    @Test("ordinary local attachment does not rewrite PATH")
+    func ordinaryAttachLeavesPathAlone() {
+        let command = TmuxAttachmentInfo(
+            sessionName: "alpha",
+            host: .local
+        ).attachCommand(tmuxPath: "/opt/homebrew/bin/tmux")
+
+        #expect(!command.contains("export PATH"))
+    }
+
     @Test("isolated local attachment targets the returned tmux socket")
     func isolatedLocalAttachCommand() {
         let command = TmuxAttachmentInfo(
