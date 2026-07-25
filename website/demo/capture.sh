@@ -8,6 +8,7 @@ set -euo pipefail
 demo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 scratch="${GHOSTHUB_DEMO_SCRATCH:-/tmp/ghosthub-demo}"
 out="${1:-$scratch/hero-raw.png}"
+mode="${2:-window}"
 bin="$scratch/app/Ghosthub.app/Contents/MacOS/Ghosthub"
 
 # shellcheck source=SCRIPTDIR/scratch-guard.sh
@@ -21,7 +22,15 @@ source "$demo_root/process.sh"
 demo_pid="$(demo_require_recorded_process "$scratch/app.pid" "$bin")"
 
 rm -f "$out" "$out.tmp"
-GHOSTHUB_DEMO_PID="$demo_pid" GHOSTHUB_DEMO_CAPTURE_OUT="$out" swift - <<'EOF'
+if [[ "$mode" == "matrix" ]]; then
+  for index in 1 2 3 4 5; do
+    rm -f "$out.$index" "$out.$index.tmp"
+  done
+fi
+GHOSTHUB_DEMO_PID="$demo_pid" \
+  GHOSTHUB_DEMO_CAPTURE_OUT="$out" \
+  GHOSTHUB_DEMO_CAPTURE_MODE="$mode" \
+  swift - <<'EOF'
 import Foundation
 
 let environment = ProcessInfo.processInfo.environment
@@ -31,18 +40,34 @@ else { exit(1) }
 DistributedNotificationCenter.default().post(
     name: Notification.Name("com.ghosthub.demo.capture"),
     object: pid,
-    userInfo: ["path": output]
+    userInfo: [
+        "path": output,
+        "mode": environment["GHOSTHUB_DEMO_CAPTURE_MODE"] ?? "window",
+    ]
 )
 EOF
 
-for _ in $(seq 1 50); do
-  [[ -s "$out" ]] && break
+capture_complete() {
+  [[ -s "$out" ]] || return 1
+  [[ "$mode" != "matrix" ]] && return 0
+  local index
+  for index in 1 2 3 4 5; do
+    [[ -s "$out.$index" ]] || return 1
+  done
+}
+
+for _ in $(seq 1 100); do
+  capture_complete && break
   sleep 0.1
 done
-if [[ ! -s "$out" ]]; then
+if ! capture_complete; then
   echo "error: demo process did not produce a window capture" >&2
   exit 1
 fi
 
-echo "captured demo process $demo_pid -> $out"
-sips -g pixelWidth -g pixelHeight "$out" | tail -2
+if [[ "$mode" == "matrix" ]]; then
+  echo "captured six-window demo matrix from process $demo_pid -> $out{,.1...5}"
+else
+  echo "captured demo process $demo_pid -> $out"
+  sips -g pixelWidth -g pixelHeight "$out" | tail -2
+fi

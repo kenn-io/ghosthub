@@ -124,11 +124,11 @@ static CGRect DemoWindowBounds(CGWindowID windowID) {
   return bounds;
 }
 
-static void DemoCapture(NSString *path) {
-  NSWindow *window = DemoRootWindow();
-  if (window == nil) return;
+static BOOL DemoCaptureWindow(NSWindow *window, NSString *path,
+                              BOOL exactWindow) {
+  if (window == nil) return NO;
   CGRect bounds = DemoWindowBounds((CGWindowID)window.windowNumber);
-  if (CGRectIsNull(bounds)) return;
+  if (CGRectIsNull(bounds)) return NO;
 
   /* The macOS 26 SDK makes the legacy function unavailable to new source,
    * but the runtime retains it for binary compatibility. Resolving it here
@@ -138,12 +138,16 @@ static void DemoCapture(NSString *path) {
       CGRect, CGWindowListOption, CGWindowID, CGWindowImageOption);
   CreateWindowImage createImage =
       (CreateWindowImage)dlsym(RTLD_DEFAULT, "CGWindowListCreateImage");
-  if (createImage == NULL) return;
+  if (createImage == NULL) return NO;
   CGImageRef image = createImage(
-      bounds, kCGWindowListOptionOnScreenOnly, kCGNullWindowID,
+      bounds,
+      exactWindow ? kCGWindowListOptionIncludingWindow
+                  : kCGWindowListOptionOnScreenOnly,
+      exactWindow ? (CGWindowID)window.windowNumber : kCGNullWindowID,
       kCGWindowImageBoundsIgnoreFraming | kCGWindowImageNominalResolution);
-  if (image == NULL) return;
+  if (image == NULL) return NO;
 
+  BOOL wrote = NO;
   NSString *temporary = [path stringByAppendingString:@".tmp"];
   NSURL *url = [NSURL fileURLWithPath:temporary];
   CGImageDestinationRef destination = CGImageDestinationCreateWithURL(
@@ -153,20 +157,83 @@ static void DemoCapture(NSString *path) {
     if (CGImageDestinationFinalize(destination)) {
       NSFileManager *files = [NSFileManager defaultManager];
       [files removeItemAtPath:path error:nil];
-      [files moveItemAtPath:temporary toPath:path error:nil];
+      wrote = [files moveItemAtPath:temporary toPath:path error:nil];
     }
     CFRelease(destination);
   }
   CGImageRelease(image);
+  return wrote;
+}
+
+static NSArray<NSWindow *> *DemoWorkspaceWindows(void) {
+  NSMutableArray<NSWindow *> *windows = [NSMutableArray array];
+  for (NSWindow *window in NSApp.windows) {
+    if (!window.isVisible || window.isSheet || window.sheetParent != nil ||
+        window.parentWindow != nil || window.level != NSNormalWindowLevel ||
+        window.contentView == nil) {
+      continue;
+    }
+    [windows addObject:window];
+  }
+  [windows sortUsingComparator:^NSComparisonResult(NSWindow *left,
+                                                    NSWindow *right) {
+    if (left.windowNumber < right.windowNumber) return NSOrderedAscending;
+    if (left.windowNumber > right.windowNumber) return NSOrderedDescending;
+    return NSOrderedSame;
+  }];
+  if (windows.count > 6) {
+    return [windows subarrayWithRange:NSMakeRange(0, 6)];
+  }
+  return windows;
+}
+
+static void DemoArrangeMatrix(NSArray<NSWindow *> *windows) {
+  if (windows.count != 6) return;
+  NSRect screen = NSScreen.mainScreen.visibleFrame;
+  CGFloat gap = 6;
+  CGFloat width = floor((screen.size.width - (2 * gap)) / 3);
+  CGFloat height = floor((screen.size.height - gap) / 2);
+  for (NSUInteger index = 0; index < windows.count; index++) {
+    NSUInteger column = index % 3;
+    NSUInteger row = index / 3;
+    CGFloat x = screen.origin.x + column * (width + gap);
+    CGFloat y = screen.origin.y + (1 - row) * (height + gap);
+    NSWindow *window = windows[index];
+    [window setFrame:NSMakeRect(x, y, width, height) display:YES];
+    [window orderFront:nil];
+  }
+}
+
+static void DemoCapture(NSString *path, BOOL matrix) {
+  if (!matrix) {
+    DemoCaptureWindow(DemoRootWindow(), path, NO);
+    return;
+  }
+
+  NSArray<NSWindow *> *windows = DemoWorkspaceWindows();
+  if (windows.count != 6) return;
+  DemoArrangeMatrix(windows);
+  dispatch_after(
+      dispatch_time(DISPATCH_TIME_NOW, 1000 * NSEC_PER_MSEC),
+      dispatch_get_main_queue(), ^{
+        for (NSUInteger index = 0; index < windows.count; index++) {
+          NSString *windowPath = index == 0
+              ? path
+              : [path stringByAppendingFormat:@".%lu",
+                                                 (unsigned long)index];
+          if (!DemoCaptureWindow(windows[index], windowPath, YES)) return;
+        }
+      });
 }
 
 @implementation DemoController
 
 - (void)capture:(NSNotification *)notification {
   NSString *path = notification.userInfo[@"path"];
+  BOOL matrix = [notification.userInfo[@"mode"] isEqualToString:@"matrix"];
   if (path.length == 0) return;
   dispatch_async(dispatch_get_main_queue(), ^{
-    DemoCapture(path);
+    DemoCapture(path, matrix);
   });
 }
 

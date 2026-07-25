@@ -93,6 +93,43 @@ capture_state() {
   sips -g pixelWidth -g pixelHeight "$out_dir/$name" | tail -2
 }
 
+process_matrix_capture() {
+  local raw="$1" destination="$2"
+  NODE_PATH="$demo_root/../node_modules" node - "$raw" "$destination" <<'EOF'
+const sharp = require("sharp");
+(async () => {
+  const [raw, destination] = process.argv.slice(2);
+  const files = [raw, ...[1, 2, 3, 4, 5].map((index) => `${raw}.${index}`)];
+  const metadata = await Promise.all(
+    files.map((file) => sharp(file).metadata())
+  );
+  const width = metadata[0].width;
+  const height = metadata[0].height;
+  if (width === undefined || height === undefined
+      || metadata.some((item) => item.width !== width || item.height !== height)) {
+    throw new Error("matrix windows did not capture at one consistent size");
+  }
+  const gap = 6;
+  await sharp({
+    create: {
+      width: width * 3 + gap * 2,
+      height: height * 2 + gap,
+      channels: 4,
+      background: "#080b0e",
+    },
+  })
+    .composite(files.map((input, index) => ({
+      input,
+      left: (index % 3) * (width + gap),
+      top: Math.floor(index / 3) * (height + gap),
+    })))
+    .resize({ width: 1800 })
+    .png({ compressionLevel: 9 })
+    .toFile(destination);
+})();
+EOF
+}
+
 echo "==> hero: active coding-agent worktree"
 palette "fix-reconnect-backoff"
 sleep 5
@@ -136,8 +173,8 @@ sleep 2
 capture_state guide-terminal.png
 dismiss_sheet
 
-command_window() {
-  local query="$1" name="$2" create="${3:-true}" select="${4:-palette}"
+prepare_command_window() {
+  local query="$1" create="${2:-true}" select="${3:-palette}"
   if [[ "$create" == "true" ]]; then
     demo_input new-window
     sleep 2
@@ -152,15 +189,19 @@ command_window() {
   sleep 3
   demo_input sidebar
   sleep 1
-  capture_state "$name"
 }
 
 echo "==> guide: six-window tmux command center"
-command_window "fix-reconnect-backoff" guide-command-ghosthub.png false
-command_window "add-session-filters" guide-command-agentsview.png
-command_window "scratch" guide-command-scratch.png true press
-command_window "docbank-export" guide-command-export.png true press
-command_window "release-watch" guide-command-release.png true press
-command_window "test-matrix" guide-command-tests.png true press
+prepare_command_window "fix-reconnect-backoff" false
+prepare_command_window "add-session-filters"
+prepare_command_window "scratch" true press
+prepare_command_window "docbank-export" true press
+prepare_command_window "release-watch" true press
+prepare_command_window "test-matrix" true press
+matrix_raw="$scratch/screenshots-raw/guide-command-center.png"
+"$demo_root/capture.sh" "$matrix_raw" matrix
+process_matrix_capture "$matrix_raw" "$out_dir/guide-command-center.png"
+sips -g pixelWidth -g pixelHeight \
+  "$out_dir/guide-command-center.png" | tail -2
 
 echo "captured website asset set -> $out_dir"
