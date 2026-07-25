@@ -26,6 +26,11 @@ build:
 make run-app KWT_BINARY_PATH=/absolute/path/to/kwt
 ```
 
+Such a bundle records `GhosthubKwtSourceRevision` as `unpinned` and takes
+`GhosthubKwtVersion` from what that binary reports, so it never claims the
+pinned provenance. Set `KWT_VERSION` and `KWT_SOURCE_REVISION` explicitly to
+record a helper whose origin you know.
+
 Run the compiler warning gate:
 
 ```bash

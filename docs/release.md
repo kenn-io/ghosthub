@@ -38,7 +38,9 @@ release inputs that must move deliberately:
 
 The embedded kwt revision and release-facing version are written into
 `Info.plist` as `GhosthubKwtSourceRevision` and `GhosthubKwtVersion`. The
-revision is also included in GitHub release notes. Kwt is part of Ghosthub's
+revision is also included in GitHub release notes. Release CI records the
+helper it built from the pin; a local build against a substituted
+`KWT_BINARY_PATH` is recorded as `unpinned` rather than inheriting the pin. Kwt is part of Ghosthub's
 signed code, but it remains an ordinary CLI rather than a daemon or state
 authority of its own. The pinned revision must support the complete automation
 contract consumed by the app, including the isolated tmux socket identity

@@ -31,8 +31,21 @@ KWT_REF ?= $(shell tr -d '[:space:]' < KWT_REVISION)
 KWT_SOURCE_DIR ?= $(abspath .build/kwt-source)
 KWT_BINARY_PATH ?= $(abspath .build/kwt/kwt)
 THIRD_PARTY_LICENSES_DIR ?= LICENSES
+
+# Only the helper this Makefile builds is the pinned one. A developer-supplied
+# KWT_BINARY_PATH must not inherit the pin's provenance in the bundle, so ask
+# that binary to identify itself instead. An explicit KWT_VERSION or
+# KWT_SOURCE_REVISION still wins either way, which is how release CI records
+# the helper it built.
+KWT_REPORTED_VERSION = $(shell "$(KWT_BINARY_PATH)" --version 2>/dev/null \
+	| sed -n '1s/^kwt version //p')
+ifeq ($(origin KWT_BINARY_PATH),file)
 KWT_VERSION ?= $(KWT_REF)
 KWT_SOURCE_REVISION ?= $(KWT_REF)
+else
+KWT_VERSION ?= $(or $(KWT_REPORTED_VERSION),unknown)
+KWT_SOURCE_REVISION ?= unpinned
+endif
 SWIFT_TEST_FILTER ?=
 
 .PHONY: help bootstrap-kwt ensure-kwt bootstrap-libghostty bootstrap-libghostty-release check-libghostty check-libghostty-release test-libghostty-bootstrap test-terminal-fallback test-stage-release-app-bundles test-assemble-app-bundle test-essential-workflows build swift-warning-check build-release debug-app release-app release-dmg release-appcast run-release-app run-app swift-test test-tmux-attach python-test test smoke-test docs-build docs-serve site-deploy reset-app-state install-hooks format format-check
