@@ -145,9 +145,13 @@ public enum WorkspaceSidebarModel {
         visibility: WorktreeVisibility = .default
     ) -> [WorkspaceSidebarSection] {
         snapshot.hosts.map { host in
-            let kwtSessionNames = Set(
+            // Discovery only lists the host's default tmux server. A
+            // protected PR workspace lives on its own socket, so its session
+            // name never identifies a discovered session and must not
+            // suppress an unrelated default-server session of the same name.
+            let defaultServerSessionNames = Set(
                 snapshot.worktrees.compactMap { worktree in
-                    worktree.hostID == host.id
+                    worktree.hostID == host.id && worktree.tmuxSocketName == nil
                         ? worktree.tmuxSessionName : nil
                 }
             )
@@ -177,7 +181,7 @@ public enum WorkspaceSidebarModel {
                 host: host,
                 projects: projects,
                 tmuxSessionRows: host.tmuxSessions
-                    .filter { !kwtSessionNames.contains($0.name) }
+                    .filter { !defaultServerSessionNames.contains($0.name) }
                     .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
                     .map { tmuxSessionRow($0, hostID: host.id) }
             )

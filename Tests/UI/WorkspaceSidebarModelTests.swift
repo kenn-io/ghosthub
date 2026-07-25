@@ -236,6 +236,50 @@ struct WorkspaceSidebarModelTests {
         #expect(sections[0].projects[0].worktrees.map(\.id) == [worktree.id])
     }
 
+    @Test("protected workspace names never hide default-server sessions")
+    func keepsDefaultServerSessionSharingProtectedName() {
+        let hostID = UUID()
+        let projectID = UUID()
+        var worktree = WorktreeSummary.fixture(
+            hostID: hostID,
+            projectID: projectID,
+            name: "pr-32",
+            path: "/code/docbank-pr-32",
+            branch: "contributor/pr-32"
+        )
+        worktree.tmuxSessionName = "kwt-docbank-pr-32"
+        worktree.tmuxSocketName = "kwt-pr-0123456789abcdef"
+        let snapshot = WorkspaceSnapshot.fixture(
+            hosts: [
+                .fixture(
+                    id: hostID,
+                    tmuxSessions: [
+                        TmuxSessionSummary(
+                            name: "kwt-docbank-pr-32",
+                            managed: false,
+                            windows: []
+                        ),
+                    ]
+                ),
+            ],
+            projects: [
+                .fixture(
+                    id: projectID,
+                    hostID: hostID,
+                    name: "docbank",
+                    rootPath: "/code/docbank"
+                ),
+            ],
+            worktrees: [worktree]
+        )
+
+        let sections = WorkspaceSidebarModel.sections(in: snapshot)
+
+        #expect(
+            sections[0].tmuxSessionRows.map(\.title) == ["kwt-docbank-pr-32"]
+        )
+    }
+
     @Test("sidebar model groups active projects and visible worktrees")
     func groupsProjectsAndWorktrees() {
         let hostID = UUID()
