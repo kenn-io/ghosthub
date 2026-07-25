@@ -178,10 +178,10 @@ final class TerminalTextInputHandler {
         // call to ghosthub's `tmuxPaneInputSink` closure.
         if let sink = delegate?.tmuxPaneInputSink,
            let data = AttachedTmuxInputEncoder.inputData(
-            isRelease: false,
-            text: chars,
-            eventCharacters: nil,
-            modifierFlags: modifierFlags
+               isRelease: false,
+               text: chars,
+               eventCharacters: nil,
+               modifierFlags: modifierFlags
            ) {
             sink(data)
             return

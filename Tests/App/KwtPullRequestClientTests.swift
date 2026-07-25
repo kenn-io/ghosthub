@@ -14,7 +14,7 @@ struct KwtPullRequestClientTests {
                 return (0, Self.listResponse)
             },
             localBinaryPath:
-                "/Applications/Ghosthub.app/Contents/Helpers/kwt",
+            "/Applications/Ghosthub.app/Contents/Helpers/kwt",
             loginShellProvider: { "/bin/zsh" }
         )
 
@@ -183,123 +183,123 @@ struct KwtPullRequestClientTests {
     }
 
     private static let listResponse = """
-        login banner
-        GHOSTHUB_KWT_PR_JSON
-        {
-          "pull_requests": [{
-            "id": "github:github.com/kenn-io/ghosthub#32",
+    login banner
+    GHOSTHUB_KWT_PR_JSON
+    {
+      "pull_requests": [{
+        "id": "github:github.com/kenn-io/ghosthub#32",
+        "provider": "github",
+        "repository": {
+          "provider": "github",
+          "identity": "github.com/kenn-io/ghosthub",
+          "host": "github.com",
+          "owner": "kenn-io",
+          "name": "ghosthub"
+        },
+        "number": 32,
+        "url": "https://github.com/kenn-io/ghosthub/pull/32",
+        "title": "Import pull requests",
+        "author": "wesm",
+        "source": {
+          "branch": "feature/pr-import",
+          "repository": {
             "provider": "github",
-            "repository": {
-              "provider": "github",
-              "identity": "github.com/kenn-io/ghosthub",
-              "host": "github.com",
-              "owner": "kenn-io",
-              "name": "ghosthub"
-            },
-            "number": 32,
-            "url": "https://github.com/kenn-io/ghosthub/pull/32",
-            "title": "Import pull requests",
-            "author": "wesm",
-            "source": {
-              "branch": "feature/pr-import",
-              "repository": {
-                "provider": "github",
-                "identity": "github.com/wesm/ghosthub",
-                "host": "github.com",
-                "owner": "wesm",
-                "name": "ghosthub"
-              },
-              "is_fork": true
-            },
-            "target": {
-              "branch": "main",
-              "repository": {
-                "provider": "github",
-                "identity": "github.com/kenn-io/ghosthub",
-                "host": "github.com",
-                "owner": "kenn-io",
-                "name": "ghosthub"
-              },
-              "is_fork": false
-            },
-            "draft": false,
-            "state": "open",
-            "head_sha": "0123456789012345678901234567890123456789",
-            "imported": false
-          }]
-        }
-        """
+            "identity": "github.com/wesm/ghosthub",
+            "host": "github.com",
+            "owner": "wesm",
+            "name": "ghosthub"
+          },
+          "is_fork": true
+        },
+        "target": {
+          "branch": "main",
+          "repository": {
+            "provider": "github",
+            "identity": "github.com/kenn-io/ghosthub",
+            "host": "github.com",
+            "owner": "kenn-io",
+            "name": "ghosthub"
+          },
+          "is_fork": false
+        },
+        "draft": false,
+        "state": "open",
+        "head_sha": "0123456789012345678901234567890123456789",
+        "imported": false
+      }]
+    }
+    """
 
     private static let importResponse = """
-        GHOSTHUB_KWT_PR_JSON
-        {
-          "status": "created",
-          "pull_request": {
-            "id": "github:github.com/kenn-io/ghosthub#32",
+    GHOSTHUB_KWT_PR_JSON
+    {
+      "status": "created",
+      "pull_request": {
+        "id": "github:github.com/kenn-io/ghosthub#32",
+        "provider": "github",
+        "repository": {
+          "provider": "github",
+          "identity": "github.com/kenn-io/ghosthub",
+          "host": "github.com",
+          "owner": "kenn-io",
+          "name": "ghosthub"
+        },
+        "number": 32,
+        "url": "https://github.com/kenn-io/ghosthub/pull/32",
+        "title": "Import pull requests",
+        "author": "wesm",
+        "source": {
+          "branch": "feature/pr-import",
+          "repository": {
             "provider": "github",
-            "repository": {
-              "provider": "github",
-              "identity": "github.com/kenn-io/ghosthub",
-              "host": "github.com",
-              "owner": "kenn-io",
-              "name": "ghosthub"
-            },
-            "number": 32,
-            "url": "https://github.com/kenn-io/ghosthub/pull/32",
-            "title": "Import pull requests",
-            "author": "wesm",
-            "source": {
-              "branch": "feature/pr-import",
-              "repository": {
-                "provider": "github",
-                "identity": "github.com/wesm/ghosthub",
-                "host": "github.com",
-                "owner": "wesm",
-                "name": "ghosthub"
-              },
-              "is_fork": true
-            },
-            "target": {
-              "branch": "main",
-              "repository": {
-                "provider": "github",
-                "identity": "github.com/kenn-io/ghosthub",
-                "host": "github.com",
-                "owner": "kenn-io",
-                "name": "ghosthub"
-              },
-              "is_fork": false
-            },
-            "draft": false,
-            "state": "open",
-            "head_sha": "0123456789012345678901234567890123456789",
-            "imported": true,
-            "workspace": {
-              "id": "workspace-32",
-              "repository": "github.com/kenn-io/ghosthub",
-              "branch": "pr-32-feature-pr-import",
-              "path": "/tmp/ghosthub-pr-32",
-              "state": "ready",
-              "session_name": "kwt-workspace-pr-32",
-              "tmux_socket_name": "kwt-pr-0123456789abcdef"
-            }
+            "identity": "github.com/wesm/ghosthub",
+            "host": "github.com",
+            "owner": "wesm",
+            "name": "ghosthub"
           },
-          "project": {
+          "is_fork": true
+        },
+        "target": {
+          "branch": "main",
+          "repository": {
+            "provider": "github",
             "identity": "github.com/kenn-io/ghosthub",
-            "name": "ghosthub",
-            "path": "/code/ghosthub"
+            "host": "github.com",
+            "owner": "kenn-io",
+            "name": "ghosthub"
           },
-          "workspace": {
-            "id": "workspace-32",
-            "repository": "github.com/kenn-io/ghosthub",
-            "branch": "pr-32-feature-pr-import",
-            "path": "/tmp/ghosthub-pr-32",
-            "state": "ready",
-            "session_name": "kwt-workspace-pr-32",
-            "tmux_socket_name": "kwt-pr-0123456789abcdef"
-          }
+          "is_fork": false
+        },
+        "draft": false,
+        "state": "open",
+        "head_sha": "0123456789012345678901234567890123456789",
+        "imported": true,
+        "workspace": {
+          "id": "workspace-32",
+          "repository": "github.com/kenn-io/ghosthub",
+          "branch": "pr-32-feature-pr-import",
+          "path": "/tmp/ghosthub-pr-32",
+          "state": "ready",
+          "session_name": "kwt-workspace-pr-32",
+          "tmux_socket_name": "kwt-pr-0123456789abcdef"
         }
-        """
+      },
+      "project": {
+        "identity": "github.com/kenn-io/ghosthub",
+        "name": "ghosthub",
+        "path": "/code/ghosthub"
+      },
+      "workspace": {
+        "id": "workspace-32",
+        "repository": "github.com/kenn-io/ghosthub",
+        "branch": "pr-32-feature-pr-import",
+        "path": "/tmp/ghosthub-pr-32",
+        "state": "ready",
+        "session_name": "kwt-workspace-pr-32",
+        "tmux_socket_name": "kwt-pr-0123456789abcdef"
+      }
+    }
+    """
 }
 
 private final class PullRequestCommandRecorder: @unchecked Sendable {

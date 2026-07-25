@@ -76,7 +76,9 @@ enum AttachedTmuxInputEncoder {
             // not be confused with the physical special keys sharing bytes.
             let needsCSIU = isPhysicalSpecialKey
                 && !modifierFlags.intersection([.shift, .option, .control]).isEmpty
-            if needsCSIU { return nil }
+            if needsCSIU {
+                return nil
+            }
             let raw = Data([UInt8(scalar.value)])
             return optionWasConsumedForMeta ? Data([0x1b]) + raw : raw
         }
@@ -158,9 +160,15 @@ enum AttachedTmuxInputEncoder {
     /// Returns 0 when no modifiers are held (caller should omit the param).
     private static func xtermModifierParam(_ flags: NSEvent.ModifierFlags) -> Int {
         var m = 0
-        if flags.contains(.shift)   { m += 1 }
-        if flags.contains(.option)  { m += 2 }
-        if flags.contains(.control) { m += 4 }
+        if flags.contains(.shift) {
+            m += 1
+        }
+        if flags.contains(.option) {
+            m += 2
+        }
+        if flags.contains(.control) {
+            m += 4
+        }
         return m == 0 ? 0 : 1 + m
     }
 
@@ -172,21 +180,42 @@ enum AttachedTmuxInputEncoder {
     ) -> Data? {
         switch scalar {
         // Arrow keys: \e[1;<mod>A/B/C/D or \e[A/B/C/D
-        case 0xF700: return arrowSequence(0x41, modifier: mod, applicationCursorKeys: applicationCursorKeys) // Up
-        case 0xF701: return arrowSequence(0x42, modifier: mod, applicationCursorKeys: applicationCursorKeys) // Down
-        case 0xF703: return arrowSequence(0x43, modifier: mod, applicationCursorKeys: applicationCursorKeys) // Right
-        case 0xF702: return arrowSequence(0x44, modifier: mod, applicationCursorKeys: applicationCursorKeys) // Left
-
+        case 0xF700: return arrowSequence(
+                0x41,
+                modifier: mod,
+                applicationCursorKeys: applicationCursorKeys
+            ) // Up
+        case 0xF701: return arrowSequence(
+                0x42,
+                modifier: mod,
+                applicationCursorKeys: applicationCursorKeys
+            ) // Down
+        case 0xF703: return arrowSequence(
+                0x43,
+                modifier: mod,
+                applicationCursorKeys: applicationCursorKeys
+            ) // Right
+        case 0xF702: return arrowSequence(
+                0x44,
+                modifier: mod,
+                applicationCursorKeys: applicationCursorKeys
+            ) // Left
         // Home/End: \e[1;<mod>H/F or \eOH/\eOF
-        case 0xF729: return homeEndSequence(0x48, modifier: mod, applicationCursorKeys: applicationCursorKeys) // Home
-        case 0xF72B: return homeEndSequence(0x46, modifier: mod, applicationCursorKeys: applicationCursorKeys) // End
-
+        case 0xF729: return homeEndSequence(
+                0x48,
+                modifier: mod,
+                applicationCursorKeys: applicationCursorKeys
+            ) // Home
+        case 0xF72B: return homeEndSequence(
+                0x46,
+                modifier: mod,
+                applicationCursorKeys: applicationCursorKeys
+            ) // End
         // Tilde keys: \e[<code>;<mod>~ or \e[<code>~
-        case 0xF727: return tildeSequence(2, modifier: mod)  // Insert
-        case 0xF728: return tildeSequence(3, modifier: mod)  // Delete
-        case 0xF72C: return tildeSequence(5, modifier: mod)  // PageUp
-        case 0xF72D: return tildeSequence(6, modifier: mod)  // PageDown
-
+        case 0xF727: return tildeSequence(2, modifier: mod) // Insert
+        case 0xF728: return tildeSequence(3, modifier: mod) // Delete
+        case 0xF72C: return tildeSequence(5, modifier: mod) // PageUp
+        case 0xF72D: return tildeSequence(6, modifier: mod) // PageDown
         default: return nil
         }
     }
@@ -199,56 +228,84 @@ enum AttachedTmuxInputEncoder {
     ) -> Data? {
         switch keyCode {
         // Arrow keys (fallback when eventCharacters unavailable)
-        case 126: return arrowSequence(0x41, modifier: mod, applicationCursorKeys: applicationCursorKeys) // Up
-        case 125: return arrowSequence(0x42, modifier: mod, applicationCursorKeys: applicationCursorKeys) // Down
-        case 124: return arrowSequence(0x43, modifier: mod, applicationCursorKeys: applicationCursorKeys) // Right
-        case 123: return arrowSequence(0x44, modifier: mod, applicationCursorKeys: applicationCursorKeys) // Left
-
+        case 126: return arrowSequence(
+                0x41,
+                modifier: mod,
+                applicationCursorKeys: applicationCursorKeys
+            ) // Up
+        case 125: return arrowSequence(
+                0x42,
+                modifier: mod,
+                applicationCursorKeys: applicationCursorKeys
+            ) // Down
+        case 124: return arrowSequence(
+                0x43,
+                modifier: mod,
+                applicationCursorKeys: applicationCursorKeys
+            ) // Right
+        case 123: return arrowSequence(
+                0x44,
+                modifier: mod,
+                applicationCursorKeys: applicationCursorKeys
+            ) // Left
         // Home/End
-        case 115: return homeEndSequence(0x48, modifier: mod, applicationCursorKeys: applicationCursorKeys) // Home
-        case 119: return homeEndSequence(0x46, modifier: mod, applicationCursorKeys: applicationCursorKeys) // End
-
+        case 115: return homeEndSequence(
+                0x48,
+                modifier: mod,
+                applicationCursorKeys: applicationCursorKeys
+            ) // Home
+        case 119: return homeEndSequence(
+                0x46,
+                modifier: mod,
+                applicationCursorKeys: applicationCursorKeys
+            ) // End
         // Tilde keys
-        case 114: return tildeSequence(2, modifier: mod)  // Insert
-        case 117: return tildeSequence(3, modifier: mod)  // Delete
-        case 116: return tildeSequence(5, modifier: mod)  // PageUp
-        case 121: return tildeSequence(6, modifier: mod)  // PageDown
-
+        case 114: return tildeSequence(2, modifier: mod) // Insert
+        case 117: return tildeSequence(3, modifier: mod) // Delete
+        case 116: return tildeSequence(5, modifier: mod) // PageUp
+        case 121: return tildeSequence(6, modifier: mod) // PageDown
         // Enter (0x0d), Tab (0x09), Backspace (0x7f), Escape (0x1b)
         // With modifiers: CSI u encoding \e[<codepoint>;<mod>u
         // Without modifiers: return nil — the raw byte is already sent by
         // inputData() or doCommand(), so we must not duplicate it here.
         case 36: // Enter
-            if mod > 0 { return csiU(13, modifier: mod) }
+            if mod > 0 {
+                return csiU(13, modifier: mod)
+            }
             return nil
         case 48: // Tab
             // Shift-Tab is special: \e[Z (standard backtab)
-            if mod == 2 { return Data([0x1b, 0x5b, 0x5a]) }
-            if mod > 0 { return csiU(9, modifier: mod) }
+            if mod == 2 {
+                return Data([0x1b, 0x5b, 0x5a])
+            }
+            if mod > 0 {
+                return csiU(9, modifier: mod)
+            }
             return nil
         case 51: // Backspace
-            if mod > 0 { return csiU(127, modifier: mod) }
+            if mod > 0 {
+                return csiU(127, modifier: mod)
+            }
             return nil
         case 53: // Escape
-            if mod > 0 { return csiU(27, modifier: mod) }
+            if mod > 0 {
+                return csiU(27, modifier: mod)
+            }
             return nil
-
         // Function keys F1-F4: SS3 sequences \eO<mod>P/Q/R/S
         case 122: return ss3FunctionKey(0x50, modifier: mod) // F1
         case 120: return ss3FunctionKey(0x51, modifier: mod) // F2
-        case  99: return ss3FunctionKey(0x52, modifier: mod) // F3
+        case 99: return ss3FunctionKey(0x52, modifier: mod) // F3
         case 118: return ss3FunctionKey(0x53, modifier: mod) // F4
-
         // Function keys F5-F12: tilde sequences
-        case  96: return tildeSequence(15, modifier: mod) // F5
-        case  97: return tildeSequence(17, modifier: mod) // F6
-        case  98: return tildeSequence(18, modifier: mod) // F7
+        case 96: return tildeSequence(15, modifier: mod) // F5
+        case 97: return tildeSequence(17, modifier: mod) // F6
+        case 98: return tildeSequence(18, modifier: mod) // F7
         case 100: return tildeSequence(19, modifier: mod) // F8
         case 101: return tildeSequence(20, modifier: mod) // F9
         case 109: return tildeSequence(21, modifier: mod) // F10
         case 103: return tildeSequence(23, modifier: mod) // F11
         case 111: return tildeSequence(24, modifier: mod) // F12
-
         default: return nil
         }
     }
@@ -332,11 +389,11 @@ enum AttachedTmuxInputEncoder {
 }
 
 enum AttachedTmuxInputRouter {
-    // Diverges from fantastty: fantastty's `bindingFlags` parameter is typed
-    // `Ghostty.Input.BindingFlags?`, a Swift OptionSet wrapper that doesn't
-    // exist in GhosthubTerminal. It's unused inside this function in
-    // fantastty too (`_ = bindingFlags`), so it's kept here only for call-site
-    // parity, typed as ghosthub's raw `ghostty_binding_flags_e?`.
+    /// Diverges from fantastty: fantastty's `bindingFlags` parameter is typed
+    /// `Ghostty.Input.BindingFlags?`, a Swift OptionSet wrapper that doesn't
+    /// exist in GhosthubTerminal. It's unused inside this function in
+    /// fantastty too (`_ = bindingFlags`), so it's kept here only for call-site
+    /// parity, typed as ghosthub's raw `ghostty_binding_flags_e?`.
     static func shouldHandleLocally(
         bindingFlags: ghostty_binding_flags_e?,
         event: NSEvent

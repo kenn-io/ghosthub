@@ -258,7 +258,7 @@ func makeModel(
     notificationService: any NotificationService = NotificationServiceStub(),
     nativeTmuxSurfaceStore: (any TmuxSurfaceStoring)? = nil,
     nativeTmuxPathProvider:
-        (@Sendable () -> Result<String, TmuxBinaryError>)? = nil,
+    (@Sendable () -> Result<String, TmuxBinaryError>)? = nil,
     remoteTmuxPathProvider: @escaping @Sendable (SSHHostInfo)
         -> Result<String, TmuxBinaryError> = { _ in
             .failure(.notFound(shell: "test"))
@@ -276,28 +276,28 @@ func makeModel(
         )
     },
     kwtPullRequestLister:
-        @escaping WorkspaceSceneModel.KwtPullRequestLister = {
-            projectIdentity, host in
-            try await KwtPullRequestClient().list(
-                projectIdentity: projectIdentity,
-                on: host
-            )
-        },
+    @escaping WorkspaceSceneModel.KwtPullRequestLister = {
+        projectIdentity, host in
+        try await KwtPullRequestClient().list(
+            projectIdentity: projectIdentity,
+            on: host
+        )
+    },
     kwtPullRequestImporter:
-        @escaping WorkspaceSceneModel.KwtPullRequestImporter = {
-            id, projectIdentity, host in
-            try await KwtPullRequestClient().importPullRequest(
-                id: id,
-                projectIdentity: projectIdentity,
-                on: host
-            )
-        },
+    @escaping WorkspaceSceneModel.KwtPullRequestImporter = {
+        id, projectIdentity, host in
+        try await KwtPullRequestClient().importPullRequest(
+            id: id,
+            projectIdentity: projectIdentity,
+            on: host
+        )
+    },
     tmuxSessionDiscovery: @escaping
-        WorkspaceSceneModel.TmuxSessionDiscovery = { _ in .success([]) },
+    WorkspaceSceneModel.TmuxSessionDiscovery = { _ in .success([]) },
     sshHostProbeRunner: @escaping
-        WorkspaceSceneModel.SSHHostProbeRunner = { _, _ in
-            (status: 255, stdout: "")
-        },
+    WorkspaceSceneModel.SSHHostProbeRunner = { _, _ in
+        (status: 255, stdout: "")
+    },
     configuredSSHHostsProvider: @escaping () -> [SSHHost] = { [] },
     configuredSSHHostsPublisher: AnyPublisher<[SSHHost], Never> =
         Empty(completeImmediately: false).eraseToAnyPublisher(),

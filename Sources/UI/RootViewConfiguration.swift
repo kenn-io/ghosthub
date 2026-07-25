@@ -101,11 +101,11 @@ public struct InteractionHandlers {
         createTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)? = nil,
         refreshWorkspaceInventory: (() -> Void)? = nil,
         createWorktree:
-            ((WorktreeCreateRequest) async throws -> Void)? = nil,
+        ((WorktreeCreateRequest) async throws -> Void)? = nil,
         listPullRequests:
-            ((UUID) async throws -> [PullRequestCandidate])? = nil,
+        ((UUID) async throws -> [PullRequestCandidate])? = nil,
         importPullRequest:
-            ((PullRequestImportRequest) async throws -> Void)? = nil
+        ((PullRequestImportRequest) async throws -> Void)? = nil
     ) {
         self.closeWindow = closeWindow
         self.dismissLogViewer = dismissLogViewer

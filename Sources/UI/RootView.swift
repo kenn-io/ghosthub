@@ -92,7 +92,7 @@ public struct RootView: View {
                     },
                     onImportPullRequest: { request in
                         guard let importPullRequest =
-                                handlers.importPullRequest
+                            handlers.importPullRequest
                         else {
                             return
                         }
@@ -340,7 +340,7 @@ public struct RootView: View {
             },
             inventoryWarning: display.workspaceInventoryWarning,
             inventoryWarningsByHost:
-                display.workspaceInventoryWarningsByHost,
+            display.workspaceInventoryWarningsByHost,
             onOpen: { worktree in
                 selection.select(
                     .worktree(worktree.id),

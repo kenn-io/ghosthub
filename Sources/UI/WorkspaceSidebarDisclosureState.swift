@@ -42,8 +42,12 @@ struct WorkspaceSidebarDisclosureState: Equatable {
     }
 
     func isExpanded(_ key: String) -> Bool {
-        if expandedKeys.contains(key) { return true }
-        if collapsedKeys.contains(key) { return false }
+        if expandedKeys.contains(key) {
+            return true
+        }
+        if collapsedKeys.contains(key) {
+            return false
+        }
         return Self.isExpandedByDefault(key)
     }
 

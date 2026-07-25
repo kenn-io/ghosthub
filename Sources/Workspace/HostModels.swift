@@ -172,7 +172,7 @@ public struct RemoteHostDiagnostic: Codable, Equatable, Sendable, Identifiable {
             severity: .warning,
             summary: "kwt is not available (optional).",
             recoverySuggestion:
-                "Install kwt to show projects and worktrees from this host. "
+            "Install kwt to show projects and worktrees from this host. "
                 + "Tmux sessions remain available."
         )
     }
@@ -183,7 +183,7 @@ public struct RemoteHostDiagnostic: Codable, Equatable, Sendable, Identifiable {
             severity: .error,
             summary: "Tmux could not be reached.",
             recoverySuggestion:
-                "Verify the SSH destination and that tmux is installed, "
+            "Verify the SSH destination and that tmux is installed, "
                 + "then retry workspace discovery."
         )
     }

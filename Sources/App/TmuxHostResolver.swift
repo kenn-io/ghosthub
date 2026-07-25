@@ -34,7 +34,7 @@ enum TmuxHostResolver {
             let hostnameStart = hostAndPort.index(
                 after: hostAndPort.startIndex
             )
-            hostname = String(hostAndPort[hostnameStart..<closingBracket])
+            hostname = String(hostAndPort[hostnameStart ..< closingBracket])
             let suffix = hostAndPort[hostAndPort.index(after: closingBracket)...]
             if suffix.isEmpty {
                 port = nil

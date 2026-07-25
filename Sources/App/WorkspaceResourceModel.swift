@@ -72,11 +72,11 @@ enum WorkspaceResourceModel {
 
             var current =
                 worktreeSamples[worktree.id]
-                ?? WorkspaceResourceSample(
-                    cpuPercent: 0,
-                    residentMB: 0,
-                    processCount: 0
-                )
+                    ?? WorkspaceResourceSample(
+                        cpuPercent: 0,
+                        residentMB: 0,
+                        processCount: 0
+                    )
             current.cpuPercent += process.sample.cpuPercent
             current.residentMB += process.sample.residentMB
             current.processCount += process.sample.processCount

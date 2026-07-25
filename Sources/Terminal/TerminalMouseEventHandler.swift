@@ -84,7 +84,9 @@ struct TerminalMouseEventHandler {
 
     func handleMouseExited(_ event: NSEvent) {
         guard let surface = delegate?.surfaceHandle else { return }
-        if NSEvent.pressedMouseButtons != 0 { return }
+        if NSEvent.pressedMouseButtons != 0 {
+            return
+        }
         let mods = TerminalInputHelpers.ghosttyMods(event.modifierFlags)
         ghostty_surface_mouse_pos(surface, -1, -1, mods)
     }

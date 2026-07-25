@@ -28,7 +28,7 @@ struct SSHHostDraftListEditorTests {
     }
 
     @Test("removing selected host keeps selection near the removed row")
-    func removingSelectedHostKeepsSelectionNearby() throws {
+    func removingSelectedHostKeepsSelectionNearby() {
         let first = draft(id: uuid(1), configKey: "studio")
         let second = draft(id: uuid(2), configKey: "epyc")
         let third = draft(id: uuid(3), configKey: "lab")
@@ -70,7 +70,7 @@ struct SSHHostDraftListEditorTests {
     @Test("importing SSH hosts maps host fields and uniquifies keys")
     func importingSSHHostsMapsFields() throws {
         let existing = [
-            draft(id: uuid(1), configKey: "mac-mini")
+            draft(id: uuid(1), configKey: "mac-mini"),
         ]
         let hosts = [
             SSHHostDraftImport(

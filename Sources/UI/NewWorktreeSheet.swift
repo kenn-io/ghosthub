@@ -588,7 +588,7 @@ struct NewWorktreeSheet: View {
             }) {
                 selectedPullRequestID =
                     loaded.first(where: { !$0.isImported })?.id
-                    ?? loaded.first?.id
+                        ?? loaded.first?.id
             }
         } catch is CancellationError {
             return
@@ -615,7 +615,7 @@ struct NewWorktreeSheet: View {
         !project.isSynthesized
             && !project.isStale
             && hosts.first(where: { $0.id == project.hostID })?
-                .canCreateWorktree == true
+            .canCreateWorktree == true
     }
 
     private func canImportPullRequest(
@@ -625,7 +625,7 @@ struct NewWorktreeSheet: View {
             && !project.isStale
             && project.scopedKey.lowercased().hasPrefix("github.com/")
             && hosts.first(where: { $0.id == project.hostID })?
-                .canImportPullRequest == true
+            .canImportPullRequest == true
     }
 
     private func cancelIfIdle() {

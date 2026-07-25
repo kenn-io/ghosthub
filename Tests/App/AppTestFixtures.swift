@@ -86,10 +86,14 @@ func waitUntil(
     let clock = ContinuousClock()
     let deadline = clock.now.advanced(by: timeout)
     while clock.now < deadline {
-        if await condition() { return }
+        if await condition() {
+            return
+        }
         try? await Task.sleep(for: pollInterval)
     }
-    if await condition() { return }
+    if await condition() {
+        return
+    }
     Issue.record(
         "waitUntil timed out after \(timeout)",
         sourceLocation: sourceLocation
@@ -107,10 +111,14 @@ func waitUntilMainActor(
     let clock = ContinuousClock()
     let deadline = clock.now.advanced(by: timeout)
     while clock.now < deadline {
-        if await condition() { return }
+        if await condition() {
+            return
+        }
         try? await Task.sleep(for: pollInterval)
     }
-    if await condition() { return }
+    if await condition() {
+        return
+    }
     Issue.record(
         "waitUntilMainActor timed out after \(timeout)",
         sourceLocation: sourceLocation

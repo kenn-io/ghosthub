@@ -614,7 +614,7 @@ struct WorkspaceTmuxDiscoveryTests {
         await waitUntilMainActor {
             model.pendingCreatedTmuxSessionCount == 0
                 && model.snapshot.host(id: environment.host.id)?
-                    .tmuxSessions.isEmpty == true
+                .tmuxSessions.isEmpty == true
         }
         #expect(model.exhaustedCreatedTmuxSessionCount == 0)
         await model.shutdown()
@@ -751,7 +751,7 @@ struct WorkspaceTmuxDiscoveryTests {
         await waitUntilMainActor {
             model.pendingCreatedTmuxSessionCount == 0
                 && model.snapshot.host(id: environment.host.id)?
-                    .tmuxSessions.map(\.name) == ["release-work"]
+                .tmuxSessions.map(\.name) == ["release-work"]
         }
 
         discovery.releaseFirst()
@@ -795,7 +795,7 @@ struct WorkspaceTmuxDiscoveryTests {
                 ])
             },
             configuredSSHHostsPublisher:
-                configuredHosts.eraseToAnyPublisher(),
+            configuredHosts.eraseToAnyPublisher(),
             startServices: true
         )
 
@@ -854,14 +854,14 @@ struct WorkspaceTmuxDiscoveryTests {
             },
             configuredSSHHostsProvider: { configuredHosts.value },
             configuredSSHHostsPublisher:
-                configuredHosts.eraseToAnyPublisher(),
+            configuredHosts.eraseToAnyPublisher(),
             startServices: true
         )
 
         await waitUntilMainActor {
             model.workspaceInventoryState == .loaded
                 && model.snapshot.host(id: environment.host.id)?
-                    .tmuxSessions.map(\.name) == ["docbank"]
+                .tmuxSessions.map(\.name) == ["docbank"]
                 && model.workspaceInventoryWarningsByHost.values.contains {
                     $0.contains("Wes MBP")
                 }
@@ -959,7 +959,7 @@ struct WorkspaceTmuxDiscoveryTests {
             tmuxSessionDiscovery: { _ in .success([]) },
             configuredSSHHostsProvider: { configuredHosts.value },
             configuredSSHHostsPublisher:
-                configuredHosts.eraseToAnyPublisher(),
+            configuredHosts.eraseToAnyPublisher(),
             startServices: true
         )
 
@@ -1028,7 +1028,7 @@ struct WorkspaceTmuxDiscoveryTests {
             },
             configuredSSHHostsProvider: { configuredHosts.value },
             configuredSSHHostsPublisher:
-                configuredHosts.eraseToAnyPublisher(),
+            configuredHosts.eraseToAnyPublisher(),
             startServices: true
         )
 
@@ -1132,7 +1132,7 @@ struct WorkspaceTmuxDiscoveryTests {
             tmuxSessionDiscovery: { _ in .success([]) },
             configuredSSHHostsProvider: { configuredHosts.value },
             configuredSSHHostsPublisher:
-                configuredHosts.eraseToAnyPublisher(),
+            configuredHosts.eraseToAnyPublisher(),
             startServices: true
         )
 
@@ -1175,7 +1175,7 @@ struct WorkspaceTmuxDiscoveryTests {
         await waitUntilMainActor {
             availability.remoteLoadCount >= 2
                 && model.snapshot.host(id: cachedProject.hostID)?
-                    .primaryDiagnostic?.code == .missingKwt
+                .primaryDiagnostic?.code == .missingKwt
         }
         #expect(creationAttempts.count == 1)
         #expect(model.snapshot.project(id: cachedProject.id) != nil)
@@ -1218,7 +1218,7 @@ struct WorkspaceTmuxDiscoveryTests {
             tmuxSessionDiscovery: reachability.discover,
             configuredSSHHostsProvider: { configuredHosts.value },
             configuredSSHHostsPublisher:
-                configuredHosts.eraseToAnyPublisher(),
+            configuredHosts.eraseToAnyPublisher(),
             startServices: true
         )
 
@@ -1318,12 +1318,14 @@ struct WorkspaceTmuxDiscoveryTests {
             },
             configuredSSHHostsProvider: { configuredHosts.value },
             configuredSSHHostsPublisher:
-                configuredHosts.eraseToAnyPublisher(),
+            configuredHosts.eraseToAnyPublisher(),
             startServices: true
         )
 
         await waitUntilMainActor {
-            if case .failed = model.workspaceInventoryState { return true }
+            if case .failed = model.workspaceInventoryState {
+                return true
+            }
             return false
         }
 

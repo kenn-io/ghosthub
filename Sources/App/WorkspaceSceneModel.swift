@@ -285,7 +285,7 @@ final class WorkspaceSceneModel: ObservableObject {
         notificationService: NotificationService,
         nativeTmuxSurfaceStore: (any TmuxSurfaceStoring)? = nil,
         nativeTmuxPathProvider:
-            (@Sendable () -> Result<String, TmuxBinaryError>)? = nil,
+        (@Sendable () -> Result<String, TmuxBinaryError>)? = nil,
         remoteTmuxPathProvider: @escaping @Sendable (SSHHostInfo)
             -> Result<String, TmuxBinaryError> = {
                 TmuxBinaryResolver().resolveTmuxPath(on: $0)
@@ -545,7 +545,7 @@ final class WorkspaceSceneModel: ObservableObject {
             configuredSSHHostsCancellable = sshHostsPublisher.sink {
                 [weak self] hosts in
                 guard let self, !self.hasOverrideSnapshot else { return }
-                self.snapshot = self.applyingConfiguredSSHHosts(
+                self.snapshot = applyingConfiguredSSHHosts(
                     hosts,
                     to: self.snapshot
                 )
@@ -777,7 +777,7 @@ final class WorkspaceSceneModel: ObservableObject {
         guard let imported = snapshot.worktrees.first(where: {
             $0.hostID == project.hostID
                 && normalizedWorkspacePath($0.path)
-                    == normalizedWorkspacePath(result.workspace.path)
+                == normalizedWorkspacePath(result.workspace.path)
         }) else {
             throw KwtPullRequestError.importedWorkspaceMissing(
                 path: result.workspace.path
@@ -812,7 +812,7 @@ final class WorkspaceSceneModel: ObservableObject {
         let projectIndex = inventory.projects.firstIndex {
             $0.project.repository == project.scopedKey
                 || normalizedWorkspacePath($0.project.path)
-                    == normalizedWorkspacePath(project.rootPath)
+                == normalizedWorkspacePath(project.rootPath)
         }
         let worktree = KwtWorktreeRecord(
             path: workspace.path,
@@ -862,7 +862,7 @@ final class WorkspaceSceneModel: ObservableObject {
         if let index = snapshot.worktrees.firstIndex(where: {
             $0.hostID == project.hostID
                 && normalizedWorkspacePath($0.path)
-                    == normalizedWorkspacePath(workspace.path)
+                == normalizedWorkspacePath(workspace.path)
         }) {
             snapshot.worktrees[index].branch = workspace.branch
             snapshot.worktrees[index].tmuxSessionName =
@@ -882,9 +882,9 @@ final class WorkspaceSceneModel: ObservableObject {
             tmuxSessionName: workspace.sessionName,
             tmuxSocketName: workspace.tmuxSocketName,
             sessionBackend:
-                snapshot.host(id: project.hostID)?.kind == .remote
-                    ? .remoteTmux
-                    : .localTmux
+            snapshot.host(id: project.hostID)?.kind == .remote
+                ? .remoteTmux
+                : .localTmux
         ))
     }
 
@@ -896,7 +896,7 @@ final class WorkspaceSceneModel: ObservableObject {
         guard let index = snapshot.worktrees.firstIndex(where: {
             $0.hostID == hostID
                 && normalizedWorkspacePath($0.path)
-                    == normalizedWorkspacePath(workspace.path)
+                == normalizedWorkspacePath(workspace.path)
         }) else { return }
         snapshot.worktrees[index].linkedPullRequestNumber =
             pullRequest.number
@@ -965,9 +965,9 @@ final class WorkspaceSceneModel: ObservableObject {
         guard kwtInventoryEnabled,
               Self.canScheduleKwtInventory(
                   isWorktreeCreationInProgress:
-                      isWorktreeCreationInProgress,
+                  isWorktreeCreationInProgress,
                   isPullRequestImportInProgress:
-                      isPullRequestImportInProgress
+                  isPullRequestImportInProgress
               ) else { return }
         let targets = Array(inventoryHosts)
         kwtInventoryGeneration += 1
@@ -978,15 +978,15 @@ final class WorkspaceSceneModel: ObservableObject {
         let kwtInventoryLoader = kwtInventoryLoader
         kwtInventoryTask = Task { [weak self] in
             await withTaskGroup(
-                of: (UUID, Result<KwtHostInventory, Error>).self,
+                of: (UUID, Result<KwtHostInventory, Error>).self
             ) { group in
                 for (hostID, host) in targets {
                     group.addTask {
                         do {
-                            return (
+                            return await (
                                 hostID,
                                 .success(
-                                    try await kwtInventoryLoader(host)
+                                    try kwtInventoryLoader(host)
                                 )
                             )
                         } catch {
@@ -1116,7 +1116,7 @@ final class WorkspaceSceneModel: ObservableObject {
         let tmuxSessionDiscovery = tmuxSessionDiscovery
         tmuxDiscoveryTask = Task { [weak self] in
             await withTaskGroup(
-                of: (UUID, Result<[DiscoveredTmuxSession], TmuxBinaryError>).self,
+                of: (UUID, Result<[DiscoveredTmuxSession], TmuxBinaryError>).self
             ) { group in
                 for (hostID, host) in targets {
                     group.addTask {
@@ -1379,7 +1379,7 @@ final class WorkspaceSceneModel: ObservableObject {
                     severity: .error,
                     summary: "SSH or tmux could not be reached.",
                     recoverySuggestion:
-                        "Verify the SSH destination and install tmux on the host."
+                    "Verify the SSH destination and install tmux on the host."
                 )]
             } else if !kwtAvailable {
                 diagnostics = [.missingKwtCapability]
@@ -1435,10 +1435,10 @@ final class WorkspaceSceneModel: ObservableObject {
             let worktree = enriched.worktrees[index]
             guard let host = enriched.host(id: worktree.hostID),
                   let presentation = presentationByKey[
-                    PresentationKey(
-                        hostConfigKey: host.configKey,
-                        worktreeScopedKey: worktree.scopedKey
-                    )
+                      PresentationKey(
+                          hostConfigKey: host.configKey,
+                          worktreeScopedKey: worktree.scopedKey
+                      )
                   ]
             else { continue }
             enriched.worktrees[index].lastViewedAt = presentation.lastViewedAt
@@ -1714,9 +1714,9 @@ final class WorkspaceSceneModel: ObservableObject {
     ) {
         guard let pending = pendingCreatedTmuxSessions[handleID],
               let host = inventoryHosts[pending.hostID]
-                ?? snapshot.host(id: pending.hostID).flatMap(
-                    TmuxHostResolver.resolve
-                )
+              ?? snapshot.host(id: pending.hostID).flatMap(
+                  TmuxHostResolver.resolve
+              )
         else { return }
         createdSessionDiscoveryTasks.removeValue(
             forKey: handleID
@@ -1734,7 +1734,7 @@ final class WorkspaceSceneModel: ObservableObject {
                     return
                 }
                 guard let self,
-                      self.pendingCreatedTmuxSessions[handleID] == pending
+                      pendingCreatedTmuxSessions[handleID] == pending
                 else { return }
                 let probe = Task.detached(priority: .utility) {
                     discovery(host)
@@ -1745,12 +1745,12 @@ final class WorkspaceSceneModel: ObservableObject {
                     probe.cancel()
                 }
                 guard !Task.isCancelled,
-                      self.pendingCreatedTmuxSessions[handleID] == pending
+                      pendingCreatedTmuxSessions[handleID] == pending
                 else { return }
                 switch result {
                 case let .success(discovered):
-                    self.fenceTmuxDiscoveryForCreationReconciliation()
-                    self.tmuxDiscoveryFailuresByHost.removeValue(
+                    fenceTmuxDiscoveryForCreationReconciliation()
+                    tmuxDiscoveryFailuresByHost.removeValue(
                         forKey: pending.hostID
                     )
                     let found = discovered.contains {
@@ -1758,38 +1758,38 @@ final class WorkspaceSceneModel: ObservableObject {
                     }
                     let isLastAttempt = index == delays.indices.last
                     if !found, isLastAttempt {
-                        self.exhaustedCreatedTmuxSessionHandles.insert(
+                        exhaustedCreatedTmuxSessionHandles.insert(
                             handleID
                         )
                     }
-                    self.tmuxSessionsByHost[pending.hostID] =
-                        self.reconciledTmuxSessions(
+                    tmuxSessionsByHost[pending.hostID] =
+                        reconciledTmuxSessions(
                             discovered,
                             hostID: pending.hostID
                         )
-                    self.applyInventoryOverlayIfNeeded()
-                    self.updateWorkspaceInventoryState()
+                    applyInventoryOverlayIfNeeded()
+                    updateWorkspaceInventoryState()
                     if found || isLastAttempt {
-                        self.createdSessionDiscoveryTasks.removeValue(
+                        createdSessionDiscoveryTasks.removeValue(
                             forKey: handleID
                         )
                         return
                     }
                 case let .failure(error):
-                    let hostName = self.snapshot.host(
+                    let hostName = snapshot.host(
                         id: pending.hostID
                     )?.name ?? "Unknown host"
-                    self.tmuxDiscoveryFailuresByHost[pending.hostID] =
+                    tmuxDiscoveryFailuresByHost[pending.hostID] =
                         "\(hostName): \(error.localizedDescription)"
-                    self.updateWorkspaceInventoryState()
+                    updateWorkspaceInventoryState()
                 }
             }
             guard let self,
-                  self.pendingCreatedTmuxSessions[handleID] == pending
+                  pendingCreatedTmuxSessions[handleID] == pending
             else { return }
-            self.createdSessionDiscoveryTasks.removeValue(forKey: handleID)
-            self.exhaustedCreatedTmuxSessionHandles.insert(handleID)
-            self.fenceTmuxDiscoveryForCreationReconciliation()
+            createdSessionDiscoveryTasks.removeValue(forKey: handleID)
+            exhaustedCreatedTmuxSessionHandles.insert(handleID)
+            fenceTmuxDiscoveryForCreationReconciliation()
         }
     }
 
@@ -1801,7 +1801,7 @@ final class WorkspaceSceneModel: ObservableObject {
             TmuxSessionSummary(
                 name: session.name,
                 managed: session.managed,
-                windows: (0..<session.windowCount).map { offset in
+                windows: (0 ..< session.windowCount).map { offset in
                     TmuxWindowSummary(
                         id: "discovered-\(offset)",
                         index: offset,

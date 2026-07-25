@@ -492,7 +492,7 @@ struct CommandPaletteModelTests {
                 $0.title == "Switch to Worktree: feature/api-keyboard"
             }
         )
-        #expect(filtered[ switchIndex ].title
+        #expect(filtered[switchIndex].title
             == "Switch to Worktree: feature/api-keyboard")
         commands.expectCommandNotContains(
             title: "Delete Worktree: feature/api-keyboard"
@@ -622,7 +622,9 @@ private extension [WorkspaceCommandItem] {
     ) {
         let found = contains {
             guard $0.title == title else { return false }
-            if expectNilShortcut { return $0.shortcut == nil }
+            if expectNilShortcut {
+                return $0.shortcut == nil
+            }
             return shortcut == nil || $0.shortcut == shortcut
         }
         #expect(

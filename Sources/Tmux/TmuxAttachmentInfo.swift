@@ -79,7 +79,9 @@ public enum TmuxHost: Codable, Hashable, Sendable {
     }
 
     public var isRemote: Bool {
-        if case .ssh = self { return true }
+        if case .ssh = self {
+            return true
+        }
         return false
     }
 }
@@ -242,8 +244,8 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         if let protectedWorkspacePath {
             let protectedAttach =
                 "ghosthub_kwt_path=$(command -v kwt) || exit 127; "
-                + "exec \"$ghosthub_kwt_path\" 'pr' 'attach' "
-                + shellQuotedCommandArgument(protectedWorkspacePath)
+                    + "exec \"$ghosthub_kwt_path\" 'pr' 'attach' "
+                    + shellQuotedCommandArgument(protectedWorkspacePath)
             attach = remoteAccountLoginShellCommand(protectedAttach)
         } else {
             let tmuxAttach = tmuxArguments(

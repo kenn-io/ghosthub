@@ -90,7 +90,7 @@ struct WorkspaceSidebarView: View {
                                 addHelp: "New tmux session on "
                                     + section.host.sidebarTitle,
                                 inventoryWarning:
-                                    inventoryWarningsByHost[section.host.id]
+                                inventoryWarningsByHost[section.host.id]
                             )
                             .contextMenu {
                                 Button("New tmux session…") {
@@ -292,7 +292,7 @@ struct WorkspaceSidebarView: View {
             if case let .worktree(worktreeID) = row.target,
                let worktree = snapshot.worktree(id: worktreeID),
                let tmuxSelection = WorkspaceSidebarModel
-                   .tmuxSessionSelection(for: worktree) {
+               .tmuxSessionSelection(for: worktree) {
                 selection.select(
                     row.target,
                     in: snapshot,
@@ -319,7 +319,7 @@ struct WorkspaceSidebarView: View {
                     legacyRowContent(title: row.title, subtitle: row.subtitle)
                 }
                 Spacer(minLength: 0)
-                if isSelected && differentiateWithoutColor {
+                if isSelected, differentiateWithoutColor {
                     Image(systemName: "checkmark")
                         .font(.system(size: 10, weight: .bold))
                         .accessibilityHidden(true)
@@ -385,7 +385,7 @@ struct WorkspaceSidebarView: View {
                 inventoryWarningButton(
                     inventoryWarning,
                     accessibilityLabel:
-                        "Retry inventory for \(row.title)"
+                    "Retry inventory for \(row.title)"
                 )
             }
 

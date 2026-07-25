@@ -162,12 +162,16 @@ struct NativeTmuxSessionCoordinatorTests {
         await waitUntilMainActor { isSurfaceReady }
         _ = coordinator.surface(handle: handle)
         #expect(!states.contains {
-            if case .disconnected = $0 { return true }
+            if case .disconnected = $0 {
+                return true
+            }
             return false
         })
         await waitUntilMainActor {
             states.contains {
-                if case .disconnected = $0 { return true }
+                if case .disconnected = $0 {
+                    return true
+                }
                 return false
             }
         }

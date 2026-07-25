@@ -228,8 +228,12 @@ func syntheticClick(
         clickCount: 1,
         pressure: 0
     )
-    if let down { window.sendEvent(down) }
-    if let up { window.sendEvent(up) }
+    if let down {
+        window.sendEvent(down)
+    }
+    if let up {
+        window.sendEvent(up)
+    }
 }
 
 @MainActor
@@ -253,7 +257,9 @@ func syntheticMouseMoved(
         clickCount: 0,
         pressure: 0
     )
-    if let moved { window.sendEvent(moved) }
+    if let moved {
+        window.sendEvent(moved)
+    }
 }
 
 @MainActor
@@ -276,7 +282,9 @@ func syntheticHoverEntered(
         trackingNumber: 0,
         userData: nil
     )
-    if let event { view.mouseEntered(with: event) }
+    if let event {
+        view.mouseEntered(with: event)
+    }
 }
 
 // MARK: - View Inspection Helpers
@@ -288,7 +296,9 @@ func waitUntilCondition(
 ) {
     let deadline = Date().addingTimeInterval(timeout)
     while Date() < deadline {
-        if condition() { return }
+        if condition() {
+            return
+        }
         RunLoop.main.run(until: Date().addingTimeInterval(0.02))
     }
 }
@@ -413,7 +423,9 @@ extension [WorkspaceCommandItem] {
     ) {
         let found = contains {
             guard $0.title == title else { return false }
-            if expectNilShortcut { return $0.shortcut == nil }
+            if expectNilShortcut {
+                return $0.shortcut == nil
+            }
             return shortcut == nil || $0.shortcut == shortcut
         }
         #expect(

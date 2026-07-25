@@ -6,6 +6,10 @@ public enum LibghosttyBootstrap {
     }
 
     public static func preconditionReady(file: StaticString = #file, line: UInt = #line) {
-        preconditionFailure(LibghosttyBootstrapSupport.missingArtifactsMessage, file: file, line: line)
+        preconditionFailure(
+            LibghosttyBootstrapSupport.missingArtifactsMessage,
+            file: file,
+            line: line
+        )
     }
 }

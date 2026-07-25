@@ -357,7 +357,9 @@ struct TmuxBinaryResolverTests {
     ) -> Value? {
         let deadline = Date().addingTimeInterval(timeout)
         repeat {
-            if let value = produce() { return value }
+            if let value = produce() {
+                return value
+            }
             usleep(20_000)
         } while Date() < deadline
         return produce()

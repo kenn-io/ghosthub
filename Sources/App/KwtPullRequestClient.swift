@@ -63,7 +63,7 @@ struct KwtPullRequestImportResult: Equatable, Sendable {
     var status: String
     var pullRequest: PullRequestCandidate
     var workspace: PullRequestWorkspace
-    var sessionStartError: KwtPullRequestSessionStartError? = nil
+    var sessionStartError: KwtPullRequestSessionStartError?
 }
 
 /// Executes kwt's provider-neutral pull-request automation contract. Ghosthub

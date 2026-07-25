@@ -1,5 +1,4 @@
 import Foundation
-import GhosthubWorkspace
 import Testing
 @testable import GhosthubWorkspace
 
