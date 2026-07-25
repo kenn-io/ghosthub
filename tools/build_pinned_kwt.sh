@@ -51,8 +51,20 @@ mkdir -p "$(dirname "$output")"
   cd "$source_dir"
   go build \
     -trimpath \
-    -ldflags "-s -w -X main.version=${revision}" \
+    -ldflags "-s -w -X go.kenn.io/kwt/internal/cmd.version=${revision}" \
     -o "$output" \
     cmd/kwt/main.go
 )
+
+# The linker silently ignores -X for a symbol it cannot find, so an unstamped
+# binary is the only evidence that kwt has moved its version variable.
+version_output="$("$output" --version 2>&1 || true)"
+if [[ "$version_output" != *"$revision"* ]]; then
+  printf 'Built kwt reports %s instead of the pinned revision %s.\n' \
+    "${version_output:-no version output}" "$revision" >&2
+  printf 'Update the -X version symbol in %s to match kwt.\n' "$0" >&2
+  rm -f "$output"
+  exit 1
+fi
+
 printf '%s' "$revision" >"$stamp"
