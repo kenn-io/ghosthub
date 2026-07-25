@@ -54,17 +54,19 @@ state. The current pin includes kwt's provider-neutral `pr list`, `pr import
 --start-session`, and `pr attach` contract; changing that contract requires
 exercising candidate discovery, an idempotent existing-import result, creation
 of the exact returned tmux session, partial-success reporting when runtime
-session startup fails after a durable import, and a protected attach before
-release. Imports originating in an unregistered repository must remain
-attachable when the recorded clone agrees with its live Git identity, while
-ambiguous or conflicting registrations must fail closed.
+session startup fails after a durable import, and a protected attach that can
+re-establish an absent session before release. Imports originating in an
+unregistered repository must remain attachable when the recorded clone agrees
+with its live Git identity, while ambiguous or conflicting registrations must
+fail closed.
 The pinned implementation removes `KWT_GITHUB_TOKEN`, `KWT_FLEET_TOKEN`, and
 the configured fleet token variable from tmux subprocess and session
 environments before imported workspace panes start, while preserving
-operational state such as `KWT_HOME`. Protected attachment verifies the
-isolated server and workspace marker, repairs the session policy, and uses
+operational state such as `KWT_HOME`. Protected attachment validates the
+configured layout, creates or repairs the isolated session, and uses
 `attach-session -E` so a mutable `update-environment` option cannot restore
-credentials. It removes the caller's parent tmux identity so the isolated
+credentials. Existing sessions must carry the exact workspace marker before
+reuse. The command removes the caller's parent tmux identity so the isolated
 cross-server attachment also works when invoked from an existing tmux pane.
 Attachment validates the recorded project clone and exact live worktree
 identity, honoring registered upstream identity for fork-origin checkouts while

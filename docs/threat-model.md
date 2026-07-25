@@ -109,8 +109,9 @@ identity, and excludes prunable or missing worktrees. Registered upstream
 identity remains authoritative when a configured clone's origin is a fork.
 An unregistered clone is accepted only when its live Git identity matches the
 recorded repository; ambiguous or conflicting registrations fail closed.
-The command then verifies the isolated server and exact workspace marker,
-repairs the policy, clears any parent tmux client identity, and executes
+The command validates the configured layout, creates an absent isolated
+session, or verifies the exact workspace marker before repairing an existing
+session. It then clears any parent tmux client identity and executes
 `attach-session -E`. If provenance cannot be read, kwt fails inventory rather
 than omitting the protected socket identity.
 Kwt's ordinary `open` and dashboard actions refuse imported workspaces before

@@ -85,9 +85,10 @@ after the import is durable, kwt returns the workspace with an explicit
 partial-success error; Ghosthub retains and selects the imported worktree
 before presenting that error. A successful result is presented through kwt's
 protected attach command. That command verifies persisted workspace provenance
-and the current tmux state before executing an ordinary client with
-environment updates disabled. Other workspaces and unbound sessions continue
-to attach directly to the host's normal tmux server.
+and the current tmux state, creates or repairs the isolated session when
+needed, and then executes an ordinary client with environment updates
+disabled. Other workspaces and unbound sessions continue to attach directly
+to the host's normal tmux server.
 
 Remote kwt installation is not currently implicit. A future managed-helper
 flow may upload a Ghosthub-pinned build into a per-user directory after an
