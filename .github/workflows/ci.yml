@@ -96,6 +96,15 @@ jobs:
           uv --version
           xcrun -sdk macosx --find metal
 
+      # Nothing else enforced the repository SwiftFormat rules, so the tree
+      # had drifted from them. Checked before the build so a formatting-only
+      # failure does not wait on a full compile.
+      - name: Install SwiftFormat
+        run: brew install swiftformat
+
+      - name: Check Swift formatting
+        run: make format-check
+
       - name: Build Ghosthub
         run: make build
 

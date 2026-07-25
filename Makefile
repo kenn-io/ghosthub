@@ -35,7 +35,7 @@ KWT_VERSION ?= $(KWT_REF)
 KWT_SOURCE_REVISION ?= $(KWT_REF)
 SWIFT_TEST_FILTER ?=
 
-.PHONY: help bootstrap-kwt ensure-kwt bootstrap-libghostty bootstrap-libghostty-release check-libghostty check-libghostty-release test-libghostty-bootstrap test-terminal-fallback test-stage-release-app-bundles test-assemble-app-bundle test-essential-workflows build swift-warning-check build-release debug-app release-app release-dmg release-appcast run-release-app run-app swift-test test-tmux-attach python-test test smoke-test docs-build docs-serve site-deploy reset-app-state install-hooks
+.PHONY: help bootstrap-kwt ensure-kwt bootstrap-libghostty bootstrap-libghostty-release check-libghostty check-libghostty-release test-libghostty-bootstrap test-terminal-fallback test-stage-release-app-bundles test-assemble-app-bundle test-essential-workflows build swift-warning-check build-release debug-app release-app release-dmg release-appcast run-release-app run-app swift-test test-tmux-attach python-test test smoke-test docs-build docs-serve site-deploy reset-app-state install-hooks format format-check
 
 help:
 	@printf '%s\n' \
@@ -78,6 +78,10 @@ help:
 		'      Run the full Python test suite via uv-managed pytest.' \
 		'  make test' \
 		'      Run both the Swift and Python test suites.' \
+		'  make format' \
+		'      Apply the repository SwiftFormat rules in place.' \
+		'  make format-check' \
+		'      Report Swift files that do not match the repository SwiftFormat rules.' \
 		'  make smoke-test' \
 		'      Run terminal runtime smoke tests (requires bootstrapped libghostty).' \
 		'  make docs-build' \
@@ -388,3 +392,17 @@ install-hooks:
 		exit 1; \
 	fi
 	prek install -f
+
+format:
+	@if ! command -v swiftformat >/dev/null 2>&1; then \
+		echo "swiftformat not found. Install with: brew install swiftformat" >&2; \
+		exit 1; \
+	fi
+	swiftformat --quiet .
+
+format-check:
+	@if ! command -v swiftformat >/dev/null 2>&1; then \
+		echo "swiftformat not found. Install with: brew install swiftformat" >&2; \
+		exit 1; \
+	fi
+	swiftformat --lint .

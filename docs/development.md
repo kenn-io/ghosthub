@@ -32,6 +32,16 @@ Run the compiler warning gate:
 make swift-warning-check
 ```
 
+Apply or check the SwiftFormat rules in `.swiftformat`. CI runs the check, so
+a drifting file fails the build:
+
+```bash
+make format         # rewrite in place
+make format-check   # report without changing anything
+```
+
+`make install-hooks` wires the same formatter into a pre-commit hook.
+
 Run Swift tests:
 
 ```bash
