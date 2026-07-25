@@ -63,8 +63,9 @@ struct KwtPullRequestClientTests {
             "pr import 'github:github.com/kenn-io/ghosthub#32'"
         ) == true)
         #expect(recorder.command?.contains(
-            "--start-session --json"
-        ) == true)
+            "--start-session"
+        ) == false)
+        #expect(recorder.command?.hasSuffix("--json") == true)
         #expect(result.status == "created")
         #expect(result.workspace.path == "/tmp/ghosthub-pr-32")
         #expect(result.workspace.sessionName == "kwt-workspace-pr-32")

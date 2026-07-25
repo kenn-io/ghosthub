@@ -125,8 +125,10 @@ struct TmuxAttachmentInfoTests {
         ).attachCommand(tmuxPath: "/usr/bin/tmux")
 
         #expect(command.contains("command -v kwt"))
+        #expect(command.contains("${SHELL:-/bin/sh}"))
+        #expect(command.contains("-lc"))
         #expect(command.contains(
-            "; ghosthub_kwt_path=$(command -v kwt) || exit 127; exec "
+            "ghosthub_kwt_path=$(command -v kwt) || exit 127"
         ))
         #expect(!command.contains("exec ghosthub_kwt_path="))
         #expect(command.contains("pr"))

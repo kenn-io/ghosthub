@@ -28,6 +28,18 @@ public func shellQuotedCommandArgument(_ value: String) -> String {
     "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
 }
 
+/// Initializes the remote account's login environment, then delegates
+/// Ghosthub-owned POSIX command text to `/bin/sh`. The outer simple command is
+/// accepted by POSIX shells and non-POSIX account shells such as fish.
+public func remoteAccountLoginShellCommand(_ command: String) -> String {
+    let posixCommand = "exec /bin/sh -c "
+        + shellQuotedCommandArgument(command)
+    let accountShellCommand = "exec \"${SHELL:-/bin/sh}\" -lc "
+        + shellQuotedCommandArgument(posixCommand)
+    return "exec /bin/sh -c "
+        + shellQuotedCommandArgument(accountShellCommand)
+}
+
 public enum ConnectionState: Codable, Equatable, Sendable {
     case connecting
     case reconnecting(reason: String?)
@@ -228,9 +240,11 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
     ) -> String {
         let attach: String
         if let protectedWorkspacePath {
-            attach = "ghosthub_kwt_path=$(command -v kwt) || exit 127; "
+            let protectedAttach =
+                "ghosthub_kwt_path=$(command -v kwt) || exit 127; "
                 + "exec \"$ghosthub_kwt_path\" 'pr' 'attach' "
                 + shellQuotedCommandArgument(protectedWorkspacePath)
+            attach = remoteAccountLoginShellCommand(protectedAttach)
         } else {
             let tmuxAttach = tmuxArguments(
                 tmuxPath,

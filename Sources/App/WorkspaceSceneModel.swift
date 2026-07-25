@@ -806,8 +806,13 @@ final class WorkspaceSceneModel: ObservableObject {
         _ workspace: PullRequestWorkspace,
         project: ProjectSummary
     ) {
-        var inventory = kwtInventoriesByHost[project.hostID]
-            ?? KwtHostInventory(projects: [])
+        guard var inventory = kwtInventoriesByHost[project.hostID] else {
+            mergeImportedWorkspaceIntoSnapshot(
+                workspace,
+                project: project
+            )
+            return
+        }
         let projectIndex = inventory.projects.firstIndex {
             $0.project.repository == project.scopedKey
                 || normalizedWorkspacePath($0.project.path)
@@ -852,6 +857,39 @@ final class WorkspaceSceneModel: ObservableObject {
             ))
         }
         kwtInventoriesByHost[project.hostID] = inventory
+    }
+
+    private func mergeImportedWorkspaceIntoSnapshot(
+        _ workspace: PullRequestWorkspace,
+        project: ProjectSummary
+    ) {
+        if let index = snapshot.worktrees.firstIndex(where: {
+            $0.hostID == project.hostID
+                && normalizedWorkspacePath($0.path)
+                    == normalizedWorkspacePath(workspace.path)
+        }) {
+            snapshot.worktrees[index].branch = workspace.branch
+            snapshot.worktrees[index].tmuxSessionName =
+                workspace.sessionName
+            snapshot.worktrees[index].tmuxSocketName =
+                workspace.tmuxSocketName
+            return
+        }
+        snapshot.worktrees.append(WorktreeSummary(
+            id: UUID(),
+            hostID: project.hostID,
+            projectID: project.id,
+            scopedKey: workspace.path,
+            name: workspace.branch,
+            path: workspace.path,
+            branch: workspace.branch,
+            tmuxSessionName: workspace.sessionName,
+            tmuxSocketName: workspace.tmuxSocketName,
+            sessionBackend:
+                snapshot.host(id: project.hostID)?.kind == .remote
+                    ? .remoteTmux
+                    : .localTmux
+        ))
     }
 
     private func annotateImportedPullRequest(
@@ -929,7 +967,12 @@ final class WorkspaceSceneModel: ObservableObject {
 
     private func scheduleKwtInventory() {
         guard kwtInventoryEnabled,
-              !isWorktreeCreationInProgress else { return }
+              Self.canScheduleKwtInventory(
+                  isWorktreeCreationInProgress:
+                      isWorktreeCreationInProgress,
+                  isPullRequestImportInProgress:
+                      isPullRequestImportInProgress
+              ) else { return }
         let targets = Array(inventoryHosts)
         kwtInventoryGeneration += 1
         let generation = kwtInventoryGeneration
@@ -1002,6 +1045,13 @@ final class WorkspaceSceneModel: ObservableObject {
             isKwtInventoryLoading = false
             updateWorkspaceInventoryState()
         }
+    }
+
+    static func canScheduleKwtInventory(
+        isWorktreeCreationInProgress: Bool,
+        isPullRequestImportInProgress: Bool
+    ) -> Bool {
+        !isWorktreeCreationInProgress && !isPullRequestImportInProgress
     }
 
     private func invalidateKwtInventoryRefresh() {

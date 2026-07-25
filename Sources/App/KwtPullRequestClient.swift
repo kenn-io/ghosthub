@@ -249,7 +249,7 @@ struct KwtPullRequestClient: Sendable {
             + shellQuotedCommandArgument(id)
             + " --project "
             + shellQuotedCommandArgument(projectIdentity)
-            + " --start-session --json"
+            + " --json"
     }
 
     private static func commandPrelude(

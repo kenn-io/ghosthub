@@ -119,15 +119,17 @@ host-level session group. No naming convention or ownership marker is used to
 hide Middleman-created sessions.
 
 Pull-request imports are the one alternate-socket case. Kwt returns the named
-socket for the workspace-specific server it established, and Ghosthub carries
-that identity with the worktree selection. A successful import without a
+socket reserved for the workspace-specific server, and Ghosthub carries that
+identity with the worktree selection. Import does not start tmux or execute a
+configured project layout. A successful import without a
 nonempty socket identity is rejected as malformed rather than treated as a
 default-server session. Ghosthub supplies `-L <socket>` to its best-effort
 presentation commands, but launches the client through `kwt pr attach
-<workspace-path>`. Kwt verifies provenance and creates or repairs the protected
-session before executing `attach-session -E`, including on every SSH
-reconnect. Ghosthub never directly creates or attaches through the default
-server for that imported workspace.
+<workspace-path>`. Kwt verifies provenance and creates or repairs an inert
+shell-only protected session before executing `attach-session -E`, including
+on every SSH reconnect. Project commands run only after the user explicitly
+invokes them in that shell. Ghosthub never directly creates or attaches
+through the default server for that imported workspace.
 
 ## Local PTY
 

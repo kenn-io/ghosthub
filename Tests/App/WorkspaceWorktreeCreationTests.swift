@@ -34,6 +34,24 @@ private actor KwtInventoryRaceStub {
 
 @Suite("Workspace worktree creation")
 struct WorkspaceWorktreeCreationTests {
+    @Test(
+        "workspace mutations fence background kwt inventory",
+        arguments: [
+            (creating: true, importing: false),
+            (creating: false, importing: true),
+        ]
+    )
+    @MainActor
+    func workspaceMutationsFenceInventory(
+        creating: Bool,
+        importing: Bool
+    ) {
+        #expect(!WorkspaceSceneModel.canScheduleKwtInventory(
+            isWorktreeCreationInProgress: creating,
+            isPullRequestImportInProgress: importing
+        ))
+    }
+
     @Test("selecting a kwt worktree preserves the authoritative inventory")
     @MainActor
     func selectionPreservesKwtInventory() async throws {
@@ -158,6 +176,26 @@ struct WorkspaceWorktreeCreationTests {
         var snapshot = environment.snapshot
         snapshot.projects[0].scopedKey =
             "github.com/kenn-io/ghosthub"
+        let unrelatedProjectID = UUID()
+        let unrelatedWorktreeID = UUID()
+        snapshot.projects.append(ProjectSummary(
+            id: unrelatedProjectID,
+            hostID: environment.host.id,
+            scopedKey: "github.com/kenn-io/kwt",
+            name: "kwt",
+            rootPath: "/tmp/kwt"
+        ))
+        snapshot.worktrees.append(WorktreeSummary(
+            id: unrelatedWorktreeID,
+            hostID: environment.host.id,
+            projectID: unrelatedProjectID,
+            scopedKey: "/tmp/kwt",
+            name: "main",
+            path: "/tmp/kwt",
+            branch: "main",
+            isPrimary: true,
+            tmuxSessionName: "kwt-workspace-kwt"
+        ))
         let workspace = PullRequestWorkspace(
             id: "workspace-32",
             repository: "github.com/kenn-io/ghosthub",
@@ -227,6 +265,8 @@ struct WorkspaceWorktreeCreationTests {
         #expect(imported.linkedPullRequestNumber == 32)
         #expect(imported.pullRequestTitle == candidate.title)
         #expect(imported.pullRequestState == .open)
+        #expect(model.snapshot.project(id: unrelatedProjectID) != nil)
+        #expect(model.snapshot.worktree(id: unrelatedWorktreeID) != nil)
         await model.shutdown()
     }
 

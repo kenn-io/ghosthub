@@ -42,32 +42,32 @@ revision is also included in GitHub release notes. Kwt is part of Ghosthub's
 signed code, but it remains an ordinary CLI rather than a daemon or state
 authority of its own. The pinned revision must support the complete automation
 contract consumed by the app, including the isolated tmux socket identity
-returned by `pr import --start-session`, the protected `pr attach` command,
-and refusal to open protected imports through kwt's ordinary default-server
-open paths.
+returned by `pr import` without starting tmux, the inert shell-only protected
+`pr attach` command, and refusal to open protected imports through kwt's
+ordinary default-server open paths.
 
 Because a separately installed kwt can access the same user-owned kwt state,
 kwt must preserve backward compatibility for supported on-disk state and
-machine-readable commands. Before advancing `KWT_REF`, test the new revision
+machine-readable commands. Before advancing `KWT_REVISION`, test the new revision
 both through Ghosthub and as a standalone CLI against representative existing
-state. The current pin includes kwt's provider-neutral `pr list`, `pr import
---start-session`, and `pr attach` contract; changing that contract requires
+state. The current pin includes kwt's provider-neutral `pr list`, `pr import`,
+and `pr attach` contract; changing that contract requires
 exercising candidate discovery, an idempotent existing-import result, creation
-of the exact returned tmux session, partial-success reporting when runtime
-session startup fails after a durable import, and a protected attach that can
-re-establish an absent session before release. Imports originating in an
-unregistered repository must remain attachable when the recorded clone agrees
-with its live Git identity, while ambiguous or conflicting registrations must
-fail closed.
+of the exact returned tmux session only on protected attachment, and a
+protected attach that can re-establish an absent session without executing a
+configured project layout. Imports originating in an unregistered repository
+must remain attachable when the recorded clone agrees with its live Git
+identity, while ambiguous or conflicting registrations must fail closed.
 The pinned implementation removes `KWT_GITHUB_TOKEN`, `KWT_FLEET_TOKEN`, and
 the configured fleet token variable from tmux subprocess and session
 environments before imported workspace panes start, while preserving
 operational state such as `KWT_HOME`. Protected attachment validates the
-configured layout, creates or repairs the isolated session, and uses
-`attach-session -E` so a mutable `update-environment` option cannot restore
-credentials. Existing sessions must carry the exact workspace marker before
-reuse. The command removes the caller's parent tmux identity so the isolated
-cross-server attachment also works when invoked from an existing tmux pane.
+workspace provenance, creates or repairs an inert shell-only isolated session,
+and uses `attach-session -E` so a mutable `update-environment` option cannot
+restore credentials. Existing sessions must carry the exact workspace marker
+before reuse. The command removes the caller's parent tmux identity so the
+isolated cross-server attachment also works when invoked from an existing tmux
+pane.
 Attachment validates the recorded project clone and exact live worktree
 identity, honoring registered upstream identity for fork-origin checkouts while
 excluding prunable or missing worktrees. Unreadable provenance makes inventory
@@ -254,6 +254,10 @@ make release-app \
   KWT_VERSION=development \
   KWT_SOURCE_REVISION=local
 ```
+
+`tools/build_release_dmg.sh` passes kwt overrides to the Makefile only when
+they are nonempty. A clean release therefore retains these pinned defaults
+instead of overriding `KWT_BINARY_PATH` with an empty value.
 
 Unsigned DMG:
 
