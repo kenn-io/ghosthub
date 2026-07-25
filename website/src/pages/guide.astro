@@ -1,6 +1,12 @@
 ---
 import { Image } from 'astro:assets';
 import SiteLayout from '../layouts/SiteLayout.astro';
+import commandAgentsview from '../assets/guide-command-agentsview.png';
+import commandExport from '../assets/guide-command-export.png';
+import commandGhosthub from '../assets/guide-command-ghosthub.png';
+import commandRelease from '../assets/guide-command-release.png';
+import commandScratch from '../assets/guide-command-scratch.png';
+import commandTests from '../assets/guide-command-tests.png';
 import hosts from '../assets/guide-hosts.png';
 import quickLaunch from '../assets/guide-quick-launch.png';
 import sessions from '../assets/guide-sessions.png';
@@ -10,11 +16,43 @@ import { RELEASES_URL } from '../config';
 
 const title = 'How to use Ghosthub';
 const description =
-  'A visual guide to tmux sessions, automatic SSH reconnect, worktrees, '
-  + 'Quick Launch, and configuring the Ghosthub terminal.';
+  'A visual guide to connected tmux sessions, automatic SSH reconnect, '
+  + 'worktrees, Quick Launch, multi-window command centers, and terminal configuration.';
 
 const imageWidths = [640, 960, 1280, 1600];
 const imageSizes = '(max-width: 900px) calc(100vw - 3rem), 900px';
+const commandWindows = [
+  {
+    name: 'fix-reconnect-backoff',
+    src: commandGhosthub,
+    alt: 'Ghosthub window attached to the fix-reconnect-backoff tmux session with its sidebar hidden',
+  },
+  {
+    name: 'add-session-filters',
+    src: commandAgentsview,
+    alt: 'Ghosthub window attached to the add-session-filters tmux session with its sidebar hidden',
+  },
+  {
+    name: 'scratch',
+    src: commandScratch,
+    alt: 'Ghosthub window attached to a scratch tmux session with its sidebar hidden',
+  },
+  {
+    name: 'docbank-export',
+    src: commandExport,
+    alt: 'Ghosthub window attached to the docbank-export tmux session with its sidebar hidden',
+  },
+  {
+    name: 'release-watch',
+    src: commandRelease,
+    alt: 'Ghosthub window attached to a release-watch tmux session with its sidebar hidden',
+  },
+  {
+    name: 'test-matrix',
+    src: commandTests,
+    alt: 'Ghosthub window attached to a test-matrix tmux session with its sidebar hidden',
+  },
+];
 ---
 
 <SiteLayout title={title} description={description} path="/guide/">
@@ -48,7 +86,8 @@ const imageSizes = '(max-width: 900px) calc(100vw - 3rem), 900px';
     <a href="#hosts"><b>02</b> Add a host</a>
     <a href="#worktrees"><b>03</b> Add worktrees</a>
     <a href="#quick-launch"><b>04</b> Move quickly</a>
-    <a href="#terminal"><b>05</b> Make it yours</a>
+    <a href="#command-center"><b>05</b> Command center</a>
+    <a href="#terminal"><b>06</b> Make it yours</a>
   </nav>
 
   <ol class="steps">
@@ -158,7 +197,7 @@ const imageSizes = '(max-width: 900px) calc(100vw - 3rem), 900px';
             then press Return to go.
           </p>
           <div class="shortcuts" aria-label="Useful keyboard shortcuts">
-            <span><kbd>⌘B</kbd> Sidebar</span>
+            <span><kbd>⌘B</kbd> Hide/show sidebar</span>
             <span><kbd>⌘⌥↑</kbd> Previous worktree</span>
             <span><kbd>⌘⌥↓</kbd> Next worktree</span>
             <span><kbd>⌘W</kbd> Detach</span>
@@ -176,9 +215,47 @@ const imageSizes = '(max-width: 900px) calc(100vw - 3rem), 900px';
       </figure>
     </li>
 
-    <li id="terminal">
+    <li id="command-center">
       <div class="container step-copy">
         <p class="number">05</p>
+        <div>
+          <h2>Build your tmux command center</h2>
+          <p>
+            Ghosthub is window-based today—there is no app-level tab bar.
+            Press <kbd>⌘⌥N</kbd> to open another independent workspace,
+            attach each window to a different tmux session, and arrange them
+            with the macOS window tools you already use.
+          </p>
+          <p>
+            Press <kbd>⌘B</kbd> in any window to hide its sidebar and give
+            the terminal the full frame. Press it again whenever you need
+            fleet navigation back.
+          </p>
+        </div>
+      </div>
+      <div class="container command-grid" aria-label="Six independent Ghosthub windows">
+        {
+          commandWindows.map((window) => (
+            <figure class="command-window">
+              <div class="command-titlebar">
+                <span aria-hidden="true"><i></i><i></i><i></i></span>
+                <b>{window.name}</b>
+              </div>
+              <Image
+                src={window.src}
+                alt={window.alt}
+                widths={[360, 640, 960]}
+                sizes="(max-width: 620px) calc(100vw - 3rem), (max-width: 900px) calc((100vw - 4rem) / 2), 370px"
+              />
+            </figure>
+          ))
+        }
+      </div>
+    </li>
+
+    <li id="terminal">
+      <div class="container step-copy">
+        <p class="number">06</p>
         <div>
           <h2>Make the terminal yours</h2>
           <p>
@@ -320,7 +397,7 @@ const imageSizes = '(max-width: 900px) calc(100vw - 3rem), 900px';
 
   .contents {
     display: grid;
-    grid-template-columns: repeat(5, 1fr);
+    grid-template-columns: repeat(6, 1fr);
     border: 1px solid var(--line);
     border-radius: 14px;
     overflow: hidden;
@@ -475,6 +552,60 @@ const imageSizes = '(max-width: 900px) calc(100vw - 3rem), 900px';
     height: auto;
   }
 
+  .command-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 1rem;
+    max-width: 1180px;
+  }
+
+  .command-window {
+    min-width: 0;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    overflow: hidden;
+    background: var(--bg);
+    box-shadow: 0 18px 42px rgb(0 0 0 / 0.35);
+  }
+
+  .command-titlebar {
+    display: grid;
+    grid-template-columns: 3.4rem 1fr 3.4rem;
+    align-items: center;
+    min-width: 0;
+    border-bottom: 1px solid var(--line);
+    padding: 0.36rem 0.55rem;
+  }
+
+  .command-titlebar > span {
+    display: flex;
+    gap: 0.3rem;
+  }
+
+  .command-titlebar i {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--line);
+  }
+
+  .command-titlebar b {
+    overflow: hidden;
+    color: var(--text-faint);
+    font-family: var(--font-mono);
+    font-size: 0.56rem;
+    font-weight: 400;
+    text-align: center;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .command-window :global(img) {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+
   .finish {
     border-top: 1px solid var(--line);
     padding: 5rem 0 6rem;
@@ -517,6 +648,16 @@ const imageSizes = '(max-width: 900px) calc(100vw - 3rem), 900px';
     .step-copy {
       grid-template-columns: 1fr;
       gap: 0.65rem;
+    }
+
+    .command-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  @media (max-width: 520px) {
+    .command-grid {
+      grid-template-columns: 1fr;
     }
   }
 </style>

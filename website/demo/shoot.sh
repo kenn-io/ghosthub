@@ -136,4 +136,31 @@ sleep 2
 capture_state guide-terminal.png
 dismiss_sheet
 
+command_window() {
+  local query="$1" name="$2" create="${3:-true}" select="${4:-palette}"
+  if [[ "$create" == "true" ]]; then
+    demo_input new-window
+    sleep 2
+  fi
+  demo_input frame "160,145,1200,760"
+  sleep 1
+  if [[ "$select" == "press" ]]; then
+    demo_input press "$query"
+  else
+    palette "$query"
+  fi
+  sleep 3
+  demo_input sidebar
+  sleep 1
+  capture_state "$name"
+}
+
+echo "==> guide: six-window tmux command center"
+command_window "fix-reconnect-backoff" guide-command-ghosthub.png false
+command_window "add-session-filters" guide-command-agentsview.png
+command_window "scratch" guide-command-scratch.png true press
+command_window "docbank-export" guide-command-export.png true press
+command_window "release-watch" guide-command-release.png true press
+command_window "test-matrix" guide-command-tests.png true press
+
 echo "captured website asset set -> $out_dir"

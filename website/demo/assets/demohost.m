@@ -25,13 +25,14 @@ static NSString *DemoHostName(id self, SEL _cmd) {
   return @"studio.local";
 }
 
-static void DemoSendKey(NSString *characters, unsigned short keyCode) {
+static void DemoSendKey(NSString *characters, unsigned short keyCode,
+                        NSEventModifierFlags modifiers) {
   NSWindow *window = [NSApp keyWindow] ?: [NSApp mainWindow];
   if (window == nil) return;
   NSTimeInterval now = [NSProcessInfo processInfo].systemUptime;
   NSEvent *down = [NSEvent keyEventWithType:NSEventTypeKeyDown
                                    location:NSZeroPoint
-                              modifierFlags:0
+                              modifierFlags:modifiers
                                   timestamp:now
                                windowNumber:window.windowNumber
                                     context:nil
@@ -41,7 +42,7 @@ static void DemoSendKey(NSString *characters, unsigned short keyCode) {
                                     keyCode:keyCode];
   NSEvent *up = [NSEvent keyEventWithType:NSEventTypeKeyUp
                                  location:NSZeroPoint
-                            modifierFlags:0
+                            modifierFlags:modifiers
                                 timestamp:now
                              windowNumber:window.windowNumber
                                   context:nil
@@ -100,7 +101,7 @@ static BOOL DemoPressLabel(id element, NSString *label, NSUInteger depth) {
 }
 
 static NSWindow *DemoRootWindow(void) {
-  NSWindow *window = [NSApp mainWindow] ?: [NSApp keyWindow];
+  NSWindow *window = [NSApp keyWindow] ?: [NSApp mainWindow];
   while (window.sheetParent != nil) {
     window = window.sheetParent;
   }
@@ -186,21 +187,32 @@ static void DemoCapture(NSString *path) {
             dispatch_after(
                 dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC),
                 dispatch_get_main_queue(), ^{
-                  DemoSendKey(@"\r", 36);
+                  DemoSendKey(@"\r", 36, 0);
                 });
           }
         });
   } else if ([action isEqualToString:@"text"]) {
     DemoInsertText(notification.userInfo[@"text"] ?: @"");
   } else if ([action isEqualToString:@"escape"]) {
-    DemoSendKey(@"\x1b", 53);
+    DemoSendKey(@"\x1b", 53, 0);
+  } else if ([action isEqualToString:@"new-window"]) {
+    DemoSendKey(@"n", 45,
+                NSEventModifierFlagCommand | NSEventModifierFlagOption);
+  } else if ([action isEqualToString:@"sidebar"]) {
+    DemoSendKey(@"b", 11, NSEventModifierFlagCommand);
   } else if ([action isEqualToString:@"frame"]) {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
     [NSApp activateIgnoringOtherApps:YES];
 #pragma clang diagnostic pop
-    [DemoRootWindow() setFrame:NSMakeRect(160, 25, 1600, 1000)
-                       display:YES];
+    NSRect frame = NSMakeRect(160, 25, 1600, 1000);
+    NSArray<NSString *> *parts =
+        [notification.userInfo[@"text"] componentsSeparatedByString:@","];
+    if (parts.count == 4) {
+      frame = NSMakeRect(parts[0].doubleValue, parts[1].doubleValue,
+                         parts[2].doubleValue, parts[3].doubleValue);
+    }
+    [DemoRootWindow() setFrame:frame display:YES];
   } else if ([action isEqualToString:@"click"]) {
     NSArray<NSString *> *parts =
         [notification.userInfo[@"text"] componentsSeparatedByString:@","];

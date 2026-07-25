@@ -858,6 +858,12 @@ def make_offline_asset_tree(tmp_path: Path, *, trusted: bool) -> tuple[Path, dic
         "guide-worktree.png",
         "guide-quick-launch.png",
         "guide-terminal.png",
+        "guide-command-ghosthub.png",
+        "guide-command-agentsview.png",
+        "guide-command-scratch.png",
+        "guide-command-export.png",
+        "guide-command-release.png",
+        "guide-command-tests.png",
     )
     for asset_name in asset_names:
         asset = assets / asset_name
