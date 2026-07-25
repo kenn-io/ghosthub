@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
-# Drives the running demo instance to the hero state and captures it:
-# activate by pid (the real Ghosthub may be running alongside), select the
-# agent session through the command palette, redraw the git log pane at the
-# attached client size, then screenshot the window via capture.sh.
+# Drives the running isolated demo through every website screenshot state,
+# captures the exact demo process, crops native macOS chrome, and writes
+# web-ready 1600px PNGs. The real Ghosthub may run alongside it.
 set -euo pipefail
 
 demo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 scratch="${GHOSTHUB_DEMO_SCRATCH:-/tmp/ghosthub-demo}"
-out="${1:-$scratch/hero-raw.png}"
+out_dir="${1:-$scratch/screenshots}"
 bin="$scratch/app/Ghosthub.app/Contents/MacOS/Ghosthub"
 
 # shellcheck source=SCRIPTDIR/scratch-guard.sh
@@ -17,30 +16,124 @@ demo_scratch_guard "$scratch"
 # shellcheck source=SCRIPTDIR/process.sh
 source "$demo_root/process.sh"
 demo_pid="$(demo_require_recorded_process "$scratch/app.pid" "$bin")"
+mkdir -p "$out_dir" "$scratch/screenshots-raw"
 
-# NSRunningApplication targets the exact process; activating "Ghosthub" by
-# name or System Events frontmost routes to the real app instead.
-GHOSTHUB_DEMO_PID="$demo_pid" swift - <<'EOF'
-import AppKit
-let pid = Int32(ProcessInfo.processInfo.environment["GHOSTHUB_DEMO_PID"]!)!
-guard let app = NSRunningApplication(processIdentifier: pid) else { exit(1) }
-app.activate(options: [.activateIgnoringOtherApps])
-Thread.sleep(forTimeInterval: 1.0)
-guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {
-    FileHandle.standardError.write(Data("demo app did not become frontmost\n".utf8))
-    exit(1)
+demo_input() {
+  local action="$1" text="${2:-}" submit="${3:-false}"
+  GHOSTHUB_DEMO_PID="$demo_pid" \
+    GHOSTHUB_DEMO_ACTION="$action" \
+    GHOSTHUB_DEMO_TEXT="$text" \
+    GHOSTHUB_DEMO_SUBMIT="$submit" \
+    swift - <<'EOF'
+import Foundation
+
+let environment = ProcessInfo.processInfo.environment
+guard let pid = environment["GHOSTHUB_DEMO_PID"],
+      let action = environment["GHOSTHUB_DEMO_ACTION"]
+else { exit(1) }
+DistributedNotificationCenter.default().post(
+    name: Notification.Name("com.ghosthub.demo.input"),
+    object: pid,
+    userInfo: [
+        "action": action,
+        "text": environment["GHOSTHUB_DEMO_TEXT"] ?? "",
+        "submit": environment["GHOSTHUB_DEMO_SUBMIT"] ?? "false",
+    ]
+)
+EOF
 }
-EOF
 
-osascript <<'EOF'
-tell application "System Events"
-  keystroke "p" using {command down, shift down}
-  delay 0.8
-  keystroke "fix-reconnect"
-  delay 0.8
-  key code 36
-end tell
-EOF
+demo_input frame
+# Allow both local inventory and the isolated SSH host probe to settle before
+# the first capture so the full fleet is present in every sidebar.
+sleep 10
 
+palette() {
+  local query="$1" submit="${2:-true}"
+  demo_input palette "$query" "$submit"
+  sleep 1.5
+}
+
+dismiss_sheet() {
+  demo_input escape
+  sleep 1
+}
+
+process_capture() {
+  local raw="$1" destination="$2"
+  NODE_PATH="$demo_root/../node_modules" node - "$raw" "$destination" <<'EOF'
+const sharp = require("sharp");
+(async () => {
+  const [raw, destination] = process.argv.slice(2);
+  const image = sharp(raw);
+  const metadata = await image.metadata();
+  if (metadata.width === undefined || metadata.height === undefined) {
+    throw new Error(`could not read screenshot dimensions: ${raw}`);
+  }
+  const titlebarHeight = 34;
+  await image
+    .extract({
+      left: 0,
+      top: titlebarHeight,
+      width: metadata.width,
+      height: metadata.height - titlebarHeight,
+    })
+    .resize({ width: 1600 })
+    .png({ compressionLevel: 9 })
+    .toFile(destination);
+})();
+EOF
+}
+
+capture_state() {
+  local name="$1"
+  local raw="$scratch/screenshots-raw/$name"
+  "$demo_root/capture.sh" "$raw"
+  process_capture "$raw" "$out_dir/$name"
+  sips -g pixelWidth -g pixelHeight "$out_dir/$name" | tail -2
+}
+
+echo "==> hero: active coding-agent worktree"
+palette "fix-reconnect-backoff"
 sleep 5
-"$demo_root/capture.sh" "$out"
+demo_input press "Expand Projects"
+sleep 0.5
+demo_input press "Expand ghosthub"
+sleep 0.5
+capture_state hero.png
+
+echo "==> guide: ordinary worktree session"
+palette "add-session-filters"
+sleep 4
+demo_input press "Expand agentsview"
+sleep 0.5
+capture_state guide-sessions.png
+
+echo "==> guide: remote host settings"
+palette "Open Hosts Settings"
+sleep 2
+capture_state guide-hosts.png
+dismiss_sheet
+
+echo "==> guide: new worktree"
+palette "fix-reconnect-backoff"
+sleep 2
+palette "New Worktree in ghosthub"
+sleep 1
+demo_input text "improve-session-search"
+sleep 1
+capture_state guide-worktree.png
+dismiss_sheet
+
+echo "==> guide: Quick Launch"
+palette "reconnect" false
+capture_state guide-quick-launch.png
+dismiss_sheet
+
+echo "==> guide: terminal settings"
+palette "Open Terminal Settings"
+sleep 2
+capture_state guide-terminal.png
+dismiss_sheet
+
+echo "captured website asset set -> $out_dir"

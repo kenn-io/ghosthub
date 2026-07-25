@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Captures the demo Ghosthub window to a PNG (no drop shadow). Pass an output
-# path; defaults to .scratch/hero-raw.png. Requires Screen Recording
-# permission for the invoking terminal.
+# Asks the injected demo controller to capture its own composited window to a
+# PNG (no drop shadow). Pass an output path; defaults to
+# .scratch/hero-raw.png. This stays exact-PID scoped and does not require
+# Screen Recording permission for the invoking terminal.
 set -euo pipefail
 
 demo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -19,32 +20,29 @@ demo_scratch_guard "$scratch"
 source "$demo_root/process.sh"
 demo_pid="$(demo_require_recorded_process "$scratch/app.pid" "$bin")"
 
-window_id="$(GHOSTHUB_DEMO_PID="$demo_pid" swift - <<'EOF'
-import CoreGraphics
+rm -f "$out" "$out.tmp"
+GHOSTHUB_DEMO_PID="$demo_pid" GHOSTHUB_DEMO_CAPTURE_OUT="$out" swift - <<'EOF'
 import Foundation
 
-guard let pidText = ProcessInfo.processInfo.environment["GHOSTHUB_DEMO_PID"],
-      let demoPID = Int(pidText) else { exit(1) }
-let opts: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
-guard let list = CGWindowListCopyWindowInfo(opts, kCGNullWindowID)
-    as? [[String: Any]] else { exit(1) }
-for entry in list {
-    guard let pid = entry[kCGWindowOwnerPID as String] as? Int,
-          pid == demoPID,
-          let layer = entry[kCGWindowLayer as String] as? Int, layer == 0,
-          let number = entry[kCGWindowNumber as String] as? Int
-    else { continue }
-    print(number)
-    break
-}
+let environment = ProcessInfo.processInfo.environment
+guard let pid = environment["GHOSTHUB_DEMO_PID"],
+      let output = environment["GHOSTHUB_DEMO_CAPTURE_OUT"]
+else { exit(1) }
+DistributedNotificationCenter.default().post(
+    name: Notification.Name("com.ghosthub.demo.capture"),
+    object: pid,
+    userInfo: ["path": output]
+)
 EOF
-)"
 
-if [[ -z "$window_id" ]]; then
-  echo "error: no on-screen Ghosthub window found (run run.sh first)" >&2
+for _ in $(seq 1 50); do
+  [[ -s "$out" ]] && break
+  sleep 0.1
+done
+if [[ ! -s "$out" ]]; then
+  echo "error: demo process did not produce a window capture" >&2
   exit 1
 fi
 
-screencapture -o -l "$window_id" "$out"
-echo "captured window $window_id -> $out"
+echo "captured demo process $demo_pid -> $out"
 sips -g pixelWidth -g pixelHeight "$out" | tail -2

@@ -28,30 +28,34 @@ The target builds the site first, which hydrates the hero screenshot from the
 `website-assets` branch, then runs `vercel deploy --prod`. The repository-root
 `.vercelignore` limits the upload to the website project.
 
-## Hero screenshot
+## Product screenshots
 
-`src/assets/hero.png` is gitignored; binaries live on the orphan
-`website-assets` branch and `scripts/sync-assets.sh` materializes them
+`src/assets/*.png` is gitignored; binaries live on the orphan
+`website-assets` branch and `scripts/sync-assets.sh` materializes the required set
 (it runs automatically via `pnpm dev`, `pnpm check`, and `pnpm build`).
 The script degrades to a generated placeholder only when
 `SYNC_ASSETS_ALLOW_PLACEHOLDER` is set (CI does this while the repo is
 private); production builds fail instead of silently deploying a
-placeholder. Successfully fetched assets get a local checksum sidecar, so an
-unmarked legacy placeholder is never reused by an offline production build.
+placeholder or partial set. Successfully fetched assets get local checksum
+sidecars, so unmarked legacy placeholders are never reused by an offline
+production build.
 
-To refresh the screenshot, use the faux environment in `demo/`. It never
-shows real project or host details:
+To refresh every screenshot, use the faux environment in `demo/`. It never
+shows real project or host details, and `shoot.sh` drives the exact staged
+process through every documented UI state:
 
     cd website/demo
-    ./stage.sh && ./run.sh && ./shoot.sh
+    ./stage.sh && ./run.sh && ./shoot.sh /tmp/ghosthub-website-assets
     ./teardown.sh   # always run: stops demo processes and removes scratch state
 
 The staged app receives an explicit demo-only OpenSSH configuration and
 known-hosts file under the guarded scratch directory. Discovery and attachment
 therefore cannot inherit the developer's SSH aliases, proxies, or host trust.
 
-Crop the native titlebar (34px at 1x) since Hero.astro renders its own
-synthetic titlebar, then commit the result as `hero.png` on
-`website-assets` and push that branch. Pushing `website-assets` does not
-redeploy the site by itself: trigger a Vercel redeploy (dashboard, or any
-push to the production branch) to publish the new screenshot.
+The injected demo controller drives and captures only its exact staged
+process, so the workflow needs neither Accessibility nor Screen Recording
+permission. `shoot.sh` crops the native 34pt titlebar and writes optimized
+1600px PNGs with the exact filenames expected by the site.
+Commit those files on `website-assets` and push that branch. Pushing
+`website-assets` does not redeploy the site by itself: trigger a Vercel
+redeploy (dashboard, or any push to the production branch) to publish them.

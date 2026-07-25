@@ -54,6 +54,10 @@ touch "$sentinel"
 source "$demo_root/process.sh"
 demo_stop_recorded_process \
   "$scratch/app.pid" "$scratch/app/Ghosthub.app/Contents/MacOS/Ghosthub"
+# The staged bundle uses this demo-only defaults domain. Clear it between
+# passes so window layout and disclosure state never depend on an earlier
+# capture while leaving every real Ghosthub preference untouched.
+defaults delete com.ghosthub.demo 2>/dev/null || true
 demo_socket="$scratch/tmux/tmux-$(id -u)/default"
 # shellcheck source=SCRIPTDIR/tmux.sh
 source "$demo_root/tmux.sh"
@@ -67,8 +71,8 @@ export TMUX_TMPDIR="$scratch/tmux"
 # enclosing server. All demo tmux traffic must stay on the demo socket.
 unset TMUX
 
-# Synthetic history and the public clone must not inherit developer Git
-# rewrites, hooks, templates, transports, or configuration.
+# Synthetic history must not inherit developer Git rewrites, hooks,
+# templates, transports, or configuration.
 # shellcheck source=SCRIPTDIR/git.sh
 source "$demo_root/git.sh"
 git_c=(
@@ -110,16 +114,30 @@ mkdir -p "$scratch"/{repos,worktrees,tmux,home,ssh,ghosthub-config,ghosthub-stat
 cp "$demo_root/home/zprofile" "$scratch/home/.zprofile"
 cp "$demo_root/home/zshrc" "$scratch/home/.zshrc"
 cp "$demo_root/ssh-config" "$scratch/ssh/config"
+cat > "$scratch/ghosthub-config/ghostty.conf" <<'EOF'
+# Isolated marketing-demo terminal configuration.
+font-family = Menlo
+font-size = 13
+background = 282c34
+foreground = abb2bf
+cursor-color = abb2bf
+selection-background = 3e4451
+selection-foreground = ffffff
+scrollback-limit = 50000000
+term = xterm-256color
+cursor-style = block
+mouse-hide-while-typing = true
+copy-on-select = clipboard
+macos-option-as-alt = true
+shell-integration = detect
+EOF
 chmod 700 "$scratch/ssh"
 chmod 600 "$scratch/ssh/config"
 
-# ghosthub is a real local clone: its pane runs a live Claude Code session
-# and synthetic stub content reads as fake. Fetch only the public main branch
-# into an independent object store so unpublished local refs and objects are
-# unavailable to the demo session.
-"${git_c[@]}" clone -q --no-local --single-branch --branch main --depth 1 \
-  https://github.com/kenn-io/ghosthub.git "$scratch/repos/ghosthub"
-
+make_repo ghosthub \
+  "Initial native workspace" \
+  "Attach ordinary tmux clients" \
+  "Reconnect remote sessions"
 make_repo agentsview \
   "Initial import" \
   "Add live session table" \
@@ -144,61 +162,76 @@ new_session() {
   demo_new_session "$scratch" "$@"
 }
 
-# Bound sessions: names must match the kwt shim's session_name values.
-# The ghosthub pane runs a real Claude Code session (plan mode: read-only)
-# against the real clone; staged transcripts read as fake. Claude needs the
-# real HOME for keychain auth, but no repository or account customization may
-# execute in the demo. Safe mode disables CLAUDE.md, hooks, skills, plugins,
-# agents, and settings from the cloned source and the user account;
-# --strict-mcp-config also rejects every implicit MCP server. Pass one shell
-# string: multi-argument commands are not portable across tmux versions.
-claude_prompt='How does native tmux attachment recover from dropped SSH'
-claude_prompt+=' connections? Trace reconnect and keepalive handling'
-claude_prompt+=' through Sources/TmuxControl and the session coordinator,'
-claude_prompt+=' and point out anything fragile.'
+# Bound sessions: names must match the kwt shim's session_name values. The
+# hero pane uses a curated agent investigation so captures never depend on an
+# account, a network service, unpublished source, or nondeterministic output.
+cat > "$scratch/agent-transcript.txt" <<'EOF'
+● Read Sources/Tmux/TmuxAttachmentInfo.swift
+● Read Sources/App/NativeTmuxSessionCoordinator.swift
+● Search reconnect | ServerAliveInterval | ConnectTimeout
+
+I traced the remote attachment path from host discovery through the ordinary
+tmux client. The important boundaries are:
+
+1. Attachment
+   Ghosthub opens the same tmux client locally and remotely. Tmux continues to
+   own windows, panes, layout, history, and process lifetime.
+
+2. Keepalive
+   SSH uses a short connection timeout plus server keepalives, so a dead link
+   exits instead of leaving the terminal surface hung indefinitely.
+
+3. Reconnect
+   Transport failures restart the SSH client with bounded backoff. A clean
+   detach remains clean and never destroys the tmux session.
+
+The coordinator owns presentation lifecycle, while the reconnecting shell owns
+transport recovery inside the still-running terminal surface. That separation
+is why closing Ghosthub detaches without becoming session authority.
+
+Fragile point
+
+The user-visible reconnect state should always come from the transport process,
+not a second Swift-side timer. Two clocks would drift and report false health.
+
+Ready to turn this into a focused regression test and implementation plan.
+EOF
+cat > "$scratch/session-transcript.txt" <<'EOF'
+$ git status --short --branch
+## add-session-filters
+ M Sources/SessionTable.swift
+ M Sources/SessionFilter.swift
+?? Tests/SessionFilterTests.swift
+
+$ swift test --filter SessionFilterTests
+Building for debugging...
+Build complete! (1.8s)
+Test Suite 'Selected tests' started
+  ✓ filters sessions by host
+  ✓ matches project and worktree names
+  ✓ keeps active agents visible
+  ✓ clears the query without changing selection
+Test Suite 'Selected tests' passed
+Executed 4 tests, with 0 failures in 0.09 seconds
+
+$ git diff --stat
+ Sources/SessionFilter.swift      | 42 +++++++++++++++++++++
+ Sources/SessionTable.swift       | 18 ++++++++-
+ Tests/SessionFilterTests.swift   | 35 +++++++++++++++++
+ 3 files changed, 94 insertions(+), 1 deletion(-)
+EOF
 new_session ghosthub--fix-reconnect-backoff \
   "$scratch/worktrees/ghosthub/fix-reconnect-backoff" \
-  "HOME=$(printf '%q' "$HOME") claude --safe-mode --permission-mode plan --strict-mcp-config $(printf '%q' "$claude_prompt")"
-
-# Never accept repository trust on the user's behalf. Even with safe mode,
-# trust is an explicit developer decision and must remain visibly manual.
-claude_ready=""
-trust_required=""
-for _ in $(seq 1 30); do
-  pane="$(tmux capture-pane -pt ghosthub--fix-reconnect-backoff)"
-  if grep -qE "esc to interrupt|tokens" <<<"$pane"; then
-    claude_ready=1
-    break
-  fi
-  if grep -q "trust the files in this folder" <<<"$pane"; then
-    trust_required=1
-    break
-  fi
-  sleep 2
-done
-if [[ -n "$trust_required" ]]; then
-  echo "error: Claude requires manual repository trust; stage.sh did not accept it" >&2
-  echo "       inspect and accept only if appropriate, then rerun stage.sh:" >&2
-  echo "       TMUX_TMPDIR=$TMUX_TMPDIR tmux attach -t" \
-    "ghosthub--fix-reconnect-backoff" >&2
-  exit 1
-fi
-if [[ -z "$claude_ready" ]]; then
-  echo "error: Claude session never started working (check the pane:" >&2
-  echo "       TMUX_TMPDIR=$TMUX_TMPDIR tmux attach -t" \
-    "ghosthub--fix-reconnect-backoff)" >&2
-  exit 1
-fi
+  "clear; cat $(printf '%q' "$scratch/agent-transcript.txt")"
 
 # The default status-right renders the pane title, which carries the real
 # hostname. Same for anything else the shell stuffs into titles.
-tmux set -g status-right '"studio.local" %H:%M %d-%b-%y'
+tmux set -g status-right '"studio.local"'
 tmux set -g set-titles off
 
 new_session agentsview--add-session-filters \
-  "$scratch/worktrees/agentsview/add-session-filters"
-tmux send-keys -t agentsview--add-session-filters \
-  "clear; git status -sb" Enter
+  "$scratch/worktrees/agentsview/add-session-filters" \
+  "clear; cat $(printf '%q' "$scratch/session-transcript.txt")"
 
 # Raw local sessions (unbound: not in any kwt inventory).
 new_session scratch "$scratch/repos/msgvault"
@@ -234,7 +267,7 @@ chmod +x "$app_copy/Contents/Helpers/kwt"
 # hostname override in run.sh) takes effect.
 codesign --force --deep -s - "$app_copy" 2>/dev/null
 
-cc -dynamiclib -framework Foundation \
+cc -dynamiclib -fobjc-arc -framework AppKit -framework ImageIO \
   -o "$scratch/libdemohost.dylib" "$demo_root/assets/demohost.m"
 
 echo "==> staging docker remote (127.0.0.1:2201)"

@@ -6,7 +6,8 @@ import AppIcon from './AppIcon.astro';
 <header>
   <div class="container bar">
     <a class="brand" href="/"><AppIcon prefix="gh-ic-hdr" /><span>Ghosthub</span></a>
-    <nav aria-label="External links">
+    <nav aria-label="Primary navigation">
+      <a class="guide" href="/guide/">Guide</a>
       <a class="repo" href={GITHUB_URL}>
         <span class="sr-only">Ghosthub on GitHub:</span>
         <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true" fill="currentColor">
@@ -144,6 +145,17 @@ import AppIcon from './AppIcon.astro';
     display: flex;
     align-items: center;
     gap: 1rem;
+  }
+
+  .guide {
+    color: var(--text-dim);
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    transition: color 0.15s;
+  }
+
+  .guide:hover {
+    color: var(--text);
   }
 
   .repo {

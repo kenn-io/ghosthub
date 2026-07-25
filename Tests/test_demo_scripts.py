@@ -64,17 +64,12 @@ def test_scratch_guard_requires_creation_after_allow_missing_check(tmp_path: Pat
     assert "disappeared or was never created" in required.stderr
 
 
-def test_stage_disables_claude_customizations_without_accepting_trust() -> None:
+def test_stage_uses_a_curated_account_free_agent_session() -> None:
     stage = (DEMO / "stage.sh").read_text()
 
-    assert "claude --safe-mode --permission-mode plan --strict-mcp-config" in stage
-    assert "--setting-sources project" not in stage
-    trust_block = stage[
-        stage.index('trust_required=""') : stage.index('if [[ -z "$claude_ready" ]]')
-    ]
-    assert "trust the files in this folder" in trust_block
-    assert "tmux send-keys" not in trust_block
-    assert "exit 1" in trust_block
+    assert 'cat > "$scratch/agent-transcript.txt"' in stage
+    assert "Ghosthub opens the same tmux client locally and remotely." in stage
+    assert '"clear; cat $(printf \'%q\' "$scratch/agent-transcript.txt")"' in stage
 
 
 def test_stage_stops_live_consumers_before_replacing_scratch_state() -> None:
@@ -96,13 +91,15 @@ def test_stage_uses_immutable_docker_image_id_without_a_shared_tag() -> None:
     assert '-p 127.0.0.1:2201:22 "$image_id"' in stage
 
 
-def test_stage_clones_only_public_main_without_local_objects() -> None:
+def test_stage_builds_ghosthub_from_synthetic_history() -> None:
     stage = (DEMO / "stage.sh").read_text()
 
-    assert "--no-local --single-branch --branch main --depth 1" in stage
-    assert "https://github.com/kenn-io/ghosthub.git" in stage
-    assert "git clone -q --local " not in stage
-    assert "GHOSTHUB_DEMO_SOURCE" not in stage
+    ghosthub_fixture = stage[
+        stage.index("make_repo ghosthub") : stage.index("make_repo agentsview")
+    ]
+    assert "Initial native workspace" in ghosthub_fixture
+    assert "Attach ordinary tmux clients" in ghosthub_fixture
+    assert "Reconnect remote sessions" in ghosthub_fixture
 
 
 def test_demo_git_ignores_url_rewrites_and_hooks(tmp_path: Path) -> None:
@@ -854,10 +851,22 @@ def make_offline_asset_tree(tmp_path: Path, *, trusted: bool) -> tuple[Path, dic
     assets.mkdir(parents=True)
     fake_bin.mkdir()
     shutil.copy2(ROOT / "website" / "scripts" / "sync-assets.sh", scripts)
-    (assets / "hero.png").write_bytes(b"legacy-placeholder-or-unverified-image")
-    if trusted:
-        digest = hashlib.sha256((assets / "hero.png").read_bytes()).hexdigest()
-        (assets / "hero.png.synced").write_text(f"{digest}  src/assets/hero.png\n")
+    asset_names = (
+        "hero.png",
+        "guide-sessions.png",
+        "guide-hosts.png",
+        "guide-worktree.png",
+        "guide-quick-launch.png",
+        "guide-terminal.png",
+    )
+    for asset_name in asset_names:
+        asset = assets / asset_name
+        asset.write_bytes(f"unverified-{asset_name}".encode())
+        if trusted:
+            digest = hashlib.sha256(asset.read_bytes()).hexdigest()
+            (assets / f"{asset_name}.synced").write_text(
+                f"{digest}  src/assets/{asset_name}\n"
+            )
     for command in ("git", "curl"):
         path = fake_bin / command
         path.write_text("#!/usr/bin/env bash\nexit 1\n")
@@ -878,4 +887,4 @@ def test_offline_asset_reuse_requires_synced_provenance(
 
     assert result.returncode == expected_code
     if not trusted:
-        assert "missing or is a stale placeholder" in result.stderr
+        assert "is missing or stale" in result.stderr
