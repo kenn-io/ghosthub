@@ -26,24 +26,87 @@ demo_input() {
     GHOSTHUB_DEMO_SUBMIT="$submit" \
     swift - <<'EOF'
 import Foundation
+import Darwin
 
 let environment = ProcessInfo.processInfo.environment
 guard let pid = environment["GHOSTHUB_DEMO_PID"],
       let action = environment["GHOSTHUB_DEMO_ACTION"]
 else { exit(1) }
-DistributedNotificationCenter.default().post(
+
+final class Acknowledgement: NSObject {
+    let requestID: String
+    var result: Bool?
+    var message = ""
+
+    init(requestID: String) {
+        self.requestID = requestID
+    }
+
+    @objc func receive(_ notification: Notification) {
+        guard notification.userInfo?["requestID"] as? String == requestID else {
+            return
+        }
+        result = notification.userInfo?["success"] as? Bool ?? false
+        message = notification.userInfo?["message"] as? String ?? ""
+    }
+}
+
+let requestID = UUID().uuidString
+let acknowledgement = Acknowledgement(requestID: requestID)
+let notifications = DistributedNotificationCenter.default()
+notifications.addObserver(
+    acknowledgement,
+    selector: #selector(Acknowledgement.receive(_:)),
+    name: Notification.Name("com.ghosthub.demo.input.ack"),
+    object: pid
+)
+notifications.post(
     name: Notification.Name("com.ghosthub.demo.input"),
     object: pid,
     userInfo: [
+        "requestID": requestID,
         "action": action,
         "text": environment["GHOSTHUB_DEMO_TEXT"] ?? "",
         "submit": environment["GHOSTHUB_DEMO_SUBMIT"] ?? "false",
     ]
 )
+let deadline = Date(timeIntervalSinceNow: 5)
+while acknowledgement.result == nil && Date() < deadline {
+    RunLoop.current.run(
+        mode: .default,
+        before: Date(timeIntervalSinceNow: 0.05)
+    )
+}
+notifications.removeObserver(acknowledgement)
+guard let succeeded = acknowledgement.result else {
+    fputs("error: demo action \(action) timed out (\(requestID))\n", stderr)
+    exit(1)
+}
+guard succeeded else {
+    fputs(
+        "error: demo action \(action) failed: \(acknowledgement.message) "
+        + "(\(requestID))\n",
+        stderr
+    )
+    exit(1)
+}
 EOF
 }
 
-demo_input frame
+demo_ready=""
+ready_error="$scratch/controller-ready.error"
+for _ in $(seq 1 20); do
+  if demo_input frame 2>"$ready_error"; then
+    demo_ready=1
+    break
+  fi
+  sleep 0.5
+done
+if [[ -z "$demo_ready" ]]; then
+  sed -n '1,5p' "$ready_error" >&2
+  echo "error: demo controller never reported a ready workspace window" >&2
+  exit 1
+fi
 # Allow both local inventory and the isolated SSH host probe to settle before
 # the first capture so the full fleet is present in every sidebar.
 sleep 10

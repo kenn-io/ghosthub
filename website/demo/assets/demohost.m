@@ -15,6 +15,8 @@ static NSString *const DemoCaptureNotification =
     @"com.ghosthub.demo.capture";
 static NSString *const DemoInputNotification =
     @"com.ghosthub.demo.input";
+static NSString *const DemoInputAcknowledgement =
+    @"com.ghosthub.demo.input.ack";
 
 @interface DemoController : NSObject
 @end
@@ -25,10 +27,10 @@ static NSString *DemoHostName(id self, SEL _cmd) {
   return @"studio.local";
 }
 
-static void DemoSendKey(NSString *characters, unsigned short keyCode,
+static BOOL DemoSendKey(NSString *characters, unsigned short keyCode,
                         NSEventModifierFlags modifiers) {
   NSWindow *window = [NSApp keyWindow] ?: [NSApp mainWindow];
-  if (window == nil) return;
+  if (window == nil) return NO;
   NSTimeInterval now = [NSProcessInfo processInfo].systemUptime;
   NSEvent *down = [NSEvent keyEventWithType:NSEventTypeKeyDown
                                    location:NSZeroPoint
@@ -52,11 +54,12 @@ static void DemoSendKey(NSString *characters, unsigned short keyCode,
                                   keyCode:keyCode];
   [NSApp sendEvent:down];
   [NSApp sendEvent:up];
+  return YES;
 }
 
-static void DemoClick(NSPoint point) {
+static BOOL DemoClick(NSPoint point) {
   NSWindow *window = DemoRootWindow();
-  if (window == nil) return;
+  if (window == nil) return NO;
   NSTimeInterval now = [NSProcessInfo processInfo].systemUptime;
   NSEvent *down = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDown
                                      location:point
@@ -78,15 +81,16 @@ static void DemoClick(NSPoint point) {
                                    pressure:0];
   [NSApp sendEvent:down];
   [NSApp sendEvent:up];
+  return YES;
 }
 
-static void DemoInsertText(NSString *text) {
+static BOOL DemoInsertText(NSString *text) {
   id responder = [NSApp keyWindow].firstResponder;
-  if ([responder respondsToSelector:
-          @selector(insertText:replacementRange:)]) {
-    [responder insertText:text
-         replacementRange:NSMakeRange(NSNotFound, 0)];
-  }
+  if (![responder respondsToSelector:
+          @selector(insertText:replacementRange:)]) return NO;
+  [responder insertText:text
+       replacementRange:NSMakeRange(NSNotFound, 0)];
+  return YES;
 }
 
 static BOOL DemoPressLabel(id element, NSString *label, NSUInteger depth) {
@@ -96,6 +100,19 @@ static BOOL DemoPressLabel(id element, NSString *label, NSUInteger depth) {
   }
   for (id child in [element accessibilityChildren] ?: @[]) {
     if (DemoPressLabel(child, label, depth + 1)) return YES;
+  }
+  return NO;
+}
+
+static BOOL DemoContainsText(id element, NSString *text,
+                             NSUInteger depth) {
+  if (element == nil || depth > 20) return NO;
+  if ([[element accessibilityLabel] isEqualToString:text] ||
+      [[[element accessibilityValue] description] isEqualToString:text]) {
+    return YES;
+  }
+  for (id child in [element accessibilityChildren] ?: @[]) {
+    if (DemoContainsText(child, text, depth + 1)) return YES;
   }
   return NO;
 }
@@ -317,6 +334,22 @@ static void DemoCapture(NSString *path, BOOL matrix) {
 
 @implementation DemoController
 
+- (void)acknowledge:(NSString *)requestID
+            success:(BOOL)success
+            message:(NSString *)message {
+  NSString *target =
+      [NSString stringWithFormat:@"%d",
+                                 [NSProcessInfo processInfo].processIdentifier];
+  [[NSDistributedNotificationCenter defaultCenter]
+      postNotificationName:DemoInputAcknowledgement
+                    object:target
+                  userInfo:@{
+                    @"requestID": requestID,
+                    @"success": @(success),
+                    @"message": message ?: @"",
+                  }];
+}
+
 - (void)capture:(NSNotification *)notification {
   NSString *path = notification.userInfo[@"path"];
   BOOL matrix = [notification.userInfo[@"mode"] isEqualToString:@"matrix"];
@@ -328,57 +361,143 @@ static void DemoCapture(NSString *path, BOOL matrix) {
 
 - (void)input:(NSNotification *)notification {
   NSString *action = notification.userInfo[@"action"];
-  if ([action isEqualToString:@"palette"]) {
-    NSString *query = notification.userInfo[@"text"] ?: @"";
-    BOOL submit =
-        [notification.userInfo[@"submit"] isEqualToString:@"true"];
-    [[NSNotificationCenter defaultCenter]
-        postNotificationName:@"ghosthubCommandPalette"
-                      object:nil];
-    dispatch_after(
-        dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC),
-        dispatch_get_main_queue(), ^{
-          DemoInsertText(query);
-          if (submit) {
+  NSString *requestID = notification.userInfo[@"requestID"];
+  NSString *text = notification.userInfo[@"text"] ?: @"";
+  BOOL submit =
+      [notification.userInfo[@"submit"] isEqualToString:@"true"];
+  if (action.length == 0 || requestID.length == 0) return;
+
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if ([action isEqualToString:@"palette"]) {
+      [[NSNotificationCenter defaultCenter]
+          postNotificationName:@"ghosthubCommandPalette"
+                        object:nil];
+      dispatch_after(
+          dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC),
+          dispatch_get_main_queue(), ^{
+            if (!DemoInsertText(text)) {
+              [self acknowledge:requestID
+                        success:NO
+                        message:@"command palette did not accept text"];
+              return;
+            }
+            if (!submit) {
+              [self acknowledge:requestID
+                        success:YES
+                        message:@"command palette ready"];
+              return;
+            }
             dispatch_after(
                 dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC),
                 dispatch_get_main_queue(), ^{
-                  DemoSendKey(@"\r", 36, 0);
+                  BOOL sent = DemoSendKey(@"\r", 36, 0);
+                  [self acknowledge:requestID
+                            success:sent
+                            message:sent ? @"command palette submitted"
+                                         : @"command palette lost its window"];
                 });
-          }
-        });
-  } else if ([action isEqualToString:@"text"]) {
-    DemoInsertText(notification.userInfo[@"text"] ?: @"");
-  } else if ([action isEqualToString:@"escape"]) {
-    DemoSendKey(@"\x1b", 53, 0);
-  } else if ([action isEqualToString:@"new-window"]) {
-    DemoSendKey(@"n", 45,
-                NSEventModifierFlagCommand | NSEventModifierFlagOption);
-  } else if ([action isEqualToString:@"sidebar"]) {
-    DemoSendKey(@"b", 11, NSEventModifierFlagCommand);
-  } else if ([action isEqualToString:@"frame"]) {
+          });
+    } else if ([action isEqualToString:@"text"]) {
+      BOOL inserted = DemoInsertText(text);
+      [self acknowledge:requestID
+                success:inserted
+                message:inserted ? @"text inserted"
+                                 : @"focused control did not accept text"];
+    } else if ([action isEqualToString:@"escape"]) {
+      BOOL sent = DemoSendKey(@"\x1b", 53, 0);
+      [self acknowledge:requestID
+                success:sent
+                message:sent ? @"escape sent" : @"no active window"];
+    } else if ([action isEqualToString:@"new-window"]) {
+      NSUInteger windowCount = DemoWorkspaceWindows().count;
+      if (!DemoSendKey(
+              @"n", 45,
+              NSEventModifierFlagCommand | NSEventModifierFlagOption)) {
+        [self acknowledge:requestID
+                  success:NO
+                  message:@"no active window for new-window shortcut"];
+        return;
+      }
+      dispatch_after(
+          dispatch_time(DISPATCH_TIME_NOW, 1500 * NSEC_PER_MSEC),
+          dispatch_get_main_queue(), ^{
+            BOOL created = DemoWorkspaceWindows().count > windowCount;
+            [self acknowledge:requestID
+                      success:created
+                      message:created ? @"workspace window created"
+                                      : @"workspace window did not appear"];
+          });
+    } else if ([action isEqualToString:@"sidebar"]) {
+      NSView *content = DemoRootWindow().contentView;
+      BOOL wasVisible = DemoContainsText(content, @"Workspaces", 0);
+      BOOL sent =
+          DemoSendKey(@"b", 11, NSEventModifierFlagCommand);
+      if (!sent) {
+        [self acknowledge:requestID
+                  success:NO
+                  message:@"no active window"];
+        return;
+      }
+      dispatch_after(
+          dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC),
+          dispatch_get_main_queue(), ^{
+            BOOL isVisible =
+                DemoContainsText(content, @"Workspaces", 0);
+            BOOL toggled = isVisible != wasVisible;
+            [self acknowledge:requestID
+                      success:toggled
+                      message:toggled ? @"sidebar visibility changed"
+                                      : @"sidebar visibility did not change"];
+          });
+    } else if ([action isEqualToString:@"frame"]) {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-    [NSApp activateIgnoringOtherApps:YES];
+      [NSApp activateIgnoringOtherApps:YES];
 #pragma clang diagnostic pop
-    NSRect frame = NSMakeRect(160, 25, 1600, 1000);
-    NSArray<NSString *> *parts =
-        [notification.userInfo[@"text"] componentsSeparatedByString:@","];
-    if (parts.count == 4) {
-      frame = NSMakeRect(parts[0].doubleValue, parts[1].doubleValue,
-                         parts[2].doubleValue, parts[3].doubleValue);
+      NSRect frame = NSMakeRect(160, 25, 1600, 1000);
+      NSArray<NSString *> *parts =
+          [text componentsSeparatedByString:@","];
+      if (text.length > 0 && parts.count != 4) {
+        [self acknowledge:requestID
+                  success:NO
+                  message:@"frame requires x,y,width,height"];
+        return;
+      }
+      if (parts.count == 4) {
+        frame = NSMakeRect(parts[0].doubleValue, parts[1].doubleValue,
+                           parts[2].doubleValue, parts[3].doubleValue);
+      }
+      NSWindow *window = DemoRootWindow();
+      if (window != nil) [window setFrame:frame display:YES];
+      [self acknowledge:requestID
+                success:window != nil
+                message:window != nil ? @"window framed"
+                                      : @"no workspace window"];
+    } else if ([action isEqualToString:@"click"]) {
+      NSArray<NSString *> *parts =
+          [text componentsSeparatedByString:@","];
+      BOOL clicked =
+          parts.count == 2 &&
+          DemoClick(NSMakePoint(parts[0].doubleValue,
+                                parts[1].doubleValue));
+      [self acknowledge:requestID
+                success:clicked
+                message:clicked ? @"click sent"
+                                : @"click requires x,y and a workspace window"];
+    } else if ([action isEqualToString:@"press"]) {
+      BOOL pressed =
+          text.length > 0 &&
+          DemoPressLabel(DemoRootWindow().contentView, text, 0);
+      [self acknowledge:requestID
+                success:pressed
+                message:pressed ? @"accessibility control pressed"
+                                : @"accessibility label not found"];
+    } else {
+      [self acknowledge:requestID
+                success:NO
+                message:@"unknown demo action"];
     }
-    [DemoRootWindow() setFrame:frame display:YES];
-  } else if ([action isEqualToString:@"click"]) {
-    NSArray<NSString *> *parts =
-        [notification.userInfo[@"text"] componentsSeparatedByString:@","];
-    if (parts.count == 2) {
-      DemoClick(NSMakePoint(parts[0].doubleValue, parts[1].doubleValue));
-    }
-  } else if ([action isEqualToString:@"press"]) {
-    DemoPressLabel(DemoRootWindow().contentView,
-                   notification.userInfo[@"text"], 0);
-  }
+  });
 }
 
 @end

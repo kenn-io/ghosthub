@@ -15,6 +15,15 @@ import pytest
 
 ROOT = Path(__file__).parents[1]
 DEMO = ROOT / "website" / "demo"
+WEBSITE_ASSET_NAMES = (
+    "hero.png",
+    "guide-sessions.png",
+    "guide-hosts.png",
+    "guide-worktree.png",
+    "guide-quick-launch.png",
+    "guide-terminal.png",
+    "guide-command-center.png",
+)
 
 
 def run_bash(script: str, *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -851,23 +860,15 @@ def make_offline_asset_tree(tmp_path: Path, *, trusted: bool) -> tuple[Path, dic
     assets.mkdir(parents=True)
     fake_bin.mkdir()
     shutil.copy2(ROOT / "website" / "scripts" / "sync-assets.sh", scripts)
-    asset_names = (
-        "hero.png",
-        "guide-sessions.png",
-        "guide-hosts.png",
-        "guide-worktree.png",
-        "guide-quick-launch.png",
-        "guide-terminal.png",
-        "guide-command-center.png",
-    )
-    for asset_name in asset_names:
+    manifest = []
+    for asset_name in WEBSITE_ASSET_NAMES:
         asset = assets / asset_name
         asset.write_bytes(f"unverified-{asset_name}".encode())
         if trusted:
             digest = hashlib.sha256(asset.read_bytes()).hexdigest()
-            (assets / f"{asset_name}.synced").write_text(
-                f"{digest}  src/assets/{asset_name}\n"
-            )
+            manifest.append(f"{digest}  src/assets/{asset_name}\n")
+    if trusted:
+        (assets / ".website-assets.synced").write_text("".join(manifest))
     for command in ("git", "curl"):
         path = fake_bin / command
         path.write_text("#!/usr/bin/env bash\nexit 1\n")
@@ -900,17 +901,8 @@ def test_fetched_asset_ref_is_authoritative_and_atomic(tmp_path: Path) -> None:
     assets.mkdir(parents=True)
     fake_bin.mkdir()
     shutil.copy2(ROOT / "website" / "scripts" / "sync-assets.sh", scripts)
-    asset_names = (
-        "hero.png",
-        "guide-sessions.png",
-        "guide-hosts.png",
-        "guide-worktree.png",
-        "guide-quick-launch.png",
-        "guide-terminal.png",
-        "guide-command-center.png",
-    )
     originals = {}
-    for asset_name in asset_names:
+    for asset_name in WEBSITE_ASSET_NAMES:
         content = f"original-{asset_name}".encode()
         originals[asset_name] = content
         (assets / asset_name).write_bytes(content)
@@ -956,5 +948,65 @@ def test_fetched_asset_ref_is_authoritative_and_atomic(tmp_path: Path) -> None:
     assert not curl_marker.exists()
     assert {
         asset_name: (assets / asset_name).read_bytes()
-        for asset_name in asset_names
+        for asset_name in WEBSITE_ASSET_NAMES
     } == originals
+
+
+def test_interrupted_asset_publication_invalidates_generation(
+    tmp_path: Path,
+) -> None:
+    website = tmp_path / "website"
+    scripts = website / "scripts"
+    assets = website / "src" / "assets"
+    fake_bin = tmp_path / "bin"
+    scripts.mkdir(parents=True)
+    assets.mkdir(parents=True)
+    fake_bin.mkdir()
+    shutil.copy2(ROOT / "website" / "scripts" / "sync-assets.sh", scripts)
+
+    manifest = []
+    for asset_name in WEBSITE_ASSET_NAMES:
+        asset = assets / asset_name
+        asset.write_bytes(f"original-{asset_name}".encode())
+        digest = hashlib.sha256(asset.read_bytes()).hexdigest()
+        manifest.append(f"{digest}  src/assets/{asset_name}\n")
+    generation = assets / ".website-assets.synced"
+    generation.write_text("".join(manifest))
+
+    git = fake_bin / "git"
+    git.write_text(
+        "#!/usr/bin/env bash\n"
+        "case \"$1\" in\n"
+        "  fetch|cat-file) exit 0 ;;\n"
+        "  show) printf 'fetched-%s' \"${2#*:}\"; exit 0 ;;\n"
+        "esac\n"
+        "exit 1\n"
+    )
+    git.chmod(0o755)
+    move_count = tmp_path / "move-count"
+    move = fake_bin / "mv"
+    move.write_text(
+        "#!/usr/bin/env bash\n"
+        "count=$(cat \"$MOVE_COUNT\" 2>/dev/null || printf 0)\n"
+        "count=$((count + 1))\n"
+        "printf '%s' \"$count\" > \"$MOVE_COUNT\"\n"
+        "[[ \"$count\" -eq 4 ]] && exit 1\n"
+        "exec /bin/mv \"$@\"\n"
+    )
+    move.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+        "MOVE_COUNT": str(move_count),
+    }
+
+    result = subprocess.run(
+        ["bash", str(scripts / "sync-assets.sh")],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert not generation.exists()

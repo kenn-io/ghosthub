@@ -26,16 +26,18 @@ assets=(
 raw_root="https://raw.githubusercontent.com/kenn-io/ghosthub/website-assets"
 fetched_ref=""
 stage_root="$(mktemp -d "src/.asset-sync.XXXXXX")"
+generation_manifest="src/assets/.website-assets.synced"
+placeholder_manifest="src/assets/.website-assets.placeholder"
 trap 'rm -rf "$stage_root"' EXIT
 
 if git fetch --depth=1 origin website-assets 2>/dev/null; then
   fetched_ref="FETCH_HEAD"
 fi
 
-asset_is_synced() {
-  local path="$1"
-  [[ -f "$path.synced" ]] \
-    && shasum -a 256 -c "$path.synced" >/dev/null 2>&1
+cached_generation_is_synced() {
+  [[ -f "$generation_manifest" ]] \
+    && [[ ! -f "$placeholder_manifest" ]] \
+    && shasum -a 256 -c "$generation_manifest" >/dev/null 2>&1
 }
 
 git_ref_has_complete_set() {
@@ -66,12 +68,11 @@ stage_raw_assets() {
 }
 
 stage_cached_assets() {
-  local destination="$1" asset path
+  local destination="$1" asset
   mkdir "$destination"
+  cached_generation_is_synced || return 1
   for asset in "${assets[@]}"; do
-    path="src/assets/$asset"
-    asset_is_synced "$path" || return 1
-    cp "$path" "$destination/$asset"
+    cp "src/assets/$asset" "$destination/$asset"
   done
 }
 
@@ -103,19 +104,30 @@ stage_placeholders() {
 
 publish_assets() {
   local source="$1" label="$2" placeholders="${3:-}" asset path digest
+  local staged_manifest="$source/.website-assets.synced"
+  if [[ -z "$placeholders" ]]; then
+    for asset in "${assets[@]}"; do
+      digest="$(shasum -a 256 "$source/$asset" | awk '{print $1}')"
+      printf '%s  src/assets/%s\n' "$digest" "$asset" \
+        >> "$staged_manifest"
+    done
+  fi
+
+  # The manifest is the commit marker for a complete generation. Invalidate
+  # the old marker before the first replacement, then publish the new marker
+  # with one rename only after every asset has landed.
+  rm -f "$generation_manifest" "$placeholder_manifest"
   for asset in "${assets[@]}"; do
     path="src/assets/$asset"
     mv -f "$source/$asset" "$path"
-    if [[ -n "$placeholders" ]]; then
-      rm -f "$path.synced"
-      touch "$path.placeholder"
-    else
-      digest="$(shasum -a 256 "$path" | awk '{print $1}')"
-      printf '%s  %s\n' "$digest" "$path" > "$path.synced"
-      rm -f "$path.placeholder"
-    fi
     echo "synced $path from $label"
   done
+  if [[ -n "$placeholders" ]]; then
+    touch "$source/.website-assets.placeholder"
+    mv -f "$source/.website-assets.placeholder" "$placeholder_manifest"
+  else
+    mv -f "$staged_manifest" "$generation_manifest"
+  fi
 }
 
 if [[ -n "$fetched_ref" ]]; then
