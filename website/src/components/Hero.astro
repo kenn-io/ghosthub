@@ -32,7 +32,6 @@ const heroAlt =
       <a href={GITHUB_URL}>View on GitHub</a>
     </p>
     <figure class="window">
-      <div class="titlebar" aria-hidden="true"><i></i><i></i><i></i></div>
       <ZoomableImage label={heroAlt}>
         <Image
           src={hero}
@@ -163,23 +162,6 @@ const heroAlt =
     box-shadow:
       0 40px 90px rgb(0 0 0 / 0.55),
       0 0 80px color-mix(in srgb, var(--accent) 6%, transparent);
-  }
-
-  /* Sized to read at the same scale as the screenshot below (1600px
-     capture shown at 960px, ~0.6x), not at native macOS chrome size. */
-  .titlebar {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    padding: 0.42rem 0.7rem;
-    border-bottom: 1px solid var(--line);
-  }
-
-  .titlebar i {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--line);
   }
 
   .window :global(img) {

@@ -86,7 +86,6 @@ const imageAlt = {
         </div>
       </div>
       <figure class="container window">
-        <div class="titlebar" aria-hidden="true"><i></i><i></i><i></i></div>
         <ZoomableImage label={imageAlt.sessions}>
           <Image
             src={sessions}
@@ -126,7 +125,6 @@ const imageAlt = {
         </div>
       </div>
       <figure class="container window">
-        <div class="titlebar" aria-hidden="true"><i></i><i></i><i></i></div>
         <ZoomableImage label={imageAlt.hosts}>
           <Image
             src={hosts}
@@ -156,7 +154,6 @@ const imageAlt = {
         </div>
       </div>
       <figure class="container window">
-        <div class="titlebar" aria-hidden="true"><i></i><i></i><i></i></div>
         <ZoomableImage label={imageAlt.worktree}>
           <Image
             src={worktree}
@@ -187,7 +184,6 @@ const imageAlt = {
         </div>
       </div>
       <figure class="container window">
-        <div class="titlebar" aria-hidden="true"><i></i><i></i><i></i></div>
         <ZoomableImage label={imageAlt.quickLaunch}>
           <Image
             src={quickLaunch}
@@ -247,7 +243,6 @@ const imageAlt = {
         </div>
       </div>
       <figure class="container window">
-        <div class="titlebar" aria-hidden="true"><i></i><i></i><i></i></div>
         <ZoomableImage label={imageAlt.terminal}>
           <Image
             src={terminal}
@@ -507,21 +502,6 @@ const imageAlt = {
     overflow: hidden;
     background: var(--bg);
     box-shadow: 0 28px 70px rgb(0 0 0 / 0.4);
-  }
-
-  .titlebar {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    padding: 0.42rem 0.7rem;
-    border-bottom: 1px solid var(--line);
-  }
-
-  .titlebar i {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--line);
   }
 
   .window :global(img) {

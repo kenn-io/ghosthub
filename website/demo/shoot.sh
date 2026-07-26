@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Drives the running isolated demo through every website screenshot state,
-# captures the exact demo process, crops native macOS chrome, and writes
-# web-ready 1600px PNGs. The real Ghosthub may run alongside it.
+# captures the exact demo process with native macOS chrome, and writes web-ready
+# 1600px PNGs. The real Ghosthub may run alongside it.
 set -euo pipefail
 
 demo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -150,14 +150,7 @@ const sharp = require("sharp");
   if (metadata.width === undefined || metadata.height === undefined) {
     throw new Error(`could not read screenshot dimensions: ${raw}`);
   }
-  const titlebarHeight = 34;
   await image
-    .extract({
-      left: 0,
-      top: titlebarHeight,
-      width: metadata.width,
-      height: metadata.height - titlebarHeight,
-    })
     .resize({ width: 1600 })
     .png({ compressionLevel: 9 })
     .toFile(destination);
