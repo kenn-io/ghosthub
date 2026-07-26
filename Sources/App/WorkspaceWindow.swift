@@ -124,7 +124,8 @@ private struct WindowFocusTracker: NSViewRepresentable {
                 return
             }
             window.tabbingMode = .preferred
-            window.tabbingIdentifier = "workspace"
+            window.tabbingIdentifier =
+                WorkspaceWindowIdentity.tabbingIdentifier
             applicationDelegate?
                 .adoptWorkspaceWindowAsTabIfRequested(window)
             titlebarController.install(on: window)
@@ -179,12 +180,50 @@ private struct WindowFocusTracker: NSViewRepresentable {
 }
 
 @MainActor
-private final class WorkspaceWindowCloseController: NSObject {
+private final class WorkspaceWindowCloseDelegate: NSObject,
+    NSWindowDelegate {
     weak var applicationDelegate: ApplicationDelegate?
-    weak var window: NSWindow?
+    private weak var installedWindow: NSWindow?
+    private nonisolated(unsafe) weak var forwardingDelegate:
+        NSWindowDelegate?
 
-    @objc func requestClose(_ sender: Any?) {
-        applicationDelegate?.requestWorkspaceWindowClose(window)
+    func install(on window: NSWindow) {
+        if installedWindow !== window {
+            restoreInstalledWindowDelegate()
+            installedWindow = window
+        }
+        guard window.delegate !== self else { return }
+        forwardingDelegate = window.delegate
+        window.delegate = self
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        applicationDelegate?.requestWorkspaceWindowClose(sender)
+        return false
+    }
+
+    override nonisolated func responds(
+        to selector: Selector!
+    ) -> Bool {
+        super.responds(to: selector)
+            || forwardingDelegate?.responds(to: selector) == true
+    }
+
+    override nonisolated func forwardingTarget(
+        for selector: Selector!
+    ) -> Any? {
+        guard forwardingDelegate?.responds(to: selector) == true
+        else {
+            return super.forwardingTarget(for: selector)
+        }
+        return forwardingDelegate
+    }
+
+    private func restoreInstalledWindowDelegate() {
+        guard let installedWindow,
+              installedWindow.delegate === self
+        else { return }
+        installedWindow.delegate = forwardingDelegate
     }
 }
 
@@ -199,7 +238,7 @@ final class CompactWorkspaceTitlebarController {
 
     private let sidebarHost = NSHostingView(rootView: AnyView(EmptyView()))
     private let actionsHost = NSHostingView(rootView: AnyView(EmptyView()))
-    private let closeController = WorkspaceWindowCloseController()
+    private let closeDelegate = WorkspaceWindowCloseDelegate()
     private weak var installedWindow: NSWindow?
     private var isSidebarVisible = true
     private var canCreateWorktree = false
@@ -210,7 +249,7 @@ final class CompactWorkspaceTitlebarController {
     private var onNewWorktree: () -> Void = {}
 
     init(applicationDelegate: ApplicationDelegate? = nil) {
-        closeController.applicationDelegate = applicationDelegate
+        closeDelegate.applicationDelegate = applicationDelegate
         sidebarHost.identifier = Self.sidebarIdentifier
         actionsHost.identifier = Self.actionsIdentifier
         sidebarHost.translatesAutoresizingMaskIntoConstraints = false
@@ -220,18 +259,14 @@ final class CompactWorkspaceTitlebarController {
     func install(on window: NSWindow) {
         WorkspaceWindowChrome.apply(to: window)
         window.title = sessionTitle?.title ?? "Ghosthub"
+        if closeDelegate.applicationDelegate != nil {
+            closeDelegate.install(on: window)
+        }
 
         guard let closeButton = window.standardWindowButton(.closeButton),
               let zoomButton = window.standardWindowButton(.zoomButton),
               let titlebar = closeButton.superview
         else { return }
-        if closeController.applicationDelegate != nil {
-            closeController.window = window
-            closeButton.target = closeController
-            closeButton.action = #selector(
-                WorkspaceWindowCloseController.requestClose(_:)
-            )
-        }
         guard installedWindow !== window
             || sidebarHost.superview !== titlebar
             || actionsHost.superview !== titlebar

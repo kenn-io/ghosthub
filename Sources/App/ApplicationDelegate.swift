@@ -38,22 +38,61 @@ private func presentApplicationAlertAsync(
     alert.beginSheetModal(for: window, completionHandler: completion)
 }
 
-enum WorkspaceTabAdoptionAction: Equatable {
-    case ignore
-    case finish
-    case adopt
+@MainActor
+enum WorkspaceWindowIdentity {
+    static let tabbingIdentifier = "workspace"
+
+    static func matches(_ window: NSWindow) -> Bool {
+        window.tabbingIdentifier == tabbingIdentifier
+    }
+
+    static func hasAnotherOpenWindow(
+        besides window: NSWindow
+    ) -> Bool {
+        if window.tabbedWindows?.contains(where: {
+            $0 !== window && matches($0)
+        }) == true {
+            return true
+        }
+        return NSApplication.shared.windows.contains {
+            $0 !== window
+                && matches($0)
+                && ($0.isVisible || $0.isMiniaturized)
+                && $0.frame.width > 1
+                && $0.frame.height > 1
+        }
+    }
 }
 
-enum WorkspaceTabAdoptionPolicy {
-    static func action(
-        hasPendingParent: Bool,
-        isParentWindow: Bool,
-        isAlreadyGrouped: Bool
-    ) -> WorkspaceTabAdoptionAction {
-        guard hasPendingParent, !isParentWindow else {
-            return .ignore
+enum WorkspaceWindowResolver {
+    static func workspaceWindow<Window: AnyObject>(
+        from candidate: Window?,
+        sheetParent: (Window) -> Window?,
+        isWorkspace: (Window) -> Bool
+    ) -> Window? {
+        guard var window = candidate else { return nil }
+        while let parent = sheetParent(window) {
+            window = parent
         }
-        return isAlreadyGrouped ? .finish : .adopt
+        return isWorkspace(window) ? window : nil
+    }
+}
+
+final class PendingWorkspaceTab<Window: AnyObject> {
+    private weak var parent: Window?
+
+    func request(from parent: Window?) {
+        self.parent = parent
+    }
+
+    func requestIndependentWindow() {
+        parent = nil
+    }
+
+    func consumeParent(for window: Window) -> Window? {
+        guard let parent, parent !== window else { return nil }
+        self.parent = nil
+        return parent
     }
 }
 
@@ -72,13 +111,13 @@ final class ApplicationDelegate: NSObject,
         NSApplication.shared.terminate(nil)
     }
 
-    var workspaceWindowCount: () -> Int = {
-        WindowRegistry.shared.workspaceWindowCount
+    var hasAnotherWorkspaceWindow: (NSWindow) -> Bool = {
+        WorkspaceWindowIdentity.hasAnotherOpenWindow(besides: $0)
     }
 
     var openWorkspaceWindow: () -> Void = {}
 
-    private weak var pendingTabParent: NSWindow?
+    private let pendingTab = PendingWorkspaceTab<NSWindow>()
     private(set) var terminationConfirmed = false
     private(set) var terminationConfirmationPending = false
 
@@ -92,35 +131,46 @@ final class ApplicationDelegate: NSObject,
         }
     }
 
+    func applicationDidFinishLaunching(
+        _ notification: Notification
+    ) {
+        // Cmd-N must stay an independent window even when the user's system
+        // preference normally groups newly opened windows into tabs.
+        NSWindow.allowsAutomaticWindowTabbing = false
+    }
+
     @objc func newWindowForTab(_ sender: Any?) {
+        requestNewWorkspaceTab()
+    }
+
+    func requestNewWorkspaceWindow() {
+        pendingTab.requestIndependentWindow()
+        openWorkspaceWindow()
+    }
+
+    func requestNewWorkspaceTab() {
         requestNewWorkspaceTab(from: NSApplication.shared.keyWindow)
     }
 
-    func requestNewWorkspaceTab(from parent: NSWindow?) {
-        pendingTabParent = parent
+    func requestNewWorkspaceTab(from candidate: NSWindow?) {
+        let parent = WorkspaceWindowResolver.workspaceWindow(
+            from: candidate,
+            sheetParent: \.sheetParent,
+            isWorkspace: WorkspaceWindowIdentity.matches
+        )
+        pendingTab.request(from: parent)
         openWorkspaceWindow()
     }
 
     func adoptWorkspaceWindowAsTabIfRequested(_ window: NSWindow) {
-        let parent = pendingTabParent
-        let isAlreadyGrouped = parent?.tabbedWindows?
-            .contains { $0 === window } ?? false
-        let action = WorkspaceTabAdoptionPolicy.action(
-            hasPendingParent: parent != nil,
-            isParentWindow: parent === window,
-            isAlreadyGrouped: isAlreadyGrouped
-        )
-
-        switch action {
-        case .ignore:
-            return
-        case .finish:
-            pendingTabParent = nil
-        case .adopt:
-            pendingTabParent = nil
-            parent?.addTabbedWindow(window, ordered: .above)
-            window.makeKeyAndOrderFront(nil)
-        }
+        guard WorkspaceWindowIdentity.matches(window),
+              let parent = pendingTab.consumeParent(for: window)
+        else { return }
+        guard parent.tabbedWindows?.contains(where: { $0 === window })
+            != true
+        else { return }
+        parent.addTabbedWindow(window, ordered: .above)
+        window.makeKeyAndOrderFront(nil)
     }
 
     @discardableResult
@@ -222,7 +272,7 @@ final class ApplicationDelegate: NSObject,
 
     func requestWorkspaceWindowClose(_ window: NSWindow?) {
         guard let window, !window.isSheet else { return }
-        guard workspaceWindowCount() <= 1 else {
+        guard !hasAnotherWorkspaceWindow(window) else {
             window.close()
             return
         }

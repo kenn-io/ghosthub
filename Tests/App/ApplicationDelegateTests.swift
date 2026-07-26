@@ -461,6 +461,21 @@ final class ApplicationDelegateTests: XCTestCase {
         )
     }
 
+    func testApplicationDisablesAutomaticWindowTabbing() {
+        let previousValue = NSWindow.allowsAutomaticWindowTabbing
+        defer {
+            NSWindow.allowsAutomaticWindowTabbing = previousValue
+        }
+        NSWindow.allowsAutomaticWindowTabbing = true
+        let delegate = ApplicationDelegate()
+
+        delegate.applicationDidFinishLaunching(
+            Notification(name: NSApplication.didFinishLaunchingNotification)
+        )
+
+        XCTAssertFalse(NSWindow.allowsAutomaticWindowTabbing)
+    }
+
     func testLastWindowStaysOpenWhenConfirmationCancels() {
         let delegate = ApplicationDelegate.forTesting(
             confirmTerminationResult: false
@@ -535,7 +550,7 @@ final class ApplicationDelegateTests: XCTestCase {
             confirmTerminationResult: true
         )
         let window = CloseSpyWindow()
-        delegate.workspaceWindowCount = { 2 }
+        delegate.hasAnotherWorkspaceWindow = { _ in true }
         var terminationRequests = 0
         delegate.terminateApplication = {
             terminationRequests += 1
@@ -604,7 +619,7 @@ final class ApplicationDelegateTests: XCTestCase {
         )
     }
 
-    func testStandardCloseButtonUsesGhosthubConfirmation() throws {
+    func testWindowCloseDelegateUsesGhosthubConfirmation() throws {
         let delegate = ApplicationDelegate.forTesting(
             confirmTerminationResult: false
         )
@@ -631,7 +646,10 @@ final class ApplicationDelegateTests: XCTestCase {
             window.standardWindowButton(.closeButton)
         )
 
-        closeButton.performClick(nil)
+        let shouldClose = try XCTUnwrap(
+            window.delegate?.windowShouldClose?(window)
+        )
+        XCTAssertFalse(shouldClose)
         XCTAssertEqual(window.closeCallCount, 0)
         XCTAssertEqual(terminationRequests, 0)
 
@@ -641,6 +659,47 @@ final class ApplicationDelegateTests: XCTestCase {
         closeButton.performClick(nil)
         XCTAssertEqual(window.closeCallCount, 0)
         XCTAssertEqual(terminationRequests, 1)
+    }
+
+    func testWindowCloseDelegateForwardsOtherCallbacks() throws {
+        final class ForwardingDelegate: NSObject, NSWindowDelegate {
+            var resizeCount = 0
+
+            func windowDidResize(_ notification: Notification) {
+                resizeCount += 1
+            }
+        }
+
+        let appDelegate = ApplicationDelegate.forTesting()
+        let forwardingDelegate = ForwardingDelegate()
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.delegate = forwardingDelegate
+        let controller = CompactWorkspaceTitlebarController(
+            applicationDelegate: appDelegate
+        )
+
+        controller.install(on: window)
+
+        let installedDelegate = try XCTUnwrap(
+            window.delegate as? NSObject
+        )
+        let selector = #selector(
+            NSWindowDelegate.windowDidResize(_:)
+        )
+        XCTAssertTrue(installedDelegate.responds(to: selector))
+        _ = installedDelegate.perform(
+            selector,
+            with: Notification(
+                name: NSWindow.didResizeNotification,
+                object: window
+            )
+        )
+        XCTAssertEqual(forwardingDelegate.resizeCount, 1)
     }
 
     func testCompactTitlebarKeepsSessionIdentityInNativeWindowTitle() {

@@ -211,14 +211,12 @@ struct GhosthubApp: App {
             Divider()
 
             Button("New Window") {
-                openWindow(id: "workspace")
+                appDelegate.requestNewWorkspaceWindow()
             }
             .keyboardShortcut("n")
 
             Button("New Tab") {
-                appDelegate.requestNewWorkspaceTab(
-                    from: NSApplication.shared.keyWindow
-                )
+                appDelegate.requestNewWorkspaceTab()
             }
             .keyboardShortcut("t")
 
