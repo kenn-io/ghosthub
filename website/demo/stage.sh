@@ -109,7 +109,7 @@ make_worktree() {
 }
 
 echo "==> staging repos and worktrees"
-rm -rf "$scratch/repos" "$scratch/worktrees"
+rm -rf "$scratch/repos" "$scratch/worktrees" "$scratch/ghosthub-state"
 mkdir -p "$scratch"/{repos,worktrees,tmux,home,ssh,ghosthub-config,ghosthub-state}
 cp "$demo_root/home/zprofile" "$scratch/home/.zprofile"
 cp "$demo_root/home/zshrc" "$scratch/home/.zshrc"

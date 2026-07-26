@@ -73,6 +73,55 @@ def test_scratch_guard_requires_creation_after_allow_missing_check(tmp_path: Pat
     assert "disappeared or was never created" in required.stderr
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="demo scripts target macOS stat")
+def test_private_directory_prepare_creates_owner_only_output(tmp_path: Path) -> None:
+    output = tmp_path / "screenshots"
+    env = {
+        **os.environ,
+        "GUARD": str(DEMO / "scratch-guard.sh"),
+        "OUTPUT": str(output),
+    }
+
+    result = run_bash(
+        'source "$GUARD"; '
+        'demo_private_directory_prepare '
+        '"$OUTPUT" "screenshot output" "replace screenshots"',
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert output.stat().st_mode & 0o777 == 0o700
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="demo scripts target macOS stat")
+@pytest.mark.parametrize("unsafe_kind", ["shared", "symlink"])
+def test_private_directory_prepare_rejects_unsafe_output(
+    tmp_path: Path, unsafe_kind: str
+) -> None:
+    output = tmp_path / "screenshots"
+    if unsafe_kind == "shared":
+        output.mkdir(mode=0o700)
+        output.chmod(0o755)
+    else:
+        target = tmp_path / "target"
+        target.mkdir(mode=0o700)
+        output.symlink_to(target, target_is_directory=True)
+    env = {
+        **os.environ,
+        "GUARD": str(DEMO / "scratch-guard.sh"),
+        "OUTPUT": str(output),
+    }
+
+    result = run_bash(
+        'source "$GUARD"; '
+        'demo_private_directory_prepare '
+        '"$OUTPUT" "screenshot output" "replace screenshots"',
+        env=env,
+    )
+
+    assert result.returncode != 0
+
+
 def test_stage_uses_a_curated_account_free_agent_session() -> None:
     stage = (DEMO / "stage.sh").read_text()
 

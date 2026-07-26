@@ -13,17 +13,21 @@ bin="$scratch/app/Ghosthub.app/Contents/MacOS/Ghosthub"
 source "$demo_root/scratch-guard.sh"
 demo_scratch_guard "$scratch"
 [[ -f "$scratch/.ghosthub-demo-scratch" ]] || { echo "error: run stage.sh first" >&2; exit 1; }
+demo_private_directory_prepare \
+  "$out_dir" "screenshot output" "replace screenshots"
 # shellcheck source=SCRIPTDIR/process.sh
 source "$demo_root/process.sh"
 demo_pid="$(demo_require_recorded_process "$scratch/app.pid" "$bin")"
-mkdir -p "$out_dir" "$scratch/screenshots-raw"
+mkdir -p "$scratch/screenshots-raw"
 
 demo_input() {
   local action="$1" text="${2:-}" submit="${3:-false}"
+  local expect_kind="${4:-}"
   GHOSTHUB_DEMO_PID="$demo_pid" \
     GHOSTHUB_DEMO_ACTION="$action" \
     GHOSTHUB_DEMO_TEXT="$text" \
     GHOSTHUB_DEMO_SUBMIT="$submit" \
+    GHOSTHUB_DEMO_EXPECT_KIND="$expect_kind" \
     swift - <<'EOF'
 import Foundation
 import Darwin
@@ -68,9 +72,10 @@ notifications.post(
         "action": action,
         "text": environment["GHOSTHUB_DEMO_TEXT"] ?? "",
         "submit": environment["GHOSTHUB_DEMO_SUBMIT"] ?? "false",
+        "expectKind": environment["GHOSTHUB_DEMO_EXPECT_KIND"] ?? "",
     ]
 )
-let deadline = Date(timeIntervalSinceNow: 5)
+let deadline = Date(timeIntervalSinceNow: 15)
 while acknowledgement.result == nil && Date() < deadline {
     RunLoop.current.run(
         mode: .default,
@@ -113,7 +118,16 @@ sleep 10
 
 palette() {
   local query="$1" submit="${2:-true}"
-  demo_input palette "$query" "$submit"
+  local result="${3:-selection}"
+  local expectation="palette-closed"
+  if [[ "$submit" != "true" ]]; then
+    expectation="palette-open"
+  elif [[ "$result" == "sheet" ]]; then
+    expectation="palette-replaced"
+  fi
+  if ! demo_input palette "$query" "$submit" "$expectation"; then
+    return 1
+  fi
   sleep 1.5
 }
 
@@ -124,7 +138,10 @@ dismiss_sheet() {
 
 process_capture() {
   local raw="$1" destination="$2"
-  NODE_PATH="$demo_root/../node_modules" node - "$raw" "$destination" <<'EOF'
+  local temporary
+  temporary="$(mktemp "$destination.tmp.XXXXXX")"
+  if ! NODE_PATH="$demo_root/../node_modules" \
+      node - "$raw" "$temporary" <<'EOF'
 const sharp = require("sharp");
 (async () => {
   const [raw, destination] = process.argv.slice(2);
@@ -146,6 +163,11 @@ const sharp = require("sharp");
     .toFile(destination);
 })();
 EOF
+  then
+    rm -f "$temporary"
+    return 1
+  fi
+  mv -f "$temporary" "$destination"
 }
 
 capture_state() {
@@ -158,7 +180,10 @@ capture_state() {
 
 process_matrix_capture() {
   local raw="$1" destination="$2"
-  NODE_PATH="$demo_root/../node_modules" node - "$raw" "$destination" <<'EOF'
+  local temporary
+  temporary="$(mktemp "$destination.tmp.XXXXXX")"
+  if ! NODE_PATH="$demo_root/../node_modules" \
+      node - "$raw" "$temporary" <<'EOF'
 const sharp = require("sharp");
 (async () => {
   const [raw, destination] = process.argv.slice(2);
@@ -191,7 +216,22 @@ const sharp = require("sharp");
     .toFile(destination);
 })();
 EOF
+  then
+    rm -f "$temporary"
+    return 1
+  fi
+  mv -f "$temporary" "$destination"
 }
+
+echo "==> controller: unmatched palette commands fail validation"
+unmatched_command="__ghosthub_missing_command__"
+unmatched_error="$scratch/unmatched-command.error"
+if palette "$unmatched_command" \
+    2>"$unmatched_error"; then
+  echo "error: unmatched command unexpectedly passed palette validation" >&2
+  exit 1
+fi
+demo_input escape
 
 echo "==> hero: active coding-agent worktree"
 palette "fix-reconnect-backoff"
@@ -210,7 +250,7 @@ sleep 0.5
 capture_state guide-sessions.png
 
 echo "==> guide: remote host settings"
-palette "Open Hosts Settings"
+palette "Open Hosts Settings" true sheet
 sleep 2
 capture_state guide-hosts.png
 dismiss_sheet
@@ -218,7 +258,7 @@ dismiss_sheet
 echo "==> guide: new worktree"
 palette "fix-reconnect-backoff"
 sleep 2
-palette "New Worktree in ghosthub"
+palette "New Worktree in ghosthub" true sheet
 sleep 1
 demo_input text "improve-session-search"
 sleep 1
@@ -231,7 +271,7 @@ capture_state guide-quick-launch.png
 dismiss_sheet
 
 echo "==> guide: terminal settings"
-palette "Open Terminal Settings"
+palette "Open Terminal Settings" true sheet
 sleep 2
 capture_state guide-terminal.png
 dismiss_sheet

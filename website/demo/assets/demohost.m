@@ -117,6 +117,22 @@ static BOOL DemoContainsText(id element, NSString *text,
   return NO;
 }
 
+static BOOL DemoPalettePostcondition(NSString *kind,
+                                     NSWindow *paletteSheet) {
+  NSWindow *currentSheet = DemoRootWindow().attachedSheet;
+  BOOL paletteOpen = currentSheet == paletteSheet;
+  if ([kind isEqualToString:@"palette-open"]) {
+    return paletteOpen;
+  }
+  if ([kind isEqualToString:@"palette-closed"]) {
+    return !paletteOpen;
+  }
+  if ([kind isEqualToString:@"palette-replaced"]) {
+    return !paletteOpen && currentSheet != nil;
+  }
+  return NO;
+}
+
 static NSWindow *DemoRootWindow(void) {
   NSWindow *window = [NSApp keyWindow] ?: [NSApp mainWindow];
   while (window.sheetParent != nil) {
@@ -363,6 +379,7 @@ static void DemoCapture(NSString *path, BOOL matrix) {
   NSString *action = notification.userInfo[@"action"];
   NSString *requestID = notification.userInfo[@"requestID"];
   NSString *text = notification.userInfo[@"text"] ?: @"";
+  NSString *expectKind = notification.userInfo[@"expectKind"] ?: @"";
   BOOL submit =
       [notification.userInfo[@"submit"] isEqualToString:@"true"];
   if (action.length == 0 || requestID.length == 0) return;
@@ -381,20 +398,43 @@ static void DemoCapture(NSString *path, BOOL matrix) {
                         message:@"command palette did not accept text"];
               return;
             }
-            if (!submit) {
-              [self acknowledge:requestID
-                        success:YES
-                        message:@"command palette ready"];
-              return;
-            }
+            NSWindow *paletteSheet = DemoRootWindow().attachedSheet;
             dispatch_after(
-                dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC),
+                dispatch_time(DISPATCH_TIME_NOW, 250 * NSEC_PER_MSEC),
                 dispatch_get_main_queue(), ^{
-                  BOOL sent = DemoSendKey(@"\r", 36, 0);
-                  [self acknowledge:requestID
-                            success:sent
-                            message:sent ? @"command palette submitted"
-                                         : @"command palette lost its window"];
+                  if (!submit) {
+                    BOOL matched = DemoPalettePostcondition(
+                        expectKind, paletteSheet);
+                    [self acknowledge:requestID
+                              success:matched
+                              message:matched
+                                  ? @"command palette matched requested state"
+                                  : @"command palette did not match requested state"];
+                    return;
+                  }
+                  dispatch_after(
+                      dispatch_time(
+                          DISPATCH_TIME_NOW, 250 * NSEC_PER_MSEC),
+                      dispatch_get_main_queue(), ^{
+                        if (!DemoSendKey(@"\r", 36, 0)) {
+                          [self acknowledge:requestID
+                                    success:NO
+                                    message:@"command palette lost its window"];
+                          return;
+                        }
+                        dispatch_after(
+                            dispatch_time(
+                                DISPATCH_TIME_NOW, 750 * NSEC_PER_MSEC),
+                            dispatch_get_main_queue(), ^{
+                              BOOL matched = DemoPalettePostcondition(
+                                  expectKind, paletteSheet);
+                              [self acknowledge:requestID
+                                        success:matched
+                                        message:matched
+                                            ? @"command reached requested state"
+                                            : @"command did not reach requested state"];
+                            });
+                      });
                 });
           });
     } else if ([action isEqualToString:@"text"]) {
