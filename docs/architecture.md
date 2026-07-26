@@ -18,6 +18,20 @@ every directly discovered tmux session on each host, including sessions that
 were not created by Ghosthub or kwt. General tmux sessions are presented as one
 ordinary native tmux client; tmux alone owns and renders their layout.
 
+## Window Model
+
+Each Ghosthub workspace is an independent SwiftUI scene with its own scene
+model, selection, and terminal coordinators. Workspaces may be presented as
+separate windows or grouped using native AppKit `NSWindow` tabs. Cmd-N opens a
+new window, while Cmd-T opens a workspace and adopts it into the active
+window's native tab group. AppKit owns the tab bar, tab movement, and window
+merging; Ghosthub does not render a custom tab strip or project tmux windows
+into native UI.
+
+Closing a native tab closes only that workspace presentation. Closing the last
+tab of the last workspace follows the same quit-confirmation policy as closing
+the final standalone window.
+
 ## Process Boundaries
 
 ### Ghosthub.app

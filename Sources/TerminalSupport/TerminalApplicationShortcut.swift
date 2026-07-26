@@ -19,7 +19,7 @@ public enum TerminalApplicationShortcut {
     ) -> Bool {
         if flags == .command {
             switch chars {
-            case "q", ",", "b":
+            case "q", ",", "b", "n", "t":
                 return true
             case "w":
                 return !hasPaneCloseHandler
@@ -30,15 +30,6 @@ public enum TerminalApplicationShortcut {
         if flags == [.command, .shift] {
             switch chars {
             case "n", "p", "w":
-                return true
-            default:
-                return false
-            }
-        }
-        if flags == [.command, .option] {
-            switch chars {
-            // New Window is Cmd+Option+N so the terminal can keep bare Cmd+N.
-            case "n":
                 return true
             default:
                 return false

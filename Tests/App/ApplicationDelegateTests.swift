@@ -643,7 +643,7 @@ final class ApplicationDelegateTests: XCTestCase {
         XCTAssertEqual(terminationRequests, 1)
     }
 
-    func testCompactTitlebarInstallsActiveSessionIdentityWithoutToolbar() throws {
+    func testCompactTitlebarKeepsSessionIdentityInNativeWindowTitle() {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
             styleMask: [.titled, .closable, .resizable],
@@ -669,15 +669,6 @@ final class ApplicationDelegateTests: XCTestCase {
 
         XCTAssertNil(window.toolbar)
         XCTAssertEqual(window.title, "docbank · studio-mac")
-        let titlebar = try XCTUnwrap(
-            window.standardWindowButton(.closeButton)?.superview
-        )
-        let titleHost = try XCTUnwrap(
-            titlebar.subviews.first {
-                $0.identifier?.rawValue == "GhosthubCompactSessionTitle"
-            }
-        )
-        XCTAssertTrue(titleHost.mouseDownCanMoveWindow)
     }
 
     func testQuitPolicyRequiresConfirmationWhenRuntimeRequestsIt() {

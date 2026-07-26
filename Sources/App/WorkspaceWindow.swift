@@ -27,12 +27,8 @@ extension FocusedValues {
 @MainActor
 enum WorkspaceWindowChrome {
     static func apply(to window: NSWindow) {
-        // An NSToolbar adds a second, 40-point-tall row on Tahoe even when its
-        // controls use compact metrics. Keep controls in the standard
-        // titlebar and give that single row an explicit uniform surface. A
-        // transparent titlebar alone reveals whichever content happens to be
-        // underneath it, so an active terminal would otherwise tint only the
-        // detail side.
+        // Keep workspace controls in the standard titlebar. Native window tabs
+        // add their own AppKit-managed row when a tab group is present.
         window.toolbar = nil
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
@@ -102,9 +98,11 @@ private struct WindowFocusTracker: NSViewRepresentable {
             ((Bool) -> Void)?
         private nonisolated(unsafe) var observers:
             [NSObjectProtocol] = []
+        private weak var applicationDelegate: ApplicationDelegate?
         let titlebarController: CompactWorkspaceTitlebarController
 
         init(applicationDelegate: ApplicationDelegate) {
+            self.applicationDelegate = applicationDelegate
             titlebarController = CompactWorkspaceTitlebarController(
                 applicationDelegate: applicationDelegate
             )
@@ -125,7 +123,10 @@ private struct WindowFocusTracker: NSViewRepresentable {
                 }
                 return
             }
-            window.tabbingMode = .disallowed
+            window.tabbingMode = .preferred
+            window.tabbingIdentifier = "workspace"
+            applicationDelegate?
+                .adoptWorkspaceWindowAsTabIfRequested(window)
             titlebarController.install(on: window)
             DispatchQueue.main.async { [weak self] in
                 self?.titlebarController.install(on: window)
@@ -178,11 +179,6 @@ private struct WindowFocusTracker: NSViewRepresentable {
 }
 
 @MainActor
-private final class DraggableTitlebarHostingView: NSHostingView<AnyView> {
-    override var mouseDownCanMoveWindow: Bool { true }
-}
-
-@MainActor
 private final class WorkspaceWindowCloseController: NSObject {
     weak var applicationDelegate: ApplicationDelegate?
     weak var window: NSWindow?
@@ -200,14 +196,8 @@ final class CompactWorkspaceTitlebarController {
     private static let actionsIdentifier = NSUserInterfaceItemIdentifier(
         "GhosthubCompactWorkspaceActions"
     )
-    private static let titleIdentifier = NSUserInterfaceItemIdentifier(
-        "GhosthubCompactSessionTitle"
-    )
 
     private let sidebarHost = NSHostingView(rootView: AnyView(EmptyView()))
-    private let titleHost = DraggableTitlebarHostingView(
-        rootView: AnyView(EmptyView())
-    )
     private let actionsHost = NSHostingView(rootView: AnyView(EmptyView()))
     private let closeController = WorkspaceWindowCloseController()
     private weak var installedWindow: NSWindow?
@@ -222,15 +212,9 @@ final class CompactWorkspaceTitlebarController {
     init(applicationDelegate: ApplicationDelegate? = nil) {
         closeController.applicationDelegate = applicationDelegate
         sidebarHost.identifier = Self.sidebarIdentifier
-        titleHost.identifier = Self.titleIdentifier
         actionsHost.identifier = Self.actionsIdentifier
         sidebarHost.translatesAutoresizingMaskIntoConstraints = false
-        titleHost.translatesAutoresizingMaskIntoConstraints = false
         actionsHost.translatesAutoresizingMaskIntoConstraints = false
-        titleHost.setContentCompressionResistancePriority(
-            .defaultLow,
-            for: .horizontal
-        )
     }
 
     func install(on window: NSWindow) {
@@ -250,22 +234,19 @@ final class CompactWorkspaceTitlebarController {
         }
         guard installedWindow !== window
             || sidebarHost.superview !== titlebar
-            || titleHost.superview !== titlebar
+            || actionsHost.superview !== titlebar
         else { return }
 
         removeControlsFromInstalledWindow()
         titlebar.subviews
             .filter {
                 ($0.identifier == Self.sidebarIdentifier
-                    || $0.identifier == Self.titleIdentifier
                     || $0.identifier == Self.actionsIdentifier)
                     && $0 !== sidebarHost
-                    && $0 !== titleHost
                     && $0 !== actionsHost
             }
             .forEach { $0.removeFromSuperview() }
         titlebar.addSubview(sidebarHost)
-        titlebar.addSubview(titleHost)
         titlebar.addSubview(actionsHost)
         NSLayoutConstraint.activate([
             sidebarHost.leadingAnchor.constraint(
@@ -277,18 +258,6 @@ final class CompactWorkspaceTitlebarController {
             ),
             sidebarHost.widthAnchor.constraint(equalToConstant: 22),
             sidebarHost.heightAnchor.constraint(equalToConstant: 22),
-            titleHost.leadingAnchor.constraint(
-                equalTo: sidebarHost.trailingAnchor,
-                constant: 8
-            ),
-            titleHost.trailingAnchor.constraint(
-                lessThanOrEqualTo: actionsHost.leadingAnchor,
-                constant: -12
-            ),
-            titleHost.centerYAnchor.constraint(
-                equalTo: closeButton.centerYAnchor
-            ),
-            titleHost.heightAnchor.constraint(equalToConstant: 22),
             actionsHost.trailingAnchor.constraint(
                 equalTo: titlebar.trailingAnchor,
                 constant: -10
@@ -323,7 +292,6 @@ final class CompactWorkspaceTitlebarController {
 
     private func refreshHosts() {
         sidebarHost.rootView = AnyView(sidebarView)
-        titleHost.rootView = AnyView(titleView)
         actionsHost.rootView = AnyView(actionsView)
     }
 
@@ -359,34 +327,8 @@ final class CompactWorkspaceTitlebarController {
         }
     }
 
-    @ViewBuilder
-    private var titleView: some View {
-        if let sessionTitle {
-            HStack(spacing: 5) {
-                Image(systemName: sessionTitle.icon.systemImageName)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
-                Text(sessionTitle.sessionName)
-                    .font(.system(size: 12, weight: .semibold))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Text("·")
-                    .foregroundStyle(.tertiary)
-                Text(sessionTitle.hostname)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            .help(sessionTitle.title)
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(sessionTitle.title)
-        }
-    }
-
     private func removeControlsFromInstalledWindow() {
         sidebarHost.removeFromSuperview()
-        titleHost.removeFromSuperview()
         actionsHost.removeFromSuperview()
     }
 }

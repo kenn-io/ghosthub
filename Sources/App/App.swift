@@ -46,6 +46,9 @@ struct GhosthubApp: App {
                     AppAppearance.apply(
                         settingsStore.interfaceAppearance
                     )
+                    appDelegate.openWorkspaceWindow = {
+                        openWindow(id: "workspace")
+                    }
                     appDelegate.needsConfirmQuit = {
                         QuitPolicy.needsConfirmation(
                             runtimeNeedsConfirmQuit:
@@ -210,10 +213,14 @@ struct GhosthubApp: App {
             Button("New Window") {
                 openWindow(id: "workspace")
             }
-            .keyboardShortcut(
-                "n",
-                modifiers: [.command, .option]
-            )
+            .keyboardShortcut("n")
+
+            Button("New Tab") {
+                appDelegate.requestNewWorkspaceTab(
+                    from: NSApplication.shared.keyWindow
+                )
+            }
+            .keyboardShortcut("t")
 
             Divider()
 

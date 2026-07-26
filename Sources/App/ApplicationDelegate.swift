@@ -38,6 +38,25 @@ private func presentApplicationAlertAsync(
     alert.beginSheetModal(for: window, completionHandler: completion)
 }
 
+enum WorkspaceTabAdoptionAction: Equatable {
+    case ignore
+    case finish
+    case adopt
+}
+
+enum WorkspaceTabAdoptionPolicy {
+    static func action(
+        hasPendingParent: Bool,
+        isParentWindow: Bool,
+        isAlreadyGrouped: Bool
+    ) -> WorkspaceTabAdoptionAction {
+        guard hasPendingParent, !isParentWindow else {
+            return .ignore
+        }
+        return isAlreadyGrouped ? .finish : .adopt
+    }
+}
+
 @MainActor
 final class ApplicationDelegate: NSObject,
     NSApplicationDelegate {
@@ -57,6 +76,9 @@ final class ApplicationDelegate: NSObject,
         WindowRegistry.shared.workspaceWindowCount
     }
 
+    var openWorkspaceWindow: () -> Void = {}
+
+    private weak var pendingTabParent: NSWindow?
     private(set) var terminationConfirmed = false
     private(set) var terminationConfirmationPending = false
 
@@ -70,10 +92,35 @@ final class ApplicationDelegate: NSObject,
         }
     }
 
-    func applicationDidFinishLaunching(
-        _ notification: Notification
-    ) {
-        NSWindow.allowsAutomaticWindowTabbing = false
+    @objc func newWindowForTab(_ sender: Any?) {
+        requestNewWorkspaceTab(from: NSApplication.shared.keyWindow)
+    }
+
+    func requestNewWorkspaceTab(from parent: NSWindow?) {
+        pendingTabParent = parent
+        openWorkspaceWindow()
+    }
+
+    func adoptWorkspaceWindowAsTabIfRequested(_ window: NSWindow) {
+        let parent = pendingTabParent
+        let isAlreadyGrouped = parent?.tabbedWindows?
+            .contains { $0 === window } ?? false
+        let action = WorkspaceTabAdoptionPolicy.action(
+            hasPendingParent: parent != nil,
+            isParentWindow: parent === window,
+            isAlreadyGrouped: isAlreadyGrouped
+        )
+
+        switch action {
+        case .ignore:
+            return
+        case .finish:
+            pendingTabParent = nil
+        case .adopt:
+            pendingTabParent = nil
+            parent?.addTabbedWindow(window, ordered: .above)
+            window.makeKeyAndOrderFront(nil)
+        }
     }
 
     @discardableResult
