@@ -15,6 +15,15 @@ import pytest
 
 ROOT = Path(__file__).parents[1]
 DEMO = ROOT / "website" / "demo"
+WEBSITE_ASSET_NAMES = (
+    "hero.png",
+    "guide-sessions.png",
+    "guide-hosts.png",
+    "guide-worktree.png",
+    "guide-quick-launch.png",
+    "guide-terminal.png",
+    "guide-command-center.png",
+)
 
 
 def run_bash(script: str, *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -64,17 +73,61 @@ def test_scratch_guard_requires_creation_after_allow_missing_check(tmp_path: Pat
     assert "disappeared or was never created" in required.stderr
 
 
-def test_stage_disables_claude_customizations_without_accepting_trust() -> None:
+@pytest.mark.skipif(sys.platform != "darwin", reason="demo scripts target macOS stat")
+def test_private_directory_prepare_creates_owner_only_output(tmp_path: Path) -> None:
+    output = tmp_path / "screenshots"
+    env = {
+        **os.environ,
+        "GUARD": str(DEMO / "scratch-guard.sh"),
+        "OUTPUT": str(output),
+    }
+
+    result = run_bash(
+        'source "$GUARD"; '
+        'demo_private_directory_prepare '
+        '"$OUTPUT" "screenshot output" "replace screenshots"',
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert output.stat().st_mode & 0o777 == 0o700
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="demo scripts target macOS stat")
+@pytest.mark.parametrize("unsafe_kind", ["shared", "symlink"])
+def test_private_directory_prepare_rejects_unsafe_output(
+    tmp_path: Path, unsafe_kind: str
+) -> None:
+    output = tmp_path / "screenshots"
+    if unsafe_kind == "shared":
+        output.mkdir(mode=0o700)
+        output.chmod(0o755)
+    else:
+        target = tmp_path / "target"
+        target.mkdir(mode=0o700)
+        output.symlink_to(target, target_is_directory=True)
+    env = {
+        **os.environ,
+        "GUARD": str(DEMO / "scratch-guard.sh"),
+        "OUTPUT": str(output),
+    }
+
+    result = run_bash(
+        'source "$GUARD"; '
+        'demo_private_directory_prepare '
+        '"$OUTPUT" "screenshot output" "replace screenshots"',
+        env=env,
+    )
+
+    assert result.returncode != 0
+
+
+def test_stage_uses_a_curated_account_free_agent_session() -> None:
     stage = (DEMO / "stage.sh").read_text()
 
-    assert "claude --safe-mode --permission-mode plan --strict-mcp-config" in stage
-    assert "--setting-sources project" not in stage
-    trust_block = stage[
-        stage.index('trust_required=""') : stage.index('if [[ -z "$claude_ready" ]]')
-    ]
-    assert "trust the files in this folder" in trust_block
-    assert "tmux send-keys" not in trust_block
-    assert "exit 1" in trust_block
+    assert 'cat > "$scratch/agent-transcript.txt"' in stage
+    assert "Ghosthub opens the same tmux client locally and remotely." in stage
+    assert '"clear; cat $(printf \'%q\' "$scratch/agent-transcript.txt")"' in stage
 
 
 def test_stage_stops_live_consumers_before_replacing_scratch_state() -> None:
@@ -96,13 +149,15 @@ def test_stage_uses_immutable_docker_image_id_without_a_shared_tag() -> None:
     assert '-p 127.0.0.1:2201:22 "$image_id"' in stage
 
 
-def test_stage_clones_only_public_main_without_local_objects() -> None:
+def test_stage_builds_ghosthub_from_synthetic_history() -> None:
     stage = (DEMO / "stage.sh").read_text()
 
-    assert "--no-local --single-branch --branch main --depth 1" in stage
-    assert "https://github.com/kenn-io/ghosthub.git" in stage
-    assert "git clone -q --local " not in stage
-    assert "GHOSTHUB_DEMO_SOURCE" not in stage
+    ghosthub_fixture = stage[
+        stage.index("make_repo ghosthub") : stage.index("make_repo agentsview")
+    ]
+    assert "Initial native workspace" in ghosthub_fixture
+    assert "Attach ordinary tmux clients" in ghosthub_fixture
+    assert "Reconnect remote sessions" in ghosthub_fixture
 
 
 def test_demo_git_ignores_url_rewrites_and_hooks(tmp_path: Path) -> None:
@@ -854,10 +909,15 @@ def make_offline_asset_tree(tmp_path: Path, *, trusted: bool) -> tuple[Path, dic
     assets.mkdir(parents=True)
     fake_bin.mkdir()
     shutil.copy2(ROOT / "website" / "scripts" / "sync-assets.sh", scripts)
-    (assets / "hero.png").write_bytes(b"legacy-placeholder-or-unverified-image")
+    manifest = []
+    for asset_name in WEBSITE_ASSET_NAMES:
+        asset = assets / asset_name
+        asset.write_bytes(f"unverified-{asset_name}".encode())
+        if trusted:
+            digest = hashlib.sha256(asset.read_bytes()).hexdigest()
+            manifest.append(f"{digest}  src/assets/{asset_name}\n")
     if trusted:
-        digest = hashlib.sha256((assets / "hero.png").read_bytes()).hexdigest()
-        (assets / "hero.png.synced").write_text(f"{digest}  src/assets/hero.png\n")
+        (assets / ".website-assets.synced").write_text("".join(manifest))
     for command in ("git", "curl"):
         path = fake_bin / command
         path.write_text("#!/usr/bin/env bash\nexit 1\n")
@@ -878,4 +938,124 @@ def test_offline_asset_reuse_requires_synced_provenance(
 
     assert result.returncode == expected_code
     if not trusted:
-        assert "missing or is a stale placeholder" in result.stderr
+        assert "is missing or stale" in result.stderr
+
+
+def test_fetched_asset_ref_is_authoritative_and_atomic(tmp_path: Path) -> None:
+    website = tmp_path / "website"
+    scripts = website / "scripts"
+    assets = website / "src" / "assets"
+    fake_bin = tmp_path / "bin"
+    scripts.mkdir(parents=True)
+    assets.mkdir(parents=True)
+    fake_bin.mkdir()
+    shutil.copy2(ROOT / "website" / "scripts" / "sync-assets.sh", scripts)
+    originals = {}
+    for asset_name in WEBSITE_ASSET_NAMES:
+        content = f"original-{asset_name}".encode()
+        originals[asset_name] = content
+        (assets / asset_name).write_bytes(content)
+
+    git = fake_bin / "git"
+    git.write_text(
+        "#!/usr/bin/env bash\n"
+        "case \"$1\" in\n"
+        "  fetch) exit 0 ;;\n"
+        "  cat-file)\n"
+        "    [[ \"$3\" == \"FETCH_HEAD:guide-worktree.png\" ]] && exit 1\n"
+        "    exit 0\n"
+        "    ;;\n"
+        "  show) printf 'fetched-%s' \"${2#*:}\"; exit 0 ;;\n"
+        "esac\n"
+        "exit 1\n"
+    )
+    git.chmod(0o755)
+    curl_marker = tmp_path / "curl-called"
+    curl = fake_bin / "curl"
+    curl.write_text(
+        "#!/usr/bin/env bash\n"
+        "touch \"$CURL_MARKER\"\n"
+        "exit 0\n"
+    )
+    curl.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+        "CURL_MARKER": str(curl_marker),
+    }
+
+    result = subprocess.run(
+        ["bash", str(scripts / "sync-assets.sh")],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "fetched website-assets is incomplete" in result.stderr
+    assert not curl_marker.exists()
+    assert {
+        asset_name: (assets / asset_name).read_bytes()
+        for asset_name in WEBSITE_ASSET_NAMES
+    } == originals
+
+
+def test_interrupted_asset_publication_invalidates_generation(
+    tmp_path: Path,
+) -> None:
+    website = tmp_path / "website"
+    scripts = website / "scripts"
+    assets = website / "src" / "assets"
+    fake_bin = tmp_path / "bin"
+    scripts.mkdir(parents=True)
+    assets.mkdir(parents=True)
+    fake_bin.mkdir()
+    shutil.copy2(ROOT / "website" / "scripts" / "sync-assets.sh", scripts)
+
+    manifest = []
+    for asset_name in WEBSITE_ASSET_NAMES:
+        asset = assets / asset_name
+        asset.write_bytes(f"original-{asset_name}".encode())
+        digest = hashlib.sha256(asset.read_bytes()).hexdigest()
+        manifest.append(f"{digest}  src/assets/{asset_name}\n")
+    generation = assets / ".website-assets.synced"
+    generation.write_text("".join(manifest))
+
+    git = fake_bin / "git"
+    git.write_text(
+        "#!/usr/bin/env bash\n"
+        "case \"$1\" in\n"
+        "  fetch|cat-file) exit 0 ;;\n"
+        "  show) printf 'fetched-%s' \"${2#*:}\"; exit 0 ;;\n"
+        "esac\n"
+        "exit 1\n"
+    )
+    git.chmod(0o755)
+    move_count = tmp_path / "move-count"
+    move = fake_bin / "mv"
+    move.write_text(
+        "#!/usr/bin/env bash\n"
+        "count=$(cat \"$MOVE_COUNT\" 2>/dev/null || printf 0)\n"
+        "count=$((count + 1))\n"
+        "printf '%s' \"$count\" > \"$MOVE_COUNT\"\n"
+        "[[ \"$count\" -eq 4 ]] && exit 1\n"
+        "exec /bin/mv \"$@\"\n"
+    )
+    move.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+        "MOVE_COUNT": str(move_count),
+    }
+
+    result = subprocess.run(
+        ["bash", str(scripts / "sync-assets.sh")],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert not generation.exists()

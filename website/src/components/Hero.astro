@@ -2,7 +2,12 @@
 import { Image } from 'astro:assets';
 import { GITHUB_URL, RELEASES_URL } from '../config';
 import AppIcon from './AppIcon.astro';
+import ZoomableImage from './ZoomableImage.astro';
 import hero from '../assets/hero.png';
+
+const heroAlt =
+  'Ghosthub main window: sidebar with local and remote tmux sessions and kwt '
+  + 'worktrees, and an attached session running a Claude Code investigation';
 ---
 
 <section class="hero">
@@ -13,25 +18,31 @@ import hero from '../assets/hero.png';
     </p>
     <h1>A power terminal for your agents&rsquo; tmux sessions</h1>
     <p class="sub">
-      Attach to every session in your fleet, local or over SSH, with
-      keepalives and automatic reconnect. Worktree-native from the ground
-      up.
+      A native, libghostty-powered terminal for every tmux session in your
+      fleet—local or over SSH—with keepalives and automatic reconnect.
+      Worktree-native from the ground up.
     </p>
     <div class="actions">
       <a class="cta" data-download href={RELEASES_URL}>Download for Apple Silicon</a>
-      <a class="ghost" href={GITHUB_URL}>View on GitHub</a>
+      <a class="learn" href="/guide/">Learn how it works</a>
     </div>
-    <p class="meta"><span data-version></span>macOS 26+ &middot; Apple Silicon</p>
+    <p class="meta">
+      <span data-version></span>macOS 26+ &middot; Apple Silicon
+      {' '}<span aria-hidden="true">&middot;</span>{' '}
+      <a href={GITHUB_URL}>View on GitHub</a>
+    </p>
     <figure class="window">
       <div class="titlebar" aria-hidden="true"><i></i><i></i><i></i></div>
-      <Image
-        src={hero}
-        alt="Ghosthub main window: sidebar with local and remote tmux sessions and kwt worktrees, and an attached session running a Claude Code investigation"
-        widths={[640, 960, 1280, 1920, 2400]}
-        sizes="(max-width: 1000px) 100vw, 960px"
-        loading="eager"
-        fetchpriority="high"
-      />
+      <ZoomableImage label={heroAlt}>
+        <Image
+          src={hero}
+          alt={heroAlt}
+          widths={[640, 960, 1280, 1920, 2400]}
+          sizes="(max-width: 1000px) 100vw, 960px"
+          loading="eager"
+          fetchpriority="high"
+        />
+      </ZoomableImage>
     </figure>
   </div>
 </section>
@@ -108,18 +119,19 @@ import hero from '../assets/hero.png';
     box-shadow: 0 0 44px color-mix(in srgb, var(--accent) 45%, transparent);
   }
 
-  .ghost {
+  .learn {
     font-family: var(--font-mono);
     padding: 0.8rem 1.5rem;
-    border: 1px solid var(--line);
+    border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--line));
     border-radius: 10px;
-    color: var(--text-dim);
-    transition: color 0.15s, border-color 0.15s;
+    color: var(--accent);
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
   }
 
-  .ghost:hover {
+  .learn:hover {
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
     color: var(--text);
-    border-color: var(--text-faint);
+    border-color: var(--accent);
   }
 
   .meta {
@@ -127,6 +139,18 @@ import hero from '../assets/hero.png';
     font-size: 0.78rem;
     color: var(--text-faint);
     margin-top: 1rem;
+  }
+
+  .meta a {
+    color: var(--text-faint);
+    text-decoration: underline;
+    text-decoration-color: color-mix(in srgb, var(--text-faint) 55%, transparent);
+    text-underline-offset: 0.2em;
+    transition: color 0.15s;
+  }
+
+  .meta a:hover {
+    color: var(--text-dim);
   }
 
   .window {

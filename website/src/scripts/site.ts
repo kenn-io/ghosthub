@@ -64,5 +64,55 @@ function ignoreNetworkFailure(err: unknown): void {
   console.warn('github api unavailable, using static fallbacks', err);
 }
 
+function largestImageSource(image: HTMLImageElement): string {
+  const candidates = image.srcset
+    .split(',')
+    .map((candidate) => candidate.trim().split(/\s+/)[0])
+    .filter((candidate): candidate is string => candidate !== undefined);
+  return candidates.at(-1) ?? image.currentSrc ?? image.src;
+}
+
+function setupImageLightbox(): void {
+  const dialog = document.querySelector('[data-image-lightbox]');
+  const frame = document.querySelector('[data-image-lightbox-frame]');
+  const lightboxImage = document.querySelector('[data-image-lightbox-image]');
+  const close = document.querySelector('[data-image-lightbox-close]');
+  if (
+    !(dialog instanceof HTMLDialogElement)
+    || !(frame instanceof HTMLDivElement)
+    || !(lightboxImage instanceof HTMLImageElement)
+    || !(close instanceof HTMLButtonElement)
+  ) {
+    return;
+  }
+
+  let opener: HTMLButtonElement | null = null;
+  for (const trigger of document.querySelectorAll('[data-lightbox-trigger]')) {
+    if (!(trigger instanceof HTMLButtonElement)) continue;
+    const image = trigger.querySelector('img');
+    if (!(image instanceof HTMLImageElement)) continue;
+    trigger.addEventListener('click', () => {
+      opener = trigger;
+      lightboxImage.src = largestImageSource(image);
+      lightboxImage.alt = image.alt;
+      document.body.classList.add('lightbox-open');
+      dialog.showModal();
+    });
+  }
+
+  close.addEventListener('click', () => dialog.close());
+  dialog.addEventListener('click', (event) => {
+    if (event.target === dialog || event.target === frame) dialog.close();
+  });
+  dialog.addEventListener('close', () => {
+    document.body.classList.remove('lightbox-open');
+    lightboxImage.removeAttribute('src');
+    lightboxImage.alt = '';
+    opener?.focus();
+    opener = null;
+  });
+}
+
+setupImageLightbox();
 renderRepoFacts().catch(ignoreNetworkFailure);
 renderDownload().catch(ignoreNetworkFailure);

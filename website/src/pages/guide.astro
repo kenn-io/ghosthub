@@ -1,0 +1,593 @@
+---
+import { Image } from 'astro:assets';
+import SiteLayout from '../layouts/SiteLayout.astro';
+import ZoomableImage from '../components/ZoomableImage.astro';
+import commandCenter from '../assets/guide-command-center.png';
+import hosts from '../assets/guide-hosts.png';
+import quickLaunch from '../assets/guide-quick-launch.png';
+import sessions from '../assets/guide-sessions.png';
+import terminal from '../assets/guide-terminal.png';
+import worktree from '../assets/guide-worktree.png';
+import { RELEASES_URL } from '../config';
+
+const title = 'How to use Ghosthub';
+const description =
+  'A visual guide to connected tmux sessions, automatic SSH reconnect, '
+  + 'worktrees, Quick Launch, multi-window command centers, and terminal configuration.';
+
+const imageWidths = [640, 960, 1280, 1600];
+const imageSizes = '(max-width: 900px) calc(100vw - 3rem), 900px';
+const imageAlt = {
+  sessions:
+    'Ghosthub workspace showing local sessions, projects, worktrees, and a remote host in the sidebar',
+  hosts: 'Ghosthub Hosts settings with a configured remote GPU host',
+  worktree:
+    'Ghosthub new worktree sheet ready to create a feature branch with kwt',
+  quickLaunch: 'Ghosthub Quick Launch filtered to a reconnect worktree',
+  commandCenter:
+    'Six real Ghosthub windows arranged in a tight three-by-two matrix, each attached to a different tmux session with its sidebar collapsed',
+  terminal:
+    'Ghosthub Terminal settings showing interaction and configuration options',
+};
+---
+
+<SiteLayout title={title} description={description} path="/guide/">
+  <section class="intro">
+    <div class="container narrow">
+      <p class="eyebrow">Five-minute guide</p>
+      <h1>How to use Ghosthub</h1>
+      <p class="lead">
+        Ghosthub keeps the tmux sessions behind your projects and coding
+        agents connected in one native macOS workspace. If SSH drops, it
+        retries and reattaches to the same exact session automatically.
+        Tmux keeps owning the windows, panes, history, and process state.
+      </p>
+      <p class="promise" aria-label="Automatic SSH reconnect plus tmux reattach">
+        <span class="promise-icon" aria-hidden="true">↻</span>
+        <span>Automatic SSH reconnect</span>
+        <i aria-hidden="true">+</i>
+        <span>tmux reattach</span>
+      </p>
+      <div class="requirements" aria-label="Requirements">
+        <span>Apple Silicon</span>
+        <span>macOS 26+</span>
+        <span>tmux 3.2+</span>
+      </div>
+      <a class="download" data-download href={RELEASES_URL}>Download Ghosthub</a>
+    </div>
+  </section>
+
+  <nav class="contents container" aria-label="On this page">
+    <a href="#sessions"><b>01</b> Open a session</a>
+    <a href="#hosts"><b>02</b> Add a host</a>
+    <a href="#worktrees"><b>03</b> Add worktrees</a>
+    <a href="#quick-launch"><b>04</b> Move quickly</a>
+    <a href="#command-center"><b>05</b> Command center</a>
+    <a href="#terminal"><b>06</b> Make it yours</a>
+  </nav>
+
+  <ol class="steps">
+    <li id="sessions">
+      <div class="container step-copy">
+        <p class="number">01</p>
+        <div>
+          <h2>Open a tmux session</h2>
+          <p>
+            Launch Ghosthub and expand your Mac under{' '}
+            <strong>Hosts</strong>. Existing tmux sessions appear
+            automatically alongside projects and worktrees. Select one to
+            attach with an ordinary tmux client.
+          </p>
+          <p>
+            Use the <strong>+</strong> button beside a host to create a named
+            session. Closing the Ghosthub window only detaches—your work keeps
+            running in tmux.
+          </p>
+        </div>
+      </div>
+      <figure class="container window">
+        <div class="titlebar" aria-hidden="true"><i></i><i></i><i></i></div>
+        <ZoomableImage label={imageAlt.sessions}>
+          <Image
+            src={sessions}
+            alt={imageAlt.sessions}
+            widths={imageWidths}
+            sizes={imageSizes}
+            loading="eager"
+          />
+        </ZoomableImage>
+      </figure>
+    </li>
+
+    <li id="hosts">
+      <div class="container step-copy">
+        <p class="number">02</p>
+        <div>
+          <h2>Add an SSH host</h2>
+          <p>
+            Open <strong>Settings → Hosts</strong> and add any destination
+            accepted by your SSH configuration, such as{' '}
+            <code>devbox</code> or <code>alice@build-server</code>.
+          </p>
+          <p>
+            Remote hosts need tmux and non-interactive SSH authentication
+            backed by a key or SSH agent. Ghosthub keeps each host isolated,
+            so an unreachable machine never blocks the rest of your fleet.
+          </p>
+          <aside class="reconnect">
+            <span aria-hidden="true">↻</span>
+            <p>
+              <strong>Lose your connection?</strong> Ghosthub retries SSH with
+              keepalives and bounded backoff. When connectivity returns, it
+              automatically reattaches to the same exact tmux session, with
+              the server-side process state still intact.
+            </p>
+          </aside>
+        </div>
+      </div>
+      <figure class="container window">
+        <div class="titlebar" aria-hidden="true"><i></i><i></i><i></i></div>
+        <ZoomableImage label={imageAlt.hosts}>
+          <Image
+            src={hosts}
+            alt={imageAlt.hosts}
+            widths={imageWidths}
+            sizes={imageSizes}
+          />
+        </ZoomableImage>
+      </figure>
+    </li>
+
+    <li id="worktrees">
+      <div class="container step-copy">
+        <p class="number">03</p>
+        <div>
+          <h2>Add project and worktree context</h2>
+          <p>
+            Ghosthub uses <a href="https://kwt.sh">kwt</a> to map repositories
+            and worktrees to their exact tmux sessions. Run <code>kwt</code>
+            once inside a repository to register it.
+          </p>
+          <p>
+            Select a project and press <kbd>⌘⇧N</kbd> to create a branch and
+            worktree without leaving Ghosthub. Kwt remains optional if you
+            only want a local and remote tmux session switcher.
+          </p>
+        </div>
+      </div>
+      <figure class="container window">
+        <div class="titlebar" aria-hidden="true"><i></i><i></i><i></i></div>
+        <ZoomableImage label={imageAlt.worktree}>
+          <Image
+            src={worktree}
+            alt={imageAlt.worktree}
+            widths={imageWidths}
+            sizes={imageSizes}
+          />
+        </ZoomableImage>
+      </figure>
+    </li>
+
+    <li id="quick-launch">
+      <div class="container step-copy">
+        <p class="number">04</p>
+        <div>
+          <h2>Move through the fleet without the mouse</h2>
+          <p>
+            Press <kbd>⌘⇧P</kbd> for Quick Launch. Search across hosts,
+            projects, worktrees, appearance, settings, and common actions,
+            then press Return to go.
+          </p>
+          <div class="shortcuts" aria-label="Useful keyboard shortcuts">
+            <span><kbd>⌘B</kbd> Hide/show sidebar</span>
+            <span><kbd>⌘⌥↑</kbd> Previous worktree</span>
+            <span><kbd>⌘⌥↓</kbd> Next worktree</span>
+            <span><kbd>⌘W</kbd> Detach</span>
+          </div>
+        </div>
+      </div>
+      <figure class="container window">
+        <div class="titlebar" aria-hidden="true"><i></i><i></i><i></i></div>
+        <ZoomableImage label={imageAlt.quickLaunch}>
+          <Image
+            src={quickLaunch}
+            alt={imageAlt.quickLaunch}
+            widths={imageWidths}
+            sizes={imageSizes}
+          />
+        </ZoomableImage>
+      </figure>
+    </li>
+
+    <li id="command-center">
+      <div class="container step-copy">
+        <p class="number">05</p>
+        <div>
+          <h2>Build your command center</h2>
+          <p>
+            Ghosthub is window-based today—there is no app-level tab bar.
+            Press <kbd>⌘⌥N</kbd> to open another independent workspace,
+            attach each window to a different tmux session, and arrange them
+            with the macOS window tools you already use.
+          </p>
+          <p>
+            Press <kbd>⌘B</kbd> in any window to hide its sidebar and give
+            the terminal the full frame. Press it again whenever you need
+            fleet navigation back.
+          </p>
+        </div>
+      </div>
+      <figure class="container command-matrix">
+        <ZoomableImage label={imageAlt.commandCenter}>
+          <Image
+            src={commandCenter}
+            alt={imageAlt.commandCenter}
+            widths={[640, 960, 1280, 1800]}
+            sizes="(max-width: 1200px) calc(100vw - 3rem), 1160px"
+          />
+        </ZoomableImage>
+      </figure>
+    </li>
+
+    <li id="terminal">
+      <div class="container step-copy">
+        <p class="number">06</p>
+        <div>
+          <h2>Make the terminal yours</h2>
+          <p>
+            Terminal preferences live in Ghosthub Settings. For the full
+            configuration surface, edit{' '}
+            <code>~/.config/ghosthub/ghostty.conf</code>.
+          </p>
+          <p>
+            The file uses{' '}<a href="https://ghostty.org/docs/config/reference">Ghostty’s
+              configuration format</a>, but is isolated from Ghostty.app.
+            Ghosthub reloads the active configuration when it changes.
+          </p>
+        </div>
+      </div>
+      <figure class="container window">
+        <div class="titlebar" aria-hidden="true"><i></i><i></i><i></i></div>
+        <ZoomableImage label={imageAlt.terminal}>
+          <Image
+            src={terminal}
+            alt={imageAlt.terminal}
+            widths={imageWidths}
+            sizes={imageSizes}
+          />
+        </ZoomableImage>
+      </figure>
+    </li>
+  </ol>
+
+  <section class="finish">
+    <div class="container narrow">
+      <p class="eyebrow">That’s it</p>
+      <h2>Your sessions keep running</h2>
+      <p>
+        Ghosthub never replaces tmux windows, panes, history, or plugins.
+        Quit the app or close a presentation and the sessions remain where
+        you left them. Lose the network and Ghosthub automatically reconnects
+        and reattaches when it returns.
+      </p>
+      <a data-download href={RELEASES_URL}>Download Ghosthub <span aria-hidden="true">&rarr;</span></a>
+    </div>
+  </section>
+</SiteLayout>
+
+<style>
+  .intro {
+    padding: 5rem 0 3.5rem;
+    text-align: center;
+    background:
+      radial-gradient(
+        52% 70% at 50% 0%,
+        color-mix(in srgb, var(--accent) 8%, transparent),
+        transparent
+      );
+  }
+
+  .narrow {
+    max-width: 760px;
+  }
+
+  .eyebrow,
+  .number {
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+  }
+
+  .eyebrow {
+    margin: 0 0 0.75rem;
+  }
+
+  h1 {
+    font-size: clamp(2.3rem, 6vw, 4.2rem);
+  }
+
+  .lead {
+    color: var(--text-dim);
+    font-size: clamp(1rem, 2.2vw, 1.2rem);
+    margin: 1rem auto 0;
+    max-width: 64ch;
+    text-wrap: balance;
+  }
+
+  .promise {
+    display: inline-flex;
+    align-items: center;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0.55rem;
+    max-width: calc(100% - 1rem);
+    margin: 1.4rem 0 0;
+    border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line));
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--accent) 7%, transparent);
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    padding: 0.45rem 0.75rem;
+  }
+
+  .promise-icon {
+    color: var(--accent);
+    font-size: 1rem;
+  }
+
+  .promise i {
+    color: var(--text-faint);
+    font-style: normal;
+  }
+
+  .requirements {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0.55rem;
+    margin: 1.6rem 0;
+  }
+
+  .requirements span {
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    color: var(--text-dim);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    padding: 0.3rem 0.7rem;
+  }
+
+  .download,
+  .finish a {
+    display: inline-block;
+    border-radius: 10px;
+    background: var(--accent);
+    color: #06222e;
+    font-family: var(--font-mono);
+    font-size: 0.9rem;
+    font-weight: 700;
+    padding: 0.75rem 1.15rem;
+  }
+
+  .contents {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    overflow: hidden;
+    margin-bottom: 2rem;
+  }
+
+  .contents a {
+    color: var(--text-dim);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    padding: 1rem;
+    text-align: center;
+    transition: background 0.15s, color 0.15s;
+  }
+
+  .contents a + a {
+    border-left: 1px solid var(--line);
+  }
+
+  .contents a:hover {
+    background: var(--bg-raise);
+    color: var(--text);
+  }
+
+  .contents b {
+    color: var(--accent);
+    display: block;
+    font-size: 0.68rem;
+    margin-bottom: 0.2rem;
+  }
+
+  .steps {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .steps > li {
+    border-top: 1px solid var(--line);
+    padding: 5rem 0 6rem;
+    scroll-margin-top: 4rem;
+  }
+
+  .steps > li:nth-child(even) {
+    background: var(--bg-raise);
+  }
+
+  .step-copy {
+    display: grid;
+    grid-template-columns: 5rem minmax(0, 660px);
+    justify-content: center;
+    margin-bottom: 2.5rem;
+  }
+
+  .number {
+    margin: 0.25rem 0 0;
+  }
+
+  h2 {
+    font-size: clamp(1.55rem, 3.5vw, 2.25rem);
+  }
+
+  .step-copy p:not(.number),
+  .finish p:not(.eyebrow) {
+    color: var(--text-dim);
+  }
+
+  .step-copy p {
+    margin: 0.85rem 0 0;
+  }
+
+  .step-copy strong {
+    color: var(--text);
+  }
+
+  .reconnect {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0.8rem;
+    margin-top: 1.4rem;
+    border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--accent) 6%, var(--bg));
+    padding: 1rem;
+  }
+
+  .reconnect > span {
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 1.25rem;
+    line-height: 1.25;
+  }
+
+  .reconnect p {
+    margin: 0;
+  }
+
+  .step-copy a {
+    color: var(--accent);
+  }
+
+  code,
+  kbd {
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    background: color-mix(in srgb, var(--bg) 75%, transparent);
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 0.84em;
+    padding: 0.12rem 0.34rem;
+  }
+
+  .shortcuts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.55rem 1rem;
+    margin-top: 1.25rem;
+  }
+
+  .shortcuts span {
+    color: var(--text-dim);
+    font-size: 0.82rem;
+  }
+
+  .window {
+    max-width: 920px;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    overflow: hidden;
+    background: var(--bg);
+    box-shadow: 0 28px 70px rgb(0 0 0 / 0.4);
+  }
+
+  .titlebar {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.42rem 0.7rem;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .titlebar i {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--line);
+  }
+
+  .window :global(img) {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+
+  .command-matrix {
+    max-width: 1180px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    overflow: hidden;
+    background: var(--bg);
+    box-shadow: 0 28px 70px rgb(0 0 0 / 0.45);
+  }
+
+  .command-matrix :global(img) {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+
+  .finish {
+    border-top: 1px solid var(--line);
+    padding: 5rem 0 6rem;
+    text-align: center;
+  }
+
+  .finish p:not(.eyebrow) {
+    margin: 1rem auto 1.6rem;
+    max-width: 58ch;
+  }
+
+  @media (max-width: 760px) {
+    .intro {
+      padding-top: 3.5rem;
+    }
+
+    .contents {
+      grid-template-columns: 1fr;
+    }
+
+    .contents a {
+      display: flex;
+      gap: 0.65rem;
+      text-align: left;
+    }
+
+    .contents b {
+      margin: 0;
+    }
+
+    .contents a + a {
+      border-left: 0;
+      border-top: 1px solid var(--line);
+    }
+
+    .steps > li {
+      padding: 3.5rem 0 4rem;
+    }
+
+    .step-copy {
+      grid-template-columns: 1fr;
+      gap: 0.65rem;
+    }
+
+  }
+</style>

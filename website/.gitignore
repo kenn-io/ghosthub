@@ -2,6 +2,8 @@ node_modules/
 dist/
 .astro/
 # Synced from the orphan website-assets branch by scripts/sync-assets.sh
-src/assets/hero.png
-src/assets/hero.png.placeholder
-src/assets/hero.png.synced
+src/assets/*.png
+src/assets/*.png.placeholder
+src/assets/*.png.synced
+src/assets/.website-assets.placeholder
+src/assets/.website-assets.synced

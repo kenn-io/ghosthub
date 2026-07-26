@@ -1,0 +1,18 @@
+---
+interface Props {
+  label: string;
+}
+
+const { label } = Astro.props;
+---
+
+<button
+  class="image-zoom"
+  type="button"
+  data-lightbox-trigger
+  aria-controls="image-lightbox"
+  aria-haspopup="dialog"
+  aria-label={`Enlarge screenshot: ${label}`}
+>
+  <slot />
+</button>

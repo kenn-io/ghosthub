@@ -33,6 +33,10 @@ Ghosthub is a **worktree-centric terminal multiplexer** for macOS.
 - For Python build tooling and tests, use `uv` rather than bare `python`, `pip`, or ad hoc virtualenv state.
 - Prefer Makefile targets over raw multi-flag test commands; if a Python or test invocation is complex enough to be copied around, add a `make` target for it.
 - Use `kata` for task management (see `CLAUDE.md`).
+- Every user-facing UI change must update the website Guide in the same turn
+  and regenerate the complete website screenshot set. Publish refreshed
+  binaries to the orphan `website-assets` branch so UI changes never leave
+  ghosthub.ai with stale product views.
 - Pull request descriptions should be concise, rationale-first prose. Do not add boilerplate or navel-gazing sections like "Changes", "Tests", or "Verification"; mention validation only when it is genuinely useful reviewer context.
 - Do not poll or watch GitHub Actions through `gh`, the GitHub API, or browser automation unless the user explicitly asks you to do so.
 - **NO DATABASE MIGRATIONS** until the first production release. Update the current schema, bootstrap paths, fixtures, and tests directly.
