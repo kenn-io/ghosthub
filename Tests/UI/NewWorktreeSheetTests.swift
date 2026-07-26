@@ -110,6 +110,70 @@ struct NewWorktreeSheetTests {
         #expect(matches.map(\.number) == [132, 232])
     }
 
+    @Test("a number with no exact match never auto-selects a longer number")
+    func numericQueryWithoutAnExactMatchLeavesSelectionEmpty() {
+        let candidates = [Self.candidate(132), Self.candidate(232)]
+
+        let matches = PullRequestQuery.matches(in: candidates, query: "32")
+
+        #expect(
+            PullRequestQuery.impliedSelectionID(
+                in: matches, query: "32"
+            ) == nil
+        )
+    }
+
+    @Test("a typed number kwt has not listed still submits that number")
+    func unlistedNumberSubmitsTheTypedSelector() {
+        let candidates = [Self.candidate(132)]
+
+        let matches = PullRequestQuery.matches(in: candidates, query: "32")
+        let selection = PullRequestQuery.impliedSelectionID(
+            in: matches, query: "32"
+        )
+
+        #expect(
+            PullRequestQuery.importSelector(
+                in: matches, query: "32", selectedID: selection
+            ) == "32"
+        )
+    }
+
+    @Test("explicitly picking a listed candidate submits that candidate")
+    func explicitSelectionOutranksTheTypedSelector() {
+        let candidates = [Self.candidate(132)]
+
+        let matches = PullRequestQuery.matches(in: candidates, query: "32")
+
+        #expect(
+            PullRequestQuery.importSelector(
+                in: matches, query: "32", selectedID: "pr-132"
+            ) == "pr-132"
+        )
+    }
+
+    @Test("a selection the filtered list dropped falls back to the query")
+    func staleSelectionFallsBackToTheTypedSelector() {
+        let candidates = [Self.candidate(132)]
+
+        let matches = PullRequestQuery.matches(in: candidates, query: "32")
+
+        #expect(
+            PullRequestQuery.importSelector(
+                in: matches, query: "32", selectedID: "pr-999"
+            ) == "32"
+        )
+    }
+
+    @Test("a text query with no selector submits nothing")
+    func textQueryWithoutSelectionSubmitsNothing() {
+        #expect(
+            PullRequestQuery.importSelector(
+                in: [], query: "parser", selectedID: nil
+            ) == nil
+        )
+    }
+
     @Test("duplicate project names include host and repository location")
     func duplicateProjectNamesAreDisambiguated() {
         let firstHost = HostSummary.fixture(

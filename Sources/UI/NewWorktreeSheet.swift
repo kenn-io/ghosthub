@@ -66,19 +66,38 @@ enum PullRequestQuery {
         return ranked
     }
 
-    /// The candidate a query implies. An exact number wins outright, including
-    /// when it is already imported, because that is still the one the user
-    /// named. Otherwise prefer a candidate that is not yet imported.
+    /// The candidate a query implies. A typed number names exactly one pull
+    /// request, so it selects that candidate or nothing: settling for one that
+    /// merely contains those digits would import #132 for a typed 32. Leaving
+    /// the selection empty hands the number to kwt instead, which can resolve
+    /// pull requests this list never showed. An exact number still wins when
+    /// it is already imported, because that is still the one the user named.
+    /// A text query has no such single answer, so prefer an unimported hit.
     static func impliedSelectionID(
         in candidates: [PullRequestCandidate],
         query: String
     ) -> String? {
-        if let number = requestedNumber(query),
-           let exact = candidates.first(where: { $0.number == number }) {
-            return exact.id
+        if let number = requestedNumber(query) {
+            return candidates.first { $0.number == number }?.id
         }
         return candidates.first(where: { !$0.isImported })?.id
             ?? candidates.first?.id
+    }
+
+    /// The selector an import submits. A candidate the user can currently see
+    /// and pick wins; otherwise the typed query goes to kwt verbatim. Deriving
+    /// both the submitted selector and the submit gate from this keeps an
+    /// enabled button from importing something other than what it names.
+    static func importSelector(
+        in candidates: [PullRequestCandidate],
+        query: String,
+        selectedID: String?
+    ) -> String? {
+        if let selectedID,
+           candidates.contains(where: { $0.id == selectedID }) {
+            return selectedID
+        }
+        return PullRequestSelector.normalized(query)
     }
 
     private static func requestedNumber(_ query: String) -> Int? {
@@ -177,12 +196,19 @@ struct NewWorktreeSheet: View {
         PullRequestSelector.normalized(query)
     }
 
+    private var pullRequestImportSelector: String? {
+        PullRequestQuery.importSelector(
+            in: filteredPullRequests,
+            query: query,
+            selectedID: selectedPullRequestID
+        )
+    }
+
     private var canImportPullRequest: Bool {
         selectedMode == .pullRequest
             && !isWorking
             && !isLoadingPullRequests
-            && (selectedPullRequest != nil
-                || directPullRequestSelector != nil)
+            && pullRequestImportSelector != nil
             && canImportPullRequest(in: selectedProject)
     }
 
@@ -398,6 +424,12 @@ struct NewWorktreeSheet: View {
                 )
             )
         } else {
+            // A typed number selects nothing unless the list holds that exact
+            // pull request, so name the selector that would actually be
+            // imported rather than leaving the listed near-misses to imply it.
+            if selectedPullRequest == nil, let directPullRequestSelector {
+                directSelectorRow(directPullRequestSelector)
+            }
             ScrollView {
                 LazyVStack(spacing: 2) {
                     ForEach(filteredPullRequests) { pullRequest in
@@ -593,10 +625,9 @@ struct NewWorktreeSheet: View {
     }
 
     private func importSelectedPullRequest() {
-        guard canImportPullRequest else { return }
-        let selector = selectedPullRequest?.id
-            ?? directPullRequestSelector
-        guard let selector else { return }
+        guard canImportPullRequest,
+              let selector = pullRequestImportSelector
+        else { return }
         isWorking = true
         errorMessage = nil
         Task {
