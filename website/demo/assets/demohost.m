@@ -93,28 +93,85 @@ static BOOL DemoInsertText(NSString *text) {
   return YES;
 }
 
-static BOOL DemoPressLabel(id element, NSString *label, NSUInteger depth) {
-  if (element == nil || depth > 20) return NO;
-  if ([[element accessibilityLabel] isEqualToString:label]) {
-    return [element accessibilityPerformPress];
+// SwiftUI's accessibility tree can contain private AppKit nodes that advertise
+// NSObject ancestry but throw for standard accessibility selectors. Keep those
+// implementation details from escaping the demo controller as an app crash.
+static NSString *DemoAccessibilityLabel(id element) {
+  @try {
+    return [element accessibilityLabel];
+  } @catch (NSException *exception) {
+    (void)exception;
+    return nil;
   }
-  for (id child in [element accessibilityChildren] ?: @[]) {
-    if (DemoPressLabel(child, label, depth + 1)) return YES;
+}
+
+static id DemoAccessibilityValue(id element) {
+  @try {
+    return [element accessibilityValue];
+  } @catch (NSException *exception) {
+    (void)exception;
+    return nil;
+  }
+}
+
+static NSArray *DemoAccessibilityChildren(id element) {
+  @try {
+    id children = [element accessibilityChildren];
+    return [children isKindOfClass:[NSArray class]] ? children : @[];
+  } @catch (NSException *exception) {
+    (void)exception;
+    return @[];
+  }
+}
+
+static BOOL DemoAccessibilityPress(id element) {
+  @try {
+    return [element accessibilityPerformPress];
+  } @catch (NSException *exception) {
+    (void)exception;
+    return NO;
+  }
+}
+
+static BOOL DemoPressLabelWalk(id element, NSString *label,
+                               NSUInteger depth, NSUInteger *budget) {
+  if (element == nil || depth > 20 || *budget == 0) return NO;
+  *budget -= 1;
+  if ([DemoAccessibilityLabel(element) isEqualToString:label]) {
+    return DemoAccessibilityPress(element);
+  }
+  for (id child in DemoAccessibilityChildren(element)) {
+    if (DemoPressLabelWalk(
+            child, label, depth + 1, budget)) return YES;
+  }
+  return NO;
+}
+
+static BOOL DemoPressLabel(id element, NSString *label, NSUInteger depth) {
+  NSUInteger budget = 4096;
+  return DemoPressLabelWalk(element, label, depth, &budget);
+}
+
+static BOOL DemoContainsTextWalk(id element, NSString *text,
+                                 NSUInteger depth, NSUInteger *budget) {
+  if (element == nil || depth > 20 || *budget == 0) return NO;
+  *budget -= 1;
+  if ([DemoAccessibilityLabel(element) isEqualToString:text] ||
+      [[DemoAccessibilityValue(element) description]
+          isEqualToString:text]) {
+    return YES;
+  }
+  for (id child in DemoAccessibilityChildren(element)) {
+    if (DemoContainsTextWalk(
+            child, text, depth + 1, budget)) return YES;
   }
   return NO;
 }
 
 static BOOL DemoContainsText(id element, NSString *text,
                              NSUInteger depth) {
-  if (element == nil || depth > 20) return NO;
-  if ([[element accessibilityLabel] isEqualToString:text] ||
-      [[[element accessibilityValue] description] isEqualToString:text]) {
-    return YES;
-  }
-  for (id child in [element accessibilityChildren] ?: @[]) {
-    if (DemoContainsText(child, text, depth + 1)) return YES;
-  }
-  return NO;
+  NSUInteger budget = 4096;
+  return DemoContainsTextWalk(element, text, depth, &budget);
 }
 
 static BOOL DemoPalettePostcondition(NSString *kind,
