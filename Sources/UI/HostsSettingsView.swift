@@ -81,9 +81,9 @@ public struct HostsSettingsView: View {
                     ForEach(sshHosts) { host in
                         VStack(alignment: .leading, spacing: 4) {
                             Text(host.listDisplayName)
-                            .font(.system(
-                                size: 13, weight: .semibold
-                            ))
+                                .font(.system(
+                                    size: 13, weight: .semibold
+                                ))
                             Text(host.listSubtitle)
                                 .font(.system(size: 12))
                                 .foregroundStyle(.secondary)
@@ -288,7 +288,11 @@ public struct HostsSettingsView: View {
             "Tailscale Import",
             isPresented: Binding(
                 get: { tailscaleError != nil },
-                set: { if !$0 { tailscaleError = nil } }
+                set: {
+                    if !$0 {
+                        tailscaleError = nil
+                    }
+                }
             )
         ) {
             Button("OK") { tailscaleError = nil }

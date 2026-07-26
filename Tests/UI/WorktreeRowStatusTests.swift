@@ -5,6 +5,7 @@ import Testing
 @testable import GhosthubUI
 
 struct WorktreeRowStatusTests {
+
     // MARK: - Fixture helpers
 
     private func makeWorktree(

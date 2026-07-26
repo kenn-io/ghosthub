@@ -44,6 +44,7 @@ public enum WorkspaceCommandAction: Equatable, Sendable {
     case previousWorktree
     case nextWorktree
     case newWorktree(UUID)
+    case importPullRequest(UUID)
     case openSettings(SettingsDomain)
     case setInterfaceAppearance(AppearancePreference)
     case select(WorkspaceNavigationTarget)
@@ -176,6 +177,10 @@ public enum CommandPaletteModel {
         ))
         commands.append(contentsOf: hostCommands(in: snapshot))
         commands.append(contentsOf: newWorktreeCommands(
+            in: snapshot,
+            selection: selection
+        ))
+        commands.append(contentsOf: importPullRequestCommands(
             in: snapshot,
             selection: selection
         ))
@@ -347,6 +352,37 @@ public enum CommandPaletteModel {
                         in: snapshot
                     ) ? .commandShiftN : nil,
                     action: .newWorktree(project.id)
+                )
+            }
+    }
+
+    private static func importPullRequestCommands(
+        in snapshot: WorkspaceSnapshot,
+        selection: WorkspaceSelection
+    ) -> [WorkspaceCommandItem] {
+        orderedSidebarProjects(in: snapshot, selection: selection)
+            .filter {
+                snapshot.canImportPullRequest(in: $0.project)
+            }
+            .map { sidebarProject in
+                let project = sidebarProject.project
+                let projectName = sidebarProject.row.title
+                let host = snapshot.host(id: project.hostID)
+                return WorkspaceCommandItem(
+                    id: "import-pr-\(project.id.uuidString)",
+                    title: "Import Pull Request in \(projectName)",
+                    subtitle: host.map {
+                        "Discover and import with kwt on \($0.name)."
+                    } ?? "Discover and import with kwt.",
+                    keywords: [
+                        "import", "pull", "request", "pr", "kwt",
+                        projectName, project.rootPath,
+                    ],
+                    shortcut: project.id == selectedProjectID(
+                        from: selection,
+                        in: snapshot
+                    ) ? .commandShiftI : nil,
+                    action: .importPullRequest(project.id)
                 )
             }
     }

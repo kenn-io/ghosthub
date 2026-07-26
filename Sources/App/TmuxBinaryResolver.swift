@@ -149,8 +149,8 @@ struct TmuxBinaryResolver: Sendable {
 
     private static let probeCommand =
         "ghosthub_tmux_path=$(command -v tmux) || exit $?; "
-        + "printf '%s\\n' \"$ghosthub_tmux_path\"; "
-        + "\"$ghosthub_tmux_path\" -V"
+            + "printf '%s\\n' \"$ghosthub_tmux_path\"; "
+            + "\"$ghosthub_tmux_path\" -V"
 
     private static let discoveryPrefix = "GHOSTHUB_TMUX_SESSION"
     private static let discoveryFormat = discoveryPrefix
@@ -428,7 +428,7 @@ struct TmuxBinaryResolver: Sendable {
                 if errno == EINTR {
                     continue
                 }
-                if errno != EAGAIN && errno != EWOULDBLOCK {
+                if errno != EAGAIN, errno != EWOULDBLOCK {
                     outputReachedEOF = true
                 }
                 break
@@ -440,7 +440,7 @@ struct TmuxBinaryResolver: Sendable {
                 let waited = waitpid(processID, &waitStatus, WNOHANG)
                 processFinished = waited == processID
             }
-            if processFinished && outputReachedEOF {
+            if processFinished, outputReachedEOF {
                 break
             }
             if let status = currentInterruptionStatus() {

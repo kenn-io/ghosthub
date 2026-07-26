@@ -58,6 +58,78 @@ struct TmuxAttachmentInfoTests {
         )
     }
 
+    @Test("protected attachment leads kwt to the resolved tmux")
+    func protectedAttachExportsResolvedTmuxDirectory() {
+        let command = TmuxAttachmentInfo(
+            sessionName: "pr-32",
+            host: .local,
+            socketName: "kwt-pr-0123456789abcdef",
+            protectedWorkspacePath: "/worktrees/pr-32"
+        ).attachCommand(
+            tmuxPath: "/opt/homebrew/bin/tmux",
+            kwtPath: "/Applications/Ghosthub.app/Contents/Helpers/kwt"
+        )
+
+        // kwt looks tmux up by name, so the directory has to precede whatever
+        // PATH a Finder-launched app inherited.
+        #expect(command.contains("/opt/homebrew/bin"))
+        let beforeKwt = command
+            .components(separatedBy: "Helpers/kwt")
+            .first ?? ""
+        #expect(beforeKwt.contains("export PATH"))
+    }
+
+    @Test("an unresolved tmux name contributes no PATH entry")
+    func protectedAttachSkipsPathForBareTmuxName() {
+        let command = TmuxAttachmentInfo(
+            sessionName: "pr-32",
+            host: .local,
+            socketName: "kwt-pr-0123456789abcdef",
+            protectedWorkspacePath: "/worktrees/pr-32"
+        ).attachCommand(
+            tmuxPath: "tmux",
+            kwtPath: "/Applications/Ghosthub.app/Contents/Helpers/kwt"
+        )
+
+        #expect(!command.contains("export PATH"))
+    }
+
+    @Test("ordinary local attachment does not rewrite PATH")
+    func ordinaryAttachLeavesPathAlone() {
+        let command = TmuxAttachmentInfo(
+            sessionName: "alpha",
+            host: .local
+        ).attachCommand(tmuxPath: "/opt/homebrew/bin/tmux")
+
+        #expect(!command.contains("export PATH"))
+    }
+
+    @Test("isolated local attachment targets the returned tmux socket")
+    func isolatedLocalAttachCommand() {
+        let command = TmuxAttachmentInfo(
+            sessionName: "pr-32",
+            host: .local,
+            socketName: "kwt-pr-0123456789abcdef",
+            protectedWorkspacePath: "/worktrees/pr-32"
+        ).attachCommand(
+            tmuxPath: "/opt/homebrew/bin/tmux",
+            kwtPath: "/Applications/Ghosthub.app/Contents/Helpers/kwt"
+        )
+
+        #expect(command.contains(
+            "/Applications/Ghosthub.app/Contents/Helpers/kwt"
+        ))
+        #expect(command.contains("pr"))
+        #expect(command.contains("attach"))
+        #expect(command.contains("/worktrees/pr-32"))
+        #expect(!command.contains("exec '\\''/opt/homebrew/bin/tmux"))
+        #expect(
+            command.components(
+                separatedBy: "kwt-pr-0123456789abcdef"
+            ).count - 1 == 3
+        )
+    }
+
     @Test("remote attachment adds keepalives and transport-only retry")
     func remoteAttachCommand() {
         let info = TmuxAttachmentInfo(
@@ -85,6 +157,31 @@ struct TmuxAttachmentInfoTests {
         #expect(!command.contains("KexAlgorithms"))
         #expect(!command.contains("bind-key"))
         #expect(!command.contains("unbind-key"))
+    }
+
+    @Test("isolated remote attachment targets the returned tmux socket")
+    func isolatedRemoteAttachCommand() {
+        let command = TmuxAttachmentInfo(
+            sessionName: "pr-32",
+            host: .ssh(SSHHostInfo(
+                user: "wesm", hostname: "build-box", port: nil
+            )),
+            socketName: "kwt-pr-0123456789abcdef",
+            protectedWorkspacePath: "/worktrees/pr-32"
+        ).attachCommand(tmuxPath: "/usr/bin/tmux")
+
+        #expect(command.contains("command -v kwt"))
+        #expect(command.contains("${SHELL:-/bin/sh}"))
+        #expect(command.contains("-lc"))
+        #expect(command.contains(
+            "ghosthub_kwt_path=$(command -v kwt) || exit 127"
+        ))
+        #expect(!command.contains("exec ghosthub_kwt_path="))
+        #expect(command.contains("pr"))
+        #expect(command.contains("attach"))
+        #expect(command.contains("/worktrees/pr-32"))
+        #expect(!command.contains("exec '\\''/usr/bin/tmux"))
+        #expect(command.contains("kwt-pr-0123456789abcdef"))
     }
 
     @Test("demo SSH arguments isolate config, trust, and routing")

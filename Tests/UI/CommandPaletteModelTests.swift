@@ -400,6 +400,36 @@ struct CommandPaletteModelTests {
         commands.expectCommandNotContains(title: "Import Pull Request in ghosthub")
     }
 
+    @Test("GitHub kwt projects expose pull request import")
+    func githubKwtProjectExposesPullRequestImport() {
+        let host = HostSummary.fixture(
+            name: "This Mac", kind: .selfHost, platform: .macOS
+        )
+        var project = ProjectSummary.fixture(
+            hostID: host.id,
+            name: "ghosthub",
+            rootPath: "/code/ghosthub"
+        )
+        project.scopedKey = "github.com/kenn-io/ghosthub"
+        let snapshot = WorkspaceSnapshot(
+            hosts: [host],
+            projects: [project],
+            worktrees: []
+        )
+        let commands = makeCommandPaletteCommands(
+            snapshot: snapshot,
+            selection: WorkspaceSelection(
+                selectedHostID: host.id,
+                selectedProjectID: project.id
+            )
+        )
+
+        commands.expectCommandContains(
+            title: "Import Pull Request in ghosthub",
+            shortcut: .commandShiftI
+        )
+    }
+
     @Test("import PR command hidden without GitHub-linked projects")
     func importPRCommandHiddenWithoutGitHubLink() {
         let host = HostSummary.fixture(
@@ -462,7 +492,7 @@ struct CommandPaletteModelTests {
                 $0.title == "Switch to Worktree: feature/api-keyboard"
             }
         )
-        #expect(filtered[ switchIndex ].title
+        #expect(filtered[switchIndex].title
             == "Switch to Worktree: feature/api-keyboard")
         commands.expectCommandNotContains(
             title: "Delete Worktree: feature/api-keyboard"
@@ -592,7 +622,9 @@ private extension [WorkspaceCommandItem] {
     ) {
         let found = contains {
             guard $0.title == title else { return false }
-            if expectNilShortcut { return $0.shortcut == nil }
+            if expectNilShortcut {
+                return $0.shortcut == nil
+            }
             return shortcut == nil || $0.shortcut == shortcut
         }
         #expect(

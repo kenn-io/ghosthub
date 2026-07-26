@@ -42,7 +42,7 @@ enum WorkspaceWindowChrome {
         window.contentMinSize = .zero
         window.backgroundColor = WorkspaceSurfaceColor.nsColor
         guard let closeButton = window.standardWindowButton(.closeButton),
-            let titlebar = closeButton.superview
+              let titlebar = closeButton.superview
         else { return }
         titlebar.wantsLayer = true
         titlebar.effectiveAppearance.performAsCurrentDrawingAppearance {
@@ -249,8 +249,8 @@ final class CompactWorkspaceTitlebarController {
             )
         }
         guard installedWindow !== window
-                || sidebarHost.superview !== titlebar
-                || titleHost.superview !== titlebar
+            || sidebarHost.superview !== titlebar
+            || titleHost.superview !== titlebar
         else { return }
 
         removeControlsFromInstalledWindow()
@@ -529,6 +529,12 @@ struct WorkspaceWindow: View {
                 },
                 createWorktree: { [sceneModel] request in
                     try await sceneModel.createWorktree(request)
+                },
+                listPullRequests: { [sceneModel] projectID in
+                    try await sceneModel.pullRequests(for: projectID)
+                },
+                importPullRequest: { [sceneModel] request in
+                    try await sceneModel.importPullRequest(request)
                 }
             ),
             settingsStore: settingsStore,
@@ -576,71 +582,71 @@ struct WorkspaceWindow: View {
             }
         }
         #if canImport(AppKit)
-            .background(
-                WindowFocusTracker(
-                    applicationDelegate: applicationDelegate,
-                    isFocused: Binding(
-                        get: { sceneModel.isFocusedWindow },
-                        set: { sceneModel.isFocusedWindow = $0 }
-                    ),
-                    isSidebarVisible:
-                    sceneModel.columnVisibility != .detailOnly,
-                    canCreateWorktree: canCreateWorktree,
-                    sessionTitle: SessionTitlebarPresentation.resolve(
-                        activeSession: sceneModel.activeBorrowedTmuxSelection,
-                        in: sceneModel.snapshot
-                    ),
-                    onToggleSidebar: {
-                        NotificationCenter.default.post(
-                            name: .ghosthubToggleSidebar,
-                            object: nil
-                        )
-                    },
-                    onQuickLaunch: {
-                        NotificationCenter.default.post(
-                            name: .ghosthubCommandPalette,
-                            object: nil
-                        )
-                    },
-                    onSettings: {
-                        sceneModel.isSettingsPresented = true
-                    },
-                    onNewWorktree: {
-                        NotificationCenter.default.post(
-                            name: .ghosthubNewWorktree,
-                            object: nil
-                        )
-                    }
-                )
+        .background(
+            WindowFocusTracker(
+                applicationDelegate: applicationDelegate,
+                isFocused: Binding(
+                    get: { sceneModel.isFocusedWindow },
+                    set: { sceneModel.isFocusedWindow = $0 }
+                ),
+                isSidebarVisible:
+                sceneModel.columnVisibility != .detailOnly,
+                canCreateWorktree: canCreateWorktree,
+                sessionTitle: SessionTitlebarPresentation.resolve(
+                    activeSession: sceneModel.activeBorrowedTmuxSelection,
+                    in: sceneModel.snapshot
+                ),
+                onToggleSidebar: {
+                    NotificationCenter.default.post(
+                        name: .ghosthubToggleSidebar,
+                        object: nil
+                    )
+                },
+                onQuickLaunch: {
+                    NotificationCenter.default.post(
+                        name: .ghosthubCommandPalette,
+                        object: nil
+                    )
+                },
+                onSettings: {
+                    sceneModel.isSettingsPresented = true
+                },
+                onNewWorktree: {
+                    NotificationCenter.default.post(
+                        name: .ghosthubNewWorktree,
+                        object: nil
+                    )
+                }
             )
+        )
         #endif
-            .onAppear {
-                registry.register(sceneModel)
+        .onAppear {
+            registry.register(sceneModel)
+        }
+        .onReceive(
+            terminalRuntime.$configReloadNotice
+        ) { notice in
+            withAnimation(.easeOut(duration: 0.15)) {
+                visibleConfigReloadNotice = notice
             }
-            .onReceive(
-                terminalRuntime.$configReloadNotice
-            ) { notice in
-                withAnimation(.easeOut(duration: 0.15)) {
-                    visibleConfigReloadNotice = notice
-                }
+        }
+        .task(id: visibleConfigReloadNotice?.id) {
+            guard visibleConfigReloadNotice?.kind == .success
+            else { return }
+            try? await Task.sleep(
+                nanoseconds: 2_500_000_000
+            )
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.15)) {
+                visibleConfigReloadNotice = nil
             }
-            .task(id: visibleConfigReloadNotice?.id) {
-                guard visibleConfigReloadNotice?.kind == .success
-                else { return }
-                try? await Task.sleep(
-                    nanoseconds: 2_500_000_000
-                )
-                guard !Task.isCancelled else { return }
-                withAnimation(.easeOut(duration: 0.15)) {
-                    visibleConfigReloadNotice = nil
-                }
+        }
+        .onDisappear {
+            registry.unregister(sceneModel)
+            Task { [sceneModel] in
+                await sceneModel.shutdown()
             }
-            .onDisappear {
-                registry.unregister(sceneModel)
-                Task { [sceneModel] in
-                    await sceneModel.shutdown()
-                }
-            }
+        }
     }
 
     private var canCreateWorktree: Bool {

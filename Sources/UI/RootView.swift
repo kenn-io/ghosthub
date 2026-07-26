@@ -23,6 +23,7 @@ public struct RootView: View {
     @State private var sidePanelUserOverride = false
     @State private var tmuxSelectionBaseline: WorkspaceSelection?
     @State private var newWorktreeProject: ProjectSummary?
+    @State private var newWorktreeMode: NewWorktreeMode = .branch
     @State private var newTmuxSessionHost: HostSummary?
 
     public init(
@@ -74,13 +75,28 @@ public struct RootView: View {
             .sheet(item: $newWorktreeProject) { project in
                 NewWorktreeSheet(
                     project: project,
-                    projects: creatableProjects,
+                    projects: workspaceActionProjects,
                     hosts: snapshot.hosts,
+                    initialMode: newWorktreeMode,
                     onCreate: { request in
                         guard let create = handlers.createWorktree else {
                             return
                         }
                         try await create(request)
+                    },
+                    onListPullRequests: { projectID in
+                        guard let list = handlers.listPullRequests else {
+                            return []
+                        }
+                        return try await list(projectID)
+                    },
+                    onImportPullRequest: { request in
+                        guard let importPullRequest =
+                            handlers.importPullRequest
+                        else {
+                            return
+                        }
+                        try await importPullRequest(request)
                     },
                     onCancel: { newWorktreeProject = nil }
                 )
@@ -315,6 +331,7 @@ public struct RootView: View {
                 deactivateTmuxSession()
             },
             onNewWorktree: openNewWorktree,
+            onImportPullRequest: openImportPullRequest,
             onNewTmuxSession: { host in
                 newTmuxSessionHost = host
             },
@@ -323,7 +340,7 @@ public struct RootView: View {
             },
             inventoryWarning: display.workspaceInventoryWarning,
             inventoryWarningsByHost:
-                display.workspaceInventoryWarningsByHost,
+            display.workspaceInventoryWarningsByHost,
             onOpen: { worktree in
                 selection.select(
                     .worktree(worktree.id),
@@ -504,8 +521,11 @@ public struct RootView: View {
         columnVisibility != .detailOnly
     }
 
-    private var creatableProjects: [ProjectSummary] {
-        snapshot.projects.filter(snapshot.canCreateWorktree(in:))
+    private var workspaceActionProjects: [ProjectSummary] {
+        snapshot.projects.filter {
+            snapshot.canCreateWorktree(in: $0)
+                || snapshot.canImportPullRequest(in: $0)
+        }
     }
 
     private func displayName(
@@ -546,6 +566,9 @@ public struct RootView: View {
         case let .newWorktree(projectID):
             guard let project = snapshot.project(id: projectID) else { return }
             openNewWorktree(project)
+        case let .importPullRequest(projectID):
+            guard let project = snapshot.project(id: projectID) else { return }
+            openImportPullRequest(project)
         case let .openSettings(domain):
             guard content.settingsSheetBuilder != nil else { return }
             settingsStore.selectedDomain = domain
@@ -670,6 +693,18 @@ public struct RootView: View {
         else {
             return
         }
+        newWorktreeMode = .branch
+        newWorktreeProject = project
+    }
+
+    private func openImportPullRequest(_ project: ProjectSummary) {
+        guard handlers.listPullRequests != nil,
+              handlers.importPullRequest != nil,
+              snapshot.canImportPullRequest(in: project)
+        else {
+            return
+        }
+        newWorktreeMode = .pullRequest
         newWorktreeProject = project
     }
 

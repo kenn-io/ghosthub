@@ -4,14 +4,6 @@ import GhosthubWorkspace
 struct ResourceMonitoringPlan: Equatable, Sendable {
     let refreshIntervalSeconds: Int
     let sampleImmediately: Bool
-
-    init(
-        refreshIntervalSeconds: Int,
-        sampleImmediately: Bool
-    ) {
-        self.refreshIntervalSeconds = refreshIntervalSeconds
-        self.sampleImmediately = sampleImmediately
-    }
 }
 
 enum ResourceMonitoringPolicy {

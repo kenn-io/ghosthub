@@ -384,8 +384,8 @@ final class AttachedTmuxInputTests: XCTestCase {
 
     func testAttachedTmuxInputControlAliasesRemainRawControlBytes() {
         let cases: [(keyCode: UInt16, character: String, byte: UInt8)] = [
-            (34, "\t", 0x09),   // Ctrl-I, not physical Tab (48)
-            (46, "\r", 0x0d),   // Ctrl-M, not physical Enter (36)
+            (34, "\t", 0x09), // Ctrl-I, not physical Tab (48)
+            (46, "\r", 0x0d), // Ctrl-M, not physical Enter (36)
             (33, "\u{1b}", 0x1b), // Ctrl-[, not physical Escape (53)
             (44, "\u{7f}", 0x7f), // Ctrl-?, not physical Backspace (51)
         ]

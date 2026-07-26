@@ -231,7 +231,6 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         """)
     }
 
-
     private func makeKeyEvent(
         characters: String,
         charactersIgnoringModifiers: String,
@@ -344,7 +343,6 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         )
     }
 
-
     private func hostInWorkspaceWindow(
         size: CGSize = CGSize(width: 960, height: 640),
         tmuxContentBuilder: @escaping () -> AnyView?
@@ -397,7 +395,6 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             settleDelay: 0.5
         )
     }
-
 
     private func hostInGhosthubWorkspaceWindow(
         _ view: TerminalSurfaceView,
@@ -691,9 +688,6 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         return try body()
     }
 
-
-
-
     func testControlChordUsesInterpretKeyEventsOnSurfaceView() throws {
         let appHandle = try requireAppHandle()
 
@@ -780,8 +774,6 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             "Control chords should still map through AppKit's text interpretation selectors."
         )
     }
-
-
 
     func testReservedAppShortcutBypassesTerminalDispatchState() throws {
         let appHandle = try requireAppHandle()
@@ -1017,11 +1009,6 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         )
     }
 
-
-
-
-
-
     func testApplicationDispatchedMouseDownNotifiesPrimaryInteractionExactlyOnce() throws {
         let appHandle = try requireAppHandle()
 
@@ -1101,8 +1088,6 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             "Removing an older pane observer must not clear a newer binding for the same surface."
         )
     }
-
-
 
     func testPaneCloseObserversReceiveCloseRequests() throws {
         let appHandle = try requireAppHandle()
@@ -1637,7 +1622,6 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         XCTAssertTrue(descendantViews(in: window.contentView).contains(surfaceB))
     }
 
-
     func testDetachingViewClearsFocusState() throws {
         let appHandle = try requireAppHandle()
 
@@ -1759,7 +1743,6 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             "Detaching a live surface from its window must mark it occluded so libghostty stops rendering."
         )
     }
-
 
     func testOptionDSendsMetaDToPTYInGhosthubWorkspaceHost() throws {
         try assertPTYReceives(

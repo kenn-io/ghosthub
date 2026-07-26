@@ -366,7 +366,7 @@ final class SettingsStoreTests {
     }
 
     @Test
-    func testSSHHostConfigurationPersistsLocally() throws {
+    func testSSHHostConfigurationPersistsLocally() {
         let store = makeSUT()
         store.setSSHHosts([
             SSHHost(

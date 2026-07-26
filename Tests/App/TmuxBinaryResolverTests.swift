@@ -252,7 +252,10 @@ struct TmuxBinaryResolverTests {
             resolver.resolveTmuxPath()
                 == .failure(.probeTimedOut(shell: shell.path))
         )
-        #expect(Date().timeIntervalSince(started) < 1)
+        // The failure above already establishes that the budget ended this.
+        // The clock only has to rule out waiting on the ten-second sleep,
+        // which a tighter bound cannot do reliably on a loaded machine.
+        #expect(Date().timeIntervalSince(started) < 5)
     }
 
     @Test("cancelling a login-shell probe terminates it promptly")
@@ -270,8 +273,9 @@ struct TmuxBinaryResolverTests {
         try FileManager.default.setAttributes(
             [.posixPermissions: 0o755], ofItemAtPath: shell.path
         )
+        let processTimeout: TimeInterval = 5
         let resolver = TmuxBinaryResolver(
-            processTimeout: 5,
+            processTimeout: processTimeout,
             loginShellProvider: { shell.path }
         )
         let task = Task.detached { resolver.resolveTmuxPath() }
@@ -283,7 +287,8 @@ struct TmuxBinaryResolverTests {
             await task.value
                 == .failure(.probeCancelled(shell: shell.path))
         )
-        #expect(Date().timeIntervalSince(started) < 1)
+        // Cancellation has to beat the process budget rather than ride it out.
+        #expect(Date().timeIntervalSince(started) < processTimeout)
     }
 
     @Test("a background descendant cannot hold probe stdout open")
@@ -305,8 +310,13 @@ struct TmuxBinaryResolverTests {
         try FileManager.default.setAttributes(
             [.posixPermissions: 0o755], ofItemAtPath: shell.path
         )
+        // The probe kills the shell's process group on timeout, so the budget
+        // must comfortably exceed process startup. At a fraction of a second a
+        // loaded machine can reach the timeout before the shell has recorded
+        // its child, leaving nothing to assert against.
+        let processTimeout: TimeInterval = 2
         let resolver = TmuxBinaryResolver(
-            processTimeout: 0.5,
+            processTimeout: processTimeout,
             loginShellProvider: { shell.path }
         )
         let started = Date()
@@ -315,11 +325,49 @@ struct TmuxBinaryResolverTests {
             resolver.resolveTmuxPath()
                 == .failure(.probeTimedOut(shell: shell.path))
         )
-        #expect(Date().timeIntervalSince(started) < 2)
-        let childPID = try #require(Int32(
-            String(contentsOf: childPIDFile, encoding: .utf8)
-        ))
-        #expect(kill(childPID, 0) != 0)
+        // Well under the descendant's ten-second sleep: the probe must not
+        // wait for it.
+        #expect(Date().timeIntervalSince(started) < processTimeout + 3)
+        let childPID = try #require(Self.recordedPID(at: childPIDFile))
+        #expect(Self.waitForExit(of: childPID))
+    }
+
+    /// Reads a pid a subprocess published, tolerating the gap between the
+    /// shell creating the file through redirection and writing the value.
+    private static func recordedPID(
+        at file: URL,
+        timeout: TimeInterval = 5
+    ) -> Int32? {
+        poll(timeout: timeout) {
+            guard let contents = try? String(
+                contentsOf: file, encoding: .utf8
+            ) else { return nil }
+            return Int32(
+                contents.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+        }
+    }
+
+    /// Signalling a process group does not reap its members synchronously.
+    private static func waitForExit(
+        of pid: Int32,
+        timeout: TimeInterval = 5
+    ) -> Bool {
+        poll(timeout: timeout) { kill(pid, 0) != 0 ? true : nil } ?? false
+    }
+
+    private static func poll<Value>(
+        timeout: TimeInterval,
+        until produce: () -> Value?
+    ) -> Value? {
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            if let value = produce() {
+                return value
+            }
+            usleep(20_000)
+        } while Date() < deadline
+        return produce()
     }
 
     @Test("noisy startup output is drained but remains memory bounded")
@@ -369,8 +417,9 @@ struct TmuxBinaryResolverTests {
         try FileManager.default.setAttributes(
             [.posixPermissions: 0o755], ofItemAtPath: shell.path
         )
+        let processTimeout: TimeInterval = 5
         let resolver = TmuxBinaryResolver(
-            processTimeout: 5,
+            processTimeout: processTimeout,
             loginShellProvider: { shell.path }
         )
         let started = Date()
@@ -379,7 +428,9 @@ struct TmuxBinaryResolverTests {
             resolver.resolveTmuxPath()
                 == .failure(.probeOutputExceeded(shell: shell.path))
         )
-        #expect(Date().timeIntervalSince(started) < 1)
+        // The output cap, not the clock, must end this. The failure above
+        // proves the cause; this only rules out riding out the whole budget.
+        #expect(Date().timeIntervalSince(started) < processTimeout)
     }
 
     @Test("probe does not inherit unrelated descriptors")

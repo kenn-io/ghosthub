@@ -95,11 +95,11 @@ public final class LibghosttyRuntime: ObservableObject {
                 }
             }
         ) { [weak self] in
-                guard let self else { return }
-                Task { @MainActor in
-                    self.reloadActiveConfig(force: true)
-                }
+            guard let self else { return }
+            Task { @MainActor in
+                self.reloadActiveConfig(force: true)
             }
+        }
 
         do {
             try monitor.start()

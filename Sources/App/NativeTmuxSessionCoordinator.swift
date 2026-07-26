@@ -40,16 +40,35 @@ struct BorrowedTmuxSessionHandle: Equatable, Sendable {
     var hostID: UUID
     var name: String
     var surfaceID: UUID
+    var socketName: String?
+
+    init(
+        id: UUID,
+        hostID: UUID,
+        name: String,
+        surfaceID: UUID,
+        socketName: String? = nil
+    ) {
+        self.id = id
+        self.hostID = hostID
+        self.name = name
+        self.surfaceID = surfaceID
+        self.socketName = socketName
+    }
 }
 
 private struct NativeTmuxSessionKey: Hashable {
     var hostID: UUID
     var name: String
+    var socketName: String?
 }
 
 private struct NativeTmuxAttachment {
     var host: TmuxHost
     var tmuxPath: String
+    var kwtPath: String?
+    var socketName: String?
+    var protectedWorkspacePath: String?
     var launchMode: TmuxAttachmentLaunchMode
     var workingDirectory: String?
 }
@@ -64,6 +83,7 @@ final class NativeTmuxSessionCoordinator {
         @Sendable () -> Result<String, TmuxBinaryError>
     private let remoteTmuxPathProvider:
         @Sendable (SSHHostInfo) -> Result<String, TmuxBinaryError>
+    private let localKwtPathProvider: @Sendable () -> String?
     private var handlesByKey: [NativeTmuxSessionKey: BorrowedTmuxSessionHandle] = [:]
     private var targetHostsByHandle: [UUID: TmuxHost] = [:]
     private var attachments: [UUID: NativeTmuxAttachment] = [:]
@@ -80,6 +100,9 @@ final class NativeTmuxSessionCoordinator {
     init(
         terminalCoordinator: any TmuxSurfaceStoring,
         tmuxPathProvider: @escaping @Sendable () -> Result<String, TmuxBinaryError>,
+        localKwtPathProvider: @escaping @Sendable () -> String? = {
+            KwtBinaryLocator.bundledPath()
+        },
         remoteTmuxPathProvider: @escaping @Sendable (SSHHostInfo)
             -> Result<String, TmuxBinaryError> = {
                 TmuxBinaryResolver().resolveTmuxPath(on: $0)
@@ -87,6 +110,7 @@ final class NativeTmuxSessionCoordinator {
     ) {
         self.terminalCoordinator = terminalCoordinator
         self.tmuxPathProvider = tmuxPathProvider
+        self.localKwtPathProvider = localKwtPathProvider
         self.remoteTmuxPathProvider = remoteTmuxPathProvider
     }
 
@@ -94,10 +118,15 @@ final class NativeTmuxSessionCoordinator {
         hostID: UUID,
         name: String,
         host: TmuxHost,
+        socketName: String? = nil,
         launchMode: TmuxAttachmentLaunchMode = .attach,
         workingDirectory: String? = nil
     ) -> BorrowedTmuxSessionHandle {
-        let key = NativeTmuxSessionKey(hostID: hostID, name: name)
+        let key = NativeTmuxSessionKey(
+            hostID: hostID,
+            name: name,
+            socketName: socketName
+        )
         if let existing = handlesByKey[key],
            targetHostsByHandle[existing.id] != host {
             removeHandle(existing, for: key)
@@ -107,7 +136,8 @@ final class NativeTmuxSessionCoordinator {
                 id: UUID(),
                 hostID: hostID,
                 name: name,
-                surfaceID: UUID()
+                surfaceID: UUID(),
+                socketName: socketName
             )
         handlesByKey[key] = handle
         targetHostsByHandle[handle.id] = host
@@ -145,6 +175,7 @@ final class NativeTmuxSessionCoordinator {
             self?.finishAttach(
                 handle: handle,
                 host: host,
+                socketName: socketName,
                 launchMode: launchMode,
                 workingDirectory: workingDirectory,
                 resolution: resolution
@@ -156,22 +187,29 @@ final class NativeTmuxSessionCoordinator {
     private func finishAttach(
         handle: BorrowedTmuxSessionHandle,
         host: TmuxHost,
+        socketName: String?,
         launchMode: TmuxAttachmentLaunchMode,
         workingDirectory: String?,
         resolution: Result<String, TmuxBinaryError>
     ) {
         provisioningTasks.removeValue(forKey: handle.id)
         provisioningHandles.remove(handle.id)
-        let key = NativeTmuxSessionKey(hostID: handle.hostID, name: handle.name)
+        let key = sessionKey(handle)
         guard handlesByKey[key] == handle,
               targetHostsByHandle[handle.id] == host,
               attachments[handle.id] == nil else { return }
         switch resolution {
         case let .success(path):
             tmuxPathsByHost[host] = path
+            let protectedWorkspacePath = socketName == nil
+                ? nil
+                : workingDirectory
             attachments[handle.id] = NativeTmuxAttachment(
                 host: host,
                 tmuxPath: path,
+                kwtPath: host.isRemote ? nil : localKwtPathProvider(),
+                socketName: socketName,
+                protectedWorkspacePath: protectedWorkspacePath,
                 launchMode: launchMode,
                 workingDirectory: workingDirectory
             )
@@ -184,8 +222,12 @@ final class NativeTmuxSessionCoordinator {
         }
     }
 
-    func detach(hostID: UUID, name: String) {
-        let key = NativeTmuxSessionKey(hostID: hostID, name: name)
+    func detach(hostID: UUID, name: String, socketName: String? = nil) {
+        let key = NativeTmuxSessionKey(
+            hostID: hostID,
+            name: name,
+            socketName: socketName
+        )
         guard let handle = handlesByKey.removeValue(forKey: key) else {
             return
         }
@@ -229,6 +271,8 @@ final class NativeTmuxSessionCoordinator {
         let info = TmuxAttachmentInfo(
             sessionName: handle.name,
             host: attachment.host,
+            socketName: attachment.socketName,
+            protectedWorkspacePath: attachment.protectedWorkspacePath,
             launchMode: attachment.launchMode
         )
         let surface = terminalCoordinator.paneSurface(
@@ -237,6 +281,7 @@ final class NativeTmuxSessionCoordinator {
                 workingDirectory: NSHomeDirectory(),
                 command: info.attachCommand(
                     tmuxPath: attachment.tmuxPath,
+                    kwtPath: attachment.kwtPath,
                     workingDirectory: attachment.workingDirectory
                 )
             )
@@ -276,10 +321,7 @@ final class NativeTmuxSessionCoordinator {
     ) {
         Task { [weak self] in
             guard let self, !isShuttingDown else { return }
-            let key = NativeTmuxSessionKey(
-                hostID: handle.hostID,
-                name: handle.name
-            )
+            let key = sessionKey(handle)
             guard handlesByKey[key] == handle else { return }
             if requiresLiveSurface {
                 guard launchedHandles.contains(handle.id),
@@ -291,7 +333,7 @@ final class NativeTmuxSessionCoordinator {
     }
 
     private func surfaceDidClose(_ handle: BorrowedTmuxSessionHandle) {
-        let key = NativeTmuxSessionKey(hostID: handle.hostID, name: handle.name)
+        let key = sessionKey(handle)
         guard handlesByKey[key] == handle else { return }
         endedHandles.insert(handle.id)
         attachments.removeValue(forKey: handle.id)
@@ -326,6 +368,16 @@ final class NativeTmuxSessionCoordinator {
             hostID: handle.hostID,
             target: .tmuxSession,
             leafID: handle.surfaceID
+        )
+    }
+
+    private func sessionKey(
+        _ handle: BorrowedTmuxSessionHandle
+    ) -> NativeTmuxSessionKey {
+        NativeTmuxSessionKey(
+            hostID: handle.hostID,
+            name: handle.name,
+            socketName: handle.socketName
         )
     }
 }

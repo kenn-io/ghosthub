@@ -14,11 +14,9 @@ builds Swift code and bootstraps libghostty locally.
 
 - Metal Toolchain installed for the selected Xcode.
 - `uv` for Python tooling.
+- Go for building Ghosthub's pinned kwt helper.
 - `zig` 0.15.2 or newer for libghostty bootstrap.
 - `git`, `xcodebuild`, and `xcrun`.
-- `kwt` on `PATH`, or `KWT_BINARY_PATH` set to an executable kwt build, so the
-  development app bundle can embed the same local-state boundary used by a
-  release.
 
 ## Build and Launch
 
@@ -33,6 +31,10 @@ match `Vendor/ghostty.version.json`, it exits without rebuilding.
 
 `make build` builds only Ghosthub and its native dependencies. The repository
 does not initialize or build git submodules.
+
+`make run-app` also builds and embeds the exact kwt revision recorded in
+`KWT_REVISION`. Set `KWT_BINARY_PATH` only to package an existing, separately
+prepared kwt executable.
 
 ## Run Checks
 

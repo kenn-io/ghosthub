@@ -87,6 +87,10 @@ public struct InteractionHandlers {
     public let refreshWorkspaceInventory: (() -> Void)?
     public let createWorktree:
         ((WorktreeCreateRequest) async throws -> Void)?
+    public let listPullRequests:
+        ((UUID) async throws -> [PullRequestCandidate])?
+    public let importPullRequest:
+        ((PullRequestImportRequest) async throws -> Void)?
 
     public init(
         closeWindow: (() -> Void)? = nil,
@@ -97,7 +101,11 @@ public struct InteractionHandlers {
         createTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)? = nil,
         refreshWorkspaceInventory: (() -> Void)? = nil,
         createWorktree:
-            ((WorktreeCreateRequest) async throws -> Void)? = nil
+        ((WorktreeCreateRequest) async throws -> Void)? = nil,
+        listPullRequests:
+        ((UUID) async throws -> [PullRequestCandidate])? = nil,
+        importPullRequest:
+        ((PullRequestImportRequest) async throws -> Void)? = nil
     ) {
         self.closeWindow = closeWindow
         self.dismissLogViewer = dismissLogViewer
@@ -107,5 +115,7 @@ public struct InteractionHandlers {
         self.createTmuxSession = createTmuxSession
         self.refreshWorkspaceInventory = refreshWorkspaceInventory
         self.createWorktree = createWorktree
+        self.listPullRequests = listPullRequests
+        self.importPullRequest = importPullRequest
     }
 }

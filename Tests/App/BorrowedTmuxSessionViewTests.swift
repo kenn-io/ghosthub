@@ -8,7 +8,7 @@ import Testing
 @MainActor
 struct BorrowedTmuxSessionViewTests {
     @Test("a failed borrowed attachment shows its reason and retries")
-    func failureShowsReasonAndRetry() throws {
+    func failureShowsReasonAndRetry() {
         var retryCount = 0
         let view = BorrowedTmuxSessionView(
             handle: BorrowedTmuxSessionHandle(

@@ -1,4 +1,5 @@
 import Foundation
+import GhosthubUI
 import GhosthubWorkspace
 import Testing
 @testable import GhosthubApp
@@ -33,6 +34,24 @@ private actor KwtInventoryRaceStub {
 
 @Suite("Workspace worktree creation")
 struct WorkspaceWorktreeCreationTests {
+    @Test(
+        "workspace mutations fence background kwt inventory",
+        arguments: [
+            (creating: true, importing: false),
+            (creating: false, importing: true),
+        ]
+    )
+    @MainActor
+    func workspaceMutationsFenceInventory(
+        creating: Bool,
+        importing: Bool
+    ) {
+        #expect(!WorkspaceSceneModel.canScheduleKwtInventory(
+            isWorktreeCreationInProgress: creating,
+            isPullRequestImportInProgress: importing
+        ))
+    }
+
     @Test("selecting a kwt worktree preserves the authoritative inventory")
     @MainActor
     func selectionPreservesKwtInventory() async throws {
@@ -147,6 +166,107 @@ struct WorkspaceWorktreeCreationTests {
             model.snapshot.worktree(id: selectedID)?
                 .branch == createdBranch
         )
+        await model.shutdown()
+    }
+
+    @Test("PR session failure retains and selects the imported workspace")
+    @MainActor
+    func pullRequestSessionFailureRetainsWorkspace() async throws {
+        let environment = try setupStandardEnvironment()
+        var snapshot = environment.snapshot
+        snapshot.projects[0].scopedKey =
+            "github.com/kenn-io/ghosthub"
+        let unrelatedProjectID = UUID()
+        let unrelatedWorktreeID = UUID()
+        snapshot.projects.append(ProjectSummary(
+            id: unrelatedProjectID,
+            hostID: environment.host.id,
+            scopedKey: "github.com/kenn-io/kwt",
+            name: "kwt",
+            rootPath: "/tmp/kwt"
+        ))
+        snapshot.worktrees.append(WorktreeSummary(
+            id: unrelatedWorktreeID,
+            hostID: environment.host.id,
+            projectID: unrelatedProjectID,
+            scopedKey: "/tmp/kwt",
+            name: "main",
+            path: "/tmp/kwt",
+            branch: "main",
+            isPrimary: true,
+            tmuxSessionName: "kwt-workspace-kwt"
+        ))
+        let workspace = PullRequestWorkspace(
+            id: "workspace-32",
+            repository: "github.com/kenn-io/ghosthub",
+            branch: "pr-32-feature",
+            path: "/tmp/ghosthub-pr-32",
+            state: "ready",
+            sessionName: "kwt-workspace-pr-32",
+            tmuxSocketName: "kwt-pr-0123456789abcdef"
+        )
+        let candidate = PullRequestCandidate(
+            id: "github:github.com/kenn-io/ghosthub#32",
+            number: 32,
+            url: "https://github.com/kenn-io/ghosthub/pull/32",
+            title: "Import pull requests",
+            author: "wesm",
+            sourceBranch: "feature/pr-import",
+            targetBranch: "main",
+            isDraft: false,
+            state: "open",
+            isImported: true,
+            workspace: workspace
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtInventoryLoader: { _ in
+                throw KwtInventoryError.commandFailed(
+                    host: "this Mac",
+                    status: 1
+                )
+            },
+            kwtPullRequestImporter: { id, identity, _ in
+                #expect(id == candidate.id)
+                #expect(identity == "github.com/kenn-io/ghosthub")
+                return KwtPullRequestImportResult(
+                    status: "created",
+                    pullRequest: candidate,
+                    workspace: workspace,
+                    sessionStartError: KwtPullRequestSessionStartError(
+                        code: "workspace_creation_failed",
+                        message: "tmux could not start",
+                        retryable: false
+                    )
+                )
+            }
+        )
+
+        await #expect(throws: KwtPullRequestError.self) {
+            try await model.importPullRequest(PullRequestImportRequest(
+                projectID: environment.project.id,
+                pullRequestID: candidate.id
+            ))
+        }
+
+        let selectedID = try #require(model.selection.selectedWorktreeID)
+        let imported = try #require(
+            model.snapshot.worktree(id: selectedID)
+        )
+        #expect(imported.path == workspace.path)
+        #expect(imported.tmuxSessionName == workspace.sessionName)
+        #expect(imported.tmuxSocketName == workspace.tmuxSocketName)
+        let selectedSession = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: imported)
+        )
+        #expect(selectedSession.socketName == workspace.tmuxSocketName)
+        #expect(imported.linkedPullRequestNumber == 32)
+        #expect(imported.pullRequestTitle == candidate.title)
+        #expect(imported.pullRequestState == .open)
+        #expect(model.snapshot.project(id: unrelatedProjectID) != nil)
+        #expect(model.snapshot.worktree(id: unrelatedWorktreeID) != nil)
         await model.shutdown()
     }
 

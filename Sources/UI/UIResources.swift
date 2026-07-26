@@ -1,7 +1,7 @@
 import Foundation
 
 enum UIResources {
-    static nonisolated let bundle: Bundle = {
+    nonisolated static let bundle: Bundle = {
         if let packagedBundle = packagedBundle(
             applicationBundleURL: Bundle.main.bundleURL
         ) {

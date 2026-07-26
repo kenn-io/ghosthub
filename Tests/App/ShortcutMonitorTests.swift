@@ -96,10 +96,18 @@ struct ShortcutCase: Sendable, CustomTestStringConvertible {
 
     var testDescription: String {
         var parts: [String] = []
-        if modifiers.contains(.command) { parts.append("command") }
-        if modifiers.contains(.option) { parts.append("option") }
-        if modifiers.contains(.control) { parts.append("control") }
-        if modifiers.contains(.shift) { parts.append("shift") }
+        if modifiers.contains(.command) {
+            parts.append("command")
+        }
+        if modifiers.contains(.option) {
+            parts.append("option")
+        }
+        if modifiers.contains(.control) {
+            parts.append("control")
+        }
+        if modifiers.contains(.shift) {
+            parts.append("shift")
+        }
         parts.append(characters ?? "keyCode(\(keyCode))")
         return parts.joined(separator: "-")
     }

@@ -69,7 +69,7 @@ public struct SessionTitlebarPresentation: Equatable, Sendable {
         if hostAndPort.hasPrefix("["),
            let closingBracket = hostAndPort.firstIndex(of: "]") {
             let start = hostAndPort.index(after: hostAndPort.startIndex)
-            return String(hostAndPort[start..<closingBracket])
+            return String(hostAndPort[start ..< closingBracket])
         }
 
         if hostAndPort.filter({ $0 == ":" }).count == 1,

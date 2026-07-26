@@ -117,6 +117,8 @@ parent's checklist.
 ## Quality Gates
 
 - `make build` is required for app-affecting Swift changes.
+- **Formatting:** `make format` before committing Swift; CI runs
+  `make format-check` and fails on drift.
 - **Python:** `make python-test`
 - **Swift:** `swift test` or targeted `xcodebuild test`
 - Prefer deterministic unit tests around parsing, prompt generation, and

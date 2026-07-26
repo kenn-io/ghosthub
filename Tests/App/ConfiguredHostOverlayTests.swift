@@ -212,7 +212,7 @@ struct ConfiguredHostOverlayTests {
             configuredSSHHostsProvider: provider,
             configuredSSHHostsPublisher: publisher
         )
-        for _ in 0..<10 where subscriptionCount.load() < 2 {
+        for _ in 0 ..< 10 where subscriptionCount.load() < 2 {
             await Task.yield()
         }
         #expect(subscriptionCount.load() == 2)

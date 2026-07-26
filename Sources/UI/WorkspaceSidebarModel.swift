@@ -6,17 +6,20 @@ public struct WorkspaceTmuxSessionSelection: Equatable, Sendable {
     public var name: String
     public var worktreeID: UUID?
     public var worktreePath: String?
+    public var socketName: String?
 
     public init(
         hostID: UUID,
         name: String,
         worktreeID: UUID? = nil,
-        worktreePath: String? = nil
+        worktreePath: String? = nil,
+        socketName: String? = nil
     ) {
         self.hostID = hostID
         self.name = name
         self.worktreeID = worktreeID
         self.worktreePath = worktreePath
+        self.socketName = socketName
     }
 }
 
@@ -132,7 +135,8 @@ public enum WorkspaceSidebarModel {
             hostID: worktree.hostID,
             name: name,
             worktreeID: worktree.id,
-            worktreePath: worktree.path
+            worktreePath: worktree.path,
+            socketName: worktree.tmuxSocketName
         )
     }
 
@@ -141,9 +145,13 @@ public enum WorkspaceSidebarModel {
         visibility: WorktreeVisibility = .default
     ) -> [WorkspaceSidebarSection] {
         snapshot.hosts.map { host in
-            let kwtSessionNames = Set(
+            // Discovery only lists the host's default tmux server. A
+            // protected PR workspace lives on its own socket, so its session
+            // name never identifies a discovered session and must not
+            // suppress an unrelated default-server session of the same name.
+            let defaultServerSessionNames = Set(
                 snapshot.worktrees.compactMap { worktree in
-                    worktree.hostID == host.id
+                    worktree.hostID == host.id && worktree.tmuxSocketName == nil
                         ? worktree.tmuxSessionName : nil
                 }
             )
@@ -173,7 +181,7 @@ public enum WorkspaceSidebarModel {
                 host: host,
                 projects: projects,
                 tmuxSessionRows: host.tmuxSessions
-                    .filter { !kwtSessionNames.contains($0.name) }
+                    .filter { !defaultServerSessionNames.contains($0.name) }
                     .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
                     .map { tmuxSessionRow($0, hostID: host.id) }
             )

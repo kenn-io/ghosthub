@@ -26,19 +26,37 @@ RELEASE_MIN_MACOS ?= 26.0
 APP_ICON_PATH ?= Resources/AppIcon/Ghosthub.icns
 APP_COPYRIGHT ?= Copyright © 2026 Kenn Software LLC. Licensed under the GNU AGPL v3.0 or later.
 APP_LICENSE_PATH ?= LICENSE
-KWT_BINARY_PATH ?= $(shell command -v kwt 2>/dev/null)
+KWT_REPOSITORY ?= https://github.com/kenn-io/kwt.git
+KWT_REF ?= $(shell tr -d '[:space:]' < KWT_REVISION)
+KWT_SOURCE_DIR ?= $(abspath .build/kwt-source)
+KWT_BINARY_PATH ?= $(abspath .build/kwt/kwt)
 THIRD_PARTY_LICENSES_DIR ?= LICENSES
-KWT_VERSION ?= development
+
+# Only the helper this Makefile builds is the pinned one. A developer-supplied
+# KWT_BINARY_PATH must not inherit the pin's provenance in the bundle, so ask
+# that binary to identify itself instead. An explicit KWT_VERSION or
+# KWT_SOURCE_REVISION still wins either way, which is how release CI records
+# the helper it built.
+KWT_REPORTED_VERSION = $(shell "$(KWT_BINARY_PATH)" --version 2>/dev/null \
+	| sed -n '1s/^kwt version //p')
+ifeq ($(origin KWT_BINARY_PATH),file)
+KWT_VERSION ?= $(KWT_REF)
+KWT_SOURCE_REVISION ?= $(KWT_REF)
+else
+KWT_VERSION ?= $(or $(KWT_REPORTED_VERSION),unknown)
 KWT_SOURCE_REVISION ?= unpinned
+endif
 SWIFT_TEST_FILTER ?=
 
-.PHONY: help bootstrap-libghostty bootstrap-libghostty-release check-libghostty check-libghostty-release test-libghostty-bootstrap test-terminal-fallback test-stage-release-app-bundles test-assemble-app-bundle test-essential-workflows build swift-warning-check build-release debug-app release-app release-dmg release-appcast run-release-app run-app swift-test test-tmux-attach python-test test smoke-test docs-build docs-serve site-deploy reset-app-state install-hooks
+.PHONY: help bootstrap-kwt ensure-kwt bootstrap-libghostty bootstrap-libghostty-release check-libghostty check-libghostty-release test-libghostty-bootstrap test-terminal-fallback test-stage-release-app-bundles test-assemble-app-bundle test-essential-workflows build swift-warning-check build-release debug-app release-app release-dmg release-appcast run-release-app run-app swift-test test-tmux-attach python-test test smoke-test docs-build docs-serve site-deploy reset-app-state install-hooks format format-check
 
 help:
 	@printf '%s\n' \
 		'Ghosthub developer shortcuts' \
 		'' \
 		'Targets:' \
+		'  make bootstrap-kwt' \
+		'      Build the exact kwt revision embedded by local debug app bundles.' \
 		'  make bootstrap-libghostty' \
 		'      Fetch the pinned Ghostty source, build libghostty, and stage the local artifacts.' \
 		'  make check-libghostty' \
@@ -73,6 +91,10 @@ help:
 		'      Run the full Python test suite via uv-managed pytest.' \
 		'  make test' \
 		'      Run both the Swift and Python test suites.' \
+		'  make format' \
+		'      Apply the repository SwiftFormat rules in place.' \
+		'  make format-check' \
+		'      Report Swift files that do not match the repository SwiftFormat rules.' \
 		'  make smoke-test' \
 		'      Run terminal runtime smoke tests (requires bootstrapped libghostty).' \
 		'  make docs-build' \
@@ -103,6 +125,21 @@ help:
 		'  Debug and release libghostty variants are cached separately; switching LIBGHOSTTY_OPTIMIZE modes re-activates the requested variant into .build/libghostty and only rebuilds when that cached variant is missing or stale.' \
 		'  bootstrap-libghostty and check-libghostty prefer LIBGHOSTTY_ZIG first, then ~/.local/bin/zig-0.15.2-x86_64, then zig from PATH, and finally /opt/homebrew/bin/zig as a fallback.' \
 		'  libghostty bootstrap requires a full Xcode install and the Metal Toolchain, not just Command Line Tools.'
+
+bootstrap-kwt:
+	@tools/build_pinned_kwt.sh \
+		"$(KWT_REPOSITORY)" \
+		"$(KWT_REF)" \
+		"$(KWT_SOURCE_DIR)" \
+		"$(KWT_BINARY_PATH)"
+
+ensure-kwt:
+	@if [[ "$(origin KWT_BINARY_PATH)" == "file" ]]; then \
+		$(MAKE) --no-print-directory bootstrap-kwt; \
+	elif [[ ! -x "$(KWT_BINARY_PATH)" ]]; then \
+		printf 'KWT_BINARY_PATH must name an existing executable kwt binary.\n' >&2; \
+		exit 1; \
+	fi
 
 bootstrap-libghostty:
 	@set -euo pipefail; \
@@ -201,8 +238,13 @@ test-essential-workflows:
 build: bootstrap-libghostty
 	@$(SWIFT) build
 
+# This gate is about warnings in Ghosthub's own Swift code. Ghostty's umbrella
+# header deliberately omits the ghostty/vt headers, and clang only reports that
+# while building the GhosttyKit module, so leaving it fatal made the gate pass
+# or fail on whether the module cache happened to be warm.
 swift-warning-check: bootstrap-libghostty
-	@$(SWIFT) build --build-tests -Xswiftc -warnings-as-errors
+	@$(SWIFT) build --build-tests -Xswiftc -warnings-as-errors \
+		-Xcc -Wno-incomplete-umbrella
 
 bootstrap-libghostty-release: LIBGHOSTTY_OPTIMIZE = ReleaseFast
 bootstrap-libghostty-release: bootstrap-libghostty
@@ -215,7 +257,7 @@ build-release: bootstrap-libghostty-release
 	@$(SWIFT) build --configuration release --product "$(GHOSTHUB_APP)"
 
 debug-app: LIBGHOSTTY_QUIET_NOOP = 1
-debug-app: bootstrap-libghostty
+debug-app: ensure-kwt bootstrap-libghostty
 	@set -euo pipefail; \
 	kwt_bin="$(KWT_BINARY_PATH)"; \
 	if [[ -z "$$kwt_bin" || ! -x "$$kwt_bin" ]]; then \
@@ -246,7 +288,7 @@ debug-app: bootstrap-libghostty
 	printf 'Built debug app bundle: %s\n' "$(DEBUG_APP_PATH)"
 
 release-app: LIBGHOSTTY_OPTIMIZE = ReleaseFast
-release-app: build-release
+release-app: ensure-kwt build-release
 	@set -euo pipefail; \
 	kwt_bin="$(KWT_BINARY_PATH)"; \
 	if [[ -z "$$kwt_bin" || ! -x "$$kwt_bin" ]]; then \
@@ -368,3 +410,17 @@ install-hooks:
 		exit 1; \
 	fi
 	prek install -f
+
+format:
+	@if ! command -v swiftformat >/dev/null 2>&1; then \
+		echo "swiftformat not found. Install with: brew install swiftformat" >&2; \
+		exit 1; \
+	fi
+	swiftformat --quiet .
+
+format-check:
+	@if ! command -v swiftformat >/dev/null 2>&1; then \
+		echo "swiftformat not found. Install with: brew install swiftformat" >&2; \
+		exit 1; \
+	fi
+	swiftformat --lint .

@@ -197,16 +197,16 @@ public final class LibghosttyConfigFileMonitor {
         )
         source.setEventHandler { [weak self, weak source] in
             guard let self, let source,
-                  self.fileSources[file] === source
+                  fileSources[file] === source
             else { return }
             let events = source.data
             if events.contains(.delete) || events.contains(.rename) {
                 source.cancel()
-                self.fileSources[file] = nil
-                self.refreshAfterDirectoryChangeLocked()
-                self.scheduleChangeLocked()
+                fileSources[file] = nil
+                refreshAfterDirectoryChangeLocked()
+                scheduleChangeLocked()
             } else {
-                self.scheduleChangeLocked()
+                scheduleChangeLocked()
             }
         }
         source.setCancelHandler { [descriptor] in
@@ -228,9 +228,9 @@ public final class LibghosttyConfigFileMonitor {
         )
         source.setEventHandler { [weak self, weak source] in
             guard let self, let source,
-                  self.directorySources[directory] === source
+                  directorySources[directory] === source
             else { return }
-            self.refreshAfterDirectoryChangeLocked()
+            refreshAfterDirectoryChangeLocked()
         }
         source.setCancelHandler { [descriptor] in
             close(descriptor)
@@ -252,10 +252,10 @@ public final class LibghosttyConfigFileMonitor {
 
         do {
             for file in graph.files
-            where graph.fileIdentities[file]?.exists == true {
+                where graph.fileIdentities[file]?.exists == true {
                 let sourceIsCurrent = fileSources[file] != nil
                     && knownIdentity[file]
-                        == graph.fileIdentities[file]
+                    == graph.fileIdentities[file]
                 guard !sourceIsCurrent,
                       let descriptor = try openDescriptor(for: file)
                 else { continue }
@@ -264,7 +264,7 @@ public final class LibghosttyConfigFileMonitor {
             for directory in graph.directories {
                 let sourceIsCurrent = directorySources[directory] != nil
                     && knownDirectoryIdentity[directory]
-                        == graph.directoryIdentities[directory]
+                    == graph.directoryIdentities[directory]
                 guard !sourceIsCurrent,
                       let descriptor = try openDescriptor(for: directory)
                 else { continue }
@@ -315,7 +315,7 @@ public final class LibghosttyConfigFileMonitor {
                 to: updatedFiles,
                 keepStagedSourcesOnFailure: keepStagedSourcesOnFailure,
                 remainingCoverageRetries:
-                    remainingCoverageRetries - 1
+                remainingCoverageRetries - 1
             )
             return
         }
@@ -361,7 +361,7 @@ public final class LibghosttyConfigFileMonitor {
         stagedDirectories: [URL: Int32]
     ) -> URL? {
         for (file, identity) in graph.fileIdentities
-        where identity.exists {
+            where identity.exists {
             let existingSourceIsCurrent = fileSources[file] != nil
                 && knownIdentity[file] == identity
             if !existingSourceIsCurrent, stagedFiles[file] == nil {
@@ -372,7 +372,7 @@ public final class LibghosttyConfigFileMonitor {
             let existingSourceIsCurrent =
                 directorySources[directory] != nil
                     && knownDirectoryIdentity[directory]
-                        == graph.directoryIdentities[directory]
+                    == graph.directoryIdentities[directory]
             if !existingSourceIsCurrent,
                stagedDirectories[directory] == nil {
                 return directory
@@ -386,11 +386,11 @@ public final class LibghosttyConfigFileMonitor {
         _ second: WatchGraph
     ) -> URL {
         for file in first.files.union(second.files)
-        where first.fileIdentities[file] != second.fileIdentities[file] {
+            where first.fileIdentities[file] != second.fileIdentities[file] {
             return file
         }
         for directory in first.directories.union(second.directories)
-        where first.directoryIdentities[directory]
+            where first.directoryIdentities[directory]
             != second.directoryIdentities[directory] {
             return directory
         }
@@ -423,13 +423,13 @@ public final class LibghosttyConfigFileMonitor {
             }
         }
         for (file, identity) in graph.fileIdentities
-        where identity.exists && fileSources[file] == nil {
+            where identity.exists && fileSources[file] == nil {
             return file
         }
         for directory in graph.directories {
             guard directorySources[directory] != nil,
                   knownDirectoryIdentity[directory]
-                    == graph.directoryIdentities[directory]
+                  == graph.directoryIdentities[directory]
             else { return directory }
         }
         return nil
@@ -465,7 +465,7 @@ public final class LibghosttyConfigFileMonitor {
             )
             let identityChanged = directories.contains(directory)
                 && knownDirectoryIdentity[directory]
-                    != directoryIdentities[directory]
+                != directoryIdentities[directory]
             let isRequiredAncestor = fallbackDirectories.contains {
                 isAncestor(directory, of: $0)
             }
@@ -536,21 +536,21 @@ public final class LibghosttyConfigFileMonitor {
         pendingDirectoryRecheck?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            self.pendingDirectoryRecheck = nil
-            let previousIdentity = self.knownIdentity
+            pendingDirectoryRecheck = nil
+            let previousIdentity = knownIdentity
             let observedIdentity = Dictionary(
-                uniqueKeysWithValues: self.desiredFiles.map {
+                uniqueKeysWithValues: desiredFiles.map {
                     ($0, self.fileIdentity(for: $0))
                 }
             )
-            self.reportingErrors {
+            reportingErrors {
                 try self.reconfigureSourcesLocked(
                     to: self.desiredFiles
                 )
             }
             if previousIdentity != observedIdentity
-                || previousIdentity != self.knownIdentity {
-                self.scheduleChangeLocked()
+                || previousIdentity != knownIdentity {
+                scheduleChangeLocked()
             }
         }
         pendingDirectoryRecheck = work
@@ -599,7 +599,7 @@ public final class LibghosttyConfigFileMonitor {
                 SymlinkCandidate(
                     file: desiredFile,
                     expansionDepth: 0
-                )
+                ),
             ]
             var visited: Set<URL> = []
 
@@ -706,8 +706,8 @@ public final class LibghosttyConfigFileMonitor {
         pendingChange?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            self.pendingChange = nil
-            self.changeHandler()
+            pendingChange = nil
+            changeHandler()
         }
         pendingChange = work
         queue.asyncAfter(

@@ -23,9 +23,6 @@ env:
   RELEASE_ROOT: .dist/release
   LIBGHOSTTY_XCFRAMEWORK_TARGET: native
   KWT_REPOSITORY: kenn-io/kwt
-  # Ghosthub and its embedded kwt are one tested release unit. Advance this
-  # full revision deliberately, never by following a moving branch.
-  KWT_REF: d55475048921f98e80ccf009b9c9ff4f8b7a810a
 
 jobs:
   macos-release:
@@ -40,6 +37,9 @@ jobs:
       name: release-signing
     outputs:
       version: ${{ steps.release.outputs.version }}
+      # $GITHUB_ENV does not cross jobs, so the revision this job actually
+      # built has to be handed to publish-release explicitly.
+      kwt-revision: ${{ steps.kwt-pin.outputs.revision }}
 
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -47,11 +47,23 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
+      - name: Load pinned kwt revision
+        id: kwt-pin
+        shell: bash
+        run: |
+          revision="$(tr -d '[:space:]' < KWT_REVISION)"
+          if [[ ! "$revision" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "KWT_REVISION must contain one full Git commit." >&2
+            exit 1
+          fi
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+          echo "KWT_REF=$revision" >> "$GITHUB_ENV"
+
       - name: Check out pinned kwt
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: ${{ env.KWT_REPOSITORY }}
-          ref: ${{ env.KWT_REF }}
+          ref: ${{ steps.kwt-pin.outputs.revision }}
           path: .release-inputs/kwt-source
           persist-credentials: false
 
@@ -134,15 +146,26 @@ jobs:
         working-directory: .release-inputs/kwt-source
         run: |
           kwt_binary="$RUNNER_TEMP/kwt"
-          go build -trimpath -ldflags "-s -w" -o "$kwt_binary" ./cmd/kwt
+          go build -trimpath \
+            -ldflags "-s -w -X go.kenn.io/kwt/internal/cmd.version=$KWT_REF" \
+            -o "$kwt_binary" ./cmd/kwt
           kwt_archs="$(lipo -archs "$kwt_binary")"
           if [[ "$kwt_archs" != "arm64" ]]; then
             echo "Embedded kwt must be an arm64 Mach-O; found: $kwt_archs" >&2
             file "$kwt_binary" >&2
             exit 1
           fi
-          "$kwt_binary" version
-          kwt_version="$("$kwt_binary" version | sed -n '1s/^kwt version //p')"
+          kwt_reported="$("$kwt_binary" version)"
+          echo "$kwt_reported"
+          kwt_version="$(printf '%s\n' "$kwt_reported" | sed -n '1s/^kwt version //p')"
+          # Go's VCS stamping usually supplies the revision here and outranks
+          # the -X value; -X covers the case where stamping is unavailable.
+          # Either way the helper must name the revision it was built from.
+          if [[ "$kwt_reported" != *"$KWT_REF"* ]]; then
+            echo "Embedded kwt does not report the pinned revision $KWT_REF:" >&2
+            echo "$kwt_reported" >&2
+            exit 1
+          fi
           {
             echo "KWT_BINARY_PATH=$kwt_binary"
             echo "KWT_VERSION=$kwt_version"
@@ -292,7 +315,13 @@ jobs:
 
       - name: Build release notes
         shell: bash
+        env:
+          KWT_REF: ${{ needs.macos-release.outputs.kwt-revision }}
         run: |
+          if [[ ! "$KWT_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "The build job did not report an embedded kwt revision." >&2
+            exit 1
+          fi
           SOURCE_SHA=$(git rev-parse "${GITHUB_REF_NAME}^{}")
           TAG_BODY=$(git tag -l --format='%(contents:body)' "$GITHUB_REF_NAME")
           BODY_PATH="$RUNNER_TEMP/release-body.md"

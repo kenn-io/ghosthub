@@ -250,7 +250,7 @@ public final class LibghosttyRuntime: ObservableObject {
             let graphIsStable =
                 plan.orderedConfigFiles
                     == refreshedPlan.orderedConfigFiles
-                && plan.watchedConfigFiles
+                    && plan.watchedConfigFiles
                     == refreshedPlan.watchedConfigFiles
             if graphIsStable {
                 return (refreshedPlan, monitorFailure)

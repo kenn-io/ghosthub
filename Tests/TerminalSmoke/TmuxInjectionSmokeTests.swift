@@ -10,13 +10,13 @@ private let silentChildCommand = "/bin/sh -c 'stty raw -echo 2>/dev/null; exec /
 
 @MainActor
 final class TmuxInjectionSmokeTests: XCTestCase {
-    // Retained across the entire test suite so ghostty_app_free is
-    // never called while deferred ghostty_surface_free tasks are
-    // still pending.
+    /// Retained across the entire test suite so ghostty_app_free is
+    /// never called while deferred ghostty_surface_free tasks are
+    /// still pending.
     private static var retainedRuntime: LibghosttyRuntime?
-    // Windows must stay alive for the duration of the surface's
-    // lifetime, or the surface tears down before the test can
-    // exercise it.
+    /// Windows must stay alive for the duration of the surface's
+    /// lifetime, or the surface tears down before the test can
+    /// exercise it.
     private static var retainedWindows: [NSWindow] = []
 
     override func setUpWithError() throws {
@@ -107,7 +107,7 @@ final class TmuxInjectionSmokeTests: XCTestCase {
         return String(cString: text.text)
     }
 
-    func testInjectedOutputRendersInViewport() throws {
+    func testInjectedOutputRendersInViewport() {
         let view = makeSurface(command: silentChildCommand)
         waitUntil(timeout: 5.0) { view.error == nil && view.surfaceHandle != nil }
 
@@ -131,7 +131,10 @@ final class TmuxInjectionSmokeTests: XCTestCase {
             String(data: received, encoding: .utf8)?.contains("R") == true
         }
         let text = try XCTUnwrap(String(data: received, encoding: .utf8))
-        XCTAssertTrue(text.contains("\u{1b}["), "expected a CSI cursor report, got \(text.debugDescription)")
+        XCTAssertTrue(
+            text.contains("\u{1b}["),
+            "expected a CSI cursor report, got \(text.debugDescription)"
+        )
     }
 
     /// Regression test for callback misdelivery via reused view

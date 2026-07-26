@@ -44,8 +44,8 @@ public enum WorkspaceKeyResolver {
     ) -> WorktreeSummary? {
         if let hostKey {
             guard let host = host(
-               matching: hostKey,
-               in: snapshot
+                matching: hostKey,
+                in: snapshot
             ) else {
                 return nil
             }

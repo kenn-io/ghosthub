@@ -342,7 +342,7 @@ struct LibghosttyConfigFileMonitorTests {
     func missingGraphReplacementsPruneObsoleteDirectories() throws {
         let fixture = try TemporaryConfigMonitorFixture.create()
         var missingConfigs: [URL] = []
-        for index in 0..<8 {
+        for index in 0 ..< 8 {
             let directory = fixture.tempDirectory.appendingPathComponent(
                 "missing-\(index)",
                 isDirectory: true
@@ -377,7 +377,7 @@ struct LibghosttyConfigFileMonitorTests {
         let fixture = try TemporaryConfigMonitorFixture.create()
         var directory = fixture.tempDirectory
         var missingConfigs: [URL] = []
-        for index in 0..<8 {
+        for index in 0 ..< 8 {
             directory = directory.appendingPathComponent(
                 "level-\(index)",
                 isDirectory: true
@@ -760,7 +760,7 @@ struct LibghosttyConfigFileMonitorTests {
         var configFiles: [URL] = []
         var expectedDirectories: Set<URL> = []
 
-        for index in 0..<80 {
+        for index in 0 ..< 80 {
             let directory = fixture.tempDirectory.appendingPathComponent(
                 "config-\(index)",
                 isDirectory: true

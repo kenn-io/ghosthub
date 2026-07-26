@@ -87,6 +87,56 @@ signed release input. Their output must still be validated for compatibility
 and correctness, but deliberate compromise of those programs or their on-disk
 state is outside the security model.
 
+Pull-request import is an explicit user mutation delegated to the bundled local
+kwt or the selected remote host's kwt. Ghosthub passes kwt's opaque candidate
+identity back unchanged and does not construct provider refs, worktree paths,
+branches, push destinations, or tmux names. The imported checkout remains
+untrusted contributor-controlled source. Kwt suppresses repository hooks,
+filters, setup commands, and credential prompts during import, but Ghosthub
+does not sandbox the checkout or commands the user later runs inside its tmux
+session. Import itself does not start tmux or execute a configured project
+layout, bootstrap, agent, or checkout command. It returns the deterministic
+workspace-specific socket identity without creating the server.
+
+When the user opens the imported workspace, Ghosthub invokes kwt's protected
+attach command through the remote account's login shell when applicable. Kwt
+resolves persisted provenance, validates the recorded project clone and
+complete live worktree identity, and excludes prunable or missing worktrees.
+Registered upstream identity remains authoritative when a configured clone's
+origin is a fork. An unregistered clone is accepted only when its live Git
+identity matches the recorded repository; ambiguous or conflicting
+registrations fail closed. The protected command creates or repairs an inert
+shell-only session on a deterministic workspace-specific tmux server; it never
+executes the project's configured layout. Before the first pane starts, kwt
+removes its provider and fleet credential variables from the server
+environment. It also installs session removal markers and filters those
+credential names from the session's effective `update-environment`. Because
+pane processes can mutate tmux options, Ghosthub never treats that option as
+authorization. The command verifies the exact workspace marker before
+repairing an existing session, clears any parent tmux client identity, and
+executes `attach-session -E`. If provenance cannot be read, kwt fails
+inventory rather than omitting the protected socket identity.
+Kwt's ordinary `open` and dashboard actions refuse imported workspaces before
+they can create a parallel session on the credential-bearing default server.
+Ghosthub likewise rejects a successful import response with a missing or blank
+socket identity and never lets a pending default-server creation with the same
+session name authorize a protected workspace launch.
+Kwt unconditionally protects `KWT_GITHUB_TOKEN` and `KWT_FLEET_TOKEN` as well
+as the configured fleet token name. Non-secret kwt state such as `KWT_HOME`
+remains available inside panes.
+
+Because import selects the new workspace, inert attachment is not by itself
+enough: any file Ghosthub reads from the imported checkout is contributor
+input. A project's `.ghosthub/terminal.conf` is loaded into the app-wide
+libghostty configuration, where keybindings and terminal behavior apply to
+every surface rather than only the selected worktree. Ghosthub therefore
+treats project terminal configuration as trusted user authorship and reads it
+only from checkouts the user controls. Selecting an imported pull-request
+workspace, identified by its protected tmux socket, falls back to the
+project's own checkout. This is a trust boundary, not a sandbox: Ghosthub
+still does not constrain a configuration the user wrote, nor commands the
+user runs inside a pane.
+
 Names in the user's shared tmux server are identifiers, not credentials.
 Ghosthub attaches to the exact session name reported by kwt or selected from
 direct discovery. When the user explicitly requests a new named session,

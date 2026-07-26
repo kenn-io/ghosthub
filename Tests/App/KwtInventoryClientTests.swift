@@ -21,7 +21,7 @@ struct KwtInventoryClientTests {
                 return (
                     0,
                     "GHOSTHUB_KWT_JSON\n" +
-                        #"[{"path":"/code/docbank","branch":"main","commit_hash":"abc","is_main":true,"repository":"github.com/kenn-io/docbank","session_name":"kwt-docbank-main"}]"#
+                        #"[{"path":"/code/docbank","branch":"main","commit_hash":"abc","is_main":true,"repository":"github.com/kenn-io/docbank","session_name":"kwt-docbank-main","tmux_socket_name":"kwt-pr-0123456789abcdef"}]"#
                 )
             },
             localBinaryPath: "/Applications/Ghost Hub/kwt",
@@ -34,6 +34,10 @@ struct KwtInventoryClientTests {
         #expect(
             inventory.projects[0].worktrees.map(\.sessionName)
                 == ["kwt-docbank-main"]
+        )
+        #expect(
+            inventory.projects[0].worktrees.map(\.tmuxSocketName)
+                == ["kwt-pr-0123456789abcdef"]
         )
         #expect(inventory.projects[0].warning == nil)
     }
@@ -179,6 +183,71 @@ struct KwtInventoryClientTests {
         #expect(merged.worktrees[0].registryID == nil)
         #expect(merged.worktrees[0].tmuxSessionName == "kwt-docbank-main")
         #expect(merged.worktrees[0].sessionBackend == .localTmux)
+    }
+
+    @Test("a refresh without a socket cannot unprotect a workspace")
+    func retainsProtectedSocketWhenRefreshOmitsIt() {
+        let hostID = UUID()
+        let projectID = UUID()
+        let worktreeID = UUID()
+        let snapshot = WorkspaceSnapshot(
+            hosts: [HostSummary(
+                id: hostID,
+                name: "This Mac",
+                kind: .selfHost,
+                platform: .macOS
+            )],
+            projects: [ProjectSummary(
+                id: projectID,
+                hostID: hostID,
+                scopedKey: "repo",
+                name: "repo",
+                rootPath: "/repo"
+            )],
+            worktrees: [WorktreeSummary(
+                id: worktreeID,
+                hostID: hostID,
+                projectID: projectID,
+                scopedKey: "/repo-pr-32",
+                name: "pr-32",
+                path: "/repo-pr-32",
+                branch: "contributor/pr-32",
+                tmuxSessionName: "kwt-repo-pr-32",
+                tmuxSocketName: "kwt-pr-0123456789abcdef"
+            )]
+        )
+        let inventory = KwtHostInventory(projects: [
+            KwtProjectInventory(
+                project: KwtProjectRecord(
+                    repository: "repo",
+                    name: "repo",
+                    path: "/repo",
+                    lastTouched: nil
+                ),
+                worktrees: [KwtWorktreeRecord(
+                    path: "/repo-pr-32",
+                    branch: "contributor/pr-32",
+                    commitHash: "abc",
+                    isMain: false,
+                    createdAt: nil,
+                    repository: "repo",
+                    sessionName: "kwt-repo-pr-32",
+                    tmuxSocketName: nil
+                )],
+                warning: nil
+            ),
+        ])
+
+        let merged = KwtSnapshotMerger.merge(
+            inventory,
+            hostID: hostID,
+            into: snapshot
+        )
+
+        #expect(merged.worktrees.count == 1)
+        #expect(
+            merged.worktrees[0].tmuxSocketName == "kwt-pr-0123456789abcdef"
+        )
     }
 
     @Test("a failed project listing preserves its last successful worktrees")
