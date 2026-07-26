@@ -78,20 +78,30 @@ enum WorkspaceWindowResolver {
     }
 }
 
-final class PendingWorkspaceTab<Window: AnyObject> {
-    private weak var parent: Window?
+final class WorkspaceWindowRequests<Window: AnyObject> {
+    private final class Request {
+        weak var parent: Window?
 
-    func request(from parent: Window?) {
-        self.parent = parent
+        init(parent: Window?) {
+            self.parent = parent
+        }
     }
 
-    func requestIndependentWindow() {
-        parent = nil
+    private var requests: [UUID: Request] = [:]
+
+    func add(_ id: UUID, parent: Window?) {
+        requests[id] = Request(parent: parent)
     }
 
-    func consumeParent(for window: Window) -> Window? {
-        guard let parent, parent !== window else { return nil }
-        self.parent = nil
+    func consumeParent(
+        for id: UUID?,
+        window: Window
+    ) -> Window? {
+        guard let id,
+              let request = requests.removeValue(forKey: id),
+              let parent = request.parent,
+              parent !== window
+        else { return nil }
         return parent
     }
 }
@@ -115,9 +125,9 @@ final class ApplicationDelegate: NSObject,
         WorkspaceWindowIdentity.hasAnotherOpenWindow(besides: $0)
     }
 
-    var openWorkspaceWindow: () -> Void = {}
+    var openWorkspaceWindow: (UUID) -> Void = { _ in }
 
-    private let pendingTab = PendingWorkspaceTab<NSWindow>()
+    private let windowRequests = WorkspaceWindowRequests<NSWindow>()
     private(set) var terminationConfirmed = false
     private(set) var terminationConfirmationPending = false
 
@@ -144,8 +154,7 @@ final class ApplicationDelegate: NSObject,
     }
 
     func requestNewWorkspaceWindow() {
-        pendingTab.requestIndependentWindow()
-        openWorkspaceWindow()
+        openWorkspaceWindow(requestWorkspaceWindow(parent: nil))
     }
 
     func requestNewWorkspaceTab() {
@@ -158,19 +167,30 @@ final class ApplicationDelegate: NSObject,
             sheetParent: \.sheetParent,
             isWorkspace: WorkspaceWindowIdentity.matches
         )
-        pendingTab.request(from: parent)
-        openWorkspaceWindow()
+        openWorkspaceWindow(requestWorkspaceWindow(parent: parent))
     }
 
-    func adoptWorkspaceWindowAsTabIfRequested(_ window: NSWindow) {
+    func adoptWorkspaceWindowAsTabIfRequested(
+        _ window: NSWindow,
+        requestID: UUID?
+    ) {
         guard WorkspaceWindowIdentity.matches(window),
-              let parent = pendingTab.consumeParent(for: window)
+              let parent = windowRequests.consumeParent(
+                  for: requestID,
+                  window: window
+              )
         else { return }
         guard parent.tabbedWindows?.contains(where: { $0 === window })
             != true
         else { return }
         parent.addTabbedWindow(window, ordered: .above)
         window.makeKeyAndOrderFront(nil)
+    }
+
+    private func requestWorkspaceWindow(parent: NSWindow?) -> UUID {
+        let id = UUID()
+        windowRequests.add(id, parent: parent)
+        return id
     }
 
     @discardableResult

@@ -53,6 +53,7 @@ enum WorkspaceWindowChrome {
 /// is focused.
 private struct WindowFocusTracker: NSViewRepresentable {
     let applicationDelegate: ApplicationDelegate
+    let requestID: UUID?
     @Binding var isFocused: Bool
     var isSidebarVisible: Bool
     var canCreateWorktree: Bool
@@ -64,7 +65,8 @@ private struct WindowFocusTracker: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSView {
         let view = FocusTrackingView(
-            applicationDelegate: applicationDelegate
+            applicationDelegate: applicationDelegate,
+            requestID: requestID
         )
         view.onFocusChanged = { [self] focused in
             isFocused = focused
@@ -99,10 +101,15 @@ private struct WindowFocusTracker: NSViewRepresentable {
         private nonisolated(unsafe) var observers:
             [NSObjectProtocol] = []
         private weak var applicationDelegate: ApplicationDelegate?
+        private let requestID: UUID?
         let titlebarController: CompactWorkspaceTitlebarController
 
-        init(applicationDelegate: ApplicationDelegate) {
+        init(
+            applicationDelegate: ApplicationDelegate,
+            requestID: UUID?
+        ) {
             self.applicationDelegate = applicationDelegate
+            self.requestID = requestID
             titlebarController = CompactWorkspaceTitlebarController(
                 applicationDelegate: applicationDelegate
             )
@@ -127,7 +134,10 @@ private struct WindowFocusTracker: NSViewRepresentable {
             window.tabbingIdentifier =
                 WorkspaceWindowIdentity.tabbingIdentifier
             applicationDelegate?
-                .adoptWorkspaceWindowAsTabIfRequested(window)
+                .adoptWorkspaceWindowAsTabIfRequested(
+                    window,
+                    requestID: requestID
+                )
             titlebarController.install(on: window)
             DispatchQueue.main.async { [weak self] in
                 self?.titlebarController.install(on: window)
@@ -394,6 +404,7 @@ private struct CompactToolbarButton: View {
 struct WorkspaceWindow: View {
     #if canImport(AppKit)
     let applicationDelegate: ApplicationDelegate
+    let requestID: UUID?
     #endif
     @StateObject private var sceneModel = WorkspaceSceneModel()
     @EnvironmentObject private var terminalRuntime: LibghosttyRuntime
@@ -562,6 +573,7 @@ struct WorkspaceWindow: View {
         .background(
             WindowFocusTracker(
                 applicationDelegate: applicationDelegate,
+                requestID: requestID,
                 isFocused: Binding(
                     get: { sceneModel.isFocusedWindow },
                     set: { sceneModel.isFocusedWindow = $0 }

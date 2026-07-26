@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import GhosthubApp
 
@@ -16,40 +17,63 @@ struct WorkspaceTabRequestTests {
         }
     }
 
-    @Test("an explicit tab request adopts the next workspace")
-    func explicitTabRequestAdoptsNextWorkspace() {
-        let parent = Window(isWorkspace: true)
-        let newWindow = Window(isWorkspace: true)
-        let request = PendingWorkspaceTab<Window>()
+    @Test("outstanding requests retain their own tab parents")
+    func outstandingRequestsRetainParents() {
+        let firstID = UUID()
+        let secondID = UUID()
+        let firstParent = Window(isWorkspace: true)
+        let secondParent = Window(isWorkspace: true)
+        let firstWindow = Window(isWorkspace: true)
+        let secondWindow = Window(isWorkspace: true)
+        let requests = WorkspaceWindowRequests<Window>()
 
-        request.request(from: parent)
+        requests.add(firstID, parent: firstParent)
+        requests.add(secondID, parent: secondParent)
 
-        #expect(request.consumeParent(for: newWindow) === parent)
-        #expect(request.consumeParent(for: newWindow) == nil)
+        #expect(
+            requests.consumeParent(
+                for: secondID,
+                window: secondWindow
+            ) === secondParent
+        )
+        #expect(
+            requests.consumeParent(
+                for: firstID,
+                window: firstWindow
+            ) === firstParent
+        )
     }
 
-    @Test("an independent window request cannot adopt")
-    func independentWindowDoesNotAdopt() {
+    @Test("an independent request does not overwrite tab intent")
+    func independentRequestDoesNotOverwriteTab() {
+        let tabID = UUID()
+        let windowID = UUID()
         let parent = Window(isWorkspace: true)
-        let newWindow = Window(isWorkspace: true)
-        let request = PendingWorkspaceTab<Window>()
+        let tabWindow = Window(isWorkspace: true)
+        let independentWindow = Window(isWorkspace: true)
+        let requests = WorkspaceWindowRequests<Window>()
 
-        request.request(from: parent)
-        request.requestIndependentWindow()
+        requests.add(tabID, parent: parent)
+        requests.add(windowID, parent: nil)
 
-        #expect(request.consumeParent(for: newWindow) == nil)
-    }
-
-    @Test("the requesting window appearing again does not consume the request")
-    func requestingWindowDoesNotConsumeRequest() {
-        let parent = Window(isWorkspace: true)
-        let newWindow = Window(isWorkspace: true)
-        let request = PendingWorkspaceTab<Window>()
-
-        request.request(from: parent)
-
-        #expect(request.consumeParent(for: parent) == nil)
-        #expect(request.consumeParent(for: newWindow) === parent)
+        #expect(
+            requests.consumeParent(
+                for: windowID,
+                window: independentWindow
+            ) == nil
+        )
+        #expect(
+            requests.consumeParent(
+                for: tabID,
+                window: tabWindow
+            ) === parent
+        )
+        #expect(
+            requests.consumeParent(
+                for: tabID,
+                window: tabWindow
+            ) == nil
+        )
     }
 
     @Test("a sheet resolves to its workspace parent")
