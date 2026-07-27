@@ -90,7 +90,9 @@ can disable it in Settings or with `GHOSTHUB_TELEMETRY_ENABLED=0` or
 telemetry client. Each activity check refreshes the persisted privacy
 preference so another Ghosthub process can disable reporting. While the app is
 active, it schedules the next check for the following UTC-day boundary and
-cancels that check when the app resigns active.
+cancels that check when the app resigns active. The persisted activity day is
+monotonic: stale claims cannot move it backward or make a newer day report
+twice.
 
 ### External State
 

@@ -11,7 +11,9 @@ private actor TelemetryTestStateStore: TelemetryStateStoring {
                 installationID: UUID(),
                 lastActiveDay: nil
             )
-        guard state.lastActiveDay != day else { return nil }
+        if let lastActiveDay = state.lastActiveDay {
+            guard day > lastActiveDay else { return nil }
+        }
         state.lastActiveDay = day
         self.state = state
         return state.installationID
@@ -232,6 +234,35 @@ struct TelemetryTests {
             event.distinctID
                 == state.installationID.uuidString.lowercased()
         )
+    }
+
+    @Test("daily claims never move backward")
+    func dailyClaimsNeverMoveBackward() async throws {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "ghosthub-telemetry-\(UUID().uuidString)"
+            )
+        defer {
+            try? FileManager.default.removeItem(at: directoryURL)
+        }
+        let fileURL = directoryURL.appendingPathComponent(
+            "telemetry.json"
+        )
+        let store = FileTelemetryStateStore(fileURL: fileURL)
+
+        let firstClaim = try await store.claimActiveDay(
+            "2027-01-02"
+        )
+        let staleClaim = try await store.claimActiveDay(
+            "2027-01-01"
+        )
+        let repeatedClaim = try await store.claimActiveDay(
+            "2027-01-02"
+        )
+
+        #expect(firstClaim != nil)
+        #expect(staleClaim == nil)
+        #expect(repeatedClaim == nil)
     }
 
     @MainActor

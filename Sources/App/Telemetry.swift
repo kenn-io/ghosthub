@@ -80,7 +80,9 @@ struct FileTelemetryStateStore: TelemetryStateStoring {
                     installationID: UUID(),
                     lastActiveDay: nil
                 )
-            guard state.lastActiveDay != day else { return nil }
+            if let lastActiveDay = state.lastActiveDay {
+                guard day > lastActiveDay else { return nil }
+            }
 
             state.lastActiveDay = day
             try save(state)
