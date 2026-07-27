@@ -171,6 +171,51 @@ capture_state() {
   sips -g pixelWidth -g pixelHeight "$out_dir/$name" | tail -2
 }
 
+process_matrix_capture() {
+  local raw="$1" destination="$2"
+  local temporary
+  temporary="$(mktemp "$destination.tmp.XXXXXX")"
+  if ! NODE_PATH="$demo_root/../node_modules" \
+      node - "$raw" "$temporary" <<'EOF'
+const sharp = require("sharp");
+(async () => {
+  const [raw, destination] = process.argv.slice(2);
+  const files = [raw, ...[1, 2, 3, 4, 5].map((index) => `${raw}.${index}`)];
+  const metadata = await Promise.all(
+    files.map((file) => sharp(file).metadata())
+  );
+  const width = metadata[0].width;
+  const height = metadata[0].height;
+  if (width === undefined || height === undefined
+      || metadata.some((item) => item.width !== width || item.height !== height)) {
+    throw new Error("matrix windows did not capture at one consistent size");
+  }
+  const gap = 6;
+  await sharp({
+    create: {
+      width: width * 3 + gap * 2,
+      height: height * 2 + gap,
+      channels: 4,
+      background: "#080b0e",
+    },
+  })
+    .composite(files.map((input, index) => ({
+      input,
+      left: (index % 3) * (width + gap),
+      top: Math.floor(index / 3) * (height + gap),
+    })))
+    .resize({ width: 1800 })
+    .png({ compressionLevel: 9 })
+    .toFile(destination);
+})();
+EOF
+  then
+    rm -f "$temporary"
+    return 1
+  fi
+  mv -f "$temporary" "$destination"
+}
+
 echo "==> controller: unmatched palette commands fail validation"
 unmatched_command="__ghosthub_missing_command__"
 unmatched_error="$scratch/unmatched-command.error"
@@ -224,6 +269,37 @@ sleep 2
 capture_state guide-terminal.png
 dismiss_sheet
 
+prepare_command_window() {
+  local query="$1" create="${2:-true}" select="${3:-palette}"
+  if [[ "$create" == "true" ]]; then
+    demo_input new-window
+    sleep 2
+  fi
+  demo_input frame "160,145,1200,760"
+  sleep 1
+  if [[ "$select" == "press" ]]; then
+    demo_input press "$query"
+  else
+    palette "$query"
+  fi
+  sleep 3
+  demo_input sidebar
+  sleep 1
+}
+
+echo "==> guide: six-window tmux command center"
+prepare_command_window "fix-reconnect-backoff" false
+prepare_command_window "add-session-filters"
+prepare_command_window "scratch" true press
+prepare_command_window "docbank-export" true press
+prepare_command_window "release-watch" true press
+prepare_command_window "test-matrix" true press
+matrix_raw="$scratch/screenshots-raw/guide-command-center.png"
+"$demo_root/capture.sh" "$matrix_raw" matrix
+process_matrix_capture "$matrix_raw" "$out_dir/guide-command-center.png"
+sips -g pixelWidth -g pixelHeight \
+  "$out_dir/guide-command-center.png" | tail -2
+
 prepare_command_tab() {
   local query="$1" create="${2:-true}" select="${3:-palette}"
   if [[ "$create" == "true" ]]; then
@@ -242,13 +318,15 @@ prepare_command_tab() {
   sleep 1
 }
 
-echo "==> guide: six-tab tmux command center"
+echo "==> guide: six-tab tmux workspace"
+demo_input new-window
+sleep 2
 prepare_command_tab "fix-reconnect-backoff" false
 prepare_command_tab "add-session-filters"
 prepare_command_tab "scratch" true press
 prepare_command_tab "docbank-export" true press
 prepare_command_tab "release-watch" true press
 prepare_command_tab "test-matrix" true press
-capture_state guide-command-center.png
+capture_state guide-native-tabs.png
 
 echo "captured website asset set -> $out_dir"

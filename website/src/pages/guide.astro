@@ -4,6 +4,7 @@ import SiteLayout from '../layouts/SiteLayout.astro';
 import ZoomableImage from '../components/ZoomableImage.astro';
 import commandCenter from '../assets/guide-command-center.png';
 import hosts from '../assets/guide-hosts.png';
+import nativeTabs from '../assets/guide-native-tabs.png';
 import quickLaunch from '../assets/guide-quick-launch.png';
 import sessions from '../assets/guide-sessions.png';
 import terminal from '../assets/guide-terminal.png';
@@ -25,6 +26,8 @@ const imageAlt = {
     'Ghosthub new worktree sheet ready to create a feature branch with kwt',
   quickLaunch: 'Ghosthub Quick Launch filtered to a reconnect worktree',
   commandCenter:
+    'Six real Ghosthub windows arranged in a tight three-by-two matrix, each attached to a different tmux session with its sidebar collapsed',
+  nativeTabs:
     'Six native Ghosthub workspace tabs, each attached to a different tmux session',
   terminal:
     'Ghosthub Terminal settings showing interaction and configuration options',
@@ -223,11 +226,21 @@ const imageAlt = {
           </p>
         </div>
       </div>
-      <figure class="container window">
+      <figure class="container command-matrix">
         <ZoomableImage label={imageAlt.commandCenter}>
           <Image
             src={commandCenter}
             alt={imageAlt.commandCenter}
+            widths={[640, 960, 1280, 1800]}
+            sizes="(max-width: 1200px) calc(100vw - 3rem), 1160px"
+          />
+        </ZoomableImage>
+      </figure>
+      <figure class="container window">
+        <ZoomableImage label={imageAlt.nativeTabs}>
+          <Image
+            src={nativeTabs}
+            alt={imageAlt.nativeTabs}
             widths={imageWidths}
             sizes={imageSizes}
           />
@@ -515,6 +528,21 @@ const imageAlt = {
   }
 
   .window :global(img) {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+
+  .command-matrix {
+    max-width: 1180px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    overflow: hidden;
+    background: var(--bg);
+    box-shadow: 0 28px 70px rgb(0 0 0 / 0.45);
+  }
+
+  .command-matrix :global(img) {
     display: block;
     width: 100%;
     height: auto;

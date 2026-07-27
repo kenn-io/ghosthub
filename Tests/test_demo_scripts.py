@@ -23,6 +23,7 @@ WEBSITE_ASSET_NAMES = (
     "guide-quick-launch.png",
     "guide-terminal.png",
     "guide-command-center.png",
+    "guide-native-tabs.png",
 )
 
 

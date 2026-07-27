@@ -382,9 +382,6 @@ static NSArray<NSWindow *> *DemoWorkspaceWindows(void) {
     if (left.windowNumber > right.windowNumber) return NSOrderedDescending;
     return NSOrderedSame;
   }];
-  if (windows.count > 6) {
-    return [windows subarrayWithRange:NSMakeRange(0, 6)];
-  }
   return windows;
 }
 
