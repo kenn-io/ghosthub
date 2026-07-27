@@ -22,6 +22,7 @@ assets=(
   guide-quick-launch.png
   guide-terminal.png
   guide-command-center.png
+  guide-native-tabs.png
 )
 raw_root="https://raw.githubusercontent.com/kenn-io/ghosthub/website-assets"
 fetched_ref=""
