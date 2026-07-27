@@ -212,21 +212,40 @@ private final class WorkspaceWindowCloseDelegate: NSObject,
     NSWindowDelegate {
     weak var applicationDelegate: ApplicationDelegate?
     private weak var installedWindow: NSWindow?
+    private weak var installedCloseButton: NSButton?
+    private nonisolated(unsafe) weak var forwardingCloseTarget:
+        AnyObject?
+    private var forwardingCloseAction: Selector?
     private nonisolated(unsafe) weak var forwardingDelegate:
         NSWindowDelegate?
 
     func install(on window: NSWindow) {
         if installedWindow !== window {
-            restoreInstalledWindowDelegate()
+            restoreInstalledWindow()
             installedWindow = window
         }
-        guard window.delegate !== self else { return }
-        forwardingDelegate = window.delegate
-        window.delegate = self
+        if window.delegate !== self {
+            forwardingDelegate = window.delegate
+            window.delegate = self
+        }
+        guard let closeButton = window.standardWindowButton(.closeButton)
+        else { return }
+        if installedCloseButton !== closeButton {
+            restoreInstalledCloseButton()
+            installedCloseButton = closeButton
+            forwardingCloseTarget = closeButton.target as AnyObject?
+            forwardingCloseAction = closeButton.action
+        }
+        closeButton.target = self
+        closeButton.action = #selector(requestWindowClose(_:))
+    }
+
+    @objc private func requestWindowClose(_ sender: Any?) {
+        applicationDelegate?.requestWorkspaceWindowClose(installedWindow)
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        applicationDelegate?.requestWorkspaceWindowClose(sender)
+        applicationDelegate?.requestWorkspaceTabClose(sender)
         return false
     }
 
@@ -247,11 +266,23 @@ private final class WorkspaceWindowCloseDelegate: NSObject,
         return forwardingDelegate
     }
 
-    private func restoreInstalledWindowDelegate() {
+    private func restoreInstalledWindow() {
+        restoreInstalledCloseButton()
         guard let installedWindow,
               installedWindow.delegate === self
         else { return }
         installedWindow.delegate = forwardingDelegate
+    }
+
+    private func restoreInstalledCloseButton() {
+        guard let installedCloseButton,
+              installedCloseButton.target === self
+        else { return }
+        installedCloseButton.target = forwardingCloseTarget
+        installedCloseButton.action = forwardingCloseAction
+        self.installedCloseButton = nil
+        forwardingCloseTarget = nil
+        forwardingCloseAction = nil
     }
 }
 
@@ -578,7 +609,7 @@ struct WorkspaceWindow: View {
             ),
             handlers: InteractionHandlers(
                 closeWindow: { [applicationDelegate] in
-                    applicationDelegate.requestWorkspaceWindowClose(
+                    applicationDelegate.requestWorkspaceTabClose(
                         NSApplication.shared.keyWindow
                     )
                 },

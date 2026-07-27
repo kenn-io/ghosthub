@@ -46,16 +46,27 @@ enum WorkspaceWindowIdentity {
         window.tabbingIdentifier == tabbingIdentifier
     }
 
+    static func group(containing window: NSWindow) -> [NSWindow] {
+        guard let tabbedWindows = window.tabbedWindows,
+              !tabbedWindows.isEmpty
+        else { return [window] }
+        return tabbedWindows
+    }
+
     static func hasAnotherOpenWindow(
-        besides window: NSWindow
+        besides windows: [NSWindow]
     ) -> Bool {
-        if window.tabbedWindows?.contains(where: {
-            $0 !== window && matches($0)
-        }) == true {
-            return true
+        let excluded = Set(windows.map(ObjectIdentifier.init))
+        for window in windows {
+            if window.tabbedWindows?.contains(where: {
+                !excluded.contains(ObjectIdentifier($0))
+                    && matches($0)
+            }) == true {
+                return true
+            }
         }
         return NSApplication.shared.windows.contains {
-            $0 !== window
+            !excluded.contains(ObjectIdentifier($0))
                 && matches($0)
                 && ($0.isVisible || $0.isMiniaturized)
                 && $0.frame.width > 1
@@ -121,7 +132,7 @@ final class ApplicationDelegate: NSObject,
         NSApplication.shared.terminate(nil)
     }
 
-    var hasAnotherWorkspaceWindow: (NSWindow) -> Bool = {
+    var hasAnotherWorkspaceWindow: ([NSWindow]) -> Bool = {
         WorkspaceWindowIdentity.hasAnotherOpenWindow(besides: $0)
     }
 
@@ -290,14 +301,24 @@ final class ApplicationDelegate: NSObject,
         terminationConfirmed
     }
 
-    func requestWorkspaceWindowClose(_ window: NSWindow?) {
+    func requestWorkspaceTabClose(_ window: NSWindow?) {
         guard let window, !window.isSheet else { return }
-        guard !hasAnotherWorkspaceWindow(window) else {
+        guard !hasAnotherWorkspaceWindow([window]) else {
             window.close()
             return
         }
-        // The final red close button follows the same asynchronous path as
-        // Command-Q. Keeping the window open while the sheet is presented
+        requestApplicationTermination()
+    }
+
+    func requestWorkspaceWindowClose(_ window: NSWindow?) {
+        guard let window, !window.isSheet else { return }
+        let group = WorkspaceWindowIdentity.group(containing: window)
+        guard !hasAnotherWorkspaceWindow(group) else {
+            group.forEach { $0.close() }
+            return
+        }
+        // The final window group follows the same asynchronous path as
+        // Command-Q. Keeping every tab open while the sheet is presented
         // avoids a nested run loop and never re-enters NSWindow.close().
         requestApplicationTermination()
     }

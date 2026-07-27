@@ -566,6 +566,93 @@ final class ApplicationDelegateTests: XCTestCase {
         )
     }
 
+    func testClosingOnlyWindowGroupConfirmsBeforeClosingTabs() {
+        let delegate = ApplicationDelegate.forTesting(
+            confirmTerminationResult: false
+        )
+        let window = CloseSpyWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        let tab = CloseSpyWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.addTabbedWindow(tab, ordered: .above)
+        var inspectedGroup: [NSWindow] = []
+        delegate.hasAnotherWorkspaceWindow = {
+            inspectedGroup = $0
+            return false
+        }
+        var confirmationRequests = 0
+        delegate.requestTerminationConfirmation = { completion in
+            confirmationRequests += 1
+            completion(false)
+        }
+
+        delegate.requestWorkspaceWindowClose(window)
+
+        XCTAssertEqual(inspectedGroup.count, 2)
+        XCTAssertEqual(confirmationRequests, 1)
+        XCTAssertEqual(window.closeCallCount, 0)
+        XCTAssertEqual(tab.closeCallCount, 0)
+        XCTAssertFalse(delegate.terminationConfirmed)
+    }
+
+    func testTrafficLightClosesWholeGroupWhenAnotherWindowRemains() throws {
+        let delegate = ApplicationDelegate.forTesting()
+        let window = CloseSpyWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        let tab = CloseSpyWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.addTabbedWindow(tab, ordered: .above)
+        delegate.hasAnotherWorkspaceWindow = { _ in true }
+        let controller = CompactWorkspaceTitlebarController(
+            applicationDelegate: delegate
+        )
+        controller.install(on: window)
+        let closeButton = try XCTUnwrap(
+            window.standardWindowButton(.closeButton)
+        )
+
+        closeButton.performClick(nil)
+
+        XCTAssertEqual(window.closeCallCount, 1)
+        XCTAssertEqual(tab.closeCallCount, 1)
+        XCTAssertFalse(delegate.terminationConfirmed)
+    }
+
+    func testTabCloseClosesOnlySelectedWorkspace() {
+        let delegate = ApplicationDelegate.forTesting()
+        let window = CloseSpyWindow()
+        let sibling = CloseSpyWindow()
+        var inspectedWindows: [NSWindow] = []
+        delegate.hasAnotherWorkspaceWindow = {
+            inspectedWindows = $0
+            return true
+        }
+
+        delegate.requestWorkspaceTabClose(window)
+
+        XCTAssertEqual(inspectedWindows.count, 1)
+        XCTAssertTrue(inspectedWindows.first === window)
+        XCTAssertEqual(window.closeCallCount, 1)
+        XCTAssertEqual(sibling.closeCallCount, 0)
+        XCTAssertFalse(delegate.terminationConfirmed)
+    }
+
     func testResolvedAppAppearanceNamesMatchPreference() {
         XCTAssertNil(
             AppAppearance.resolvedNSAppearanceName(for: .system)
