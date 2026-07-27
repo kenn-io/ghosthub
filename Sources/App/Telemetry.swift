@@ -122,17 +122,7 @@ struct PostHogTelemetryTransport: TelemetryTransport {
     let endpoint: URL
 
     func capture(_ event: TelemetryEvent) async throws {
-        var request = URLRequest(url: endpoint)
-        request.httpMethod = "POST"
-        request.setValue(
-            "application/json",
-            forHTTPHeaderField: "Content-Type"
-        )
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        request.httpBody = try encoder.encode(
-            PostHogPayload(event: event)
-        )
+        let request = try request(for: event)
 
         let (_, response) = try await URLSession.shared.data(
             for: request
@@ -145,6 +135,21 @@ struct PostHogTelemetryTransport: TelemetryTransport {
                 statusCode: httpResponse.statusCode
             )
         }
+    }
+
+    func request(for event: TelemetryEvent) throws -> URLRequest {
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.setValue(
+            "application/json",
+            forHTTPHeaderField: "Content-Type"
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        request.httpBody = try encoder.encode(
+            PostHogPayload(event: event)
+        )
+        return request
     }
 }
 
@@ -192,6 +197,8 @@ private struct PostHogPayload: Encodable {
     enum CodingKeys: String, CodingKey {
         case projectToken = "api_key"
         case event
+        // PostHog's /i/v0/e single-event contract requires distinct_id
+        // at the top level. The properties placement is a /batch option.
         case distinctID = "distinct_id"
         case timestamp
         case properties
@@ -232,9 +239,10 @@ actor TelemetryReporter {
             let day = Self.utcDay(containing: date)
             guard state.lastActiveDay != day else { return }
 
-            if state.lastActiveDay == nil {
-                try await stateStore.save(state)
-            }
+            // Claim the day before sending. A lost response or later state
+            // write must not allow another activation to duplicate the event.
+            state.lastActiveDay = day
+            try await stateStore.save(state)
 
             try await transport.capture(
                 TelemetryEvent(
@@ -249,9 +257,6 @@ actor TelemetryReporter {
                     )
                 )
             )
-
-            state.lastActiveDay = day
-            try await stateStore.save(state)
         } catch {
             AppLogger.shared.debug(
                 "anonymous usage event was not sent: \(error)",

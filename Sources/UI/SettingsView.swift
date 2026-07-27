@@ -321,7 +321,14 @@ public struct SettingsView: View {
             settingsSection("Anonymous Usage Data") {
                 Toggle(
                     "Share anonymous usage data",
-                    isOn: $draft.shareAnonymousUsageData
+                    isOn: Binding(
+                        get: {
+                            store.shareAnonymousUsageData
+                        },
+                        set: {
+                            store.setShareAnonymousUsageData($0)
+                        }
+                    )
                 )
 
                 Text(

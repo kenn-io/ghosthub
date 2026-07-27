@@ -16,7 +16,6 @@ struct SettingsViewDraftTests {
         store.setShowHiddenWorktreesByDefault(true)
         store.setShowMacOSNotifications(false)
         store.setNotificationAttentionSound(.glass)
-        store.setShareAnonymousUsageData(false)
         store.setSSHHosts([host(configKey: "epyc", name: "EPYC")])
 
         let draft = SettingsViewDraft(store: store)
@@ -28,7 +27,6 @@ struct SettingsViewDraftTests {
         #expect(draft.showHiddenWorktreesByDefault)
         #expect(!draft.showMacOSNotifications)
         #expect(draft.attentionSound == .glass)
-        #expect(!draft.shareAnonymousUsageData)
         #expect(draft.sshHosts.map(\.configKey) == ["epyc"])
         #expect(draft.selectedSSHHostDraftID == draft.sshHosts.first?.id)
     }
@@ -41,7 +39,6 @@ struct SettingsViewDraftTests {
         draft.showHiddenWorktreesByDefault = true
         draft.showMacOSNotifications = false
         draft.attentionSound = .ping
-        draft.shareAnonymousUsageData = false
 
         _ = draft.persist(to: store)
 
@@ -49,7 +46,6 @@ struct SettingsViewDraftTests {
         #expect(store.worktreePreferences.showHiddenWorktreesByDefault)
         #expect(!store.notificationConfiguration.showMacOSNotifications)
         #expect(store.notificationConfiguration.attentionSound == .ping)
-        #expect(!store.shareAnonymousUsageData)
     }
 
     @Test("persist reports terminal reload for terminal settings")

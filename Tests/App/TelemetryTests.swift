@@ -15,10 +15,22 @@ private actor TelemetryTestStateStore: TelemetryStateStoring {
 }
 
 private actor TelemetryTestTransport: TelemetryTransport {
+    enum TestError: Error {
+        case rejected
+    }
+
+    private let rejectsEvents: Bool
     private var capturedEvents: [TelemetryEvent] = []
 
-    func capture(_ event: TelemetryEvent) {
+    init(rejectsEvents: Bool = false) {
+        self.rejectsEvents = rejectsEvents
+    }
+
+    func capture(_ event: TelemetryEvent) throws {
         capturedEvents.append(event)
+        if rejectsEvents {
+            throw TestError.rejected
+        }
     }
 
     func events() -> [TelemetryEvent] {
@@ -96,6 +108,78 @@ struct TelemetryTests {
 
         #expect(await transport.events().isEmpty)
         #expect(await stateStore.load() == nil)
+    }
+
+    @Test("a failed request is not retried on the same UTC day")
+    func failedRequestIsNotRetriedOnSameDay() async {
+        let stateStore = TelemetryTestStateStore()
+        let transport = TelemetryTestTransport(
+            rejectsEvents: true
+        )
+        let reporter = TelemetryReporter(
+            configuration: TelemetryConfiguration(
+                projectToken: "test-token",
+                endpoint: URL(
+                    string: "https://example.test/capture"
+                )!,
+                version: "test",
+                build: "test"
+            ),
+            stateStore: stateStore,
+            transport: transport
+        )
+        let date = Date(timeIntervalSince1970: 1_800_000_000)
+
+        await reporter.applicationBecameActive(
+            sharingEnabled: true,
+            at: date
+        )
+        await reporter.applicationBecameActive(
+            sharingEnabled: true,
+            at: date.addingTimeInterval(60 * 60)
+        )
+
+        #expect(await transport.events().count == 1)
+        #expect(await stateStore.load()?.lastActiveDay != nil)
+    }
+
+    @Test("single-event request follows PostHog's wire contract")
+    func singleEventRequestFollowsPostHogContract() throws {
+        let event = TelemetryEvent(
+            projectToken: "test-token",
+            name: TelemetryEvent.applicationActive,
+            distinctID: "anonymous-installation-id",
+            timestamp: Date(timeIntervalSince1970: 1_800_000_000),
+            properties: TelemetryEvent.Properties(
+                version: "test-version",
+                build: "test-build"
+            )
+        )
+        let transport = PostHogTelemetryTransport(
+            endpoint: URL(
+                string: "https://example.test/capture"
+            )!
+        )
+
+        let request = try transport.request(for: event)
+        let body = try #require(request.httpBody)
+        let payload = try #require(
+            JSONSerialization.jsonObject(with: body)
+                as? [String: Any]
+        )
+        let properties = try #require(
+            payload["properties"] as? [String: Any]
+        )
+
+        #expect(
+            payload["distinct_id"] as? String
+                == "anonymous-installation-id"
+        )
+        #expect(properties["distinct_id"] == nil)
+        #expect(
+            properties["$process_person_profile"] as? Bool
+                == false
+        )
     }
 
     @Test("environment kill switches disable telemetry")
