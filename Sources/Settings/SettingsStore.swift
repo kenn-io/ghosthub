@@ -203,6 +203,16 @@ public final class SettingsStore: ObservableObject {
         )
     }
 
+    @discardableResult
+    public func refreshShareAnonymousUsageData() -> Bool {
+        _ = userDefaults.synchronize()
+        let enabled = Self.loadShareAnonymousUsageData(
+            using: userDefaults
+        )
+        shareAnonymousUsageData = enabled
+        return enabled
+    }
+
     public func setTerminalTheme(_ theme: TerminalTheme) {
         updateTerminalAppearancePreferences { preferences in
             preferences.theme = theme

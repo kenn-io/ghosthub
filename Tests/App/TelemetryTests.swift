@@ -46,6 +46,32 @@ private actor TelemetryTestTransport: TelemetryTransport {
     }
 }
 
+private actor TelemetryTestSleeper {
+    private var requestedDurations: [Duration] = []
+    private var continuations: [
+        CheckedContinuation<Void, Never>
+    ] = []
+
+    func sleep(for duration: Duration) async {
+        requestedDurations.append(duration)
+        await withCheckedContinuation { continuation in
+            continuations.append(continuation)
+        }
+    }
+
+    func pendingCount() -> Int {
+        continuations.count
+    }
+
+    func durations() -> [Duration] {
+        requestedDurations
+    }
+
+    func resumeNext() {
+        continuations.removeFirst().resume()
+    }
+}
+
 struct TelemetryTests {
     @Test("application activity is anonymous and sent once per UTC day")
     func applicationActivityIsAnonymousAndDaily() async throws {
@@ -206,6 +232,115 @@ struct TelemetryTests {
             event.distinctID
                 == state.installationID.uuidString.lowercased()
         )
+    }
+
+    @MainActor
+    @Test("an active app reports again after UTC midnight")
+    func activeAppReportsAfterUTCMidnight() async {
+        let dayStart = floor(1_800_000_000 / 86_400) * 86_400
+        var date = Date(
+            timeIntervalSince1970: dayStart + 86_390
+        )
+        let stateStore = TelemetryTestStateStore()
+        let transport = TelemetryTestTransport()
+        let sleeper = TelemetryTestSleeper()
+        var preferenceReads = 0
+        let controller = TelemetryController(
+            configuration: TelemetryConfiguration(
+                projectToken: "test-token",
+                endpoint: URL(
+                    string: "https://example.test/capture"
+                )!,
+                version: "test",
+                build: "test"
+            ),
+            stateStore: stateStore,
+            transport: transport,
+            sharingEnabled: {
+                preferenceReads += 1
+                return true
+            },
+            currentDate: {
+                date
+            },
+            sleep: {
+                await sleeper.sleep(for: $0)
+            }
+        )
+
+        controller.applicationDidBecomeActive()
+        await waitUntil {
+            let eventCount = await transport.events().count
+            let pendingCount = await sleeper.pendingCount()
+            return eventCount == 1 && pendingCount == 1
+        }
+
+        date = date.addingTimeInterval(20)
+        await sleeper.resumeNext()
+        await waitUntil {
+            let eventCount = await transport.events().count
+            let pendingCount = await sleeper.pendingCount()
+            return eventCount == 2 && pendingCount == 1
+        }
+
+        #expect(
+            await sleeper.durations().first == .seconds(10)
+        )
+        #expect(preferenceReads == 2)
+
+        controller.applicationWillResignActive()
+        await sleeper.resumeNext()
+    }
+
+    @MainActor
+    @Test("resigning active cancels the UTC rollover check")
+    func resigningActiveCancelsRollover() async {
+        let dayStart = floor(1_800_000_000 / 86_400) * 86_400
+        var date = Date(
+            timeIntervalSince1970: dayStart + 86_390
+        )
+        let stateStore = TelemetryTestStateStore()
+        let transport = TelemetryTestTransport()
+        let sleeper = TelemetryTestSleeper()
+        var preferenceReads = 0
+        let controller = TelemetryController(
+            configuration: TelemetryConfiguration(
+                projectToken: "test-token",
+                endpoint: URL(
+                    string: "https://example.test/capture"
+                )!,
+                version: "test",
+                build: "test"
+            ),
+            stateStore: stateStore,
+            transport: transport,
+            sharingEnabled: {
+                preferenceReads += 1
+                return true
+            },
+            currentDate: {
+                date
+            },
+            sleep: {
+                await sleeper.sleep(for: $0)
+            }
+        )
+
+        controller.applicationDidBecomeActive()
+        await waitUntil {
+            let eventCount = await transport.events().count
+            let pendingCount = await sleeper.pendingCount()
+            return eventCount == 1 && pendingCount == 1
+        }
+
+        controller.applicationWillResignActive()
+        date = date.addingTimeInterval(20)
+        await sleeper.resumeNext()
+        try? await Task.sleep(for: .milliseconds(20))
+
+        #expect(await transport.events().count == 1)
+        #expect(preferenceReads == 1)
+        #expect(await sleeper.pendingCount() == 0)
     }
 
     @Test("single-event request follows PostHog's wire contract")

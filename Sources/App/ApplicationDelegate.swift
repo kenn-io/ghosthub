@@ -160,7 +160,13 @@ final class ApplicationDelegate: NSObject,
     func applicationDidBecomeActive(
         _ notification: Notification
     ) {
-        TelemetryController.shared.applicationBecameActive()
+        TelemetryController.shared.applicationDidBecomeActive()
+    }
+
+    func applicationWillResignActive(
+        _ notification: Notification
+    ) {
+        TelemetryController.shared.applicationWillResignActive()
     }
 
     @objc func newWindowForTab(_ sender: Any?) {

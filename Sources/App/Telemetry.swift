@@ -340,27 +340,99 @@ final class TelemetryController {
     static let shared = TelemetryController()
 
     private let reporter: TelemetryReporter?
+    private let sharingEnabled: @MainActor () -> Bool
+    private let currentDate: @MainActor () -> Date
+    private let sleep: @Sendable (Duration) async throws -> Void
+    private var rolloverTask: Task<Void, Never>?
 
     init(
-        configuration: TelemetryConfiguration? = .live()
+        configuration: TelemetryConfiguration? = .live(),
+        stateStore: (any TelemetryStateStoring)? = nil,
+        transport: (any TelemetryTransport)? = nil,
+        sharingEnabled: @escaping @MainActor () -> Bool = {
+            SettingsStore.shared.refreshShareAnonymousUsageData()
+        },
+        currentDate: @escaping @MainActor () -> Date = Date.init,
+        sleep: @escaping @Sendable (Duration) async throws -> Void = {
+            try await Task.sleep(for: $0)
+        }
     ) {
         if let configuration {
             reporter = TelemetryReporter(
-                configuration: configuration
+                configuration: configuration,
+                stateStore: stateStore ?? FileTelemetryStateStore(),
+                transport: transport
             )
         } else {
             reporter = nil
         }
+        self.sharingEnabled = sharingEnabled
+        self.currentDate = currentDate
+        self.sleep = sleep
     }
 
-    func applicationBecameActive() {
+    func applicationDidBecomeActive() {
         guard let reporter else { return }
-        let sharingEnabled =
-            SettingsStore.shared.shareAnonymousUsageData
+        rolloverTask?.cancel()
+
+        let date = currentDate()
+        capture(with: reporter, at: date)
+        scheduleRollover(after: date, reporter: reporter)
+    }
+
+    func applicationWillResignActive() {
+        rolloverTask?.cancel()
+        rolloverTask = nil
+    }
+
+    private func capture(
+        with reporter: TelemetryReporter,
+        at date: Date
+    ) {
+        let sharingEnabled = sharingEnabled
         Task(priority: .utility) {
+            let enabled = sharingEnabled()
             await reporter.applicationBecameActive(
-                sharingEnabled: sharingEnabled
+                sharingEnabled: enabled,
+                at: date
             )
         }
+    }
+
+    private func scheduleRollover(
+        after date: Date,
+        reporter: TelemetryReporter
+    ) {
+        let boundary = Self.nextUTCBoundary(after: date)
+        let delay = Duration.seconds(
+            max(0, boundary.timeIntervalSince(date))
+        )
+        let sleep = sleep
+        rolloverTask = Task(priority: .utility) { [weak self] in
+            do {
+                try await sleep(delay)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled, let self else { return }
+
+            let currentDate = currentDate()
+            capture(with: reporter, at: currentDate)
+            scheduleRollover(
+                after: currentDate,
+                reporter: reporter
+            )
+        }
+    }
+
+    private static func nextUTCBoundary(after date: Date) -> Date {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let startOfDay = calendar.startOfDay(for: date)
+        return calendar.date(
+            byAdding: .day,
+            value: 1,
+            to: startOfDay
+        ) ?? date.addingTimeInterval(24 * 60 * 60)
     }
 }

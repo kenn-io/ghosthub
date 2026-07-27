@@ -158,6 +158,18 @@ final class SettingsStoreTests {
     }
 
     @Test
+    func testRefreshingAnonymousUsageDataReadsPersistedPreference() {
+        let store = makeSUT()
+        let otherStore = makeSUT()
+
+        otherStore.setShareAnonymousUsageData(false)
+
+        #expect(store.shareAnonymousUsageData)
+        #expect(!store.refreshShareAnonymousUsageData())
+        #expect(!store.shareAnonymousUsageData)
+    }
+
+    @Test
     func testUpdatingTerminalPreferencesWritesManagedConfigBlock() throws {
         let store = makeSUT()
 

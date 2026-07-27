@@ -87,7 +87,10 @@ session, path, command, and terminal data are outside the telemetry contract.
 Anonymous usage reporting is enabled by default in packaged releases. Users
 can disable it in Settings or with `GHOSTHUB_TELEMETRY_ENABLED=0` or
 `TELEMETRY_ENABLED=0`. Debug builds and tests do not configure the production
-telemetry client.
+telemetry client. Each activity check refreshes the persisted privacy
+preference so another Ghosthub process can disable reporting. While the app is
+active, it schedules the next check for the following UTC-day boundary and
+cancels that check when the app resigns active.
 
 ### External State
 
