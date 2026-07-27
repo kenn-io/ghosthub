@@ -75,11 +75,14 @@ Swift client submits the event directly instead of enabling a general-purpose
 analytics SDK, automatic lifecycle capture, screen capture, or swizzling.
 
 The distinct ID is a random installation UUID stored in
-`~/.ghosthub/telemetry.json`. Event properties are limited to the application
-name, native-app source, version, and build number. Events explicitly disable
-PostHog person-profile processing and GeoIP enrichment. Repository, worktree,
-host, session, path, command, and terminal data are outside the telemetry
-contract.
+`~/.ghosthub/telemetry.json`. Installation-ID creation and each UTC-day claim
+are one interprocess-locked transaction, so simultaneous Ghosthub instances
+share the same identity and only one schedules the event. The claim is
+persisted before networking so an accepted event with a lost response is not
+retried. Event properties are limited to the application name, native-app
+source, version, and build number. Events explicitly disable PostHog
+person-profile processing and GeoIP enrichment. Repository, worktree, host,
+session, path, command, and terminal data are outside the telemetry contract.
 
 Anonymous usage reporting is enabled by default in packaged releases. Users
 can disable it in Settings or with `GHOSTHUB_TELEMETRY_ENABLED=0` or
@@ -206,7 +209,7 @@ Ghosthub local persistence stores app-owned state:
 - terminal presentation state
 - selected worktree/window state
 - settings that are explicitly native-app concerns
-- the anonymous telemetry installation UUID and last accepted activity day
+- the anonymous telemetry installation UUID and last attempted activity day
 
 Do not add database migrations before the first production release. Edit the
 current schema, bootstrap paths, fixtures, and tests directly.

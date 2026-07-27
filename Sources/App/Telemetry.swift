@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import GhosthubSettings
 import GhosthubWorkspace
@@ -53,11 +54,12 @@ struct TelemetryState: Codable, Equatable, Sendable {
 }
 
 protocol TelemetryStateStoring: Sendable {
-    func load() async throws -> TelemetryState?
-    func save(_ state: TelemetryState) async throws
+    func claimActiveDay(_ day: String) async throws -> UUID?
 }
 
 struct FileTelemetryStateStore: TelemetryStateStoring {
+    private static let processLock = NSLock()
+
     let fileURL: URL
 
     init(
@@ -67,7 +69,65 @@ struct FileTelemetryStateStore: TelemetryStateStoring {
         self.fileURL = fileURL
     }
 
-    func load() async throws -> TelemetryState? {
+    func claimActiveDay(_ day: String) async throws -> UUID? {
+        try FileManager.default.createDirectory(
+            at: fileURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        return try withExclusiveLock {
+            var state = try load()
+                ?? TelemetryState(
+                    installationID: UUID(),
+                    lastActiveDay: nil
+                )
+            guard state.lastActiveDay != day else { return nil }
+
+            state.lastActiveDay = day
+            try save(state)
+            return state.installationID
+        }
+    }
+
+    private func withExclusiveLock<T>(
+        _ operation: () throws -> T
+    ) throws -> T {
+        Self.processLock.lock()
+        defer { Self.processLock.unlock() }
+
+        let lockURL = fileURL.appendingPathExtension("lock")
+        let descriptor = lockURL.path.withCString {
+            Darwin.open(
+                $0,
+                O_CREAT | O_RDWR | O_CLOEXEC,
+                mode_t(S_IRUSR | S_IWUSR)
+            )
+        }
+        guard descriptor >= 0 else {
+            throw Self.currentPOSIXError()
+        }
+        defer { Darwin.close(descriptor) }
+
+        var lock = flock(
+            l_start: 0,
+            l_len: 0,
+            l_pid: 0,
+            l_type: Int16(F_WRLCK),
+            l_whence: Int16(SEEK_SET)
+        )
+        while Darwin.fcntl(descriptor, F_SETLKW, &lock) != 0 {
+            guard errno == EINTR else {
+                throw Self.currentPOSIXError()
+            }
+        }
+        defer {
+            lock.l_type = Int16(F_UNLCK)
+            _ = Darwin.fcntl(descriptor, F_SETLK, &lock)
+        }
+
+        return try operation()
+    }
+
+    private func load() throws -> TelemetryState? {
         guard FileManager.default.fileExists(
             atPath: fileURL.path
         ) else {
@@ -80,13 +140,13 @@ struct FileTelemetryStateStore: TelemetryStateStoring {
         )
     }
 
-    func save(_ state: TelemetryState) async throws {
-        try FileManager.default.createDirectory(
-            at: fileURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
+    private func save(_ state: TelemetryState) throws {
         let data = try JSONEncoder().encode(state)
         try data.write(to: fileURL, options: .atomic)
+    }
+
+    private static func currentPOSIXError() -> POSIXError {
+        POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
     }
 }
 
@@ -231,25 +291,19 @@ actor TelemetryReporter {
         guard sharingEnabled else { return }
 
         do {
-            var state = try await stateStore.load()
-                ?? TelemetryState(
-                    installationID: UUID(),
-                    lastActiveDay: nil
-                )
             let day = Self.utcDay(containing: date)
-            guard state.lastActiveDay != day else { return }
-
-            // Claim the day before sending. A lost response or later state
-            // write must not allow another activation to duplicate the event.
-            state.lastActiveDay = day
-            try await stateStore.save(state)
+            guard let installationID =
+                try await stateStore.claimActiveDay(day)
+            else {
+                return
+            }
 
             try await transport.capture(
                 TelemetryEvent(
                     projectToken: configuration.projectToken,
                     name: TelemetryEvent.applicationActive,
                     distinctID:
-                    state.installationID.uuidString.lowercased(),
+                    installationID.uuidString.lowercased(),
                     timestamp: date,
                     properties: TelemetryEvent.Properties(
                         version: configuration.version,

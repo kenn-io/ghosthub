@@ -5,12 +5,20 @@ import Testing
 private actor TelemetryTestStateStore: TelemetryStateStoring {
     private var state: TelemetryState?
 
-    func load() -> TelemetryState? {
-        state
+    func claimActiveDay(_ day: String) -> UUID? {
+        var state = state
+            ?? TelemetryState(
+                installationID: UUID(),
+                lastActiveDay: nil
+            )
+        guard state.lastActiveDay != day else { return nil }
+        state.lastActiveDay = day
+        self.state = state
+        return state.installationID
     }
 
-    func save(_ state: TelemetryState) {
-        self.state = state
+    func currentState() -> TelemetryState? {
+        state
     }
 }
 
@@ -107,7 +115,7 @@ struct TelemetryTests {
         )
 
         #expect(await transport.events().isEmpty)
-        #expect(await stateStore.load() == nil)
+        #expect(await stateStore.currentState() == nil)
     }
 
     @Test("a failed request is not retried on the same UTC day")
@@ -140,7 +148,64 @@ struct TelemetryTests {
         )
 
         #expect(await transport.events().count == 1)
-        #expect(await stateStore.load()?.lastActiveDay != nil)
+        #expect(
+            await stateStore.currentState()?.lastActiveDay != nil
+        )
+    }
+
+    @Test("concurrent reporters share one daily claim and identity")
+    func concurrentReportersShareDailyClaim() async throws {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "ghosthub-telemetry-\(UUID().uuidString)"
+            )
+        defer {
+            try? FileManager.default.removeItem(at: directoryURL)
+        }
+        let fileURL = directoryURL.appendingPathComponent(
+            "telemetry.json"
+        )
+        let transport = TelemetryTestTransport()
+        let configuration = TelemetryConfiguration(
+            projectToken: "test-token",
+            endpoint: URL(
+                string: "https://example.test/capture"
+            )!,
+            version: "test",
+            build: "test"
+        )
+        let date = Date(timeIntervalSince1970: 1_800_000_000)
+
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0 ..< 20 {
+                group.addTask {
+                    let reporter = TelemetryReporter(
+                        configuration: configuration,
+                        stateStore: FileTelemetryStateStore(
+                            fileURL: fileURL
+                        ),
+                        transport: transport
+                    )
+                    await Task.yield()
+                    await reporter.applicationBecameActive(
+                        sharingEnabled: true,
+                        at: date
+                    )
+                }
+            }
+        }
+
+        let events = await transport.events()
+        let event = try #require(events.first)
+        let state = try JSONDecoder().decode(
+            TelemetryState.self,
+            from: Data(contentsOf: fileURL)
+        )
+        #expect(events.count == 1)
+        #expect(
+            event.distinctID
+                == state.installationID.uuidString.lowercased()
+        )
     }
 
     @Test("single-event request follows PostHog's wire contract")
