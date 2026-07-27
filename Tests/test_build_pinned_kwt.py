@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 
 
-def test_fresh_no_checkout_clone_builds_pinned_kwt(tmp_path: Path) -> None:
+def test_failed_initial_clone_does_not_block_retry(tmp_path: Path) -> None:
     repository = tmp_path / "repository"
     repository.mkdir()
     subprocess.run(["git", "init", "-q", repository], check=True)
@@ -64,6 +64,24 @@ chmod +x "$output"
 
     source = tmp_path / "source"
     output = tmp_path / "output" / "kwt"
+    failed_result = subprocess.run(
+        [
+            "bash",
+            "tools/build_pinned_kwt.sh",
+            str(repository),
+            "missing-revision",
+            str(source),
+            str(output),
+        ],
+        cwd=Path(__file__).parents[1],
+        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+        capture_output=True,
+        text=True,
+    )
+
+    assert failed_result.returncode != 0
+    assert not source.exists()
+
     result = subprocess.run(
         [
             "bash",

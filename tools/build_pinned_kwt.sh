@@ -38,22 +38,34 @@ if [[ -e "$source_dir" && ! -d "$source_dir/.git" ]]; then
   exit 1
 fi
 
-fresh_clone=false
 if [[ ! -d "$source_dir/.git" ]]; then
   mkdir -p "$(dirname "$source_dir")"
-  git clone --filter=blob:none --no-checkout "$repository" "$source_dir"
-  fresh_clone=true
-fi
 
-if [[ "$fresh_clone" == false ]] \
-  && [[ -n "$(git -C "$source_dir" status --porcelain)" ]]; then
-  printf '%s has uncommitted changes; refusing to replace them.\n' \
-    "$source_dir" >&2
-  exit 1
-fi
+  staging_dir=""
+  cleanup_staging() {
+    if [[ -n "$staging_dir" && -d "$staging_dir" ]]; then
+      rm -rf "$staging_dir"
+    fi
+  }
+  trap cleanup_staging EXIT
 
-git -C "$source_dir" fetch --no-tags origin "$revision"
-git -C "$source_dir" checkout --detach "$revision"
+  staging_dir="$(mktemp -d "${source_dir}.tmp.XXXXXX")"
+  git clone --filter=blob:none --no-checkout "$repository" "$staging_dir"
+  git -C "$staging_dir" fetch --no-tags origin "$revision"
+  git -C "$staging_dir" checkout --detach "$revision"
+  mv "$staging_dir" "$source_dir"
+  staging_dir=""
+  trap - EXIT
+else
+  if [[ -n "$(git -C "$source_dir" status --porcelain)" ]]; then
+    printf '%s has uncommitted changes; refusing to replace them.\n' \
+      "$source_dir" >&2
+    exit 1
+  fi
+
+  git -C "$source_dir" fetch --no-tags origin "$revision"
+  git -C "$source_dir" checkout --detach "$revision"
+fi
 
 mkdir -p "$(dirname "$output")"
 (
