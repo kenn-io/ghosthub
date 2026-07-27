@@ -6,7 +6,7 @@ import Testing
 struct TerminalShortcutReservationTests {
     @Test("current application commands reach menus from a focused terminal")
     func currentApplicationCommandsAreReserved() {
-        for chars in ["q", ",", "b"] {
+        for chars in ["q", ",", "b", "n", "t"] {
             #expect(TerminalSurfaceView.isReservedApplicationShortcut(
                 flags: .command,
                 chars: chars,
@@ -22,12 +22,6 @@ struct TerminalShortcutReservationTests {
                 hasPaneCloseHandler: false
             ))
         }
-        #expect(TerminalSurfaceView.isReservedApplicationShortcut(
-            flags: [.command, .option],
-            chars: "n",
-            keyCode: 45,
-            hasPaneCloseHandler: false
-        ))
     }
 
     @Test("retired workspace commands are left to tmux")
@@ -47,9 +41,9 @@ struct TerminalShortcutReservationTests {
             hasPaneCloseHandler: false
         ))
         #expect(!TerminalSurfaceView.isReservedApplicationShortcut(
-            flags: .command,
-            chars: "t",
-            keyCode: 17,
+            flags: [.command, .option],
+            chars: "n",
+            keyCode: 45,
             hasPaneCloseHandler: false
         ))
     }

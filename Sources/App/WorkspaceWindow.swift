@@ -27,12 +27,8 @@ extension FocusedValues {
 @MainActor
 enum WorkspaceWindowChrome {
     static func apply(to window: NSWindow) {
-        // An NSToolbar adds a second, 40-point-tall row on Tahoe even when its
-        // controls use compact metrics. Keep controls in the standard
-        // titlebar and give that single row an explicit uniform surface. A
-        // transparent titlebar alone reveals whichever content happens to be
-        // underneath it, so an active terminal would otherwise tint only the
-        // detail side.
+        // Keep workspace controls in the standard titlebar. Native window tabs
+        // add their own AppKit-managed row when a tab group is present.
         window.toolbar = nil
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
@@ -50,6 +46,7 @@ enum WorkspaceWindowChrome {
                 WorkspaceSurfaceColor.nsColor.cgColor
         }
     }
+
 }
 
 /// Invisible NSView that reports its hosting window's key
@@ -57,6 +54,7 @@ enum WorkspaceWindowChrome {
 /// is focused.
 private struct WindowFocusTracker: NSViewRepresentable {
     let applicationDelegate: ApplicationDelegate
+    let requestID: UUID?
     @Binding var isFocused: Bool
     var isSidebarVisible: Bool
     var canCreateWorktree: Bool
@@ -68,7 +66,8 @@ private struct WindowFocusTracker: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSView {
         let view = FocusTrackingView(
-            applicationDelegate: applicationDelegate
+            applicationDelegate: applicationDelegate,
+            requestID: requestID
         )
         view.onFocusChanged = { [self] focused in
             isFocused = focused
@@ -102,9 +101,17 @@ private struct WindowFocusTracker: NSViewRepresentable {
             ((Bool) -> Void)?
         private nonisolated(unsafe) var observers:
             [NSObjectProtocol] = []
+        private var tabObservation: NSKeyValueObservation?
+        private weak var applicationDelegate: ApplicationDelegate?
+        private let requestID: UUID?
         let titlebarController: CompactWorkspaceTitlebarController
 
-        init(applicationDelegate: ApplicationDelegate) {
+        init(
+            applicationDelegate: ApplicationDelegate,
+            requestID: UUID?
+        ) {
+            self.applicationDelegate = applicationDelegate
+            self.requestID = requestID
             titlebarController = CompactWorkspaceTitlebarController(
                 applicationDelegate: applicationDelegate
             )
@@ -125,7 +132,22 @@ private struct WindowFocusTracker: NSViewRepresentable {
                 }
                 return
             }
-            window.tabbingMode = .disallowed
+            window.tabbingMode = .preferred
+            window.tabbingIdentifier =
+                WorkspaceWindowIdentity.tabbingIdentifier
+            tabObservation = window.observe(
+                \.tabbedWindows,
+                options: [.initial, .new]
+            ) { [weak self] window, _ in
+                MainActor.assumeIsolated {
+                    self?.titlebarController.install(on: window)
+                }
+            }
+            applicationDelegate?
+                .adoptWorkspaceWindowAsTabIfRequested(
+                    window,
+                    requestID: requestID
+                )
             titlebarController.install(on: window)
             DispatchQueue.main.async { [weak self] in
                 self?.titlebarController.install(on: window)
@@ -161,6 +183,8 @@ private struct WindowFocusTracker: NSViewRepresentable {
         }
 
         private func removeObservers() {
+            tabObservation?.invalidate()
+            tabObservation = nil
             for observer in observers {
                 NotificationCenter.default
                     .removeObserver(observer)
@@ -178,17 +202,87 @@ private struct WindowFocusTracker: NSViewRepresentable {
 }
 
 @MainActor
-private final class DraggableTitlebarHostingView: NSHostingView<AnyView> {
+private final class DraggableTitlebarHostingView:
+    NSHostingView<AnyView> {
     override var mouseDownCanMoveWindow: Bool { true }
 }
 
 @MainActor
-private final class WorkspaceWindowCloseController: NSObject {
+private final class WorkspaceWindowCloseDelegate: NSObject,
+    NSWindowDelegate {
     weak var applicationDelegate: ApplicationDelegate?
-    weak var window: NSWindow?
+    private weak var installedWindow: NSWindow?
+    private weak var installedCloseButton: NSButton?
+    private nonisolated(unsafe) weak var forwardingCloseTarget:
+        AnyObject?
+    private var forwardingCloseAction: Selector?
+    private nonisolated(unsafe) weak var forwardingDelegate:
+        NSWindowDelegate?
 
-    @objc func requestClose(_ sender: Any?) {
-        applicationDelegate?.requestWorkspaceWindowClose(window)
+    func install(on window: NSWindow) {
+        if installedWindow !== window {
+            restoreInstalledWindow()
+            installedWindow = window
+        }
+        if window.delegate !== self {
+            forwardingDelegate = window.delegate
+            window.delegate = self
+        }
+        guard let closeButton = window.standardWindowButton(.closeButton)
+        else { return }
+        if installedCloseButton !== closeButton {
+            restoreInstalledCloseButton()
+            installedCloseButton = closeButton
+            forwardingCloseTarget = closeButton.target as AnyObject?
+            forwardingCloseAction = closeButton.action
+        }
+        closeButton.target = self
+        closeButton.action = #selector(requestWindowClose(_:))
+    }
+
+    @objc private func requestWindowClose(_ sender: Any?) {
+        applicationDelegate?.requestWorkspaceWindowClose(installedWindow)
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        applicationDelegate?.requestWorkspaceTabClose(sender)
+        return false
+    }
+
+    override nonisolated func responds(
+        to selector: Selector!
+    ) -> Bool {
+        super.responds(to: selector)
+            || forwardingDelegate?.responds(to: selector) == true
+    }
+
+    override nonisolated func forwardingTarget(
+        for selector: Selector!
+    ) -> Any? {
+        guard forwardingDelegate?.responds(to: selector) == true
+        else {
+            return super.forwardingTarget(for: selector)
+        }
+        return forwardingDelegate
+    }
+
+    private func restoreInstalledWindow() {
+        restoreInstalledCloseButton()
+        guard let installedWindow,
+              installedWindow.delegate === self
+        else { return }
+        installedWindow.delegate = forwardingDelegate
+    }
+
+    private func restoreInstalledCloseButton() {
+        guard let installedCloseButton,
+              installedCloseButton.target === self
+        else { return }
+        installedCloseButton.target = forwardingCloseTarget
+        installedCloseButton.action = forwardingCloseAction
+        self.installedCloseButton = nil
+        forwardingCloseTarget = nil
+        forwardingCloseAction = nil
     }
 }
 
@@ -209,7 +303,7 @@ final class CompactWorkspaceTitlebarController {
         rootView: AnyView(EmptyView())
     )
     private let actionsHost = NSHostingView(rootView: AnyView(EmptyView()))
-    private let closeController = WorkspaceWindowCloseController()
+    private let closeDelegate = WorkspaceWindowCloseDelegate()
     private weak var installedWindow: NSWindow?
     private var isSidebarVisible = true
     private var canCreateWorktree = false
@@ -220,7 +314,7 @@ final class CompactWorkspaceTitlebarController {
     private var onNewWorktree: () -> Void = {}
 
     init(applicationDelegate: ApplicationDelegate? = nil) {
-        closeController.applicationDelegate = applicationDelegate
+        closeDelegate.applicationDelegate = applicationDelegate
         sidebarHost.identifier = Self.sidebarIdentifier
         titleHost.identifier = Self.titleIdentifier
         actionsHost.identifier = Self.actionsIdentifier
@@ -236,21 +330,21 @@ final class CompactWorkspaceTitlebarController {
     func install(on window: NSWindow) {
         WorkspaceWindowChrome.apply(to: window)
         window.title = sessionTitle?.title ?? "Ghosthub"
+        titleHost.isHidden = !Self.showsTitle(
+            tabCount: window.tabbedWindows?.count ?? 1
+        )
+        if closeDelegate.applicationDelegate != nil {
+            closeDelegate.install(on: window)
+        }
 
         guard let closeButton = window.standardWindowButton(.closeButton),
               let zoomButton = window.standardWindowButton(.zoomButton),
               let titlebar = closeButton.superview
         else { return }
-        if closeController.applicationDelegate != nil {
-            closeController.window = window
-            closeButton.target = closeController
-            closeButton.action = #selector(
-                WorkspaceWindowCloseController.requestClose(_:)
-            )
-        }
         guard installedWindow !== window
             || sidebarHost.superview !== titlebar
             || titleHost.superview !== titlebar
+            || actionsHost.superview !== titlebar
         else { return }
 
         removeControlsFromInstalledWindow()
@@ -300,6 +394,10 @@ final class CompactWorkspaceTitlebarController {
             actionsHost.heightAnchor.constraint(equalToConstant: 22),
         ])
         installedWindow = window
+    }
+
+    static func showsTitle(tabCount: Int) -> Bool {
+        tabCount <= 1
     }
 
     func update(
@@ -381,6 +479,11 @@ final class CompactWorkspaceTitlebarController {
             .help(sessionTitle.title)
             .accessibilityElement(children: .combine)
             .accessibilityLabel(sessionTitle.title)
+        } else {
+            Text("Ghosthub")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("Ghosthub")
         }
     }
 
@@ -417,6 +520,7 @@ private struct CompactToolbarButton: View {
 struct WorkspaceWindow: View {
     #if canImport(AppKit)
     let applicationDelegate: ApplicationDelegate
+    let requestID: UUID?
     #endif
     @StateObject private var sceneModel = WorkspaceSceneModel()
     @EnvironmentObject private var terminalRuntime: LibghosttyRuntime
@@ -505,7 +609,7 @@ struct WorkspaceWindow: View {
             ),
             handlers: InteractionHandlers(
                 closeWindow: { [applicationDelegate] in
-                    applicationDelegate.requestWorkspaceWindowClose(
+                    applicationDelegate.requestWorkspaceTabClose(
                         NSApplication.shared.keyWindow
                     )
                 },
@@ -585,6 +689,7 @@ struct WorkspaceWindow: View {
         .background(
             WindowFocusTracker(
                 applicationDelegate: applicationDelegate,
+                requestID: requestID,
                 isFocused: Binding(
                     get: { sceneModel.isFocusedWindow },
                     set: { sceneModel.isFocusedWindow = $0 }

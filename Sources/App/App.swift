@@ -38,35 +38,48 @@ struct GhosthubApp: App {
     }
 
     var body: some Scene {
-        WindowGroup("Ghosthub", id: "workspace") {
-            WorkspaceWindow(applicationDelegate: appDelegate)
-                .environmentObject(terminalRuntime)
-                .onAppear {
-                    #if canImport(AppKit)
-                    AppAppearance.apply(
-                        settingsStore.interfaceAppearance
+        WindowGroup(
+            "Ghosthub",
+            id: "workspace",
+            for: UUID.self
+        ) { requestID in
+            WorkspaceWindow(
+                applicationDelegate: appDelegate,
+                requestID: requestID.wrappedValue
+            )
+            .environmentObject(terminalRuntime)
+            .onAppear {
+                #if canImport(AppKit)
+                AppAppearance.apply(
+                    settingsStore.interfaceAppearance
+                )
+                appDelegate.openWorkspaceWindow = { requestID in
+                    openWindow(
+                        id: "workspace",
+                        value: requestID
                     )
-                    appDelegate.needsConfirmQuit = {
-                        QuitPolicy.needsConfirmation(
-                            runtimeNeedsConfirmQuit:
-                            terminalRuntime
-                                .needsConfirmQuit,
-                            openTerminalSurfaceCount:
-                            WindowRegistry.shared
-                                .totalOpenTerminalSurfaceCount
-                        )
-                    }
-                    updateController.start()
-                    requestLaunchActivationIfNeeded()
-                    #endif
                 }
-                .onChange(
-                    of: settingsStore.interfaceAppearance
-                ) { _, appearance in
-                    #if canImport(AppKit)
-                    AppAppearance.apply(appearance)
-                    #endif
+                appDelegate.needsConfirmQuit = {
+                    QuitPolicy.needsConfirmation(
+                        runtimeNeedsConfirmQuit:
+                        terminalRuntime
+                            .needsConfirmQuit,
+                        openTerminalSurfaceCount:
+                        WindowRegistry.shared
+                            .totalOpenTerminalSurfaceCount
+                    )
                 }
+                updateController.start()
+                requestLaunchActivationIfNeeded()
+                #endif
+            }
+            .onChange(
+                of: settingsStore.interfaceAppearance
+            ) { _, appearance in
+                #if canImport(AppKit)
+                AppAppearance.apply(appearance)
+                #endif
+            }
         }
         .defaultSize(width: 1600, height: 1000)
         .windowStyle(.hiddenTitleBar)
@@ -208,12 +221,14 @@ struct GhosthubApp: App {
             Divider()
 
             Button("New Window") {
-                openWindow(id: "workspace")
+                appDelegate.requestNewWorkspaceWindow()
             }
-            .keyboardShortcut(
-                "n",
-                modifiers: [.command, .option]
-            )
+            .keyboardShortcut("n")
+
+            Button("New Tab") {
+                appDelegate.requestNewWorkspaceTab()
+            }
+            .keyboardShortcut("t")
 
             Divider()
 

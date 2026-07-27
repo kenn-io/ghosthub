@@ -39,6 +39,82 @@ private func presentApplicationAlertAsync(
 }
 
 @MainActor
+enum WorkspaceWindowIdentity {
+    static let tabbingIdentifier = "workspace"
+
+    static func matches(_ window: NSWindow) -> Bool {
+        window.tabbingIdentifier == tabbingIdentifier
+    }
+
+    static func group(containing window: NSWindow) -> [NSWindow] {
+        window.tabGroup?.windows ?? [window]
+    }
+
+    static func hasAnotherOpenWindow(
+        besides windows: [NSWindow]
+    ) -> Bool {
+        let excluded = Set(windows.map(ObjectIdentifier.init))
+        for window in windows {
+            if window.tabGroup?.windows.contains(where: {
+                !excluded.contains(ObjectIdentifier($0))
+                    && matches($0)
+            }) == true {
+                return true
+            }
+        }
+        return NSApplication.shared.windows.contains {
+            !excluded.contains(ObjectIdentifier($0))
+                && matches($0)
+                && ($0.isVisible || $0.isMiniaturized)
+                && $0.frame.width > 1
+                && $0.frame.height > 1
+        }
+    }
+}
+
+enum WorkspaceWindowResolver {
+    static func workspaceWindow<Window: AnyObject>(
+        from candidate: Window?,
+        sheetParent: (Window) -> Window?,
+        isWorkspace: (Window) -> Bool
+    ) -> Window? {
+        guard var window = candidate else { return nil }
+        while let parent = sheetParent(window) {
+            window = parent
+        }
+        return isWorkspace(window) ? window : nil
+    }
+}
+
+final class WorkspaceWindowRequests<Window: AnyObject> {
+    private final class Request {
+        weak var parent: Window?
+
+        init(parent: Window?) {
+            self.parent = parent
+        }
+    }
+
+    private var requests: [UUID: Request] = [:]
+
+    func add(_ id: UUID, parent: Window?) {
+        requests[id] = Request(parent: parent)
+    }
+
+    func consumeParent(
+        for id: UUID?,
+        window: Window
+    ) -> Window? {
+        guard let id,
+              let request = requests.removeValue(forKey: id),
+              let parent = request.parent,
+              parent !== window
+        else { return nil }
+        return parent
+    }
+}
+
+@MainActor
 final class ApplicationDelegate: NSObject,
     NSApplicationDelegate {
     var confirmTermination: () -> Bool
@@ -53,10 +129,13 @@ final class ApplicationDelegate: NSObject,
         NSApplication.shared.terminate(nil)
     }
 
-    var workspaceWindowCount: () -> Int = {
-        WindowRegistry.shared.workspaceWindowCount
+    var hasAnotherWorkspaceWindow: ([NSWindow]) -> Bool = {
+        WorkspaceWindowIdentity.hasAnotherOpenWindow(besides: $0)
     }
 
+    var openWorkspaceWindow: (UUID) -> Void = { _ in }
+
+    private let windowRequests = WorkspaceWindowRequests<NSWindow>()
     private(set) var terminationConfirmed = false
     private(set) var terminationConfirmationPending = false
 
@@ -73,7 +152,53 @@ final class ApplicationDelegate: NSObject,
     func applicationDidFinishLaunching(
         _ notification: Notification
     ) {
+        // Cmd-N must stay an independent window even when the user's system
+        // preference normally groups newly opened windows into tabs.
         NSWindow.allowsAutomaticWindowTabbing = false
+    }
+
+    @objc func newWindowForTab(_ sender: Any?) {
+        requestNewWorkspaceTab()
+    }
+
+    func requestNewWorkspaceWindow() {
+        openWorkspaceWindow(requestWorkspaceWindow(parent: nil))
+    }
+
+    func requestNewWorkspaceTab() {
+        requestNewWorkspaceTab(from: NSApplication.shared.keyWindow)
+    }
+
+    func requestNewWorkspaceTab(from candidate: NSWindow?) {
+        let parent = WorkspaceWindowResolver.workspaceWindow(
+            from: candidate,
+            sheetParent: \.sheetParent,
+            isWorkspace: WorkspaceWindowIdentity.matches
+        )
+        openWorkspaceWindow(requestWorkspaceWindow(parent: parent))
+    }
+
+    func adoptWorkspaceWindowAsTabIfRequested(
+        _ window: NSWindow,
+        requestID: UUID?
+    ) {
+        guard WorkspaceWindowIdentity.matches(window),
+              let parent = windowRequests.consumeParent(
+                  for: requestID,
+                  window: window
+              )
+        else { return }
+        guard !WorkspaceWindowIdentity.group(containing: parent)
+            .contains(where: { $0 === window })
+        else { return }
+        parent.addTabbedWindow(window, ordered: .above)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    private func requestWorkspaceWindow(parent: NSWindow?) -> UUID {
+        let id = UUID()
+        windowRequests.add(id, parent: parent)
+        return id
     }
 
     @discardableResult
@@ -173,14 +298,24 @@ final class ApplicationDelegate: NSObject,
         terminationConfirmed
     }
 
-    func requestWorkspaceWindowClose(_ window: NSWindow?) {
+    func requestWorkspaceTabClose(_ window: NSWindow?) {
         guard let window, !window.isSheet else { return }
-        guard workspaceWindowCount() <= 1 else {
+        guard !hasAnotherWorkspaceWindow([window]) else {
             window.close()
             return
         }
-        // The final red close button follows the same asynchronous path as
-        // Command-Q. Keeping the window open while the sheet is presented
+        requestApplicationTermination()
+    }
+
+    func requestWorkspaceWindowClose(_ window: NSWindow?) {
+        guard let window, !window.isSheet else { return }
+        let group = WorkspaceWindowIdentity.group(containing: window)
+        guard !hasAnotherWorkspaceWindow(group) else {
+            group.forEach { $0.close() }
+            return
+        }
+        // The final window group follows the same asynchronous path as
+        // Command-Q. Keeping every tab open while the sheet is presented
         // avoids a nested run loop and never re-enters NSWindow.close().
         requestApplicationTermination()
     }

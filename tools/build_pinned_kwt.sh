@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+locked=false
+if [[ $# -eq 5 && "$5" == "--locked" ]]; then
+  locked=true
+  set -- "$1" "$2" "$3" "$4"
+fi
+
 if [[ $# -ne 4 ]]; then
   printf 'usage: %s <repository> <revision> <source-dir> <output>\n' "$0" >&2
   exit 2
@@ -16,6 +22,15 @@ stamp="${output}.revision"
 reported_version() {
   "$output" --version 2>&1 || true
 }
+
+if [[ "$locked" == false ]]; then
+  command -v lockf >/dev/null || {
+    printf 'lockf is required to build the pinned kwt helper.\n' >&2
+    exit 1
+  }
+  mkdir -p "$(dirname "$source_dir")"
+  exec lockf -k "${source_dir}.lock" "$0" "$@" --locked
+fi
 
 if [[ -x "$output" && -f "$stamp" ]] \
   && [[ "$(<"$stamp")" == "$revision" ]] \
@@ -39,18 +54,31 @@ if [[ -e "$source_dir" && ! -d "$source_dir/.git" ]]; then
 fi
 
 if [[ ! -d "$source_dir/.git" ]]; then
-  mkdir -p "$(dirname "$source_dir")"
-  git clone --filter=blob:none --no-checkout "$repository" "$source_dir"
-fi
+  staging_dir=""
+  cleanup_staging() {
+    if [[ -n "$staging_dir" && -d "$staging_dir" ]]; then
+      rm -rf "$staging_dir"
+    fi
+  }
+  trap cleanup_staging EXIT
 
-if [[ -n "$(git -C "$source_dir" status --porcelain)" ]]; then
-  printf '%s has uncommitted changes; refusing to replace them.\n' \
-    "$source_dir" >&2
-  exit 1
-fi
+  staging_dir="$(mktemp -d "${source_dir}.tmp.XXXXXX")"
+  git clone --filter=blob:none --no-checkout "$repository" "$staging_dir"
+  git -C "$staging_dir" fetch --no-tags origin "$revision"
+  git -C "$staging_dir" checkout --detach "$revision"
+  mv "$staging_dir" "$source_dir"
+  staging_dir=""
+  trap - EXIT
+else
+  if [[ -n "$(git -C "$source_dir" status --porcelain)" ]]; then
+    printf '%s has uncommitted changes; refusing to replace them.\n' \
+      "$source_dir" >&2
+    exit 1
+  fi
 
-git -C "$source_dir" fetch --no-tags origin "$revision"
-git -C "$source_dir" checkout --detach "$revision"
+  git -C "$source_dir" fetch --no-tags origin "$revision"
+  git -C "$source_dir" checkout --detach "$revision"
+fi
 
 mkdir -p "$(dirname "$output")"
 (

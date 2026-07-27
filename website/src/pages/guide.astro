@@ -13,7 +13,7 @@ import { RELEASES_URL } from '../config';
 const title = 'How to use Ghosthub';
 const description =
   'A visual guide to connected tmux sessions, automatic SSH reconnect, '
-  + 'worktrees, Quick Launch, multi-window command centers, and terminal configuration.';
+  + 'worktrees, Quick Launch, native tabs and windows, and terminal configuration.';
 
 const imageWidths = [640, 960, 1280, 1600];
 const imageSizes = '(max-width: 900px) calc(100vw - 3rem), 900px';
@@ -201,11 +201,21 @@ const imageAlt = {
         <div>
           <h2>Build your command center</h2>
           <p>
-            Ghosthub is window-based today—there is no app-level tab bar.
-            Press <kbd>⌘⌥N</kbd> to open another independent workspace,
-            attach each window to a different tmux session, and arrange them
-            with the macOS window tools you already use.
+            Ghosthub supports native macOS tabs alongside independent windows.
+            Press <kbd>⌘T</kbd> to open a workspace tab in the current window,
+            or <kbd>⌘N</kbd> to open a separate window. Each one can attach to
+            a different tmux session.
           </p>
+          <p>
+            These tabs group complete Ghosthub workspaces; tmux still owns the
+            windows and panes inside each attached session. Use the macOS
+            <strong>Window</strong> menu to move a tab into its own window or
+            merge separate windows into one tab group.
+          </p>
+          <div class="shortcuts" aria-label="Workspace window shortcuts">
+            <span><kbd>⌘T</kbd> New tab</span>
+            <span><kbd>⌘N</kbd> New window</span>
+          </div>
           <p>
             Press <kbd>⌘B</kbd> in any window to hide its sidebar and give
             the terminal the full frame. Press it again whenever you need
