@@ -31,7 +31,7 @@ enum WorkspaceWindowChrome {
         // add their own AppKit-managed row when a tab group is present.
         window.toolbar = nil
         window.titlebarAppearsTransparent = true
-        window.titleVisibility = .hidden
+        applyTitleVisibility(to: window)
         // SwiftUI otherwise derives a workspace-sized floor from the root
         // view hierarchy. A terminal window must remain free to shrink to the
         // compact dimensions AppKit's standard titlebar permits.
@@ -45,6 +45,18 @@ enum WorkspaceWindowChrome {
             titlebar.layer?.backgroundColor =
                 WorkspaceSurfaceColor.nsColor.cgColor
         }
+    }
+
+    static func applyTitleVisibility(to window: NSWindow) {
+        window.titleVisibility = titleVisibility(
+            tabCount: window.tabbedWindows?.count ?? 1
+        )
+    }
+
+    static func titleVisibility(
+        tabCount: Int
+    ) -> NSWindow.TitleVisibility {
+        tabCount > 1 ? .hidden : .visible
     }
 }
 
@@ -100,6 +112,7 @@ private struct WindowFocusTracker: NSViewRepresentable {
             ((Bool) -> Void)?
         private nonisolated(unsafe) var observers:
             [NSObjectProtocol] = []
+        private var tabObservation: NSKeyValueObservation?
         private weak var applicationDelegate: ApplicationDelegate?
         private let requestID: UUID?
         let titlebarController: CompactWorkspaceTitlebarController
@@ -133,6 +146,14 @@ private struct WindowFocusTracker: NSViewRepresentable {
             window.tabbingMode = .preferred
             window.tabbingIdentifier =
                 WorkspaceWindowIdentity.tabbingIdentifier
+            tabObservation = window.observe(
+                \.tabbedWindows,
+                options: [.initial, .new]
+            ) { [weak self] window, _ in
+                MainActor.assumeIsolated {
+                    self?.titlebarController.install(on: window)
+                }
+            }
             applicationDelegate?
                 .adoptWorkspaceWindowAsTabIfRequested(
                     window,
@@ -173,6 +194,8 @@ private struct WindowFocusTracker: NSViewRepresentable {
         }
 
         private func removeObservers() {
+            tabObservation?.invalidate()
+            tabObservation = nil
             for observer in observers {
                 NotificationCenter.default
                     .removeObserver(observer)

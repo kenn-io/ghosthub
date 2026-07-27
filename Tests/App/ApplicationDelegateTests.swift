@@ -580,7 +580,7 @@ final class ApplicationDelegateTests: XCTestCase {
         )
     }
 
-    func testWorkspaceWindowChromeKeepsOneThinTitlebarSurface() throws {
+    func testStandaloneWorkspaceWindowChromeShowsNativeTitle() throws {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
             styleMask: [.titled, .closable, .resizable],
@@ -599,7 +599,7 @@ final class ApplicationDelegateTests: XCTestCase {
             window.titlebarAppearsTransparent,
             "The uniform workspace surface should continue into the titlebar"
         )
-        XCTAssertEqual(window.titleVisibility, .hidden)
+        XCTAssertEqual(window.titleVisibility, .visible)
         XCTAssertEqual(
             window.contentMinSize,
             .zero,
@@ -616,6 +616,13 @@ final class ApplicationDelegateTests: XCTestCase {
         XCTAssertNotNil(
             titlebar.layer?.backgroundColor,
             "The titlebar color cannot depend on underlying terminal content"
+        )
+    }
+
+    func testTabbedWorkspaceWindowChromeHidesRedundantTitle() {
+        XCTAssertEqual(
+            WorkspaceWindowChrome.titleVisibility(tabCount: 2),
+            .hidden
         )
     }
 
@@ -728,6 +735,7 @@ final class ApplicationDelegateTests: XCTestCase {
 
         XCTAssertNil(window.toolbar)
         XCTAssertEqual(window.title, "docbank · studio-mac")
+        XCTAssertEqual(window.titleVisibility, .visible)
     }
 
     func testQuitPolicyRequiresConfirmationWhenRuntimeRequestsIt() {
