@@ -12,7 +12,8 @@ struct ResourceSamplingCoordinatorTests {
 
         let recorder = ctx.recorder
         ctx.coordinator.scheduleRefresh(after: 0.2)
-        try? await Task.sleep(for: .milliseconds(50))
+        // Replace the pending task before yielding so scheduler load cannot
+        // let the first refresh fire before the cancellation under test.
         ctx.coordinator.scheduleRefresh(after: 0.01)
 
         await waitUntil {
