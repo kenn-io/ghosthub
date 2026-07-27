@@ -37,7 +37,8 @@ env -u TMUX \
   GHOSTHUB_DEMO_SSH_DIR="$scratch/ssh" \
   TMUX_TMPDIR="$scratch/tmux" \
   DYLD_INSERT_LIBRARIES="$scratch/libdemohost.dylib" \
-  "$bin" -ghosthub.settings.hosts.ssh "<$hosts_hex>" \
+  "$bin" -ApplePersistenceIgnoreState YES \
+  -ghosthub.settings.hosts.ssh "<$hosts_hex>" \
   > "$scratch/app.log" 2>&1 &
 
 demo_pid=$!

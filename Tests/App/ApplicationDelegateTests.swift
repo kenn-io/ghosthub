@@ -580,7 +580,7 @@ final class ApplicationDelegateTests: XCTestCase {
         )
     }
 
-    func testStandaloneWorkspaceWindowChromeShowsNativeTitle() throws {
+    func testWorkspaceWindowChromeUsesCompactTitleSurface() throws {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
             styleMask: [.titled, .closable, .resizable],
@@ -599,7 +599,10 @@ final class ApplicationDelegateTests: XCTestCase {
             window.titlebarAppearsTransparent,
             "The uniform workspace surface should continue into the titlebar"
         )
-        XCTAssertEqual(window.titleVisibility, .visible)
+        XCTAssertEqual(window.titleVisibility, .hidden)
+        XCTAssertTrue(
+            CompactWorkspaceTitlebarController.showsTitle(tabCount: 1)
+        )
         XCTAssertEqual(
             window.contentMinSize,
             .zero,
@@ -620,9 +623,8 @@ final class ApplicationDelegateTests: XCTestCase {
     }
 
     func testTabbedWorkspaceWindowChromeHidesRedundantTitle() {
-        XCTAssertEqual(
-            WorkspaceWindowChrome.titleVisibility(tabCount: 2),
-            .hidden
+        XCTAssertFalse(
+            CompactWorkspaceTitlebarController.showsTitle(tabCount: 2)
         )
     }
 
@@ -709,7 +711,7 @@ final class ApplicationDelegateTests: XCTestCase {
         XCTAssertEqual(forwardingDelegate.resizeCount, 1)
     }
 
-    func testCompactTitlebarKeepsSessionIdentityInNativeWindowTitle() {
+    func testCompactTitlebarKeepsSessionIdentity() {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
             styleMask: [.titled, .closable, .resizable],
@@ -735,7 +737,7 @@ final class ApplicationDelegateTests: XCTestCase {
 
         XCTAssertNil(window.toolbar)
         XCTAssertEqual(window.title, "docbank · studio-mac")
-        XCTAssertEqual(window.titleVisibility, .visible)
+        XCTAssertEqual(window.titleVisibility, .hidden)
     }
 
     func testQuitPolicyRequiresConfirmationWhenRuntimeRequestsIt() {

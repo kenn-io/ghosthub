@@ -57,6 +57,28 @@ static BOOL DemoSendKey(NSString *characters, unsigned short keyCode,
   return YES;
 }
 
+static NSMenuItem *DemoFindMenuItem(NSMenu *menu, NSString *title) {
+  for (NSMenuItem *item in menu.itemArray) {
+    if ([item.title isEqualToString:title]) return item;
+    NSMenuItem *match = DemoFindMenuItem(item.submenu, title);
+    if (match != nil) return match;
+  }
+  return nil;
+}
+
+static NSMenuItem *DemoMenuItemForShortcut(
+    NSString *title, NSString *characters,
+    NSEventModifierFlags modifiers) {
+  NSMenuItem *item = DemoFindMenuItem(NSApp.mainMenu, title);
+  NSEventModifierFlags mask =
+      item.keyEquivalentModifierMask &
+      NSEventModifierFlagDeviceIndependentFlagsMask;
+  return [item.keyEquivalent isEqualToString:characters] &&
+                 mask == modifiers
+             ? item
+             : nil;
+}
+
 static BOOL DemoClick(NSPoint point) {
   NSWindow *window = DemoRootWindow();
   if (window == nil) return NO;
@@ -507,23 +529,42 @@ static void DemoCapture(NSString *path, BOOL matrix) {
                 message:sent ? @"escape sent" : @"no active window"];
     } else if ([action isEqualToString:@"new-window"]) {
       NSUInteger windowCount = DemoWorkspaceWindows().count;
-      if (!DemoSendKey(
-              @"n", 45,
-              NSEventModifierFlagCommand | NSEventModifierFlagOption)) {
+      NSMenuItem *newWindow = DemoMenuItemForShortcut(
+          @"New Window", @"n", NSEventModifierFlagCommand);
+      if (newWindow == nil) {
         [self acknowledge:requestID
                   success:NO
-                  message:@"no active window for new-window shortcut"];
+                  message:@"New Window is not bound to Cmd-N"];
         return;
       }
-      dispatch_after(
-          dispatch_time(DISPATCH_TIME_NOW, 1500 * NSEC_PER_MSEC),
-          dispatch_get_main_queue(), ^{
-            BOOL created = DemoWorkspaceWindows().count > windowCount;
-            [self acknowledge:requestID
-                      success:created
-                      message:created ? @"workspace window created"
-                                      : @"workspace window did not appear"];
-          });
+      dispatch_async(dispatch_get_main_queue(), ^{
+        if (![NSApp sendAction:newWindow.action
+                            to:newWindow.target
+                          from:newWindow]) {
+          [self acknowledge:requestID
+                    success:NO
+                    message:@"New Window menu action was not handled"];
+          return;
+        }
+        dispatch_after(
+            dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC),
+            dispatch_get_main_queue(), ^{
+              BOOL created =
+                  DemoWorkspaceWindows().count > windowCount;
+              NSString *message = created
+                  ? @"workspace window created"
+                  : [NSString stringWithFormat:
+                      @"workspace window did not appear "
+                       "(workspace=%lu, app=%lu, tabs=%lu)",
+                      (unsigned long)DemoWorkspaceWindows().count,
+                      (unsigned long)NSApp.windows.count,
+                      (unsigned long)(
+                          DemoRootWindow().tabbedWindows.count)];
+              [self acknowledge:requestID
+                        success:created
+                        message:message];
+            });
+      });
     } else if ([action isEqualToString:@"sidebar"]) {
       NSView *content = DemoRootWindow().contentView;
       BOOL wasVisible = DemoContainsText(content, @"Workspaces", 0);
