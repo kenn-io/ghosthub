@@ -115,12 +115,16 @@ extension ApplicationDelegate {
 
 @MainActor
 final class ApplicationDelegateTests: XCTestCase {
-    private final class CloseSpyWindow: NSWindow {
+    private class CloseSpyWindow: NSWindow {
         private(set) var closeCallCount = 0
 
         override func close() {
             closeCallCount += 1
         }
+    }
+
+    private final class HiddenTabBarWindow: CloseSpyWindow {
+        override var tabbedWindows: [NSWindow]? { nil }
     }
 
     private final class NotificationCenterSpy: UserNotificationCentering {
@@ -566,11 +570,11 @@ final class ApplicationDelegateTests: XCTestCase {
         )
     }
 
-    func testClosingOnlyWindowGroupConfirmsBeforeClosingTabs() {
+    func testClosingHiddenTabBarGroupConfirmsBeforeClosingTabs() {
         let delegate = ApplicationDelegate.forTesting(
             confirmTerminationResult: false
         )
-        let window = CloseSpyWindow(
+        let window = HiddenTabBarWindow(
             contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
             styleMask: [.titled, .closable, .resizable],
             backing: .buffered,
@@ -603,9 +607,10 @@ final class ApplicationDelegateTests: XCTestCase {
         XCTAssertFalse(delegate.terminationConfirmed)
     }
 
-    func testTrafficLightClosesWholeGroupWhenAnotherWindowRemains() throws {
+    func testTrafficLightClosesHiddenTabBarGroupWhenAnotherWindowRemains()
+        throws {
         let delegate = ApplicationDelegate.forTesting()
-        let window = CloseSpyWindow(
+        let window = HiddenTabBarWindow(
             contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
             styleMask: [.titled, .closable, .resizable],
             backing: .buffered,

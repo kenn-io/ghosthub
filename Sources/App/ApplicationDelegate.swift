@@ -47,10 +47,7 @@ enum WorkspaceWindowIdentity {
     }
 
     static func group(containing window: NSWindow) -> [NSWindow] {
-        guard let tabbedWindows = window.tabbedWindows,
-              !tabbedWindows.isEmpty
-        else { return [window] }
-        return tabbedWindows
+        window.tabGroup?.windows ?? [window]
     }
 
     static func hasAnotherOpenWindow(
@@ -58,7 +55,7 @@ enum WorkspaceWindowIdentity {
     ) -> Bool {
         let excluded = Set(windows.map(ObjectIdentifier.init))
         for window in windows {
-            if window.tabbedWindows?.contains(where: {
+            if window.tabGroup?.windows.contains(where: {
                 !excluded.contains(ObjectIdentifier($0))
                     && matches($0)
             }) == true {
@@ -191,8 +188,8 @@ final class ApplicationDelegate: NSObject,
                   window: window
               )
         else { return }
-        guard parent.tabbedWindows?.contains(where: { $0 === window })
-            != true
+        guard !WorkspaceWindowIdentity.group(containing: parent)
+            .contains(where: { $0 === window })
         else { return }
         parent.addTabbedWindow(window, ordered: .above)
         window.makeKeyAndOrderFront(nil)
