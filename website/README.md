@@ -54,8 +54,8 @@ therefore cannot inherit the developer's SSH aliases, proxies, or host trust.
 
 The injected demo controller drives and captures only its exact staged
 process, so the workflow needs neither Accessibility nor Screen Recording
-permission. `shoot.sh` crops the native 34pt titlebar and writes optimized
-1600px PNGs with the exact filenames expected by the site.
+permission. `shoot.sh` preserves native window and tab chrome and writes
+optimized 1600px PNGs with the exact filenames expected by the site.
 Commit those files on `website-assets` and push that branch. Pushing
 `website-assets` does not redeploy the site by itself: trigger a Vercel
 redeploy (dashboard, or any push to the production branch) to publish them.

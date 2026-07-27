@@ -565,6 +565,44 @@ static void DemoCapture(NSString *path, BOOL matrix) {
                         message:message];
             });
       });
+    } else if ([action isEqualToString:@"new-tab"]) {
+      NSWindow *rootWindow = DemoRootWindow();
+      NSUInteger tabCount = rootWindow.tabGroup.windows.count;
+      NSMenuItem *newTab = DemoMenuItemForShortcut(
+          @"New Tab", @"t", NSEventModifierFlagCommand);
+      if (newTab == nil) {
+        [self acknowledge:requestID
+                  success:NO
+                  message:@"New Tab is not bound to Cmd-T"];
+        return;
+      }
+      dispatch_async(dispatch_get_main_queue(), ^{
+        if (![NSApp sendAction:newTab.action
+                            to:newTab.target
+                          from:newTab]) {
+          [self acknowledge:requestID
+                    success:NO
+                    message:@"New Tab menu action was not handled"];
+          return;
+        }
+        dispatch_after(
+            dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC),
+            dispatch_get_main_queue(), ^{
+              NSUInteger currentCount =
+                  DemoRootWindow().tabGroup.windows.count;
+              BOOL created = currentCount > tabCount;
+              NSString *message = created
+                  ? @"workspace tab created"
+                  : [NSString stringWithFormat:
+                      @"workspace tab did not appear "
+                       "(before=%lu, after=%lu)",
+                      (unsigned long)tabCount,
+                      (unsigned long)currentCount];
+              [self acknowledge:requestID
+                        success:created
+                        message:message];
+            });
+      });
     } else if ([action isEqualToString:@"sidebar"]) {
       NSView *content = DemoRootWindow().contentView;
       BOOL wasVisible = DemoContainsText(content, @"Workspaces", 0);

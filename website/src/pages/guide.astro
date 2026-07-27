@@ -25,7 +25,7 @@ const imageAlt = {
     'Ghosthub new worktree sheet ready to create a feature branch with kwt',
   quickLaunch: 'Ghosthub Quick Launch filtered to a reconnect worktree',
   commandCenter:
-    'Six real Ghosthub windows arranged in a tight three-by-two matrix, each attached to a different tmux session with its sidebar collapsed',
+    'Six native Ghosthub workspace tabs, each attached to a different tmux session',
   terminal:
     'Ghosthub Terminal settings showing interaction and configuration options',
 };
@@ -223,13 +223,13 @@ const imageAlt = {
           </p>
         </div>
       </div>
-      <figure class="container command-matrix">
+      <figure class="container window">
         <ZoomableImage label={imageAlt.commandCenter}>
           <Image
             src={commandCenter}
             alt={imageAlt.commandCenter}
-            widths={[640, 960, 1280, 1800]}
-            sizes="(max-width: 1200px) calc(100vw - 3rem), 1160px"
+            widths={imageWidths}
+            sizes={imageSizes}
           />
         </ZoomableImage>
       </figure>
@@ -515,21 +515,6 @@ const imageAlt = {
   }
 
   .window :global(img) {
-    display: block;
-    width: 100%;
-    height: auto;
-  }
-
-  .command-matrix {
-    max-width: 1180px;
-    border: 1px solid var(--line);
-    border-radius: 12px;
-    overflow: hidden;
-    background: var(--bg);
-    box-shadow: 0 28px 70px rgb(0 0 0 / 0.45);
-  }
-
-  .command-matrix :global(img) {
     display: block;
     width: 100%;
     height: auto;
