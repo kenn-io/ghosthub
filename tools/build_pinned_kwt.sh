@@ -38,12 +38,15 @@ if [[ -e "$source_dir" && ! -d "$source_dir/.git" ]]; then
   exit 1
 fi
 
+fresh_clone=false
 if [[ ! -d "$source_dir/.git" ]]; then
   mkdir -p "$(dirname "$source_dir")"
   git clone --filter=blob:none --no-checkout "$repository" "$source_dir"
+  fresh_clone=true
 fi
 
-if [[ -n "$(git -C "$source_dir" status --porcelain)" ]]; then
+if [[ "$fresh_clone" == false ]] \
+  && [[ -n "$(git -C "$source_dir" status --porcelain)" ]]; then
   printf '%s has uncommitted changes; refusing to replace them.\n' \
     "$source_dir" >&2
   exit 1
