@@ -125,13 +125,13 @@ jobs:
         run: >-
           swift test --skip-build --disable-swift-testing
           --filter GhosthubTerminalSmokeTests
-          --skip 'RemoteClipboardPolicy|ReceivesPasteOnCmdV'
+          --skip 'Clipboard|Paste'
           --parallel --num-workers 2
 
       - name: Run pasteboard terminal smoke tests
         run: >-
           swift test --skip-build --disable-swift-testing
-          --filter 'RemoteClipboardPolicy|ReceivesPasteOnCmdV' --no-parallel
+          --filter 'Clipboard|Paste' --no-parallel
 
       - name: Run remaining XCTest suites
         # Keep deadline-sensitive monitor and lifecycle tests serialized.
