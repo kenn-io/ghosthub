@@ -79,6 +79,13 @@ observers and active network attackers are in scope to the extent that SSH
 normally protects against them. Ghosthub does not replace or weaken OpenSSH
 host verification, authentication, or encryption.
 
+Ghosthub's anonymous usage event is sent over HTTPS to PostHog. Its stable
+identifier is a random installation UUID, not a hardware identifier, user
+identity, host identity, repository path, or tmux session name. The event
+contract excludes repository, worktree, host, session, path, command, and
+terminal data, disables person-profile processing and GeoIP enrichment, and
+can be disabled in Settings or through the documented environment switches.
+
 ### Local external state tools
 
 Local state providers such as the bundled kwt, git, and tmux are trusted

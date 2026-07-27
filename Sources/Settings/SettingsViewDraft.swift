@@ -29,6 +29,7 @@ public struct SettingsViewDraft: Equatable {
     public var showHiddenWorktreesByDefault: Bool
     public var showMacOSNotifications: Bool
     public var attentionSound: WorkspaceNotificationSound
+    public var shareAnonymousUsageData: Bool
     public var sshHosts: [SSHHostDraft]
     public var selectedSSHHostDraftID: UUID?
 
@@ -57,6 +58,7 @@ public struct SettingsViewDraft: Equatable {
         showMacOSNotifications = store.notificationConfiguration
             .showMacOSNotifications
         attentionSound = store.notificationConfiguration.attentionSound
+        shareAnonymousUsageData = store.shareAnonymousUsageData
         self.sshHosts = sshHosts
         selectedSSHHostDraftID = sshHosts.first?.id
     }
@@ -99,6 +101,7 @@ public struct SettingsViewDraft: Equatable {
         )
         store.setShowMacOSNotifications(showMacOSNotifications)
         store.setNotificationAttentionSound(attentionSound)
+        store.setShareAnonymousUsageData(shareAnonymousUsageData)
 
         if shouldRefreshHosts {
             store.setSSHHosts(hosts)

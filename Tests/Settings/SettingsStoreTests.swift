@@ -154,6 +154,7 @@ final class SettingsStoreTests {
                 == SettingsStore.defaultTerminalAppearancePreferences
         )
         #expect(!store.worktreePreferences.hideRootCheckout)
+        #expect(store.shareAnonymousUsageData)
     }
 
     @Test
@@ -252,6 +253,7 @@ final class SettingsStoreTests {
         store.setInterfaceAppearance(.dark)
         store.setShowMacOSNotifications(false)
         store.setNotificationAttentionSound(.glass)
+        store.setShareAnonymousUsageData(false)
         store.setHideRootCheckout(true)
         store.setShowHiddenWorktreesByDefault(true)
         store.setShowPaneResourceUsage(false)
@@ -267,6 +269,7 @@ final class SettingsStoreTests {
         #expect(reloaded.interfaceAppearance == .dark)
         #expect(!reloaded.notificationConfiguration.showMacOSNotifications)
         #expect(reloaded.notificationConfiguration.attentionSound == .glass)
+        #expect(!reloaded.shareAnonymousUsageData)
         #expect(reloaded.worktreePreferences.hideRootCheckout)
         #expect(reloaded.worktreePreferences.showHiddenWorktreesByDefault)
         #expect(!reloaded.terminalPreferences.showPaneResourceUsage)

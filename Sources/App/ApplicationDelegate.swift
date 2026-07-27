@@ -157,6 +157,12 @@ final class ApplicationDelegate: NSObject,
         NSWindow.allowsAutomaticWindowTabbing = false
     }
 
+    func applicationDidBecomeActive(
+        _ notification: Notification
+    ) {
+        TelemetryController.shared.applicationBecameActive()
+    }
+
     @objc func newWindowForTab(_ sender: Any?) {
         requestNewWorkspaceTab()
     }

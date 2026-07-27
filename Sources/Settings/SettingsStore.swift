@@ -21,6 +21,8 @@ public final class SettingsStore: ObservableObject {
             "ghosthub.settings.notifications.showMacOSNotifications"
         static let attentionSound =
             "ghosthub.settings.notifications.attentionSound"
+        static let shareAnonymousUsageData =
+            "ghosthub.settings.privacy.shareAnonymousUsageData"
         static let terminalTheme =
             "ghosthub.settings.terminalAppearance.theme"
         static let terminalUsesCustomFont =
@@ -73,6 +75,7 @@ public final class SettingsStore: ObservableObject {
     @Published public private(set) var terminalPreferences: TerminalPreferences
     @Published public private(set) var worktreePreferences: WorktreePreferences
     @Published public private(set) var agentPreferences: AgentPreferences
+    @Published public private(set) var shareAnonymousUsageData: Bool
     @Published public private(set) var sshHosts: [SSHHost]
     @Published public private(set) var lastErrorMessage: String?
 
@@ -114,6 +117,10 @@ public final class SettingsStore: ObservableObject {
         let loadedAgents = Self.loadAgentPreferences(
             using: userDefaults
         )
+        let loadedShareAnonymousUsageData =
+            Self.loadShareAnonymousUsageData(
+                using: userDefaults
+            )
         let loadedSSHHosts = Self.loadSSHHosts(using: userDefaults)
 
         interfaceAppearance = loadedAppearance
@@ -122,6 +129,7 @@ public final class SettingsStore: ObservableObject {
         terminalPreferences = loadedTerminal
         worktreePreferences = loadedWorktrees
         agentPreferences = loadedAgents
+        shareAnonymousUsageData = loadedShareAnonymousUsageData
         sshHosts = loadedSSHHosts
         persistTerminalPreferences()
         persistTerminalAppearancePreferences()
@@ -145,6 +153,10 @@ public final class SettingsStore: ObservableObject {
         )
         worktreePreferences = Self.loadWorktreePreferences(using: userDefaults)
         agentPreferences = Self.loadAgentPreferences(using: userDefaults)
+        shareAnonymousUsageData =
+            Self.loadShareAnonymousUsageData(
+                using: userDefaults
+            )
 
         sshHosts = Self.loadSSHHosts(using: userDefaults)
         lastErrorMessage = nil
@@ -180,6 +192,14 @@ public final class SettingsStore: ObservableObject {
         userDefaults.set(
             sound.rawValue,
             forKey: DefaultsKey.attentionSound
+        )
+    }
+
+    public func setShareAnonymousUsageData(_ enabled: Bool) {
+        shareAnonymousUsageData = enabled
+        userDefaults.set(
+            enabled,
+            forKey: DefaultsKey.shareAnonymousUsageData
         )
     }
 
@@ -585,6 +605,14 @@ public final class SettingsStore: ObservableObject {
         using _: UserDefaults
     ) -> AgentPreferences {
         AgentPreferences()
+    }
+
+    private static func loadShareAnonymousUsageData(
+        using userDefaults: UserDefaults
+    ) -> Bool {
+        userDefaults.object(
+            forKey: DefaultsKey.shareAnonymousUsageData
+        ) as? Bool ?? true
     }
 
 }

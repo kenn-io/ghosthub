@@ -32,6 +32,11 @@ struct SettingsDomainTests {
                 "Attention notifications for active agent sessions."
             ),
             (
+                .privacy,
+                "Privacy",
+                "Control anonymous usage reporting."
+            ),
+            (
                 .hosts,
                 "Hosts",
                 "Connect the machines and tmux sessions"
