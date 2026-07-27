@@ -13,6 +13,8 @@ extension SettingsDomain {
             return "arrow.triangle.branch"
         case .agents:
             return "bell.badge"
+        case .privacy:
+            return "hand.raised"
         case .hosts:
             return "desktopcomputer"
         }

@@ -67,6 +67,33 @@ that rotation path. The reviewed public key is embedded in `Info.plist`; its
 private counterpart exists only in 1Password and the protected
 `release-signing` GitHub environment.
 
+### Anonymous Usage Telemetry
+
+Packaged release builds send a single allowlisted `application active` event
+to Ghosthub's PostHog project at most once per UTC day. A Ghosthub-owned native
+Swift client submits the event directly instead of enabling a general-purpose
+analytics SDK, automatic lifecycle capture, screen capture, or swizzling.
+
+The distinct ID is a random installation UUID stored in
+`~/.ghosthub/telemetry.json`. Installation-ID creation and each UTC-day claim
+are one interprocess-locked transaction, so simultaneous Ghosthub instances
+share the same identity and only one schedules the event. The claim is
+persisted before networking so an accepted event with a lost response is not
+retried. Event properties are limited to the application name, native-app
+source, version, and build number. Events explicitly disable PostHog
+person-profile processing and GeoIP enrichment. Repository, worktree, host,
+session, path, command, and terminal data are outside the telemetry contract.
+
+Anonymous usage reporting is enabled by default in packaged releases. Users
+can disable it in Settings or with `GHOSTHUB_TELEMETRY_ENABLED=0` or
+`TELEMETRY_ENABLED=0`. Debug builds and tests do not configure the production
+telemetry client. Each activity check refreshes the persisted privacy
+preference so another Ghosthub process can disable reporting. While the app is
+active, it schedules the next check for the following UTC-day boundary and
+cancels that check when the app resigns active. The persisted activity day is
+monotonic: stale claims cannot move it backward or make a newer day report
+twice.
+
 ### External State
 
 Ghosthub bundles a revision-pinned kwt CLI for local project and worktree
@@ -187,6 +214,7 @@ Ghosthub local persistence stores app-owned state:
 - terminal presentation state
 - selected worktree/window state
 - settings that are explicitly native-app concerns
+- the anonymous telemetry installation UUID and last attempted activity day
 
 Do not add database migrations before the first production release. Edit the
 current schema, bootstrap paths, fixtures, and tests directly.

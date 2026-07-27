@@ -184,6 +184,27 @@ local and remote tmux session switcher.
 **Ghosthub owns the experience.** It discovers sessions, organizes the fleet,
 presents native terminal clients, and supervises SSH keepalive and reconnect.
 
+## Anonymous usage data
+
+Packaged Ghosthub releases send one anonymous `application active` event to
+PostHog at most once per UTC day. This gives the project a daily active
+installation count without collecting repository, worktree, host, session,
+path, command, or terminal data.
+
+Each event uses a random installation UUID stored in
+`~/.ghosthub/telemetry.json`. It includes only:
+
+- `application: "ghosthub"`
+- `source: "native_app"`
+- the Ghosthub version and build number
+- `$process_person_profile: false`
+- `$geoip_disable: true`
+
+Disable reporting in **Settings → Privacy** by turning off **Share anonymous
+usage data**. You can also launch Ghosthub with
+`GHOSTHUB_TELEMETRY_ENABLED=0` or `TELEMETRY_ENABLED=0`. Debug builds and test
+runs never configure the production telemetry client.
+
 ## Build from source
 
 The packaged app is the easiest way to use Ghosthub. Contributors who want to

@@ -6,6 +6,7 @@ public enum SettingsDomain: String, CaseIterable, Identifiable, Sendable {
     case keyboard
     case worktrees
     case agents
+    case privacy
     case hosts
 
     public var id: Self { self }
@@ -22,6 +23,8 @@ public enum SettingsDomain: String, CaseIterable, Identifiable, Sendable {
             return "Worktrees"
         case .agents:
             return "Agents"
+        case .privacy:
+            return "Privacy"
         case .hosts:
             return "Hosts"
         }
@@ -40,6 +43,8 @@ public enum SettingsDomain: String, CaseIterable, Identifiable, Sendable {
             return "Kwt workspace visibility and sidebar behavior."
         case .agents:
             return "Attention notifications for active agent sessions."
+        case .privacy:
+            return "Control anonymous usage reporting."
         case .hosts:
             return "Connect the machines and tmux sessions"
                 + " in your tailnet or SSH network."

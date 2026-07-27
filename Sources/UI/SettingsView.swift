@@ -154,6 +154,8 @@ public struct SettingsView: View {
                 worktreesDetail
             case .agents:
                 agentsDetail
+            case .privacy:
+                privacyDetail
             case .hosts:
                 hostsDetail
             }
@@ -306,6 +308,35 @@ public struct SettingsView: View {
                 Text(
                     "Ghosthub uses this notification policy when a"
                         + " recognized agent session needs attention."
+                )
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var privacyDetail: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            settingsSection("Anonymous Usage Data") {
+                Toggle(
+                    "Share anonymous usage data",
+                    isOn: Binding(
+                        get: {
+                            store.shareAnonymousUsageData
+                        },
+                        set: {
+                            store.setShareAnonymousUsageData($0)
+                        }
+                    )
+                )
+
+                Text(
+                    "Ghosthub sends at most one application-active"
+                        + " event per day with a random installation ID,"
+                        + " app version, and build number. It never sends"
+                        + " repository, worktree, host, session, path,"
+                        + " command, or terminal data."
                 )
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
