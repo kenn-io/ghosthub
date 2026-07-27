@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+locked=false
+if [[ $# -eq 5 && "$5" == "--locked" ]]; then
+  locked=true
+  set -- "$1" "$2" "$3" "$4"
+fi
+
 if [[ $# -ne 4 ]]; then
   printf 'usage: %s <repository> <revision> <source-dir> <output>\n' "$0" >&2
   exit 2
@@ -17,13 +23,14 @@ reported_version() {
   "$output" --version 2>&1 || true
 }
 
-command -v lockf >/dev/null || {
-  printf 'lockf is required to build the pinned kwt helper.\n' >&2
-  exit 1
-}
-mkdir -p "$(dirname "$source_dir")"
-exec 9>"${source_dir}.lock"
-lockf 9
+if [[ "$locked" == false ]]; then
+  command -v lockf >/dev/null || {
+    printf 'lockf is required to build the pinned kwt helper.\n' >&2
+    exit 1
+  }
+  mkdir -p "$(dirname "$source_dir")"
+  exec lockf -k "${source_dir}.lock" "$0" "$@" --locked
+fi
 
 if [[ -x "$output" && -f "$stamp" ]] \
   && [[ "$(<"$stamp")" == "$revision" ]] \
