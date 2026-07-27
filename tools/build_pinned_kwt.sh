@@ -17,6 +17,14 @@ reported_version() {
   "$output" --version 2>&1 || true
 }
 
+command -v lockf >/dev/null || {
+  printf 'lockf is required to build the pinned kwt helper.\n' >&2
+  exit 1
+}
+mkdir -p "$(dirname "$source_dir")"
+exec 9>"${source_dir}.lock"
+lockf 9
+
 if [[ -x "$output" && -f "$stamp" ]] \
   && [[ "$(<"$stamp")" == "$revision" ]] \
   && [[ "$(reported_version)" == *"$revision"* ]]; then
@@ -39,8 +47,6 @@ if [[ -e "$source_dir" && ! -d "$source_dir/.git" ]]; then
 fi
 
 if [[ ! -d "$source_dir/.git" ]]; then
-  mkdir -p "$(dirname "$source_dir")"
-
   staging_dir=""
   cleanup_staging() {
     if [[ -n "$staging_dir" && -d "$staging_dir" ]]; then
