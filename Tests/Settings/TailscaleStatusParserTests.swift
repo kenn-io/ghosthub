@@ -90,7 +90,8 @@ struct TailscaleStatusParserTests {
         let data = Data(json.utf8)
         let peers = try TailscaleStatusParser
             .peers(from: data).get()
-        #expect(peers.isEmpty)
+        #expect(peers.map(\.hostName) == ["windows-pc"])
+        #expect(peers.first?.platform == .windows)
     }
 
     @Test("sorts online peers before offline")

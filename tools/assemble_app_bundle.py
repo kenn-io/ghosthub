@@ -80,6 +80,8 @@ def assemble_app_bundle(
         "darwin-arm64",
         "linux-amd64",
         "linux-arm64",
+        "windows-amd64",
+        "windows-arm64",
     )
     remote_helpers = {
         target: kwt_variants_dir / target / "kwt"

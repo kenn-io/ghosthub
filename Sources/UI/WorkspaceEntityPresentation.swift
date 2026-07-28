@@ -107,6 +107,8 @@ extension HostPlatform {
             return "macOS"
         case .linux:
             return "Linux"
+        case .windows:
+            return "Windows"
         }
     }
 }

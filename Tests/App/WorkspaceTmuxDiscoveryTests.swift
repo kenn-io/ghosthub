@@ -1716,13 +1716,15 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.host.id,
             sshHostProbeRunner: { _, command in
                 #expect(command.contains("command -v tmux"))
-                #expect(command.contains("GHOSTHUB_REMOTE_PROBE_REACHED"))
+                #expect(command.contains("GHOSTHUB_SSH_REACHED"))
                 return (
                     status: 0,
-                    stdout:
-                    "GHOSTHUB_REMOTE_PROBE_REACHED\n"
-                        + "GHOSTHUB_TMUX_AVAILABLE\n"
-                        + "GHOSTHUB_KWT_UNAVAILABLE\n"
+                    stdout: """
+                    GHOSTHUB_SSH_REACHED
+                    GHOSTHUB_TMUX_AVAILABLE
+                    GHOSTHUB_KWT_UNAVAILABLE
+
+                    """
                 )
             }
         )
@@ -1756,9 +1758,9 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.host.id,
             sshHostProbeRunner: { _, _ in
                 (
-                    status: 0,
+                    status: 127,
                     stdout:
-                    "GHOSTHUB_REMOTE_PROBE_REACHED\n"
+                    "GHOSTHUB_SSH_REACHED\n"
                         + "GHOSTHUB_TMUX_UNAVAILABLE\n"
                         + "GHOSTHUB_KWT_UNAVAILABLE\n"
                 )
@@ -1773,15 +1775,12 @@ struct WorkspaceTmuxDiscoveryTests {
         ))
         let summary = try result.get()
 
-        #expect(summary.connectionState == .online)
+        #expect(summary.connectionState == .degraded)
         #expect(summary.host.lastKnownReachable)
-        #expect(summary.diagnostics.map(\.code) == [
-            .missingTmux,
-            .missingKwt,
-        ])
+        #expect(summary.diagnostics.map(\.code) == [.missingTmux])
         #expect(
             summary.diagnostics.first?.summary
-                == "tmux is not installed."
+                == "tmux is not available."
         )
         await model.shutdown()
     }
@@ -1813,7 +1812,7 @@ struct WorkspaceTmuxDiscoveryTests {
         ])
         #expect(
             summary.diagnostics.first?.summary
-                == "SSH connection failed."
+                == "SSH could not be reached."
         )
         await model.shutdown()
     }
@@ -1831,7 +1830,9 @@ struct WorkspaceTmuxDiscoveryTests {
             sshHostProbeRunner: { _, _ in
                 (
                     status: status,
-                    stdout: "GHOSTHUB_REMOTE_PROBE_REACHED\n"
+                    stdout:
+                    "GHOSTHUB_SSH_REACHED\n"
+                        + "GHOSTHUB_TMUX_AVAILABLE\n"
                 )
             }
         )
@@ -1850,7 +1851,7 @@ struct WorkspaceTmuxDiscoveryTests {
         #expect(summary.diagnostics.map(\.code) == [.probeFailure])
         #expect(
             summary.diagnostics.first?.summary
-                == "Remote verification failed (status \(status))."
+                == "tmux did not respond successfully."
         )
         await model.shutdown()
     }
@@ -1878,10 +1879,10 @@ struct WorkspaceTmuxDiscoveryTests {
         #expect(summary.connectionState == .offline)
         #expect(!summary.host.lastKnownReachable)
         #expect(summary.host.lastSeenAt == nil)
-        #expect(summary.diagnostics.map(\.code) == [.probeFailure])
+        #expect(summary.diagnostics.map(\.code) == [.sshConnectionFailed])
         #expect(
             summary.diagnostics.first?.summary
-                == "Remote verification did not reach the host (status -124)."
+                == "SSH could not be reached."
         )
         await model.shutdown()
     }
@@ -1941,6 +1942,94 @@ struct WorkspaceTmuxDiscoveryTests {
             ))
         )
         #expect(registrationCalls.count == 0)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("connection probe uses native PowerShell for Windows hosts")
+    func connectionProbeUsesWindowsPowerShell() async throws {
+        let environment = try setupStandardEnvironment()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            sshHostProbeRunner: { host, command in
+                #expect(host.platform == .windows)
+                #expect(command.contains("Get-Command tmux.exe"))
+                #expect(command.contains("GHOSTHUB_KWT_AVAILABLE"))
+                if let managedPath =
+                    KwtBinaryLocator.windowsRemoteManagedRelativePath(
+                        revision:
+                        KwtBinaryLocator.bundledRemoteRevision()
+                    ) {
+                    #expect(command.contains(
+                        powerShellEncodedArgument(managedPath)
+                    ))
+                } else {
+                    #expect(command.contains(
+                        "$ghosthubKwtAvailable = $false"
+                    ))
+                }
+                #expect(!command.contains("Get-Command kwt.exe"))
+                #expect(!command.contains("command -v"))
+                return (
+                    status: 0,
+                    stdout: """
+                    GHOSTHUB_SSH_REACHED
+                    GHOSTHUB_TMUX_AVAILABLE
+                    GHOSTHUB_KWT_AVAILABLE
+
+                    """
+                )
+            }
+        )
+
+        let result = await model.probeSSHHost(SSHHost(
+            configKey: "arm-builder",
+            name: "ARM Builder",
+            platform: .windows,
+            sshDestination: "wesm@arm-builder"
+        ))
+        let summary = try result.get()
+
+        #expect(summary.connectionState == .online)
+        #expect(summary.platform == .windows)
+        #expect(summary.diagnostics.isEmpty)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("connection probe distinguishes missing psmux from SSH failure")
+    func connectionProbeReportsMissingPsmux() async throws {
+        let environment = try setupStandardEnvironment()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            sshHostProbeRunner: { _, _ in
+                (
+                    status: 127,
+                    stdout: """
+                    GHOSTHUB_SSH_REACHED
+                    GHOSTHUB_TMUX_UNAVAILABLE
+
+                    """
+                )
+            }
+        )
+
+        let result = await model.probeSSHHost(SSHHost(
+            configKey: "arm-builder",
+            name: "ARM Builder",
+            platform: .windows,
+            sshDestination: "wesm@arm-builder"
+        ))
+        let summary = try result.get()
+        let diagnostic = try #require(summary.diagnostics.first)
+
+        #expect(summary.connectionState == .degraded)
+        #expect(summary.host.lastKnownReachable)
+        #expect(diagnostic.code == .missingTmux)
+        #expect(diagnostic.summary == "psmux is not available.")
+        #expect(diagnostic.recoverySuggestion.contains("tmux.exe alias"))
         await model.shutdown()
     }
 

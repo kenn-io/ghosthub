@@ -62,6 +62,7 @@ public struct HostsSettingsView: View {
     @Binding var tailscaleError: String?
     @Binding var isLoadingTailscale: Bool
     @Binding var isTailscaleSheetPresented: Bool
+    @Binding var isInstallingWindowsKwt: Bool
     let probeSSHHost:
         (SSHHost) async -> Result<
             HostProbeSummary,
@@ -72,6 +73,8 @@ public struct HostsSettingsView: View {
     let registerRemoteProject:
         (SSHHost, String) async -> Result<String, HostProbeError>
     let loadTailscalePeers: () async -> TailscalePeerLoadResult
+    let installWindowsKwt:
+        (SSHHost) async -> Result<Void, HostProbeError>
 
     public init(
         sshHosts: Binding<[SSHHostDraft]>,
@@ -85,6 +88,7 @@ public struct HostsSettingsView: View {
         tailscaleError: Binding<String?>,
         isLoadingTailscale: Binding<Bool>,
         isTailscaleSheetPresented: Binding<Bool>,
+        isInstallingWindowsKwt: Binding<Bool>,
         probeSSHHost: @escaping (SSHHost) async -> Result<
             HostProbeSummary,
             HostProbeError
@@ -96,7 +100,11 @@ public struct HostsSettingsView: View {
             SSHHost,
             String
         ) async -> Result<String, HostProbeError>,
-        loadTailscalePeers: @escaping () async -> TailscalePeerLoadResult
+        loadTailscalePeers: @escaping () async -> TailscalePeerLoadResult,
+        installWindowsKwt: @escaping (SSHHost) async -> Result<
+            Void,
+            HostProbeError
+        >
     ) {
         _sshHosts = sshHosts
         _selectedSSHHostDraftID = selectedSSHHostDraftID
@@ -109,10 +117,12 @@ public struct HostsSettingsView: View {
         _tailscaleError = tailscaleError
         _isLoadingTailscale = isLoadingTailscale
         _isTailscaleSheetPresented = isTailscaleSheetPresented
+        _isInstallingWindowsKwt = isInstallingWindowsKwt
         self.probeSSHHost = probeSSHHost
         self.installRemoteKwt = installRemoteKwt
         self.registerRemoteProject = registerRemoteProject
         self.loadTailscalePeers = loadTailscalePeers
+        self.installWindowsKwt = installWindowsKwt
     }
 
     public var body: some View {
@@ -238,6 +248,8 @@ public struct HostsSettingsView: View {
                             Picker("Platform", selection: binding.platform) {
                                 Text("Linux").tag(HostPlatform.linux)
                                 Text("macOS").tag(HostPlatform.macOS)
+                                Text("Windows (psmux)")
+                                    .tag(HostPlatform.windows)
                             }
                             .labelsHidden()
                         }
@@ -321,6 +333,19 @@ public struct HostsSettingsView: View {
                             }
                         }
 
+                        if draft.platform == .windows {
+                            Text(
+                                "Installs Ghosthub’s unsigned experimental"
+                                    + " AMD64 or ARM64 kwt.exe for this user."
+                            )
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(
+                                horizontal: false,
+                                vertical: true
+                            )
+                        }
+
                         if let hostProbeResult {
                             Text(hostProbeResult.subtitle)
                                 .font(.system(size: 12, weight: .semibold))
@@ -389,7 +414,7 @@ public struct HostsSettingsView: View {
                         }
                     }
 
-                    if isRemoteKwtReady {
+                    if isRemoteKwtReady, draft.platform != .windows {
                         settingsSection("Projects") {
                             Text(
                                 "Register an existing Git checkout explicitly."
@@ -663,8 +688,11 @@ public struct HostsSettingsView: View {
     }
 
     private var remoteKwtButtonTitle: String {
-        if isInstallingRemoteKwt {
+        if isInstallingRemoteKwt || isInstallingWindowsKwt {
             return "Installing\u{2026}"
+        }
+        if selectedSSHHostDraft?.platform == .windows {
+            return "Install Bundled kwt"
         }
         let isMissing = hostProbeResult?.diagnostics.contains {
             $0.code == .missingKwt
@@ -677,6 +705,7 @@ public struct HostsSettingsView: View {
     private var isHostActionInProgress: Bool {
         isProbingSSHHost
             || isInstallingRemoteKwt
+            || isInstallingWindowsKwt
             || isRegisteringRemoteProject
     }
 
@@ -698,6 +727,20 @@ public struct HostsSettingsView: View {
     }
 
     private func installKwt(on draft: SSHHostDraft) async {
+        if draft.platform == .windows {
+            clearSSHHostProbeFeedback()
+            isInstallingWindowsKwt = true
+            defer { isInstallingWindowsKwt = false }
+
+            switch await installWindowsKwt(draft.sshHost) {
+            case .success:
+                await probeHost(draft)
+            case let .failure(error):
+                hostProbeErrorMessage = error.displayMessage
+            }
+            return
+        }
+
         let target = HostOperationTarget(draft)
         hostProbeErrorMessage = nil
         remoteKwtInstallMessage = nil

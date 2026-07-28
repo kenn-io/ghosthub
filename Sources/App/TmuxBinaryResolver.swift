@@ -149,7 +149,10 @@ struct TmuxBinaryResolver: Sendable {
     }
 
     func resolveTmuxPath(on host: SSHHostInfo) -> Result<String, TmuxBinaryError> {
-        let result = remoteProcessRunner(host, Self.probeCommand)
+        let result = remoteProcessRunner(
+            host,
+            Self.probeCommand(for: host.platform)
+        )
         if result.status == 255 {
             return .failure(.sshConnectionFailed(host: host.displayName))
         }
@@ -167,7 +170,10 @@ struct TmuxBinaryResolver: Sendable {
     func discoverSessions(
         on host: SSHHostInfo
     ) -> Result<[DiscoveredTmuxSession], TmuxBinaryError> {
-        let result = remoteProcessRunner(host, Self.discoveryCommand)
+        let result = remoteProcessRunner(
+            host,
+            Self.discoveryCommand(for: host.platform)
+        )
         if result.status == 255 {
             return .failure(.sshConnectionFailed(host: host.displayName))
         }
@@ -194,6 +200,53 @@ struct TmuxBinaryResolver: Sendable {
         + "[ \"$ghosthub_tmux_status\" -eq 0 ]"
         + " || [ \"$ghosthub_tmux_status\" -eq 1 ]"
 
+    private static func probeCommand(
+        for platform: SSHHostInfo.Platform
+    ) -> String {
+        switch platform {
+        case .posix:
+            probeCommand
+        case .windows:
+            windowsProbePrelude + """
+
+            Write-Output $ghosthubMux
+            & $ghosthubMux '-V'
+            exit $LASTEXITCODE
+            """
+        }
+    }
+
+    private static func discoveryCommand(
+        for platform: SSHHostInfo.Platform
+    ) -> String {
+        switch platform {
+        case .posix:
+            discoveryCommand
+        case .windows:
+            windowsProbePrelude + """
+
+            Write-Output $ghosthubMux
+            & $ghosthubMux '-V'
+            if ($LASTEXITCODE -ne 0) {
+                exit $LASTEXITCODE
+            }
+            & $ghosthubMux 'list-sessions' '-F' \(powerShellEncodedArgument(discoveryFormat))
+            $ghosthubMuxStatus = $LASTEXITCODE
+            if (($ghosthubMuxStatus -eq 0) -or ($ghosthubMuxStatus -eq 1)) {
+                exit 0
+            }
+            exit $ghosthubMuxStatus
+            """
+        }
+    }
+
+    private static let windowsProbePrelude = """
+    $ErrorActionPreference = 'Stop'
+    [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+    $OutputEncoding = [Console]::OutputEncoding
+    $ghosthubMux = (Get-Command tmux.exe -CommandType Application -ErrorAction Stop).Source
+    """
+
     private static func parseProbe(
         _ result: (status: Int32, stdout: String),
         shell: String
@@ -215,7 +268,7 @@ struct TmuxBinaryResolver: Sendable {
         }
         let lines = result.stdout.split(whereSeparator: \.isNewline).map(String.init)
         guard let pathIndex = lines.indices.first(where: {
-            lines[$0].hasPrefix("/")
+            isAbsoluteExecutablePath(lines[$0])
                 && lines.indices.contains($0 + 1)
                 && lines[$0 + 1].hasPrefix("tmux ")
         })
@@ -232,6 +285,17 @@ struct TmuxBinaryResolver: Sendable {
         return .success(path)
     }
 
+    private static func isAbsoluteExecutablePath(_ value: String) -> Bool {
+        if value.hasPrefix("/") || value.hasPrefix("\\\\") {
+            return true
+        }
+        guard value.count >= 3 else { return false }
+        let characters = Array(value)
+        return characters[0].isLetter
+            && characters[1] == ":"
+            && (characters[2] == "\\" || characters[2] == "/")
+    }
+
     private static func parseDiscovery(
         _ result: (status: Int32, stdout: String),
         shell: String
@@ -244,7 +308,7 @@ struct TmuxBinaryResolver: Sendable {
         }
         let prefix = discoveryPrefix + "\t"
         let sessions = result.stdout
-            .split(separator: "\n", omittingEmptySubsequences: true)
+            .split(whereSeparator: \.isNewline)
             .compactMap { rawLine -> DiscoveredTmuxSession? in
                 let line = String(rawLine)
                 guard line.hasPrefix(prefix) else { return nil }
@@ -313,15 +377,26 @@ struct TmuxBinaryResolver: Sendable {
             arguments.append(contentsOf: ["-p", String(port)])
         }
         let target = host.user.map { "\($0)@\(host.hostname)" } ?? host.hostname
-        let accountShellCommand = "exec \"${SHELL:-/bin/sh}\" -lc "
-            + shellQuotedCommandArgument(posixCommand(command))
-        let loginCommand = posixCommand(accountShellCommand)
-        arguments.append(contentsOf: ["--", target, loginCommand])
+        arguments.append(contentsOf: [
+            "--", target, remoteLoginCommand(host: host, command: command),
+        ])
         return runProcess(
             executable: "/usr/bin/ssh",
             arguments: arguments,
             timeout: timeout
         )
+    }
+
+    static func remoteLoginCommand(
+        host: SSHHostInfo,
+        command: String
+    ) -> String {
+        if host.platform == .windows {
+            return powerShellEncodedCommand(command)
+        }
+        let accountShellCommand = "exec \"${SHELL:-/bin/sh}\" -lc "
+            + shellQuotedCommandArgument(posixCommand(command))
+        return posixCommand(accountShellCommand)
     }
 
     /// The account shell owns login-environment initialization, but Ghosthub's

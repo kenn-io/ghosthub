@@ -18,7 +18,7 @@ struct TailscalePeerPickerSheet: View {
             Text(
                 "Select hosts to add as SSH connections."
                     + " Only SSH-capable hosts (Linux and"
-                    + " macOS) are shown."
+                    + " macOS, and Windows) are shown."
             )
             .font(.subheadline)
             .foregroundStyle(.secondary)

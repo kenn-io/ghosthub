@@ -37,7 +37,8 @@ enum ConfiguredHostOverlay {
             }
             if let existing {
                 consumedHostIDs.insert(existing.id)
-                if existing.sshDestination != configured.sshDestination {
+                if existing.sshDestination != configured.sshDestination
+                    || existing.platform != configured.platform {
                     invalidatedHostIDs.insert(existing.id)
                 }
             }

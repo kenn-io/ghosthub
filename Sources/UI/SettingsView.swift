@@ -23,6 +23,10 @@ public struct SettingsActions {
             _, _ in
             .failure(.message("Remote project registration is unavailable."))
         }
+    var installWindowsKwt:
+        (SSHHost) async -> Result<Void, HostProbeError> = { _ in
+            .failure(.message("Windows kwt installation is unavailable."))
+        }
     var reloadTerminalConfig: () -> Void = {}
 
     public init(
@@ -47,6 +51,12 @@ public struct SettingsActions {
         ) async -> Result<String, HostProbeError> = { _, _ in
             .failure(.message("Remote project registration is unavailable."))
         },
+        installWindowsKwt: @escaping (SSHHost) async -> Result<
+            Void,
+            HostProbeError
+        > = { _ in
+            .failure(.message("Windows kwt installation is unavailable."))
+        },
         reloadTerminalConfig: @escaping () -> Void = {}
     ) {
         self.refreshHosts = refreshHosts
@@ -54,6 +64,7 @@ public struct SettingsActions {
         self.loadTailscalePeers = loadTailscalePeers
         self.installRemoteKwt = installRemoteKwt
         self.registerRemoteProject = registerRemoteProject
+        self.installWindowsKwt = installWindowsKwt
         self.reloadTerminalConfig = reloadTerminalConfig
     }
 }
@@ -79,6 +90,7 @@ public struct SettingsView: View {
     @State private var tailscaleError: String?
     @State private var isLoadingTailscale = false
     @State private var isTailscaleSheetPresented = false
+    @State private var isInstallingWindowsKwt = false
     public init(
         store: SettingsStore,
         actions: SettingsActions = SettingsActions(),
@@ -236,10 +248,12 @@ public struct SettingsView: View {
             tailscaleError: $tailscaleError,
             isLoadingTailscale: $isLoadingTailscale,
             isTailscaleSheetPresented: $isTailscaleSheetPresented,
+            isInstallingWindowsKwt: $isInstallingWindowsKwt,
             probeSSHHost: actions.probeSSHHost,
             installRemoteKwt: actions.installRemoteKwt,
             registerRemoteProject: actions.registerRemoteProject,
-            loadTailscalePeers: actions.loadTailscalePeers
+            loadTailscalePeers: actions.loadTailscalePeers,
+            installWindowsKwt: actions.installWindowsKwt
         )
     }
 

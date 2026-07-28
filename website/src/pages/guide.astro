@@ -130,6 +130,17 @@ const imageAlt = {
             so an unreachable machine never blocks the rest of your fleet.
           </p>
           <p>
+            Native Windows support is experimental. Choose{' '}
+            <strong>Windows (psmux)</strong> for a Windows OpenSSH host with
+            PowerShell and <a href="https://github.com/marlocarlo/psmux">psmux</a>{' '}
+            installed, including its <code>tmux.exe</code> alias. After
+            testing the connection, <strong>Install Bundled kwt</strong>{' '}
+            uploads Ghosthub’s matching AMD64 or ARM64 helper for that user.
+            The Windows helper is currently unsigned, so this path is intended
+            for development machines and power users until Authenticode
+            signing is available.
+          </p>
+          <p>
             To add project and worktree context without installing{' '}
             <a href="https://kwt.sh">kwt, a Git worktree manager</a>,
             system-wide, test the connection and choose{' '}
@@ -139,12 +150,14 @@ const imageAlt = {
             first when your policy prompts for trust. Ghosthub then copies its
             pinned build for the host’s OS and CPU, verifies it, and keeps it
             under <code>~/.ghosthub/</code>.
-            On a fresh host, open the <strong>+</strong> menu beside it, choose
-            <strong>Add Project</strong>, and enter each existing checkout’s
-            absolute path. Ghosthub delegates registration to kwt and refreshes
-            inventory without scanning the machine. If the host’s SSH address
-            changes while Add Project is open, close the sheet and try again
-            against the updated host. Ghosthub marks the machine reachable only
+            On a fresh macOS or Linux host, open the <strong>+</strong> menu
+            beside it, choose <strong>Add Project</strong>, and enter each
+            existing checkout’s absolute path. Ghosthub delegates registration
+            to kwt and refreshes inventory without scanning the machine.
+            Project registration is not yet available for Windows hosts. If the
+            host’s SSH address changes while Add Project is open, close the
+            sheet and try again against the updated host. Ghosthub marks the
+            machine reachable only
             when the remote verification command actually begins; SSH failures
             and unconfirmed local timeouts remain offline, while a confirmed
             remote command failure is shown as degraded. Tmux-only hosts do not
@@ -181,11 +194,12 @@ const imageAlt = {
         <div>
           <h2>Add project and worktree context</h2>
           <p>
-            Open the <strong>+</strong> menu beside a local or remote host,
-            choose <strong>Add Project</strong>, and enter the absolute path to
-            an existing checkout. Ghosthub registers that repository through
-            its bundled or managed <a href="https://kwt.sh">kwt</a> helper
-            without scanning the machine.
+            Open the <strong>+</strong> menu beside your local Mac or a remote
+            macOS or Linux host, choose <strong>Add Project</strong>, and enter
+            the absolute path to an existing checkout. Ghosthub registers that
+            repository through its bundled or managed{' '}
+            <a href="https://kwt.sh">kwt</a> helper without scanning the machine.
+            Windows project registration is not yet supported.
           </p>
           <p>
             Pull-request import requires the{' '}

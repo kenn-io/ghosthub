@@ -96,7 +96,8 @@ struct TmuxSessionKiller: Sendable {
             tmuxPath: tmuxPath,
             sessionName: selection.name,
             socketName: selection.socketName,
-            expectedIdentity: expectedIdentity
+            expectedIdentity: expectedIdentity,
+            platform: Self.platform(for: host)
         )
         let runner = runner
         let result = await Task.detached(priority: .userInitiated) {
@@ -125,7 +126,8 @@ struct TmuxSessionKiller: Sendable {
         let command = Self.identityCommand(
             tmuxPath: tmuxPath,
             sessionName: selection.name,
-            socketName: selection.socketName
+            socketName: selection.socketName,
+            platform: Self.platform(for: host)
         )
         let runner = runner
         let result = await Task.detached(priority: .userInitiated) {
@@ -146,7 +148,8 @@ struct TmuxSessionKiller: Sendable {
         tmuxPath: String,
         sessionName: String,
         socketName: String?,
-        expectedIdentity: TmuxSessionIdentity
+        expectedIdentity: TmuxSessionIdentity,
+        platform: SSHHostInfo.Platform = .posix
     ) -> String {
         let target = "=\(sessionName):"
         var arguments = [tmuxPath]
@@ -165,6 +168,13 @@ struct TmuxSessionKiller: Sendable {
             "display-message -p "
                 + shellQuotedCommandArgument(identityMismatchMarker),
         ])
+        if platform == .windows {
+            arguments[arguments.count - 2] =
+                "kill-session -t \(expectedIdentity.sessionID)"
+            arguments[arguments.count - 1] =
+                "display-message -p \(identityMismatchMarker)"
+            return powerShellCommand(arguments)
+        }
         return arguments
             .map(shellQuotedCommandArgument)
             .joined(separator: " ")
@@ -173,7 +183,8 @@ struct TmuxSessionKiller: Sendable {
     private static func identityCommand(
         tmuxPath: String,
         sessionName: String,
-        socketName: String?
+        socketName: String?,
+        platform: SSHHostInfo.Platform
     ) -> String {
         var arguments = [tmuxPath]
         if let socketName {
@@ -186,9 +197,33 @@ struct TmuxSessionKiller: Sendable {
             "=\(sessionName):",
             identityMarker + "#{pid}\t#{session_id}\t#{session_created}",
         ])
+        if platform == .windows {
+            return powerShellCommand(arguments)
+        }
         return arguments
             .map(shellQuotedCommandArgument)
             .joined(separator: " ")
+    }
+
+    private static func powerShellCommand(_ arguments: [String]) -> String {
+        """
+        $ErrorActionPreference = 'Stop'
+        [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+        $OutputEncoding = [Console]::OutputEncoding
+        & \(arguments.map(powerShellEncodedArgument).joined(separator: " "))
+        exit $LASTEXITCODE
+        """
+    }
+
+    private static func platform(
+        for host: TmuxHost
+    ) -> SSHHostInfo.Platform {
+        switch host {
+        case .local:
+            .posix
+        case let .ssh(info):
+            info.platform
+        }
     }
 
     static func isSessionCreatedAt(_ value: String) -> Bool {
@@ -213,7 +248,7 @@ struct TmuxSessionKiller: Sendable {
         _ output: String
     ) -> TmuxSessionIdentity? {
         let markedLine = output
-            .split(separator: "\n", omittingEmptySubsequences: true)
+            .split(whereSeparator: \.isNewline)
             .reversed()
             .map(String.init)
             .first { $0.hasPrefix(identityMarker) }

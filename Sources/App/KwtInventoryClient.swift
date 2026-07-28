@@ -139,11 +139,17 @@ struct KwtInventoryClient: Sendable {
         case .local: "this Mac"
         case let .ssh(info): info.displayName
         }
+        let windowsKwtRelativePath =
+            KwtBinaryLocator.windowsRemoteManagedRelativePath(
+                revision: remoteBinaryRevision
+            )
         let projects: [KwtProjectRecord] = try decode(
             run(
                 host: host,
                 command: Self.projectsCommand(
-                    binaryPrelude: binaryPrelude(for: host)
+                    platform: platform(for: host),
+                    binaryPrelude: binaryPrelude(for: host),
+                    windowsKwtRelativePath: windowsKwtRelativePath
                 )
             ),
             hostLabel: hostLabel
@@ -159,7 +165,9 @@ struct KwtInventoryClient: Sendable {
                         host: host,
                         command: Self.worktreesCommand(
                             projectPath: project.path,
-                            binaryPrelude: binaryPrelude(for: host)
+                            platform: platform(for: host),
+                            binaryPrelude: binaryPrelude(for: host),
+                            windowsKwtRelativePath: windowsKwtRelativePath
                         )
                     )
                     do {
@@ -209,6 +217,15 @@ struct KwtInventoryClient: Sendable {
         }
     }
 
+    private func platform(
+        for host: TmuxHost
+    ) -> SSHHostInfo.Platform {
+        switch host {
+        case .local: .posix
+        case let .ssh(info): info.platform
+        }
+    }
+
     private func run(
         host: TmuxHost,
         command: String
@@ -231,13 +248,17 @@ struct KwtInventoryClient: Sendable {
                 status: result.status
             )
         }
-        guard let markerRange = result.stdout.range(
+        let normalizedOutput = result.stdout.replacingOccurrences(
+            of: "\r\n",
+            with: "\n"
+        )
+        guard let markerRange = normalizedOutput.range(
             of: Self.jsonMarker,
             options: .backwards
         ) else {
             throw KwtInventoryError.malformedOutput(host: hostLabel)
         }
-        let json = result.stdout[markerRange.upperBound...]
+        let json = normalizedOutput[markerRange.upperBound...]
         do {
             return try JSONDecoder().decode(
                 Value.self,
@@ -248,17 +269,38 @@ struct KwtInventoryClient: Sendable {
         }
     }
 
-    private static func projectsCommand(binaryPrelude: String) -> String {
-        binaryPrelude
+    private static func projectsCommand(
+        platform: SSHHostInfo.Platform,
+        binaryPrelude: String,
+        windowsKwtRelativePath: String?
+    ) -> String {
+        if platform == .windows {
+            return KwtPowerShellCommand.run(
+                arguments: ["projects", "--json"],
+                marker: "GHOSTHUB_KWT_JSON",
+                managedRelativePath: windowsKwtRelativePath
+            )
+        }
+        return binaryPrelude
             + "printf 'GHOSTHUB_KWT_JSON\\n'; "
             + "exec \"$ghosthub_kwt_path\" projects --json"
     }
 
     private static func worktreesCommand(
         projectPath: String,
-        binaryPrelude: String
+        platform: SSHHostInfo.Platform,
+        binaryPrelude: String,
+        windowsKwtRelativePath: String?
     ) -> String {
-        binaryPrelude
+        if platform == .windows {
+            return KwtPowerShellCommand.run(
+                arguments: ["list", "--json"],
+                workingDirectory: projectPath,
+                marker: "GHOSTHUB_KWT_JSON",
+                managedRelativePath: windowsKwtRelativePath
+            )
+        }
+        return binaryPrelude
             + "cd -- \(shellQuotedCommandArgument(projectPath)) || exit $?; "
             + "printf 'GHOSTHUB_KWT_JSON\\n'; "
             + "exec \"$ghosthub_kwt_path\" list --json"

@@ -199,8 +199,10 @@ struct WorkspaceSidebarView: View {
             Button("New tmux session…") {
                 onNewTmuxSession(section.host)
             }
-            Button("Add Project…") {
-                onAddProject(section.host)
+            if section.host.canRegisterProjects {
+                Button("Add Project…") {
+                    onAddProject(section.host)
+                }
             }
         }
     }
@@ -340,20 +342,9 @@ struct WorkspaceSidebarView: View {
             }
             NativePopupMenuButton(
                 groups: [
-                    [
-                        NativePopupMenuAction("New tmux session…") {
-                            guard let host = preferredNewSessionHost else {
-                                return
-                            }
-                            onNewTmuxSession(host)
-                        },
-                        NativePopupMenuAction("Add Project…") {
-                            guard let host = preferredNewSessionHost else {
-                                return
-                            }
-                            onAddProject(host)
-                        },
-                    ],
+                    preferredNewSessionHost.map {
+                        hostActionMenuItems(for: $0)
+                    } ?? [],
                     [
                         NativePopupMenuAction(
                             "New worktree…",
@@ -725,14 +716,7 @@ struct WorkspaceSidebarView: View {
             if let actionHost {
                 NativePopupMenuButton(
                     groups: [
-                        [
-                            NativePopupMenuAction("New tmux session…") {
-                                onNewTmuxSession(actionHost)
-                            },
-                            NativePopupMenuAction("Add Project…") {
-                                onAddProject(actionHost)
-                            },
-                        ],
+                        hostActionMenuItems(for: actionHost),
                     ]
                 ) {
                     Image(systemName: "plus")
@@ -750,6 +734,24 @@ struct WorkspaceSidebarView: View {
                 .accessibilityIdentifier("host-actions")
             }
         }
+    }
+
+    private func hostActionMenuItems(
+        for host: HostSummary
+    ) -> [NativePopupMenuAction] {
+        var actions = [
+            NativePopupMenuAction("New tmux session…") {
+                onNewTmuxSession(host)
+            },
+        ]
+        if host.canRegisterProjects {
+            actions.append(
+                NativePopupMenuAction("Add Project…") {
+                    onAddProject(host)
+                }
+            )
+        }
+        return actions
     }
 
     private func projectHierarchyRow(

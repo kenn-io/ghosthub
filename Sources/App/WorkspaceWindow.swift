@@ -613,6 +613,13 @@ struct WorkspaceWindow: View {
                                             on: host
                                         )
                                 },
+                                installWindowsKwt: {
+                                    host in
+                                    await sceneModel
+                                        .installWindowsKwt(
+                                            on: host
+                                        )
+                                },
                                 reloadTerminalConfig: {
                                     sceneModel.reloadTerminalConfig()
                                 }

@@ -82,6 +82,63 @@ struct KwtPullRequestClientTests {
         #expect(result.pullRequest.isImported)
     }
 
+    @Test("Windows listing uses the native kwt PowerShell contract")
+    func windowsRemoteListing() async throws {
+        let recorder = PullRequestCommandRecorder()
+        let revision = String(repeating: "d", count: 40)
+        let managedPath = try #require(
+            KwtBinaryLocator.windowsRemoteManagedRelativePath(
+                revision: revision
+            )
+        )
+        let ssh = SSHHostInfo(
+            user: "wesm",
+            hostname: "arm-builder",
+            port: nil,
+            platform: .windows
+        )
+        let client = KwtPullRequestClient(
+            remoteRunner: { host, command in
+                recorder.record(host: host, command: command)
+                return (
+                    0,
+                    Self.listResponse
+                        .replacingOccurrences(
+                            of: "login banner\nGHOSTHUB_KWT_PR_JSON",
+                            with: "login bannerGHOSTHUB_KWT_PR_JSON"
+                        )
+                        .replacingOccurrences(
+                            of: "\n",
+                            with: "\r\n"
+                        )
+                )
+            },
+            remoteBinaryRevision: revision
+        )
+
+        let candidates = try await client.list(
+            projectIdentity: "github.com/kenn-io/ghosthub",
+            on: .ssh(ssh)
+        )
+
+        #expect(recorder.host == ssh)
+        #expect(recorder.command?.contains(
+            powerShellEncodedArgument(managedPath)
+        ) == true)
+        #expect(recorder.command?.contains("Get-Command kwt.exe") == false)
+        #expect(recorder.command?.contains(
+            ["pr", "list", "--project", "github.com/kenn-io/ghosthub"]
+                .map(powerShellEncodedArgument)
+                .joined(separator: " ")
+        ) == true)
+        #expect(recorder.command?.contains(
+            "Write-Output "
+                + powerShellEncodedArgument("GHOSTHUB_KWT_PR_JSON")
+        ) == true)
+        #expect(recorder.command?.contains("command -v") == false)
+        #expect(candidates.map(\.number) == [32])
+    }
+
     @Test(
         "successful imports require an isolated tmux socket",
         arguments: [false, true]

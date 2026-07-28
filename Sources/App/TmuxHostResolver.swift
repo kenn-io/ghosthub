@@ -9,7 +9,16 @@ enum TmuxHostResolver {
             .trimmingCharacters(in: .whitespacesAndNewlines),
             !destination.isEmpty
         else { return nil }
-        return parseSSHDestination(destination).map(TmuxHost.ssh)
+        return parseSSHDestination(destination).map { info in
+            TmuxHost.ssh(
+                SSHHostInfo(
+                    user: info.user,
+                    hostname: info.hostname,
+                    port: info.port,
+                    platform: host.platform == .windows ? .windows : .posix
+                )
+            )
+        }
     }
 
     static func parseSSHDestination(_ destination: String) -> SSHHostInfo? {

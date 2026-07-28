@@ -76,21 +76,32 @@ struct KwtWorktreeClient: Sendable {
         on host: TmuxHost
     ) async throws {
         let binaryPrelude: String
+        let windowsKwtRelativePath: String?
+        let platform: SSHHostInfo.Platform
         switch host {
         case .local:
             binaryPrelude = KwtBinaryLocator.commandPrelude(
                 exactPath: localBinaryPath
             )
-        case .ssh:
+            windowsKwtRelativePath = nil
+            platform = .posix
+        case let .ssh(info):
             binaryPrelude = KwtBinaryLocator.remoteCommandPrelude(
                 revision: remoteBinaryRevision
             )
+            windowsKwtRelativePath =
+                KwtBinaryLocator.windowsRemoteManagedRelativePath(
+                    revision: remoteBinaryRevision
+                )
+            platform = info.platform
         }
         let command = Self.command(
             branchName: request.branchName,
             createsBranch: request.createsBranch,
             projectPath: projectPath,
-            binaryPrelude: binaryPrelude
+            platform: platform,
+            binaryPrelude: binaryPrelude,
+            windowsKwtRelativePath: windowsKwtRelativePath
         )
         let localRunner = localRunner
         let remoteRunner = remoteRunner
@@ -115,8 +126,22 @@ struct KwtWorktreeClient: Sendable {
         branchName: String,
         createsBranch: Bool,
         projectPath: String,
-        binaryPrelude: String
+        platform: SSHHostInfo.Platform = .posix,
+        binaryPrelude: String,
+        windowsKwtRelativePath: String? = nil
     ) -> String {
+        if platform == .windows {
+            var arguments = ["add"]
+            if createsBranch {
+                arguments.append("--branch")
+            }
+            arguments += [branchName, "--no-launch"]
+            return KwtPowerShellCommand.run(
+                arguments: arguments,
+                workingDirectory: projectPath,
+                managedRelativePath: windowsKwtRelativePath
+            )
+        }
         let branchFlag = createsBranch ? " --branch" : ""
         return binaryPrelude
             + "cd -- \(shellQuotedCommandArgument(projectPath)) || exit $?; "

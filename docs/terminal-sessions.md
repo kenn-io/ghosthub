@@ -27,7 +27,10 @@ detach-only presentation lifecycle as every other session.
 ## Native Tmux Attachment
 
 Ghosthub invokes `tmux attach-session -E -t =<name>` for a local session. A
-remote session uses the same tmux command through OpenSSH. There is no
+remote POSIX session uses the same tmux command through OpenSSH. An
+experimental native Windows host invokes psmux's `tmux.exe` compatibility
+alias through an encoded Windows PowerShell command and the same exact session
+target. There is no
 `tmux -CC`, pane capture, history replay, silent rendering child, Swift pane
 map, split-tree projection, or Ghosthub tab bar. Tmux owns:
 
@@ -67,6 +70,9 @@ tmux may report the first attached client's theme even when Ghosthub uses
 different colors. Tmux shares the override with every attached client. These
 best-effort style commands do not change tmux interaction: prefix and key
 tables, mouse behavior, windows, panes, history, and layout remain untouched.
+Native Windows attachment leaves psmux's status and message styles user-owned;
+psmux does not preserve tmux's session-scoped rendering for these style resets
+and may apply `reverse` across the client rather than only its status line.
 
 Explicit local creation uses one atomic `new-session -A` create-or-attach
 client invocation. This closes the detached-session race when the user's tmux
@@ -91,13 +97,21 @@ remote host, only an SSH transport loss can hand a kwt-opened session to
 Ghosthub's attach-only reconnect loop. Ghosthub first retries SSH to probe the
 exact session: confirmed presence advances to ordinary attachment, while
 confirmed absence reruns `kwt open` because the failed SSH connection may never
-have executed it. The open, probe, and attach-only phases all run through the
-account login shell so settings such as `TMUX_TMPDIR` resolve the same tmux
-server. Confirmed absence retries use bounded exponential backoff. Unbound
-discovered sessions remain attach-only. Ghosthub does not expose rename, split,
-resize, window, or pane operations. Kill Session is exposed separately from
-presentation only for a session known to be running and always requires
-confirmation.
+have executed it. On POSIX hosts, the open, probe, and attach-only phases all
+run through the account login shell so settings such as `TMUX_TMPDIR` resolve
+the same tmux server. On Windows, those phases use encoded PowerShell commands
+within the same OpenSSH account environment. Confirmed absence retries use
+bounded exponential backoff. Unbound discovered sessions remain attach-only.
+Ghosthub does not expose rename, split, resize, window, or pane operations.
+Kill Session is exposed separately from presentation only for a session known
+to be running and always requires confirmation.
+
+Native Windows creation also supplies the SSH account's process `PATH` through
+psmux's `new-session -e` contract. Psmux otherwise starts detached panes
+without the user-level path entries visible to Windows OpenSSH, which prevents
+tools installed under locations such as `.local\bin`, WinGet links, or the npm
+prefix from resolving. This applies only while creating a session; attachment
+does not modify an existing session or running pane.
 
 The requested session appears optimistically so transient SSH or discovery
 latency cannot remove the user's only way back to it. Direct `list-sessions`
@@ -109,11 +123,12 @@ and all later retries are demoted to attach-only. Pending probes are scoped to
 the resolved host endpoint and cancelled when that endpoint changes or the
 owning window shuts down.
 
-Before discovery or attachment, Ghosthub resolves an absolute tmux path
-through the target host's login shell and verifies tmux 3.2 or newer.
-The login shell initializes its environment, then delegates Ghosthub's probe
-to `/bin/sh`; fish and other non-POSIX account shells never interpret the
-POSIX probe itself.
+Before discovery or attachment, Ghosthub resolves an absolute tmux-compatible
+binary path and verifies the reported tmux protocol version is 3.2 or newer.
+On POSIX hosts the login shell initializes its environment, then delegates
+Ghosthub's probe to `/bin/sh`; fish and other non-POSIX account shells never
+interpret the POSIX probe itself. On Windows, Ghosthub starts noninteractive
+Windows PowerShell and resolves `tmux.exe` with `Get-Command`.
 Successful paths are cached per host; lookup and version failures remain
 retryable and are presented to the user.
 
@@ -128,6 +143,11 @@ verification emits a marker only after the remote command begins. Status 255
 and local wrapper failures such as an unconfirmed timeout leave the host
 offline; a nonzero login-shell or probe-command status is reachable and
 degraded only when that marker proves the remote account executed the probe.
+
+The initial psmux path allocates an ordinary SSH PTY and targets Windows 11
+build 22523 or newer. Older ConPTY builds preserve keyboard input but consume
+psmux mouse-reporting sequences; supporting them would require the separate
+psmux `ssh -T` wrapper and is not part of this experiment.
 
 Tmux remains alive on the remote host while the network is unavailable. After
 connectivity returns, the client reattaches to the same exact session and tmux
@@ -156,12 +176,22 @@ of a login-shell or tmux failure. Remote hosts where Ghosthub's managed kwt is
 absent remain available for direct tmux discovery and attachment. Inventory
 never uploads the helper. The user grants permission with **Install kwt
 Worktree Helper** in Host Settings, after which inventory and protected
-attachment execute its exact revisioned path. A fresh helper has an empty
-project registry: **Add Project** in the host's **+** menu passes one
-user-supplied absolute checkout path to kwt's noninteractive registration
-command, then refreshes inventory. Immediately before registration, Ghosthub
-re-resolves the host ID and rejects the operation if its endpoint changed
-while Add Project was open. No filesystem scan occurs.
+attachment execute its exact revisioned path. On macOS and Linux, a fresh
+helper has an empty project registry: **Add Project** in the host's **+** menu
+passes one user-supplied absolute checkout path to kwt's noninteractive
+registration command, then refreshes inventory. Immediately before
+registration, Ghosthub re-resolves the host ID and rejects the operation if its
+endpoint changed while Add Project was open. No filesystem scan occurs.
+
+On experimental Windows hosts, an explicit Install Bundled kwt action probes
+the process architecture, uploads the matching pinned AMD64 or ARM64 helper,
+verifies its SHA-256 and exact revision, and activates it at
+`%USERPROFILE%\.ghosthub\helpers\kwt\<revision>\kwt.exe`. Inventory and
+workspace operations use only that exact per-user helper and never resolve
+`kwt.exe` from `PATH`.
+Project registration is not yet supported on Windows, so its Add Project
+actions are hidden. Discovery never installs or updates remote software
+implicitly.
 
 Kwt session names are removed from the generic session group and rendered
 under their project/worktree. Every remaining tmux session is shown in the

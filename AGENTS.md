@@ -35,8 +35,12 @@ Ghosthub is a **worktree-centric terminal multiplexer** for macOS.
 - Use `kata` for task management (see `CLAUDE.md`).
 - User-facing workflow changes must update the website Guide when they affect
   documented behavior. Regenerate and publish the website screenshot set only
-  when a change materially alters visuals shown in those screenshots; copy,
+  at feature acceptance and when opening a pull request, and only when the
+  accepted change materially alters visuals shown in those screenshots; copy,
   accessibility, and non-visual behavior changes do not require new captures.
+  Do not capture or publish screenshots while a feature is still in
+  development. Publish required refreshed binaries to the orphan
+  `website-assets` branch so ghosthub.ai does not ship stale product views.
 - Pull request descriptions should be concise, rationale-first prose. Do not add boilerplate or navel-gazing sections like "Changes", "Tests", or "Verification"; mention validation only when it is genuinely useful reviewer context.
 - Do not poll or watch GitHub Actions through `gh`, the GitHub API, or browser automation unless the user explicitly asks you to do so.
 - **NO DATABASE MIGRATIONS** until the first production release. Update the current schema, bootstrap paths, fixtures, and tests directly.

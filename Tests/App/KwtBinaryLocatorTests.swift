@@ -40,4 +40,46 @@ struct KwtBinaryLocatorTests {
                 .contains("managed kwt is unavailable")
         )
     }
+
+    @Test(
+        "Windows helper paths preserve the remote architecture",
+        arguments: [
+            KwtBinaryLocator.WindowsArchitecture.amd64,
+            KwtBinaryLocator.WindowsArchitecture.arm64,
+        ]
+    )
+    func windowsHelperPath(
+        architecture: KwtBinaryLocator.WindowsArchitecture
+    ) {
+        let path = KwtBinaryLocator.windowsBundledPath(
+            architecture: architecture,
+            bundleURL: URL(fileURLWithPath: "/Applications/Ghosthub.app")
+        )
+
+        #expect(
+            path.hasSuffix(
+                "/Contents/Resources/KwtRemote/windows-"
+                    + "\(architecture.rawValue)/kwt"
+            )
+        )
+    }
+
+    @Test("Windows managed helper path is revision-pinned")
+    func windowsManagedHelperPath() {
+        let revision = String(repeating: "f", count: 40)
+
+        #expect(
+            KwtBinaryLocator.windowsRemoteManagedRelativePath(
+                revision: revision
+            )
+                == #".ghosthub\helpers\kwt\"#
+                + revision
+                + #"\kwt.exe"#
+        )
+        #expect(
+            KwtBinaryLocator.windowsRemoteManagedRelativePath(
+                revision: "unpinned"
+            ) == nil
+        )
+    }
 }

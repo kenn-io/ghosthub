@@ -32,6 +32,25 @@ struct TmuxHostResolverTests {
         #expect(TmuxHostResolver.resolve(.fixture(kind: .remote)) == nil)
     }
 
+    @Test("Windows hosts preserve their native command platform")
+    func windowsRemoteHost() {
+        let host = HostSummary.fixture(
+            kind: .remote,
+            platform: .windows,
+            sshDestination: "wesm@arm-builder"
+        )
+
+        #expect(
+            TmuxHostResolver.resolve(host)
+                == .ssh(SSHHostInfo(
+                    user: "wesm",
+                    hostname: "arm-builder",
+                    port: nil,
+                    platform: .windows
+                ))
+        )
+    }
+
     @Test("raw IPv6 destinations use the default SSH port")
     func rawIPv6Destination() {
         #expect(

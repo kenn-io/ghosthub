@@ -97,13 +97,13 @@ twice.
 ### External State
 
 Ghosthub bundles revision-pinned kwt CLI builds for local project and worktree
-operations and for `darwin/{amd64,arm64}` and `linux/{amd64,arm64}` remote
-hosts. The local helper is signed as app code and invoked by its exact bundle
+operations and for `darwin/{amd64,arm64}`, `linux/{amd64,arm64}`, and
+`windows/{amd64,arm64}` remote hosts. The local helper is signed as app code and invoked by its exact bundle
 path. Remote helpers are sealed resources in the signed app. After the user
 chooses **Install kwt Worktree Helper** for a host, Ghosthub selects the matching
 `uname` target, uploads it, verifies its SHA-256 on the host, and atomically
 installs it under `~/.ghosthub/helpers/kwt/<revision>/kwt`. Packaging verifies
-the four binaries' formats, architectures, and embedded revision; installation
+the six binaries' formats, architectures, and embedded revision; installation
 also requires the uploaded helper's `version` output to report that revision
 before promotion. Every remote kwt operation invokes that exact revisioned
 path; failed upload or installation attempts also best-effort remove their
@@ -111,13 +111,17 @@ unique staged file. Neither local nor remote operations select an unrelated
 kwt from `PATH`. This is a CLI boundary, not a vendored daemon or submodule.
 Kwt's machine-readable CLI provides project identity, worktree metadata, and
 exact tmux session names.
-On a host with no existing kwt registry, the user adds one absolute repository
-path at a time through **Add Project**. Ghosthub delegates registration to
-`kwt projects add --json`, then refreshes ordinary kwt inventory; it does not
-search the host's filesystem or write kwt's configuration itself.
-The account login shell initializes the command environment, while Ghosthub's
-own inventory and discovery commands execute under the host's POSIX `/bin/sh`;
-non-POSIX account shells such as fish are not asked to interpret those commands.
+On a macOS or Linux host with no existing kwt registry, the user adds one
+absolute repository path at a time through **Add Project**. Ghosthub delegates
+registration to `kwt projects add --json`, then refreshes ordinary kwt
+inventory; it does not search the host's filesystem or write kwt's
+configuration itself. Windows hosts do not expose project registration until
+that command boundary supports native Windows paths.
+On macOS and Linux, the account login shell initializes the command
+environment, while Ghosthub's own inventory and discovery commands execute
+under the host's POSIX `/bin/sh`; non-POSIX account shells such as fish are not
+asked to interpret those commands. Windows commands execute through encoded
+noninteractive PowerShell.
 Direct tmux discovery provides every otherwise-unbound session. A remote host
 without kwt remains a valid tmux-only host; remote inventory failures stay
 attached to that host and never replace usable local or cached inventory with a
@@ -150,6 +154,30 @@ older pinned helpers, so installing an older Ghosthub build can select and
 restore its own revision; reinstalling one revision also retains
 `kwt.previous`.
 
+Native Windows installation uses a separate PowerShell boundary. The explicit
+**Install Bundled kwt** action probes the remote process architecture, uploads
+the matching PE helper over OpenSSH, verifies its SHA-256 and exact pinned
+version at a managed staging path, and atomically installs it at
+`%USERPROFILE%\.ghosthub\helpers\kwt\<revision>\kwt.exe` without replacing or
+resolving a system `kwt.exe`. A failed activation restores the prior helper at
+that revision. The Windows helpers remain unsigned experimental payloads until
+the release pipeline adds an approved Authenticode/DigiCert signing step.
+
+### Experimental native Windows hosts
+
+A configured Windows host uses OpenSSH, Windows PowerShell 5.1 or newer, and
+psmux's `tmux.exe` compatibility alias. Ghosthub probes and discovers psmux
+through encoded, noninteractive PowerShell commands, then creates and attaches
+to sessions using the same exact-target and attach-only reconnect model as
+POSIX tmux hosts. Windows 11 build 22523 or newer is the initial interactive
+target because its ConPTY path supports ordinary OpenSSH TTY allocation.
+
+When Ghosthub creates a native Windows session, it passes the SSH account
+process's `PATH` through psmux's session-environment argument so the initial
+PowerShell and later panes resolve the same user-installed tools as a direct
+SSH shell. It retains psmux's native status-bar styling and does not rewrite
+the environment of an existing session or running pane.
+
 ## Startup and Onboarding
 
 Ghosthub always completes kwt and tmux inventory before deciding which empty
@@ -159,9 +187,10 @@ there is no repository-intake interstitial and no first-launch modal.
 When both inventories are empty, Ghosthub explains that kwt owns project
 registration and tmux owns sessions. Ghosthub does not edit kwt's config file
 or present its retired Middleman-backed Add Repository flow. The **+** menu on
-each host exposes **Add Project**, which passes one explicit absolute checkout
-path to kwt's supported noninteractive registration command. Ghosthub does not
-scan the host for repositories.
+macOS and Linux hosts exposes **Add Project**, which passes one explicit
+absolute checkout path to kwt's supported noninteractive registration command.
+Windows hosts omit that action. Ghosthub does not scan the host for
+repositories.
 
 ## Source Layout
 

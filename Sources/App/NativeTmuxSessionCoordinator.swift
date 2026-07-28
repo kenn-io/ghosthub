@@ -68,6 +68,7 @@ private struct NativeTmuxAttachment {
     var tmuxPath: String
     var kwtPath: String?
     var remoteKwtCommandPrelude: String?
+    var windowsKwtRelativePath: String?
     var socketName: String?
     var protectedWorkspacePath: String?
     var launchMode: TmuxAttachmentLaunchMode
@@ -87,6 +88,7 @@ final class NativeTmuxSessionCoordinator {
         @Sendable (SSHHostInfo) -> Result<String, TmuxBinaryError>
     private let localKwtPathProvider: @Sendable () -> String?
     private let remoteKwtCommandPreludeProvider: @Sendable () -> String?
+    private let windowsKwtRelativePathProvider: @Sendable () -> String?
     private let presentationStyleProvider: () -> TmuxPresentationStyle?
     private var handlesByKey: [NativeTmuxSessionKey: BorrowedTmuxSessionHandle] = [:]
     private var targetHostsByHandle: [UUID: TmuxHost] = [:]
@@ -113,6 +115,12 @@ final class NativeTmuxSessionCoordinator {
                 revision: KwtBinaryLocator.bundledRemoteRevision()
             )
         },
+        windowsKwtRelativePathProvider:
+        @escaping @Sendable () -> String? = {
+            KwtBinaryLocator.windowsRemoteManagedRelativePath(
+                revision: KwtBinaryLocator.bundledRemoteRevision()
+            )
+        },
         presentationStyleProvider:
         @escaping () -> TmuxPresentationStyle? = { nil },
         remoteTmuxPathProvider: @escaping @Sendable (SSHHostInfo)
@@ -125,6 +133,8 @@ final class NativeTmuxSessionCoordinator {
         self.localKwtPathProvider = localKwtPathProvider
         self.remoteKwtCommandPreludeProvider =
             remoteKwtCommandPreludeProvider
+        self.windowsKwtRelativePathProvider =
+            windowsKwtRelativePathProvider
         self.presentationStyleProvider = presentationStyleProvider
         self.remoteTmuxPathProvider = remoteTmuxPathProvider
     }
@@ -229,6 +239,9 @@ final class NativeTmuxSessionCoordinator {
                 remoteKwtCommandPrelude: host.isRemote
                     ? remoteKwtCommandPreludeProvider()
                     : nil,
+                windowsKwtRelativePath: host.isRemote
+                    ? windowsKwtRelativePathProvider()
+                    : nil,
                 socketName: socketName,
                 protectedWorkspacePath: protectedWorkspacePath,
                 launchMode: launchMode,
@@ -310,6 +323,8 @@ final class NativeTmuxSessionCoordinator {
                     kwtPath: attachment.kwtPath,
                     remoteKwtCommandPrelude:
                     attachment.remoteKwtCommandPrelude,
+                    windowsKwtRelativePath:
+                    attachment.windowsKwtRelativePath,
                     workingDirectory: attachment.workingDirectory
                 )
             )

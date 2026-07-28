@@ -79,6 +79,62 @@ struct KwtWorktreeClientTests {
         #expect(recorder.command?.contains("--branch") == false)
     }
 
+    @Test("Windows creation encodes paths and hostile branch names")
+    func windowsRemoteCreation() async throws {
+        let recorder = CommandRecorder()
+        let projectPath = #"C:\code\ghost hub"#
+        let branchName = #"x’;iex("attacker-command");#‘&|$()"#
+        let revision = String(repeating: "e", count: 40)
+        let managedPath = try #require(
+            KwtBinaryLocator.windowsRemoteManagedRelativePath(
+                revision: revision
+            )
+        )
+        let ssh = SSHHostInfo(
+            user: "wesm",
+            hostname: "arm-builder",
+            port: nil,
+            platform: .windows
+        )
+        let client = KwtWorktreeClient(
+            remoteRunner: { host, command in
+                recorder.record(host: host, command: command)
+                return (0, "")
+            },
+            remoteBinaryRevision: revision
+        )
+
+        try await client.create(
+            request: WorktreeCreateRequest(
+                projectID: UUID(),
+                branchName: branchName,
+                createsBranch: true
+            ),
+            projectPath: projectPath,
+            on: .ssh(ssh)
+        )
+
+        #expect(recorder.host == ssh)
+        #expect(recorder.command?.contains(
+            powerShellEncodedArgument(managedPath)
+        ) == true)
+        #expect(recorder.command?.contains("Get-Command kwt.exe") == false)
+        #expect(recorder.command?.contains(
+            "Set-Location -LiteralPath "
+                + powerShellEncodedArgument(projectPath)
+        ) == true)
+        #expect(recorder.command?.contains(
+            ["add", "--branch", branchName, "--no-launch"]
+                .map(powerShellEncodedArgument)
+                .joined(separator: " ")
+        ) == true)
+        #expect(recorder.command?.contains(branchName) == false)
+        #expect(recorder.command?.contains("iex(") == false)
+        #expect(recorder.command?.contains("’") == false)
+        #expect(recorder.command?.contains("‘") == false)
+        #expect(recorder.command?.contains("command -v") == false)
+    }
+
     @Test("a nonzero kwt exit is reported")
     func reportsFailure() async {
         let client = KwtWorktreeClient(

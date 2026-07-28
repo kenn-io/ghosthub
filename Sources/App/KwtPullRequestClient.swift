@@ -98,7 +98,12 @@ struct KwtPullRequestClient: Sendable {
         let response: ListResponse = try await execute(
             Self.listCommand(
                 projectIdentity: projectIdentity,
-                binaryPrelude: binaryPrelude(for: host)
+                platform: platform(for: host),
+                binaryPrelude: binaryPrelude(for: host),
+                windowsKwtRelativePath:
+                KwtBinaryLocator.windowsRemoteManagedRelativePath(
+                    revision: remoteBinaryRevision
+                )
             ),
             on: host
         )
@@ -114,7 +119,12 @@ struct KwtPullRequestClient: Sendable {
             Self.importCommand(
                 id: id,
                 projectIdentity: projectIdentity,
-                binaryPrelude: binaryPrelude(for: host)
+                platform: platform(for: host),
+                binaryPrelude: binaryPrelude(for: host),
+                windowsKwtRelativePath:
+                KwtBinaryLocator.windowsRemoteManagedRelativePath(
+                    revision: remoteBinaryRevision
+                )
             ),
             on: host
         )
@@ -169,11 +179,24 @@ struct KwtPullRequestClient: Sendable {
         }
     }
 
+    private func platform(
+        for host: TmuxHost
+    ) -> SSHHostInfo.Platform {
+        switch host {
+        case .local: .posix
+        case let .ssh(info): info.platform
+        }
+    }
+
     private static func decode<Value: Decodable>(
         _ result: (status: Int32, stdout: String),
         hostLabel: String
     ) throws -> Value {
-        guard let markerRange = result.stdout.range(
+        let normalizedOutput = result.stdout.replacingOccurrences(
+            of: "\r\n",
+            with: "\n"
+        )
+        guard let markerRange = normalizedOutput.range(
             of: jsonMarker,
             options: .backwards
         ) else {
@@ -188,7 +211,8 @@ struct KwtPullRequestClient: Sendable {
             }
             throw KwtPullRequestError.malformedOutput(host: hostLabel)
         }
-        let data = Data(result.stdout[markerRange.upperBound...].utf8)
+        let payload = normalizedOutput[markerRange.upperBound...]
+        let data = Data(payload.utf8)
         guard result.status == 0 else {
             let envelope = try? JSONDecoder().decode(
                 ErrorEnvelope.self,
@@ -211,9 +235,21 @@ struct KwtPullRequestClient: Sendable {
 
     static func listCommand(
         projectIdentity: String,
-        binaryPrelude: String
+        platform: SSHHostInfo.Platform = .posix,
+        binaryPrelude: String,
+        windowsKwtRelativePath: String? = nil
     ) -> String {
-        commandPrelude(binaryPrelude: binaryPrelude)
+        if platform == .windows {
+            return KwtPowerShellCommand.run(
+                arguments: [
+                    "pr", "list", "--project", projectIdentity,
+                    "--state", "open", "--json",
+                ],
+                marker: "GHOSTHUB_KWT_PR_JSON",
+                managedRelativePath: windowsKwtRelativePath
+            )
+        }
+        return commandPrelude(binaryPrelude: binaryPrelude)
             + "exec \"$ghosthub_kwt_path\" pr list --project "
             + shellQuotedCommandArgument(projectIdentity)
             + " --state open --json"
@@ -222,9 +258,21 @@ struct KwtPullRequestClient: Sendable {
     static func importCommand(
         id: String,
         projectIdentity: String,
-        binaryPrelude: String
+        platform: SSHHostInfo.Platform = .posix,
+        binaryPrelude: String,
+        windowsKwtRelativePath: String? = nil
     ) -> String {
-        commandPrelude(binaryPrelude: binaryPrelude)
+        if platform == .windows {
+            return KwtPowerShellCommand.run(
+                arguments: [
+                    "pr", "import", id, "--project", projectIdentity,
+                    "--json",
+                ],
+                marker: "GHOSTHUB_KWT_PR_JSON",
+                managedRelativePath: windowsKwtRelativePath
+            )
+        }
+        return commandPrelude(binaryPrelude: binaryPrelude)
             + "exec \"$ghosthub_kwt_path\" pr import "
             + shellQuotedCommandArgument(id)
             + " --project "

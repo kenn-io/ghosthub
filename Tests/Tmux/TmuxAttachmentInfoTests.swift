@@ -491,6 +491,120 @@ struct TmuxAttachmentInfoTests {
         #expect(!command.contains("unbind-key"))
     }
 
+    @Test("Windows attachment leaves psmux presentation user-owned")
+    func windowsRemoteAttachCommand() throws {
+        let command = TmuxAttachmentInfo(
+            sessionName: "doc bank's work",
+            host: .ssh(SSHHostInfo(
+                user: "wesm",
+                hostname: "arm-builder",
+                port: 2222,
+                platform: .windows
+            ))
+        ).attachCommand(
+            tmuxPath: #"C:\Program Files\psmux\tmux.exe"#,
+            windowsKwtRelativePath:
+            #".ghosthub\helpers\kwt\0123456789012345678901234567890123456789\kwt.exe"#
+        )
+
+        #expect(command.contains("'/usr/bin/ssh' '-tt'"))
+        #expect(command.contains("'wesm@arm-builder'"))
+        #expect(command.contains("-EncodedCommand"))
+        #expect(command.contains("ghosthub-ssh-psmux"))
+        #expect(!command.contains("command -v"))
+
+        let script = try Self.decodedPowerShellScript(from: command)
+        #expect(script.contains(
+            "& " + [
+                #"C:\Program Files\psmux\tmux.exe"#,
+                "attach-session",
+                "-E",
+                "-t",
+                "=doc bank's work",
+            ]
+            .map(powerShellEncodedArgument)
+            .joined(separator: " ")
+        ))
+    }
+
+    @Test("Windows attachment keeps hostile values out of PowerShell source")
+    func windowsRemoteAttachEncodesHostileSessionName() throws {
+        let sessionName = #"x’;iex("attacker-command");#‘&|$()"#
+        let command = TmuxAttachmentInfo(
+            sessionName: sessionName,
+            host: .ssh(SSHHostInfo(
+                user: "wesm",
+                hostname: "arm-builder",
+                port: nil,
+                platform: .windows
+            ))
+        ).attachCommand(tmuxPath: #"C:\Tools\psmux\tmux.exe"#)
+
+        let script = try Self.decodedPowerShellScript(from: command)
+        #expect(script.contains(
+            powerShellEncodedArgument("=\(sessionName)")
+        ))
+        #expect(!script.contains(sessionName))
+        #expect(!script.contains("iex("))
+        #expect(!script.contains("’"))
+        #expect(!script.contains("‘"))
+    }
+
+    @Test("Windows worktrees open through kwt before psmux reconnect")
+    func windowsRemoteWorkspaceAttachCommand() throws {
+        let command = TmuxAttachmentInfo(
+            sessionName: "release work",
+            host: .ssh(SSHHostInfo(
+                user: "wesm",
+                hostname: "arm-builder",
+                port: nil,
+                platform: .windows
+            )),
+            workspacePath: #"C:\code\release work"#
+        ).attachCommand(
+            tmuxPath: #"C:\Program Files\psmux\tmux.exe"#,
+            windowsKwtRelativePath:
+            #".ghosthub\helpers\kwt\0123456789012345678901234567890123456789\kwt.exe"#
+        )
+
+        #expect(command.contains("ghosthub-ssh-kwt-attach"))
+        #expect(command.contains("ghosthub-ssh-kwt-probe"))
+        let decoded = try Self.decodedPowerShellScripts(from: command)
+        let scripts = try #require(decoded.count == 3 ? decoded : nil)
+        #expect(scripts[0].contains(
+            powerShellEncodedArgument(
+                #".ghosthub\helpers\kwt\0123456789012345678901234567890123456789\kwt.exe"#
+            )
+        ))
+        #expect(!scripts[0].contains("Get-Command kwt.exe"))
+        #expect(scripts[0].contains(
+            "& $ghosthubKwt 'open' "
+                + powerShellEncodedArgument(#"C:\code\release work"#)
+        ))
+        #expect(scripts[1].contains(
+            "& " + [
+                #"C:\Program Files\psmux\tmux.exe"#,
+                "has-session",
+                "-t",
+                "=release work",
+            ]
+            .map(powerShellEncodedArgument)
+            .joined(separator: " ")
+        ))
+        #expect(scripts[2].contains(
+            "& " + [
+                #"C:\Program Files\psmux\tmux.exe"#,
+                "attach-session",
+                "-E",
+                "-t",
+                "=release work",
+            ]
+            .map(powerShellEncodedArgument)
+            .joined(separator: " ")
+        ))
+        #expect(!scripts.joined().contains("exec /bin/sh"))
+    }
+
     @Test("isolated remote attachment targets the returned tmux socket")
     func isolatedRemoteAttachCommand() {
         let command = TmuxAttachmentInfo(
@@ -810,6 +924,60 @@ struct TmuxAttachmentInfoTests {
         ))
     }
 
+    @Test("Windows named creation runs once before psmux attachment")
+    func windowsRemoteCreationIsOneShot() throws {
+        let command = TmuxAttachmentInfo(
+            sessionName: "release-work",
+            host: .ssh(SSHHostInfo(
+                user: "wesm",
+                hostname: "arm-builder",
+                port: nil,
+                platform: .windows
+            )),
+            launchMode: .create
+        ).attachCommand(
+            tmuxPath: #"C:\Tools\psmux\tmux.exe"#,
+            workingDirectory: #"C:\code\release work"#
+        )
+
+        #expect(command.contains("'-T'"))
+        #expect(command.contains("'-tt'"))
+        #expect(
+            command.components(separatedBy: "-EncodedCommand").count == 3
+        )
+        let decoded = try Self.decodedPowerShellScripts(from: command)
+        let scripts = try #require(decoded.count == 2 ? decoded : nil)
+        #expect(scripts[0].contains(
+            "& " + [
+                #"C:\Tools\psmux\tmux.exe"#,
+                "has-session",
+                "-t",
+                "=release-work",
+            ]
+            .map(powerShellEncodedArgument)
+            .joined(separator: " ")
+        ))
+        #expect(scripts[0].contains(
+            [
+                "new-session",
+                "-d",
+                "-E",
+                "-s",
+                "release-work",
+                "-c",
+                #"C:\code\release work"#,
+            ]
+            .map(powerShellEncodedArgument)
+            .joined(separator: " ")
+            + " '-e' ('PATH=' + $env:PATH)"
+        ))
+        #expect(scripts[1].contains(
+            ["attach-session", "-E", "-t", "=release-work"]
+                .map(powerShellEncodedArgument)
+                .joined(separator: " ")
+        ))
+    }
+
     @Test("attach retries never rerun the completed create phase")
     func reconnectDoesNotRepeatCreation() throws {
         let directory = FileManager.default.temporaryDirectory
@@ -956,5 +1124,28 @@ struct TmuxAttachmentInfoTests {
         let data = try JSONEncoder().encode(original)
         let decoded = try JSONDecoder().decode(TmuxHost.self, from: data)
         #expect(original == decoded)
+    }
+
+    private static func decodedPowerShellScript(
+        from command: String
+    ) throws -> String {
+        try #require(decodedPowerShellScripts(from: command).first)
+    }
+
+    private static func decodedPowerShellScripts(
+        from command: String
+    ) throws -> [String] {
+        let marker = "-EncodedCommand "
+        return try command
+            .components(separatedBy: marker)
+            .dropFirst()
+            .map { suffix in
+                let encoded = try #require(suffix.split(separator: "'").first)
+                let data = try #require(Data(base64Encoded: String(encoded)))
+                return try #require(String(
+                    data: data,
+                    encoding: .utf16LittleEndian
+                ))
+            }
     }
 }

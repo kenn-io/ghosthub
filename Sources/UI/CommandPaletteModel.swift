@@ -345,7 +345,7 @@ public enum CommandPaletteModel {
         in snapshot: WorkspaceSnapshot
     ) -> [WorkspaceCommandItem] {
         snapshot.hosts.flatMap { host in
-            [
+            var commands = [
                 WorkspaceCommandItem(
                     id: "new-tmux-session-\(host.id.uuidString)",
                     title: "New tmux session on \(host.name)",
@@ -356,7 +356,9 @@ public enum CommandPaletteModel {
                     ],
                     action: .newTmuxSession(host.id)
                 ),
-                WorkspaceCommandItem(
+            ]
+            if host.canRegisterProjects {
+                commands.append(WorkspaceCommandItem(
                     id: "add-project-\(host.id.uuidString)",
                     title: "Add Project on \(host.name)",
                     subtitle: "Register an existing checkout with kwt.",
@@ -365,8 +367,9 @@ public enum CommandPaletteModel {
                         host.name, host.sshDestination ?? "",
                     ],
                     action: .addProject(host.id)
-                ),
-            ]
+                ))
+            }
+            return commands
         }
     }
 
