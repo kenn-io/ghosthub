@@ -19,8 +19,8 @@ struct TmuxAttachmentInfoTests {
         #expect(TmuxHost.local.displayName == "localhost")
     }
 
-    @Test("local attachment normalizes only tmux presentation styles")
-    func localAttachCommand() {
+    @Test("local attachment leaves tmux presentation unchanged by default")
+    func localAttachCommandLeavesTmuxPresentationUnchanged() {
         let info = TmuxAttachmentInfo(
             sessionName: "doc bank's work",
             host: .local
@@ -31,11 +31,8 @@ struct TmuxAttachmentInfoTests {
         )
 
         #expect(command.contains("unset TMUX TMUX_PANE"))
-        #expect(command.contains("set-option"))
-        #expect(command.contains("status-style"))
-        #expect(command.contains("message-style"))
-        #expect(command.contains("message-command-style"))
-        #expect(command.contains("reverse"))
+        #expect(!command.contains("set-option"))
+        #expect(!command.contains("status-style"))
         #expect(command.contains("exec"))
         #expect(command.contains("attach-session"))
         #expect(command.contains("=doc bank"))
@@ -50,12 +47,52 @@ struct TmuxAttachmentInfoTests {
     func presentationStylesUseExactSessionTarget() {
         let command = TmuxAttachmentInfo(
             sessionName: "alpha",
-            host: .local
+            host: .local,
+            presentationStyle: TmuxPresentationStyle(
+                foreground: "#3B4851",
+                background: "#FFFFFF"
+            )
         ).attachCommand(tmuxPath: "/opt/homebrew/bin/tmux")
 
         #expect(
-            command.components(separatedBy: "=alpha:").count - 1 == 3
+            command.components(separatedBy: "=alpha:").count - 1 == 4
         )
+    }
+
+    @Test("built-in themes set pane defaults for terminal color queries")
+    func builtInThemeSetsPaneDefaults() {
+        let command = TmuxAttachmentInfo(
+            sessionName: "docbank",
+            host: .local,
+            presentationStyle: TmuxPresentationStyle(
+                foreground: "#3B4851",
+                background: "#FFFFFF"
+            )
+        ).attachCommand(tmuxPath: "/opt/homebrew/bin/tmux")
+
+        #expect(command.contains("'list-windows'"))
+        #expect(command.contains("'#{window_id}'"))
+        #expect(command.contains("\"$ghosthub_window\""))
+        #expect(command.contains("'window-style'"))
+        #expect(command.contains("'window-active-style'"))
+        #expect(command.contains("'status-style'"))
+        #expect(command.contains("'message-style'"))
+        #expect(command.contains("'message-command-style'"))
+        #expect(command.contains("'fg=#3B4851,bg=#FFFFFF'"))
+    }
+
+    @Test("follow-config leaves tmux pane defaults unchanged")
+    func followConfigLeavesPaneDefaultsUnchanged() {
+        let command = TmuxAttachmentInfo(
+            sessionName: "docbank",
+            host: .local
+        ).attachCommand(tmuxPath: "/opt/homebrew/bin/tmux")
+
+        #expect(!command.contains("list-windows"))
+        #expect(!command.contains("set-option"))
+        #expect(!command.contains("status-style"))
+        #expect(!command.contains("window-style"))
+        #expect(!command.contains("window-active-style"))
     }
 
     @Test("protected attachment leads kwt to the resolved tmux")
@@ -64,7 +101,11 @@ struct TmuxAttachmentInfoTests {
             sessionName: "pr-32",
             host: .local,
             socketName: "kwt-pr-0123456789abcdef",
-            protectedWorkspacePath: "/worktrees/pr-32"
+            protectedWorkspacePath: "/worktrees/pr-32",
+            presentationStyle: TmuxPresentationStyle(
+                foreground: "#3B4851",
+                background: "#FFFFFF"
+            )
         ).attachCommand(
             tmuxPath: "/opt/homebrew/bin/tmux",
             kwtPath: "/Applications/Ghosthub.app/Contents/Helpers/kwt"
@@ -77,6 +118,11 @@ struct TmuxAttachmentInfoTests {
             .components(separatedBy: "Helpers/kwt")
             .first ?? ""
         #expect(beforeKwt.contains("export PATH"))
+        let kwtPosition = command.range(of: "Helpers/kwt")?.lowerBound
+        let stylePosition = command.range(of: "window-style")?.lowerBound
+        if let kwtPosition, let stylePosition {
+            #expect(kwtPosition < stylePosition)
+        }
     }
 
     @Test("an unresolved tmux name contributes no PATH entry")
@@ -125,6 +171,34 @@ struct TmuxAttachmentInfoTests {
         #expect(!command.contains("attach-session"))
     }
 
+    @Test("existing local worktrees receive built-in theme defaults")
+    func localWorktreeReceivesThemeDefaults() {
+        let command = TmuxAttachmentInfo(
+            sessionName: "kwt-widget-feature",
+            host: .local,
+            workspacePath: "/worktrees/widget",
+            presentationStyle: TmuxPresentationStyle(
+                foreground: "#3B4851",
+                background: "#FFFFFF"
+            )
+        ).attachCommand(
+            tmuxPath: "/opt/homebrew/bin/tmux",
+            kwtPath: "/Applications/Ghosthub.app/Contents/Helpers/kwt"
+        )
+
+        let stylePosition = command.range(of: "window-style")?.lowerBound
+        let kwtPosition = command.range(of: "Helpers/kwt")?.lowerBound
+        #expect(stylePosition != nil)
+        #expect(kwtPosition != nil)
+        if let stylePosition, let kwtPosition {
+            #expect(kwtPosition < stylePosition)
+        }
+        #expect(command.contains("ghosthub_existing_clients"))
+        #expect(command.contains(
+            "[ \"$ghosthub_kwt_attempts\" -lt 500 ]"
+        ))
+    }
+
     @Test("local attachment stops when kwt cannot start the workspace")
     func localWorktreeStartFailureStopsAttachment() throws {
         let directory = FileManager.default.temporaryDirectory
@@ -142,7 +216,7 @@ struct TmuxAttachmentInfoTests {
         """.write(to: kwt, atomically: true, encoding: .utf8)
         try """
         #!/bin/sh
-        touch "$GHOSTHUB_TMUX_MARKER"
+        printf '%s\n' "$*" >> "$GHOSTHUB_TMUX_MARKER"
         exit 0
         """.write(to: tmux, atomically: true, encoding: .utf8)
         for executable in [kwt, tmux] {
@@ -154,7 +228,11 @@ struct TmuxAttachmentInfoTests {
         let command = TmuxAttachmentInfo(
             sessionName: "kwt-widget-feature",
             host: .local,
-            workspacePath: "/worktrees/widget"
+            workspacePath: "/worktrees/widget",
+            presentationStyle: TmuxPresentationStyle(
+                foreground: "#3B4851",
+                background: "#FFFFFF"
+            )
         ).attachCommand(
             tmuxPath: tmux.path,
             kwtPath: kwt.path
@@ -171,7 +249,106 @@ struct TmuxAttachmentInfoTests {
         process.waitUntilExit()
 
         #expect(process.terminationStatus == 42)
-        #expect(!FileManager.default.fileExists(atPath: tmuxMarker.path))
+        let tmuxCommands = try String(
+            contentsOf: tmuxMarker,
+            encoding: .utf8
+        )
+        #expect(!tmuxCommands.contains("set-option"))
+        #expect(!tmuxCommands.contains("attach-session"))
+    }
+
+    @Test("theming waits for kwt to create and repair every window")
+    func themingFollowsKwtSessionRepair() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let kwt = directory.appendingPathComponent("kwt")
+        let tmux = directory.appendingPathComponent("tmux")
+        let log = directory.appendingPathComponent("tmux.log")
+        let clientPID = directory.appendingPathComponent("client.pid")
+        try """
+        #!/bin/sh
+        "$GHOSTHUB_TMUX" new-session
+        "$GHOSTHUB_TMUX" new-window
+        /bin/sh -c '"$GHOSTHUB_TMUX" attach-session'
+        """.write(to: kwt, atomically: true, encoding: .utf8)
+        try """
+        #!/bin/sh
+        case " $* " in
+          *" new-session "*)
+            printf 'new-session\n' >> "$GHOSTHUB_TMUX_LOG"
+            ;;
+          *" new-window "*)
+            printf 'new-window\n' >> "$GHOSTHUB_TMUX_LOG"
+            ;;
+          *" attach-session "*)
+            printf '%s\n' "$$" > "$GHOSTHUB_TMUX_CLIENT_PID"
+            trap 'rm -f "$GHOSTHUB_TMUX_CLIENT_PID"' EXIT
+            while ! grep -q '@2 window-active-style' \
+                "$GHOSTHUB_TMUX_LOG"; do
+              sleep 0.01
+            done
+            ;;
+          *" list-clients "*)
+            if [ -f "$GHOSTHUB_TMUX_CLIENT_PID" ]; then
+              cat "$GHOSTHUB_TMUX_CLIENT_PID"
+            fi
+            ;;
+          *" list-windows "*)
+            if ! grep -q new-window "$GHOSTHUB_TMUX_LOG"; then
+              printf 'early-list-windows\n' >> "$GHOSTHUB_TMUX_LOG"
+              exit 1
+            fi
+            printf '@1\n@2\n'
+            ;;
+          *" set-option "*)
+            if ! grep -q new-window "$GHOSTHUB_TMUX_LOG"; then
+              printf 'early-set-option\n' >> "$GHOSTHUB_TMUX_LOG"
+              exit 1
+            fi
+            printf 'set-option %s\n' "$*" >> "$GHOSTHUB_TMUX_LOG"
+            ;;
+        esac
+        """.write(to: tmux, atomically: true, encoding: .utf8)
+        for executable in [kwt, tmux] {
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o755], ofItemAtPath: executable.path
+            )
+        }
+
+        let command = TmuxAttachmentInfo(
+            sessionName: "kwt-widget-feature",
+            host: .local,
+            workspacePath: "/worktrees/widget",
+            presentationStyle: TmuxPresentationStyle(
+                foreground: "#3B4851",
+                background: "#FFFFFF"
+            )
+        ).attachCommand(
+            tmuxPath: tmux.path,
+            kwtPath: kwt.path
+        )
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", command]
+        process.environment = ProcessInfo.processInfo.environment.merging([
+            "GHOSTHUB_TMUX": tmux.path,
+            "GHOSTHUB_TMUX_LOG": log.path,
+            "GHOSTHUB_TMUX_CLIENT_PID": clientPID.path,
+        ]) { _, new in new }
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+
+        #expect(process.terminationStatus == 0)
+        let tmuxCommands = try String(contentsOf: log, encoding: .utf8)
+        #expect(!tmuxCommands.contains("early-"))
+        #expect(tmuxCommands.contains("@1 window-style"))
+        #expect(tmuxCommands.contains("@2 window-active-style"))
     }
 
     @Test("worktree attachment survives destroy-unattached")
@@ -216,7 +393,7 @@ struct TmuxAttachmentInfoTests {
                     "sleep 0.2; : > '$GHOSTHUB_SESSION_MARKER'"
             fi
         done
-        exec "$GHOSTHUB_TMUX" -L "$GHOSTHUB_TMUX_SOCKET" \
+        "$GHOSTHUB_TMUX" -L "$GHOSTHUB_TMUX_SOCKET" \
             -f "$GHOSTHUB_TMUX_CONFIG" new-session -A -s "$GHOSTHUB_TMUX_SESSION" \
             "sleep 0.2; : > '$GHOSTHUB_SESSION_MARKER'"
         """.write(to: kwt, atomically: true, encoding: .utf8)
@@ -226,7 +403,11 @@ struct TmuxAttachmentInfoTests {
         let command = TmuxAttachmentInfo(
             sessionName: "kwt-destroy-unattached",
             host: .local,
-            workspacePath: "/worktrees/widget"
+            workspacePath: "/worktrees/widget",
+            presentationStyle: TmuxPresentationStyle(
+                foreground: "#3B4851",
+                background: "#FFFFFF"
+            )
         ).attachCommand(
             tmuxPath: tmuxPath,
             kwtPath: kwt.path
@@ -257,7 +438,11 @@ struct TmuxAttachmentInfoTests {
             sessionName: "pr-32",
             host: .local,
             socketName: "kwt-pr-0123456789abcdef",
-            protectedWorkspacePath: "/worktrees/pr-32"
+            protectedWorkspacePath: "/worktrees/pr-32",
+            presentationStyle: TmuxPresentationStyle(
+                foreground: "#3B4851",
+                background: "#FFFFFF"
+            )
         ).attachCommand(
             tmuxPath: "/opt/homebrew/bin/tmux",
             kwtPath: "/Applications/Ghosthub.app/Contents/Helpers/kwt"
@@ -273,7 +458,7 @@ struct TmuxAttachmentInfoTests {
         #expect(
             command.components(
                 separatedBy: "kwt-pr-0123456789abcdef"
-            ).count - 1 == 3
+            ).count - 1 == 8
         )
     }
 
@@ -296,9 +481,9 @@ struct TmuxAttachmentInfoTests {
         #expect(command.contains("'attach-session'"))
         #expect(command.contains("'-E'"))
         #expect(command.contains("=docbank"))
-        #expect(command.contains("status-style"))
-        #expect(command.contains("message-style"))
-        #expect(command.contains("message-command-style"))
+        #expect(!command.contains("status-style"))
+        #expect(!command.contains("message-style"))
+        #expect(!command.contains("message-command-style"))
         #expect(command.contains("[ \"$status\" -eq 255 ] || exit \"$status\""))
         #expect(!command.contains("-CC"))
         #expect(!command.contains("KexAlgorithms"))
@@ -314,7 +499,11 @@ struct TmuxAttachmentInfoTests {
                 user: "wesm", hostname: "build-box", port: nil
             )),
             socketName: "kwt-pr-0123456789abcdef",
-            protectedWorkspacePath: "/worktrees/pr-32"
+            protectedWorkspacePath: "/worktrees/pr-32",
+            presentationStyle: TmuxPresentationStyle(
+                foreground: "#3B4851",
+                background: "#FFFFFF"
+            )
         ).attachCommand(
             tmuxPath: "/usr/bin/tmux",
             remoteKwtCommandPrelude:
@@ -336,6 +525,11 @@ struct TmuxAttachmentInfoTests {
         #expect(command.contains("/worktrees/pr-32"))
         #expect(!command.contains("exec '\\''/usr/bin/tmux"))
         #expect(command.contains("kwt-pr-0123456789abcdef"))
+        let kwtPosition = command.range(of: "ghosthub_kwt_path")?.lowerBound
+        let stylePosition = command.range(of: "window-style")?.lowerBound
+        if let kwtPosition, let stylePosition {
+            #expect(kwtPosition < stylePosition)
+        }
     }
 
     @Test("demo SSH arguments isolate config, trust, and routing")
@@ -381,7 +575,7 @@ struct TmuxAttachmentInfoTests {
         #expect(command.contains("'-A'"))
         #expect(command.contains("'-E'"))
         #expect(command.contains("release-work"))
-        #expect(command.contains("status-style"))
+        #expect(!command.contains("status-style"))
         #expect(!command.contains("'-d'"))
         #expect(!command.contains("attach-session"))
         #expect(
@@ -445,6 +639,35 @@ struct TmuxAttachmentInfoTests {
                 separatedBy: "${SHELL:-/bin/sh}"
             ).count - 1 == 3
         )
+    }
+
+    @Test("existing remote worktrees receive built-in theme defaults")
+    func remoteWorktreeReceivesThemeDefaults() {
+        let command = TmuxAttachmentInfo(
+            sessionName: "kwt-widget-feature",
+            host: .ssh(SSHHostInfo(
+                user: "wesm", hostname: "build-box", port: nil
+            )),
+            workspacePath: "/srv/widget",
+            presentationStyle: TmuxPresentationStyle(
+                foreground: "#3B4851",
+                background: "#FFFFFF"
+            )
+        ).attachCommand(
+            tmuxPath: "/usr/bin/tmux",
+            remoteKwtCommandPrelude:
+            "ghosthub_kwt_path=\"$HOME/.ghosthub/helpers/kwt/pinned/kwt\"; "
+                + "[ -x \"$ghosthub_kwt_path\" ] || exit 127; "
+        )
+
+        #expect(command.contains("list-windows"))
+        #expect(command.contains("window-style"))
+        #expect(command.contains("fg=#3B4851,bg=#FFFFFF"))
+        let kwtPosition = command.range(of: "ghosthub_kwt_path")?.lowerBound
+        let stylePosition = command.range(of: "window-style")?.lowerBound
+        if let kwtPosition, let stylePosition {
+            #expect(kwtPosition < stylePosition)
+        }
     }
 
     @Test("remote worktree switches to tmux only after transport loss")

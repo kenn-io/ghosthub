@@ -25,6 +25,8 @@ public final class SettingsStore: ObservableObject {
             "ghosthub.settings.privacy.shareAnonymousUsageData"
         static let terminalTheme =
             "ghosthub.settings.terminalAppearance.theme"
+        static let terminalAppliesThemeToTmuxSessions =
+            "ghosthub.settings.terminalAppearance.appliesThemeToTmuxSessions"
         static let terminalUsesCustomFont =
             "ghosthub.settings.terminalAppearance.usesCustomFont"
         static let terminalFontFamily =
@@ -54,6 +56,7 @@ public final class SettingsStore: ObservableObject {
     public static let defaultTerminalAppearancePreferences =
         TerminalAppearancePreferences(
             theme: .followConfig,
+            appliesThemeToTmuxSessions: false,
             usesCustomFont: false,
             fontFamily: "Berkeley Mono",
             fontSize: 13
@@ -219,6 +222,13 @@ public final class SettingsStore: ObservableObject {
         }
         persistTerminalAppearanceDefaults()
         persistTerminalAppearancePreferences()
+    }
+
+    public func setTerminalThemeAppliesToTmuxSessions(_ enabled: Bool) {
+        updateTerminalAppearancePreferences { preferences in
+            preferences.appliesThemeToTmuxSessions = enabled
+        }
+        persistTerminalAppearanceDefaults()
     }
 
     public func setUseCustomTerminalFont(_ enabled: Bool) {
@@ -445,6 +455,10 @@ public final class SettingsStore: ObservableObject {
             forKey: DefaultsKey.terminalTheme
         )
         userDefaults.set(
+            ta.appliesThemeToTmuxSessions,
+            forKey: DefaultsKey.terminalAppliesThemeToTmuxSessions
+        )
+        userDefaults.set(
             ta.usesCustomFont,
             forKey: DefaultsKey.terminalUsesCustomFont
         )
@@ -576,6 +590,12 @@ public final class SettingsStore: ObservableObject {
         )
         .flatMap(TerminalTheme.init(rawValue:)) {
             preferences.theme = theme
+        }
+        if let appliesThemeToTmuxSessions = userDefaults.object(
+            forKey: DefaultsKey.terminalAppliesThemeToTmuxSessions
+        ) as? Bool {
+            preferences.appliesThemeToTmuxSessions =
+                appliesThemeToTmuxSessions
         }
         if let usesCustomFont = userDefaults.object(
             forKey: DefaultsKey.terminalUsesCustomFont

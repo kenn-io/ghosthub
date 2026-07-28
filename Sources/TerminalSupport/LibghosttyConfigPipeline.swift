@@ -177,7 +177,6 @@ public struct LibghosttyConfigPipeline {
 
     font-family = Berkeley Mono
     font-size = 13
-    theme = dark:ghostty,light:ghostty-light
     background-opacity = 0.95
     scrollback-limit = 50000000
     term = xterm-256color
@@ -250,6 +249,7 @@ public struct LibghosttyConfigPipeline {
             return
         }
 
+        var updated = contents
         let defaults: [(key: String, value: String)] = [
             ("scrollback-limit", "50000000"),
             ("term", "xterm-256color"),
@@ -258,19 +258,20 @@ public struct LibghosttyConfigPipeline {
         ]
 
         let missingDefaults = defaults.filter { setting in
-            !configContainsKey(setting.key, in: contents)
+            !configContainsKey(setting.key, in: updated)
         }
-        guard !missingDefaults.isEmpty else {
+        guard updated != contents || !missingDefaults.isEmpty else {
             return
         }
 
-        var updated = contents
-        if !updated.hasSuffix("\n") {
+        if !missingDefaults.isEmpty {
+            if !updated.hasSuffix("\n") {
+                updated.append("\n")
+            }
             updated.append("\n")
-        }
-        updated.append("\n")
-        for setting in missingDefaults {
-            updated.append("\(setting.key) = \(setting.value)\n")
+            for setting in missingDefaults {
+                updated.append("\(setting.key) = \(setting.value)\n")
+            }
         }
 
         try? updated.write(

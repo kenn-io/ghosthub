@@ -8,7 +8,7 @@ struct SettingsDomainTests {
             (
                 .appearance,
                 "Appearance",
-                "App chrome, built-in terminal themes,"
+                "App chrome, built-in tmux themes,"
                     + " font overrides, and cursor styling."
             ),
             (

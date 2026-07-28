@@ -449,7 +449,7 @@ public final class LibghosttyRuntime: ObservableObject {
                     Task { @MainActor in
                         self.reloadActiveConfig(
                             force: true,
-                            notifyOnSuccess: true
+                            notifyOnSuccess: false
                         )
                     }
                 }

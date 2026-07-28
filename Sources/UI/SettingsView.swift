@@ -388,7 +388,7 @@ public struct SettingsView: View {
                 }
             }
 
-            settingsSection("Terminal Theme") {
+            settingsSection("Tmux Theme") {
                 settingRow("Theme") {
                     Picker("Theme", selection: $draft.terminalTheme) {
                         ForEach(TerminalTheme.allCases) { theme in
@@ -401,8 +401,14 @@ public struct SettingsView: View {
 
                 terminalThemePreview(theme: draft.terminalTheme)
 
+                Toggle(
+                    "Apply theme to shared tmux sessions",
+                    isOn: $draft.appliesTerminalThemeToTmuxSessions
+                )
+                .disabled(draft.terminalTheme == .followConfig)
+
                 Text(
-                    "Follow ghostty.conf keeps Ghosthub from applying any built-in terminal colors. Choosing a built-in theme writes a Ghosthub-owned overlay file that loads after ghostty.conf and any project terminal.conf override."
+                    "The selected theme controls how tmux appears in Ghosthub. The shared-session override also changes tmux window, status, and message colors when Ghosthub next attaches. Tmux shares those settings, so every attached terminal sees the change. Follow ghostty.conf leaves the configured tmux theme untouched."
                 )
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)

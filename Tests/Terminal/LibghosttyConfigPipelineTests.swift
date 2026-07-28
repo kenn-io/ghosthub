@@ -35,6 +35,7 @@ struct LibghosttyConfigPipelineTests {
             "shell-integration = detect",
         ], omits: [
             "shell-integration-features",
+            "theme =",
         ])
     }
 

@@ -91,6 +91,23 @@ public enum TmuxAttachmentLaunchMode: String, Codable, Equatable, Sendable {
     case create
 }
 
+/// Default colors Ghosthub applies to tmux panes when a built-in terminal
+/// theme is selected. Tmux otherwise answers OSC 10/11 queries from the first
+/// attached client, which can describe a different terminal's theme.
+public struct TmuxPresentationStyle: Equatable, Sendable {
+    public let foreground: String
+    public let background: String
+
+    public init(foreground: String, background: String) {
+        self.foreground = foreground
+        self.background = background
+    }
+
+    fileprivate var tmuxStyle: String {
+        "fg=\(foreground),bg=\(background)"
+    }
+}
+
 /// An ordinary tmux client launched inside a libghostty terminal surface.
 /// Tmux owns rendering, windows, panes, history, input, and process lifetime.
 public struct TmuxAttachmentInfo: Equatable, Sendable {
@@ -99,6 +116,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
     public let socketName: String?
     public let workspacePath: String?
     public let protectedWorkspacePath: String?
+    public let presentationStyle: TmuxPresentationStyle?
     public var launchMode: TmuxAttachmentLaunchMode
 
     public init(
@@ -107,6 +125,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         socketName: String? = nil,
         workspacePath: String? = nil,
         protectedWorkspacePath: String? = nil,
+        presentationStyle: TmuxPresentationStyle? = nil,
         launchMode: TmuxAttachmentLaunchMode = .attach
     ) {
         self.sessionName = sessionName
@@ -114,6 +133,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         self.socketName = socketName
         self.workspacePath = workspacePath
         self.protectedWorkspacePath = protectedWorkspacePath
+        self.presentationStyle = presentationStyle
         self.launchMode = launchMode
     }
 
@@ -170,7 +190,6 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         switch launchMode {
         case .attach:
             if let protectedWorkspacePath {
-                commands.append(presentationSetupCommand(tmuxPath: tmuxPath))
                 guard let kwtPath, !kwtPath.isEmpty else {
                     commands.append(
                         "printf 'Ghosthub: bundled kwt is unavailable\\n' >&2"
@@ -192,7 +211,12 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                 let protectedAttach = [
                     kwtPath, "pr", "attach", protectedWorkspacePath,
                 ].map(shellQuotedCommandArgument).joined(separator: " ")
-                commands.append("exec \(protectedAttach)")
+                commands.append(
+                    kwtAttachWithPresentationCommand(
+                        protectedAttach,
+                        tmuxPath: tmuxPath
+                    )
+                )
             } else {
                 if let workspacePath {
                     guard let kwtPath, !kwtPath.isEmpty else {
@@ -214,7 +238,12 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                     // Let kwt create and attach with one tmux client.
                     // A detached `--start-session` phase is unsafe when the
                     // user's tmux server enables destroy-unattached.
-                    commands.append("exec \(openWorkspace)")
+                    commands.append(
+                        kwtAttachWithPresentationCommand(
+                            openWorkspace,
+                            tmuxPath: tmuxPath
+                        )
+                    )
                 } else {
                     commands.append(
                         presentationSetupCommand(tmuxPath: tmuxPath)
@@ -252,6 +281,12 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                 presentationTarget, option, value,
             ]
         }
+        for (option, value) in windowPresentationOptions {
+            arguments += [
+                ";", "set-option", "-w", "-t",
+                presentationTarget, option, value,
+            ]
+        }
         return arguments
             .map(shellQuotedCommandArgument)
             .joined(separator: " ")
@@ -265,24 +300,100 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
     }
 
     private var presentationOptions: [(String, String)] {
-        [
+        guard presentationStyle != nil else { return [] }
+        return [
             ("status-style", "reverse"),
             ("message-style", "reverse"),
             ("message-command-style", "reverse"),
         ]
     }
 
-    /// Tmux behavior remains user-owned. These session-scoped style resets
-    /// only make tmux chrome resolve through the foreground and background
+    private var windowPresentationOptions: [(String, String)] {
+        guard let presentationStyle else { return [] }
+        return [
+            ("window-style", presentationStyle.tmuxStyle),
+            ("window-active-style", presentationStyle.tmuxStyle),
+        ]
+    }
+
+    /// Tmux interaction remains user-owned. These style resets only make tmux
+    /// chrome and terminal default-color queries resolve through the colors
     /// configured by Ghosthub.
     private func presentationSetupCommand(tmuxPath: String) -> String {
-        presentationOptions.map { option, value in
+        guard presentationStyle != nil else { return ":" }
+        var commands = presentationOptions.map { option, value in
             let command = tmuxArguments(
                 tmuxPath,
                 "set-option", "-t", presentationTarget, option, value
             ).map(shellQuotedCommandArgument).joined(separator: " ")
             return "\(command) >/dev/null 2>&1 || :"
-        }.joined(separator: "; ")
+        }
+        if !windowPresentationOptions.isEmpty {
+            let listWindows = tmuxArguments(
+                tmuxPath,
+                "list-windows", "-t", presentationTarget,
+                "-F", "#{window_id}"
+            ).map(shellQuotedCommandArgument).joined(separator: " ")
+            let setWindowOptions = windowPresentationOptions.map {
+                option, value in
+                let commandPrefix = tmuxArguments(
+                    tmuxPath,
+                    "set-option", "-w", "-t"
+                ).map(shellQuotedCommandArgument).joined(separator: " ")
+                return "\(commandPrefix) \"$ghosthub_window\" "
+                    + "\(shellQuotedCommandArgument(option)) "
+                    + "\(shellQuotedCommandArgument(value)) "
+                    + ">/dev/null 2>&1 || :"
+            }.joined(separator: "; ")
+            commands.append(
+                "\(listWindows) 2>/dev/null | "
+                    + "while IFS= read -r ghosthub_window; do "
+                    + "\(setWindowOptions); done"
+            )
+        }
+        return commands.joined(separator: "; ")
+    }
+
+    /// Kwt establishes or repairs the complete session before starting its
+    /// tmux client. When Ghosthub owns presentation, run kwt as the foreground
+    /// terminal's background child just long enough to identify that client,
+    /// then style the finished session and wait on the same client process.
+    /// This preserves kwt's atomic create-and-attach path under
+    /// `destroy-unattached` while ensuring repair-created windows are included.
+    private func kwtAttachWithPresentationCommand(
+        _ kwtCommand: String,
+        tmuxPath: String
+    ) -> String {
+        guard presentationStyle != nil else { return "exec \(kwtCommand)" }
+        let listClients = tmuxArguments(
+            tmuxPath,
+            "list-clients", "-t", "=\(sessionName)",
+            "-F", "#{client_pid}"
+        ).map(shellQuotedCommandArgument).joined(separator: " ")
+        return [
+            "exec 3<&0",
+            "ghosthub_existing_clients=\" $(\(listClients) 2>/dev/null "
+                + "| /usr/bin/tr '\\n' ' ') \"",
+            "\(kwtCommand) <&3 3<&- & ghosthub_kwt_pid=$!",
+            "ghosthub_kwt_client_ready=",
+            "ghosthub_kwt_attempts=0",
+            "while [ \"$ghosthub_kwt_attempts\" -lt 500 ] "
+                + "&& kill -0 \"$ghosthub_kwt_pid\" 2>/dev/null; do "
+                + "for ghosthub_client_pid in $(\(listClients) 2>/dev/null); "
+                + "do case \"$ghosthub_existing_clients\" in "
+                + "*\" $ghosthub_client_pid \"*) ;; "
+                + "*) ghosthub_kwt_client_ready=1; break ;; esac; done; "
+                + "[ -n \"$ghosthub_kwt_client_ready\" ] && break; "
+                + "ghosthub_kwt_attempts=$((ghosthub_kwt_attempts + 1)); "
+                + "/bin/sleep 0.01; done",
+            "if [ -n \"$ghosthub_kwt_client_ready\" ] "
+                + "|| kill -0 \"$ghosthub_kwt_pid\" 2>/dev/null; then "
+                + "\(presentationSetupCommand(tmuxPath: tmuxPath)); fi",
+            "wait \"$ghosthub_kwt_pid\"",
+            "ghosthub_kwt_status=$?",
+            "exec 3<&-",
+            "exit \"$ghosthub_kwt_status\"",
+        ].joined(separator: "; ")
     }
 
     private func remoteAttachCommand(
@@ -296,9 +407,13 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         if let protectedWorkspacePath {
             let protectedAttach: String
             if let remoteKwtCommandPrelude {
-                protectedAttach = remoteKwtCommandPrelude
-                    + "exec \"$ghosthub_kwt_path\" 'pr' 'attach' "
+                let kwtAttach = remoteKwtCommandPrelude
+                    + "\"$ghosthub_kwt_path\" 'pr' 'attach' "
                     + shellQuotedCommandArgument(protectedWorkspacePath)
+                protectedAttach = kwtAttachWithPresentationCommand(
+                    kwtAttach,
+                    tmuxPath: tmuxPath
+                )
             } else {
                 protectedAttach =
                     "printf 'Ghosthub: managed kwt is unavailable\\n' >&2; "
@@ -312,11 +427,14 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
             ).map(shellQuotedCommandArgument).joined(separator: " ")
             attach = "exec \(tmuxAttach)"
         }
-        let remoteAttachBody = [
-            "unset TMUX TMUX_PANE",
-            presentationSetupCommand(tmuxPath: tmuxPath),
-            attach,
-        ].joined(separator: "; ")
+        var remoteAttachCommands = ["unset TMUX TMUX_PANE"]
+        if protectedWorkspacePath == nil {
+            remoteAttachCommands.append(
+                presentationSetupCommand(tmuxPath: tmuxPath)
+            )
+        }
+        remoteAttachCommands.append(attach)
+        let remoteAttachBody = remoteAttachCommands.joined(separator: "; ")
         let remoteAttach = useAccountLoginShell
             ? remoteAccountLoginShellCommand(remoteAttachBody)
             : remoteAttachBody
@@ -349,19 +467,27 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         }
         let remoteOpen: String
         if let remoteKwtCommandPrelude {
-            remoteOpen = remoteKwtCommandPrelude
-                + "exec \"$ghosthub_kwt_path\" 'open' "
+            let kwtOpen = remoteKwtCommandPrelude
+                + "\"$ghosthub_kwt_path\" 'open' "
                 + shellQuotedCommandArgument(workspacePath)
+            remoteOpen = kwtAttachWithPresentationCommand(
+                kwtOpen,
+                tmuxPath: tmuxPath
+            )
         } else {
             remoteOpen =
                 "printf 'Ghosthub: managed kwt is unavailable\\n' >&2; "
                     + "exit 127"
         }
+        let initialBody = [
+            "unset TMUX TMUX_PANE",
+            remoteOpen,
+        ].joined(separator: "; ")
         let initialAttach = shellCommand(
             sshArguments(
                 info: info,
                 allocateTTY: true,
-                remoteCommand: remoteAccountLoginShellCommand(remoteOpen),
+                remoteCommand: remoteAccountLoginShellCommand(initialBody),
                 sshConnectionArguments: sshConnectionArguments
             )
         )

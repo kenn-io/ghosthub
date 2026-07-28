@@ -701,7 +701,7 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
         )
     }
 
-    func testIncludedConfigAutomaticallyReloads() throws {
+    func testIncludedConfigAutomaticallyReloadsWithoutSuccessNotice() throws {
         try skipUnlessLibghosttyReady()
         let (pipeline, tempRoot) = makeIsolatedPipeline()
         addTeardownBlock {
@@ -730,6 +730,16 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
                 == true
         )
 
+        try "font-size = definitely-not-a-number\n".write(
+            to: included,
+            atomically: true,
+            encoding: .utf8
+        )
+
+        waitUntil(timeout: 3) {
+            runtime.configReloadNotice?.kind == .error
+        }
+
         try "foreground = eeeeee\n".write(
             to: included,
             atomically: true,
@@ -737,8 +747,10 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
         )
 
         waitUntil(timeout: 3) {
-            runtime.configReloadNotice?.kind == .success
+            runtime.configReloadNotice == nil
+                && runtime.diagnostics.isEmpty
         }
+        XCTAssertNil(runtime.configReloadNotice)
         XCTAssertEqual(runtime.diagnostics, [])
     }
 

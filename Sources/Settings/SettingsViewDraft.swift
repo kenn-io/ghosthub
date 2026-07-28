@@ -18,6 +18,7 @@ public struct SettingsViewDraft: Equatable {
     public var selectedDomain: SettingsDomain
     public var interfaceAppearance: AppearancePreference
     public var terminalTheme: TerminalTheme
+    public var appliesTerminalThemeToTmuxSessions: Bool
     public var usesCustomTerminalFont: Bool
     public var terminalFontFamily: String
     public var terminalFontSize: Double
@@ -43,6 +44,8 @@ public struct SettingsViewDraft: Equatable {
         ) ? store.selectedDomain : .appearance
         interfaceAppearance = store.interfaceAppearance
         terminalTheme = terminalAppearance.theme
+        appliesTerminalThemeToTmuxSessions =
+            terminalAppearance.appliesThemeToTmuxSessions
         usesCustomTerminalFont = terminalAppearance.usesCustomFont
         terminalFontFamily = terminalAppearance.fontFamily
         terminalFontSize = terminalAppearance.fontSize
@@ -84,6 +87,9 @@ public struct SettingsViewDraft: Equatable {
         store.selectedDomain = selectedDomain
         store.setInterfaceAppearance(interfaceAppearance)
         store.setTerminalTheme(terminalTheme)
+        store.setTerminalThemeAppliesToTmuxSessions(
+            appliesTerminalThemeToTmuxSessions
+        )
         store.setUseCustomTerminalFont(usesCustomTerminalFont)
         store.setTerminalFontFamily(terminalFontFamily)
         store.setTerminalFontSize(terminalFontSize)

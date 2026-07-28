@@ -181,8 +181,8 @@ scan the host for repositories.
 Terminal configuration is Ghosthub-owned and applied transactionally through
 libghostty. The runtime watches the active base, project, appearance, and
 recursive include graph with debouncing. Invalid candidates never replace the
-last valid configuration, and both automatic and explicit reloads publish a
-user-visible result.
+last valid configuration. Automatic successes are silent, automatic failures
+remain visible, and explicit reloads publish a user-visible result.
 
 ## Session Attachment
 
@@ -206,13 +206,14 @@ Ghosthub supplies keepalives and retries
 transport status 255. Tmux owns all windows, panes, history, input, rendering,
 and server-side lifetime.
 
-Ghosthub normalizes only tmux's session-scoped visual chrome before attaching:
-the status and message styles resolve through the foreground and background
-from Ghosthub's Ghostty-compatible terminal configuration, with reversed terminal
-colors highlighting the status line. This styling is best-effort and can never
-prevent attachment. Tmux still owns all interaction behavior; Ghosthub does
-not modify its prefix, key tables, mouse mode, window/pane commands, history,
-or layout.
+Ghosthub does not modify shared tmux colors by default. The explicit Tmux Theme
+override is the only presentation exception: before attachment it resets
+status and message styles to terminal defaults and supplies the selected
+built-in theme's foreground and background to existing windows in the exact
+session. This gives tmux deterministic OSC 10/11 responses, but tmux shares the
+result with every attached client. The best-effort styling can never prevent
+attachment. Tmux still owns all interaction behavior; Ghosthub does not modify
+its prefix, key tables, mouse mode, window/pane commands, history, or layout.
 
 An explicit New Tmux Session action is the sole boundary where Ghosthub
 creates a bare tmux session itself. For a user-supplied exact name, local
