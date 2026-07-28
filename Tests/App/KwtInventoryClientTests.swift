@@ -88,12 +88,17 @@ struct KwtInventoryClientTests {
             remoteRunner: { host, command in
                 #expect(host == ssh)
                 #expect(command.contains("Get-Command kwt.exe"))
-                #expect(command.contains("'projects' '--json'"))
                 #expect(command.contains(
-                    "Write-Output 'GHOSTHUB_KWT_JSON'"
+                    ["projects", "--json"]
+                        .map(powerShellEncodedArgument)
+                        .joined(separator: " ")
+                ))
+                #expect(command.contains(
+                    "Write-Output "
+                        + powerShellEncodedArgument("GHOSTHUB_KWT_JSON")
                 ))
                 #expect(!command.contains("command -v"))
-                return (0, "GHOSTHUB_KWT_JSON\n[]")
+                return (0, "GHOSTHUB_KWT_JSON\r\n[]\r\n")
             }
         )
 

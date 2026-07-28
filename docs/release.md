@@ -240,8 +240,9 @@ locally built. Verify at minimum:
 - A configured SSH host discovers and attaches tmux without managed kwt.
 - Install kwt Worktree Helper selects the correct target, enables remote project
   inventory, and leaves any system `kwt` untouched.
-- On a fresh host, Add Project registers an absolute existing checkout through
-  managed kwt and makes its worktrees available without a filesystem scan.
+- On a fresh macOS or Linux host, Add Project registers an absolute existing
+  checkout through managed kwt and makes its worktrees available without a
+  filesystem scan.
 - **Check for Updates…** opens Sparkle's native UI without a configuration or
   signature error. A complete end-to-end installation requires a later release
   than the first version that embeds Sparkle.

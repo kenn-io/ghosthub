@@ -230,7 +230,7 @@ struct TmuxBinaryResolver: Sendable {
             if ($LASTEXITCODE -ne 0) {
                 exit $LASTEXITCODE
             }
-            & $ghosthubMux 'list-sessions' '-F' \(powerShellQuotedCommandArgument(discoveryFormat))
+            & $ghosthubMux 'list-sessions' '-F' \(powerShellEncodedArgument(discoveryFormat))
             $ghosthubMuxStatus = $LASTEXITCODE
             if (($ghosthubMuxStatus -eq 0) -or ($ghosthubMuxStatus -eq 1)) {
                 exit 0
@@ -308,7 +308,7 @@ struct TmuxBinaryResolver: Sendable {
         }
         let prefix = discoveryPrefix + "\t"
         let sessions = result.stdout
-            .split(separator: "\n", omittingEmptySubsequences: true)
+            .split(whereSeparator: \.isNewline)
             .compactMap { rawLine -> DiscoveredTmuxSession? in
                 let line = String(rawLine)
                 guard line.hasPrefix(prefix) else { return nil }

@@ -158,7 +158,7 @@ struct KwtWindowsInstaller: Sendable {
         $ErrorActionPreference = 'Stop'
         [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
         $OutputEncoding = [Console]::OutputEncoding
-        $ghosthubUpload = Join-Path $env:USERPROFILE \(powerShellQuotedCommandArgument(uploadName))
+        $ghosthubUpload = Join-Path $env:USERPROFILE \(powerShellEncodedArgument(uploadName))
         $ghosthubDirectory = Join-Path $env:USERPROFILE '.ghosthub\\bin'
         $ghosthubDestination = Join-Path $ghosthubDirectory 'kwt.exe'
         $ghosthubStaging = Join-Path $ghosthubDirectory ('kwt-stage-' + [System.Guid]::NewGuid().ToString('N') + '.exe')

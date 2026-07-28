@@ -23,19 +23,19 @@ enum KwtPowerShellCommand {
         if let workingDirectory {
             lines.append(
                 "Set-Location -LiteralPath "
-                    + powerShellQuotedCommandArgument(workingDirectory)
+                    + powerShellEncodedArgument(workingDirectory)
             )
         }
         if let marker {
             lines.append(
                 "Write-Output "
-                    + powerShellQuotedCommandArgument(marker)
+                    + powerShellEncodedArgument(marker)
             )
         }
         lines.append(
             "& $ghosthubKwt "
                 + arguments
-                .map(powerShellQuotedCommandArgument)
+                .map(powerShellEncodedArgument)
                 .joined(separator: " ")
         )
         lines.append("exit $LASTEXITCODE")

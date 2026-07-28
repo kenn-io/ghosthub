@@ -512,10 +512,40 @@ struct TmuxAttachmentInfoTests {
         #expect(!command.contains("command -v"))
 
         let script = try Self.decodedPowerShellScript(from: command)
-        #expect(script.contains("""
-        Remove-Item Env:TMUX, Env:TMUX_PANE -ErrorAction SilentlyContinue
-        & 'C:\\Program Files\\psmux\\tmux.exe' 'attach-session' '-E' '-t' '=doc bank''s work'
-        """))
+        #expect(script.contains(
+            "& " + [
+                #"C:\Program Files\psmux\tmux.exe"#,
+                "attach-session",
+                "-E",
+                "-t",
+                "=doc bank's work",
+            ]
+            .map(powerShellEncodedArgument)
+            .joined(separator: " ")
+        ))
+    }
+
+    @Test("Windows attachment keeps hostile values out of PowerShell source")
+    func windowsRemoteAttachEncodesHostileSessionName() throws {
+        let sessionName = #"x’;iex("attacker-command");#‘&|$()"#
+        let command = TmuxAttachmentInfo(
+            sessionName: sessionName,
+            host: .ssh(SSHHostInfo(
+                user: "wesm",
+                hostname: "arm-builder",
+                port: nil,
+                platform: .windows
+            ))
+        ).attachCommand(tmuxPath: #"C:\Tools\psmux\tmux.exe"#)
+
+        let script = try Self.decodedPowerShellScript(from: command)
+        #expect(script.contains(
+            powerShellEncodedArgument("=\(sessionName)")
+        ))
+        #expect(!script.contains(sessionName))
+        #expect(!script.contains("iex("))
+        #expect(!script.contains("’"))
+        #expect(!script.contains("‘"))
     }
 
     @Test("Windows worktrees open through kwt before psmux reconnect")
@@ -538,13 +568,29 @@ struct TmuxAttachmentInfoTests {
         let decoded = try Self.decodedPowerShellScripts(from: command)
         let scripts = try #require(decoded.count == 3 ? decoded : nil)
         #expect(scripts[0].contains(
-            #"& $ghosthubKwt 'open' 'C:\code\release work'"#
+            "& $ghosthubKwt 'open' "
+                + powerShellEncodedArgument(#"C:\code\release work"#)
         ))
         #expect(scripts[1].contains(
-            #"& 'C:\Program Files\psmux\tmux.exe' 'has-session' '-t' '=release work'"#
+            "& " + [
+                #"C:\Program Files\psmux\tmux.exe"#,
+                "has-session",
+                "-t",
+                "=release work",
+            ]
+            .map(powerShellEncodedArgument)
+            .joined(separator: " ")
         ))
         #expect(scripts[2].contains(
-            #"& 'C:\Program Files\psmux\tmux.exe' 'attach-session' '-E' '-t' '=release work'"#
+            "& " + [
+                #"C:\Program Files\psmux\tmux.exe"#,
+                "attach-session",
+                "-E",
+                "-t",
+                "=release work",
+            ]
+            .map(powerShellEncodedArgument)
+            .joined(separator: " ")
         ))
         #expect(!scripts.joined().contains("exec /bin/sh"))
     }
@@ -892,13 +938,33 @@ struct TmuxAttachmentInfoTests {
         let decoded = try Self.decodedPowerShellScripts(from: command)
         let scripts = try #require(decoded.count == 2 ? decoded : nil)
         #expect(scripts[0].contains(
-            #"& 'C:\Tools\psmux\tmux.exe' 'has-session' '-t' '=release-work'"#
+            "& " + [
+                #"C:\Tools\psmux\tmux.exe"#,
+                "has-session",
+                "-t",
+                "=release-work",
+            ]
+            .map(powerShellEncodedArgument)
+            .joined(separator: " ")
         ))
         #expect(scripts[0].contains(
-            #"'new-session' '-d' '-E' '-s' 'release-work' '-c' 'C:\code\release work' '-e' ('PATH=' + $env:PATH)"#
+            [
+                "new-session",
+                "-d",
+                "-E",
+                "-s",
+                "release-work",
+                "-c",
+                #"C:\code\release work"#,
+            ]
+            .map(powerShellEncodedArgument)
+            .joined(separator: " ")
+            + " '-e' ('PATH=' + $env:PATH)"
         ))
         #expect(scripts[1].contains(
-            #"'attach-session' '-E' '-t' '=release-work'"#
+            ["attach-session", "-E", "-t", "=release-work"]
+                .map(powerShellEncodedArgument)
+                .joined(separator: " ")
         ))
     }
 

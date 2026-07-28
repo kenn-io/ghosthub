@@ -455,6 +455,10 @@ public struct HostSummary: Identifiable, Equatable, Sendable {
         remoteDiagnostics.first
     }
 
+    public var canRegisterProjects: Bool {
+        platform != .windows
+    }
+
     public var canCreateWorktree: Bool {
         if kind == .remote, connectionState == .offline {
             return false

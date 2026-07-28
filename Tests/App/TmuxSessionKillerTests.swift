@@ -164,11 +164,13 @@ struct TmuxSessionKillerTests {
             },
             runner: { _, command in
                 commands.withLock { $0.append(command) }
-                if command.contains("'display-message'") {
+                if command.contains(
+                    powerShellEncodedArgument("display-message")
+                ) {
                     return (
                         0,
                         "GHOSTHUB_TMUX_SESSION_IDENTITY\t"
-                            + "31415\t$42\t1785182057\n"
+                            + "31415\t$42\t1785182057\r\n"
                     )
                 }
                 return (0, "")
@@ -197,16 +199,33 @@ struct TmuxSessionKillerTests {
             "[Console]::OutputEncoding"
         ) })
         #expect(recorded[0].contains(
-            #"& 'C:\Program Files\psmux\tmux.exe' '-L' 'kwt-pr-windows' 'display-message' '-p' '-t' '=review''s session:'"#
+            "& "
+                + [
+                    #"C:\Program Files\psmux\tmux.exe"#,
+                    "-L",
+                    "kwt-pr-windows",
+                    "display-message",
+                    "-p",
+                    "-t",
+                    "=review's session:",
+                ]
+                .map(powerShellEncodedArgument)
+                .joined(separator: " ")
         ))
-        #expect(recorded[1].contains("'if-shell' '-F'"))
         #expect(recorded[1].contains(
-            "'-t' '=review''s session:'"
+            ["if-shell", "-F"]
+                .map(powerShellEncodedArgument)
+                .joined(separator: " ")
         ))
         #expect(recorded[1].contains(
-            "'kill-session -t $42'"
+            ["-t", "=review's session:"]
+                .map(powerShellEncodedArgument)
+                .joined(separator: " ")
         ))
-        #expect(!recorded.joined().contains(#"'\''"#))
+        #expect(recorded[1].contains(
+            powerShellEncodedArgument("kill-session -t $42")
+        ))
+        #expect(!recorded.joined().contains("review's session"))
     }
 
     @Test("kill failure preserves host, session, and status")

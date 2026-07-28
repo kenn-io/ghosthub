@@ -278,15 +278,16 @@ struct TmuxBinaryResolverTests {
                 #expect(received == host)
                 #expect(command.contains("Get-Command tmux.exe"))
                 #expect(command.contains("'list-sessions' '-F'"))
-                #expect(command.contains("#{session_name}"))
+                #expect(!command.contains("#{session_name}"))
+                #expect(command.contains(
+                    "[System.Convert]::FromBase64String"
+                ))
                 return (
                     status: 0,
-                    stdout: """
-                    C:\\Tools\\psmux\\tmux.exe
-                    tmux 3.3.7
-                    GHOSTHUB_TMUX_SESSION\t2\t202\t$7\t1783344091\t\twindows-work
-
-                    """
+                    stdout: "C:\\Tools\\psmux\\tmux.exe\r\n"
+                        + "tmux 3.3.7\r\n"
+                        + "GHOSTHUB_TMUX_SESSION\t2\t202\t$7"
+                        + "\t1783344091\t\twindows-work\r\n"
                 )
             }
         )

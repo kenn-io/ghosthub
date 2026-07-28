@@ -79,9 +79,11 @@ struct KwtWorktreeClientTests {
         #expect(recorder.command?.contains("--branch") == false)
     }
 
-    @Test("Windows creation quotes paths and branch names for PowerShell")
+    @Test("Windows creation encodes paths and hostile branch names")
     func windowsRemoteCreation() async throws {
         let recorder = CommandRecorder()
+        let projectPath = #"C:\code\ghost hub"#
+        let branchName = #"x’;iex("attacker-command");#‘&|$()"#
         let ssh = SSHHostInfo(
             user: "wesm",
             hostname: "arm-builder",
@@ -98,21 +100,28 @@ struct KwtWorktreeClientTests {
         try await client.create(
             request: WorktreeCreateRequest(
                 projectID: UUID(),
-                branchName: "wesm's-fix",
+                branchName: branchName,
                 createsBranch: true
             ),
-            projectPath: #"C:\code\ghost hub"#,
+            projectPath: projectPath,
             on: .ssh(ssh)
         )
 
         #expect(recorder.host == ssh)
         #expect(recorder.command?.contains("Get-Command kwt.exe") == true)
         #expect(recorder.command?.contains(
-            #"Set-Location -LiteralPath 'C:\code\ghost hub'"#
+            "Set-Location -LiteralPath "
+                + powerShellEncodedArgument(projectPath)
         ) == true)
         #expect(recorder.command?.contains(
-            #"& $ghosthubKwt 'add' '--branch' 'wesm''s-fix' '--no-launch'"#
+            ["add", "--branch", branchName, "--no-launch"]
+                .map(powerShellEncodedArgument)
+                .joined(separator: " ")
         ) == true)
+        #expect(recorder.command?.contains(branchName) == false)
+        #expect(recorder.command?.contains("iex(") == false)
+        #expect(recorder.command?.contains("’") == false)
+        #expect(recorder.command?.contains("‘") == false)
         #expect(recorder.command?.contains("command -v") == false)
     }
 

@@ -94,7 +94,13 @@ struct KwtPullRequestClientTests {
         let client = KwtPullRequestClient(
             remoteRunner: { host, command in
                 recorder.record(host: host, command: command)
-                return (0, Self.listResponse)
+                return (
+                    0,
+                    Self.listResponse.replacingOccurrences(
+                        of: "\n",
+                        with: "\r\n"
+                    )
+                )
             }
         )
 
@@ -106,10 +112,13 @@ struct KwtPullRequestClientTests {
         #expect(recorder.host == ssh)
         #expect(recorder.command?.contains("Get-Command kwt.exe") == true)
         #expect(recorder.command?.contains(
-            "'pr' 'list' '--project' 'github.com/kenn-io/ghosthub'"
+            ["pr", "list", "--project", "github.com/kenn-io/ghosthub"]
+                .map(powerShellEncodedArgument)
+                .joined(separator: " ")
         ) == true)
         #expect(recorder.command?.contains(
-            "Write-Output 'GHOSTHUB_KWT_PR_JSON'"
+            "Write-Output "
+                + powerShellEncodedArgument("GHOSTHUB_KWT_PR_JSON")
         ) == true)
         #expect(recorder.command?.contains("command -v") == false)
         #expect(candidates.map(\.number) == [32])

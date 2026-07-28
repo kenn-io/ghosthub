@@ -111,13 +111,17 @@ unique staged file. Neither local nor remote operations select an unrelated
 kwt from `PATH`. This is a CLI boundary, not a vendored daemon or submodule.
 Kwt's machine-readable CLI provides project identity, worktree metadata, and
 exact tmux session names.
-On a host with no existing kwt registry, the user adds one absolute repository
-path at a time through **Add Project**. Ghosthub delegates registration to
-`kwt projects add --json`, then refreshes ordinary kwt inventory; it does not
-search the host's filesystem or write kwt's configuration itself.
-The account login shell initializes the command environment, while Ghosthub's
-own inventory and discovery commands execute under the host's POSIX `/bin/sh`;
-non-POSIX account shells such as fish are not asked to interpret those commands.
+On a macOS or Linux host with no existing kwt registry, the user adds one
+absolute repository path at a time through **Add Project**. Ghosthub delegates
+registration to `kwt projects add --json`, then refreshes ordinary kwt
+inventory; it does not search the host's filesystem or write kwt's
+configuration itself. Windows hosts do not expose project registration until
+that command boundary supports native Windows paths.
+On macOS and Linux, the account login shell initializes the command
+environment, while Ghosthub's own inventory and discovery commands execute
+under the host's POSIX `/bin/sh`; non-POSIX account shells such as fish are not
+asked to interpret those commands. Windows commands execute through encoded
+noninteractive PowerShell.
 Direct tmux discovery provides every otherwise-unbound session. A remote host
 without kwt remains a valid tmux-only host; remote inventory failures stay
 attached to that host and never replace usable local or cached inventory with a
@@ -182,9 +186,10 @@ there is no repository-intake interstitial and no first-launch modal.
 When both inventories are empty, Ghosthub explains that kwt owns project
 registration and tmux owns sessions. Ghosthub does not edit kwt's config file
 or present its retired Middleman-backed Add Repository flow. The **+** menu on
-each host exposes **Add Project**, which passes one explicit absolute checkout
-path to kwt's supported noninteractive registration command. Ghosthub does not
-scan the host for repositories.
+macOS and Linux hosts exposes **Add Project**, which passes one explicit
+absolute checkout path to kwt's supported noninteractive registration command.
+Windows hosts omit that action. Ghosthub does not scan the host for
+repositories.
 
 ## Source Layout
 

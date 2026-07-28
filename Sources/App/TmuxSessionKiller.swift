@@ -210,7 +210,7 @@ struct TmuxSessionKiller: Sendable {
         $ErrorActionPreference = 'Stop'
         [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
         $OutputEncoding = [Console]::OutputEncoding
-        & \(arguments.map(powerShellQuotedCommandArgument).joined(separator: " "))
+        & \(arguments.map(powerShellEncodedArgument).joined(separator: " "))
         exit $LASTEXITCODE
         """
     }
@@ -248,7 +248,7 @@ struct TmuxSessionKiller: Sendable {
         _ output: String
     ) -> TmuxSessionIdentity? {
         let markedLine = output
-            .split(separator: "\n", omittingEmptySubsequences: true)
+            .split(whereSeparator: \.isNewline)
             .reversed()
             .map(String.init)
             .first { $0.hasPrefix(identityMarker) }

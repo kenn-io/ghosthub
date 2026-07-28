@@ -34,7 +34,9 @@ struct KwtWindowsInstallerTests {
                     )
                 }
                 #expect(command.contains(#".ghosthub\bin"#))
-                #expect(command.contains("'ghosthub-upload.exe'"))
+                #expect(command.contains(
+                    powerShellEncodedArgument("ghosthub-upload.exe")
+                ))
                 #expect(command.contains("'kwt.exe'"))
                 #expect(command.contains("[System.IO.File]::Replace"))
                 #expect(command.contains("$ghosthubBackup"))

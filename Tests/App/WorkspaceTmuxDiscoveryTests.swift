@@ -1956,7 +1956,11 @@ struct WorkspaceTmuxDiscoveryTests {
                 #expect(host.platform == .windows)
                 #expect(command.contains("Get-Command tmux.exe"))
                 #expect(command.contains("GHOSTHUB_KWT_AVAILABLE"))
-                #expect(command.contains(#".ghosthub\bin\kwt.exe"#))
+                #expect(command.contains(
+                    powerShellEncodedArgument(
+                        ghosthubManagedWindowsKwtRelativePath
+                    )
+                ))
                 #expect(!command.contains("command -v"))
                 return (
                     status: 0,

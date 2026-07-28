@@ -514,6 +514,31 @@ struct CommandPaletteModelTests {
         )
     }
 
+    @Test("Windows hosts do not offer POSIX project registration")
+    func windowsHostsHideAddProject() {
+        let host = HostSummary.fixture(
+            name: "ARM Builder",
+            kind: .remote,
+            platform: .windows,
+            sshDestination: "wesm@arm-builder"
+        )
+        let commands = makeCommandPaletteCommands(
+            snapshot: WorkspaceSnapshot(
+                hosts: [host],
+                projects: [],
+                worktrees: []
+            ),
+            selection: WorkspaceSelection(selectedHostID: host.id)
+        )
+
+        commands.expectCommandContains(
+            title: "New tmux session on ARM Builder"
+        )
+        commands.expectCommandNotContains(
+            title: "Add Project on ARM Builder"
+        )
+    }
+
     @Test("import PR command hidden without GitHub-linked projects")
     func importPRCommandHiddenWithoutGitHubLink() {
         let host = HostSummary.fixture(

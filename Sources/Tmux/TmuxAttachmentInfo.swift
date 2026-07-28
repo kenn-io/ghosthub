@@ -28,8 +28,12 @@ public func shellQuotedCommandArgument(_ value: String) -> String {
     "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
 }
 
-public func powerShellQuotedCommandArgument(_ value: String) -> String {
-    "'\(value.replacingOccurrences(of: "'", with: "''"))'"
+/// Keeps caller-controlled text out of PowerShell source. The generated
+/// expression contains only a Base64 alphabet in an ASCII-delimited literal.
+public func powerShellEncodedArgument(_ value: String) -> String {
+    let encoded = Data(value.utf8).base64EncodedString()
+    return "([System.Text.Encoding]::UTF8.GetString("
+        + "[System.Convert]::FromBase64String('\(encoded)')))"
 }
 
 public func powerShellEncodedCommand(_ command: String) -> String {
@@ -50,7 +54,7 @@ public let ghosthubManagedWindowsKwtRelativePath =
 public func powerShellKwtResolutionPrelude() -> String {
     """
     $ghosthubManagedKwt = Join-Path $env:USERPROFILE \(
-        powerShellQuotedCommandArgument(ghosthubManagedWindowsKwtRelativePath)
+        powerShellEncodedArgument(ghosthubManagedWindowsKwtRelativePath)
     )
     if (Test-Path -LiteralPath $ghosthubManagedKwt -PathType Leaf) {
         $ghosthubKwt = $ghosthubManagedKwt
@@ -63,7 +67,7 @@ public func powerShellKwtResolutionPrelude() -> String {
 public func powerShellKwtAvailabilityPrelude() -> String {
     """
     $ghosthubManagedKwt = Join-Path $env:USERPROFILE \(
-        powerShellQuotedCommandArgument(ghosthubManagedWindowsKwtRelativePath)
+        powerShellEncodedArgument(ghosthubManagedWindowsKwtRelativePath)
     )
     $ghosthubKwtAvailable = (Test-Path -LiteralPath $ghosthubManagedKwt -PathType Leaf) -or ($null -ne (Get-Command kwt.exe -CommandType Application -ErrorAction SilentlyContinue))
     """
@@ -626,7 +630,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         $OutputEncoding = [Console]::OutputEncoding
         Remove-Item Env:TMUX, Env:TMUX_PANE -ErrorAction SilentlyContinue
         \(powerShellKwtResolutionPrelude())
-        & $ghosthubKwt 'open' \(powerShellQuotedCommandArgument(workspacePath))
+        & $ghosthubKwt 'open' \(powerShellEncodedArgument(workspacePath))
         exit $LASTEXITCODE
         """
         let initialAttach = shellCommand(
@@ -679,7 +683,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         if let protectedWorkspacePath {
             attach = """
             \(powerShellKwtResolutionPrelude())
-            & $ghosthubKwt 'pr' 'attach' \(powerShellQuotedCommandArgument(protectedWorkspacePath))
+            & $ghosthubKwt 'pr' 'attach' \(powerShellEncodedArgument(protectedWorkspacePath))
             """
         } else {
             attach = windowsMuxCommand(
@@ -827,7 +831,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         }
         values += arguments
         return "& " + values
-            .map(powerShellQuotedCommandArgument)
+            .map(powerShellEncodedArgument)
             .joined(separator: " ")
     }
 

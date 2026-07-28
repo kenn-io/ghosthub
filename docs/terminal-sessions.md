@@ -176,18 +176,20 @@ of a login-shell or tmux failure. Remote hosts where Ghosthub's managed kwt is
 absent remain available for direct tmux discovery and attachment. Inventory
 never uploads the helper. The user grants permission with **Install kwt
 Worktree Helper** in Host Settings, after which inventory and protected
-attachment execute its exact revisioned path. A fresh helper has an empty
-project registry: **Add Project** in the host's **+** menu passes one
-user-supplied absolute checkout path to kwt's noninteractive registration
-command, then refreshes inventory. Immediately before registration, Ghosthub
-re-resolves the host ID and rejects the operation if its endpoint changed
-while Add Project was open. No filesystem scan occurs.
+attachment execute its exact revisioned path. On macOS and Linux, a fresh
+helper has an empty project registry: **Add Project** in the host's **+** menu
+passes one user-supplied absolute checkout path to kwt's noninteractive
+registration command, then refreshes inventory. Immediately before
+registration, Ghosthub re-resolves the host ID and rejects the operation if its
+endpoint changed while Add Project was open. No filesystem scan occurs.
 
 On experimental Windows hosts, an explicit Install Bundled kwt action probes
 the process architecture, uploads the matching pinned AMD64 or ARM64 helper,
 and activates it at `%USERPROFILE%\.ghosthub\bin\kwt.exe`. Inventory prefers
 that per-user managed helper and otherwise resolves `kwt.exe` from `PATH`.
-Discovery never installs or updates remote software implicitly.
+Project registration is not yet supported on Windows, so its Add Project
+actions are hidden. Discovery never installs or updates remote software
+implicitly.
 
 Kwt session names are removed from the generic session group and rendered
 under their project/worktree. Every remaining tmux session is shown in the
