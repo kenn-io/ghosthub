@@ -7,10 +7,10 @@
 <h1 align="center">Ghosthub</h1>
 
 <p align="center">
-  <strong>A power terminal for your agents' tmux sessions.</strong>
+  <strong>A native terminal for your fleet of tmux sessions.</strong>
   <br>
-  Attach to every session in your fleet, local or over SSH, with keepalives,
-  automatic reconnect, and worktree-aware navigation.
+  Find and enter the sessions behind your projects and coding agents,
+  on your Mac or over SSH.
 </p>
 
 <p align="center">
@@ -26,6 +26,10 @@
   ·
   <a href="https://github.com/kenn-io/ghosthub/releases"><strong>Download</strong></a>
   ·
+  <a href="https://ghosthub.io/guide/"><strong>Guide</strong></a>
+  ·
+  <a href="CHANGELOG.md"><strong>Changelog</strong></a>
+  ·
   <a href="https://discord.gg/nEB7VaAnU9"><strong>Discord</strong></a>
 </p>
 
@@ -37,38 +41,32 @@
   >
 </p>
 
-Ghosthub gives developers one fast, native place to find and enter the terminal
-sessions behind their projects and coding agents. It discovers the tmux
-sessions you already have, keeps remote clients connected through ordinary
-network interruptions, and makes switching between hosts, projects, and
-worktrees feel immediate.
+Ghosthub discovers the tmux sessions you already have and organizes them by
+host, project, and worktree. Tmux continues to own windows, panes, layout,
+history, and process lifetime; Ghosthub provides the native macOS interface,
+terminal presentation, and SSH reconnect supervision.
 
-There is no proprietary session format and nothing to migrate. Tmux continues
-to own windows, panes, layout, history, and process lifetime. Ghosthub is the
-macOS interface that makes the whole fleet easy to navigate.
+There is no proprietary session format, background daemon, or migration.
 
 ## Highlights
 
-- **Every tmux session in one sidebar.** See local sessions, remote sessions,
-  and worktree sessions together—even when they were created outside Ghosthub.
-- **SSH that handles real life.** Keepalives and automatic reconnect let a
-  remote tmux session survive Wi-Fi changes, sleep, and airplane mode.
-- **Worktree-native navigation with
-  [kwt](https://kwt.sh).** Kwt is a cross-platform Git
-  worktree manager written in Go for tmux-backed development. Its projects and
-  worktrees appear alongside ordinary tmux sessions, with exact
-  workspace-to-session mapping.
-- **Native tmux behavior.** Use the tmux window, pane, keybinding, history, and
-  plugin setup you already trust. Closing Ghosthub detaches; it does not kill
-  the session.
-- **Powered by libghostty.** GPU-accelerated terminal rendering and the library's
-  configuration format, with an isolated Ghosthub-owned config.
-- **Built for macOS.** A lightweight SwiftUI/AppKit application—no Electron
-  and no background daemon.
+- **One fleet sidebar.** Navigate local sessions, remote sessions, projects,
+  and worktrees—even when their tmux sessions were created outside Ghosthub.
+- **Resilient SSH.** Keepalives and automatic reconnect preserve remote
+  presentations through ordinary network interruptions.
+- **Worktree and pull-request workflows.** The bundled
+  [kwt](https://kwt.sh) helper supplies project identity, worktrees, and exact
+  tmux session names without requiring a system kwt installation.
+- **Native tmux lifecycle.** Closing a presentation detaches. Ending a session
+  requires the explicit, confirmed **Kill Session** action.
+- **Native workspaces.** Open independent windows or macOS tabs, and search
+  sessions and common actions from the Command Palette.
+- **Fast terminal rendering.** Ghosthub embeds libghostty with an isolated,
+  Ghostty-compatible configuration—no Electron and no Ghostty.app dependency.
 
 ## Install
 
-Ghosthub currently requires:
+Ghosthub requires:
 
 - an Apple Silicon Mac
 - macOS 26 (Tahoe) or newer
@@ -76,74 +74,64 @@ Ghosthub currently requires:
 
 1. Download the latest notarized
    [Ghosthub DMG](https://github.com/kenn-io/ghosthub/releases).
-2. Open the DMG and drag **Ghosthub** to **Applications**.
-3. Launch Ghosthub. Future releases are delivered through the built-in
-   automatic updater.
+2. Drag **Ghosthub** to **Applications** and launch it.
+3. Install tmux locally if needed:
 
-Install tmux on the local Mac with Homebrew if needed:
+   ```sh
+   brew install tmux
+   ```
 
-```sh
-brew install tmux
-```
+Remote hosts need tmux and non-interactive SSH authentication backed by a key
+or SSH agent. Password-only hosts cannot populate the sidebar.
 
-Remote hosts need tmux 3.2 or newer and non-interactive SSH authentication
-backed by a key or SSH agent. Ghosthub discovers remote inventory with
-`BatchMode=yes`, so password-only hosts cannot populate the sidebar. Installing
-[kwt](https://kwt.sh) remotely is optional unless you want that host's projects
-and worktrees in the sidebar.
+## Quick start
 
-## Five-minute guide
+### Open or create a session
 
-### 1. Open a session
+Expand your Mac in the sidebar and select an existing tmux session. Use the
+host's **+** menu to create a named session. Closing its Ghosthub window or tab
+only detaches; use the session action menu when you explicitly want to kill it.
 
-Launch Ghosthub and expand **Local**. Existing tmux sessions appear
-automatically. Click any session to attach with a normal tmux client.
+### Add an SSH host
 
-Use the **+** button beside a host to create a named tmux session when you want
-a new one. Closing its Ghosthub presentation only detaches from tmux, so the
-work keeps running.
+Open **Settings → Hosts**, add an SSH address such as `devbox`,
+`alice@build-server`, or `server.example.com:2222`, and choose
+**Test Connection**. If your OpenSSH policy prompts for a new host key, verify
+the host once with system `ssh` first.
 
-### 2. Add an SSH host
+Tmux-only hosts need no other setup. For project and worktree context, choose
+**Install kwt Worktree Helper** in Host Settings. Ghosthub copies the pinned
+helper for that host's operating system and CPU; it does not install or replace
+a system kwt.
 
-Open **Settings** with <kbd>⌘</kbd><kbd>,</kbd>, choose **Hosts**, and press
-**+**. Enter any destination accepted by your SSH configuration, such as:
+### Add projects and worktrees
 
-```text
-devbox
-alice@build-server
-server.example.com:2222
-```
+Open the **+** menu beside a local or remote host, choose **Add Project**, and
+enter the absolute path to an existing checkout. Ghosthub registers that one
+repository through its bundled or managed kwt helper and does not scan the
+machine.
 
-Use **Test Connection**, then close Settings. The host's tmux sessions will
-appear in the sidebar. A temporarily unreachable host stays isolated; it does
-not block local sessions or the rest of your fleet.
+Select a project and press <kbd>⌘</kbd><kbd>⇧</kbd><kbd>N</kbd> to create a
+worktree from a branch or pull request. Selecting a listed worktree creates or
+repairs its canonical tmux session when needed, then attaches an ordinary tmux
+client.
 
-### 3. Add project and worktree context with kwt
+## Navigation
 
-[Kwt](https://kwt.sh) is a cross-platform Git worktree manager
-written in Go for tmux-backed development and coding-agent workflows. The same
-CLI runs on macOS and Linux, so it can supply workspace context on both the
-local Mac and remote hosts while Ghosthub remains a native Swift macOS app.
-Ghosthub ships with a pinned kwt helper for reliable local integration. To
-register repositories or manage them from the command line, install the kwt
-CLI:
+Press <kbd>⌘</kbd><kbd>⇧</kbd><kbd>P</kbd> to open the **Command Palette** and
+search across hosts, projects, worktrees, sessions, settings, and actions.
 
-```sh
-go install go.kenn.io/kwt/cmd/kwt@latest
-```
+| Shortcut | Action |
+| --- | --- |
+| <kbd>⌘</kbd><kbd>⇧</kbd><kbd>P</kbd> | Open Command Palette |
+| <kbd>⌘</kbd><kbd>T</kbd> | Open a new workspace tab |
+| <kbd>⌘</kbd><kbd>N</kbd> | Open a new workspace window |
+| <kbd>⌘</kbd><kbd>B</kbd> | Show or hide the sidebar |
+| <kbd>⌘</kbd><kbd>⇧</kbd><kbd>N</kbd> | Create a worktree |
+| <kbd>⌘</kbd><kbd>W</kbd> | Detach the current presentation |
+| <kbd>⌘</kbd><kbd>,</kbd> | Open Settings |
 
-Run `kwt` once from a repository to register it:
-
-```sh
-cd ~/code/my-project
-kwt
-```
-
-The project and its worktrees will appear under that host in Ghosthub. Select
-a project and press <kbd>⌘</kbd><kbd>⇧</kbd><kbd>N</kbd> to create a new
-worktree, or use **Quick Launch** to jump there without reaching for the mouse.
-
-### 4. Make the terminal yours
+## Terminal configuration
 
 Ghosthub reads its own configuration at:
 
@@ -153,63 +141,36 @@ Ghosthub reads its own configuration at:
 
 The file uses
 [Ghostty's configuration format](https://ghostty.org/docs/config/reference),
-but remains separate from Ghostty.app so the two applications can evolve
-independently. Appearance, keyboard, worktree, agent, and host preferences are
-also available in **Settings**. Ghosthub automatically reloads the active
-configuration when the base file, a project override, or a recursively included
-file changes. Use **Ghosthub → Reload Configuration** when you want an explicit
-reload and diagnostic result.
-
-## Useful shortcuts
-
-| Shortcut | Action |
-| --- | --- |
-| <kbd>⌘</kbd><kbd>⇧</kbd><kbd>P</kbd> | Open Quick Launch |
-| <kbd>⌘</kbd><kbd>B</kbd> | Show or hide the sidebar |
-| <kbd>⌘</kbd><kbd>⇧</kbd><kbd>N</kbd> | Create a worktree in the selected project |
-| <kbd>⌘</kbd><kbd>⇧</kbd><kbd>,</kbd> | Reload terminal configuration |
-| <kbd>⌘</kbd><kbd>,</kbd> | Open Settings |
-| <kbd>⌘</kbd><kbd>W</kbd> | Detach the current presentation |
+but remains independent of Ghostty.app configuration and state. Ghosthub
+reloads the active configuration when the base file, an included file, or a
+project override changes.
 
 ## How the pieces fit
 
-**Tmux owns the session.** Ghosthub never rebuilds or replaces tmux windows,
-panes, history, or process management.
+**Tmux owns terminal sessions.** It remains authoritative for windows, panes,
+layout, history, keybindings, plugins, and process lifetime.
 
-**[Kwt](https://kwt.sh) owns worktree identity.** It tells
-Ghosthub which projects and worktrees exist and the exact tmux session
-associated with each workspace. Kwt is optional if you only want Ghosthub as a
-local and remote tmux session switcher.
+**[Kwt](https://kwt.sh) owns worktree identity.** It reports projects,
+worktrees, and their exact tmux session names. Kwt is optional when you only
+want a local and remote tmux session switcher.
 
-**Ghosthub owns the experience.** It discovers sessions, organizes the fleet,
-presents native terminal clients, and supervises SSH keepalive and reconnect.
+**Ghosthub owns presentation.** It discovers the fleet, presents native
+terminal clients, organizes workspaces, and supervises SSH reconnect.
 
 ## Anonymous usage data
 
-Packaged Ghosthub releases send one anonymous `application active` event to
-PostHog at most once per UTC day. This gives the project a daily active
-installation count without collecting repository, worktree, host, session,
-path, command, or terminal data.
-
-Each event uses a random installation UUID stored in
-`~/.ghosthub/telemetry.json`. It includes only:
-
-- `application: "ghosthub"`
-- `source: "native_app"`
-- the Ghosthub version and build number
-- `$process_person_profile: false`
-- `$geoip_disable: true`
-
-Disable reporting in **Settings → Privacy** by turning off **Share anonymous
-usage data**. You can also launch Ghosthub with
-`GHOSTHUB_TELEMETRY_ENABLED=0` or `TELEMETRY_ENABLED=0`. Debug builds and test
-runs never configure the production telemetry client.
+Packaged releases send at most one anonymous daily activity event, enabled by
+default, containing only a random installation ID and the Ghosthub version and
+build number. Repository, worktree, host, session, path, command, and terminal
+data are not collected. Disable reporting in **Settings → Privacy**. The full
+contract is documented in the
+[architecture](docs/architecture.md#anonymous-usage-telemetry) and
+[threat model](docs/threat-model.md).
 
 ## Build from source
 
-The packaged app is the easiest way to use Ghosthub. Contributors who want to
-build it need macOS 26, Xcode 26, Zig, uv, and the Metal Toolchain. Start with
-the [development quick start](docs/quickstart.md), then see
+Contributors need macOS 26, Xcode 26, Zig, uv, Go, and the Metal Toolchain.
+Start with the [development quick start](docs/quickstart.md), then read
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Architecture, security boundaries, terminal behavior, and release operations
