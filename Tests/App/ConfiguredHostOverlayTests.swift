@@ -117,6 +117,62 @@ struct ConfiguredHostOverlayTests {
         #expect(result.sessions.isEmpty)
     }
 
+    @Test(
+        "changing host platform clears inventory",
+        arguments: [
+            (from: HostPlatform.linux, to: HostPlatform.windows),
+            (from: HostPlatform.windows, to: HostPlatform.linux),
+        ]
+    )
+    func changingPlatformClearsInventory(
+        from: HostPlatform,
+        to: HostPlatform
+    ) {
+        let host = HostSummary.fixture(
+            configKey: "builder",
+            name: "Builder",
+            kind: .remote,
+            platform: from,
+            sshDestination: "builder",
+            tmuxSessions: [
+                .init(name: "old-session", managed: false, windows: []),
+            ]
+        )
+        let project = ProjectSummary.fixture(hostID: host.id)
+        let worktree = WorktreeSummary.fixture(
+            hostID: host.id,
+            projectID: project.id
+        )
+        let session = TerminalSessionSummary(
+            id: UUID(),
+            hostID: host.id,
+            worktreeID: worktree.id,
+            isAlive: true
+        )
+        let source = WorkspaceSnapshot.fixture(
+            hosts: [host],
+            projects: [project],
+            worktrees: [worktree],
+            sessions: [session]
+        )
+
+        let result = ConfiguredHostOverlay.apply([
+            SSHHost(
+                configKey: "builder",
+                name: "Builder",
+                platform: to,
+                sshDestination: "builder"
+            ),
+        ], to: source)
+
+        #expect(result.hosts[0].id == host.id)
+        #expect(result.hosts[0].platform == to)
+        #expect(result.hosts[0].tmuxSessions.isEmpty)
+        #expect(result.projects.isEmpty)
+        #expect(result.worktrees.isEmpty)
+        #expect(result.sessions.isEmpty)
+    }
+
     @Test("duplicate destinations receive distinct host identities")
     func duplicateDestinationsReceiveDistinctIDs() {
         let existing = HostSummary.fixture(
