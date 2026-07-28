@@ -94,7 +94,7 @@ struct KwtRemoteInstallerTests {
             .map { String(format: "%02x", $0) }
             .joined()
         let command = KwtRemoteInstaller.installCommand(
-            target: .linuxAMD64,
+            target: .darwinARM64,
             revision: revision,
             incomingName: incomingName,
             digest: digest

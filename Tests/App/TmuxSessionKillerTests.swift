@@ -6,6 +6,97 @@ import Testing
 
 @Suite("tmux session termination")
 struct TmuxSessionKillerTests {
+    @Test("matching identity is killed while a replacement survives")
+    func realTmuxIdentityBoundary() async throws {
+        guard case let .success(tmuxPath) =
+            TmuxBinaryResolver().resolveTmuxPath()
+        else {
+            return
+        }
+        let socketName = "ghosthub-kill-\(UUID().uuidString.lowercased())"
+        let sessionName = "same-name"
+        defer {
+            _ = TmuxBinaryResolver.runProcess(
+                executable: tmuxPath,
+                arguments: ["-L", socketName, "kill-server"],
+                timeout: 5
+            )
+        }
+        let anchor = TmuxBinaryResolver.runProcess(
+            executable: tmuxPath,
+            arguments: [
+                "-f", "/dev/null", "-L", socketName,
+                "new-session", "-d", "-s", "anchor",
+            ],
+            timeout: 5
+        )
+        #expect(anchor.status == 0)
+        let initial = TmuxBinaryResolver.runProcess(
+            executable: tmuxPath,
+            arguments: [
+                "-L", socketName, "new-session", "-d", "-s", sessionName,
+            ],
+            timeout: 5
+        )
+        #expect(initial.status == 0)
+
+        let killer = TmuxSessionKiller(
+            pathResolver: { _ in .success(tmuxPath) }
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: UUID(),
+            name: sessionName,
+            socketName: socketName
+        )
+        let originalIdentity = try await killer.sessionIdentity(
+            selection,
+            on: .local
+        )
+
+        try await killer.kill(
+            selection,
+            expectedIdentity: originalIdentity,
+            on: .local
+        )
+        let absent = TmuxBinaryResolver.runProcess(
+            executable: tmuxPath,
+            arguments: [
+                "-L", socketName, "has-session", "-t", "=\(sessionName):",
+            ],
+            timeout: 5
+        )
+        #expect(absent.status != 0)
+
+        let replacement = TmuxBinaryResolver.runProcess(
+            executable: tmuxPath,
+            arguments: [
+                "-L", socketName, "new-session", "-d", "-s", sessionName,
+            ],
+            timeout: 5
+        )
+        #expect(replacement.status == 0)
+        await #expect {
+            try await killer.kill(
+                selection,
+                expectedIdentity: originalIdentity,
+                on: .local
+            )
+        } throws: { error in
+            error as? TmuxSessionKillError == .sessionChanged(
+                host: "localhost",
+                session: sessionName
+            )
+        }
+        let replacementStillRunning = TmuxBinaryResolver.runProcess(
+            executable: tmuxPath,
+            arguments: [
+                "-L", socketName, "has-session", "-t", "=\(sessionName):",
+            ],
+            timeout: 5
+        )
+        #expect(replacementStillRunning.status == 0)
+    }
+
     @Test("kill checks the exact session identity on its selected socket")
     func exactSocketIdentity() async throws {
         let recordedCommand = LockedValue<String?>(nil)
