@@ -55,16 +55,17 @@ building the remote variant matrix; the repository slug used by
 helper it built from the pin; a local build against a substituted
 `KWT_BINARY_PATH` is recorded as `unpinned` rather than inheriting the pin. Kwt is part of Ghosthub's
 signed code, but it remains an ordinary CLI rather than a daemon or state
-authority of its own. The pinned revision must support the complete automation
+authority of its own. The pinned revision supports the complete automation
 contract consumed by the app, including the isolated tmux socket identity
 returned by session-free `pr import`, the inert shell-only protected session
 created or repaired by `pr attach`, and refusal to open protected imports
-through kwt's ordinary default-server open paths. It must also support
+through kwt's ordinary default-server open paths. It also supports
 `open <exact-worktree-path>`, which establishes or repairs an ordinary
 workspace's canonical session and keeps its initial tmux client attached.
-Exact-path resolution must operate from the supplied Git worktree rather than
-depending on the configured global base because repository-local inventory
-can report linked worktrees stored elsewhere. Its start-only automation mode
+Exact-path resolution operates from the supplied Git worktree before global
+pattern matching, so it does not depend on the configured global base when
+repository-local inventory reports primary or linked worktrees stored
+elsewhere. Its start-only automation mode
 must never prompt for target-config trust or fuzzy layout selection; callers
 may still select a deterministic layout explicitly.
 
