@@ -90,6 +90,19 @@ if [[ -n "$APPLE_SIGNING_IDENTITY" ]]; then
     "$KWT_HELPER_PATH"
   codesign --verify --strict --verbose=2 "$KWT_HELPER_PATH"
 
+  for target in darwin-amd64 darwin-arm64; do
+    REMOTE_KWT_HELPER_PATH="$RELEASE_APP_PATH/Contents/Resources/KwtRemote/$target/kwt"
+    printf 'Codesigning remote kwt helper (%s): %s\n' \
+      "$target" "$REMOTE_KWT_HELPER_PATH"
+    codesign \
+      --force \
+      --options runtime \
+      --timestamp \
+      --sign "$APPLE_SIGNING_IDENTITY" \
+      "$REMOTE_KWT_HELPER_PATH"
+    codesign --verify --strict --verbose=2 "$REMOTE_KWT_HELPER_PATH"
+  done
+
   printf 'Codesigning app bundle: %s\n' "$RELEASE_APP_PATH"
   codesign \
     --force \

@@ -205,12 +205,14 @@ The manual path imports the signing certificate into an ephemeral keychain,
 builds the pinned local kwt helper, verifies that it is an Apple Silicon
 Mach-O, cross-compiles the Darwin/Linux amd64/arm64 remote matrix,
 builds release-optimized libghostty and Ghosthub, re-signs Sparkle's nested
-helpers and framework with Ghosthub's Developer ID identity, signs kwt and the
-enclosing app, signs the DMG, submits it to Apple, staples and validates the
-ticket, and uploads a seven-day candidate artifact. It does not consume the
-production Sparkle private key, generate an appcast, create a tag, or create a
-GitHub release. Both checksum files name the DMG by basename, so they remain
-valid after download.
+helpers and framework with Ghosthub's Developer ID identity, signs the local
+kwt helper and both Darwin remote kwt variants with hardened runtime and secure
+timestamps, then signs the enclosing app and DMG, submits it to Apple, staples
+and validates the ticket, and uploads a seven-day candidate artifact. Linux
+remote variants remain unsigned ELF resources. The candidate does not consume
+the production Sparkle private key, generate an appcast, create a tag, or
+create a GitHub release. Both checksum files name the DMG by basename, so they
+remain valid after download.
 
 Download the candidate and verify either checksum from the directory that
 contains the three artifact files:
@@ -336,10 +338,12 @@ load it from the protected 1Password export as described by the operations
 runbook.
 
 Outputs live in `dist/release/`. `tools/build_release_dmg.sh` signs Sparkle's
-nested executables and services from the inside out, then kwt, then the
-containing app; do not replace that release order with recursive
-`codesign --deep` signing. Sparkle remains under `Contents/Frameworks`, and
-SwiftPM resource bundles remain under `Contents/Resources`; placing
+nested executables and services from the inside out, then the local kwt helper
+and Darwin remote kwt resources, then the containing app; do not replace that
+release order with recursive `codesign --deep` signing. Mach-O helpers require
+their own Developer ID signatures even when staged as non-executable resources;
+the Linux ELF variants do not. Sparkle remains under `Contents/Frameworks`,
+and SwiftPM resource bundles remain under `Contents/Resources`; placing
 compatibility symlinks at the `.app` root creates unsealed content that strict
 code-signing rejects. Ghosthub's AGPL license and every third-party notice in
 `LICENSES` are staged during the same assembly step.

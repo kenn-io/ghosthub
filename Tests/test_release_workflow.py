@@ -122,15 +122,21 @@ def test_release_signs_nested_code_before_the_app_and_validates_notarization():
     assert 'xattr -cr "$RELEASE_APP_PATH" || true' not in text
     sparkle_sign = text.index("Codesigning Sparkle component")
     helper_sign = text.index("Codesigning kwt helper")
+    remote_helper_sign = text.index("Codesigning remote kwt helper")
     app_sign = text.index("Codesigning app bundle")
-    assert sparkle_sign < helper_sign < app_sign
+    assert sparkle_sign < helper_sign < remote_helper_sign < app_sign
     assert "Versions/B/Autoupdate" in text
     assert "XPCServices/Downloader.xpc" in text
     assert "XPCServices/Installer.xpc" in text
     assert "Versions/B/Updater.app" in text
+    assert "for target in darwin-amd64 darwin-arm64" in text
     assert "--preserve-metadata=identifier,entitlements" in text
     assert "entitlements,requirements" not in text
     assert 'codesign --verify --strict --verbose=2 "$KWT_HELPER_PATH"' in text
+    assert (
+        'codesign --verify --strict --verbose=2 "$REMOTE_KWT_HELPER_PATH"'
+        in text
+    )
     assert 'xcrun stapler validate "$RELEASE_DMG_PATH"' in text
     assert "spctl --assess --type open" in text
 
