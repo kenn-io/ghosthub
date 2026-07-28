@@ -440,6 +440,11 @@ struct TmuxAttachmentInfoTests {
         #expect(!command.contains("--start-session"))
         #expect(command.contains("ghosthub-ssh-kwt-probe"))
         #expect(command.contains("has-session"))
+        #expect(
+            command.components(
+                separatedBy: "${SHELL:-/bin/sh}"
+            ).count - 1 == 3
+        )
     }
 
     @Test("remote worktree switches to tmux only after transport loss")
@@ -497,9 +502,11 @@ struct TmuxAttachmentInfoTests {
         )
         defer { try? FileManager.default.removeItem(at: directory) }
         let initialCounter = directory.appendingPathComponent("initial-count")
+        let sleepCounter = directory.appendingPathComponent("sleep-count")
         let initial = directory.appendingPathComponent("initial")
         let probe = directory.appendingPathComponent("probe")
         let reconnect = directory.appendingPathComponent("reconnect")
+        let sleep = directory.appendingPathComponent("sleep")
         try """
         #!/bin/sh
         printf x >> "$GHOSTHUB_INITIAL_COUNTER"
@@ -513,7 +520,11 @@ struct TmuxAttachmentInfoTests {
         #!/bin/sh
         : > "$GHOSTHUB_RECONNECT_MARKER"
         """.write(to: reconnect, atomically: true, encoding: .utf8)
-        for executable in [initial, probe, reconnect] {
+        try """
+        #!/bin/sh
+        printf '%s\n' "$1" >> "$GHOSTHUB_SLEEP_COUNTER"
+        """.write(to: sleep, atomically: true, encoding: .utf8)
+        for executable in [initial, probe, reconnect, sleep] {
             try FileManager.default.setAttributes(
                 [.posixPermissions: 0o755], ofItemAtPath: executable.path
             )
@@ -528,6 +539,9 @@ struct TmuxAttachmentInfoTests {
         process.environment = ProcessInfo.processInfo.environment.merging([
             "GHOSTHUB_INITIAL_COUNTER": initialCounter.path,
             "GHOSTHUB_RECONNECT_MARKER": reconnect.path + ".ran",
+            "GHOSTHUB_SLEEP_COUNTER": sleepCounter.path,
+            "PATH": directory.path + ":"
+                + ProcessInfo.processInfo.environment["PATH", default: ""],
         ]) { _, new in new }
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
@@ -537,6 +551,9 @@ struct TmuxAttachmentInfoTests {
         #expect(process.terminationStatus == 0)
         #expect(
             try String(contentsOf: initialCounter, encoding: .utf8) == "xx"
+        )
+        #expect(
+            try String(contentsOf: sleepCounter, encoding: .utf8) == "1\n"
         )
         #expect(!FileManager.default.fileExists(
             atPath: reconnect.path + ".ran"

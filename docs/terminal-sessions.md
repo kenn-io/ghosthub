@@ -88,10 +88,13 @@ remote host, only an SSH transport loss can hand a kwt-opened session to
 Ghosthub's attach-only reconnect loop. Ghosthub first retries SSH to probe the
 exact session: confirmed presence advances to ordinary attachment, while
 confirmed absence reruns `kwt open` because the failed SSH connection may never
-have executed it. Unbound discovered sessions remain attach-only. Ghosthub does
-not expose rename, split, resize, window, or pane operations. Kill Session is
-exposed separately from presentation only for a session known to be running
-and always requires confirmation.
+have executed it. The open, probe, and attach-only phases all run through the
+account login shell so settings such as `TMUX_TMPDIR` resolve the same tmux
+server. Confirmed absence retries use bounded exponential backoff. Unbound
+discovered sessions remain attach-only. Ghosthub does not expose rename, split,
+resize, window, or pane operations. Kill Session is exposed separately from
+presentation only for a session known to be running and always requires
+confirmation.
 
 The requested session appears optimistically so transient SSH or discovery
 latency cannot remove the user's only way back to it. Direct `list-sessions`

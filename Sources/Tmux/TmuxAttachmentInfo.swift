@@ -289,7 +289,8 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         info: SSHHostInfo,
         tmuxPath: String,
         remoteKwtCommandPrelude: String?,
-        sshConnectionArguments: [String]
+        sshConnectionArguments: [String],
+        useAccountLoginShell: Bool = false
     ) -> String {
         let attach: String
         if let protectedWorkspacePath {
@@ -311,11 +312,14 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
             ).map(shellQuotedCommandArgument).joined(separator: " ")
             attach = "exec \(tmuxAttach)"
         }
-        let remoteAttach = [
+        let remoteAttachBody = [
             "unset TMUX TMUX_PANE",
             presentationSetupCommand(tmuxPath: tmuxPath),
             attach,
         ].joined(separator: "; ")
+        let remoteAttach = useAccountLoginShell
+            ? remoteAccountLoginShellCommand(remoteAttachBody)
+            : remoteAttachBody
         return shellCommand(
             [
                 "/bin/sh", "-c", Self.sshReconnectScript,
@@ -365,7 +369,8 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
             info: info,
             tmuxPath: tmuxPath,
             remoteKwtCommandPrelude: nil,
-            sshConnectionArguments: sshConnectionArguments
+            sshConnectionArguments: sshConnectionArguments,
+            useAccountLoginShell: true
         )
         let hasSession = tmuxArguments(
             tmuxPath,
@@ -380,7 +385,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
             ] + sshArguments(
                 info: info,
                 allocateTTY: false,
-                remoteCommand: remoteProbe,
+                remoteCommand: remoteAccountLoginShellCommand(remoteProbe),
                 sshConnectionArguments: sshConnectionArguments
             )
         )
@@ -501,9 +506,12 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
     /// SSH transport loss probes the exact session through the ordinary retry
     /// loop: confirmed presence advances to attach-only reconnect, while
     /// confirmed absence retries kwt because the original SSH connection may
-    /// have failed before the remote command ran.
+    /// have failed before the remote command ran. Absent-session retries use
+    /// the same bounded backoff as ordinary SSH reconnects.
     static let remoteWorkspaceAttachScript = """
+    delay=1
     while :; do
+        started=$(date +%s)
         /bin/sh -c "$1"
         status=$?
         [ "$status" -eq 255 ] || exit "$status"
@@ -511,7 +519,16 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         status=$?
         case "$status" in
             0) exec /bin/sh -c "$3" ;;
-            1) ;;
+            1)
+                now=$(date +%s)
+                if [ $((now - started)) -ge 30 ]; then delay=1; fi
+                printf '\r\n[Ghosthub: workspace session absent; retrying in %ss]\r\n' "$delay"
+                sleep "$delay"
+                if [ "$delay" -lt 30 ]; then
+                    delay=$((delay * 2))
+                    [ "$delay" -le 30 ] || delay=30
+                fi
+                ;;
             *) exit "$status" ;;
         esac
     done
