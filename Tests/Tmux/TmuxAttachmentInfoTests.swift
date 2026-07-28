@@ -195,7 +195,7 @@ struct TmuxAttachmentInfoTests {
         }
         #expect(command.contains("ghosthub_existing_clients"))
         #expect(command.contains(
-            "[ \"$ghosthub_kwt_attempts\" -lt 500 ]"
+            "while kill -0 \"$ghosthub_kwt_pid\""
         ))
     }
 

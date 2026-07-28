@@ -249,7 +249,6 @@ public struct LibghosttyConfigPipeline {
             return
         }
 
-        var updated = contents
         let defaults: [(key: String, value: String)] = [
             ("scrollback-limit", "50000000"),
             ("term", "xterm-256color"),
@@ -258,20 +257,19 @@ public struct LibghosttyConfigPipeline {
         ]
 
         let missingDefaults = defaults.filter { setting in
-            !configContainsKey(setting.key, in: updated)
+            !configContainsKey(setting.key, in: contents)
         }
-        guard updated != contents || !missingDefaults.isEmpty else {
-            return
-        }
+        guard !missingDefaults.isEmpty else { return }
 
-        if !missingDefaults.isEmpty {
-            if !updated.hasSuffix("\n") {
-                updated.append("\n")
-            }
+        // Existing config is user-owned. Never infer that a setting was
+        // generated from its value or rewrite it while backfilling defaults.
+        var updated = contents
+        if !updated.hasSuffix("\n") {
             updated.append("\n")
-            for setting in missingDefaults {
-                updated.append("\(setting.key) = \(setting.value)\n")
-            }
+        }
+        updated.append("\n")
+        for setting in missingDefaults {
+            updated.append("\(setting.key) = \(setting.value)\n")
         }
 
         try? updated.write(

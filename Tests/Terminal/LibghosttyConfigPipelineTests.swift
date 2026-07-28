@@ -214,6 +214,22 @@ struct LibghosttyConfigPipelineTests {
         )
     }
 
+    @Test("loadPlan preserves user-authored theme settings")
+    func loadPlanPreservesUserTheme() throws {
+        let fixture = try ConfigPipelineFixture.create()
+
+        try fixture.writeGlobalConfig("""
+        theme = dark:ghostty,light:ghostty-light
+        """)
+
+        _ = try fixture.pipeline.loadPlan()
+
+        let contents = try fixture.readGlobalConfig()
+        #expect(contents.contains(
+            "theme = dark:ghostty,light:ghostty-light"
+        ))
+    }
+
     @Test("loadPlan preserves user-authored scrollback-limit")
     func loadPlanPreservesUserScrollbackLimit() throws {
         let fixture = try ConfigPipelineFixture.create()

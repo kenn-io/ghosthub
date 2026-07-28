@@ -376,18 +376,14 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                 + "| /usr/bin/tr '\\n' ' ') \"",
             "\(kwtCommand) <&3 3<&- & ghosthub_kwt_pid=$!",
             "ghosthub_kwt_client_ready=",
-            "ghosthub_kwt_attempts=0",
-            "while [ \"$ghosthub_kwt_attempts\" -lt 500 ] "
-                + "&& kill -0 \"$ghosthub_kwt_pid\" 2>/dev/null; do "
+            "while kill -0 \"$ghosthub_kwt_pid\" 2>/dev/null; do "
                 + "for ghosthub_client_pid in $(\(listClients) 2>/dev/null); "
                 + "do case \"$ghosthub_existing_clients\" in "
                 + "*\" $ghosthub_client_pid \"*) ;; "
                 + "*) ghosthub_kwt_client_ready=1; break ;; esac; done; "
                 + "[ -n \"$ghosthub_kwt_client_ready\" ] && break; "
-                + "ghosthub_kwt_attempts=$((ghosthub_kwt_attempts + 1)); "
                 + "/bin/sleep 0.01; done",
-            "if [ -n \"$ghosthub_kwt_client_ready\" ] "
-                + "|| kill -0 \"$ghosthub_kwt_pid\" 2>/dev/null; then "
+            "if [ -n \"$ghosthub_kwt_client_ready\" ]; then "
                 + "\(presentationSetupCommand(tmuxPath: tmuxPath)); fi",
             "wait \"$ghosthub_kwt_pid\"",
             "ghosthub_kwt_status=$?",
