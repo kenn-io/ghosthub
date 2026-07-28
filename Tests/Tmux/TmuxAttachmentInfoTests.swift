@@ -518,6 +518,37 @@ struct TmuxAttachmentInfoTests {
         """))
     }
 
+    @Test("Windows worktrees open through kwt before psmux reconnect")
+    func windowsRemoteWorkspaceAttachCommand() throws {
+        let command = TmuxAttachmentInfo(
+            sessionName: "release work",
+            host: .ssh(SSHHostInfo(
+                user: "wesm",
+                hostname: "arm-builder",
+                port: nil,
+                platform: .windows
+            )),
+            workspacePath: #"C:\code\release work"#
+        ).attachCommand(
+            tmuxPath: #"C:\Program Files\psmux\tmux.exe"#
+        )
+
+        #expect(command.contains("ghosthub-ssh-kwt-attach"))
+        #expect(command.contains("ghosthub-ssh-kwt-probe"))
+        let decoded = try Self.decodedPowerShellScripts(from: command)
+        let scripts = try #require(decoded.count == 3 ? decoded : nil)
+        #expect(scripts[0].contains(
+            #"& $ghosthubKwt 'open' 'C:\code\release work'"#
+        ))
+        #expect(scripts[1].contains(
+            #"& 'C:\Program Files\psmux\tmux.exe' 'has-session' '-t' '=release work'"#
+        ))
+        #expect(scripts[2].contains(
+            #"& 'C:\Program Files\psmux\tmux.exe' 'attach-session' '-E' '-t' '=release work'"#
+        ))
+        #expect(!scripts.joined().contains("exec /bin/sh"))
+    }
+
     @Test("isolated remote attachment targets the returned tmux socket")
     func isolatedRemoteAttachCommand() {
         let command = TmuxAttachmentInfo(

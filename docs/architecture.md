@@ -152,10 +152,11 @@ restore its own revision; reinstalling one revision also retains
 
 Native Windows installation uses a separate PowerShell boundary. The explicit
 **Install Bundled kwt** action probes the remote process architecture, uploads
-the matching PE helper over OpenSSH, verifies that it runs, and installs it at
-`%USERPROFILE%\.ghosthub\bin\kwt.exe` without replacing a system `kwt.exe`.
-The Windows helpers remain unsigned experimental payloads until the release
-pipeline adds an approved Authenticode/DigiCert signing step.
+the matching PE helper over OpenSSH, verifies it at a managed staging path, and
+atomically installs it at `%USERPROFILE%\.ghosthub\bin\kwt.exe` without
+replacing a system `kwt.exe`. A failed activation restores the prior managed
+helper. The Windows helpers remain unsigned experimental payloads until the
+release pipeline adds an approved Authenticode/DigiCert signing step.
 
 ### Experimental native Windows hosts
 

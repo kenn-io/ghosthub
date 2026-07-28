@@ -149,6 +149,66 @@ struct TmuxSessionKillerTests {
         )
     }
 
+    @Test("Windows identity and kill use PowerShell and psmux quoting")
+    func windowsIdentityAndKillCommands() async throws {
+        let commands = LockedValue<[String]>([])
+        let host = SSHHostInfo(
+            user: "wesm",
+            hostname: "arm-builder",
+            port: nil,
+            platform: .windows
+        )
+        let killer = TmuxSessionKiller(
+            pathResolver: { _ in
+                .success(#"C:\Program Files\psmux\tmux.exe"#)
+            },
+            runner: { _, command in
+                commands.withLock { $0.append(command) }
+                if command.contains("'display-message'") {
+                    return (
+                        0,
+                        "GHOSTHUB_TMUX_SESSION_IDENTITY\t"
+                            + "31415\t$42\t1785182057\n"
+                    )
+                }
+                return (0, "")
+            }
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: UUID(),
+            name: "review's session",
+            socketName: "kwt-pr-windows"
+        )
+
+        let identity = try await killer.sessionIdentity(
+            selection,
+            on: .ssh(host)
+        )
+        try await killer.kill(
+            selection,
+            expectedIdentity: identity,
+            on: .ssh(host)
+        )
+
+        let recorded = try #require(
+            commands.load().count == 2 ? commands.load() : nil
+        )
+        #expect(recorded.allSatisfy { $0.contains(
+            "[Console]::OutputEncoding"
+        ) })
+        #expect(recorded[0].contains(
+            #"& 'C:\Program Files\psmux\tmux.exe' '-L' 'kwt-pr-windows' 'display-message' '-p' '-t' '=review''s session:'"#
+        ))
+        #expect(recorded[1].contains("'if-shell' '-F'"))
+        #expect(recorded[1].contains(
+            "'-t' '=review''s session:'"
+        ))
+        #expect(recorded[1].contains(
+            "'kill-session -t $42'"
+        ))
+        #expect(!recorded.joined().contains(#"'\''"#))
+    }
+
     @Test("kill failure preserves host, session, and status")
     func commandFailure() async {
         let host = SSHHostInfo(

@@ -36,6 +36,19 @@ struct KwtWindowsInstallerTests {
                 #expect(command.contains(#".ghosthub\bin"#))
                 #expect(command.contains("'ghosthub-upload.exe'"))
                 #expect(command.contains("'kwt.exe'"))
+                #expect(command.contains("[System.IO.File]::Replace"))
+                #expect(command.contains("$ghosthubBackup"))
+                let stagedVerification = command.range(
+                    of: "& $ghosthubStaging '--version'"
+                )?.lowerBound
+                let replacement = command.range(
+                    of: "[System.IO.File]::Replace("
+                )?.lowerBound
+                #expect(stagedVerification != nil)
+                #expect(replacement != nil)
+                if let stagedVerification, let replacement {
+                    #expect(stagedVerification < replacement)
+                }
                 return (
                     status: 0,
                     stdout: "GHOSTHUB_KWT_INSTALLED\n"

@@ -161,16 +161,48 @@ struct KwtWindowsInstaller: Sendable {
         $ghosthubUpload = Join-Path $env:USERPROFILE \(powerShellQuotedCommandArgument(uploadName))
         $ghosthubDirectory = Join-Path $env:USERPROFILE '.ghosthub\\bin'
         $ghosthubDestination = Join-Path $ghosthubDirectory 'kwt.exe'
+        $ghosthubStaging = Join-Path $ghosthubDirectory ('kwt-stage-' + [System.Guid]::NewGuid().ToString('N') + '.exe')
+        $ghosthubBackup = Join-Path $ghosthubDirectory ('kwt-backup-' + [System.Guid]::NewGuid().ToString('N') + '.exe')
+        $ghosthubHadPrevious = $false
+        $ghosthubReplacementComplete = $false
         try {
             New-Item -ItemType Directory -Force -Path $ghosthubDirectory | Out-Null
-            Move-Item -LiteralPath $ghosthubUpload -Destination $ghosthubDestination -Force
-            & $ghosthubDestination '--version' *> $null
+            Move-Item -LiteralPath $ghosthubUpload -Destination $ghosthubStaging
+            & $ghosthubStaging '--version' *> $null
             if ($LASTEXITCODE -ne 0) {
                 exit $LASTEXITCODE
             }
+            if (Test-Path -LiteralPath $ghosthubDestination -PathType Leaf) {
+                $ghosthubHadPrevious = $true
+                [System.IO.File]::Replace($ghosthubStaging, $ghosthubDestination, $ghosthubBackup, $true)
+            } else {
+                [System.IO.File]::Move($ghosthubStaging, $ghosthubDestination)
+            }
+            $ghosthubReplacementComplete = $true
+            & $ghosthubDestination '--version' *> $null
+            if ($LASTEXITCODE -ne 0) {
+                $ghosthubVerificationStatus = $LASTEXITCODE
+                if ($ghosthubHadPrevious -and (Test-Path -LiteralPath $ghosthubBackup -PathType Leaf)) {
+                    [System.IO.File]::Replace($ghosthubBackup, $ghosthubDestination, $null, $true)
+                } else {
+                    Remove-Item -LiteralPath $ghosthubDestination -Force -ErrorAction SilentlyContinue
+                }
+                exit $ghosthubVerificationStatus
+            }
+            Remove-Item -LiteralPath $ghosthubBackup -Force -ErrorAction SilentlyContinue
             Write-Output '\(installedMarker)'
+        } catch {
+            if ($ghosthubReplacementComplete) {
+                if ($ghosthubHadPrevious -and (Test-Path -LiteralPath $ghosthubBackup -PathType Leaf)) {
+                    [System.IO.File]::Replace($ghosthubBackup, $ghosthubDestination, $null, $true)
+                } else {
+                    Remove-Item -LiteralPath $ghosthubDestination -Force -ErrorAction SilentlyContinue
+                }
+            }
+            throw
         } finally {
             Remove-Item -LiteralPath $ghosthubUpload -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $ghosthubStaging -Force -ErrorAction SilentlyContinue
         }
         """
     }

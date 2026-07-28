@@ -377,15 +377,26 @@ struct TmuxBinaryResolver: Sendable {
             arguments.append(contentsOf: ["-p", String(port)])
         }
         let target = host.user.map { "\($0)@\(host.hostname)" } ?? host.hostname
-        let accountShellCommand = "exec \"${SHELL:-/bin/sh}\" -lc "
-            + shellQuotedCommandArgument(posixCommand(command))
-        let loginCommand = posixCommand(accountShellCommand)
-        arguments.append(contentsOf: ["--", target, loginCommand])
+        arguments.append(contentsOf: [
+            "--", target, remoteLoginCommand(host: host, command: command),
+        ])
         return runProcess(
             executable: "/usr/bin/ssh",
             arguments: arguments,
             timeout: timeout
         )
+    }
+
+    static func remoteLoginCommand(
+        host: SSHHostInfo,
+        command: String
+    ) -> String {
+        if host.platform == .windows {
+            return powerShellEncodedCommand(command)
+        }
+        let accountShellCommand = "exec \"${SHELL:-/bin/sh}\" -lc "
+            + shellQuotedCommandArgument(posixCommand(command))
+        return posixCommand(accountShellCommand)
     }
 
     /// The account shell owns login-environment initialization, but Ghosthub's

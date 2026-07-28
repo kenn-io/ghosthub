@@ -1540,6 +1540,19 @@ final class WorkspaceSceneModel: ObservableObject {
         }
     }
 
+    func installWindowsKwt(
+        on host: SSHHost
+    ) async -> Result<Void, HostProbeError> {
+        switch await KwtWindowsInstaller().install(on: host) {
+        case .success:
+            refreshHosts()
+            refreshKwtInventory()
+            return .success(())
+        case let .failure(error):
+            return .failure(.message(error.localizedDescription))
+        }
+    }
+
     func registerRemoteProject(
         _ projectPath: String,
         on host: SSHHost

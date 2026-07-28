@@ -146,6 +146,31 @@ struct TmuxBinaryResolverTests {
         )
     }
 
+    @Test("Windows remote commands bypass POSIX login shells")
+    func encodesWindowsRemoteCommand() throws {
+        let host = SSHHostInfo(
+            user: "wesm",
+            hostname: "arm-builder",
+            port: nil,
+            platform: .windows
+        )
+        let command = "Write-Output 'windows-ready'"
+
+        let remoteCommand = TmuxBinaryResolver.remoteLoginCommand(
+            host: host,
+            command: command
+        )
+
+        #expect(remoteCommand.hasPrefix(
+            "powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand "
+        ))
+        #expect(!remoteCommand.contains("${SHELL"))
+        #expect(!remoteCommand.contains("/bin/sh"))
+        let encoded = try #require(remoteCommand.split(separator: " ").last)
+        let data = try #require(Data(base64Encoded: String(encoded)))
+        #expect(String(data: data, encoding: .utf16LittleEndian) == command)
+    }
+
     @Test("discovers every local tmux session without control-mode attachment")
     func discoversLocalSessions() throws {
         let resolver = TmuxBinaryResolver(processRunner: { _, command in

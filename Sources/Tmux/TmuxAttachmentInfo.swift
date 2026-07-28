@@ -205,6 +205,28 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                 workingDirectory: workingDirectory
             )
         case let .ssh(info):
+            if info.platform == .windows {
+                if launchMode == .create {
+                    return remoteCreateThenAttachCommand(
+                        info: info,
+                        tmuxPath: tmuxPath,
+                        workingDirectory: workingDirectory,
+                        sshConnectionArguments: sshConnectionArguments
+                    )
+                }
+                if protectedWorkspacePath == nil, workspacePath != nil {
+                    return windowsRemoteWorkspaceAttachCommand(
+                        info: info,
+                        tmuxPath: tmuxPath,
+                        sshConnectionArguments: sshConnectionArguments
+                    )
+                }
+                return windowsRemoteAttachCommand(
+                    info: info,
+                    tmuxPath: tmuxPath,
+                    sshConnectionArguments: sshConnectionArguments
+                )
+            }
             if launchMode == .create {
                 return remoteCreateThenAttachCommand(
                     info: info,
@@ -578,6 +600,68 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                 remoteCommand: remoteAccountLoginShellCommand(remoteProbe),
                 sshConnectionArguments: sshConnectionArguments
             )
+        )
+        return shellCommand([
+            "/bin/sh", "-c", Self.remoteWorkspaceAttachScript,
+            "ghosthub-ssh-kwt-attach",
+            initialAttach, sessionProbe, reconnectAttach,
+        ])
+    }
+
+    private func windowsRemoteWorkspaceAttachCommand(
+        info: SSHHostInfo,
+        tmuxPath: String,
+        sshConnectionArguments: [String]
+    ) -> String {
+        guard let workspacePath else {
+            return windowsRemoteAttachCommand(
+                info: info,
+                tmuxPath: tmuxPath,
+                sshConnectionArguments: sshConnectionArguments
+            )
+        }
+        let initialScript = """
+        $ErrorActionPreference = 'Stop'
+        [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+        $OutputEncoding = [Console]::OutputEncoding
+        Remove-Item Env:TMUX, Env:TMUX_PANE -ErrorAction SilentlyContinue
+        \(powerShellKwtResolutionPrelude())
+        & $ghosthubKwt 'open' \(powerShellQuotedCommandArgument(workspacePath))
+        exit $LASTEXITCODE
+        """
+        let initialAttach = shellCommand(
+            sshArguments(
+                info: info,
+                allocateTTY: true,
+                remoteCommand: powerShellEncodedCommand(initialScript),
+                sshConnectionArguments: sshConnectionArguments
+            )
+        )
+        let probeScript = """
+        $ErrorActionPreference = 'Stop'
+        [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+        Remove-Item Env:TMUX, Env:TMUX_PANE -ErrorAction SilentlyContinue
+        \(windowsMuxCommand(
+            tmuxPath: tmuxPath,
+            arguments: ["has-session", "-t", "=\(sessionName)"]
+        )) *> $null
+        exit $LASTEXITCODE
+        """
+        let sessionProbe = shellCommand(
+            [
+                "/bin/sh", "-c", Self.sshReconnectScript,
+                "ghosthub-ssh-kwt-probe",
+            ] + sshArguments(
+                info: info,
+                allocateTTY: false,
+                remoteCommand: powerShellEncodedCommand(probeScript),
+                sshConnectionArguments: sshConnectionArguments
+            )
+        )
+        let reconnectAttach = windowsRemoteAttachCommand(
+            info: info,
+            tmuxPath: tmuxPath,
+            sshConnectionArguments: sshConnectionArguments
         )
         return shellCommand([
             "/bin/sh", "-c", Self.remoteWorkspaceAttachScript,
