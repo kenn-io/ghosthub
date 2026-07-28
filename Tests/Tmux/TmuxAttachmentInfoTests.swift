@@ -670,6 +670,33 @@ struct TmuxAttachmentInfoTests {
         }
     }
 
+    @Test("themed remote attachment supports non-POSIX account shells")
+    func themedRemoteAttachmentUsesPOSIXShell() {
+        let command = TmuxAttachmentInfo(
+            sessionName: "shared-session",
+            host: .ssh(SSHHostInfo(
+                user: "wesm", hostname: "build-box", port: nil
+            )),
+            presentationStyle: TmuxPresentationStyle(
+                foreground: "#3B4851",
+                background: "#FFFFFF"
+            )
+        ).attachCommand(tmuxPath: "/usr/bin/tmux")
+
+        #expect(command.contains("${SHELL:-/bin/sh}"))
+        let loginShellPosition = command.range(
+            of: "${SHELL:-/bin/sh}"
+        )?.lowerBound
+        let presentationPosition = command.range(
+            of: "while IFS= read -r ghosthub_window"
+        )?.lowerBound
+        #expect(loginShellPosition != nil)
+        #expect(presentationPosition != nil)
+        if let loginShellPosition, let presentationPosition {
+            #expect(loginShellPosition < presentationPosition)
+        }
+    }
+
     @Test("remote worktree switches to tmux only after transport loss")
     func remoteWorktreeReconnectsAfterTransportLoss() throws {
         let directory = FileManager.default.temporaryDirectory

@@ -419,7 +419,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                     "printf 'Ghosthub: managed kwt is unavailable\\n' >&2; "
                         + "exit 127"
             }
-            attach = remoteAccountLoginShellCommand(protectedAttach)
+            attach = protectedAttach
         } else {
             let tmuxAttach = tmuxArguments(
                 tmuxPath,
@@ -435,7 +435,11 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         }
         remoteAttachCommands.append(attach)
         let remoteAttachBody = remoteAttachCommands.joined(separator: "; ")
-        let remoteAttach = useAccountLoginShell
+        let requiresAccountLoginShell =
+            useAccountLoginShell
+                || protectedWorkspacePath != nil
+                || presentationStyle != nil
+        let remoteAttach = requiresAccountLoginShell
             ? remoteAccountLoginShellCommand(remoteAttachBody)
             : remoteAttachBody
         return shellCommand(
