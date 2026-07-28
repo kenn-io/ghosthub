@@ -76,21 +76,22 @@ already exists, it is attached without creating or structurally changing panes
 or windows.
 
 Kwt inventory includes every worktree, whether or not its canonical tmux
-session is live. Ghosthub therefore executes `kwt open <exact-path>` as the
-initial attached tmux client when direct discovery does not contain the
-canonical session. Kwt idempotently repairs an existing session or creates the
-configured layout when it is absent, without an intermediate detached session
-that `destroy-unattached` could remove. A session already confirmed by direct
-discovery uses ordinary `tmux attach-session`, so cached kwt inventory remains
-usable while the managed helper is unavailable. On a remote host, only an SSH
-transport loss can hand a kwt-opened session to Ghosthub's attach-only
-reconnect loop. Ghosthub first retries SSH to probe the exact session: confirmed
-presence advances to ordinary attachment, while confirmed absence reruns
-`kwt open` because the failed SSH connection may never have executed it.
-Unbound discovered sessions remain attach-only. Ghosthub does not expose
-rename, split, resize, window, or pane operations. Kill Session is exposed
-separately from presentation only for a session known to be running and always
-requires confirmation.
+session is live. When the managed helper is available, Ghosthub therefore
+executes `kwt open <exact-path>` as the initial attached tmux client. Kwt
+idempotently repairs an existing session or creates the configured layout when
+it is absent, without an intermediate detached session that
+`destroy-unattached` could remove. Ghosthub uses this path even when cached
+discovery contains the canonical name, because the session may have exited
+since the sample. If the managed helper is explicitly unavailable, a cached
+discovered session remains usable through ordinary `tmux attach-session`. On a
+remote host, only an SSH transport loss can hand a kwt-opened session to
+Ghosthub's attach-only reconnect loop. Ghosthub first retries SSH to probe the
+exact session: confirmed presence advances to ordinary attachment, while
+confirmed absence reruns `kwt open` because the failed SSH connection may never
+have executed it. Unbound discovered sessions remain attach-only. Ghosthub does
+not expose rename, split, resize, window, or pane operations. Kill Session is
+exposed separately from presentation only for a session known to be running
+and always requires confirmation.
 
 The requested session appears optimistically so transient SSH or discovery
 latency cannot remove the user's only way back to it. Direct `list-sessions`

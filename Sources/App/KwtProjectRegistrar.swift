@@ -2,6 +2,7 @@ import Foundation
 import GhosthubTmux
 
 enum KwtProjectRegistrationError: Error, Equatable, LocalizedError {
+    case invalidProjectPath
     case commandFailed(
         host: String,
         status: Int32,
@@ -13,6 +14,8 @@ enum KwtProjectRegistrationError: Error, Equatable, LocalizedError {
 
     var errorDescription: String? {
         switch self {
+        case .invalidProjectPath:
+            return "Enter an absolute project path beginning with /."
         case let .commandFailed(
             host,
             status,
@@ -80,7 +83,7 @@ struct KwtProjectRegistrar: Sendable {
     ) async throws -> KwtProjectRecord {
         switch host {
         case .local:
-            let command = Self.command(
+            let command = try Self.command(
                 projectPath: projectPath,
                 binaryPrelude: KwtBinaryLocator.commandPrelude(
                     exactPath: localBinaryPath
@@ -105,7 +108,7 @@ struct KwtProjectRegistrar: Sendable {
         projectPath: String,
         on host: SSHHostInfo
     ) async throws -> KwtProjectRecord {
-        let command = Self.command(
+        let command = try Self.command(
             projectPath: projectPath,
             binaryPrelude: KwtBinaryLocator.remoteCommandPrelude(
                 revision: remoteBinaryRevision
@@ -129,8 +132,14 @@ struct KwtProjectRegistrar: Sendable {
     static func command(
         projectPath: String,
         binaryPrelude: String
-    ) -> String {
-        binaryPrelude
+    ) throws -> String {
+        let projectPath = projectPath.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard projectPath.hasPrefix("/") else {
+            throw KwtProjectRegistrationError.invalidProjectPath
+        }
+        return binaryPrelude
             + "printf 'GHOSTHUB_KWT_PROJECT_JSON\\n'; "
             + "exec \"$ghosthub_kwt_path\" projects add "
             + shellQuotedCommandArgument(projectPath)

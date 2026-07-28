@@ -1740,10 +1740,13 @@ final class WorkspaceSceneModel: ObservableObject {
             ?? host.tmuxSessions
         let sessionIsDiscovered = selection.socketName == nil
             && knownSessions.contains { $0.name == selection.name }
+        let managedKwtUnavailable = host.remoteDiagnostics.contains {
+            $0.code == .missingKwt
+        }
         let openWorkspace = effectiveLaunchMode == .attach
             && selection.socketName == nil
             && selection.worktreePath != nil
-            && !sessionIsDiscovered
+            && (!sessionIsDiscovered || !managedKwtUnavailable)
         let handle = nativeTmuxSessionCoordinator.attach(
             hostID: selection.hostID,
             name: selection.name,

@@ -418,12 +418,15 @@ public struct HostsSettingsView: View {
                                 }
                                 .disabled(
                                     isHostActionInProgress
-                                        || remoteProjectPath
-                                        .trimmingCharacters(
-                                            in: .whitespacesAndNewlines
-                                        )
-                                        .isEmpty
+                                        || !isRemoteProjectPathAbsolute
                                 )
+                            }
+
+                            if !normalizedRemoteProjectPath.isEmpty,
+                               !isRemoteProjectPathAbsolute {
+                                Text("Enter an absolute path beginning with /.")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(.red)
                             }
 
                             if let remoteProjectMessage {
@@ -684,6 +687,16 @@ public struct HostsSettingsView: View {
             } == false
     }
 
+    private var normalizedRemoteProjectPath: String {
+        remoteProjectPath.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+    }
+
+    private var isRemoteProjectPathAbsolute: Bool {
+        normalizedRemoteProjectPath.hasPrefix("/")
+    }
+
     private func installKwt(on draft: SSHHostDraft) async {
         let target = HostOperationTarget(draft)
         hostProbeErrorMessage = nil
@@ -722,10 +735,8 @@ public struct HostsSettingsView: View {
 
     private func addRemoteProject(on draft: SSHHostDraft) async {
         let target = HostOperationTarget(draft)
-        let path = remoteProjectPath.trimmingCharacters(
-            in: .whitespacesAndNewlines
-        )
-        guard !path.isEmpty else { return }
+        guard isRemoteProjectPathAbsolute else { return }
+        let path = normalizedRemoteProjectPath
 
         hostProbeErrorMessage = nil
         remoteProjectMessage = nil

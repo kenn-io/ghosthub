@@ -5,6 +5,44 @@ import Testing
 
 @Suite("kwt project registration")
 struct KwtProjectRegistrarTests {
+    @Test(
+        "registration rejects relative paths before invoking kwt",
+        arguments: [
+            TmuxHost.local,
+            TmuxHost.ssh(SSHHostInfo(
+                user: "wesm",
+                hostname: "spark",
+                port: nil
+            )),
+        ]
+    )
+    func rejectsRelativeProjectPath(host: TmuxHost) async {
+        let invoked = LockedValue(false)
+        let client = KwtProjectRegistrar(
+            localRunner: { _ in
+                invoked.store(true)
+                return (0, "")
+            },
+            remoteRunner: { _, _ in
+                invoked.store(true)
+                return (0, "")
+            },
+            localBinaryPath:
+            "/Applications/Ghosthub.app/Contents/Helpers/kwt",
+            remoteBinaryRevision: String(repeating: "a", count: 40)
+        )
+
+        await #expect {
+            try await client.register(
+                projectPath: "relative/repository",
+                on: host
+            )
+        } throws: { error in
+            error as? KwtProjectRegistrationError == .invalidProjectPath
+        }
+        #expect(!invoked.load())
+    }
+
     @Test("local registration uses Ghosthub's exact kwt helper")
     func registersLocalProject() async throws {
         let invocation = LockedValue<String?>(nil)

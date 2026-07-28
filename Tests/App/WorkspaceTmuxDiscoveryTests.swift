@@ -366,6 +366,7 @@ struct WorkspaceTmuxDiscoveryTests {
                 windows: []
             ),
         ]
+        snapshot.hosts[0].remoteDiagnostics = [.missingKwtCapability]
         let surfaceStore = SceneTmuxSurfaceStoreStub()
         let model = try makeModel(
             database: environment.database,
@@ -388,6 +389,43 @@ struct WorkspaceTmuxDiscoveryTests {
         #expect(command.contains("'attach-session'"))
         #expect(!command.contains("'open'"))
         #expect(!command.contains("managed kwt is unavailable"))
+    }
+
+    @MainActor
+    @Test("cached worktree session uses kwt when the helper is available")
+    func cachedWorktreeSessionUsesKwt() async throws {
+        let environment = try setupRemoteEnvironment()
+        var snapshot = environment.snapshot
+        let sessionName = "kwt-ghosthub-main"
+        snapshot.worktrees[0].tmuxSessionName = sessionName
+        snapshot.hosts[0].tmuxSessions = [
+            TmuxSessionSummary(
+                name: sessionName,
+                managed: true,
+                windows: []
+            ),
+        ]
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") }
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: sessionName,
+            worktreeID: environment.worktree.id,
+            worktreePath: environment.worktree.path
+        )
+
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+
+        let command = try #require(surfaceStore.lastConfiguration?.command)
+        #expect(command.contains("'open'"))
+        #expect(command.contains(environment.worktree.path))
     }
 
     @MainActor
