@@ -286,6 +286,17 @@ final class WorkspaceSceneModel: ObservableObject {
                 workspaceConfiguration: boot.workspaceConfiguration,
                 terminalRuntime: terminalRuntime,
                 notificationService: boot.notificationService,
+                tmuxPresentationStyleProvider: {
+                    let preferences = SettingsStore.shared
+                        .terminalAppearancePreferences
+                    guard preferences.appliesThemeToTmuxSessions,
+                          let spec = preferences.theme.spec
+                    else { return nil }
+                    return TmuxPresentationStyle(
+                        foreground: spec.foreground.hexRGB,
+                        background: spec.background.hexRGB
+                    )
+                },
                 localHostID: boot.localHostID,
                 startServices: true
             )
@@ -308,6 +319,8 @@ final class WorkspaceSceneModel: ObservableObject {
             -> Result<String, TmuxBinaryError> = {
                 TmuxBinaryResolver().resolveTmuxPath(on: $0)
             },
+        tmuxPresentationStyleProvider:
+        @escaping () -> TmuxPresentationStyle? = { nil },
         kwtInventoryLoader: @escaping KwtInventoryLoader = { host in
             try await KwtInventoryClient().load(from: host)
         },
@@ -462,6 +475,7 @@ final class WorkspaceSceneModel: ObservableObject {
             tmuxPathProvider: {
                 tmuxPathCache.resolveTmuxPath()
             },
+            presentationStyleProvider: tmuxPresentationStyleProvider,
             remoteTmuxPathProvider: remoteTmuxPathProvider
         )
         nativeTmuxSessionCoordinatorBacking?.onStateChanged = {

@@ -153,6 +153,10 @@ final class SettingsStoreTests {
             store.terminalAppearancePreferences
                 == SettingsStore.defaultTerminalAppearancePreferences
         )
+        #expect(
+            !store.terminalAppearancePreferences
+                .appliesThemeToTmuxSessions
+        )
         #expect(!store.worktreePreferences.hideRootCheckout)
         #expect(store.shareAnonymousUsageData)
     }
@@ -226,9 +230,9 @@ final class SettingsStoreTests {
 
         assertContainsAll(
             globalConfig,
-            "theme = dark:ghostty,light:ghostty-light",
             "font-family = Berkeley Mono"
         )
+        #expect(globalConfig.contains("theme =") == false)
         #expect(globalConfig.contains("background = #000000") == false)
         #expect(globalConfig.contains("font-family = \"Monaco\"") == false)
     }
@@ -270,6 +274,7 @@ final class SettingsStoreTests {
         store.setShowHiddenWorktreesByDefault(true)
         store.setShowPaneResourceUsage(false)
         store.setTerminalTheme(.clearDark)
+        store.setTerminalThemeAppliesToTmuxSessions(true)
         store.setUseCustomTerminalFont(true)
         store.setTerminalFontFamily("Monaco")
         store.setTerminalFontSize(15.5)
@@ -286,6 +291,10 @@ final class SettingsStoreTests {
         #expect(reloaded.worktreePreferences.showHiddenWorktreesByDefault)
         #expect(!reloaded.terminalPreferences.showPaneResourceUsage)
         #expect(reloaded.terminalAppearancePreferences.theme == .clearDark)
+        #expect(
+            reloaded.terminalAppearancePreferences
+                .appliesThemeToTmuxSessions
+        )
         #expect(reloaded.terminalAppearancePreferences.usesCustomFont)
         #expect(reloaded.terminalAppearancePreferences.fontFamily == "Monaco")
         #expect(reloaded.terminalAppearancePreferences.fontSize == 15.5)
@@ -538,7 +547,6 @@ final class SettingsStoreTests {
         try writeGlobalConfig("""
         font-family = JetBrains Mono
         font-size = 16
-        theme = dark:ghostty,light:ghostty-light
         """)
 
         let store = makeSUT()

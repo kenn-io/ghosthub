@@ -47,7 +47,42 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(command.contains("release-work"))
         #expect(!command.contains("'-d'"))
         #expect(!command.contains("attach-session"))
+        #expect(!command.contains("status-style"))
+    }
+
+    @Test("surface launch reads the current terminal presentation style")
+    func surfaceLaunchReadsCurrentPresentationStyle() async throws {
+        let store = TmuxSurfaceStoreStub()
+        var style = TmuxPresentationStyle(
+            foreground: "#3B4851",
+            background: "#FFFFFF"
+        )
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { .success("/opt/homebrew/bin/tmux") },
+            presentationStyleProvider: { style }
+        )
+        var isReady = false
+        coordinator.onSurfaceReady = { _ in isReady = true }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "docbank",
+            host: .local
+        )
+        style = TmuxPresentationStyle(
+            foreground: "#EEEEEE",
+            background: "#111111"
+        )
+
+        await waitUntilMainActor { isReady }
+        _ = coordinator.surface(handle: handle)
+
+        let command = try #require(
+            store.requestedConfigurations.last?.command
+        )
+        #expect(command.contains("fg=#EEEEEE,bg=#111111"))
         #expect(command.contains("status-style"))
+        #expect(!command.contains("fg=#3B4851,bg=#FFFFFF"))
     }
 
     @Test("isolated session socket participates in command routing")
@@ -58,6 +93,12 @@ struct NativeTmuxSessionCoordinatorTests {
             tmuxPathProvider: { .success("/usr/bin/tmux") },
             localKwtPathProvider: {
                 "/Applications/Ghosthub.app/Contents/Helpers/kwt"
+            },
+            presentationStyleProvider: {
+                TmuxPresentationStyle(
+                    foreground: "#3B4851",
+                    background: "#FFFFFF"
+                )
             }
         )
         var isReady = false

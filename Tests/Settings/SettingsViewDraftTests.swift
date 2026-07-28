@@ -12,6 +12,7 @@ struct SettingsViewDraftTests {
         store.selectedDomain = .hosts
         store.setInterfaceAppearance(.dark)
         store.setTerminalTheme(.homebrew)
+        store.setTerminalThemeAppliesToTmuxSessions(true)
         store.setHideRootCheckout(true)
         store.setShowHiddenWorktreesByDefault(true)
         store.setShowMacOSNotifications(false)
@@ -23,12 +24,31 @@ struct SettingsViewDraftTests {
         #expect(draft.selectedDomain == .hosts)
         #expect(draft.interfaceAppearance == .dark)
         #expect(draft.terminalTheme == .homebrew)
+        #expect(draft.appliesTerminalThemeToTmuxSessions)
         #expect(draft.hideRootCheckout)
         #expect(draft.showHiddenWorktreesByDefault)
         #expect(!draft.showMacOSNotifications)
         #expect(draft.attentionSound == .glass)
         #expect(draft.sshHosts.map(\.configKey) == ["epyc"])
         #expect(draft.selectedSSHHostDraftID == draft.sshHosts.first?.id)
+    }
+
+    @Test("tmux theme opt-in persists without reloading libghostty")
+    func tmuxThemeOptInDoesNotReloadTerminalConfig() {
+        let store = makeStore()
+        var draft = SettingsViewDraft(store: store)
+        draft.terminalTheme = .pro
+        _ = draft.persist(to: store)
+        draft = SettingsViewDraft(store: store)
+        draft.appliesTerminalThemeToTmuxSessions = true
+
+        let result = draft.persist(to: store)
+
+        #expect(!result.shouldReloadTerminalConfig)
+        #expect(
+            store.terminalAppearancePreferences
+                .appliesThemeToTmuxSessions
+        )
     }
 
     @Test("persist restores worktree and agent settings")

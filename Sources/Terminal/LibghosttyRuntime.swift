@@ -210,12 +210,13 @@ public final class LibghosttyRuntime: ObservableObject {
             }
             clearMonitorFailure()
             diagnostics = []
-            configReloadNotice = nil
             if notifyOnSuccess {
                 configReloadNotice = LibghosttyConfigReloadNotice(
                     kind: .success,
                     message: "Terminal configuration reloaded."
                 )
+            } else if configReloadNotice?.kind == .error {
+                configReloadNotice = nil
             }
             return .applied
         } catch {
@@ -449,7 +450,7 @@ public final class LibghosttyRuntime: ObservableObject {
                     Task { @MainActor in
                         self.reloadActiveConfig(
                             force: true,
-                            notifyOnSuccess: true
+                            notifyOnSuccess: false
                         )
                     }
                 }

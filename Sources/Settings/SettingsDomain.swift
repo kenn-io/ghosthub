@@ -33,7 +33,7 @@ public enum SettingsDomain: String, CaseIterable, Identifiable, Sendable {
     public var subtitle: String {
         switch self {
         case .appearance:
-            return "App chrome, built-in terminal themes,"
+            return "App chrome, built-in tmux themes,"
                 + " font overrides, and cursor styling."
         case .terminal:
             return "Terminal interaction and ghostty.conf configuration."

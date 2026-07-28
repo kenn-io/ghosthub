@@ -9,6 +9,7 @@ struct ConfigSectionEditorTests {
     @Test func renderTerminalAppearanceOverlay_nilForConfig() {
         let prefs = TerminalAppearancePreferences(
             theme: .followConfig,
+            appliesThemeToTmuxSessions: false,
             usesCustomFont: false,
             fontFamily: "Berkeley Mono",
             fontSize: 13
@@ -23,6 +24,7 @@ struct ConfigSectionEditorTests {
     @Test func renderTerminalAppearanceOverlay_includesCustomFont() {
         let prefs = TerminalAppearancePreferences(
             theme: .followConfig,
+            appliesThemeToTmuxSessions: false,
             usesCustomFont: true,
             fontFamily: "Monaco",
             fontSize: 14.5
@@ -40,7 +42,8 @@ struct ConfigSectionEditorTests {
 
     @Test func renderTerminalAppearanceOverlay_includesThemeColors() {
         let prefs = TerminalAppearancePreferences(
-            theme: .pro,
+            theme: .clearLight,
+            appliesThemeToTmuxSessions: false,
             usesCustomFont: false,
             fontFamily: "Berkeley Mono",
             fontSize: 13
@@ -60,6 +63,7 @@ struct ConfigSectionEditorTests {
     @Test func renderTerminalAppearanceOverlay_themeAndFont() {
         let prefs = TerminalAppearancePreferences(
             theme: .homebrew,
+            appliesThemeToTmuxSessions: false,
             usesCustomFont: true,
             fontFamily: "JetBrains Mono",
             fontSize: 16

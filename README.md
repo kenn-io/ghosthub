@@ -148,7 +148,11 @@ The file uses
 [Ghostty's configuration format](https://ghostty.org/docs/config/reference),
 but remains independent of Ghostty.app configuration and state. Ghosthub
 reloads the active configuration when the base file, an included file, or a
-project override changes.
+project override changes. The **Tmux Theme** setting controls how sessions
+appear in Ghosthub. Shared tmux colors remain untouched by default; an explicit
+opt-in applies the selected built-in theme to the session's existing windows
+and chrome for every attached terminal. Use **Ghosthub → Reload Configuration**
+for an explicit reload and diagnostic result.
 
 ## How the pieces fit
 

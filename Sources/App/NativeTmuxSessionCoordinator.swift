@@ -87,6 +87,7 @@ final class NativeTmuxSessionCoordinator {
         @Sendable (SSHHostInfo) -> Result<String, TmuxBinaryError>
     private let localKwtPathProvider: @Sendable () -> String?
     private let remoteKwtCommandPreludeProvider: @Sendable () -> String?
+    private let presentationStyleProvider: () -> TmuxPresentationStyle?
     private var handlesByKey: [NativeTmuxSessionKey: BorrowedTmuxSessionHandle] = [:]
     private var targetHostsByHandle: [UUID: TmuxHost] = [:]
     private var attachments: [UUID: NativeTmuxAttachment] = [:]
@@ -112,6 +113,8 @@ final class NativeTmuxSessionCoordinator {
                 revision: KwtBinaryLocator.bundledRemoteRevision()
             )
         },
+        presentationStyleProvider:
+        @escaping () -> TmuxPresentationStyle? = { nil },
         remoteTmuxPathProvider: @escaping @Sendable (SSHHostInfo)
             -> Result<String, TmuxBinaryError> = {
                 TmuxBinaryResolver().resolveTmuxPath(on: $0)
@@ -122,6 +125,7 @@ final class NativeTmuxSessionCoordinator {
         self.localKwtPathProvider = localKwtPathProvider
         self.remoteKwtCommandPreludeProvider =
             remoteKwtCommandPreludeProvider
+        self.presentationStyleProvider = presentationStyleProvider
         self.remoteTmuxPathProvider = remoteTmuxPathProvider
     }
 
@@ -294,6 +298,7 @@ final class NativeTmuxSessionCoordinator {
                 ? attachment.workingDirectory
                 : nil,
             protectedWorkspacePath: attachment.protectedWorkspacePath,
+            presentationStyle: presentationStyleProvider(),
             launchMode: attachment.launchMode
         )
         let surface = terminalCoordinator.paneSurface(

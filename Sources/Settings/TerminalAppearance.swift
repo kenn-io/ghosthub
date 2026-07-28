@@ -107,17 +107,20 @@ public enum TerminalTheme: String, CaseIterable, Identifiable, Sendable {
 
 public struct TerminalAppearancePreferences: Equatable, Sendable {
     public var theme: TerminalTheme
+    public var appliesThemeToTmuxSessions: Bool
     public var usesCustomFont: Bool
     public var fontFamily: String
     public var fontSize: Double
 
     public init(
         theme: TerminalTheme,
+        appliesThemeToTmuxSessions: Bool,
         usesCustomFont: Bool,
         fontFamily: String,
         fontSize: Double
     ) {
         self.theme = theme
+        self.appliesThemeToTmuxSessions = appliesThemeToTmuxSessions
         self.usesCustomFont = usesCustomFont
         self.fontFamily = fontFamily
         self.fontSize = fontSize

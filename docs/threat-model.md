@@ -177,11 +177,13 @@ retained inventory cannot authorize killing a same-named replacement,
 including one created during the same timestamp second or after a rapid tmux
 server restart. An active client is detached only after the kill succeeds.
 
-Attachment may reset a small, documented set of session-scoped tmux visual
-styles so status and message chrome use Ghosthub's terminal colors. This
-presentation-only exception targets the exact selected session and does not
-authorize changes to tmux key tables, prefixes, mouse behavior, windows, panes,
-layout, history, or process state.
+Attachment does not modify tmux visual styles by default. The explicit Tmux
+Theme shared-session override may reset status/message styles and set existing
+window foreground/background defaults so tmux reports the selected colors to
+terminal-aware programs. This presentation-only exception targets the exact
+selected session, affects every attached client, and does not authorize changes
+to tmux key tables, prefixes, mouse behavior, windows, panes, layout, history,
+or process state.
 
 ### Release distribution
 

@@ -56,12 +56,15 @@ leaves the presentation open. After success it rechecks the active attachment,
 closing that exact current selection and navigating away only if it is the
 killed target.
 
-The one presentation exception is color normalization. Before attachment,
-Ghosthub resets the selected session's `status-style`, `message-style`, and
-`message-command-style` to terminal-default colors so tmux chrome follows
-Ghosthub's configured foreground and background instead of tmux's built-in
-green/black and yellow/black defaults. Reversed terminal colors highlight the
-status and message areas without introducing a second fixed palette. These
+Ghosthub does not modify shared tmux colors by default. Users may explicitly
+enable the Tmux Theme shared-session override. Before attachment, that override
+resets the exact session's `status-style`, `message-style`, and
+`message-command-style` to terminal-default colors and sets each existing
+window's default foreground and background. For kwt-backed workspaces, styling
+runs only after kwt has created or repaired the complete session and layout.
+This gives tmux a deterministic answer to OSC 10/11 color queries; otherwise
+tmux may report the first attached client's theme even when Ghosthub uses
+different colors. Tmux shares the override with every attached client. These
 best-effort style commands do not change tmux interaction: prefix and key
 tables, mouse behavior, windows, panes, history, and layout remain untouched.
 
@@ -193,6 +196,8 @@ session model and die with the app process.
 - Keep `TERM_PROGRAM=ghosthub`.
 - Do not leak launcher-terminal `EDITOR` or `VISUAL` into embedded shells.
 - Keep Ghosthub terminal config at `~/.config/ghosthub/ghostty.conf`.
+- Keep the generated base config independent of optional named-theme files;
+  built-in Appearance themes use an explicit Ghosthub-owned color overlay.
 - Keep mutable Ghosthub app state under `~/.ghosthub/`.
 - Do not read or depend on Ghostty.app global config.
 - Do not install Ghosthub split, zoom, or tab keybindings. Native tmux owns
@@ -214,9 +219,10 @@ An imported pull-request workspace is contributor-authored source, so its
 own checkout instead.
 
 Reloading is transactional. A candidate with diagnostics is rejected and the
-last valid libghostty configuration remains active. The app presents the result
-of automatic and explicit reloads; errors remain visible until dismissed or
-superseded. **Ghosthub → Reload Configuration**, Quick Launch, and
+last valid libghostty configuration remains active. Successful automatic
+reloads are silent; automatic failures remain visible until dismissed or
+superseded. Explicit reloads present their result. **Ghosthub → Reload
+Configuration**, Quick Launch, and
 <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>,</kbd> all provide the explicit path.
 Options that libghostty cannot apply to existing surfaces retain their upstream
 restart or new-surface semantics.

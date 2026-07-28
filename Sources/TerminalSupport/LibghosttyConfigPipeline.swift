@@ -177,7 +177,6 @@ public struct LibghosttyConfigPipeline {
 
     font-family = Berkeley Mono
     font-size = 13
-    theme = dark:ghostty,light:ghostty-light
     background-opacity = 0.95
     scrollback-limit = 50000000
     term = xterm-256color
@@ -260,10 +259,10 @@ public struct LibghosttyConfigPipeline {
         let missingDefaults = defaults.filter { setting in
             !configContainsKey(setting.key, in: contents)
         }
-        guard !missingDefaults.isEmpty else {
-            return
-        }
+        guard !missingDefaults.isEmpty else { return }
 
+        // Existing config is user-owned. Never infer that a setting was
+        // generated from its value or rewrite it while backfilling defaults.
         var updated = contents
         if !updated.hasSuffix("\n") {
             updated.append("\n")
