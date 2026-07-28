@@ -20,6 +20,7 @@ public struct WorkspaceDisplayState {
     public let workspaceInventoryWarning: String?
     public let workspaceInventoryWarningsByHost: [UUID: String]
     public let activeTmuxSession: WorkspaceTmuxSessionSelection?
+    public let activeTmuxSessionIsConnected: Bool
 
     public init(
         snapshot: WorkspaceSnapshot,
@@ -36,7 +37,8 @@ public struct WorkspaceDisplayState {
         workspaceInventoryError: String? = nil,
         workspaceInventoryWarning: String? = nil,
         workspaceInventoryWarningsByHost: [UUID: String] = [:],
-        activeTmuxSession: WorkspaceTmuxSessionSelection? = nil
+        activeTmuxSession: WorkspaceTmuxSessionSelection? = nil,
+        activeTmuxSessionIsConnected: Bool = false
     ) {
         self.snapshot = snapshot
         self.workspaceResourceSummary = workspaceResourceSummary
@@ -54,6 +56,8 @@ public struct WorkspaceDisplayState {
         self.workspaceInventoryWarningsByHost =
             workspaceInventoryWarningsByHost
         self.activeTmuxSession = activeTmuxSession
+        self.activeTmuxSessionIsConnected =
+            activeTmuxSessionIsConnected
     }
 }
 
@@ -77,14 +81,43 @@ public struct ContentBuilders {
 }
 
 /// Action callbacks consumed by RootView.
+public struct TmuxSessionKillRequest: Equatable, Sendable {
+    public let session: WorkspaceTmuxSessionSelection
+    public let confirmedHost: HostSummary
+    public let serverPID: String
+    public let sessionID: String
+    public let sessionCreatedAt: String
+
+    public init(
+        session: WorkspaceTmuxSessionSelection,
+        confirmedHost: HostSummary,
+        serverPID: String,
+        sessionID: String,
+        sessionCreatedAt: String
+    ) {
+        self.session = session
+        self.confirmedHost = confirmedHost
+        self.serverPID = serverPID
+        self.sessionID = sessionID
+        self.sessionCreatedAt = sessionCreatedAt
+    }
+}
+
 public struct InteractionHandlers {
     public let closeWindow: (() -> Void)?
     public let dismissLogViewer: (() -> Void)?
     public let reloadTerminalConfig: (() -> Void)?
     public let openTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)?
     public let closeTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)?
+    public let prepareTmuxSessionKill:
+        ((WorkspaceTmuxSessionSelection) async throws
+            -> TmuxSessionKillRequest)?
+    public let killTmuxSession:
+        ((TmuxSessionKillRequest) async throws -> Void)?
     public let createTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)?
     public let refreshWorkspaceInventory: (() -> Void)?
+    public let registerProject:
+        ((HostSummary, String) async -> Result<String, HostProbeError>)?
     public let createWorktree:
         ((WorktreeCreateRequest) async throws -> Void)?
     public let listPullRequests:
@@ -98,8 +131,15 @@ public struct InteractionHandlers {
         reloadTerminalConfig: (() -> Void)? = nil,
         openTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)? = nil,
         closeTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)? = nil,
+        prepareTmuxSessionKill:
+        ((WorkspaceTmuxSessionSelection) async throws
+            -> TmuxSessionKillRequest)? = nil,
+        killTmuxSession:
+        ((TmuxSessionKillRequest) async throws -> Void)? = nil,
         createTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)? = nil,
         refreshWorkspaceInventory: (() -> Void)? = nil,
+        registerProject:
+        ((HostSummary, String) async -> Result<String, HostProbeError>)? = nil,
         createWorktree:
         ((WorktreeCreateRequest) async throws -> Void)? = nil,
         listPullRequests:
@@ -112,8 +152,11 @@ public struct InteractionHandlers {
         self.reloadTerminalConfig = reloadTerminalConfig
         self.openTmuxSession = openTmuxSession
         self.closeTmuxSession = closeTmuxSession
+        self.prepareTmuxSessionKill = prepareTmuxSessionKill
+        self.killTmuxSession = killTmuxSession
         self.createTmuxSession = createTmuxSession
         self.refreshWorkspaceInventory = refreshWorkspaceInventory
+        self.registerProject = registerProject
         self.createWorktree = createWorktree
         self.listPullRequests = listPullRequests
         self.importPullRequest = importPullRequest

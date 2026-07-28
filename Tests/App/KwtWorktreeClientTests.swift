@@ -49,12 +49,14 @@ struct KwtWorktreeClientTests {
             hostname: "builder",
             port: 2222
         )
+        let revision = String(repeating: "b", count: 40)
         let client = KwtWorktreeClient(
             remoteRunner: { host, command in
                 recorder.record(host: host, command: command)
                 return (0, "")
             },
-            localBinaryPath: "/Applications/Ghosthub.app/Contents/Helpers/kwt"
+            localBinaryPath: "/Applications/Ghosthub.app/Contents/Helpers/kwt",
+            remoteBinaryRevision: revision
         )
 
         try await client.create(
@@ -69,7 +71,8 @@ struct KwtWorktreeClientTests {
 
         #expect(recorder.host == ssh)
         #expect(recorder.command?.hasPrefix(
-            "ghosthub_kwt_path=$(command -v kwt) || exit 127;"
+            "ghosthub_kwt_path=\"$HOME/.ghosthub/helpers/kwt/"
+                + "\(revision)/kwt\";"
         ) == true)
         #expect(recorder.command?.contains("/Applications/Ghosthub.app") == false)
         #expect(recorder.command?.contains("add 'wesm'\\''s-fix' --no-launch") == true)

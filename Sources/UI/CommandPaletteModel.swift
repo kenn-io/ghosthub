@@ -43,6 +43,10 @@ public enum WorkspaceCommandAction: Equatable, Sendable {
     case reloadTerminalConfig
     case previousWorktree
     case nextWorktree
+    case newTmuxSession(UUID)
+    case addProject(UUID)
+    case openTmuxSession(WorkspaceTmuxSessionSelection)
+    case killTmuxSession(WorkspaceTmuxSessionSelection)
     case newWorktree(UUID)
     case importPullRequest(UUID)
     case openSettings(SettingsDomain)
@@ -113,6 +117,8 @@ public enum CommandPaletteModel {
     public static func commands(
         in snapshot: WorkspaceSnapshot,
         selection: WorkspaceSelection,
+        activeTmuxSession: WorkspaceTmuxSessionSelection? = nil,
+        activeTmuxSessionIsConnected: Bool = false,
         isWorkspacesRoute: Bool = true,
         isSidebarVisible: Bool,
         isSidePanelVisible: Bool,
@@ -176,6 +182,13 @@ public enum CommandPaletteModel {
             supportsSettings: supportsSettings
         ))
         commands.append(contentsOf: hostCommands(in: snapshot))
+        commands.append(contentsOf: hostActionCommands(in: snapshot))
+        commands.append(contentsOf: tmuxSessionCommands(
+            in: snapshot,
+            activeSelection: activeTmuxSession,
+            activeSelectionIsConnected: activeTmuxSessionIsConnected,
+            visibility: worktreeVisibility
+        ))
         commands.append(contentsOf: newWorktreeCommands(
             in: snapshot,
             selection: selection
@@ -325,6 +338,136 @@ public enum CommandPaletteModel {
                 keywords: host.searchKeywords,
                 action: .select(.host(host.id))
             )
+        }
+    }
+
+    private static func hostActionCommands(
+        in snapshot: WorkspaceSnapshot
+    ) -> [WorkspaceCommandItem] {
+        snapshot.hosts.flatMap { host in
+            [
+                WorkspaceCommandItem(
+                    id: "new-tmux-session-\(host.id.uuidString)",
+                    title: "New tmux session on \(host.name)",
+                    subtitle: "Create and attach on \(host.commandPaletteSubtitle)",
+                    keywords: [
+                        "new", "create", "tmux", "session",
+                        host.name, host.sshDestination ?? "",
+                    ],
+                    action: .newTmuxSession(host.id)
+                ),
+                WorkspaceCommandItem(
+                    id: "add-project-\(host.id.uuidString)",
+                    title: "Add Project on \(host.name)",
+                    subtitle: "Register an existing checkout with kwt.",
+                    keywords: [
+                        "add", "register", "project", "repository", "kwt",
+                        host.name, host.sshDestination ?? "",
+                    ],
+                    action: .addProject(host.id)
+                ),
+            ]
+        }
+    }
+
+    private static func tmuxSessionCommands(
+        in snapshot: WorkspaceSnapshot,
+        activeSelection: WorkspaceTmuxSessionSelection?,
+        activeSelectionIsConnected: Bool,
+        visibility: WorktreeVisibility
+    ) -> [WorkspaceCommandItem] {
+        let sections = WorkspaceSidebarModel.sections(
+            in: snapshot,
+            visibility: visibility
+        )
+        let sessions = sections.flatMap { section -> [(
+            session: WorkspaceTmuxSessionSelection,
+            hostName: String,
+            canRequestKill: Bool,
+            keywords: [String]
+        )] in
+            let discovered: [(
+                session: WorkspaceTmuxSessionSelection,
+                hostName: String,
+                canRequestKill: Bool,
+                keywords: [String]
+            )] = section.tmuxSessionRows.compactMap { row in
+                guard case let .tmuxSession(hostID, name) = row.target else {
+                    return nil
+                }
+                let session = WorkspaceTmuxSessionSelection(
+                    hostID: hostID,
+                    name: name
+                )
+                return (
+                    session,
+                    section.host.name,
+                    WorkspaceSidebarModel.canRequestKill(
+                        session,
+                        in: snapshot,
+                        activeSelection: activeSelection,
+                        activeSelectionIsConnected:
+                        activeSelectionIsConnected
+                    ),
+                    [row.title, row.subtitle ?? "", section.row.title]
+                )
+            }
+            let worktrees: [(
+                session: WorkspaceTmuxSessionSelection,
+                hostName: String,
+                canRequestKill: Bool,
+                keywords: [String]
+            )] = section.projects.flatMap { project in
+                project.worktrees.compactMap { worktree in
+                    guard let session = WorkspaceSidebarModel
+                        .tmuxSessionSelection(for: worktree)
+                    else { return nil }
+                    return (
+                        session,
+                        section.host.name,
+                        WorkspaceSidebarModel.canRequestKill(
+                            session,
+                            in: snapshot,
+                            activeSelection: activeSelection,
+                            activeSelectionIsConnected:
+                            activeSelectionIsConnected
+                        ),
+                        [
+                            worktree.name,
+                            worktree.path,
+                            project.project.name,
+                            section.row.title,
+                        ]
+                    )
+                }
+            }
+            return discovered + worktrees
+        }
+
+        return sessions.flatMap {
+            session, hostName, canRequestKill, keywords in
+            var commands = [
+                WorkspaceCommandItem(
+                    id: "open-tmux-session-\(session.id)",
+                    title: "Open tmux session: \(session.name)",
+                    subtitle: "Attach on \(hostName).",
+                    keywords: ["open", "attach", "tmux", "session"]
+                        + keywords,
+                    action: .openTmuxSession(session)
+                ),
+            ]
+            if canRequestKill {
+                commands.append(WorkspaceCommandItem(
+                    id: "kill-tmux-session-\(session.id)",
+                    title: "Kill tmux session: \(session.name)",
+                    subtitle: "Terminate every pane and process on \(hostName).",
+                    keywords: [
+                        "kill", "terminate", "stop", "tmux", "session",
+                    ] + keywords,
+                    action: .killTmuxSession(session)
+                ))
+            }
+            return commands
         }
     }
 

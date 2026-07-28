@@ -232,6 +232,7 @@ jobs:
         env:
           RELEASE_APP_VERSION: ${{ steps.release.outputs.version }}
           RELEASE_DMG_NAME: ${{ steps.release.outputs.dmg_name }}
+          KWT_SOURCE_DIR: ${{ github.workspace }}/.release-inputs/kwt-source
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_API_KEY }}
           APPLE_NOTARY_ISSUER: ${{ secrets.APPLE_API_ISSUER }}

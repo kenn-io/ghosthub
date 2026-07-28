@@ -33,6 +33,35 @@ struct WorkspaceTmuxDiscoveryTests {
         }
     }
 
+    private actor KillGate {
+        private var started = false
+        private var startWaiters: [CheckedContinuation<Void, Never>] = []
+        private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+        func suspend() async {
+            started = true
+            for waiter in startWaiters {
+                waiter.resume()
+            }
+            startWaiters.removeAll()
+            await withCheckedContinuation { continuation in
+                releaseContinuation = continuation
+            }
+        }
+
+        func waitUntilStarted() async {
+            guard !started else { return }
+            await withCheckedContinuation { continuation in
+                startWaiters.append(continuation)
+            }
+        }
+
+        func release() {
+            releaseContinuation?.resume()
+            releaseContinuation = nil
+        }
+    }
+
     private final class KwtAvailabilityState: @unchecked Sendable {
         private let lock = NSLock()
         private let remoteInventory: KwtHostInventory
@@ -321,6 +350,427 @@ struct WorkspaceTmuxDiscoveryTests {
 
         #expect(model.activeBorrowedTmuxLaunchMode == .attach)
         #expect(model.pendingCreatedTmuxSessionCount == 0)
+    }
+
+    @MainActor
+    @Test("discovered worktree session attaches without managed kwt")
+    func discoveredWorktreeSessionAttachesDirectly() async throws {
+        let environment = try setupRemoteEnvironment()
+        var snapshot = environment.snapshot
+        let sessionName = "kwt-ghosthub-main"
+        snapshot.worktrees[0].tmuxSessionName = sessionName
+        snapshot.hosts[0].tmuxSessions = [
+            TmuxSessionSummary(
+                name: sessionName,
+                managed: true,
+                windows: []
+            ),
+        ]
+        snapshot.hosts[0].remoteDiagnostics = [.missingKwtCapability]
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") }
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: sessionName,
+            worktreeID: environment.worktree.id,
+            worktreePath: environment.worktree.path
+        )
+
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+
+        let command = try #require(surfaceStore.lastConfiguration?.command)
+        #expect(command.contains("'attach-session'"))
+        #expect(!command.contains("'open'"))
+        #expect(!command.contains("managed kwt is unavailable"))
+    }
+
+    @MainActor
+    @Test("cached worktree session uses kwt when the helper is available")
+    func cachedWorktreeSessionUsesKwt() async throws {
+        let environment = try setupRemoteEnvironment()
+        var snapshot = environment.snapshot
+        let sessionName = "kwt-ghosthub-main"
+        snapshot.worktrees[0].tmuxSessionName = sessionName
+        snapshot.hosts[0].tmuxSessions = [
+            TmuxSessionSummary(
+                name: sessionName,
+                managed: true,
+                windows: []
+            ),
+        ]
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") }
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: sessionName,
+            worktreeID: environment.worktree.id,
+            worktreePath: environment.worktree.path
+        )
+
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+
+        let command = try #require(surfaceStore.lastConfiguration?.command)
+        #expect(command.contains("'open'"))
+        #expect(command.contains(environment.worktree.path))
+    }
+
+    @MainActor
+    @Test("kill carries the discovered session identity through confirmation")
+    func killUsesConfirmedSessionIdentity() async throws {
+        let environment = try setupStandardEnvironment()
+        var snapshot = environment.snapshot
+        snapshot.hosts[0].tmuxSessions = [
+            TmuxSessionSummary(
+                name: "training",
+                managed: false,
+                windows: [],
+                serverPID: "31415",
+                sessionID: "$8",
+                createdAt: "1721552400"
+            ),
+        ]
+        let killedIdentity = LockedValue<TmuxSessionIdentity?>(nil)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            tmuxSessionKiller: { _, identity, _ in
+                killedIdentity.store(identity)
+            }
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "training"
+        )
+
+        let request = try await model.prepareTmuxSessionKill(selection)
+        model.snapshot.hosts[0].tmuxSessions[0].serverPID = "31416"
+        try await model.killTmuxSession(request)
+
+        #expect(request.serverPID == "31415")
+        #expect(request.sessionID == "$8")
+        #expect(request.sessionCreatedAt == "1721552400")
+        #expect(killedIdentity.load() == TmuxSessionIdentity(
+            serverPID: "31415",
+            sessionID: "$8",
+            createdAt: "1721552400"
+        ))
+    }
+
+    @MainActor
+    @Test("a failed kill leaves the active session attached")
+    func failedKillPreservesActiveSession() async throws {
+        let environment = try setupStandardEnvironment()
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "kwt-ghosthub-main",
+            worktreeID: environment.worktree.id,
+            worktreePath: environment.worktree.path
+        )
+        let expectedError = TmuxSessionKillError.commandFailed(
+            host: "localhost",
+            session: selection.name,
+            status: 1
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxPathProvider: { .success("/opt/homebrew/bin/tmux") },
+            tmuxSessionKiller: { _, _, _ in
+                throw expectedError
+            }
+        )
+        model.selection.select(
+            .worktree(environment.worktree.id),
+            in: model.snapshot
+        )
+        let originalSelection = model.selection
+        model.openBorrowedTmuxSession(selection)
+        let request = TmuxSessionKillRequest(
+            session: selection,
+            confirmedHost: try #require(
+                model.snapshot.host(id: environment.host.id)
+            ),
+            serverPID: "31415",
+            sessionID: "$42",
+            sessionCreatedAt: "1721552400"
+        )
+
+        await #expect {
+            try await model.killTmuxSession(request)
+        } throws: { error in
+            error as? TmuxSessionKillError == expectedError
+        }
+
+        #expect(model.activeBorrowedTmuxSelection == selection)
+        #expect(model.selection == originalSelection)
+    }
+
+    @MainActor
+    @Test("kill rejects a host endpoint changed after confirmation")
+    func killRejectsChangedEndpoint() async throws {
+        let environment = try setupStandardEnvironment()
+        let configuredHosts = CurrentValueSubject<[SSHHost], Never>([
+            SSHHost(
+                configKey: "spark",
+                name: "DGX Spark",
+                platform: .linux,
+                sshDestination: "wesm@old.example.com"
+            ),
+        ])
+        let killCalls = Counter()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            tmuxSessionKiller: { _, _, _ in
+                _ = killCalls.increment()
+            },
+            configuredSSHHostsProvider: { configuredHosts.value },
+            configuredSSHHostsPublisher: configuredHosts.eraseToAnyPublisher()
+        )
+        model.refreshHosts()
+        let confirmedHost = try #require(
+            model.snapshot.hosts.first { $0.configKey == "spark" }
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: confirmedHost.id,
+            name: "training",
+            socketName: "protected"
+        )
+        model.openBorrowedTmuxSession(selection)
+        let request = TmuxSessionKillRequest(
+            session: selection,
+            confirmedHost: confirmedHost,
+            serverPID: "31415",
+            sessionID: "$42",
+            sessionCreatedAt: "1721552400"
+        )
+
+        configuredHosts.value = [
+            SSHHost(
+                configKey: "spark",
+                name: "DGX Spark",
+                platform: .linux,
+                sshDestination: "wesm@new.example.com"
+            ),
+        ]
+        model.refreshHosts()
+
+        await #expect {
+            try await model.killTmuxSession(request)
+        } throws: { error in
+            error as? TmuxSessionKillError == .hostChanged(
+                session: selection.name
+            )
+        }
+        #expect(killCalls.count == 0)
+    }
+
+    @MainActor
+    @Test("kill preparation rejects a disconnected active attachment")
+    func killPreparationRejectsDisconnectedAttachment() async throws {
+        let environment = try setupStandardEnvironment()
+        let identityReads = Counter()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            tmuxSessionIdentityReader: { _, _ in
+                _ = identityReads.increment()
+                return TmuxSessionIdentity(
+                    serverPID: "31415",
+                    sessionID: "$42",
+                    createdAt: "1721552400"
+                )
+            }
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "kwt-ghosthub-main",
+            worktreeID: environment.worktree.id,
+            worktreePath: environment.worktree.path,
+            socketName: "protected"
+        )
+        model.openBorrowedTmuxSession(selection)
+
+        await #expect {
+            _ = try await model.prepareTmuxSessionKill(selection)
+        } throws: { error in
+            error as? TmuxSessionKillError == .sessionNotRunning(
+                host: "localhost",
+                session: selection.name
+            )
+        }
+        #expect(identityReads.count == 0)
+    }
+
+    @MainActor
+    @Test("connected attachment supplies protected-session identity")
+    func connectedAttachmentSuppliesIdentity() async throws {
+        let environment = try setupStandardEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let identityReads = Counter()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            tmuxSessionIdentityReader: { _, _ in
+                _ = identityReads.increment()
+                return TmuxSessionIdentity(
+                    serverPID: "31415",
+                    sessionID: "$42",
+                    createdAt: "1721552400"
+                )
+            }
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "kwt-ghosthub-main",
+            worktreeID: environment.worktree.id,
+            worktreePath: environment.worktree.path,
+            socketName: "protected"
+        )
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        await Task.yield()
+
+        let request = try await model.prepareTmuxSessionKill(selection)
+
+        #expect(request.serverPID == "31415")
+        #expect(request.sessionID == "$42")
+        #expect(request.sessionCreatedAt == "1721552400")
+        #expect(identityReads.count == 1)
+    }
+
+    @MainActor
+    @Test("kill completion preserves a session selected while it runs")
+    func killCompletionPreservesNewActiveSession() async throws {
+        let environment = try setupStandardEnvironment()
+        let killGate = KillGate()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            tmuxSessionKiller: { _, _, _ in
+                await killGate.suspend()
+            }
+        )
+        let killed = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "training"
+        )
+        let replacement = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "kwt-ghosthub-main",
+            worktreeID: environment.worktree.id,
+            worktreePath: environment.worktree.path
+        )
+        model.openBorrowedTmuxSession(killed)
+        let request = TmuxSessionKillRequest(
+            session: killed,
+            confirmedHost: try #require(
+                model.snapshot.host(id: environment.host.id)
+            ),
+            serverPID: "31415",
+            sessionID: "$42",
+            sessionCreatedAt: "1721552400"
+        )
+
+        let killTask = Task {
+            try await model.killTmuxSession(request)
+        }
+        await killGate.waitUntilStarted()
+        model.openBorrowedTmuxSession(replacement)
+        model.selection.select(
+            .worktree(environment.worktree.id),
+            in: model.snapshot
+        )
+        await killGate.release()
+        try await killTask.value
+
+        #expect(model.activeBorrowedTmuxSelection == replacement)
+        #expect(model.selection.selectedWorktreeID == environment.worktree.id)
+    }
+
+    @MainActor
+    @Test("kill completion closes the target selected while it runs")
+    func killCompletionClosesNewlyActiveTarget() async throws {
+        let environment = try setupStandardEnvironment()
+        let killGate = KillGate()
+        var snapshot = environment.snapshot
+        snapshot.hosts[0].tmuxSessions = [
+            TmuxSessionSummary(
+                name: "training",
+                managed: false,
+                windows: []
+            ),
+        ]
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            tmuxSessionKiller: { _, _, _ in
+                await killGate.suspend()
+            }
+        )
+        let killed = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "training"
+        )
+        let replacement = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "kwt-ghosthub-main",
+            worktreeID: environment.worktree.id,
+            worktreePath: environment.worktree.path
+        )
+        model.openBorrowedTmuxSession(replacement)
+        model.selection.select(
+            .worktree(environment.worktree.id),
+            in: model.snapshot
+        )
+        let request = TmuxSessionKillRequest(
+            session: killed,
+            confirmedHost: try #require(
+                model.snapshot.host(id: environment.host.id)
+            ),
+            serverPID: "31415",
+            sessionID: "$42",
+            sessionCreatedAt: "1721552400"
+        )
+
+        let killTask = Task {
+            try await model.killTmuxSession(request)
+        }
+        await killGate.waitUntilStarted()
+        let activeTarget = WorkspaceTmuxSessionSelection(
+            hostID: killed.hostID,
+            name: killed.name,
+            worktreeID: environment.worktree.id,
+            worktreePath: environment.worktree.path
+        )
+        model.openBorrowedTmuxSession(activeTarget)
+        await killGate.release()
+        try await killTask.value
+
+        #expect(model.activeBorrowedTmuxSelection == nil)
+        #expect(model.selection.selectedWorktreeID == nil)
     }
 
     @MainActor
@@ -1266,9 +1716,13 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.host.id,
             sshHostProbeRunner: { _, command in
                 #expect(command.contains("command -v tmux"))
+                #expect(command.contains("GHOSTHUB_REMOTE_PROBE_REACHED"))
                 return (
                     status: 0,
-                    stdout: "GHOSTHUB_KWT_UNAVAILABLE\n"
+                    stdout:
+                    "GHOSTHUB_REMOTE_PROBE_REACHED\n"
+                        + "GHOSTHUB_TMUX_AVAILABLE\n"
+                        + "GHOSTHUB_KWT_UNAVAILABLE\n"
                 )
             }
         )
@@ -1290,6 +1744,203 @@ struct WorkspaceTmuxDiscoveryTests {
             summary.diagnostics.first?.recoverySuggestion
                 .contains("Tmux sessions remain available") == true
         )
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("connection probe distinguishes a reachable host without tmux")
+    func connectionProbeReportsMissingTmux() async throws {
+        let environment = try setupStandardEnvironment()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            sshHostProbeRunner: { _, _ in
+                (
+                    status: 0,
+                    stdout:
+                    "GHOSTHUB_REMOTE_PROBE_REACHED\n"
+                        + "GHOSTHUB_TMUX_UNAVAILABLE\n"
+                        + "GHOSTHUB_KWT_UNAVAILABLE\n"
+                )
+            }
+        )
+
+        let result = await model.probeSSHHost(SSHHost(
+            configKey: "spark",
+            name: "DGX Spark",
+            platform: .linux,
+            sshDestination: "wesm@dgx-spark"
+        ))
+        let summary = try result.get()
+
+        #expect(summary.connectionState == .online)
+        #expect(summary.host.lastKnownReachable)
+        #expect(summary.diagnostics.map(\.code) == [
+            .missingTmux,
+            .missingKwt,
+        ])
+        #expect(
+            summary.diagnostics.first?.summary
+                == "tmux is not installed."
+        )
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("connection probe reports an SSH failure independently")
+    func connectionProbeReportsSSHFailure() async throws {
+        let environment = try setupStandardEnvironment()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            sshHostProbeRunner: { _, _ in
+                (status: 255, stdout: "")
+            }
+        )
+
+        let result = await model.probeSSHHost(SSHHost(
+            configKey: "offline",
+            name: "Offline",
+            platform: .linux,
+            sshDestination: "offline"
+        ))
+        let summary = try result.get()
+
+        #expect(summary.connectionState == .offline)
+        #expect(!summary.host.lastKnownReachable)
+        #expect(summary.diagnostics.map(\.code) == [
+            .sshConnectionFailed,
+        ])
+        #expect(
+            summary.diagnostics.first?.summary
+                == "SSH connection failed."
+        )
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test(
+        "connection probe keeps non-SSH command failures reachable",
+        arguments: [Int32(1), Int32(127)]
+    )
+    func connectionProbeReportsProbeFailure(status: Int32) async throws {
+        let environment = try setupStandardEnvironment()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            sshHostProbeRunner: { _, _ in
+                (
+                    status: status,
+                    stdout: "GHOSTHUB_REMOTE_PROBE_REACHED\n"
+                )
+            }
+        )
+
+        let result = await model.probeSSHHost(SSHHost(
+            configKey: "misconfigured-shell",
+            name: "Misconfigured Shell",
+            platform: .linux,
+            sshDestination: "misconfigured-shell"
+        ))
+        let summary = try result.get()
+
+        #expect(summary.connectionState == .degraded)
+        #expect(summary.host.lastKnownReachable)
+        #expect(summary.host.lastSeenAt != nil)
+        #expect(summary.diagnostics.map(\.code) == [.probeFailure])
+        #expect(
+            summary.diagnostics.first?.summary
+                == "Remote verification failed (status \(status))."
+        )
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("connection probe treats an unconfirmed SSH timeout as offline")
+    func connectionProbeReportsUnconfirmedTimeout() async throws {
+        let environment = try setupStandardEnvironment()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            sshHostProbeRunner: { _, _ in
+                (status: -124, stdout: "SSH wrapper output\n")
+            }
+        )
+
+        let result = await model.probeSSHHost(SSHHost(
+            configKey: "timed-out",
+            name: "Timed Out",
+            platform: .linux,
+            sshDestination: "timed-out"
+        ))
+        let summary = try result.get()
+
+        #expect(summary.connectionState == .offline)
+        #expect(!summary.host.lastKnownReachable)
+        #expect(summary.host.lastSeenAt == nil)
+        #expect(summary.diagnostics.map(\.code) == [.probeFailure])
+        #expect(
+            summary.diagnostics.first?.summary
+                == "Remote verification did not reach the host (status -124)."
+        )
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("Add Project rejects a host endpoint changed while its sheet is open")
+    func addProjectRejectsChangedEndpoint() async throws {
+        let environment = try setupStandardEnvironment()
+        let configuredHosts = CurrentValueSubject<[SSHHost], Never>([
+            SSHHost(
+                configKey: "spark",
+                name: "DGX Spark",
+                platform: .linux,
+                sshDestination: "wesm@old.example.com"
+            ),
+        ])
+        let registrationCalls = Counter()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            kwtProjectRegistration: { _, _ in
+                _ = registrationCalls.increment()
+                return KwtProjectRecord(
+                    repository: "github.com/kenn-io/ghosthub",
+                    name: "ghosthub",
+                    path: "/srv/ghosthub",
+                    lastTouched: nil
+                )
+            },
+            configuredSSHHostsProvider: { configuredHosts.value },
+            configuredSSHHostsPublisher:
+            configuredHosts.eraseToAnyPublisher()
+        )
+        model.refreshHosts()
+        let capturedHost = try #require(
+            model.snapshot.hosts.first { $0.configKey == "spark" }
+        )
+
+        configuredHosts.value = [
+            SSHHost(
+                configKey: "spark",
+                name: "DGX Spark",
+                platform: .linux,
+                sshDestination: "wesm@new.example.com"
+            ),
+        ]
+        model.refreshHosts()
+        let result = await model.registerProject(
+            "/srv/ghosthub",
+            on: capturedHost
+        )
+
+        #expect(
+            result == .failure(.message(
+                "The host connection changed. "
+                    + "Close Add Project and try again."
+            ))
+        )
+        #expect(registrationCalls.count == 0)
         await model.shutdown()
     }
 

@@ -292,8 +292,29 @@ func makeModel(
             on: host
         )
     },
+    kwtProjectRegistration:
+    @escaping WorkspaceSceneModel.KwtProjectRegistration = {
+        projectPath, host in
+        try await KwtProjectRegistrar().register(
+            projectPath: projectPath,
+            on: host
+        )
+    },
     tmuxSessionDiscovery: @escaping
     WorkspaceSceneModel.TmuxSessionDiscovery = { _ in .success([]) },
+    tmuxSessionKiller: @escaping
+    WorkspaceSceneModel.TmuxSessionKilling = {
+        selection, identity, host in
+        try await TmuxSessionKiller().kill(
+            selection,
+            expectedIdentity: identity,
+            on: host
+        )
+    },
+    tmuxSessionIdentityReader: @escaping
+    WorkspaceSceneModel.TmuxSessionIdentityReading = { selection, host in
+        try await TmuxSessionKiller().sessionIdentity(selection, on: host)
+    },
     sshHostProbeRunner: @escaping
     WorkspaceSceneModel.SSHHostProbeRunner = { _, _ in
         (status: 255, stdout: "")
@@ -322,7 +343,10 @@ func makeModel(
         kwtWorktreeCreator: kwtWorktreeCreator,
         kwtPullRequestLister: kwtPullRequestLister,
         kwtPullRequestImporter: kwtPullRequestImporter,
+        kwtProjectRegistration: kwtProjectRegistration,
         tmuxSessionDiscovery: tmuxSessionDiscovery,
+        tmuxSessionKiller: tmuxSessionKiller,
+        tmuxSessionIdentityReader: tmuxSessionIdentityReader,
         sshHostProbeRunner: sshHostProbeRunner,
         configuredSSHHostsProvider: configuredSSHHostsProvider,
         configuredSSHHostsPublisher: configuredSSHHostsPublisher,

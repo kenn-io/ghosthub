@@ -99,6 +99,24 @@ struct TmuxBinaryResolverTests {
         )
     }
 
+    @Test("SSH transport failure is not reported as a login shell failure")
+    func reportsRemoteSSHFailure() {
+        let host = SSHHostInfo(
+            user: "wesm", hostname: "untrusted-host", port: nil
+        )
+        let resolver = TmuxBinaryResolver(
+            remoteProcessRunner: { _, _ in
+                (status: 255, stdout: "")
+            }
+        )
+        let expected = TmuxBinaryError.sshConnectionFailed(
+            host: host.displayName
+        )
+
+        #expect(resolver.resolveTmuxPath(on: host) == .failure(expected))
+        #expect(resolver.discoverSessions(on: host) == .failure(expected))
+    }
+
     @Test("discovers every local tmux session without control-mode attachment")
     func discoversLocalSessions() throws {
         let resolver = TmuxBinaryResolver(processRunner: { _, command in
@@ -113,8 +131,8 @@ struct TmuxBinaryResolverTests {
                 stdout: """
                 /opt/homebrew/bin/tmux
                 tmux 3.7b
-                GHOSTHUB_TMUX_SESSION\t2\t1783344091\t\tdocbank
-                GHOSTHUB_TMUX_SESSION\t4\t1783344092\towner-token\tGhosthub\twork
+                GHOSTHUB_TMUX_SESSION\t2\t101\t$1\t1783344091\t\tdocbank
+                GHOSTHUB_TMUX_SESSION\t4\t101\t$2\t1783344092\towner-token\tGhosthub\twork
 
                 """
             )
@@ -124,11 +142,13 @@ struct TmuxBinaryResolverTests {
             try resolver.discoverSessions().get() == [
                 DiscoveredTmuxSession(
                     name: "docbank", windowCount: 2,
-                    createdAt: "1783344091", managed: false
+                    serverPID: "101",
+                    sessionID: "$1", createdAt: "1783344091", managed: false
                 ),
                 DiscoveredTmuxSession(
                     name: "Ghosthub\twork", windowCount: 4,
-                    createdAt: "1783344092", managed: true
+                    serverPID: "101",
+                    sessionID: "$2", createdAt: "1783344092", managed: true
                 ),
             ]
         )
@@ -174,7 +194,7 @@ struct TmuxBinaryResolverTests {
                     stdout: """
                     /usr/local/bin/tmux
                     tmux 3.4
-                    GHOSTHUB_TMUX_SESSION\t3\t99\t\tremote-work
+                    GHOSTHUB_TMUX_SESSION\t3\t202\t$7\t99\t\tremote-work
 
                     """
                 )
@@ -185,7 +205,8 @@ struct TmuxBinaryResolverTests {
             try resolver.discoverSessions(on: host).get()
                 == [DiscoveredTmuxSession(
                     name: "remote-work", windowCount: 3,
-                    createdAt: "99", managed: false
+                    serverPID: "202",
+                    sessionID: "$7", createdAt: "99", managed: false
                 )]
         )
     }

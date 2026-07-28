@@ -11,12 +11,19 @@ The application bundles an ordinary `kwt` CLI helper at
 local project inventory and worktree operations. It does not resolve a local
 `kwt` from `PATH`, including when the bundle is damaged or incomplete: the
 local operation fails instead of drifting to another installation. Remote
-hosts continue to execute their own `kwt` through a login shell.
+hosts use one of four pinned, CGO-disabled variants sealed under
+`Contents/Resources/KwtRemote`: Darwin and Linux, each for amd64 and arm64.
+Ghosthub uploads a variant only after the user chooses Install or Update,
+verifies its SHA-256 remotely, and invokes the exact revisioned path under
+`~/.ghosthub/helpers/kwt/`; it never replaces or resolves a system `kwt`.
 
 `make run-app` follows the same rule. Its `bootstrap-kwt` dependency builds and
 caches `KWT_REF` under `.build`, then stages that exact helper into the debug
 app. A developer can override the repository, revision, source directory, or
 binary path deliberately, but the default never embeds the system kwt.
+`bootstrap-kwt-variants` cross-compiles the complete remote matrix from the
+same pin. Before either debug or release packaging, every variant is checked
+for its expected Mach-O/ELF architecture and embedded pinned revision.
 
 Every packaged app also carries Ghosthub's AGPL-3.0 license and all notices in
 the repository's `LICENSES` directory under `Contents/Resources/Licenses`.
@@ -38,15 +45,28 @@ release inputs that must move deliberately:
 
 The embedded kwt revision and release-facing version are written into
 `Info.plist` as `GhosthubKwtSourceRevision` and `GhosthubKwtVersion`. The
-revision is also included in GitHub release notes. Release CI records the
+remote matrix pin is recorded independently as
+`GhosthubRemoteKwtSourceRevision`, so a deliberately substituted local helper
+cannot change the managed remote path. The revision is also included in GitHub
+release notes. Release CI checks out that revision under
+`.release-inputs/kwt-source` and passes the checkout as `KWT_SOURCE_DIR` when
+building the remote variant matrix; the repository slug used by
+`actions/checkout` is never passed to `git clone`. Release CI records the
 helper it built from the pin; a local build against a substituted
 `KWT_BINARY_PATH` is recorded as `unpinned` rather than inheriting the pin. Kwt is part of Ghosthub's
 signed code, but it remains an ordinary CLI rather than a daemon or state
 authority of its own. The pinned revision must support the complete automation
 contract consumed by the app, including the isolated tmux socket identity
-returned by `pr import` without starting tmux, the inert shell-only protected
-`pr attach` command, and refusal to open protected imports through kwt's
-ordinary default-server open paths.
+returned by session-free `pr import`, the inert shell-only protected session
+created or repaired by `pr attach`, and refusal to open protected imports
+through kwt's ordinary default-server open paths. It must also support
+`open <exact-worktree-path>`, which establishes or repairs an ordinary
+workspace's canonical session and keeps its initial tmux client attached.
+Exact-path resolution must operate from the supplied Git worktree rather than
+depending on the configured global base because repository-local inventory
+can report linked worktrees stored elsewhere. Its start-only automation mode
+must never prompt for target-config trust or fuzzy layout selection; callers
+may still select a deterministic layout explicitly.
 
 Because a separately installed kwt can access the same user-owned kwt state,
 kwt must preserve backward compatibility for supported on-disk state and
@@ -57,9 +77,15 @@ and `pr attach` contract; changing that contract requires
 exercising candidate discovery, an idempotent existing-import result, creation
 of the exact returned tmux session only on protected attachment, and a
 protected attach that can re-establish an absent session without executing a
-configured project layout. Imports originating in an unregistered repository
+configured project layout. First attachment on a fresh protected socket must
+initialize and inspect the tmux server without relying on platform-specific
+connection-error text. Imports originating in an unregistered repository
 must remain attachable when the recorded clone agrees with its live Git
 identity, while ambiguous or conflicting registrations must fail closed.
+It also includes `projects add <path> --json` as the supported registration
+boundary for fresh hosts. Argument, flag, configuration, and repository
+failures must retain the structured error contract, and repeated registration
+must converge across clone paths using the host-aware repository identity.
 The pinned implementation removes `KWT_GITHUB_TOKEN`, `KWT_FLEET_TOKEN`, and
 the configured fleet token variable from tmux subprocess and session
 environments before imported workspace panes start, while preserving
@@ -176,7 +202,8 @@ gh workflow run release.yml \
 ```
 
 The manual path imports the signing certificate into an ephemeral keychain,
-builds the pinned kwt helper, verifies that it is an Apple Silicon Mach-O,
+builds the pinned local kwt helper, verifies that it is an Apple Silicon
+Mach-O, cross-compiles the Darwin/Linux amd64/arm64 remote matrix,
 builds release-optimized libghostty and Ghosthub, re-signs Sparkle's nested
 helpers and framework with Ghosthub's Developer ID identity, signs kwt and the
 enclosing app, signs the DMG, submits it to Apple, staples and validates the
@@ -201,7 +228,11 @@ locally built. Verify at minimum:
   GNU AGPL v3.0-or-later license notice.
 - Local kwt projects and worktrees load without a system kwt on `PATH`.
 - Existing local tmux sessions remain discoverable and attach normally.
-- A configured SSH host uses its remote kwt and tmux installations.
+- A configured SSH host discovers and attaches tmux without managed kwt.
+- Install kwt Worktree Helper selects the correct target, enables remote project
+  inventory, and leaves any system `kwt` untouched.
+- On a fresh host, Add Project registers an absolute existing checkout through
+  managed kwt and makes its worktrees available without a filesystem scan.
 - **Check for Updates…** opens Sparkle's native UI without a configuration or
   signature error. A complete end-to-end installation requires a later release
   than the first version that embeds Sparkle.
@@ -244,7 +275,8 @@ unsigned or unnotarized fallback artifact.
 
 ## Local packaging
 
-Both debug and release app bundles require the kwt binary that will be embedded.
+Both debug and release app bundles require the local kwt binary and complete
+remote variant matrix that will be embedded.
 With the default `.build/kwt/kwt`, the app packaging targets verify and build
 the exact `KWT_REVISION` automatically. Set `KWT_BINARY_PATH` to an existing
 executable only when deliberately packaging a separately prepared build:
@@ -256,6 +288,16 @@ make release-app \
   KWT_VERSION=development \
   KWT_SOURCE_REVISION=local
 ```
+
+`KWT_BINARY_PATH` changes only the local helper. Remote variants remain pinned
+to `KWT_REF`; use `KWT_VARIANTS_DIR` only when deliberately supplying a
+complete four-target matrix. An explicit variants directory is treated as
+prebuilt input: packaging verifies all four binary formats, target
+architectures, and embedded `KWT_REF`, and never rebuilds or modifies that
+directory. The default variants directory continues to be built from the
+pinned kwt source. Installation additionally runs the uploaded helper and
+requires its first `version` line to report that exact revision before the
+helper is promoted into the revisioned remote path.
 
 `tools/build_release_dmg.sh` passes kwt overrides to the Makefile only when
 they are nonempty. A clean release therefore retains these pinned defaults

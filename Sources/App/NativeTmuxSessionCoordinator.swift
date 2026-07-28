@@ -67,10 +67,12 @@ private struct NativeTmuxAttachment {
     var host: TmuxHost
     var tmuxPath: String
     var kwtPath: String?
+    var remoteKwtCommandPrelude: String?
     var socketName: String?
     var protectedWorkspacePath: String?
     var launchMode: TmuxAttachmentLaunchMode
     var workingDirectory: String?
+    var openWorkspace: Bool
 }
 
 /// Hosts ordinary tmux clients for kwt workspaces and unbound sessions.
@@ -84,6 +86,7 @@ final class NativeTmuxSessionCoordinator {
     private let remoteTmuxPathProvider:
         @Sendable (SSHHostInfo) -> Result<String, TmuxBinaryError>
     private let localKwtPathProvider: @Sendable () -> String?
+    private let remoteKwtCommandPreludeProvider: @Sendable () -> String?
     private var handlesByKey: [NativeTmuxSessionKey: BorrowedTmuxSessionHandle] = [:]
     private var targetHostsByHandle: [UUID: TmuxHost] = [:]
     private var attachments: [UUID: NativeTmuxAttachment] = [:]
@@ -103,6 +106,12 @@ final class NativeTmuxSessionCoordinator {
         localKwtPathProvider: @escaping @Sendable () -> String? = {
             KwtBinaryLocator.bundledPath()
         },
+        remoteKwtCommandPreludeProvider:
+        @escaping @Sendable () -> String? = {
+            KwtBinaryLocator.remoteCommandPrelude(
+                revision: KwtBinaryLocator.bundledRemoteRevision()
+            )
+        },
         remoteTmuxPathProvider: @escaping @Sendable (SSHHostInfo)
             -> Result<String, TmuxBinaryError> = {
                 TmuxBinaryResolver().resolveTmuxPath(on: $0)
@@ -111,6 +120,8 @@ final class NativeTmuxSessionCoordinator {
         self.terminalCoordinator = terminalCoordinator
         self.tmuxPathProvider = tmuxPathProvider
         self.localKwtPathProvider = localKwtPathProvider
+        self.remoteKwtCommandPreludeProvider =
+            remoteKwtCommandPreludeProvider
         self.remoteTmuxPathProvider = remoteTmuxPathProvider
     }
 
@@ -120,7 +131,8 @@ final class NativeTmuxSessionCoordinator {
         host: TmuxHost,
         socketName: String? = nil,
         launchMode: TmuxAttachmentLaunchMode = .attach,
-        workingDirectory: String? = nil
+        workingDirectory: String? = nil,
+        openWorkspace: Bool = false
     ) -> BorrowedTmuxSessionHandle {
         let key = NativeTmuxSessionKey(
             hostID: hostID,
@@ -178,6 +190,7 @@ final class NativeTmuxSessionCoordinator {
                 socketName: socketName,
                 launchMode: launchMode,
                 workingDirectory: workingDirectory,
+                openWorkspace: openWorkspace,
                 resolution: resolution
             )
         }
@@ -190,6 +203,7 @@ final class NativeTmuxSessionCoordinator {
         socketName: String?,
         launchMode: TmuxAttachmentLaunchMode,
         workingDirectory: String?,
+        openWorkspace: Bool,
         resolution: Result<String, TmuxBinaryError>
     ) {
         provisioningTasks.removeValue(forKey: handle.id)
@@ -208,10 +222,14 @@ final class NativeTmuxSessionCoordinator {
                 host: host,
                 tmuxPath: path,
                 kwtPath: host.isRemote ? nil : localKwtPathProvider(),
+                remoteKwtCommandPrelude: host.isRemote
+                    ? remoteKwtCommandPreludeProvider()
+                    : nil,
                 socketName: socketName,
                 protectedWorkspacePath: protectedWorkspacePath,
                 launchMode: launchMode,
-                workingDirectory: workingDirectory
+                workingDirectory: workingDirectory,
+                openWorkspace: openWorkspace
             )
             onSurfaceReady?(handle)
         case let .failure(error):
@@ -272,6 +290,9 @@ final class NativeTmuxSessionCoordinator {
             sessionName: handle.name,
             host: attachment.host,
             socketName: attachment.socketName,
+            workspacePath: attachment.openWorkspace
+                ? attachment.workingDirectory
+                : nil,
             protectedWorkspacePath: attachment.protectedWorkspacePath,
             launchMode: attachment.launchMode
         )
@@ -282,6 +303,8 @@ final class NativeTmuxSessionCoordinator {
                 command: info.attachCommand(
                     tmuxPath: attachment.tmuxPath,
                     kwtPath: attachment.kwtPath,
+                    remoteKwtCommandPrelude:
+                    attachment.remoteKwtCommandPrelude,
                     workingDirectory: attachment.workingDirectory
                 )
             )

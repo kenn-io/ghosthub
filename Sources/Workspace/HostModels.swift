@@ -170,10 +170,21 @@ public struct RemoteHostDiagnostic: Codable, Equatable, Sendable, Identifiable {
         RemoteHostDiagnostic(
             code: .missingKwt,
             severity: .warning,
-            summary: "kwt is not available (optional).",
+            summary: "Git worktree support is not installed (optional).",
             recoverySuggestion:
-            "Install kwt to show projects and worktrees from this host. "
+            "Use Install kwt Worktree Helper in Host Settings to show "
+                + "projects and worktrees from this host. "
                 + "Tmux sessions remain available."
+        )
+    }
+
+    public static var missingTmuxCapability: Self {
+        RemoteHostDiagnostic(
+            code: .missingTmux,
+            severity: .error,
+            summary: "tmux is not installed.",
+            recoverySuggestion:
+            "Install tmux on the remote host, then test the connection again."
         )
     }
 
@@ -329,13 +340,7 @@ public func buildHostDiagnostics(
         ))
     }
     if !capabilities.dependencies.tmux {
-        diagnostics.append(RemoteHostDiagnostic(
-            code: .missingTmux,
-            severity: .error,
-            summary: "Missing tmux",
-            recoverySuggestion:
-            "Install tmux on the remote host."
-        ))
+        diagnostics.append(.missingTmuxCapability)
     }
     return diagnostics
 }

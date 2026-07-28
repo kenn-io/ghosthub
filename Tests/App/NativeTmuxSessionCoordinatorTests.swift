@@ -83,6 +83,39 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(command.contains("kwt-pr-0123456789abcdef"))
     }
 
+    @Test("ordinary worktree path attaches directly through kwt")
+    func ordinaryWorktreeUsesKwtAttachment() async throws {
+        let store = TmuxSurfaceStoreStub()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { .success("/usr/bin/tmux") },
+            localKwtPathProvider: {
+                "/Applications/Ghosthub.app/Contents/Helpers/kwt"
+            }
+        )
+        var isReady = false
+        coordinator.onSurfaceReady = { _ in isReady = true }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "kwt-widget-feature",
+            host: .local,
+            workingDirectory: "/worktrees/widget",
+            openWorkspace: true
+        )
+
+        await waitUntilMainActor { isReady }
+        _ = coordinator.surface(handle: handle)
+
+        let command = try #require(
+            store.requestedConfigurations.last?.command
+        )
+        #expect(command.contains("Helpers/kwt"))
+        #expect(command.contains("open"))
+        #expect(command.contains("/worktrees/widget"))
+        #expect(!command.contains("--start-session"))
+        #expect(!command.contains("attach-session"))
+    }
+
     @Test("endpoint changes replace provisioning and active handles")
     func endpointChangesReplaceHandles() async throws {
         let store = TmuxSurfaceStoreStub()

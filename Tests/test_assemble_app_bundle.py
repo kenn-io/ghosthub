@@ -49,10 +49,18 @@ def make_executable(path: Path, contents: str = "#!/bin/sh\nexit 0\n") -> Path:
 def make_release_inputs(
     tmp_path: Path,
     source_bin_dir: Path,
-) -> tuple[Path, Path, Path]:
+) -> tuple[Path, Path, Path, Path]:
     app_license = tmp_path / "Ghosthub-LICENSE"
     app_license.write_text("GNU AGPL version 3", encoding="utf-8")
     kwt_binary = make_executable(tmp_path / "kwt")
+    kwt_variants_dir = tmp_path / "kwt-variants"
+    for target in (
+        "darwin-amd64",
+        "darwin-arm64",
+        "linux-amd64",
+        "linux-arm64",
+    ):
+        make_executable(kwt_variants_dir / target / "kwt")
     licenses_dir = tmp_path / "Licenses"
     licenses_dir.mkdir()
     kwt_license = licenses_dir / "kwt-Apache-2.0.txt"
@@ -82,7 +90,7 @@ def make_release_inputs(
         "Versions/Current/Sparkle"
     )
     assert sparkle_binary.exists()
-    return app_license, kwt_binary, licenses_dir
+    return app_license, kwt_binary, kwt_variants_dir, licenses_dir
 
 
 def test_release_license_inventory_covers_compiled_dependencies():
@@ -144,7 +152,7 @@ def test_assemble_app_bundle_stages_icon_and_binary(tmp_path):
     app_root = tmp_path / "Ghosthub.app"
     icon_path = tmp_path / "Ghosthub.icns"
     icon_path.write_bytes(b"icns")
-    app_license, kwt_binary, licenses_dir = make_release_inputs(
+    app_license, kwt_binary, kwt_variants_dir, licenses_dir = make_release_inputs(
         tmp_path,
         source_bin_dir,
     )
@@ -172,10 +180,12 @@ def test_assemble_app_bundle_stages_icon_and_binary(tmp_path):
         icon_path=icon_path,
         app_license_path=app_license,
         kwt_binary=kwt_binary,
+        kwt_variants_dir=kwt_variants_dir,
         third_party_licenses_dir=licenses_dir,
         copyright=COPYRIGHT_NOTICE,
         kwt_version="0.1.0",
         kwt_source_revision="abc123",
+        remote_kwt_source_revision="def456",
     )
 
     assert built_root == app_root
@@ -183,6 +193,16 @@ def test_assemble_app_bundle_stages_icon_and_binary(tmp_path):
     bundled_kwt = app_root / "Contents" / "Helpers" / "kwt"
     assert bundled_kwt.exists()
     assert stat.S_IMODE(bundled_kwt.stat().st_mode) == 0o755
+    remote_helpers = app_root / "Contents" / "Resources" / "KwtRemote"
+    for target in (
+        "darwin-amd64",
+        "darwin-arm64",
+        "linux-amd64",
+        "linux-arm64",
+    ):
+        helper = remote_helpers / target / "kwt"
+        assert helper.is_file()
+        assert stat.S_IMODE(helper.stat().st_mode) == 0o644
     licenses = app_root / "Contents" / "Resources" / "Licenses"
     assert (licenses / "Ghosthub-AGPL-3.0.txt").read_text() == (
         "GNU AGPL version 3"
@@ -230,6 +250,7 @@ def test_assemble_app_bundle_stages_icon_and_binary(tmp_path):
         "SUVerifyUpdateBeforeExtraction",
     }
     assert update_keys.isdisjoint(plist)
+    assert plist["GhosthubRemoteKwtSourceRevision"] == "def456"
 
 
 def test_release_info_plist_contains_update_configuration(tmp_path):
@@ -239,7 +260,7 @@ def test_release_info_plist_contains_update_configuration(tmp_path):
     app_root = tmp_path / "Ghosthub.app"
     icon_path = tmp_path / "Ghosthub.icns"
     icon_path.write_bytes(b"icns")
-    app_license, kwt_binary, licenses_dir = make_release_inputs(
+    app_license, kwt_binary, kwt_variants_dir, licenses_dir = make_release_inputs(
         tmp_path,
         source_bin_dir,
     )
@@ -267,10 +288,12 @@ def test_release_info_plist_contains_update_configuration(tmp_path):
         icon_path=icon_path,
         app_license_path=app_license,
         kwt_binary=kwt_binary,
+        kwt_variants_dir=kwt_variants_dir,
         third_party_licenses_dir=licenses_dir,
         copyright=COPYRIGHT_NOTICE,
         kwt_version="0.1.0",
         kwt_source_revision="abc123",
+        remote_kwt_source_revision="def456",
         include_updates=True,
     )
 
@@ -313,7 +336,7 @@ def test_assemble_app_bundle_replaces_existing_bundle_contents(tmp_path):
     app_root = tmp_path / "Ghosthub.app"
     icon_path = tmp_path / "Ghosthub.icns"
     icon_path.write_bytes(b"new-icon")
-    app_license, kwt_binary, licenses_dir = make_release_inputs(
+    app_license, kwt_binary, kwt_variants_dir, licenses_dir = make_release_inputs(
         tmp_path,
         source_bin_dir,
     )
@@ -345,10 +368,12 @@ def test_assemble_app_bundle_replaces_existing_bundle_contents(tmp_path):
         icon_path=icon_path,
         app_license_path=app_license,
         kwt_binary=kwt_binary,
+        kwt_variants_dir=kwt_variants_dir,
         third_party_licenses_dir=licenses_dir,
         copyright=COPYRIGHT_NOTICE,
         kwt_version="0.1.0",
         kwt_source_revision="abc123",
+        remote_kwt_source_revision="def456",
     )
 
     assert not stale_dir.exists()

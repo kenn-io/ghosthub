@@ -430,6 +430,90 @@ struct CommandPaletteModelTests {
         )
     }
 
+    @Test("host and tmux lifecycle actions are discoverable")
+    func hostAndTmuxLifecycleActionsAreDiscoverable() throws {
+        let host = HostSummary.fixture(
+            name: "DGX Spark",
+            kind: .remote,
+            platform: .linux,
+            sshDestination: "wesm@dgx-spark",
+            tmuxSessions: [
+                TmuxSessionSummary(
+                    name: "training",
+                    managed: false,
+                    windows: [],
+                    serverPID: "4242",
+                    sessionID: "$3",
+                    createdAt: "1785190000"
+                ),
+            ]
+        )
+        let project = ProjectSummary.fixture(
+            hostID: host.id,
+            name: "msgvault",
+            rootPath: "/code/msgvault"
+        )
+        var worktree = WorktreeSummary.fixture(
+            hostID: host.id,
+            projectID: project.id,
+            name: "pr-519",
+            path: "/worktrees/pr-519"
+        )
+        worktree.tmuxSessionName = "kwt-msgvault-pr-519"
+        worktree.tmuxSocketName = "kwt-pr-0123456789abcdef"
+        let protectedSession = WorkspaceTmuxSessionSelection(
+            hostID: host.id,
+            name: "kwt-msgvault-pr-519",
+            worktreeID: worktree.id,
+            worktreePath: worktree.path,
+            socketName: "kwt-pr-0123456789abcdef"
+        )
+        let commands = makeCommandPaletteCommands(
+            snapshot: WorkspaceSnapshot(
+                hosts: [host],
+                projects: [project],
+                worktrees: [worktree]
+            ),
+            selection: WorkspaceSelection(selectedHostID: host.id)
+        )
+
+        commands.expectCommandContains(
+            title: "New tmux session on DGX Spark"
+        )
+        commands.expectCommandContains(
+            title: "Add Project on DGX Spark"
+        )
+        commands.expectCommandContains(
+            title: "Open tmux session: training"
+        )
+        commands.expectCommandContains(
+            title: "Kill tmux session: training"
+        )
+        commands.expectCommandContains(
+            title: "Open tmux session: kwt-msgvault-pr-519"
+        )
+        commands.expectCommandNotContains(
+            title: "Kill tmux session: kwt-msgvault-pr-519"
+        )
+
+        let activeCommands = makeCommandPaletteCommands(
+            snapshot: WorkspaceSnapshot(
+                hosts: [host],
+                projects: [project],
+                worktrees: [worktree]
+            ),
+            selection: WorkspaceSelection(selectedHostID: host.id),
+            activeTmuxSession: protectedSession,
+            activeTmuxSessionIsConnected: true
+        )
+        let protectedKill = try #require(activeCommands.first {
+            $0.title == "Kill tmux session: kwt-msgvault-pr-519"
+        })
+        #expect(
+            protectedKill.action == .killTmuxSession(protectedSession)
+        )
+    }
+
     @Test("import PR command hidden without GitHub-linked projects")
     func importPRCommandHiddenWithoutGitHubLink() {
         let host = HostSummary.fixture(
@@ -550,6 +634,8 @@ struct CommandPaletteModelTests {
 private func makeCommandPaletteCommands(
     snapshot: WorkspaceSnapshot? = nil,
     selection: WorkspaceSelection? = nil,
+    activeTmuxSession: WorkspaceTmuxSessionSelection? = nil,
+    activeTmuxSessionIsConnected: Bool = false,
     isWorkspacesRoute: Bool = true,
     isSidebarVisible: Bool = true,
     isSidePanelVisible: Bool = false,
@@ -562,6 +648,8 @@ private func makeCommandPaletteCommands(
     return CommandPaletteModel.commands(
         in: snap,
         selection: sel,
+        activeTmuxSession: activeTmuxSession,
+        activeTmuxSessionIsConnected: activeTmuxSessionIsConnected,
         isWorkspacesRoute: isWorkspacesRoute,
         isSidebarVisible: isSidebarVisible,
         isSidePanelVisible: isSidePanelVisible,

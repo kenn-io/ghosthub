@@ -2,12 +2,62 @@ import SwiftUI
 import GhosthubSettings
 import GhosthubWorkspace
 
+enum HostConnectionField: Hashable {
+    case displayName
+    case sshAddress
+
+    static func adjacent(
+        to field: Self,
+        backwards: Bool
+    ) -> Self? {
+        switch (field, backwards) {
+        case (.displayName, false):
+            .sshAddress
+        case (.sshAddress, true):
+            .displayName
+        case (.displayName, true), (.sshAddress, false):
+            nil
+        }
+    }
+}
+
+struct HostOperationTarget: Equatable, Sendable {
+    let draftID: UUID
+    let sshDestination: String
+    let platform: HostPlatform
+
+    init(_ draft: SSHHostDraft) {
+        draftID = draft.id
+        sshDestination = draft.sshDestination
+        platform = draft.platform
+    }
+
+    func isCurrent(
+        selectedDraftID: UUID?,
+        drafts: [SSHHostDraft]
+    ) -> Bool {
+        guard selectedDraftID == draftID,
+              let draft = drafts.first(where: { $0.id == draftID })
+        else {
+            return false
+        }
+        return draft.sshDestination == sshDestination
+            && draft.platform == platform
+    }
+}
+
 public struct HostsSettingsView: View {
+    @FocusState private var focusedConnectionField: HostConnectionField?
+    @State private var remoteProjectPath = ""
+    @State private var isRegisteringRemoteProject = false
+    @State private var remoteProjectMessage: String?
     @Binding var sshHosts: [SSHHostDraft]
     @Binding var selectedSSHHostDraftID: UUID?
     @Binding var hostProbeResult: HostProbeSummary?
     @Binding var hostProbeErrorMessage: String?
     @Binding var isProbingSSHHost: Bool
+    @Binding var isInstallingRemoteKwt: Bool
+    @Binding var remoteKwtInstallMessage: String?
     @Binding var tailscalePeers: [TailscalePeer]?
     @Binding var tailscaleError: String?
     @Binding var isLoadingTailscale: Bool
@@ -17,6 +67,10 @@ public struct HostsSettingsView: View {
             HostProbeSummary,
             HostProbeError
         >
+    let installRemoteKwt:
+        (SSHHost) async -> Result<Void, HostProbeError>
+    let registerRemoteProject:
+        (SSHHost, String) async -> Result<String, HostProbeError>
     let loadTailscalePeers: () async -> TailscalePeerLoadResult
 
     public init(
@@ -25,6 +79,8 @@ public struct HostsSettingsView: View {
         hostProbeResult: Binding<HostProbeSummary?>,
         hostProbeErrorMessage: Binding<String?>,
         isProbingSSHHost: Binding<Bool>,
+        isInstallingRemoteKwt: Binding<Bool>,
+        remoteKwtInstallMessage: Binding<String?>,
         tailscalePeers: Binding<[TailscalePeer]?>,
         tailscaleError: Binding<String?>,
         isLoadingTailscale: Binding<Bool>,
@@ -33,6 +89,13 @@ public struct HostsSettingsView: View {
             HostProbeSummary,
             HostProbeError
         >,
+        installRemoteKwt: @escaping (
+            SSHHost
+        ) async -> Result<Void, HostProbeError>,
+        registerRemoteProject: @escaping (
+            SSHHost,
+            String
+        ) async -> Result<String, HostProbeError>,
         loadTailscalePeers: @escaping () async -> TailscalePeerLoadResult
     ) {
         _sshHosts = sshHosts
@@ -40,11 +103,15 @@ public struct HostsSettingsView: View {
         _hostProbeResult = hostProbeResult
         _hostProbeErrorMessage = hostProbeErrorMessage
         _isProbingSSHHost = isProbingSSHHost
+        _isInstallingRemoteKwt = isInstallingRemoteKwt
+        _remoteKwtInstallMessage = remoteKwtInstallMessage
         _tailscalePeers = tailscalePeers
         _tailscaleError = tailscaleError
         _isLoadingTailscale = isLoadingTailscale
         _isTailscaleSheetPresented = isTailscaleSheetPresented
         self.probeSSHHost = probeSSHHost
+        self.installRemoteKwt = installRemoteKwt
+        self.registerRemoteProject = registerRemoteProject
         self.loadTailscalePeers = loadTailscalePeers
     }
 
@@ -100,13 +167,20 @@ public struct HostsSettingsView: View {
             VStack(alignment: .leading, spacing: 18) {
                 settingsSection("SSH Tmux Hosts") {
                     Text(
-                        "Ghosthub discovers kwt workspaces and ordinary tmux"
-                            + " sessions over SSH. Closing Ghosthub detaches"
-                            + " the client and never kills host sessions."
+                        "Ghosthub uses kwt, a Git worktree manager, to discover"
+                            + " projects and worktrees alongside ordinary tmux"
+                            + " sessions. Closing Ghosthub detaches the client"
+                            + " and never kills host sessions."
                     )
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+
+                    Link(
+                        "Learn about kwt at kwt.sh",
+                        destination: URL(string: "https://kwt.sh")!
+                    )
+                    .font(.system(size: 12))
                 }
 
                 if let draft = selectedSSHHostDraft,
@@ -115,16 +189,39 @@ public struct HostsSettingsView: View {
                         hostSettingField("Display name") {
                             TextField("Office Studio", text: binding.name)
                                 .textFieldStyle(.roundedBorder)
-                        }
-
-                        hostSettingField("Identifier") {
-                            TextField("office-studio", text: binding.configKey)
-                                .textFieldStyle(.roundedBorder)
+                                .focused(
+                                    $focusedConnectionField,
+                                    equals: .displayName
+                                )
+                                .onKeyPress(
+                                    .tab,
+                                    phases: .down
+                                ) { keyPress in
+                                    moveConnectionFocus(
+                                        from: .displayName,
+                                        backwards:
+                                        keyPress.modifiers.contains(.shift)
+                                    )
+                                }
                         }
 
                         hostSettingField("SSH address") {
                             TextField("user@hostname", text: binding.sshDestination)
                                 .textFieldStyle(.roundedBorder)
+                                .focused(
+                                    $focusedConnectionField,
+                                    equals: .sshAddress
+                                )
+                                .onKeyPress(
+                                    .tab,
+                                    phases: .down
+                                ) { keyPress in
+                                    moveConnectionFocus(
+                                        from: .sshAddress,
+                                        backwards:
+                                        keyPress.modifiers.contains(.shift)
+                                    )
+                                }
                         }
 
                         if draft.platform == .macOS {
@@ -155,6 +252,15 @@ public struct HostsSettingsView: View {
                     }
 
                     settingsSection("Verification") {
+                        Text(
+                            "Test Connection follows your OpenSSH host-key"
+                                + " policy. Verify a new host with system ssh"
+                                + " first if your policy prompts for trust."
+                        )
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
                         ViewThatFits(in: .horizontal) {
                             HStack(spacing: 12) {
                                 Button(isProbingSSHHost ? "Testing\u{2026}" :
@@ -163,7 +269,21 @@ public struct HostsSettingsView: View {
                                             await probeHost(draft)
                                         }
                                     }
-                                    .disabled(isProbingSSHHost)
+                                    .disabled(
+                                        isHostActionInProgress
+                                    )
+
+                                if hostProbeResult?.host.lastKnownReachable
+                                    == true {
+                                    Button(remoteKwtButtonTitle) {
+                                        Task {
+                                            await installKwt(on: draft)
+                                        }
+                                    }
+                                    .disabled(
+                                        isHostActionInProgress
+                                    )
+                                }
 
                                 Button("Remove Host", role: .destructive) {
                                     removeSelectedSSHHost()
@@ -178,7 +298,21 @@ public struct HostsSettingsView: View {
                                             await probeHost(draft)
                                         }
                                     }
-                                    .disabled(isProbingSSHHost)
+                                    .disabled(
+                                        isHostActionInProgress
+                                    )
+
+                                if hostProbeResult?.host.lastKnownReachable
+                                    == true {
+                                    Button(remoteKwtButtonTitle) {
+                                        Task {
+                                            await installKwt(on: draft)
+                                        }
+                                    }
+                                    .disabled(
+                                        isHostActionInProgress
+                                    )
+                                }
 
                                 Button("Remove Host", role: .destructive) {
                                     removeSelectedSSHHost()
@@ -192,13 +326,23 @@ public struct HostsSettingsView: View {
                                 .font(.system(size: 12, weight: .semibold))
                                 .foregroundStyle(hostStatusColor(for: hostProbeResult))
 
-                            Text("Dependencies: \(hostProbeResult.dependencySummary)")
+                            if hostProbeResult.dependencySummary != "unknown" {
+                                Text(
+                                    "Dependencies: "
+                                        + hostProbeResult.dependencySummary
+                                )
                                 .font(.system(size: 12))
                                 .foregroundStyle(.secondary)
+                            }
 
-                            Text("Features: \(hostProbeResult.featureSummary)")
+                            if hostProbeResult.featureSummary != "unknown" {
+                                Text(
+                                    "Features: "
+                                        + hostProbeResult.featureSummary
+                                )
                                 .font(.system(size: 12))
                                 .foregroundStyle(.secondary)
+                            }
 
                             if !hostProbeResult.diagnostics.isEmpty {
                                 VStack(alignment: .leading, spacing: 10) {
@@ -219,12 +363,15 @@ public struct HostsSettingsView: View {
                                     }
                                 }
                             }
-                        } else if let hostProbeErrorMessage {
-                            Text(hostProbeErrorMessage)
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundStyle(.red)
-                                .fixedSize(horizontal: false, vertical: true)
-                        } else {
+                            if let remoteKwtInstallMessage {
+                                Text(remoteKwtInstallMessage)
+                                    .font(.system(
+                                        size: 12,
+                                        weight: .semibold
+                                    ))
+                                    .foregroundStyle(.green)
+                            }
+                        } else if hostProbeErrorMessage == nil {
                             Text(
                                 "Test the SSH connection before saving so tmux"
                                     + " discovery and reconnects are ready."
@@ -232,6 +379,64 @@ public struct HostsSettingsView: View {
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        if let hostProbeErrorMessage {
+                            Text(hostProbeErrorMessage)
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(.red)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+
+                    if isRemoteKwtReady {
+                        settingsSection("Projects") {
+                            Text(
+                                "Register an existing Git checkout explicitly."
+                                    + " Ghosthub does not scan the remote"
+                                    + " filesystem or edit kwt configuration."
+                            )
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                            HStack(spacing: 8) {
+                                TextField(
+                                    "/absolute/path/to/repository",
+                                    text: $remoteProjectPath
+                                )
+                                .textFieldStyle(.roundedBorder)
+
+                                Button(
+                                    isRegisteringRemoteProject
+                                        ? "Adding\u{2026}"
+                                        : "Add Project"
+                                ) {
+                                    Task {
+                                        await addRemoteProject(on: draft)
+                                    }
+                                }
+                                .disabled(
+                                    isHostActionInProgress
+                                        || !isRemoteProjectPathAbsolute
+                                )
+                            }
+
+                            if !normalizedRemoteProjectPath.isEmpty,
+                               !isRemoteProjectPathAbsolute {
+                                Text("Enter an absolute path beginning with /.")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(.red)
+                            }
+
+                            if let remoteProjectMessage {
+                                Text(remoteProjectMessage)
+                                    .font(.system(
+                                        size: 12,
+                                        weight: .semibold
+                                    ))
+                                    .foregroundStyle(.green)
+                            }
                         }
                     }
                 } else {
@@ -267,6 +472,10 @@ public struct HostsSettingsView: View {
                 maxWidth: .infinity,
                 alignment: .topLeading
             )
+        }
+        .onChange(of: selectedSSHHostDraftID) { _, _ in
+            remoteProjectPath = ""
+            clearSSHHostProbeFeedback()
         }
         .sheet(isPresented: $isTailscaleSheetPresented) {
             TailscalePeerPickerSheet(
@@ -332,7 +541,6 @@ public struct HostsSettingsView: View {
 
     private func selectedSSHHostDraftBinding() -> (
         name: Binding<String>,
-        configKey: Binding<String>,
         sshDestination: Binding<String>,
         platform: Binding<HostPlatform>
     )? {
@@ -345,13 +553,6 @@ public struct HostsSettingsView: View {
                 get: { sshHosts[index].name },
                 set: {
                     sshHosts[index].name = $0
-                    clearSSHHostProbeFeedback()
-                }
-            ),
-            configKey: Binding(
-                get: { sshHosts[index].configKey },
-                set: {
-                    sshHosts[index].configKey = $0
                     clearSSHHostProbeFeedback()
                 }
             ),
@@ -381,6 +582,9 @@ public struct HostsSettingsView: View {
             )
         )
         clearSSHHostProbeFeedback()
+        Task { @MainActor in
+            focusedConnectionField = .displayName
+        }
     }
 
     private func removeSelectedSSHHost() {
@@ -436,6 +640,7 @@ public struct HostsSettingsView: View {
     private func probeHost(
         _ draft: SSHHostDraft
     ) async {
+        let target = HostOperationTarget(draft)
         clearSSHHostProbeFeedback()
         isProbingSSHHost = true
         defer { isProbingSSHHost = false }
@@ -443,6 +648,12 @@ public struct HostsSettingsView: View {
         let result = await probeSSHHost(
             draft.sshHost
         )
+        guard target.isCurrent(
+            selectedDraftID: selectedSSHHostDraftID,
+            drafts: sshHosts
+        ) else {
+            return
+        }
         switch result {
         case let .success(summary):
             hostProbeResult = summary
@@ -451,9 +662,108 @@ public struct HostsSettingsView: View {
         }
     }
 
+    private var remoteKwtButtonTitle: String {
+        if isInstallingRemoteKwt {
+            return "Installing\u{2026}"
+        }
+        let isMissing = hostProbeResult?.diagnostics.contains {
+            $0.code == .missingKwt
+        } == true
+        return isMissing
+            ? "Install kwt Worktree Helper"
+            : "Update kwt Worktree Helper"
+    }
+
+    private var isHostActionInProgress: Bool {
+        isProbingSSHHost
+            || isInstallingRemoteKwt
+            || isRegisteringRemoteProject
+    }
+
+    private var isRemoteKwtReady: Bool {
+        hostProbeResult?.host.lastKnownReachable == true
+            && hostProbeResult?.diagnostics.contains {
+                $0.code == .missingKwt
+            } == false
+    }
+
+    private var normalizedRemoteProjectPath: String {
+        remoteProjectPath.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+    }
+
+    private var isRemoteProjectPathAbsolute: Bool {
+        normalizedRemoteProjectPath.hasPrefix("/")
+    }
+
+    private func installKwt(on draft: SSHHostDraft) async {
+        let target = HostOperationTarget(draft)
+        hostProbeErrorMessage = nil
+        remoteKwtInstallMessage = nil
+        isInstallingRemoteKwt = true
+        defer { isInstallingRemoteKwt = false }
+
+        let installResult = await installRemoteKwt(draft.sshHost)
+        guard target.isCurrent(
+            selectedDraftID: selectedSSHHostDraftID,
+            drafts: sshHosts
+        ) else {
+            return
+        }
+        switch installResult {
+        case .success:
+            remoteKwtInstallMessage =
+                "Ghosthub’s pinned kwt worktree helper is ready on this host."
+            let probeResult = await probeSSHHost(draft.sshHost)
+            guard target.isCurrent(
+                selectedDraftID: selectedSSHHostDraftID,
+                drafts: sshHosts
+            ) else {
+                return
+            }
+            switch probeResult {
+            case let .success(summary):
+                hostProbeResult = summary
+            case let .failure(error):
+                hostProbeErrorMessage = error.displayMessage
+            }
+        case let .failure(error):
+            hostProbeErrorMessage = error.displayMessage
+        }
+    }
+
+    private func addRemoteProject(on draft: SSHHostDraft) async {
+        let target = HostOperationTarget(draft)
+        guard isRemoteProjectPathAbsolute else { return }
+        let path = normalizedRemoteProjectPath
+
+        hostProbeErrorMessage = nil
+        remoteProjectMessage = nil
+        isRegisteringRemoteProject = true
+        defer { isRegisteringRemoteProject = false }
+
+        let result = await registerRemoteProject(draft.sshHost, path)
+        guard target.isCurrent(
+            selectedDraftID: selectedSSHHostDraftID,
+            drafts: sshHosts
+        ) else {
+            return
+        }
+        switch result {
+        case let .success(name):
+            remoteProjectPath = ""
+            remoteProjectMessage = "\(name) is now available in Ghosthub."
+        case let .failure(error):
+            hostProbeErrorMessage = error.displayMessage
+        }
+    }
+
     private func clearSSHHostProbeFeedback() {
         hostProbeResult = nil
         hostProbeErrorMessage = nil
+        remoteKwtInstallMessage = nil
+        remoteProjectMessage = nil
     }
 
     // MARK: - View Helpers
@@ -470,6 +780,20 @@ public struct HostsSettingsView: View {
             control()
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    private func moveConnectionFocus(
+        from field: HostConnectionField,
+        backwards: Bool
+    ) -> KeyPress.Result {
+        guard let adjacent = HostConnectionField.adjacent(
+            to: field,
+            backwards: backwards
+        ) else {
+            return .ignored
+        }
+        focusedConnectionField = adjacent
+        return .handled
     }
 
     private func hostStatusColor(

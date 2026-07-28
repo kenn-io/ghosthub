@@ -1,0 +1,258 @@
+import Foundation
+import GhosthubTmux
+import GhosthubUI
+import Testing
+@testable import GhosthubApp
+
+@Suite("tmux session termination")
+struct TmuxSessionKillerTests {
+    @Test("matching identity is killed while a replacement survives")
+    func realTmuxIdentityBoundary() async throws {
+        guard case let .success(tmuxPath) =
+            TmuxBinaryResolver().resolveTmuxPath()
+        else {
+            return
+        }
+        let socketName = "ghosthub-kill-\(UUID().uuidString.lowercased())"
+        let sessionName = "same-name"
+        defer {
+            _ = TmuxBinaryResolver.runProcess(
+                executable: tmuxPath,
+                arguments: ["-L", socketName, "kill-server"],
+                timeout: 5
+            )
+        }
+        let anchor = TmuxBinaryResolver.runProcess(
+            executable: tmuxPath,
+            arguments: [
+                "-f", "/dev/null", "-L", socketName,
+                "new-session", "-d", "-s", "anchor",
+            ],
+            timeout: 5
+        )
+        #expect(anchor.status == 0)
+        let initial = TmuxBinaryResolver.runProcess(
+            executable: tmuxPath,
+            arguments: [
+                "-L", socketName, "new-session", "-d", "-s", sessionName,
+            ],
+            timeout: 5
+        )
+        #expect(initial.status == 0)
+
+        let killer = TmuxSessionKiller(
+            pathResolver: { _ in .success(tmuxPath) }
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: UUID(),
+            name: sessionName,
+            socketName: socketName
+        )
+        let originalIdentity = try await killer.sessionIdentity(
+            selection,
+            on: .local
+        )
+
+        try await killer.kill(
+            selection,
+            expectedIdentity: originalIdentity,
+            on: .local
+        )
+        let absent = TmuxBinaryResolver.runProcess(
+            executable: tmuxPath,
+            arguments: [
+                "-L", socketName, "has-session", "-t", "=\(sessionName):",
+            ],
+            timeout: 5
+        )
+        #expect(absent.status != 0)
+
+        let replacement = TmuxBinaryResolver.runProcess(
+            executable: tmuxPath,
+            arguments: [
+                "-L", socketName, "new-session", "-d", "-s", sessionName,
+            ],
+            timeout: 5
+        )
+        #expect(replacement.status == 0)
+        await #expect {
+            try await killer.kill(
+                selection,
+                expectedIdentity: originalIdentity,
+                on: .local
+            )
+        } throws: { error in
+            error as? TmuxSessionKillError == .sessionChanged(
+                host: "localhost",
+                session: sessionName
+            )
+        }
+        let replacementStillRunning = TmuxBinaryResolver.runProcess(
+            executable: tmuxPath,
+            arguments: [
+                "-L", socketName, "has-session", "-t", "=\(sessionName):",
+            ],
+            timeout: 5
+        )
+        #expect(replacementStillRunning.status == 0)
+    }
+
+    @Test("kill checks the exact session identity on its selected socket")
+    func exactSocketIdentity() async throws {
+        let recordedCommand = LockedValue<String?>(nil)
+        let killer = TmuxSessionKiller(
+            pathResolver: { _ in
+                .success("/opt/homebrew/bin/tmux")
+            },
+            runner: { _, command in
+                recordedCommand.store(command)
+                return (0, "")
+            }
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: UUID(),
+            name: "review's session",
+            socketName: "kwt-pr-0123456789abcdef"
+        )
+
+        try await killer.kill(
+            selection,
+            expectedIdentity: TmuxSessionIdentity(
+                serverPID: "31415",
+                sessionID: "$42",
+                createdAt: "1785182057"
+            ),
+            on: .local
+        )
+
+        let command = try #require(recordedCommand.load())
+        #expect(command.contains("'if-shell' '-F'"))
+        #expect(command.contains("'kwt-pr-0123456789abcdef'"))
+        #expect(command.contains("'=review'\\''s session:'"))
+        #expect(
+            command.contains(
+                "#{==:#{pid},31415}"
+            )
+        )
+        #expect(
+            command.contains(
+                "#{==:#{session_id},$42}"
+            )
+        )
+        #expect(
+            command.contains(
+                "#{==:#{session_created},1785182057}"
+            )
+        )
+        #expect(
+            command.contains("GHOSTHUB_TMUX_SESSION_IDENTITY_MISMATCH")
+        )
+    }
+
+    @Test("kill failure preserves host, session, and status")
+    func commandFailure() async {
+        let host = SSHHostInfo(
+            user: "wesm",
+            hostname: "builder",
+            port: 2222
+        )
+        let killer = TmuxSessionKiller(
+            pathResolver: { _ in .success("/usr/bin/tmux") },
+            runner: { _, _ in (1, "") }
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: UUID(),
+            name: "worker"
+        )
+
+        await #expect {
+            try await killer.kill(
+                selection,
+                expectedIdentity: TmuxSessionIdentity(
+                    serverPID: "31415",
+                    sessionID: "$42",
+                    createdAt: "1785182057"
+                ),
+                on: .ssh(host)
+            )
+        } throws: { error in
+            error as? TmuxSessionKillError == .commandFailed(
+                host: "wesm@builder:2222",
+                session: "worker",
+                status: 1
+            )
+        }
+    }
+
+    @Test("identity mismatch preserves the replacement session")
+    func identityMismatch() async {
+        let killer = TmuxSessionKiller(
+            pathResolver: { _ in .success("/usr/bin/tmux") },
+            runner: { _, _ in
+                (0, "GHOSTHUB_TMUX_SESSION_IDENTITY_MISMATCH\n")
+            }
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: UUID(),
+            name: "worker"
+        )
+
+        await #expect {
+            try await killer.kill(
+                selection,
+                expectedIdentity: TmuxSessionIdentity(
+                    serverPID: "31415",
+                    sessionID: "$42",
+                    createdAt: "1785182057"
+                ),
+                on: .local
+            )
+        } throws: { error in
+            error as? TmuxSessionKillError == .sessionChanged(
+                host: "localhost",
+                session: "worker"
+            )
+        }
+    }
+
+    @Test("session identity is read from the selected socket")
+    func readsIdentity() async throws {
+        let recordedCommand = LockedValue<String?>(nil)
+        let killer = TmuxSessionKiller(
+            pathResolver: { _ in .success("/usr/bin/tmux") },
+            runner: { _, command in
+                recordedCommand.store(command)
+                return (
+                    0,
+                    "Welcome to the host\n"
+                        + "GHOSTHUB_TMUX_SESSION_IDENTITY\t"
+                        + "31415\t$42\t1785182057\n"
+                        + "shell startup output\n"
+                )
+            }
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: UUID(),
+            name: "worker",
+            socketName: "protected"
+        )
+
+        let identity = try await killer.sessionIdentity(
+            selection,
+            on: .local
+        )
+
+        #expect(identity == TmuxSessionIdentity(
+            serverPID: "31415",
+            sessionID: "$42",
+            createdAt: "1785182057"
+        ))
+        #expect(
+            recordedCommand.load()
+                == "'/usr/bin/tmux' '-L' 'protected' 'display-message'"
+                + " '-p' '-t' '=worker:'"
+                + " 'GHOSTHUB_TMUX_SESSION_IDENTITY\t"
+                + "#{pid}\t#{session_id}\t#{session_created}'"
+        )
+    }
+}

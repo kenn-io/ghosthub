@@ -2040,7 +2040,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
     /// specifically to exercise that local-monitor precedence; it fails if
     /// the routing chokepoint lives anywhere performKeyEquivalent would run
     /// but the local monitor's keyDown short-circuit does not.
-    func testTmuxPaneInputSinkReceivesPasteOnCmdVViaApplicationDispatch() throws {
+    func testPasteboardTmuxPaneInputSinkReceivesPasteOnCmdVViaApplicationDispatch() throws {
         let appHandle = try requireAppHandle()
         let view = TerminalSurfaceView(
             app: appHandle,
@@ -2093,7 +2093,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
     /// `.capsLock` to `deviceIndependentFlagsMask`) made the comparison
     /// fail and Cmd+V fell through to the local core instead of routing to
     /// the attached tmux pane sink.
-    func testTmuxPaneInputSinkReceivesPasteOnCmdVWithCapsLockActive() throws {
+    func testPasteboardTmuxPaneInputSinkReceivesPasteOnCmdVWithCapsLockActive() throws {
         let appHandle = try requireAppHandle()
         let view = TerminalSurfaceView(
             app: appHandle,
@@ -2173,7 +2173,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         )
     }
 
-    func testUnsafeCmdVRequiresConfirmationBeforeRemotePaste() throws {
+    func testPasteboardUnsafeCmdVRequiresConfirmationBeforeRemotePaste() throws {
         let runtime = try runtimeWithClipboardReadsAllowed()
         let appHandle = try requireAppHandle(from: runtime)
         let pastedText = "remote-paste\n"
@@ -2255,7 +2255,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         )
     }
 
-    func testCmdVPreservesBracketedPasteFramingOnRemoteSurface() throws {
+    func testPasteboardCmdVPreservesBracketedPasteFramingOnRemoteSurface() throws {
         let runtime = try runtimeWithClipboardReadsAllowed()
         let appHandle = try requireAppHandle(from: runtime)
         let pastedText = "first\nsecond"
@@ -2322,7 +2322,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         )
     }
 
-    func testRemotePasteFollowsReboundSemanticShortcut() throws {
+    func testPasteboardRemotePasteFollowsReboundSemanticShortcut() throws {
         let runtime = try runtimeWithTerminalConfig(
             """
             clipboard-read = allow
@@ -2395,7 +2395,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         )
     }
 
-    func testClipboardIsolatedSurfaceReturnsNoDataToOSC52ReadWhenAllowedByConfig() throws {
+    func testPasteboardClipboardIsolatedSurfaceReturnsNoDataToOSC52ReadWhenAllowedByConfig() throws {
         let runtime = try runtimeWithClipboardReadsAllowed()
         let appHandle = try requireAppHandle(from: runtime)
         let scriptURL = makeOSC52ReadProbeScript()

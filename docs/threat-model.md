@@ -17,8 +17,9 @@ Ghosthub aims to protect:
 - local user data exposed through app-mediated capabilities such as the
   clipboard
 - terminal input and session metadata while they cross the network
-- the non-destructive session boundary: Ghosthub may explicitly create a named
-  session, but does not structurally mutate or destroy tmux sessions
+- the session lifecycle boundary: ordinary presentation only attaches or
+  detaches; creation and exact-target session termination require separate,
+  explicit user actions, with confirmation before termination
 - app-owned settings and persistence from unintended cross-host or
   cross-worktree mutation
 - application-update integrity, rooted in the reviewed Sparkle Ed25519 key,
@@ -95,15 +96,27 @@ and correctness, but deliberate compromise of those programs or their on-disk
 state is outside the security model.
 
 Pull-request import is an explicit user mutation delegated to the bundled local
-kwt or the selected remote host's kwt. Ghosthub passes kwt's opaque candidate
-identity back unchanged and does not construct provider refs, worktree paths,
-branches, push destinations, or tmux names. The imported checkout remains
+kwt or Ghosthub's exact managed kwt revision on the selected remote host.
+Installing that remote helper is a separate explicit user action; Ghosthub
+selects a sealed app resource, verifies its SHA-256 after upload, and never
+replaces a system kwt. Adding a remote project is also explicit: Ghosthub
+shell-quotes one user-supplied absolute path and delegates registration to the
+managed kwt rather than scanning remote directories or editing configuration.
+Ghosthub passes kwt's opaque candidate identity back
+unchanged and does not construct provider refs, worktree paths, branches, push
+destinations, or tmux names. The imported checkout remains
 untrusted contributor-controlled source. Kwt suppresses repository hooks,
 filters, setup commands, and credential prompts during import, but Ghosthub
 does not sandbox the checkout or commands the user later runs inside its tmux
 session. Import itself does not start tmux or execute a configured project
 layout, bootstrap, agent, or checkout command. It returns the deterministic
 workspace-specific socket identity without creating the server.
+
+Testing a newly configured SSH connection delegates host-key verification to
+the user's OpenSSH configuration, just like inventory, attachment, and helper
+installation. Ghosthub never forces `accept-new` or another weaker policy. If
+the configured policy requires interactive trust for an unseen key, the user
+verifies that host with system `ssh` before retrying the noninteractive test.
 
 When the user opens the imported workspace, Ghosthub invokes kwt's protected
 attach command through the remote account's login shell when applicable. Kwt
@@ -154,7 +167,15 @@ command argument and the selected host identity is fixed before launch.
 Remote creation authority is one-shot: after it succeeds, transport recovery
 can only rerun `attach-session`. Existing same-named sessions are attached
 without modifying their panes or windows. Creation never grants authority to
-kill, rename, split, resize, or otherwise structurally mutate sessions.
+rename, split, resize, or otherwise structurally mutate sessions. The separate
+Kill Session action is offered only for a session established as running by
+discovery or a currently connected active attachment. Before confirmation,
+Ghosthub binds the selected endpoint, socket, exact target, and tmux
+server PID, `session_id`, and `session_created` identity. One tmux conditional
+compares all three live values and executes `kill-session` only on a match, so
+retained inventory cannot authorize killing a same-named replacement,
+including one created during the same timestamp second or after a rapid tmux
+server restart. An active client is detached only after the kill succeeds.
 
 Attachment may reset a small, documented set of session-scoped tmux visual
 styles so status and message chrome use Ghosthub's terminal colors. This
@@ -197,7 +218,8 @@ compromising a trusted component, including:
 - confusing host, worktree, pane, or session identity in a way that mutates a
   different target
 - killing or structurally mutating a tmux session through Ghosthub's ordinary
-  presentation, outside the explicit creation of a user-named session
+  presentation, or terminating a session other than the exact target confirmed
+  by the user
 - exposing secrets through logs, persistence, or UI surfaces beyond their
   intended scope
 - accepting or presenting an application update whose appcast, archive, or

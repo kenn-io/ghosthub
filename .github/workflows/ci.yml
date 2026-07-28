@@ -120,8 +120,8 @@ jobs:
       - name: Run terminal smoke tests
         # Most AppKit/PTY tests are isolated by fixture, so two workers shorten
         # the hosted-runner exposure window without saturating its three cores.
-        # Keep tests that mutate NSPasteboard.general out of this lane because
-        # the system pasteboard is shared across worker processes.
+        # Keep tests marked Pasteboard out of this lane because they mutate
+        # NSPasteboard.general, which is shared across worker processes.
         run: >-
           swift test --skip-build --disable-swift-testing
           --filter GhosthubTerminalSmokeTests

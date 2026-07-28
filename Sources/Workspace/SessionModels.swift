@@ -93,19 +93,42 @@ public struct TmuxSessionSummary: Codable, Equatable, Sendable {
     public var managed: Bool
     public var worktreeKey: String?
     public var windows: [TmuxWindowSummary]
+    public var serverPID: String?
+    public var sessionID: String?
     public var createdAt: String?
 
     public init(
         name: String, managed: Bool,
         worktreeKey: String? = nil,
         windows: [TmuxWindowSummary],
+        serverPID: String? = nil,
+        sessionID: String? = nil,
         createdAt: String? = nil
     ) {
         self.name = name
         self.managed = managed
         self.worktreeKey = worktreeKey
         self.windows = windows
+        self.serverPID = serverPID
+        self.sessionID = sessionID
         self.createdAt = createdAt
+    }
+
+    public var hasStableIdentity: Bool {
+        guard let serverPID, let sessionID, let createdAt else {
+            return false
+        }
+        return Self.isNumericIdentity(serverPID)
+            && sessionID.utf8.first == 36
+            && sessionID.utf8.count > 1
+            && Self.isNumericIdentity(String(sessionID.dropFirst()))
+            && Self.isNumericIdentity(createdAt)
+    }
+
+    private static func isNumericIdentity(_ value: String) -> Bool {
+        !value.isEmpty && value.utf8.allSatisfy { byte in
+            byte >= 48 && byte <= 57
+        }
     }
 }
 public struct TerminalSessionSummary: Identifiable, Equatable, Sendable {

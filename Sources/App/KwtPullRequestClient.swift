@@ -6,12 +6,6 @@ enum KwtPullRequestError: Error, Equatable, LocalizedError {
     case projectUnavailable
     case importInProgress
     case importedWorkspaceMissing(path: String)
-    case sessionStartFailed(
-        host: String,
-        code: String,
-        message: String,
-        retryable: Bool
-    )
     case commandFailed(
         host: String,
         status: Int32,
@@ -29,14 +23,6 @@ enum KwtPullRequestError: Error, Equatable, LocalizedError {
             return "Another pull request is already being imported."
         case let .importedWorkspaceMissing(path):
             return "kwt imported the pull request, but \(path) was not present in workspace inventory."
-        case let .sessionStartFailed(
-            host,
-            _,
-            message,
-            retryable
-        ):
-            let detail = "The pull request was imported on \(host), but \(message)"
-            return retryable ? "\(detail) Try again." : detail
         case let .commandFailed(
             host,
             status,
@@ -53,17 +39,10 @@ enum KwtPullRequestError: Error, Equatable, LocalizedError {
     }
 }
 
-struct KwtPullRequestSessionStartError: Equatable, Sendable {
-    var code: String
-    var message: String
-    var retryable: Bool
-}
-
 struct KwtPullRequestImportResult: Equatable, Sendable {
     var status: String
     var pullRequest: PullRequestCandidate
     var workspace: PullRequestWorkspace
-    var sessionStartError: KwtPullRequestSessionStartError?
 }
 
 /// Executes kwt's provider-neutral pull-request automation contract. Ghosthub
@@ -81,12 +60,15 @@ struct KwtPullRequestClient: Sendable {
     private let remoteRunner: RemoteRunner
     private let loginShellProvider: @Sendable () -> String
     private let localBinaryPath: String?
+    private let remoteBinaryRevision: String?
 
     init(
         localRunner: LocalRunner? = nil,
         remoteRunner: RemoteRunner? = nil,
         processTimeout: TimeInterval = 300,
         localBinaryPath: String? = KwtBinaryLocator.bundledPath(),
+        remoteBinaryRevision: String? =
+            KwtBinaryLocator.bundledRemoteRevision(),
         loginShellProvider: @escaping @Sendable () -> String =
             TmuxBinaryResolver.loginShell
     ) {
@@ -106,6 +88,7 @@ struct KwtPullRequestClient: Sendable {
         }
         self.loginShellProvider = loginShellProvider
         self.localBinaryPath = localBinaryPath
+        self.remoteBinaryRevision = remoteBinaryRevision
     }
 
     func list(
@@ -115,7 +98,7 @@ struct KwtPullRequestClient: Sendable {
         let response: ListResponse = try await execute(
             Self.listCommand(
                 projectIdentity: projectIdentity,
-                localBinaryPath: binaryPath(for: host)
+                binaryPrelude: binaryPrelude(for: host)
             ),
             on: host
         )
@@ -131,7 +114,7 @@ struct KwtPullRequestClient: Sendable {
             Self.importCommand(
                 id: id,
                 projectIdentity: projectIdentity,
-                localBinaryPath: binaryPath(for: host)
+                binaryPrelude: binaryPrelude(for: host)
             ),
             on: host
         )
@@ -145,14 +128,7 @@ struct KwtPullRequestClient: Sendable {
         return KwtPullRequestImportResult(
             status: response.status,
             pullRequest: response.pullRequest.candidate,
-            workspace: response.workspace.workspace,
-            sessionStartError: response.sessionStartError.map {
-                KwtPullRequestSessionStartError(
-                    code: $0.code,
-                    message: $0.message,
-                    retryable: $0.retryable
-                )
-            }
+            workspace: response.workspace.workspace
         )
     }
 
@@ -182,10 +158,14 @@ struct KwtPullRequestClient: Sendable {
         )
     }
 
-    private func binaryPath(for host: TmuxHost) -> String? {
+    private func binaryPrelude(for host: TmuxHost) -> String {
         switch host {
-        case .local: localBinaryPath
-        case .ssh: nil
+        case .local:
+            KwtBinaryLocator.commandPrelude(exactPath: localBinaryPath)
+        case .ssh:
+            KwtBinaryLocator.remoteCommandPrelude(
+                revision: remoteBinaryRevision
+            )
         }
     }
 
@@ -231,9 +211,9 @@ struct KwtPullRequestClient: Sendable {
 
     static func listCommand(
         projectIdentity: String,
-        localBinaryPath: String? = nil
+        binaryPrelude: String
     ) -> String {
-        commandPrelude(localBinaryPath: localBinaryPath)
+        commandPrelude(binaryPrelude: binaryPrelude)
             + "exec \"$ghosthub_kwt_path\" pr list --project "
             + shellQuotedCommandArgument(projectIdentity)
             + " --state open --json"
@@ -242,9 +222,9 @@ struct KwtPullRequestClient: Sendable {
     static func importCommand(
         id: String,
         projectIdentity: String,
-        localBinaryPath: String? = nil
+        binaryPrelude: String
     ) -> String {
-        commandPrelude(localBinaryPath: localBinaryPath)
+        commandPrelude(binaryPrelude: binaryPrelude)
             + "exec \"$ghosthub_kwt_path\" pr import "
             + shellQuotedCommandArgument(id)
             + " --project "
@@ -253,10 +233,9 @@ struct KwtPullRequestClient: Sendable {
     }
 
     private static func commandPrelude(
-        localBinaryPath: String?
+        binaryPrelude: String
     ) -> String {
-        KwtBinaryLocator.commandPrelude(exactPath: localBinaryPath)
-            + "printf 'GHOSTHUB_KWT_PR_JSON\\n'; "
+        binaryPrelude + "printf 'GHOSTHUB_KWT_PR_JSON\\n'; "
     }
 }
 
@@ -272,12 +251,10 @@ private struct ImportResponse: Decodable {
     var status: String
     var pullRequest: PullRequestDTO
     var workspace: PullRequestWorkspaceDTO
-    var sessionStartError: ErrorDTO?
 
     private enum CodingKeys: String, CodingKey {
         case status, workspace
         case pullRequest = "pull_request"
-        case sessionStartError = "session_start_error"
     }
 }
 

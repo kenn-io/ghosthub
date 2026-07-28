@@ -97,6 +97,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
     public let sessionName: String
     public let host: TmuxHost
     public let socketName: String?
+    public let workspacePath: String?
     public let protectedWorkspacePath: String?
     public var launchMode: TmuxAttachmentLaunchMode
 
@@ -104,12 +105,14 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         sessionName: String,
         host: TmuxHost,
         socketName: String? = nil,
+        workspacePath: String? = nil,
         protectedWorkspacePath: String? = nil,
         launchMode: TmuxAttachmentLaunchMode = .attach
     ) {
         self.sessionName = sessionName
         self.host = host
         self.socketName = socketName
+        self.workspacePath = workspacePath
         self.protectedWorkspacePath = protectedWorkspacePath
         self.launchMode = launchMode
     }
@@ -117,6 +120,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
     public func attachCommand(
         tmuxPath: String = "tmux",
         kwtPath: String? = nil,
+        remoteKwtCommandPrelude: String? = nil,
         workingDirectory: String? = nil,
         sshConnectionArguments: [String] = tmuxSSHConnectionArguments()
     ) -> String {
@@ -136,9 +140,18 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                     sshConnectionArguments: sshConnectionArguments
                 )
             }
+            if protectedWorkspacePath == nil, workspacePath != nil {
+                return remoteWorkspaceAttachCommand(
+                    info: info,
+                    tmuxPath: tmuxPath,
+                    remoteKwtCommandPrelude: remoteKwtCommandPrelude,
+                    sshConnectionArguments: sshConnectionArguments
+                )
+            }
             return remoteAttachCommand(
                 info: info,
                 tmuxPath: tmuxPath,
+                remoteKwtCommandPrelude: remoteKwtCommandPrelude,
                 sshConnectionArguments: sshConnectionArguments
             )
         }
@@ -156,8 +169,8 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         var commands = ["unset TMUX TMUX_PANE"]
         switch launchMode {
         case .attach:
-            commands.append(presentationSetupCommand(tmuxPath: tmuxPath))
             if let protectedWorkspacePath {
+                commands.append(presentationSetupCommand(tmuxPath: tmuxPath))
                 guard let kwtPath, !kwtPath.isEmpty else {
                     commands.append(
                         "printf 'Ghosthub: bundled kwt is unavailable\\n' >&2"
@@ -181,7 +194,33 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                 ].map(shellQuotedCommandArgument).joined(separator: " ")
                 commands.append("exec \(protectedAttach)")
             } else {
-                commands.append("exec \(attach)")
+                if let workspacePath {
+                    guard let kwtPath, !kwtPath.isEmpty else {
+                        commands.append(
+                            "printf 'Ghosthub: bundled kwt is unavailable\\n' >&2"
+                        )
+                        commands.append("exit 127")
+                        break
+                    }
+                    if let directory = resolvedBinaryDirectory(tmuxPath) {
+                        commands.append(
+                            "PATH=\(shellQuotedCommandArgument(directory)):$PATH"
+                        )
+                        commands.append("export PATH")
+                    }
+                    let openWorkspace = [
+                        kwtPath, "open", workspacePath,
+                    ].map(shellQuotedCommandArgument).joined(separator: " ")
+                    // Let kwt create and attach with one tmux client.
+                    // A detached `--start-session` phase is unsafe when the
+                    // user's tmux server enables destroy-unattached.
+                    commands.append("exec \(openWorkspace)")
+                } else {
+                    commands.append(
+                        presentationSetupCommand(tmuxPath: tmuxPath)
+                    )
+                    commands.append("exec \(attach)")
+                }
             }
         case .create:
             let createAndAttach = localCreateAndAttachCommand(
@@ -249,14 +288,22 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
     private func remoteAttachCommand(
         info: SSHHostInfo,
         tmuxPath: String,
-        sshConnectionArguments: [String]
+        remoteKwtCommandPrelude: String?,
+        sshConnectionArguments: [String],
+        useAccountLoginShell: Bool = false
     ) -> String {
         let attach: String
         if let protectedWorkspacePath {
-            let protectedAttach =
-                "ghosthub_kwt_path=$(command -v kwt) || exit 127; "
+            let protectedAttach: String
+            if let remoteKwtCommandPrelude {
+                protectedAttach = remoteKwtCommandPrelude
                     + "exec \"$ghosthub_kwt_path\" 'pr' 'attach' "
                     + shellQuotedCommandArgument(protectedWorkspacePath)
+            } else {
+                protectedAttach =
+                    "printf 'Ghosthub: managed kwt is unavailable\\n' >&2; "
+                        + "exit 127"
+            }
             attach = remoteAccountLoginShellCommand(protectedAttach)
         } else {
             let tmuxAttach = tmuxArguments(
@@ -265,11 +312,14 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
             ).map(shellQuotedCommandArgument).joined(separator: " ")
             attach = "exec \(tmuxAttach)"
         }
-        let remoteAttach = [
+        let remoteAttachBody = [
             "unset TMUX TMUX_PANE",
             presentationSetupCommand(tmuxPath: tmuxPath),
             attach,
         ].joined(separator: "; ")
+        let remoteAttach = useAccountLoginShell
+            ? remoteAccountLoginShellCommand(remoteAttachBody)
+            : remoteAttachBody
         return shellCommand(
             [
                 "/bin/sh", "-c", Self.sshReconnectScript,
@@ -281,6 +331,69 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                 sshConnectionArguments: sshConnectionArguments
             )
         )
+    }
+
+    private func remoteWorkspaceAttachCommand(
+        info: SSHHostInfo,
+        tmuxPath: String,
+        remoteKwtCommandPrelude: String?,
+        sshConnectionArguments: [String]
+    ) -> String {
+        guard let workspacePath else {
+            return remoteAttachCommand(
+                info: info,
+                tmuxPath: tmuxPath,
+                remoteKwtCommandPrelude: nil,
+                sshConnectionArguments: sshConnectionArguments
+            )
+        }
+        let remoteOpen: String
+        if let remoteKwtCommandPrelude {
+            remoteOpen = remoteKwtCommandPrelude
+                + "exec \"$ghosthub_kwt_path\" 'open' "
+                + shellQuotedCommandArgument(workspacePath)
+        } else {
+            remoteOpen =
+                "printf 'Ghosthub: managed kwt is unavailable\\n' >&2; "
+                    + "exit 127"
+        }
+        let initialAttach = shellCommand(
+            sshArguments(
+                info: info,
+                allocateTTY: true,
+                remoteCommand: remoteAccountLoginShellCommand(remoteOpen),
+                sshConnectionArguments: sshConnectionArguments
+            )
+        )
+        let reconnectAttach = remoteAttachCommand(
+            info: info,
+            tmuxPath: tmuxPath,
+            remoteKwtCommandPrelude: nil,
+            sshConnectionArguments: sshConnectionArguments,
+            useAccountLoginShell: true
+        )
+        let hasSession = tmuxArguments(
+            tmuxPath,
+            "has-session", "-t", "=\(sessionName)"
+        ).map(shellQuotedCommandArgument).joined(separator: " ")
+        let remoteProbe = "unset TMUX TMUX_PANE; "
+            + "exec \(hasSession) >/dev/null 2>&1"
+        let sessionProbe = shellCommand(
+            [
+                "/bin/sh", "-c", Self.sshReconnectScript,
+                "ghosthub-ssh-kwt-probe",
+            ] + sshArguments(
+                info: info,
+                allocateTTY: false,
+                remoteCommand: remoteAccountLoginShellCommand(remoteProbe),
+                sshConnectionArguments: sshConnectionArguments
+            )
+        )
+        return shellCommand([
+            "/bin/sh", "-c", Self.remoteWorkspaceAttachScript,
+            "ghosthub-ssh-kwt-attach",
+            initialAttach, sessionProbe, reconnectAttach,
+        ])
     }
 
     private func remoteCreateThenAttachCommand(
@@ -305,6 +418,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         let attach = remoteAttachCommand(
             info: info,
             tmuxPath: tmuxPath,
+            remoteKwtCommandPrelude: nil,
             sshConnectionArguments: sshConnectionArguments
         )
         return shellCommand([
@@ -386,6 +500,38 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
     status=$?
     [ "$status" -eq 0 ] || exit "$status"
     exec /bin/sh -c "$2"
+    """
+
+    /// The first kwt client stays attached while it creates the workspace. An
+    /// SSH transport loss probes the exact session through the ordinary retry
+    /// loop: confirmed presence advances to attach-only reconnect, while
+    /// confirmed absence retries kwt because the original SSH connection may
+    /// have failed before the remote command ran. Absent-session retries use
+    /// the same bounded backoff as ordinary SSH reconnects.
+    static let remoteWorkspaceAttachScript = """
+    delay=1
+    while :; do
+        started=$(date +%s)
+        /bin/sh -c "$1"
+        status=$?
+        [ "$status" -eq 255 ] || exit "$status"
+        /bin/sh -c "$2"
+        status=$?
+        case "$status" in
+            0) exec /bin/sh -c "$3" ;;
+            1)
+                now=$(date +%s)
+                if [ $((now - started)) -ge 30 ]; then delay=1; fi
+                printf '\r\n[Ghosthub: workspace session absent; retrying in %ss]\r\n' "$delay"
+                sleep "$delay"
+                if [ "$delay" -lt 30 ]; then
+                    delay=$((delay * 2))
+                    [ "$delay" -le 30 ] || delay=30
+                fi
+                ;;
+            *) exit "$status" ;;
+        esac
+    done
     """
 
     /// OpenSSH reserves status 255 for transport/setup failure. Clean detach

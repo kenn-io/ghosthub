@@ -169,9 +169,9 @@ struct WorkspaceWorktreeCreationTests {
         await model.shutdown()
     }
 
-    @Test("PR session failure retains and selects the imported workspace")
+    @Test("PR import survives a failed inventory refresh")
     @MainActor
-    func pullRequestSessionFailureRetainsWorkspace() async throws {
+    func pullRequestSurvivesInventoryFailure() async throws {
         let environment = try setupStandardEnvironment()
         var snapshot = environment.snapshot
         snapshot.projects[0].scopedKey =
@@ -234,22 +234,15 @@ struct WorkspaceWorktreeCreationTests {
                 return KwtPullRequestImportResult(
                     status: "created",
                     pullRequest: candidate,
-                    workspace: workspace,
-                    sessionStartError: KwtPullRequestSessionStartError(
-                        code: "workspace_creation_failed",
-                        message: "tmux could not start",
-                        retryable: false
-                    )
+                    workspace: workspace
                 )
             }
         )
 
-        await #expect(throws: KwtPullRequestError.self) {
-            try await model.importPullRequest(PullRequestImportRequest(
-                projectID: environment.project.id,
-                pullRequestID: candidate.id
-            ))
-        }
+        try await model.importPullRequest(PullRequestImportRequest(
+            projectID: environment.project.id,
+            pullRequestID: candidate.id
+        ))
 
         let selectedID = try #require(model.selection.selectedWorktreeID)
         let imported = try #require(

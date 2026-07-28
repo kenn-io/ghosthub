@@ -565,7 +565,9 @@ struct WorkspaceWindow: View {
                 workspaceInventoryWarningsByHost:
                 sceneModel.workspaceInventoryWarningsByHost,
                 activeTmuxSession:
-                sceneModel.activeBorrowedTmuxSelection
+                sceneModel.activeBorrowedTmuxSelection,
+                activeTmuxSessionIsConnected:
+                sceneModel.activeBorrowedTmuxSessionIsConnected
             ),
             content: ContentBuilders(
                 tmuxSessionContentBuilder: {
@@ -596,6 +598,21 @@ struct WorkspaceWindow: View {
                                         .discoverPeers()
                                         .peerLoadResult
                                 },
+                                installRemoteKwt: {
+                                    host in
+                                    await sceneModel
+                                        .installRemoteKwt(
+                                            on: host
+                                        )
+                                },
+                                registerRemoteProject: {
+                                    host, path in
+                                    await sceneModel
+                                        .registerRemoteProject(
+                                            path,
+                                            on: host
+                                        )
+                                },
                                 reloadTerminalConfig: {
                                     sceneModel.reloadTerminalConfig()
                                 }
@@ -625,11 +642,20 @@ struct WorkspaceWindow: View {
                 closeTmuxSession: { [sceneModel] selection in
                     sceneModel.closeBorrowedTmuxSession(selection)
                 },
+                prepareTmuxSessionKill: { [sceneModel] selection in
+                    try await sceneModel.prepareTmuxSessionKill(selection)
+                },
+                killTmuxSession: { [sceneModel] request in
+                    try await sceneModel.killTmuxSession(request)
+                },
                 createTmuxSession: { [sceneModel] selection in
                     sceneModel.createTmuxSession(selection)
                 },
                 refreshWorkspaceInventory: { [sceneModel] in
                     sceneModel.refreshKwtInventory()
+                },
+                registerProject: { [sceneModel] host, path in
+                    await sceneModel.registerProject(path, on: host)
                 },
                 createWorktree: { [sceneModel] request in
                     try await sceneModel.createWorktree(request)

@@ -1,7 +1,8 @@
 import Foundation
 import GhosthubWorkspace
 
-public struct WorkspaceTmuxSessionSelection: Equatable, Sendable {
+public struct WorkspaceTmuxSessionSelection:
+    Equatable, Hashable, Identifiable, Sendable {
     public var hostID: UUID
     public var name: String
     public var worktreeID: UUID?
@@ -20,6 +21,14 @@ public struct WorkspaceTmuxSessionSelection: Equatable, Sendable {
         self.worktreeID = worktreeID
         self.worktreePath = worktreePath
         self.socketName = socketName
+    }
+
+    public var id: String {
+        [
+            hostID.uuidString,
+            socketName ?? "default",
+            name,
+        ].joined(separator: ":")
     }
 }
 
@@ -83,6 +92,9 @@ public struct WorkspaceSidebarSection: Equatable, Identifiable, Sendable {
     public var tmuxSessionRows: [WorkspaceSidebarRow]
 
     public var id: UUID { host.id }
+    public var isEmpty: Bool {
+        projects.isEmpty && tmuxSessionRows.isEmpty
+    }
 
     public var row: WorkspaceSidebarRow {
         WorkspaceSidebarRow(
@@ -138,6 +150,24 @@ public enum WorkspaceSidebarModel {
             worktreePath: worktree.path,
             socketName: worktree.tmuxSocketName
         )
+    }
+
+    public static func canRequestKill(
+        _ selection: WorkspaceTmuxSessionSelection,
+        in snapshot: WorkspaceSnapshot,
+        activeSelection: WorkspaceTmuxSessionSelection? = nil,
+        activeSelectionIsConnected: Bool = false
+    ) -> Bool {
+        if activeSelectionIsConnected,
+           activeSelection?.id == selection.id {
+            return true
+        }
+        guard selection.socketName == nil else {
+            return false
+        }
+        return snapshot.host(id: selection.hostID)?.tmuxSessions.contains {
+            $0.name == selection.name && $0.hasStableIdentity
+        } == true
     }
 
     public static func sections(

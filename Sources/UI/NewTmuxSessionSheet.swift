@@ -57,20 +57,24 @@ struct NewTmuxSessionSheet: View {
                 Text("New tmux session")
                     .font(.headline)
                 Spacer()
-                Menu {
-                    ForEach(hosts) { host in
-                        Button(host.sidebarTitle) {
-                            selectedHost = host
-                        }
-                    }
-                } label: {
+                NativePopupMenuButton(
+                    groups: [
+                        hosts.map { host in
+                            NativePopupMenuAction(host.sidebarTitle) {
+                                selectedHost = host
+                            }
+                        },
+                    ]
+                ) {
                     Label(
                         selectedHost.sidebarTitle,
                         systemImage: selectedHost.kind == .selfHost
                             ? "laptopcomputer" : "server.rack"
                     )
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(selectedHost.sidebarTitle)
                 }
-                .menuStyle(.borderlessButton)
+                .buttonStyle(.borderless)
                 .fixedSize()
             }
             .padding(.horizontal, 16)

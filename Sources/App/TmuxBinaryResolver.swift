@@ -38,6 +38,7 @@ private final class TmuxProbeOutputCollector: @unchecked Sendable {
 enum TmuxBinaryError: Error, Equatable, LocalizedError, Sendable {
     case notFound(shell: String)
     case shellFailed(status: Int32)
+    case sshConnectionFailed(host: String)
     case probeTimedOut(shell: String)
     case probeCancelled(shell: String)
     case probeOutputExceeded(shell: String)
@@ -54,6 +55,10 @@ enum TmuxBinaryError: Error, Equatable, LocalizedError, Sendable {
         case let .shellFailed(status):
             return "The login shell exited with status \(status) while"
                 + " locating tmux. Check your shell startup files."
+        case let .sshConnectionFailed(host):
+            return "SSH could not connect to \(host). Open Host Settings and"
+                + " run Test Connection to verify the host key,"
+                + " authentication, and network access."
         case let .probeTimedOut(shell):
             return "Timed out while locating tmux through \(shell). Check"
                 + " for commands that block in your shell startup files."
@@ -78,8 +83,26 @@ enum TmuxBinaryError: Error, Equatable, LocalizedError, Sendable {
 struct DiscoveredTmuxSession: Equatable, Sendable {
     var name: String
     var windowCount: Int
+    var serverPID: String?
+    var sessionID: String?
     var createdAt: String?
     var managed: Bool
+
+    init(
+        name: String,
+        windowCount: Int,
+        serverPID: String? = nil,
+        sessionID: String? = nil,
+        createdAt: String?,
+        managed: Bool
+    ) {
+        self.name = name
+        self.windowCount = windowCount
+        self.serverPID = serverPID
+        self.sessionID = sessionID
+        self.createdAt = createdAt
+        self.managed = managed
+    }
 }
 
 /// Resolves the tmux binary through the user's login shell, because a
@@ -127,6 +150,9 @@ struct TmuxBinaryResolver: Sendable {
 
     func resolveTmuxPath(on host: SSHHostInfo) -> Result<String, TmuxBinaryError> {
         let result = remoteProcessRunner(host, Self.probeCommand)
+        if result.status == 255 {
+            return .failure(.sshConnectionFailed(host: host.displayName))
+        }
         return Self.parseProbe(result, shell: host.displayName)
     }
 
@@ -141,8 +167,12 @@ struct TmuxBinaryResolver: Sendable {
     func discoverSessions(
         on host: SSHHostInfo
     ) -> Result<[DiscoveredTmuxSession], TmuxBinaryError> {
-        Self.parseDiscovery(
-            remoteProcessRunner(host, Self.discoveryCommand),
+        let result = remoteProcessRunner(host, Self.discoveryCommand)
+        if result.status == 255 {
+            return .failure(.sshConnectionFailed(host: host.displayName))
+        }
+        return Self.parseDiscovery(
+            result,
             shell: host.displayName
         )
     }
@@ -154,7 +184,7 @@ struct TmuxBinaryResolver: Sendable {
 
     private static let discoveryPrefix = "GHOSTHUB_TMUX_SESSION"
     private static let discoveryFormat = discoveryPrefix
-        + "\t#{session_windows}\t#{session_created}"
+        + "\t#{session_windows}\t#{pid}\t#{session_id}\t#{session_created}"
         + "\t#{@ghosthub_owner}\t#{session_name}"
     private static let discoveryCommand = probeCommand
         + "; ghosthub_tmux_status=0; "
@@ -220,18 +250,20 @@ struct TmuxBinaryResolver: Sendable {
                 guard line.hasPrefix(prefix) else { return nil }
                 let fields = line.split(
                     separator: "\t",
-                    maxSplits: 4,
+                    maxSplits: 6,
                     omittingEmptySubsequences: false
                 )
-                guard fields.count == 5,
+                guard fields.count == 7,
                       let windowCount = Int(fields[1]),
                       windowCount >= 0
                 else { return nil }
                 return DiscoveredTmuxSession(
-                    name: String(fields[4]),
+                    name: String(fields[6]),
                     windowCount: windowCount,
-                    createdAt: fields[2].isEmpty ? nil : String(fields[2]),
-                    managed: !fields[3].isEmpty
+                    serverPID: fields[2].isEmpty ? nil : String(fields[2]),
+                    sessionID: fields[3].isEmpty ? nil : String(fields[3]),
+                    createdAt: fields[4].isEmpty ? nil : String(fields[4]),
+                    managed: !fields[5].isEmpty
                 )
             }
         return .success(sessions)
@@ -299,10 +331,11 @@ struct TmuxBinaryResolver: Sendable {
         "exec /bin/sh -c " + shellQuotedCommandArgument(command)
     }
 
-    private static func runProcess(
+    static func runProcess(
         executable: String,
         arguments: [String],
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        captureStandardError: Bool = false
     ) -> (status: Int32, stdout: String) {
         var outputDescriptors = [Int32](repeating: -1, count: 2)
         guard outputDescriptors.withUnsafeMutableBufferPointer({ descriptors in
@@ -331,7 +364,9 @@ struct TmuxBinaryResolver: Sendable {
             &fileActions, outputWrite, STDOUT_FILENO
         )
         posix_spawn_file_actions_adddup2(
-            &fileActions, nullDescriptor, STDERR_FILENO
+            &fileActions,
+            captureStandardError ? outputWrite : nullDescriptor,
+            STDERR_FILENO
         )
         posix_spawn_file_actions_addclose(&fileActions, outputRead)
         posix_spawn_file_actions_addclose(&fileActions, outputWrite)

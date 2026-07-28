@@ -20,6 +20,26 @@ func loadJSONDictionary(at url: URL) -> [String: Any]? {
     return object
 }
 
+func xcframeworkModuleMap(at root: URL) -> URL? {
+    let infoURL = root.appendingPathComponent("Info.plist")
+    guard let data = try? Data(contentsOf: infoURL),
+          let plist = try? PropertyListSerialization.propertyList(
+              from: data,
+              format: nil
+          ) as? [String: Any],
+          let library = (plist["AvailableLibraries"] as? [[String: Any]])?.first,
+          let identifier = library["LibraryIdentifier"] as? String,
+          let headersPath = library["HeadersPath"] as? String
+    else {
+        return nil
+    }
+
+    return root
+        .appendingPathComponent(identifier, isDirectory: true)
+        .appendingPathComponent(headersPath, isDirectory: true)
+        .appendingPathComponent("module.modulemap")
+}
+
 let hasBootstrappedLibghostty: Bool = {
     guard ProcessInfo.processInfo.environment[
         "GHOSTHUB_FORCE_TERMINAL_UNAVAILABLE"
@@ -256,15 +276,29 @@ var terminalTestDependencies: [Target.Dependency] = [
     "GhosthubWorkspace",
     "GhosthubTestSupport",
 ]
+var terminalTestSwiftSettings: [SwiftSetting] = []
 if hasBootstrappedLibghostty {
     // AttachedTmuxInputTests imports the XCFramework's Clang module directly.
     terminalTestDependencies.append("CGhostty")
+    let xcframework = libghosttyBuildRoot.appendingPathComponent(
+        "GhosttyKit.xcframework",
+        isDirectory: true
+    )
+    if let moduleMap = xcframeworkModuleMap(at: xcframework) {
+        terminalTestSwiftSettings.append(
+            .unsafeFlags([
+                "-Xcc",
+                "-fmodule-map-file=\(moduleMap.path)",
+            ])
+        )
+    }
 }
 targets.append(
     .testTarget(
         name: "GhosthubTerminalTests",
         dependencies: terminalTestDependencies,
-        path: "Tests/Terminal"
+        path: "Tests/Terminal",
+        swiftSettings: terminalTestSwiftSettings
     )
 )
 targets.append(

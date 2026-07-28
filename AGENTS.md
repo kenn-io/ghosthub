@@ -10,7 +10,7 @@ Ghosthub is a **worktree-centric terminal multiplexer** for macOS.
 - **Projects:** A Project is a git repository reported by kwt on a specific Host.
 - **Worktrees:** Projects contain kwt workspaces (standard checkouts or linked git worktrees), each with an exact tmux session name.
 - **Sessions:** Every workspace session and every otherwise-unbound tmux session opens through the same ordinary tmux client. Tmux owns windows, panes, layout, history, and process lifetime.
-- **Attachment:** Ghosthub owns discovery, local/SSH client presentation, keepalives, and reconnect. Closing a presentation detaches; it never destroys the tmux session.
+- **Attachment:** Ghosthub owns discovery, local/SSH client presentation, keepalives, and reconnect. Closing a presentation detaches. Only the explicit, confirmed Kill Session action may destroy a tmux session.
 - **Middleman:** Sessions created by Middleman remain discoverable because they are ordinary sessions on a host tmux server. Ghosthub does not use Middleman as session authority.
 - **Console Panel:** A host-scoped persistent terminal area (e.g., for `roborev`) that is independent of the active worktree.
 
@@ -33,10 +33,10 @@ Ghosthub is a **worktree-centric terminal multiplexer** for macOS.
 - For Python build tooling and tests, use `uv` rather than bare `python`, `pip`, or ad hoc virtualenv state.
 - Prefer Makefile targets over raw multi-flag test commands; if a Python or test invocation is complex enough to be copied around, add a `make` target for it.
 - Use `kata` for task management (see `CLAUDE.md`).
-- Every user-facing UI change must update the website Guide in the same turn
-  and regenerate the complete website screenshot set. Publish refreshed
-  binaries to the orphan `website-assets` branch so UI changes never leave
-  ghosthub.ai with stale product views.
+- User-facing workflow changes must update the website Guide when they affect
+  documented behavior. Regenerate and publish the website screenshot set only
+  when a change materially alters visuals shown in those screenshots; copy,
+  accessibility, and non-visual behavior changes do not require new captures.
 - Pull request descriptions should be concise, rationale-first prose. Do not add boilerplate or navel-gazing sections like "Changes", "Tests", or "Verification"; mention validation only when it is genuinely useful reviewer context.
 - Do not poll or watch GitHub Actions through `gh`, the GitHub API, or browser automation unless the user explicitly asks you to do so.
 - **NO DATABASE MIGRATIONS** until the first production release. Update the current schema, bootstrap paths, fixtures, and tests directly.

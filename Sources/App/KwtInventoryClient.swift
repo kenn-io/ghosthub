@@ -76,6 +76,10 @@ enum KwtInventoryError: Error, Equatable, LocalizedError {
     var errorDescription: String? {
         switch self {
         case let .commandFailed(host, status):
+            if status == 255 {
+                return "SSH could not connect to \(host) while loading"
+                    + " kwt projects."
+            }
             return "kwt inventory failed on \(host) with status \(status)."
         case let .malformedOutput(host):
             return "kwt returned an invalid inventory on \(host)."
@@ -99,12 +103,15 @@ struct KwtInventoryClient: Sendable {
     private let remoteRunner: RemoteRunner
     private let loginShellProvider: @Sendable () -> String
     private let localBinaryPath: String?
+    private let remoteBinaryRevision: String?
 
     init(
         localRunner: LocalRunner? = nil,
         remoteRunner: RemoteRunner? = nil,
         processTimeout: TimeInterval = 15,
         localBinaryPath: String? = KwtBinaryLocator.bundledPath(),
+        remoteBinaryRevision: String? =
+            KwtBinaryLocator.bundledRemoteRevision(),
         loginShellProvider: @escaping @Sendable () -> String =
             TmuxBinaryResolver.loginShell
     ) {
@@ -124,6 +131,7 @@ struct KwtInventoryClient: Sendable {
         }
         self.loginShellProvider = loginShellProvider
         self.localBinaryPath = localBinaryPath
+        self.remoteBinaryRevision = remoteBinaryRevision
     }
 
     func load(from host: TmuxHost) async throws -> KwtHostInventory {
@@ -135,7 +143,7 @@ struct KwtInventoryClient: Sendable {
             run(
                 host: host,
                 command: Self.projectsCommand(
-                    localBinaryPath: binaryPath(for: host)
+                    binaryPrelude: binaryPrelude(for: host)
                 )
             ),
             hostLabel: hostLabel
@@ -151,7 +159,7 @@ struct KwtInventoryClient: Sendable {
                         host: host,
                         command: Self.worktreesCommand(
                             projectPath: project.path,
-                            localBinaryPath: binaryPath(for: host)
+                            binaryPrelude: binaryPrelude(for: host)
                         )
                     )
                     do {
@@ -190,10 +198,14 @@ struct KwtInventoryClient: Sendable {
         )
     }
 
-    private func binaryPath(for host: TmuxHost) -> String? {
+    private func binaryPrelude(for host: TmuxHost) -> String {
         switch host {
-        case .local: localBinaryPath
-        case .ssh: nil
+        case .local:
+            KwtBinaryLocator.commandPrelude(exactPath: localBinaryPath)
+        case .ssh:
+            KwtBinaryLocator.remoteCommandPrelude(
+                revision: remoteBinaryRevision
+            )
         }
     }
 
@@ -236,17 +248,17 @@ struct KwtInventoryClient: Sendable {
         }
     }
 
-    private static func projectsCommand(localBinaryPath: String?) -> String {
-        KwtBinaryLocator.commandPrelude(exactPath: localBinaryPath)
+    private static func projectsCommand(binaryPrelude: String) -> String {
+        binaryPrelude
             + "printf 'GHOSTHUB_KWT_JSON\\n'; "
             + "exec \"$ghosthub_kwt_path\" projects --json"
     }
 
     private static func worktreesCommand(
         projectPath: String,
-        localBinaryPath: String?
+        binaryPrelude: String
     ) -> String {
-        KwtBinaryLocator.commandPrelude(exactPath: localBinaryPath)
+        binaryPrelude
             + "cd -- \(shellQuotedCommandArgument(projectPath)) || exit $?; "
             + "printf 'GHOSTHUB_KWT_JSON\\n'; "
             + "exec \"$ghosthub_kwt_path\" list --json"

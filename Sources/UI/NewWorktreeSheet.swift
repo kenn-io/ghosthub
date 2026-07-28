@@ -266,15 +266,17 @@ struct NewWorktreeSheet: View {
             Text("New worktree")
                 .font(.headline)
             Spacer()
-            Menu {
-                ForEach(projectsForSelectedMode) { project in
-                    Button(projectMenuTitle(project)) {
-                        selectedProject = project
-                        query = ""
-                        errorMessage = nil
-                    }
-                }
-            } label: {
+            NativePopupMenuButton(
+                groups: [
+                    projectsForSelectedMode.map { project in
+                        NativePopupMenuAction(projectMenuTitle(project)) {
+                            selectedProject = project
+                            query = ""
+                            errorMessage = nil
+                        }
+                    },
+                ]
+            ) {
                 VStack(alignment: .trailing, spacing: 1) {
                     Label(
                         selectedProject.sidebarTitle,
@@ -285,8 +287,10 @@ struct NewWorktreeSheet: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(projectMenuTitle(selectedProject))
             }
-            .menuStyle(.borderlessButton)
+            .buttonStyle(.borderless)
             .fixedSize()
             .disabled(isWorking)
         }

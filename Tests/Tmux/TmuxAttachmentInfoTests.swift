@@ -104,6 +104,153 @@ struct TmuxAttachmentInfoTests {
         #expect(!command.contains("export PATH"))
     }
 
+    @Test("ordinary local worktree attaches through kwt without a handoff")
+    func localWorktreeAttachesThroughKwt() {
+        let command = TmuxAttachmentInfo(
+            sessionName: "kwt-widget-feature",
+            host: .local,
+            workspacePath: "/worktrees/widget's feature"
+        ).attachCommand(
+            tmuxPath: "/opt/homebrew/bin/tmux",
+            kwtPath: "/Applications/Ghosthub.app/Contents/Helpers/kwt"
+        )
+
+        #expect(command.contains(
+            "/Applications/Ghosthub.app/Contents/Helpers/kwt"
+        ))
+        #expect(command.contains("open"))
+        #expect(command.contains("/worktrees/widget"))
+        #expect(command.contains("exec"))
+        #expect(!command.contains("--start-session"))
+        #expect(!command.contains("attach-session"))
+    }
+
+    @Test("local attachment stops when kwt cannot start the workspace")
+    func localWorktreeStartFailureStopsAttachment() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let kwt = directory.appendingPathComponent("kwt")
+        let tmux = directory.appendingPathComponent("tmux")
+        let tmuxMarker = directory.appendingPathComponent("tmux-ran")
+        try """
+        #!/bin/sh
+        exit 42
+        """.write(to: kwt, atomically: true, encoding: .utf8)
+        try """
+        #!/bin/sh
+        touch "$GHOSTHUB_TMUX_MARKER"
+        exit 0
+        """.write(to: tmux, atomically: true, encoding: .utf8)
+        for executable in [kwt, tmux] {
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o755], ofItemAtPath: executable.path
+            )
+        }
+
+        let command = TmuxAttachmentInfo(
+            sessionName: "kwt-widget-feature",
+            host: .local,
+            workspacePath: "/worktrees/widget"
+        ).attachCommand(
+            tmuxPath: tmux.path,
+            kwtPath: kwt.path
+        )
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", command]
+        process.environment = ProcessInfo.processInfo.environment.merging([
+            "GHOSTHUB_TMUX_MARKER": tmuxMarker.path,
+        ]) { _, new in new }
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+
+        #expect(process.terminationStatus == 42)
+        #expect(!FileManager.default.fileExists(atPath: tmuxMarker.path))
+    }
+
+    @Test("worktree attachment survives destroy-unattached")
+    func localWorktreeSurvivesDestroyUnattached() throws {
+        let tmuxPath = ProcessInfo.processInfo.environment["PATH"]?
+            .split(separator: ":")
+            .map { String($0) + "/tmux" }
+            .first {
+                FileManager.default.isExecutableFile(atPath: $0)
+            }
+        guard let tmuxPath else {
+            return
+        }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let kwt = directory.appendingPathComponent("kwt")
+        let config = directory.appendingPathComponent("tmux.conf")
+        let marker = directory.appendingPathComponent("session-ran")
+        let socketName = "ghosthub-test-\(UUID().uuidString.lowercased())"
+        defer {
+            let cleanup = Process()
+            cleanup.executableURL = URL(fileURLWithPath: tmuxPath)
+            cleanup.arguments = ["-L", socketName, "kill-server"]
+            cleanup.standardOutput = FileHandle.nullDevice
+            cleanup.standardError = FileHandle.nullDevice
+            try? cleanup.run()
+            cleanup.waitUntilExit()
+        }
+        try """
+        set-option -g destroy-unattached on
+        """.write(to: config, atomically: true, encoding: .utf8)
+        try """
+        #!/bin/sh
+        for argument in "$@"; do
+            if [ "$argument" = "--start-session" ]; then
+                exec "$GHOSTHUB_TMUX" -L "$GHOSTHUB_TMUX_SOCKET" \
+                    -f "$GHOSTHUB_TMUX_CONFIG" new-session -d -s "$GHOSTHUB_TMUX_SESSION" \
+                    "sleep 0.2; : > '$GHOSTHUB_SESSION_MARKER'"
+            fi
+        done
+        exec "$GHOSTHUB_TMUX" -L "$GHOSTHUB_TMUX_SOCKET" \
+            -f "$GHOSTHUB_TMUX_CONFIG" new-session -A -s "$GHOSTHUB_TMUX_SESSION" \
+            "sleep 0.2; : > '$GHOSTHUB_SESSION_MARKER'"
+        """.write(to: kwt, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755], ofItemAtPath: kwt.path
+        )
+        let command = TmuxAttachmentInfo(
+            sessionName: "kwt-destroy-unattached",
+            host: .local,
+            workspacePath: "/worktrees/widget"
+        ).attachCommand(
+            tmuxPath: tmuxPath,
+            kwtPath: kwt.path
+        )
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/script")
+        process.arguments = ["-q", "/dev/null", "/bin/sh", "-c", command]
+        process.environment = ProcessInfo.processInfo.environment.merging([
+            "GHOSTHUB_TMUX": tmuxPath,
+            "GHOSTHUB_TMUX_SOCKET": socketName,
+            "GHOSTHUB_TMUX_CONFIG": config.path,
+            "GHOSTHUB_TMUX_SESSION": "kwt-destroy-unattached",
+            "GHOSTHUB_SESSION_MARKER": marker.path,
+            "TERM": "xterm-256color",
+        ]) { _, new in new }
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+
+        #expect(process.terminationStatus == 0)
+        #expect(FileManager.default.fileExists(atPath: marker.path))
+    }
+
     @Test("isolated local attachment targets the returned tmux socket")
     func isolatedLocalAttachCommand() {
         let command = TmuxAttachmentInfo(
@@ -168,13 +315,20 @@ struct TmuxAttachmentInfoTests {
             )),
             socketName: "kwt-pr-0123456789abcdef",
             protectedWorkspacePath: "/worktrees/pr-32"
-        ).attachCommand(tmuxPath: "/usr/bin/tmux")
+        ).attachCommand(
+            tmuxPath: "/usr/bin/tmux",
+            remoteKwtCommandPrelude:
+            "ghosthub_kwt_path=\"$HOME/.ghosthub/helpers/kwt/pinned/kwt\"; "
+                + "[ -x \"$ghosthub_kwt_path\" ] || exit 127; "
+        )
 
-        #expect(command.contains("command -v kwt"))
+        #expect(command.contains(
+            "$HOME/.ghosthub/helpers/kwt/pinned/kwt"
+        ))
         #expect(command.contains("${SHELL:-/bin/sh}"))
         #expect(command.contains("-lc"))
         #expect(command.contains(
-            "ghosthub_kwt_path=$(command -v kwt) || exit 127"
+            "[ -x \"$ghosthub_kwt_path\" ] || exit 127"
         ))
         #expect(!command.contains("exec ghosthub_kwt_path="))
         #expect(command.contains("pr"))
@@ -264,6 +418,146 @@ struct TmuxAttachmentInfoTests {
                 separatedBy: "SSH disconnected; reconnecting"
             ).count == 2
         )
+    }
+
+    @Test("remote worktree initially attaches through kwt")
+    func remoteWorktreeInitiallyAttachesThroughKwt() {
+        let command = TmuxAttachmentInfo(
+            sessionName: "kwt-widget-feature",
+            host: .ssh(SSHHostInfo(
+                user: "wesm", hostname: "build-box", port: nil
+            )),
+            workspacePath: "/srv/widget feature"
+        ).attachCommand(
+            tmuxPath: "/usr/bin/tmux",
+            remoteKwtCommandPrelude:
+            "ghosthub_kwt_path=\"$HOME/.ghosthub/helpers/kwt/pinned/kwt\"; "
+                + "[ -x \"$ghosthub_kwt_path\" ] || exit 127; "
+        )
+
+        #expect(command.contains("'-tt'"))
+        #expect(command.contains("/srv/widget feature"))
+        #expect(!command.contains("--start-session"))
+        #expect(command.contains("ghosthub-ssh-kwt-probe"))
+        #expect(command.contains("has-session"))
+        #expect(
+            command.components(
+                separatedBy: "${SHELL:-/bin/sh}"
+            ).count - 1 == 3
+        )
+    }
+
+    @Test("remote worktree switches to tmux only after transport loss")
+    func remoteWorktreeReconnectsAfterTransportLoss() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let initial = directory.appendingPathComponent("initial")
+        let probe = directory.appendingPathComponent("probe")
+        let reconnect = directory.appendingPathComponent("reconnect")
+        try "#!/bin/sh\nexit 255\n".write(
+            to: initial, atomically: true, encoding: .utf8
+        )
+        try "#!/bin/sh\nexit 0\n".write(
+            to: probe, atomically: true, encoding: .utf8
+        )
+        try """
+        #!/bin/sh
+        : > "$GHOSTHUB_RECONNECT_MARKER"
+        """.write(to: reconnect, atomically: true, encoding: .utf8)
+        for executable in [initial, probe, reconnect] {
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o755], ofItemAtPath: executable.path
+            )
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = [
+            "-c", TmuxAttachmentInfo.remoteWorkspaceAttachScript,
+            "ghosthub-test", initial.path, probe.path, reconnect.path,
+        ]
+        process.environment = ProcessInfo.processInfo.environment.merging([
+            "GHOSTHUB_RECONNECT_MARKER": reconnect.path + ".ran",
+        ]) { _, new in new }
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+
+        #expect(process.terminationStatus == 0)
+        #expect(FileManager.default.fileExists(
+            atPath: reconnect.path + ".ran"
+        ))
+    }
+
+    @Test("remote worktree retries kwt when transport fails before creation")
+    func remoteWorktreeRetriesKwtWhenSessionIsAbsent() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let initialCounter = directory.appendingPathComponent("initial-count")
+        let sleepCounter = directory.appendingPathComponent("sleep-count")
+        let initial = directory.appendingPathComponent("initial")
+        let probe = directory.appendingPathComponent("probe")
+        let reconnect = directory.appendingPathComponent("reconnect")
+        let sleep = directory.appendingPathComponent("sleep")
+        try """
+        #!/bin/sh
+        printf x >> "$GHOSTHUB_INITIAL_COUNTER"
+        [ "$(wc -c < "$GHOSTHUB_INITIAL_COUNTER")" -gt 1 ] && exit 0
+        exit 255
+        """.write(to: initial, atomically: true, encoding: .utf8)
+        try "#!/bin/sh\nexit 1\n".write(
+            to: probe, atomically: true, encoding: .utf8
+        )
+        try """
+        #!/bin/sh
+        : > "$GHOSTHUB_RECONNECT_MARKER"
+        """.write(to: reconnect, atomically: true, encoding: .utf8)
+        try """
+        #!/bin/sh
+        printf '%s\n' "$1" >> "$GHOSTHUB_SLEEP_COUNTER"
+        """.write(to: sleep, atomically: true, encoding: .utf8)
+        for executable in [initial, probe, reconnect, sleep] {
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o755], ofItemAtPath: executable.path
+            )
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = [
+            "-c", TmuxAttachmentInfo.remoteWorkspaceAttachScript,
+            "ghosthub-test", initial.path, probe.path, reconnect.path,
+        ]
+        process.environment = ProcessInfo.processInfo.environment.merging([
+            "GHOSTHUB_INITIAL_COUNTER": initialCounter.path,
+            "GHOSTHUB_RECONNECT_MARKER": reconnect.path + ".ran",
+            "GHOSTHUB_SLEEP_COUNTER": sleepCounter.path,
+            "PATH": directory.path + ":"
+                + ProcessInfo.processInfo.environment["PATH", default: ""],
+        ]) { _, new in new }
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+
+        #expect(process.terminationStatus == 0)
+        #expect(
+            try String(contentsOf: initialCounter, encoding: .utf8) == "xx"
+        )
+        #expect(
+            try String(contentsOf: sleepCounter, encoding: .utf8) == "1\n"
+        )
+        #expect(!FileManager.default.fileExists(
+            atPath: reconnect.path + ".ran"
+        ))
     }
 
     @Test("attach retries never rerun the completed create phase")
