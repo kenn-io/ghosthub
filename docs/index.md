@@ -36,7 +36,7 @@ Ghosthub.app
   ├─ local app persistence
   ├─ native tmux clients with SSH reconnect
   ├─ bundled kwt for local worktree state
-  └─ host-provided kwt and tmux over SSH
+  └─ managed architecture-matched kwt and host tmux over SSH
 ```
 
 Start with [Quick Start](quickstart.md), then read

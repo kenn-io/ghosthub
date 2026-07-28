@@ -34,7 +34,7 @@ struct KwtPullRequestClientTests {
         #expect(!candidate.isImported)
     }
 
-    @Test("remote import returns kwt workspace identity unchanged")
+    @Test("remote import remains session-free and returns workspace identity")
     func remoteImport() async throws {
         let recorder = PullRequestCommandRecorder()
         let ssh = SSHHostInfo(
@@ -42,11 +42,13 @@ struct KwtPullRequestClientTests {
             hostname: "builder",
             port: 2222
         )
+        let revision = String(repeating: "c", count: 40)
         let client = KwtPullRequestClient(
             remoteRunner: { host, command in
                 recorder.record(host: host, command: command)
                 return (0, Self.importResponse)
-            }
+            },
+            remoteBinaryRevision: revision
         )
 
         let result = try await client.importPullRequest(
@@ -57,15 +59,15 @@ struct KwtPullRequestClientTests {
 
         #expect(recorder.host == ssh)
         #expect(recorder.command?.hasPrefix(
-            "ghosthub_kwt_path=$(command -v kwt) || exit 127;"
+            "ghosthub_kwt_path=\"$HOME/.ghosthub/helpers/kwt/"
+                + "\(revision)/kwt\";"
         ) == true)
         #expect(recorder.command?.contains(
             "pr import 'github:github.com/kenn-io/ghosthub#32'"
         ) == true)
         #expect(recorder.command?.contains(
-            "--start-session"
-        ) == false)
-        #expect(recorder.command?.hasSuffix("--json") == true)
+            "--project 'github.com/kenn-io/ghosthub' --json"
+        ) == true)
         #expect(result.status == "created")
         #expect(result.workspace.path == "/tmp/ghosthub-pr-32")
         #expect(result.workspace.sessionName == "kwt-workspace-pr-32")
@@ -78,41 +80,6 @@ struct KwtPullRequestClientTests {
                 == "kwt-pr-0123456789abcdef"
         )
         #expect(result.pullRequest.isImported)
-    }
-
-    @Test("session startup failure remains a successful imported result")
-    func partialSessionFailure() async throws {
-        let response = Self.importResponse.replacingOccurrences(
-            of: #""status": "created","#,
-            with: """
-            "status": "created",
-              "session_start_error": {
-                "code": "workspace_creation_failed",
-                "message": "tmux could not start",
-                "retryable": false
-              },
-            """
-        )
-        let client = KwtPullRequestClient(
-            localRunner: { _, _ in (0, response) }
-        )
-
-        let result = try await client.importPullRequest(
-            id: "github:github.com/kenn-io/ghosthub#32",
-            projectIdentity: "github.com/kenn-io/ghosthub",
-            on: .local
-        )
-
-        #expect(result.status == "created")
-        #expect(
-            result.sessionStartError
-                == KwtPullRequestSessionStartError(
-                    code: "workspace_creation_failed",
-                    message: "tmux could not start",
-                    retryable: false
-                )
-        )
-        #expect(result.workspace.path == "/tmp/ghosthub-pr-32")
     }
 
     @Test(

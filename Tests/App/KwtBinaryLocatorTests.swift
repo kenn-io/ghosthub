@@ -24,4 +24,20 @@ struct KwtBinaryLocatorTests {
                 == "ghosthub_kwt_path=$(command -v kwt) || exit 127; "
         )
     }
+
+    @Test("remote helper path is revision-pinned")
+    func remoteHelperPathIsRevisionPinned() {
+        let revision = String(repeating: "a", count: 40)
+
+        #expect(
+            KwtBinaryLocator.remoteCommandPrelude(revision: revision)
+                == "ghosthub_kwt_path=\"$HOME/.ghosthub/helpers/kwt/"
+                + "\(revision)/kwt\"; "
+                + "[ -x \"$ghosthub_kwt_path\" ] || exit 127; "
+        )
+        #expect(
+            KwtBinaryLocator.remoteCommandPrelude(revision: "unpinned")
+                .contains("managed kwt is unavailable")
+        )
+    }
 }

@@ -18,8 +18,12 @@ current schema, bootstrap paths, fixtures, and tests directly.
 - Kwt's machine-readable CLI is authoritative for project/worktree identity
   and exact tmux session names. Direct `tmux list-sessions` discovery supplies
   every otherwise-unbound session on each configured host.
-- Packaged builds invoke their revision-pinned bundled kwt for local operations;
-  remote hosts resolve and execute their own kwt.
+- Packaged builds invoke their revision-pinned bundled kwt for local operations.
+  After explicit user permission, remote hosts invoke Ghosthub's matching
+  revision-pinned managed helper from `~/.ghosthub/`.
+- Fresh remote hosts gain project context through the explicit Host Settings
+  **Add Project** action, which delegates one absolute repository path to kwt;
+  Ghosthub never scans the remote filesystem or edits kwt configuration.
 - Kwt workspaces and unbound sessions open through the same ordinary tmux
   client. Ghosthub never uses `tmux -CC` or reconstructs tmux panes, windows,
   layouts, history, or terminal output in Swift.

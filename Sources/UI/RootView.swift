@@ -25,6 +25,8 @@ public struct RootView: View {
     @State private var newWorktreeProject: ProjectSummary?
     @State private var newWorktreeMode: NewWorktreeMode = .branch
     @State private var newTmuxSessionHost: HostSummary?
+    @State private var addProjectHost: HostSummary?
+    @State private var sessionKillAlert: SessionKillAlert?
 
     public init(
         display: WorkspaceDisplayState,
@@ -111,6 +113,26 @@ public struct RootView: View {
                     },
                     onCancel: { newTmuxSessionHost = nil }
                 )
+            }
+            .sheet(item: $addProjectHost) { host in
+                AddProjectSheet(
+                    host: host,
+                    onAdd: { path in
+                        guard let registerProject =
+                            handlers.registerProject
+                        else {
+                            return .failure(.message(
+                                "Project registration is unavailable."
+                            ))
+                        }
+                        return await registerProject(host, path)
+                    },
+                    onCancel: { addProjectHost = nil },
+                    onAdded: { addProjectHost = nil }
+                )
+            }
+            .alert(item: $sessionKillAlert) { alert in
+                sessionKillAlertView(alert)
             }
     }
 
@@ -324,19 +346,29 @@ public struct RootView: View {
             selection: $selection,
             visibility: worktreeVisibility,
             activeTmuxSession: activeTmuxSession,
+            activeTmuxSessionIsConnected:
+            display.activeTmuxSessionIsConnected,
             onOpenTmuxSession: { session in
                 activateTmuxSession(session)
             },
             onNavigateAwayFromTmuxSession: {
                 deactivateTmuxSession()
             },
+            onRequestKillTmuxSession: requestSessionKill,
             onNewWorktree: openNewWorktree,
             onImportPullRequest: openImportPullRequest,
             onNewTmuxSession: { host in
                 newTmuxSessionHost = host
             },
+            onAddProject: { host in
+                addProjectHost = host
+            },
             onRefreshInventory: {
                 handlers.refreshWorkspaceInventory?()
+            },
+            onOpenHostSettings: {
+                settingsStore.selectedDomain = .hosts
+                isSettingsPresented = true
             },
             inventoryWarning: display.workspaceInventoryWarning,
             inventoryWarningsByHost:
@@ -382,6 +414,71 @@ public struct RootView: View {
         )
         tmuxSelectionBaseline = selection
         handlers.createTmuxSession?(session)
+    }
+
+    private func requestSessionKill(
+        _ tmuxSession: WorkspaceTmuxSessionSelection
+    ) {
+        guard let prepare = handlers.prepareTmuxSessionKill else {
+            sessionKillAlert = .failure(
+                session: tmuxSession.name,
+                message: "Session termination is unavailable."
+            )
+            return
+        }
+        Task {
+            do {
+                sessionKillAlert = await .confirmation(
+                    try prepare(tmuxSession)
+                )
+            } catch {
+                sessionKillAlert = .failure(
+                    session: tmuxSession.name,
+                    message: error.localizedDescription
+                )
+            }
+        }
+    }
+
+    private func sessionKillAlertView(_ alert: SessionKillAlert) -> Alert {
+        switch alert {
+        case let .confirmation(request):
+            let tmuxSession = request.session
+            let recreation = tmuxSession.worktreeID == nil
+                ? ""
+                : " Reopening this worktree may create the session again."
+            return Alert(
+                title: Text("Kill “\(tmuxSession.name)”?”"),
+                message: Text(
+                    "This permanently terminates every window, pane, and"
+                        + " process in this tmux session on "
+                        + "\(request.confirmedHost.sidebarTitle)."
+                        + recreation
+                ),
+                primaryButton: .destructive(Text("Kill Session")) {
+                    Task {
+                        do {
+                            guard let kill = handlers.killTmuxSession else {
+                                throw SessionKillUnavailableError()
+                            }
+                            try await kill(request)
+                        } catch {
+                            sessionKillAlert = .failure(
+                                session: tmuxSession.name,
+                                message: error.localizedDescription
+                            )
+                        }
+                    }
+                },
+                secondaryButton: .cancel()
+            )
+        case let .failure(session, message):
+            return Alert(
+                title: Text("Could Not Kill “\(session)”"),
+                message: Text(message),
+                dismissButton: .default(Text("OK"))
+            )
+        }
     }
 
     static func selectionForHostTmuxSession(
@@ -508,6 +605,9 @@ public struct RootView: View {
         CommandPaletteModel.commands(
             in: snapshot,
             selection: selection,
+            activeTmuxSession: activeTmuxSession,
+            activeTmuxSessionIsConnected:
+            display.activeTmuxSessionIsConnected,
             isWorkspacesRoute: true,
             isSidebarVisible: isSidebarVisible,
             isSidePanelVisible: isSidePanelVisible,
@@ -563,6 +663,30 @@ public struct RootView: View {
             ) {
                 selection = updatedSelection
             }
+        case let .newTmuxSession(hostID):
+            guard let host = snapshot.host(id: hostID) else { return }
+            newTmuxSessionHost = host
+        case let .addProject(hostID):
+            guard let host = snapshot.host(id: hostID) else { return }
+            addProjectHost = host
+        case let .openTmuxSession(tmuxSession):
+            if let worktreeID = tmuxSession.worktreeID {
+                selection.select(
+                    .worktree(worktreeID),
+                    in: snapshot,
+                    visibility: worktreeVisibility
+                )
+            } else {
+                selection = Self.selectionForHostTmuxSession(
+                    tmuxSession,
+                    from: selection,
+                    in: snapshot,
+                    visibility: worktreeVisibility
+                )
+            }
+            activateTmuxSession(tmuxSession)
+        case let .killTmuxSession(tmuxSession):
+            requestSessionKill(tmuxSession)
         case let .newWorktree(projectID):
             guard let project = snapshot.project(id: projectID) else { return }
             openNewWorktree(project)
@@ -770,5 +894,25 @@ struct TmuxSessionPresentationLifecycleModifier: ViewModifier {
             .onDisappear {
                 deactivate()
             }
+    }
+}
+
+private enum SessionKillAlert: Identifiable {
+    case confirmation(TmuxSessionKillRequest)
+    case failure(session: String, message: String)
+
+    var id: String {
+        switch self {
+        case let .confirmation(request):
+            return "confirm:\(request.session.id)"
+        case let .failure(session, message):
+            return "failure:\(session):\(message)"
+        }
+    }
+}
+
+private struct SessionKillUnavailableError: LocalizedError {
+    var errorDescription: String? {
+        "Session termination is unavailable."
     }
 }

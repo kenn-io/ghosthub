@@ -5,6 +5,37 @@ import Testing
 @testable import GhosthubUI
 
 struct WorkspaceSidebarModelTests {
+    @Test("sidebar hierarchy advances one compact indent per level")
+    func hierarchyIndentAdvancesByLevel() {
+        let host = WorkspaceSidebarHierarchy.indent(level: 0)
+        let child = WorkspaceSidebarHierarchy.indent(level: 1)
+        let nested = WorkspaceSidebarHierarchy.indent(level: 2)
+
+        #expect(host == 0)
+        #expect(child > host)
+        #expect(nested > child)
+        #expect(nested - child == child - host)
+    }
+
+    @Test("tmux action hover does not change reserved row width")
+    func tmuxActionHoverKeepsStableRowWidth() {
+        let idle = WorkspaceTmuxSessionActionPresentation(
+            hasTmuxSession: true,
+            isRowHovered: false,
+            isActionHovered: false
+        )
+        let hovered = WorkspaceTmuxSessionActionPresentation(
+            hasTmuxSession: true,
+            isRowHovered: true,
+            isActionHovered: false
+        )
+
+        #expect(!idle.isVisible)
+        #expect(hovered.isVisible)
+        #expect(idle.reservedWidth == hovered.reservedWidth)
+        #expect(idle.reservedWidth > 0)
+    }
+
     @Test("hosts remain visible before they have projects or tmux sessions")
     func exposesEmptyHosts() {
         let local = HostSummary.fixture(name: "This Mac")
@@ -21,6 +52,7 @@ struct WorkspaceSidebarModelTests {
         #expect(sections.map(\.host.id) == [local.id, remote.id])
         #expect(sections.allSatisfy { $0.projects.isEmpty })
         #expect(sections.allSatisfy { $0.tmuxSessionRows.isEmpty })
+        #expect(sections.allSatisfy { $0.isEmpty })
     }
 
     @Test("sidebar disclosure defaults expose fleet before project contents")
@@ -110,6 +142,80 @@ struct WorkspaceSidebarModelTests {
                 worktreePath: worktree.path
             )
         )
+    }
+
+    @Test("kill eligibility requires discovery or an active attachment")
+    func runningSessionEvidence() {
+        let hostID = UUID()
+        let snapshot = WorkspaceSnapshot.fixture(hosts: [
+            .fixture(
+                id: hostID,
+                tmuxSessions: [
+                    TmuxSessionSummary(
+                        name: "training",
+                        managed: false,
+                        windows: [],
+                        serverPID: "4242",
+                        sessionID: "$3",
+                        createdAt: "1785190000"
+                    ),
+                    TmuxSessionSummary(
+                        name: "optimistic",
+                        managed: false,
+                        windows: []
+                    ),
+                    TmuxSessionSummary(
+                        name: "malformed",
+                        managed: false,
+                        windows: [],
+                        serverPID: "not-a-pid",
+                        sessionID: "$4",
+                        createdAt: "1785190001"
+                    ),
+                ]
+            ),
+        ])
+        let discovered = WorkspaceTmuxSessionSelection(
+            hostID: hostID,
+            name: "training"
+        )
+        let protected = WorkspaceTmuxSessionSelection(
+            hostID: hostID,
+            name: "pr-519",
+            socketName: "kwt-pr-0123456789abcdef"
+        )
+        let optimistic = WorkspaceTmuxSessionSelection(
+            hostID: hostID,
+            name: "optimistic"
+        )
+        let malformed = WorkspaceTmuxSessionSelection(
+            hostID: hostID,
+            name: "malformed"
+        )
+
+        #expect(WorkspaceSidebarModel.canRequestKill(
+            discovered,
+            in: snapshot
+        ))
+        #expect(!WorkspaceSidebarModel.canRequestKill(
+            optimistic,
+            in: snapshot
+        ))
+        #expect(!WorkspaceSidebarModel.canRequestKill(
+            malformed,
+            in: snapshot
+        ))
+        #expect(!WorkspaceSidebarModel.canRequestKill(
+            protected,
+            in: snapshot,
+            activeSelection: protected
+        ))
+        #expect(WorkspaceSidebarModel.canRequestKill(
+            protected,
+            in: snapshot,
+            activeSelection: protected,
+            activeSelectionIsConnected: true
+        ))
     }
 
     @Test("worktrees without a session never fall into implicit tmux attachment")

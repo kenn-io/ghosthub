@@ -2,6 +2,9 @@ import Foundation
 import GhosthubTmux
 
 enum KwtBinaryLocator {
+    private static let remoteRevisionKey =
+        "GhosthubRemoteKwtSourceRevision"
+
     static func bundledPath(
         bundle: Bundle = .main,
         fileManager: FileManager = .default
@@ -38,5 +41,42 @@ enum KwtBinaryLocator {
                 + "; "
         }
         return "ghosthub_kwt_path=$(command -v kwt) || exit 127; "
+    }
+
+    static func bundledRemoteRevision(
+        bundle: Bundle = .main
+    ) -> String? {
+        validRevision(
+            bundle.object(
+                forInfoDictionaryKey: remoteRevisionKey
+            ) as? String
+        )
+    }
+
+    static func remoteManagedPath(revision: String) -> String? {
+        guard let revision = validRevision(revision) else {
+            return nil
+        }
+        return "$HOME/.ghosthub/helpers/kwt/\(revision)/kwt"
+    }
+
+    static func remoteCommandPrelude(revision: String?) -> String {
+        guard let revision,
+              let path = remoteManagedPath(revision: revision)
+        else {
+            return "printf 'Ghosthub: managed kwt is unavailable\\n' >&2; "
+                + "exit 127; "
+        }
+        return "ghosthub_kwt_path=\"\(path)\"; "
+            + "[ -x \"$ghosthub_kwt_path\" ] || exit 127; "
+    }
+
+    private static func validRevision(_ value: String?) -> String? {
+        guard let value, value.count == 40,
+              value.allSatisfy({ $0.isHexDigit })
+        else {
+            return nil
+        }
+        return value.lowercased()
     }
 }

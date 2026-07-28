@@ -36,12 +36,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--icon-path", required=True, type=Path)
     parser.add_argument("--app-license-path", required=True, type=Path)
     parser.add_argument("--kwt-binary", required=True, type=Path)
+    parser.add_argument("--kwt-variants-dir", required=True, type=Path)
     parser.add_argument(
         "--third-party-licenses-dir", required=True, type=Path
     )
     parser.add_argument("--copyright", required=True)
     parser.add_argument("--kwt-version", required=True)
     parser.add_argument("--kwt-source-revision", required=True)
+    parser.add_argument("--remote-kwt-source-revision", required=True)
     parser.add_argument(
         "--include-updates",
         action="store_true",
@@ -63,14 +65,34 @@ def assemble_app_bundle(
     icon_path: Path,
     app_license_path: Path,
     kwt_binary: Path,
+    kwt_variants_dir: Path,
     third_party_licenses_dir: Path,
     copyright: str,
     kwt_version: str,
     kwt_source_revision: str,
+    remote_kwt_source_revision: str,
     include_updates: bool = False,
 ) -> Path:
     if not kwt_binary.is_file() or not kwt_binary.stat().st_mode & 0o111:
         raise ValueError(f"kwt binary is missing or not executable: {kwt_binary}")
+    remote_targets = (
+        "darwin-amd64",
+        "darwin-arm64",
+        "linux-amd64",
+        "linux-arm64",
+    )
+    remote_helpers = {
+        target: kwt_variants_dir / target / "kwt"
+        for target in remote_targets
+    }
+    missing_remote_helpers = [
+        str(path) for path in remote_helpers.values() if not path.is_file()
+    ]
+    if missing_remote_helpers:
+        raise ValueError(
+            "kwt variants directory is incomplete: "
+            + ", ".join(missing_remote_helpers)
+        )
     third_party_license_paths = sorted(
         path for path in third_party_licenses_dir.iterdir() if path.is_file()
     )
@@ -105,6 +127,16 @@ def assemble_app_bundle(
     shutil.copy2(kwt_binary, bundled_kwt)
     bundled_kwt.chmod(0o755)
 
+    remote_helpers_dir = resources_dir / "KwtRemote"
+    for target, source in remote_helpers.items():
+        destination = remote_helpers_dir / target / "kwt"
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+        # These are sealed app resources, not code loaded by macOS. Keeping
+        # them non-executable avoids treating foreign ELF and Mach-O payloads
+        # as nested app code; the remote installer applies mode 0755.
+        destination.chmod(0o644)
+
     sparkle_framework = source_bin_dir / "Sparkle.framework"
     if not sparkle_framework.is_dir():
         raise FileNotFoundError(
@@ -135,6 +167,7 @@ def assemble_app_bundle(
         "LSMinimumSystemVersion": min_macos,
         "GhosthubKwtVersion": kwt_version,
         "GhosthubKwtSourceRevision": kwt_source_revision,
+        "GhosthubRemoteKwtSourceRevision": remote_kwt_source_revision,
         "NSHighResolutionCapable": True,
         "NSHumanReadableCopyright": copyright,
         "NSPrincipalClass": "NSApplication",
@@ -177,10 +210,12 @@ def main() -> int:
         icon_path=args.icon_path,
         app_license_path=args.app_license_path,
         kwt_binary=args.kwt_binary,
+        kwt_variants_dir=args.kwt_variants_dir,
         third_party_licenses_dir=args.third_party_licenses_dir,
         copyright=args.copyright,
         kwt_version=args.kwt_version,
         kwt_source_revision=args.kwt_source_revision,
+        remote_kwt_source_revision=args.remote_kwt_source_revision,
         include_updates=args.include_updates,
     )
     print(app_root)

@@ -1,0 +1,238 @@
+import Foundation
+import GhosthubTmux
+import GhosthubUI
+
+struct TmuxSessionIdentity: Equatable, Sendable {
+    let serverPID: String
+    let sessionID: String
+    let createdAt: String
+}
+
+enum TmuxSessionKillError: Error, Equatable, LocalizedError {
+    case commandFailed(host: String, session: String, status: Int32)
+    case hostChanged(session: String)
+    case sessionChanged(host: String, session: String)
+    case sessionNotRunning(host: String, session: String)
+
+    var errorDescription: String? {
+        switch self {
+        case let .commandFailed(host, session, status):
+            return "tmux could not kill session “\(session)” on \(host)"
+                + " (status \(status)). Refresh the host and try again."
+        case let .hostChanged(session):
+            return "The connection for session “\(session)” changed after"
+                + " confirmation. Review the host and try again."
+        case let .sessionChanged(host, session):
+            return "Session “\(session)” on \(host) was replaced after"
+                + " confirmation. Refresh the host and review the new session."
+        case let .sessionNotRunning(host, session):
+            return "Session “\(session)” is no longer known to be running on"
+                + " \(host). Refresh the host and try again."
+        }
+    }
+}
+
+struct TmuxSessionKiller: Sendable {
+    private static let identityMismatchMarker =
+        "GHOSTHUB_TMUX_SESSION_IDENTITY_MISMATCH"
+    private static let identityMarker =
+        "GHOSTHUB_TMUX_SESSION_IDENTITY\t"
+
+    typealias PathResolver = @Sendable (TmuxHost)
+        -> Result<String, TmuxBinaryError>
+    typealias Runner = @Sendable (TmuxHost, String)
+        -> (status: Int32, stdout: String)
+
+    private let pathResolver: PathResolver
+    private let runner: Runner
+
+    init(
+        pathResolver: PathResolver? = nil,
+        runner: Runner? = nil
+    ) {
+        self.pathResolver = pathResolver ?? { host in
+            let resolver = TmuxBinaryResolver()
+            switch host {
+            case .local:
+                return resolver.resolveTmuxPath()
+            case let .ssh(info):
+                return resolver.resolveTmuxPath(on: info)
+            }
+        }
+        self.runner = runner ?? { host, command in
+            switch host {
+            case .local:
+                TmuxBinaryResolver.runLoginShell(
+                    shell: TmuxBinaryResolver.loginShell(),
+                    command: command,
+                    timeout: 15
+                )
+            case let .ssh(info):
+                TmuxBinaryResolver.runRemoteLoginShell(
+                    host: info,
+                    command: command,
+                    timeout: 15
+                )
+            }
+        }
+    }
+
+    func kill(
+        _ selection: WorkspaceTmuxSessionSelection,
+        expectedIdentity: TmuxSessionIdentity,
+        on host: TmuxHost
+    ) async throws {
+        guard Self.isNumericIdentity(expectedIdentity.serverPID),
+              Self.isSessionID(expectedIdentity.sessionID),
+              Self.isSessionCreatedAt(expectedIdentity.createdAt)
+        else {
+            throw TmuxSessionKillError.sessionNotRunning(
+                host: host.displayName,
+                session: selection.name
+            )
+        }
+        let tmuxPath = try pathResolver(host).get()
+        let command = Self.command(
+            tmuxPath: tmuxPath,
+            sessionName: selection.name,
+            socketName: selection.socketName,
+            expectedIdentity: expectedIdentity
+        )
+        let runner = runner
+        let result = await Task.detached(priority: .userInitiated) {
+            runner(host, command)
+        }.value
+        guard result.status == 0 else {
+            throw TmuxSessionKillError.commandFailed(
+                host: host.displayName,
+                session: selection.name,
+                status: result.status
+            )
+        }
+        guard !result.stdout.contains(Self.identityMismatchMarker) else {
+            throw TmuxSessionKillError.sessionChanged(
+                host: host.displayName,
+                session: selection.name
+            )
+        }
+    }
+
+    func sessionIdentity(
+        _ selection: WorkspaceTmuxSessionSelection,
+        on host: TmuxHost
+    ) async throws -> TmuxSessionIdentity {
+        let tmuxPath = try pathResolver(host).get()
+        let command = Self.identityCommand(
+            tmuxPath: tmuxPath,
+            sessionName: selection.name,
+            socketName: selection.socketName
+        )
+        let runner = runner
+        let result = await Task.detached(priority: .userInitiated) {
+            runner(host, command)
+        }.value
+        guard result.status == 0,
+              let identity = Self.parseIdentity(result.stdout)
+        else {
+            throw TmuxSessionKillError.sessionNotRunning(
+                host: host.displayName,
+                session: selection.name
+            )
+        }
+        return identity
+    }
+
+    static func command(
+        tmuxPath: String,
+        sessionName: String,
+        socketName: String?,
+        expectedIdentity: TmuxSessionIdentity
+    ) -> String {
+        let target = "=\(sessionName):"
+        var arguments = [tmuxPath]
+        if let socketName {
+            arguments.append(contentsOf: ["-L", socketName])
+        }
+        arguments.append(contentsOf: [
+            "if-shell",
+            "-F",
+            "-t",
+            target,
+            "#{&&:#{==:#{pid},\(expectedIdentity.serverPID)},"
+                + "#{&&:#{==:#{session_id},\(expectedIdentity.sessionID)},"
+                + "#{==:#{session_created},\(expectedIdentity.createdAt)}}}",
+            "kill-session -t \(shellQuotedCommandArgument(target))",
+            "display-message -p "
+                + shellQuotedCommandArgument(identityMismatchMarker),
+        ])
+        return arguments
+            .map(shellQuotedCommandArgument)
+            .joined(separator: " ")
+    }
+
+    private static func identityCommand(
+        tmuxPath: String,
+        sessionName: String,
+        socketName: String?
+    ) -> String {
+        var arguments = [tmuxPath]
+        if let socketName {
+            arguments.append(contentsOf: ["-L", socketName])
+        }
+        arguments.append(contentsOf: [
+            "display-message",
+            "-p",
+            "-t",
+            "=\(sessionName):",
+            identityMarker + "#{pid}\t#{session_id}\t#{session_created}",
+        ])
+        return arguments
+            .map(shellQuotedCommandArgument)
+            .joined(separator: " ")
+    }
+
+    static func isSessionCreatedAt(_ value: String) -> Bool {
+        isNumericIdentity(value)
+    }
+
+    static func isNumericIdentity(_ value: String) -> Bool {
+        !value.isEmpty && value.utf8.allSatisfy { byte in
+            byte >= 48 && byte <= 57
+        }
+    }
+
+    static func isSessionID(_ value: String) -> Bool {
+        value.utf8.first == 36
+            && value.utf8.dropFirst().allSatisfy { byte in
+                byte >= 48 && byte <= 57
+            }
+            && value.utf8.count > 1
+    }
+
+    private static func parseIdentity(
+        _ output: String
+    ) -> TmuxSessionIdentity? {
+        let markedLine = output
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .reversed()
+            .map(String.init)
+            .first { $0.hasPrefix(identityMarker) }
+        guard let markedLine else { return nil }
+        let fields = markedLine.dropFirst(identityMarker.count).split(
+            separator: "\t",
+            maxSplits: 2,
+            omittingEmptySubsequences: false
+        )
+        guard fields.count == 3 else { return nil }
+        let identity = TmuxSessionIdentity(
+            serverPID: String(fields[0]),
+            sessionID: String(fields[1]),
+            createdAt: String(fields[2])
+        )
+        guard isNumericIdentity(identity.serverPID),
+              isSessionID(identity.sessionID),
+              isSessionCreatedAt(identity.createdAt)
+        else { return nil }
+        return identity
+    }
+}

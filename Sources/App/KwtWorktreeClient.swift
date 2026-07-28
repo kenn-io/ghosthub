@@ -39,12 +39,15 @@ struct KwtWorktreeClient: Sendable {
     private let remoteRunner: RemoteRunner
     private let loginShellProvider: @Sendable () -> String
     private let localBinaryPath: String?
+    private let remoteBinaryRevision: String?
 
     init(
         localRunner: LocalRunner? = nil,
         remoteRunner: RemoteRunner? = nil,
         processTimeout: TimeInterval = 60,
         localBinaryPath: String? = KwtBinaryLocator.bundledPath(),
+        remoteBinaryRevision: String? =
+            KwtBinaryLocator.bundledRemoteRevision(),
         loginShellProvider: @escaping @Sendable () -> String =
             TmuxBinaryResolver.loginShell
     ) {
@@ -64,6 +67,7 @@ struct KwtWorktreeClient: Sendable {
         }
         self.loginShellProvider = loginShellProvider
         self.localBinaryPath = localBinaryPath
+        self.remoteBinaryRevision = remoteBinaryRevision
     }
 
     func create(
@@ -71,18 +75,22 @@ struct KwtWorktreeClient: Sendable {
         projectPath: String,
         on host: TmuxHost
     ) async throws {
-        let selectedBinaryPath: String?
+        let binaryPrelude: String
         switch host {
         case .local:
-            selectedBinaryPath = localBinaryPath
+            binaryPrelude = KwtBinaryLocator.commandPrelude(
+                exactPath: localBinaryPath
+            )
         case .ssh:
-            selectedBinaryPath = nil
+            binaryPrelude = KwtBinaryLocator.remoteCommandPrelude(
+                revision: remoteBinaryRevision
+            )
         }
         let command = Self.command(
             branchName: request.branchName,
             createsBranch: request.createsBranch,
             projectPath: projectPath,
-            localBinaryPath: selectedBinaryPath
+            binaryPrelude: binaryPrelude
         )
         let localRunner = localRunner
         let remoteRunner = remoteRunner
@@ -107,10 +115,10 @@ struct KwtWorktreeClient: Sendable {
         branchName: String,
         createsBranch: Bool,
         projectPath: String,
-        localBinaryPath: String? = nil
+        binaryPrelude: String
     ) -> String {
         let branchFlag = createsBranch ? " --branch" : ""
-        return KwtBinaryLocator.commandPrelude(exactPath: localBinaryPath)
+        return binaryPrelude
             + "cd -- \(shellQuotedCommandArgument(projectPath)) || exit $?; "
             + "exec \"$ghosthub_kwt_path\" add\(branchFlag) "
             + "\(shellQuotedCommandArgument(branchName)) --no-launch"

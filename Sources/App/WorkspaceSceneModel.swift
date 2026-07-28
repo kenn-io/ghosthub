@@ -52,9 +52,18 @@ final class WorkspaceSceneModel: ObservableObject {
     typealias KwtPullRequestImporter = @Sendable (
         String, String, TmuxHost
     ) async throws -> KwtPullRequestImportResult
+    typealias KwtProjectRegistration = @Sendable (
+        String, TmuxHost
+    ) async throws -> KwtProjectRecord
     typealias TmuxSessionDiscovery = @Sendable (
         TmuxHost
     ) -> Result<[DiscoveredTmuxSession], TmuxBinaryError>
+    typealias TmuxSessionKilling = @Sendable (
+        WorkspaceTmuxSessionSelection, TmuxSessionIdentity, TmuxHost
+    ) async throws -> Void
+    typealias TmuxSessionIdentityReading = @Sendable (
+        WorkspaceTmuxSessionSelection, TmuxHost
+    ) async throws -> TmuxSessionIdentity
     typealias SSHHostProbeRunner = @Sendable (
         SSHHostInfo, String
     ) -> (status: Int32, stdout: String)
@@ -132,6 +141,12 @@ final class WorkspaceSceneModel: ObservableObject {
     private var activeBorrowedTmuxHandle: BorrowedTmuxSessionHandle?
     private(set) var activeBorrowedTmuxLaunchMode:
         TmuxAttachmentLaunchMode?
+    var activeBorrowedTmuxSessionIsConnected: Bool {
+        guard let handle = activeBorrowedTmuxHandle else {
+            return false
+        }
+        return borrowedTmuxConnectionStates[handle.id] == .connected
+    }
 
     var activityReferenceDate: Date {
         activityController.activityReferenceDate
@@ -210,7 +225,10 @@ final class WorkspaceSceneModel: ObservableObject {
     private let kwtWorktreeCreator: KwtWorktreeCreator
     private let kwtPullRequestLister: KwtPullRequestLister
     private let kwtPullRequestImporter: KwtPullRequestImporter
+    private let kwtProjectRegistration: KwtProjectRegistration
     private let tmuxSessionDiscovery: TmuxSessionDiscovery
+    private let tmuxSessionKiller: TmuxSessionKilling
+    private let tmuxSessionIdentityReader: TmuxSessionIdentityReading
     private let sshHostProbeRunner: SSHHostProbeRunner
     private let configuredSSHHostsProvider: () -> [SSHHost]
     private var configuredSSHHostsCancellable: AnyCancellable?
@@ -316,6 +334,13 @@ final class WorkspaceSceneModel: ObservableObject {
                 on: host
             )
         },
+        kwtProjectRegistration: @escaping KwtProjectRegistration = {
+            projectPath, host in
+            try await KwtProjectRegistrar().register(
+                projectPath: projectPath,
+                on: host
+            )
+        },
         tmuxSessionDiscovery: @escaping TmuxSessionDiscovery = { host in
             let resolver = TmuxBinaryResolver()
             return switch host {
@@ -324,6 +349,21 @@ final class WorkspaceSceneModel: ObservableObject {
             case let .ssh(info):
                 resolver.discoverSessions(on: info)
             }
+        },
+        tmuxSessionKiller: @escaping TmuxSessionKilling = {
+            selection, identity, host in
+            try await TmuxSessionKiller().kill(
+                selection,
+                expectedIdentity: identity,
+                on: host
+            )
+        },
+        tmuxSessionIdentityReader: @escaping TmuxSessionIdentityReading = {
+            selection, host in
+            try await TmuxSessionKiller().sessionIdentity(
+                selection,
+                on: host
+            )
         },
         sshHostProbeRunner: @escaping SSHHostProbeRunner = { host, command in
             TmuxBinaryResolver.runRemoteLoginShell(
@@ -359,7 +399,10 @@ final class WorkspaceSceneModel: ObservableObject {
         self.kwtWorktreeCreator = kwtWorktreeCreator
         self.kwtPullRequestLister = kwtPullRequestLister
         self.kwtPullRequestImporter = kwtPullRequestImporter
+        self.kwtProjectRegistration = kwtProjectRegistration
         self.tmuxSessionDiscovery = tmuxSessionDiscovery
+        self.tmuxSessionKiller = tmuxSessionKiller
+        self.tmuxSessionIdentityReader = tmuxSessionIdentityReader
         self.sshHostProbeRunner = sshHostProbeRunner
         self.createdSessionDiscoveryDelays =
             createdSessionDiscoveryDelays
@@ -788,14 +831,6 @@ final class WorkspaceSceneModel: ObservableObject {
             in: snapshot,
             visibility: worktreeVisibility
         )
-        if let sessionError = result.sessionStartError {
-            throw KwtPullRequestError.sessionStartFailed(
-                host: host.displayName,
-                code: sessionError.code,
-                message: sessionError.message,
-                retryable: sessionError.retryable
-            )
-        }
     }
 
     private func mergeImportedWorkspace(
@@ -1360,31 +1395,66 @@ final class WorkspaceSceneModel: ObservableObject {
             return .failure(.message("Enter a valid SSH destination."))
         }
         let sshHostProbeRunner = sshHostProbeRunner
+        let kwtPrelude = KwtBinaryLocator.remoteCommandPrelude(
+            revision: KwtBinaryLocator.bundledRemoteRevision()
+        )
+        let reachedMarker = "GHOSTHUB_REMOTE_PROBE_REACHED"
         return await Task.detached {
             let result = sshHostProbeRunner(
                 sshHost,
-                "command -v tmux >/dev/null || exit $?; "
-                    + "if command -v kwt >/dev/null; then "
+                "printf '\(reachedMarker)\\n'; "
+                    + "if command -v tmux >/dev/null; then "
+                    + "printf 'GHOSTHUB_TMUX_AVAILABLE\\n'; "
+                    + "else printf 'GHOSTHUB_TMUX_UNAVAILABLE\\n'; fi; "
+                    + "if ( \(kwtPrelude): ); then "
                     + "printf 'GHOSTHUB_KWT_AVAILABLE\\n'; "
                     + "else printf 'GHOSTHUB_KWT_UNAVAILABLE\\n'; fi"
             )
-            let reachable = result.status == 0
+            let reachable = result.stdout.contains(reachedMarker)
+            let probeSucceeded = result.status == 0 && reachable
+            let tmuxAvailable = result.stdout.contains(
+                "GHOSTHUB_TMUX_AVAILABLE"
+            )
             let kwtAvailable = result.stdout.contains(
                 "GHOSTHUB_KWT_AVAILABLE"
             )
-            let diagnostics: [RemoteHostDiagnostic]
-            if !reachable {
-                diagnostics = [RemoteHostDiagnostic(
+            var diagnostics: [RemoteHostDiagnostic] = []
+            if !reachable, result.status == 255 {
+                diagnostics.append(RemoteHostDiagnostic(
+                    code: .sshConnectionFailed,
+                    severity: .error,
+                    summary: "SSH connection failed.",
+                    recoverySuggestion:
+                    "Verify the SSH address, key authorization, and network, "
+                        + "then test the connection again."
+                ))
+            } else if !reachable {
+                diagnostics.append(RemoteHostDiagnostic(
                     code: .probeFailure,
                     severity: .error,
-                    summary: "SSH or tmux could not be reached.",
+                    summary: "Remote verification did not reach the host"
+                        + " (status \(result.status)).",
                     recoverySuggestion:
-                    "Verify the SSH destination and install tmux on the host."
-                )]
-            } else if !kwtAvailable {
-                diagnostics = [.missingKwtCapability]
+                    "Verify the SSH address, network, and local SSH process, "
+                        + "then test the connection again."
+                ))
+            } else if !probeSucceeded {
+                diagnostics.append(RemoteHostDiagnostic(
+                    code: .probeFailure,
+                    severity: .error,
+                    summary: "Remote verification failed"
+                        + " (status \(result.status)).",
+                    recoverySuggestion:
+                    "Check the remote account’s login-shell startup files "
+                        + "and test the connection again."
+                ))
             } else {
-                diagnostics = []
+                if !tmuxAvailable {
+                    diagnostics.append(.missingTmuxCapability)
+                }
+                if !kwtAvailable {
+                    diagnostics.append(.missingKwtCapability)
+                }
             }
             return .success(HostProbeSummary(
                 host: HostSummary(
@@ -1398,10 +1468,73 @@ final class WorkspaceSceneModel: ObservableObject {
                     lastKnownReachable: reachable,
                     lastSeenAt: reachable ? Date() : nil,
                     remoteDiagnostics: diagnostics,
-                    decodedConnectionState: reachable ? .online : .offline
+                    decodedConnectionState: probeSucceeded
+                        ? .online
+                        : (reachable ? .degraded : .offline)
                 )
             ))
         }.value
+    }
+
+    func installRemoteKwt(
+        on host: SSHHost
+    ) async -> Result<Void, HostProbeError> {
+        do {
+            try await KwtRemoteInstaller().install(on: host)
+            refreshHosts()
+            refreshKwtInventory()
+            return .success(())
+        } catch {
+            return .failure(.message(error.localizedDescription))
+        }
+    }
+
+    func registerRemoteProject(
+        _ projectPath: String,
+        on host: SSHHost
+    ) async -> Result<String, HostProbeError> {
+        guard let sshHost = TmuxHostResolver.parseSSHDestination(
+            host.sshDestination
+        ) else {
+            return .failure(.message("Enter a valid SSH destination."))
+        }
+        do {
+            let project = try await KwtProjectRegistrar().register(
+                projectPath: projectPath,
+                on: sshHost
+            )
+            refreshKwtInventory()
+            return .success(project.name)
+        } catch {
+            return .failure(.message(error.localizedDescription))
+        }
+    }
+
+    func registerProject(
+        _ projectPath: String,
+        on host: HostSummary
+    ) async -> Result<String, HostProbeError> {
+        guard let capturedTarget = TmuxHostResolver.resolve(host) else {
+            return .failure(.message("Enter a valid SSH destination."))
+        }
+        guard let currentHost = snapshot.host(id: host.id),
+              let currentTarget = TmuxHostResolver.resolve(currentHost),
+              currentTarget == capturedTarget
+        else {
+            return .failure(.message(
+                "The host connection changed. Close Add Project and try again."
+            ))
+        }
+        do {
+            let project = try await kwtProjectRegistration(
+                projectPath,
+                currentTarget
+            )
+            refreshKwtInventory()
+            return .success(project.name)
+        } catch {
+            return .failure(.message(error.localizedDescription))
+        }
     }
 
     private func fetchEnrichedSnapshot(
@@ -1603,13 +1736,22 @@ final class WorkspaceSceneModel: ObservableObject {
             activeBorrowedTmuxLaunchMode = effectiveLaunchMode
             return nil
         }
+        let knownSessions = tmuxSessionsByHost[selection.hostID]
+            ?? host.tmuxSessions
+        let sessionIsDiscovered = selection.socketName == nil
+            && knownSessions.contains { $0.name == selection.name }
+        let openWorkspace = effectiveLaunchMode == .attach
+            && selection.socketName == nil
+            && selection.worktreePath != nil
+            && !sessionIsDiscovered
         let handle = nativeTmuxSessionCoordinator.attach(
             hostID: selection.hostID,
             name: selection.name,
             host: attachmentHost,
             socketName: selection.socketName,
             launchMode: effectiveLaunchMode,
-            workingDirectory: selection.worktreePath
+            workingDirectory: selection.worktreePath,
+            openWorkspace: openWorkspace
         )
         activeBorrowedTmuxSelection = selection
         activeBorrowedTmuxHandle = handle
@@ -1681,6 +1823,122 @@ final class WorkspaceSceneModel: ObservableObject {
             name: selection.name,
             socketName: selection.socketName
         )
+    }
+
+    func prepareTmuxSessionKill(
+        _ selection: WorkspaceTmuxSessionSelection
+    ) async throws -> TmuxSessionKillRequest {
+        guard let currentHostSummary = snapshot.host(id: selection.hostID),
+              let currentHost = TmuxHostResolver.resolve(currentHostSummary)
+        else {
+            throw TmuxSessionKillError.hostChanged(
+                session: selection.name
+            )
+        }
+
+        let discoveredIdentity = selection.socketName == nil
+            ? currentHostSummary.tmuxSessions.first {
+                $0.name == selection.name
+            }.flatMap { summary -> TmuxSessionIdentity? in
+                guard summary.hasStableIdentity,
+                      let serverPID = summary.serverPID,
+                      let sessionID = summary.sessionID,
+                      let createdAt = summary.createdAt
+                else { return nil }
+                return TmuxSessionIdentity(
+                    serverPID: serverPID,
+                    sessionID: sessionID,
+                    createdAt: createdAt
+                )
+            }
+            : nil
+        let identity: TmuxSessionIdentity
+        if let discoveredIdentity {
+            identity = discoveredIdentity
+        } else if isConnectedActiveTmuxSession(selection) {
+            identity = try await tmuxSessionIdentityReader(
+                selection,
+                currentHost
+            )
+        } else {
+            throw TmuxSessionKillError.sessionNotRunning(
+                host: currentHost.displayName,
+                session: selection.name
+            )
+        }
+
+        return TmuxSessionKillRequest(
+            session: selection,
+            confirmedHost: currentHostSummary,
+            serverPID: identity.serverPID,
+            sessionID: identity.sessionID,
+            sessionCreatedAt: identity.createdAt
+        )
+    }
+
+    func killTmuxSession(
+        _ request: TmuxSessionKillRequest
+    ) async throws {
+        let tmuxSelection = request.session
+        guard request.confirmedHost.id == tmuxSelection.hostID,
+              let confirmedHost = TmuxHostResolver.resolve(
+                  request.confirmedHost
+              ),
+              let currentHostSummary = snapshot.host(
+                  id: tmuxSelection.hostID
+              ),
+              let currentHost = TmuxHostResolver.resolve(
+                  currentHostSummary
+              ),
+              currentHost == confirmedHost
+        else {
+            throw TmuxSessionKillError.hostChanged(
+                session: tmuxSelection.name
+            )
+        }
+        try await tmuxSessionKiller(
+            tmuxSelection,
+            TmuxSessionIdentity(
+                serverPID: request.serverPID,
+                sessionID: request.sessionID,
+                createdAt: request.sessionCreatedAt
+            ),
+            confirmedHost
+        )
+
+        let activeTargetAfterKill = activeBorrowedTmuxSelection.flatMap {
+            Self.sameTmuxSession($0, tmuxSelection) ? $0 : nil
+        }
+        if let activeTargetAfterKill {
+            closeBorrowedTmuxSession(activeTargetAfterKill)
+        }
+        if tmuxSelection.socketName == nil {
+            tmuxSessionsByHost[tmuxSelection.hostID]?.removeAll {
+                $0.name == tmuxSelection.name
+            }
+            applyInventoryOverlayIfNeeded()
+            updateWorkspaceInventoryState()
+        }
+        if activeTargetAfterKill != nil {
+            selection.select(
+                .host(tmuxSelection.hostID),
+                in: snapshot,
+                visibility: worktreeVisibility
+            )
+        }
+        refreshKwtInventory()
+    }
+
+    private func isConnectedActiveTmuxSession(
+        _ selection: WorkspaceTmuxSessionSelection
+    ) -> Bool {
+        guard let activeSelection = activeBorrowedTmuxSelection,
+              Self.sameTmuxSession(activeSelection, selection),
+              let activeHandle = activeBorrowedTmuxHandle
+        else {
+            return false
+        }
+        return borrowedTmuxConnectionStates[activeHandle.id] == .connected
     }
 
     private func nativeTmuxStateChanged(
@@ -1808,6 +2066,8 @@ final class WorkspaceSceneModel: ObservableObject {
                         name: ""
                     )
                 },
+                serverPID: session.serverPID,
+                sessionID: session.sessionID,
                 createdAt: session.createdAt
             )
         }

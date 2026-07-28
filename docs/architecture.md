@@ -96,12 +96,25 @@ twice.
 
 ### External State
 
-Ghosthub bundles a revision-pinned kwt CLI for local project and worktree
-operations. The helper is signed as part of the application and invoked by its
-exact bundle path; Ghosthub does not select a different local kwt from `PATH`.
-This is a CLI boundary, not a vendored daemon or submodule. Remote hosts execute
-their own kwt from the remote login-shell `PATH`. Kwt's machine-readable CLI
-provides project identity, worktree metadata, and exact tmux session names.
+Ghosthub bundles revision-pinned kwt CLI builds for local project and worktree
+operations and for `darwin/{amd64,arm64}` and `linux/{amd64,arm64}` remote
+hosts. The local helper is signed as app code and invoked by its exact bundle
+path. Remote helpers are sealed resources in the signed app. After the user
+chooses **Install kwt Worktree Helper** for a host, Ghosthub selects the matching
+`uname` target, uploads it, verifies its SHA-256 on the host, and atomically
+installs it under `~/.ghosthub/helpers/kwt/<revision>/kwt`. Packaging verifies
+the four binaries' formats, architectures, and embedded revision; installation
+also requires the uploaded helper's `version` output to report that revision
+before promotion. Every remote kwt operation invokes that exact revisioned
+path; failed upload or installation attempts also best-effort remove their
+unique staged file. Neither local nor remote operations select an unrelated
+kwt from `PATH`. This is a CLI boundary, not a vendored daemon or submodule.
+Kwt's machine-readable CLI provides project identity, worktree metadata, and
+exact tmux session names.
+On a host with no existing kwt registry, the user adds one absolute repository
+path at a time through **Add Project**. Ghosthub delegates registration to
+`kwt projects add --json`, then refreshes ordinary kwt inventory; it does not
+search the host's filesystem or write kwt's configuration itself.
 The account login shell initializes the command environment, while Ghosthub's
 own inventory and discovery commands execute under the host's POSIX `/bin/sh`;
 non-POSIX account shells such as fish are not asked to interpret those commands.
@@ -129,11 +142,13 @@ then executes an ordinary client with environment updates disabled. The user
 may explicitly run project commands after attachment. Other workspaces and
 unbound sessions continue to attach directly to the host's normal tmux server.
 
-Remote kwt installation is not currently implicit. A future managed-helper
-flow may upload a Ghosthub-pinned build into a per-user directory after an
-explicit Install or Update action, then invoke that exact path without
-replacing the host's system kwt. Ordinary inventory and tmux attachment must
-remain non-mutating, and a remote host without kwt remains tmux-only.
+Remote kwt installation is never implicit. Ordinary inventory, connection
+testing, and tmux attachment remain non-mutating, and a remote host without the
+managed helper remains tmux-only. Install and Update are explicit Settings
+actions and never replace a host's system kwt. Versioned directories retain
+older pinned helpers, so installing an older Ghosthub build can select and
+restore its own revision; reinstalling one revision also retains
+`kwt.previous`.
 
 ## Startup and Onboarding
 
@@ -143,9 +158,10 @@ there is no repository-intake interstitial and no first-launch modal.
 
 When both inventories are empty, Ghosthub explains that kwt owns project
 registration and tmux owns sessions. Ghosthub does not edit kwt's config file
-or present its retired Middleman-backed Add Repository flow. A native Add
-Project action will call a supported, noninteractive kwt registration command
-once kwt exposes one; until then project registration remains in kwt itself.
+or present its retired Middleman-backed Add Repository flow. The **+** menu on
+each host exposes **Add Project**, which passes one explicit absolute checkout
+path to kwt's supported noninteractive registration command. Ghosthub does not
+scan the host for repositories.
 
 ## Source Layout
 
@@ -173,7 +189,20 @@ user-visible result.
 Kwt workspaces and otherwise-unbound host sessions use the same native tmux
 client. Ghosthub never projects tmux windows or panes into a Swift split tree.
 Closing the app, changing selection, or pressing Cmd-W closes only the client;
-it never runs `kill-session`. For SSH, Ghosthub supplies keepalives and retries
+it never runs `kill-session`. An explicit, confirmed Kill Session action
+targets the exact session (`=<name>:`) on its selected default or protected
+socket only when discovery or a currently connected active attachment
+establishes that it is running. Confirmation captures the selected host
+endpoint and tmux server PID, `session_id`, and `session_created` identity. A
+single tmux conditional checks all three live values and kills only the
+matching instance, rejecting a same-named replacement even within the same
+timestamp second or after a rapid tmux server restart.
+Ghosthub detaches an active client after a successful kill, never before the
+operation can fail. After success, Ghosthub closes the matching current active
+selection and navigates away only when the killed target is active at
+completion time, so switching sessions during the command is preserved. The
+action terminates all of that session's windows, panes, and processes. For SSH,
+Ghosthub supplies keepalives and retries
 transport status 255. Tmux owns all windows, panes, history, input, rendering,
 and server-side lifetime.
 
@@ -185,14 +214,21 @@ prevent attachment. Tmux still owns all interaction behavior; Ghosthub does
 not modify its prefix, key tables, mouse mode, window/pane commands, history,
 or layout.
 
-An explicit New Tmux Session action is the sole session-creation boundary.
-For a user-supplied exact name, local presentation uses one atomic
+An explicit New Tmux Session action is the sole boundary where Ghosthub
+creates a bare tmux session itself. For a user-supplied exact name, local
+presentation uses one atomic
 `new-session -A` create-or-attach invocation so `destroy-unattached` cannot
 remove a newly created session before the client arrives. Remote presentation
 performs one idempotent, detached create-if-absent phase before ordinary
 attachment, then permanently enters the attach-only SSH reconnect loop.
-Ordinary worktree and discovered-session navigation is attach-only. Existing
-same-named sessions are attached without changing their windows or panes.
+Before opening an ordinary worktree, Ghosthub asks kwt to establish or repair
+that exact path's canonical session without attaching. Kwt inventory includes
+worktrees whose sessions are not currently running, so inventory membership is
+not evidence that attach-only will succeed. Kwt owns any required layout and
+environment bootstrap; Ghosthub then presents an ordinary tmux client. The
+remote establishment phase runs once, and transport reconnects remain
+attach-only. Discovered sessions that are not bound to worktrees are always
+attach-only.
 
 Ghosthub publishes the requested name optimistically. Reconciliation starts
 only after the terminal runtime accepts the command, then checks direct tmux
@@ -206,8 +242,10 @@ cancel pending probes.
 
 Kwt's project and worktree JSON surfaces are authoritative for workspace
 identity and exact tmux session names. Direct tmux discovery is authoritative
-for the remaining sessions on each host and for the eventual result of an
-explicit named-session creation request.
+for the remaining live sessions on each host and for the eventual result of an
+explicit named-session creation request. A worktree open does not infer live
+session state from kwt inventory: it uses kwt's exact-path start-only command
+to converge the session before attachment.
 
 Ghosthub local persistence stores app-owned state:
 

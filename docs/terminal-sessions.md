@@ -38,8 +38,23 @@ map, split-tree projection, or Ghosthub tab bar. Tmux owns:
 
 Ghosthub owns only inventory presentation, the disposable terminal client,
 and connection state. Navigating away, pressing Cmd-W, closing a window, or
-quitting Ghosthub detaches the client and never runs `kill-pane`,
-`kill-window`, or `kill-session`.
+quitting Ghosthub detaches the client and never destroys server-side state.
+The separate Kill Session action is the only destructive lifecycle operation.
+It is offered only when direct discovery or a currently connected active
+attachment establishes that the session is running. Before displaying
+confirmation, Ghosthub captures tmux's server PID, `session_id`, and
+`session_created` values together with the exact local or SSH endpoint, socket,
+and session name. Termination uses one tmux conditional command that compares
+all three live identity values and invokes `kill-session -t =<name>:` only on
+a match. The server PID distinguishes tmux server generations, while the
+monotonically assigned session ID distinguishes same-named replacements within
+one server even when their second-resolution creation timestamps match. A
+replacement session is therefore never killed under stale cached inventory or
+a disconnected attachment. Ghosthub detaches an active client only after that
+command succeeds, so a failed lookup, SSH connection, identity check, or kill
+leaves the presentation open. After success it rechecks the active attachment,
+closing that exact current selection and navigating away only if it is the
+killed target.
 
 The one presentation exception is color normalization. Before attachment,
 Ghosthub resets the selected session's `status-style`, `message-style`, and
@@ -58,10 +73,21 @@ The remote process then enters the attach-only SSH reconnect loop, so a later
 transport reconnect can never rerun creation. The session name is validated
 before launch and passed as one shell-quoted argument. If the exact name
 already exists, it is attached without creating or structurally changing panes
-or windows. Ordinary kwt worktree and discovered-session opens always use
-`attach-session`; explicit named creation is the only exception to the
-otherwise presentation-only boundary. Ghosthub does not expose rename, split,
-resize, window, pane, or kill operations.
+or windows.
+
+Kwt inventory includes every worktree, whether or not its canonical tmux
+session is live. Ghosthub therefore executes `kwt open <exact-path>` as the
+initial attached tmux client when direct discovery does not contain the
+canonical session. Kwt idempotently repairs an existing session or creates the
+configured layout when it is absent, without an intermediate detached session
+that `destroy-unattached` could remove. A session already confirmed by direct
+discovery uses ordinary `tmux attach-session`, so cached kwt inventory remains
+usable while the managed helper is unavailable. On a remote host, only an SSH
+transport loss hands a kwt-opened session to Ghosthub's attach-only reconnect
+loop. Unbound discovered sessions remain attach-only. Ghosthub does not expose
+rename, split, resize, window, or pane operations. Kill Session is exposed
+separately from presentation only for a session known to be running and always
+requires confirmation.
 
 The requested session appears optimistically so transient SSH or discovery
 latency cannot remove the user's only way back to it. Direct `list-sessions`
@@ -87,7 +113,11 @@ Remote clients use the user's OpenSSH configuration and add server keepalives.
 Exit status 255, OpenSSH's transport/setup failure status, reconnects with
 bounded exponential backoff. A connection that remains healthy for at least
 30 seconds resets the backoff. Other statuses pass through unchanged, so a
-normal tmux detach or a missing session does not create a reconnect loop.
+normal tmux detach or a missing session does not create a reconnect loop. Host
+verification emits a marker only after the remote command begins. Status 255
+and local wrapper failures such as an unconfirmed timeout leave the host
+offline; a nonzero login-shell or probe-command status is reachable and
+degraded only when that marker proves the remote account executed the probe.
 
 Tmux remains alive on the remote host while the network is unavailable. After
 connectivity returns, the client reattaches to the same exact session and tmux
@@ -109,9 +139,19 @@ informational: kwt owns project registration, and Ghosthub does not expose a
 retired repository-intake path as a nonfunctional substitute.
 
 Inventory degrades per host. An unavailable remote host retains its cached
-inventory and exposes a retry warning on that host without blocking the rest of
-the workspace. Remote hosts where kwt is absent remain available for direct
-tmux discovery and attachment.
+inventory and exposes a clickable detail warning on that host without blocking
+the rest of the workspace. The detail offers a retry and a shortcut to Host
+Settings; OpenSSH status 255 is reported as an SSH connection failure instead
+of a login-shell or tmux failure. Remote hosts where Ghosthub's managed kwt is
+absent remain available for direct tmux discovery and attachment. Inventory
+never uploads the helper. The user grants permission with **Install kwt
+Worktree Helper** in Host Settings, after which inventory and protected
+attachment execute its exact revisioned path. A fresh helper has an empty
+project registry: **Add Project** in the host's **+** menu passes one
+user-supplied absolute checkout path to kwt's noninteractive registration
+command, then refreshes inventory. Immediately before registration, Ghosthub
+re-resolves the host ID and rejects the operation if its endpoint changed
+while Add Project was open. No filesystem scan occurs.
 
 Kwt session names are removed from the generic session group and rendered
 under their project/worktree. Every remaining tmux session is shown in the
@@ -127,8 +167,10 @@ default-server session. Ghosthub supplies `-L <socket>` to its best-effort
 presentation commands, but launches the client through `kwt pr attach
 <workspace-path>`. Kwt verifies provenance and creates or repairs an inert
 shell-only protected session before executing `attach-session -E`, including
-on every SSH reconnect. Project commands run only after the user explicitly
-invokes them in that shell. Ghosthub never directly creates or attaches
+on every SSH reconnect. Remote reconnects invoke Ghosthub's exact managed kwt
+path rather than resolving `kwt` from the login-shell `PATH`. Project commands
+run only after the user explicitly invokes them in that shell. Ghosthub never
+directly creates or attaches
 through the default server for that imported workspace.
 
 ## Local PTY

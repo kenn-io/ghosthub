@@ -100,7 +100,14 @@ there is no longer a dedicated SSH e2e make target. Headless Linux
 hosts should provide:
 
 - `git` and `tmux` on the non-interactive SSH `PATH`
-- `kwt` on the login-shell `PATH` for project/worktree inventory
+
+Kwt does not need to be installed system-wide. After the connection succeeds,
+use **Install kwt Worktree Helper** in Host Settings to copy Ghosthub's pinned
+architecture-matched helper into the remote user's `~/.ghosthub/` directory.
+On a fresh host, enter each existing checkout's absolute path under **Add
+Project**. The managed helper records it through kwt's supported registry
+command and Ghosthub refreshes project/worktree inventory. Tmux-only discovery
+and attachment work without either optional action.
 
 Ghosthub uses the host's OpenSSH configuration directly and invokes an
 ordinary tmux client on the target host. Tmux owns windows, panes, layouts,
@@ -121,9 +128,10 @@ make release-app \
   RELEASE_BUILD_VERSION=0.1.0
 ```
 
-Ghosthub bundles the kwt CLI helper but no daemon. A clean `make release-app`
-builds the pinned helper automatically; `KWT_BINARY_PATH` may name an existing
-executable instead. Outputs land in `dist/release/`.
+Ghosthub bundles kwt CLI helpers but no daemon. A clean `make release-app`
+builds the pinned local helper and the Darwin/Linux amd64/arm64 remote matrix
+automatically; `KWT_BINARY_PATH` may name an existing local executable instead.
+Outputs land in `dist/release/`.
 
 DMG build:
 

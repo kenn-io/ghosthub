@@ -30,6 +30,7 @@ KWT_REPOSITORY ?= https://github.com/kenn-io/kwt.git
 KWT_REF ?= $(shell tr -d '[:space:]' < KWT_REVISION)
 KWT_SOURCE_DIR ?= $(abspath .build/kwt-source)
 KWT_BINARY_PATH ?= $(abspath .build/kwt/kwt)
+KWT_VARIANTS_DIR ?= $(abspath .build/kwt/variants)
 THIRD_PARTY_LICENSES_DIR ?= LICENSES
 
 # Only the helper this Makefile builds is the pinned one. A developer-supplied
@@ -48,7 +49,7 @@ KWT_SOURCE_REVISION ?= unpinned
 endif
 SWIFT_TEST_FILTER ?=
 
-.PHONY: help bootstrap-kwt ensure-kwt bootstrap-libghostty bootstrap-libghostty-release check-libghostty check-libghostty-release test-libghostty-bootstrap test-terminal-fallback test-stage-release-app-bundles test-assemble-app-bundle test-essential-workflows build swift-warning-check build-release debug-app release-app release-dmg release-appcast run-release-app run-app swift-test test-tmux-attach python-test test smoke-test docs-build docs-serve site-deploy reset-app-state install-hooks format format-check
+.PHONY: help bootstrap-kwt bootstrap-kwt-variants ensure-kwt ensure-kwt-variants bootstrap-libghostty bootstrap-libghostty-release check-libghostty check-libghostty-release test-libghostty-bootstrap test-terminal-fallback test-stage-release-app-bundles test-assemble-app-bundle test-essential-workflows build swift-warning-check build-release debug-app release-app release-dmg release-appcast run-release-app run-app swift-test test-tmux-attach python-test test smoke-test docs-build docs-serve site-deploy reset-app-state install-hooks format format-check
 
 help:
 	@printf '%s\n' \
@@ -57,6 +58,8 @@ help:
 		'Targets:' \
 		'  make bootstrap-kwt' \
 		'      Build the exact kwt revision embedded by local debug app bundles.' \
+		'  make bootstrap-kwt-variants' \
+		'      Cross-compile the pinned remote kwt helper matrix.' \
 		'  make bootstrap-libghostty' \
 		'      Fetch the pinned Ghostty source, build libghostty, and stage the local artifacts.' \
 		'  make check-libghostty' \
@@ -133,12 +136,32 @@ bootstrap-kwt:
 		"$(KWT_SOURCE_DIR)" \
 		"$(KWT_BINARY_PATH)"
 
+bootstrap-kwt-variants:
+	@tools/build_pinned_kwt_variants.sh \
+		"$(KWT_REPOSITORY)" \
+		"$(KWT_REF)" \
+		"$(KWT_SOURCE_DIR)" \
+		"$(KWT_VARIANTS_DIR)" \
+		"$(abspath tools/build_pinned_kwt.sh)"
+	@$(UV) run --frozen $(PYTHON) tools/validate_kwt_variants.py \
+		--variants-dir "$(KWT_VARIANTS_DIR)" \
+		--revision "$(KWT_REF)"
+
 ensure-kwt:
 	@if [[ "$(origin KWT_BINARY_PATH)" == "file" ]]; then \
 		$(MAKE) --no-print-directory bootstrap-kwt; \
 	elif [[ ! -x "$(KWT_BINARY_PATH)" ]]; then \
 		printf 'KWT_BINARY_PATH must name an existing executable kwt binary.\n' >&2; \
 		exit 1; \
+	fi
+
+ensure-kwt-variants:
+	@if [[ "$(origin KWT_VARIANTS_DIR)" == "file" ]]; then \
+		$(MAKE) --no-print-directory bootstrap-kwt-variants; \
+	else \
+		$(UV) run --frozen $(PYTHON) tools/validate_kwt_variants.py \
+			--variants-dir "$(KWT_VARIANTS_DIR)" \
+			--revision "$(KWT_REF)"; \
 	fi
 
 bootstrap-libghostty:
@@ -257,7 +280,7 @@ build-release: bootstrap-libghostty-release
 	@$(SWIFT) build --configuration release --product "$(GHOSTHUB_APP)"
 
 debug-app: LIBGHOSTTY_QUIET_NOOP = 1
-debug-app: ensure-kwt bootstrap-libghostty
+debug-app: ensure-kwt ensure-kwt-variants bootstrap-libghostty
 	@set -euo pipefail; \
 	kwt_bin="$(KWT_BINARY_PATH)"; \
 	if [[ -z "$$kwt_bin" || ! -x "$$kwt_bin" ]]; then \
@@ -279,16 +302,18 @@ debug-app: ensure-kwt bootstrap-libghostty
 		--icon-path "$(APP_ICON_PATH)" \
 		--app-license-path "$(APP_LICENSE_PATH)" \
 		--kwt-binary "$$kwt_bin" \
+		--kwt-variants-dir "$(KWT_VARIANTS_DIR)" \
 		--third-party-licenses-dir "$(THIRD_PARTY_LICENSES_DIR)" \
 		--copyright "$(APP_COPYRIGHT)" \
 		--kwt-version "$(KWT_VERSION)" \
-		--kwt-source-revision "$(KWT_SOURCE_REVISION)" >/dev/null; \
+		--kwt-source-revision "$(KWT_SOURCE_REVISION)" \
+		--remote-kwt-source-revision "$(KWT_REF)" >/dev/null; \
 	codesign --force --deep --sign - "$(DEBUG_APP_PATH)" >/dev/null; \
 	codesign --verify --deep --strict "$(DEBUG_APP_PATH)"; \
 	printf 'Built debug app bundle: %s\n' "$(DEBUG_APP_PATH)"
 
 release-app: LIBGHOSTTY_OPTIMIZE = ReleaseFast
-release-app: ensure-kwt build-release
+release-app: ensure-kwt ensure-kwt-variants build-release
 	@set -euo pipefail; \
 	kwt_bin="$(KWT_BINARY_PATH)"; \
 	if [[ -z "$$kwt_bin" || ! -x "$$kwt_bin" ]]; then \
@@ -310,10 +335,12 @@ release-app: ensure-kwt build-release
 		--icon-path "$(APP_ICON_PATH)" \
 		--app-license-path "$(APP_LICENSE_PATH)" \
 		--kwt-binary "$$kwt_bin" \
+		--kwt-variants-dir "$(KWT_VARIANTS_DIR)" \
 		--third-party-licenses-dir "$(THIRD_PARTY_LICENSES_DIR)" \
 		--copyright "$(APP_COPYRIGHT)" \
 		--kwt-version "$(KWT_VERSION)" \
 		--kwt-source-revision "$(KWT_SOURCE_REVISION)" \
+		--remote-kwt-source-revision "$(KWT_REF)" \
 		--include-updates >/dev/null; \
 	printf 'Built release app bundle: %s\n' "$(RELEASE_APP_PATH)"
 

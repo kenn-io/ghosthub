@@ -14,6 +14,15 @@ public struct SettingsActions {
     var loadTailscalePeers: () async -> TailscalePeerLoadResult = {
         .failure("Tailscale import is unavailable.")
     }
+    var installRemoteKwt:
+        (SSHHost) async -> Result<Void, HostProbeError> = { _ in
+            .failure(.message("Remote kwt installation is unavailable."))
+        }
+    var registerRemoteProject:
+        (SSHHost, String) async -> Result<String, HostProbeError> = {
+            _, _ in
+            .failure(.message("Remote project registration is unavailable."))
+        }
     var reloadTerminalConfig: () -> Void = {}
 
     public init(
@@ -27,11 +36,24 @@ public struct SettingsActions {
         loadTailscalePeers: @escaping () async -> TailscalePeerLoadResult = {
             .failure("Tailscale import is unavailable.")
         },
+        installRemoteKwt: @escaping (
+            SSHHost
+        ) async -> Result<Void, HostProbeError> = { _ in
+            .failure(.message("Remote kwt installation is unavailable."))
+        },
+        registerRemoteProject: @escaping (
+            SSHHost,
+            String
+        ) async -> Result<String, HostProbeError> = { _, _ in
+            .failure(.message("Remote project registration is unavailable."))
+        },
         reloadTerminalConfig: @escaping () -> Void = {}
     ) {
         self.refreshHosts = refreshHosts
         self.probeSSHHost = probeSSHHost
         self.loadTailscalePeers = loadTailscalePeers
+        self.installRemoteKwt = installRemoteKwt
+        self.registerRemoteProject = registerRemoteProject
         self.reloadTerminalConfig = reloadTerminalConfig
     }
 }
@@ -51,6 +73,8 @@ public struct SettingsView: View {
     @State private var hostProbeResult: HostProbeSummary?
     @State private var hostProbeErrorMessage: String?
     @State private var isProbingHost = false
+    @State private var isInstallingRemoteKwt = false
+    @State private var remoteKwtInstallMessage: String?
     @State private var tailscalePeers: [TailscalePeer]?
     @State private var tailscaleError: String?
     @State private var isLoadingTailscale = false
@@ -81,6 +105,7 @@ public struct SettingsView: View {
             .onChange(of: draft.selectedSSHHostDraftID) { _, _ in
                 hostProbeResult = nil
                 hostProbeErrorMessage = nil
+                remoteKwtInstallMessage = nil
             }
     }
 
@@ -205,11 +230,15 @@ public struct SettingsView: View {
             hostProbeResult: $hostProbeResult,
             hostProbeErrorMessage: $hostProbeErrorMessage,
             isProbingSSHHost: $isProbingHost,
+            isInstallingRemoteKwt: $isInstallingRemoteKwt,
+            remoteKwtInstallMessage: $remoteKwtInstallMessage,
             tailscalePeers: $tailscalePeers,
             tailscaleError: $tailscaleError,
             isLoadingTailscale: $isLoadingTailscale,
             isTailscaleSheetPresented: $isTailscaleSheetPresented,
             probeSSHHost: actions.probeSSHHost,
+            installRemoteKwt: actions.installRemoteKwt,
+            registerRemoteProject: actions.registerRemoteProject,
             loadTailscalePeers: actions.loadTailscalePeers
         )
     }

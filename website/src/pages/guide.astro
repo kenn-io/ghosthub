@@ -82,9 +82,22 @@ const imageAlt = {
             attach with an ordinary tmux client.
           </p>
           <p>
-            Use the <strong>+</strong> button beside a host to create a named
-            session. Closing the Ghosthub window only detaches—your work keeps
-            running in tmux.
+            Use the <strong>+</strong> menu to create a named session or add
+            an existing project. The command palette offers the same actions,
+            plus commands to open any discovered session.
+          </p>
+          <p>
+            Closing the Ghosthub window only detaches—your work keeps running
+            in tmux. To end a session Ghosthub knows is running, hover its row,
+            open the action menu, and choose <strong>Kill Session…</strong>.
+            Ghosthub confirms the host and exact tmux instance before
+            terminating its windows, panes, and processes. It cancels the
+            action if that host’s connection changes or if the session
+            disappears and is replaced under the same name, and keeps an
+            active attachment open if the kill fails. Switching to another
+            session while the command completes does not navigate away from
+            the new selection. The same command is available in the command
+            palette.
           </p>
         </div>
       </div>
@@ -115,6 +128,29 @@ const imageAlt = {
             Remote hosts need tmux and non-interactive SSH authentication
             backed by a key or SSH agent. Ghosthub keeps each host isolated,
             so an unreachable machine never blocks the rest of your fleet.
+          </p>
+          <p>
+            To add project and worktree context without installing{' '}
+            <a href="https://kwt.sh">kwt, a Git worktree manager</a>,
+            system-wide, test the connection and choose{' '}
+            <strong>Install kwt Worktree Helper</strong>. Ghosthub asks through that
+            explicit action. Testing a connection follows your OpenSSH
+            host-key policy; verify a new host with system <code>ssh</code>{' '}
+            first when your policy prompts for trust. Ghosthub then copies its
+            pinned build for the host’s OS and CPU, verifies it, and keeps it
+            under <code>~/.ghosthub/</code>.
+            On a fresh host, open the <strong>+</strong> menu beside it, choose
+            <strong>Add Project</strong>, and enter each existing checkout’s
+            absolute path. Ghosthub delegates registration to kwt and refreshes
+            inventory without scanning the machine. If the host’s SSH address
+            changes while Add Project is open, close the sheet and try again
+            against the updated host. Ghosthub marks the machine reachable only
+            when the remote verification command actually begins; SSH failures
+            and unconfirmed local timeouts remain offline, while a confirmed
+            remote command failure is shown as degraded. Tmux-only hosts do not
+            need either step. An expanded host with no inventory says so in the
+            sidebar. If a host shows a caution icon, click it for the connection
+            details and a shortcut back to Host Settings.
           </p>
           <aside class="reconnect">
             <span aria-hidden="true">↻</span>
@@ -153,6 +189,8 @@ const imageAlt = {
             Select a project and press <kbd>⌘⇧N</kbd> to create a branch and
             worktree without leaving Ghosthub. Kwt remains optional if you
             only want a local and remote tmux session switcher.
+            Selecting a listed worktree starts its configured kwt session
+            when that session is not already running.
           </p>
         </div>
       </div>

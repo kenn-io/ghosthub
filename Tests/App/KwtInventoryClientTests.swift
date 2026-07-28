@@ -6,6 +6,17 @@ import GhosthubWorkspace
 
 @Suite("kwt inventory")
 struct KwtInventoryClientTests {
+    @Test("SSH transport failure is identified while loading projects")
+    func identifiesSSHFailure() {
+        let error = KwtInventoryError.commandFailed(
+            host: "Wes MBP",
+            status: 255
+        )
+
+        #expect(error.localizedDescription.contains("SSH could not connect"))
+        #expect(error.localizedDescription.contains("Wes MBP"))
+    }
+
     @Test("projects and exact session names survive shell startup noise")
     func readsProjectsAndWorktrees() async throws {
         let client = KwtInventoryClient(
@@ -45,16 +56,19 @@ struct KwtInventoryClientTests {
     @Test("remote inventory resolves kwt on the remote host")
     func remoteInventoryDoesNotUseBundledPath() async throws {
         let ssh = SSHHostInfo(user: "wesm", hostname: "builder", port: nil)
+        let revision = String(repeating: "a", count: 40)
         let client = KwtInventoryClient(
             remoteRunner: { host, command in
                 #expect(host == ssh)
                 #expect(command.hasPrefix(
-                    "ghosthub_kwt_path=$(command -v kwt) || exit 127;"
+                    "ghosthub_kwt_path=\"$HOME/.ghosthub/helpers/kwt/"
+                        + "\(revision)/kwt\";"
                 ))
                 #expect(!command.contains("/Applications/Ghosthub.app"))
                 return (0, "GHOSTHUB_KWT_JSON\n[]")
             },
-            localBinaryPath: "/Applications/Ghosthub.app/Contents/Helpers/kwt"
+            localBinaryPath: "/Applications/Ghosthub.app/Contents/Helpers/kwt",
+            remoteBinaryRevision: revision
         )
 
         let inventory = try await client.load(from: .ssh(ssh))

@@ -52,5 +52,15 @@ Ghostty revision.
 
 ## Remote tmux attach fails on an SSH host
 
-Confirm the remote host has `kwt`, `git`, and `tmux` on its login-shell `PATH`,
-then verify the same SSH destination works with the system `ssh` command.
+Confirm the remote host has `git` and `tmux` on its login-shell `PATH`, then
+verify the same SSH destination works with the system `ssh` command. Kwt does
+not need a system installation: use **Test Connection** followed by **Install
+kwt Worktree Helper** in Host Settings when project inventory is missing. If the host
+has never used kwt, enter an existing checkout's absolute path under **Add
+Project** from the **+** menu beside that host; repeat for each repository
+Ghosthub should display.
+
+**Test Connection** follows your OpenSSH host-key policy. If a new destination
+requires interactive verification, connect to it once with the system `ssh`
+command, verify its fingerprint, and retry. A reachable host without tmux is
+reported separately as **tmux is not installed** rather than as an SSH failure.
