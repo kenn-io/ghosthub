@@ -5,7 +5,7 @@ import ZoomableImage from '../components/ZoomableImage.astro';
 import commandCenter from '../assets/guide-command-center.png';
 import hosts from '../assets/guide-hosts.png';
 import nativeTabs from '../assets/guide-native-tabs.png';
-import quickLaunch from '../assets/guide-quick-launch.png';
+import commandPalette from '../assets/guide-quick-launch.png';
 import sessions from '../assets/guide-sessions.png';
 import terminal from '../assets/guide-terminal.png';
 import worktree from '../assets/guide-worktree.png';
@@ -14,7 +14,7 @@ import { RELEASES_URL } from '../config';
 const title = 'How to use Ghosthub';
 const description =
   'A visual guide to connected tmux sessions, automatic SSH reconnect, '
-  + 'worktrees, Quick Launch, native tabs and windows, and terminal configuration.';
+  + 'worktrees, the Command Palette, native tabs and windows, and terminal configuration.';
 
 const imageWidths = [640, 960, 1280, 1600];
 const imageSizes = '(max-width: 900px) calc(100vw - 3rem), 900px';
@@ -23,8 +23,8 @@ const imageAlt = {
     'Ghosthub workspace showing local sessions, projects, worktrees, and a remote host in the sidebar',
   hosts: 'Ghosthub Hosts settings with a configured remote GPU host',
   worktree:
-    'Ghosthub new worktree sheet ready to create a feature branch with kwt',
-  quickLaunch: 'Ghosthub Quick Launch filtered to a reconnect worktree',
+    'Ghosthub new worktree sheet ready to create a feature branch or import a pull request',
+  commandPalette: 'Ghosthub Command Palette filtered to a reconnect worktree',
   commandCenter:
     'Six real Ghosthub windows arranged in a tight three-by-two matrix, each attached to a different tmux session with its sidebar collapsed',
   nativeTabs:
@@ -64,7 +64,7 @@ const imageAlt = {
     <a href="#sessions"><b>01</b> Open a session</a>
     <a href="#hosts"><b>02</b> Add a host</a>
     <a href="#worktrees"><b>03</b> Add worktrees</a>
-    <a href="#quick-launch"><b>04</b> Move quickly</a>
+    <a href="#command-palette"><b>04</b> Move quickly</a>
     <a href="#command-center"><b>05</b> Command center</a>
     <a href="#terminal"><b>06</b> Make it yours</a>
   </nav>
@@ -181,16 +181,28 @@ const imageAlt = {
         <div>
           <h2>Add project and worktree context</h2>
           <p>
-            Ghosthub uses <a href="https://kwt.sh">kwt</a> to map repositories
-            and worktrees to their exact tmux sessions. Run <code>kwt</code>
-            once inside a repository to register it.
+            Open the <strong>+</strong> menu beside a local or remote host,
+            choose <strong>Add Project</strong>, and enter the absolute path to
+            an existing checkout. Ghosthub registers that repository through
+            its bundled or managed <a href="https://kwt.sh">kwt</a> helper
+            without scanning the machine.
           </p>
           <p>
-            Select a project and press <kbd>⌘⇧N</kbd> to create a branch and
-            worktree without leaving Ghosthub. Kwt remains optional if you
-            only want a local and remote tmux session switcher.
-            Selecting a listed worktree starts its configured kwt session
-            when that session is not already running.
+            Pull-request import requires the{' '}
+            <a href="https://cli.github.com/">GitHub CLI (<code>gh</code>)</a>{' '}
+            on the host containing the project: your Mac for a local project
+            or the SSH machine for a remote one. Install it there and run{' '}
+            <code>gh auth login</code> on that same host before importing.
+          </p>
+          <p>
+            Select a project and press <kbd>⌘⇧N</kbd>. Use
+            <strong>Branch</strong> to create a Git worktree, or
+            <strong>Pull Request</strong> to find and import an open GitHub
+            pull request. You do not need to install or run kwt separately.
+            Selecting a listed worktree creates or repairs its canonical tmux
+            session when needed, then attaches an ordinary tmux client.
+            Kwt remains optional if you only want a local and remote tmux
+            session switcher.
           </p>
         </div>
       </div>
@@ -206,13 +218,13 @@ const imageAlt = {
       </figure>
     </li>
 
-    <li id="quick-launch">
+    <li id="command-palette">
       <div class="container step-copy">
         <p class="number">04</p>
         <div>
           <h2>Move through the fleet without the mouse</h2>
           <p>
-            Press <kbd>⌘⇧P</kbd> for Quick Launch. Search across hosts,
+            Press <kbd>⌘⇧P</kbd> for the Command Palette. Search across hosts,
             projects, worktrees, appearance, settings, and common actions,
             then press Return to go.
           </p>
@@ -225,10 +237,10 @@ const imageAlt = {
         </div>
       </div>
       <figure class="container window">
-        <ZoomableImage label={imageAlt.quickLaunch}>
+        <ZoomableImage label={imageAlt.commandPalette}>
           <Image
-            src={quickLaunch}
-            alt={imageAlt.quickLaunch}
+            src={commandPalette}
+            alt={imageAlt.commandPalette}
             widths={imageWidths}
             sizes={imageSizes}
           />
