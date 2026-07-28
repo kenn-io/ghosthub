@@ -98,7 +98,7 @@ struct KwtInventoryClient: Sendable {
         _ host: SSHHostInfo, _ command: String
     ) -> (status: Int32, stdout: String)
 
-    private static let jsonMarker = "GHOSTHUB_KWT_JSON"
+    private static let jsonMarker = "GHOSTHUB_KWT_JSON\n"
     private let localRunner: LocalRunner
     private let remoteRunner: RemoteRunner
     private let loginShellProvider: @Sendable () -> String
@@ -242,14 +242,17 @@ struct KwtInventoryClient: Sendable {
                 status: result.status
             )
         }
-        let lines = result.stdout.split(whereSeparator: \.isNewline)
-        guard let markerIndex = lines.lastIndex(where: {
-            $0 == Self.jsonMarker
-        }) else {
+        let normalizedOutput = result.stdout.replacingOccurrences(
+            of: "\r\n",
+            with: "\n"
+        )
+        guard let markerRange = normalizedOutput.range(
+            of: Self.jsonMarker,
+            options: .backwards
+        ) else {
             throw KwtInventoryError.malformedOutput(host: hostLabel)
         }
-        let json = lines[lines.index(after: markerIndex)...]
-            .joined(separator: "\n")
+        let json = normalizedOutput[markerRange.upperBound...]
         do {
             return try JSONDecoder().decode(
                 Value.self,

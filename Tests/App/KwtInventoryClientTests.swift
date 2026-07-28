@@ -98,7 +98,11 @@ struct KwtInventoryClientTests {
                         + powerShellEncodedArgument("GHOSTHUB_KWT_JSON")
                 ))
                 #expect(!command.contains("command -v"))
-                return (0, "GHOSTHUB_KWT_JSON\r\n[]\r\n")
+                return (
+                    0,
+                    "PowerShell banner without newline"
+                        + "GHOSTHUB_KWT_JSON\r\n[]\r\n"
+                )
             }
         )
 

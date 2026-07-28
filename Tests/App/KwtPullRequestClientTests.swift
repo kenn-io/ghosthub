@@ -96,10 +96,15 @@ struct KwtPullRequestClientTests {
                 recorder.record(host: host, command: command)
                 return (
                     0,
-                    Self.listResponse.replacingOccurrences(
-                        of: "\n",
-                        with: "\r\n"
-                    )
+                    Self.listResponse
+                        .replacingOccurrences(
+                            of: "login banner\nGHOSTHUB_KWT_PR_JSON",
+                            with: "login bannerGHOSTHUB_KWT_PR_JSON"
+                        )
+                        .replacingOccurrences(
+                            of: "\n",
+                            with: "\r\n"
+                        )
                 )
             }
         )

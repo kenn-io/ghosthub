@@ -55,7 +55,7 @@ struct KwtPullRequestClient: Sendable {
         _ host: SSHHostInfo, _ command: String
     ) -> (status: Int32, stdout: String)
 
-    private static let jsonMarker = "GHOSTHUB_KWT_PR_JSON"
+    private static let jsonMarker = "GHOSTHUB_KWT_PR_JSON\n"
     private let localRunner: LocalRunner
     private let remoteRunner: RemoteRunner
     private let loginShellProvider: @Sendable () -> String
@@ -184,10 +184,14 @@ struct KwtPullRequestClient: Sendable {
         _ result: (status: Int32, stdout: String),
         hostLabel: String
     ) throws -> Value {
-        let lines = result.stdout.split(whereSeparator: \.isNewline)
-        guard let markerIndex = lines.lastIndex(where: {
-            $0 == jsonMarker
-        }) else {
+        let normalizedOutput = result.stdout.replacingOccurrences(
+            of: "\r\n",
+            with: "\n"
+        )
+        guard let markerRange = normalizedOutput.range(
+            of: jsonMarker,
+            options: .backwards
+        ) else {
             if result.status != 0 {
                 throw KwtPullRequestError.commandFailed(
                     host: hostLabel,
@@ -199,8 +203,7 @@ struct KwtPullRequestClient: Sendable {
             }
             throw KwtPullRequestError.malformedOutput(host: hostLabel)
         }
-        let payload = lines[lines.index(after: markerIndex)...]
-            .joined(separator: "\n")
+        let payload = normalizedOutput[markerRange.upperBound...]
         let data = Data(payload.utf8)
         guard result.status == 0 else {
             let envelope = try? JSONDecoder().decode(
