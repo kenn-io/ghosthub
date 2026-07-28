@@ -63,7 +63,8 @@ struct KwtWorktreeClientTests {
             request: WorktreeCreateRequest(
                 projectID: UUID(),
                 branchName: "wesm's-fix",
-                createsBranch: false
+                createsBranch: false,
+                source: "origin/wesm's-fix"
             ),
             projectPath: "/srv/project",
             on: .ssh(ssh)
@@ -75,7 +76,11 @@ struct KwtWorktreeClientTests {
                 + "\(revision)/kwt\";"
         ) == true)
         #expect(recorder.command?.contains("/Applications/Ghosthub.app") == false)
-        #expect(recorder.command?.contains("add 'wesm'\\''s-fix' --no-launch") == true)
+        #expect(
+            recorder.command?.contains(
+                "add --from 'origin/wesm'\\''s-fix' 'wesm'\\''s-fix' --no-launch"
+            ) == true
+        )
         #expect(recorder.command?.contains("--branch") == false)
     }
 
@@ -133,6 +138,49 @@ struct KwtWorktreeClientTests {
         #expect(recorder.command?.contains("’") == false)
         #expect(recorder.command?.contains("‘") == false)
         #expect(recorder.command?.contains("command -v") == false)
+    }
+
+    @Test("branch listing decodes kwt candidates")
+    func branchListing() async throws {
+        let recorder = CommandRecorder()
+        let client = KwtWorktreeClient(
+            localRunner: { shell, command in
+                recorder.record(shell: shell, command: command)
+                return (
+                    0,
+                    """
+                    GHOSTHUB_KWT_JSON
+                    [
+                      {
+                        "name": "feature/remote",
+                        "source": "origin/feature/remote",
+                        "is_remote": true
+                      }
+                    ]
+                    """
+                )
+            },
+            localBinaryPath: "/Applications/Ghosthub.app/Contents/Helpers/kwt",
+            loginShellProvider: { "/bin/zsh" }
+        )
+
+        let branches = try await client.branches(
+            projectPath: "/code/ghosthub",
+            on: .local
+        )
+
+        #expect(branches == [
+            WorktreeBranchCandidate(
+                name: "feature/remote",
+                source: "origin/feature/remote",
+                isRemote: true
+            ),
+        ])
+        #expect(
+            recorder.command?.contains(
+                "exec \"$ghosthub_kwt_path\" branches --json"
+            ) == true
+        )
     }
 
     @Test("a nonzero kwt exit is reported")

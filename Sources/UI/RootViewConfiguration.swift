@@ -120,6 +120,8 @@ public struct InteractionHandlers {
         ((HostSummary, String) async -> Result<String, HostProbeError>)?
     public let createWorktree:
         ((WorktreeCreateRequest) async throws -> Void)?
+    public let listBranches:
+        ((UUID) async throws -> [WorktreeBranchCandidate])?
     public let listPullRequests:
         ((UUID) async throws -> [PullRequestCandidate])?
     public let importPullRequest:
@@ -142,6 +144,8 @@ public struct InteractionHandlers {
         ((HostSummary, String) async -> Result<String, HostProbeError>)? = nil,
         createWorktree:
         ((WorktreeCreateRequest) async throws -> Void)? = nil,
+        listBranches:
+        ((UUID) async throws -> [WorktreeBranchCandidate])? = nil,
         listPullRequests:
         ((UUID) async throws -> [PullRequestCandidate])? = nil,
         importPullRequest:
@@ -158,6 +162,7 @@ public struct InteractionHandlers {
         self.refreshWorkspaceInventory = refreshWorkspaceInventory
         self.registerProject = registerProject
         self.createWorktree = createWorktree
+        self.listBranches = listBranches
         self.listPullRequests = listPullRequests
         self.importPullRequest = importPullRequest
     }

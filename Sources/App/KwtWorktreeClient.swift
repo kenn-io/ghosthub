@@ -8,6 +8,7 @@ enum KwtWorktreeError: Error, Equatable, LocalizedError {
     case creationInProgress
     case commandFailed(host: String, status: Int32)
     case createdWorktreeMissing(branch: String)
+    case malformedBranches(host: String)
 
     var errorDescription: String? {
         switch self {
@@ -21,6 +22,8 @@ enum KwtWorktreeError: Error, Equatable, LocalizedError {
             "kwt could not create the worktree on \(host) (status \(status))."
         case let .createdWorktreeMissing(branch):
             "kwt completed, but \(branch) was not present in the refreshed inventory."
+        case let .malformedBranches(host):
+            "kwt returned an invalid branch list on \(host)."
         }
     }
 }
@@ -28,6 +31,7 @@ enum KwtWorktreeError: Error, Equatable, LocalizedError {
 /// Executes only kwt's supported worktree-creation surface. Ghosthub does not
 /// choose a worktree path or launch its own workspace/session implementation.
 struct KwtWorktreeClient: Sendable {
+    private static let jsonMarker = "GHOSTHUB_KWT_JSON\n"
     typealias LocalRunner = @Sendable (
         _ shell: String, _ command: String
     ) -> (status: Int32, stdout: String)
@@ -98,6 +102,7 @@ struct KwtWorktreeClient: Sendable {
         let command = Self.command(
             branchName: request.branchName,
             createsBranch: request.createsBranch,
+            source: request.source,
             projectPath: projectPath,
             platform: platform,
             binaryPrelude: binaryPrelude,
@@ -122,9 +127,66 @@ struct KwtWorktreeClient: Sendable {
         }
     }
 
+    func branches(
+        projectPath: String,
+        on host: TmuxHost
+    ) async throws -> [WorktreeBranchCandidate] {
+        let binaryPrelude: String
+        let hostLabel: String
+        switch host {
+        case .local:
+            binaryPrelude = KwtBinaryLocator.commandPrelude(
+                exactPath: localBinaryPath
+            )
+            hostLabel = "this Mac"
+        case let .ssh(info):
+            binaryPrelude = KwtBinaryLocator.remoteCommandPrelude(
+                revision: remoteBinaryRevision
+            )
+            hostLabel = info.displayName
+        }
+        let command = Self.branchesCommand(
+            projectPath: projectPath,
+            binaryPrelude: binaryPrelude
+        )
+        let localRunner = localRunner
+        let remoteRunner = remoteRunner
+        let shell = loginShellProvider()
+        let result = await Task.detached(priority: .userInitiated) {
+            switch host {
+            case .local:
+                localRunner(shell, command)
+            case let .ssh(info):
+                remoteRunner(info, command)
+            }
+        }.value
+        guard result.status == 0 else {
+            throw KwtWorktreeError.commandFailed(
+                host: hostLabel,
+                status: result.status
+            )
+        }
+        guard let markerRange = result.stdout.range(
+            of: Self.jsonMarker,
+            options: .backwards
+        ) else {
+            throw KwtWorktreeError.malformedBranches(host: hostLabel)
+        }
+        let json = result.stdout[markerRange.upperBound...]
+        do {
+            return try JSONDecoder().decode(
+                [WorktreeBranchCandidate].self,
+                from: Data(json.utf8)
+            )
+        } catch {
+            throw KwtWorktreeError.malformedBranches(host: hostLabel)
+        }
+    }
+
     static func command(
         branchName: String,
         createsBranch: Bool,
+        source: String? = nil,
         projectPath: String,
         platform: SSHHostInfo.Platform = .posix,
         binaryPrelude: String,
@@ -134,6 +196,8 @@ struct KwtWorktreeClient: Sendable {
             var arguments = ["add"]
             if createsBranch {
                 arguments.append("--branch")
+            } else if let source, source != branchName {
+                arguments += ["--from", source]
             }
             arguments += [branchName, "--no-launch"]
             return KwtPowerShellCommand.run(
@@ -142,10 +206,27 @@ struct KwtWorktreeClient: Sendable {
                 managedRelativePath: windowsKwtRelativePath
             )
         }
-        let branchFlag = createsBranch ? " --branch" : ""
+        let branchFlags: String
+        if createsBranch {
+            branchFlags = " --branch"
+        } else if let source, source != branchName {
+            branchFlags = " --from \(shellQuotedCommandArgument(source))"
+        } else {
+            branchFlags = ""
+        }
         return binaryPrelude
             + "cd -- \(shellQuotedCommandArgument(projectPath)) || exit $?; "
-            + "exec \"$ghosthub_kwt_path\" add\(branchFlag) "
+            + "exec \"$ghosthub_kwt_path\" add\(branchFlags) "
             + "\(shellQuotedCommandArgument(branchName)) --no-launch"
+    }
+
+    private static func branchesCommand(
+        projectPath: String,
+        binaryPrelude: String
+    ) -> String {
+        binaryPrelude
+            + "cd -- \(shellQuotedCommandArgument(projectPath)) || exit $?; "
+            + "printf 'GHOSTHUB_KWT_JSON\\n'; "
+            + "exec \"$ghosthub_kwt_path\" branches --json"
     }
 }

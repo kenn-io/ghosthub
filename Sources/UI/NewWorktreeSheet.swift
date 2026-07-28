@@ -12,6 +12,41 @@ enum NewWorktreeMode: String, CaseIterable, Hashable {
     case pullRequest
 }
 
+enum BranchQuery {
+    static func matches(
+        in branches: [WorktreeBranchCandidate],
+        query: String
+    ) -> [WorktreeBranchCandidate] {
+        let tokens = query.lowercased()
+            .split(whereSeparator: \.isWhitespace)
+            .map(String.init)
+        guard !tokens.isEmpty else { return branches }
+        let matched = branches.filter { branch in
+            let haystack = "\(branch.name) \(branch.source)".lowercased()
+            return tokens.allSatisfy(haystack.contains)
+        }
+        let normalized = query.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard let exact = matched.firstIndex(where: {
+            $0.name == normalized
+        }) else { return matched }
+        var ranked = matched
+        ranked.insert(ranked.remove(at: exact), at: 0)
+        return ranked
+    }
+
+    static func impliedSelectionSource(
+        in candidates: [WorktreeBranchCandidate],
+        query: String
+    ) -> String? {
+        let normalized = query.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        return candidates.first { $0.name == normalized }?.source
+    }
+}
+
 enum PullRequestSelector {
     static func normalized(_ value: String) -> String? {
         let trimmed = value.trimmingCharacters(
@@ -135,6 +170,8 @@ struct NewWorktreeSheet: View {
     let projects: [ProjectSummary]
     let hosts: [HostSummary]
     let onCreate: (WorktreeCreateRequest) async throws -> Void
+    let onListBranches: (UUID) async throws
+        -> [WorktreeBranchCandidate]
     let onListPullRequests: (UUID) async throws
         -> [PullRequestCandidate]
     let onImportPullRequest:
@@ -144,10 +181,13 @@ struct NewWorktreeSheet: View {
     @State private var selectedProject: ProjectSummary
     @State private var selectedMode: NewWorktreeMode
     @State private var query = ""
-    @State private var createsBranch = true
     @State private var isWorking = false
+    @State private var isLoadingBranches = false
     @State private var isLoadingPullRequests = false
     @State private var errorMessage: String?
+    @State private var branchErrorMessage: String?
+    @State private var branches: [WorktreeBranchCandidate] = []
+    @State private var selectedBranchSource: String?
     @State private var pullRequests: [PullRequestCandidate] = []
     @State private var selectedPullRequestID: String?
     @FocusState private var isSearchFieldFocused: Bool
@@ -158,6 +198,8 @@ struct NewWorktreeSheet: View {
         hosts: [HostSummary],
         initialMode: NewWorktreeMode = .branch,
         onCreate: @escaping (WorktreeCreateRequest) async throws -> Void,
+        onListBranches: @escaping (UUID) async throws
+            -> [WorktreeBranchCandidate] = { _ in [] },
         onListPullRequests: @escaping (UUID) async throws
             -> [PullRequestCandidate] = { _ in [] },
         onImportPullRequest: @escaping (
@@ -170,6 +212,7 @@ struct NewWorktreeSheet: View {
         self.projects = projects
         self.hosts = hosts
         self.onCreate = onCreate
+        self.onListBranches = onListBranches
         self.onListPullRequests = onListPullRequests
         self.onImportPullRequest = onImportPullRequest
         self.onCancel = onCancel
@@ -182,8 +225,20 @@ struct NewWorktreeSheet: View {
     private var canCreateBranch: Bool {
         selectedMode == .branch
             && !isWorking
+            && !isLoadingBranches
             && canCreateWorktree(in: selectedProject)
             && GitBranchName.isValid(normalizedBranchName)
+    }
+
+    private var filteredBranches: [WorktreeBranchCandidate] {
+        BranchQuery.matches(in: branches, query: query)
+    }
+
+    private var selectedBranch: WorktreeBranchCandidate? {
+        filteredBranches.first {
+            $0.source == selectedBranchSource
+                && $0.name == normalizedBranchName
+        }
     }
 
     private var selectedPullRequest: PullRequestCandidate? {
@@ -220,6 +275,10 @@ struct NewWorktreeSheet: View {
         "\(selectedMode.rawValue):\(selectedProject.id.uuidString)"
     }
 
+    private var branchLoadID: String {
+        "\(selectedMode.rawValue):\(selectedProject.id.uuidString)"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             titleRow
@@ -245,15 +304,29 @@ struct NewWorktreeSheet: View {
         .onChange(of: selectedMode) { _, _ in
             query = ""
             errorMessage = nil
+            branchErrorMessage = nil
+            selectedBranchSource = nil
+            isLoadingBranches = false
             ensureProjectSupportsSelectedMode()
             isSearchFieldFocused = true
         }
         .onChange(of: query) { _, _ in
-            guard selectedMode == .pullRequest else { return }
-            selectedPullRequestID = PullRequestQuery.impliedSelectionID(
-                in: filteredPullRequests,
-                query: query
-            )
+            switch selectedMode {
+            case .branch:
+                selectedBranchSource = BranchQuery.impliedSelectionSource(
+                    in: filteredBranches,
+                    query: query
+                )
+            case .pullRequest:
+                selectedPullRequestID = PullRequestQuery.impliedSelectionID(
+                    in: filteredPullRequests,
+                    query: query
+                )
+            }
+        }
+        .task(id: branchLoadID) {
+            guard selectedMode == .branch else { return }
+            await loadBranches()
         }
         .task(id: pullRequestLoadID) {
             guard selectedMode == .pullRequest else { return }
@@ -273,6 +346,8 @@ struct NewWorktreeSheet: View {
                             selectedProject = project
                             query = ""
                             errorMessage = nil
+                            branchErrorMessage = nil
+                            selectedBranchSource = nil
                         }
                     },
                 ]
@@ -326,7 +401,7 @@ struct NewWorktreeSheet: View {
             .focused($isSearchFieldFocused)
             .disabled(isWorking)
             .onSubmit(submit)
-            if isWorking || isLoadingPullRequests {
+            if isWorking || isLoadingBranches || isLoadingPullRequests {
                 ProgressView()
                     .controlSize(.small)
             }
@@ -346,12 +421,20 @@ struct NewWorktreeSheet: View {
 
     @ViewBuilder
     private var branchResults: some View {
-        if normalizedBranchName.isEmpty {
+        if isLoadingBranches, branches.isEmpty {
+            VStack(spacing: 8) {
+                ProgressView()
+                Text("Loading available branches from kwt…")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if normalizedBranchName.isEmpty, branches.isEmpty {
             VStack(alignment: .leading, spacing: 5) {
-                Text("Create a kwt worktree from a branch.")
+                Text("No available existing branches.")
                     .font(.callout)
                 Text(
-                    "kwt chooses the path and reports the exact tmux session."
+                    "Type a name to create a new branch and worktree."
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -360,39 +443,110 @@ struct NewWorktreeSheet: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 14)
         } else {
-            Button(action: createBranch) {
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 6) {
-                        Image(
-                            systemName: createsBranch
-                                ? "plus.circle.fill"
-                                : "arrow.right.circle.fill"
-                        )
-                        .foregroundStyle(createsBranch ? .green : .blue)
-                        Text(
-                            createsBranch
-                                ? "Create branch"
-                                : "Check out existing branch"
-                        )
-                        .fontWeight(.medium)
-                        Text("\"\(normalizedBranchName)\"")
+            ScrollView {
+                LazyVStack(spacing: 2) {
+                    if !normalizedBranchName.isEmpty,
+                       selectedBranch == nil,
+                       GitBranchName.isValid(normalizedBranchName) {
+                        Button(action: createBranch) {
+                            HStack(spacing: 10) {
+                                Image(systemName: "plus.circle.fill")
+                                    .foregroundStyle(.green)
+                                    .frame(width: 18)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text("Create new branch")
+                                        .font(.callout.weight(.medium))
+                                    Text(normalizedBranchName)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer(minLength: 0)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 9)
+                            .background(
+                                Color.accentColor.opacity(0.14),
+                                in: RoundedRectangle(cornerRadius: 7)
+                            )
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .font(.callout)
-                    Text("in \(selectedProject.sidebarTitle) with kwt")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    ForEach(filteredBranches) { branch in
+                        branchRow(branch)
+                    }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 11)
-                .background(Color.accentColor.opacity(0.14))
-                .contentShape(Rectangle())
+                .padding(8)
             }
-            .buttonStyle(.plain)
-            .disabled(!canCreateBranch)
         }
 
+        if let branchErrorMessage {
+            Text(branchErrorMessage)
+                .font(.callout)
+                .foregroundStyle(.red)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 10)
+        }
         errorView
+    }
+
+    private func branchRow(
+        _ branch: WorktreeBranchCandidate
+    ) -> some View {
+        let isSelected = selectedBranchSource == branch.source
+            && normalizedBranchName == branch.name
+        return Button {
+            query = branch.name
+            selectedBranchSource = branch.source
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "arrow.triangle.branch")
+                    .foregroundStyle(
+                        isSelected ? Color.accentColor : .secondary
+                    )
+                    .frame(width: 18)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(branch.name)
+                        .font(.callout.weight(.medium))
+                        .lineLimit(1)
+                    Text(
+                        branch.isRemote
+                            ? "Remote · \(branch.source)"
+                            : "Local branch"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(Color.accentColor)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 9)
+            .background {
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(
+                        isSelected
+                            ? Color.accentColor.opacity(0.16)
+                            : Color.clear
+                    )
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(branch.name)
+        .accessibilityValue(
+            branch.isRemote
+                ? "Remote branch \(branch.source)"
+                : "Local branch"
+        )
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     @ViewBuilder
@@ -549,13 +703,9 @@ struct NewWorktreeSheet: View {
     private var bottomStrip: some View {
         HStack(spacing: 10) {
             if selectedMode == .branch {
-                Picker("Branch action", selection: $createsBranch) {
-                    Text("Create new branch").tag(true)
-                    Text("Use existing branch").tag(false)
-                }
-                .labelsHidden()
-                .fixedSize()
-                .disabled(isWorking)
+                Text("\(branches.count) available branches")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             } else {
                 Text("\(pullRequests.count) open pull requests")
                     .font(.caption)
@@ -577,7 +727,9 @@ struct NewWorktreeSheet: View {
     private var primaryActionTitle: String {
         switch selectedMode {
         case .branch:
-            return createsBranch ? "Create Branch" : "Create Worktree"
+            return selectedBranch == nil
+                ? "Create Branch"
+                : "Create Worktree"
         case .pullRequest:
             return selectedPullRequest?.isImported == true
                 ? "Open Worktree"
@@ -615,7 +767,8 @@ struct NewWorktreeSheet: View {
         let request = WorktreeCreateRequest(
             projectID: selectedProject.id,
             branchName: normalizedBranchName,
-            createsBranch: createsBranch
+            createsBranch: selectedBranch == nil,
+            source: selectedBranch?.source
         )
         Task {
             do {
@@ -678,6 +831,29 @@ struct NewWorktreeSheet: View {
             errorMessage = error.localizedDescription
         }
         isLoadingPullRequests = false
+    }
+
+    private func loadBranches() async {
+        guard canCreateWorktree(in: selectedProject) else { return }
+        isLoadingBranches = true
+        branchErrorMessage = nil
+        do {
+            let loaded = try await onListBranches(selectedProject.id)
+            guard !Task.isCancelled else { return }
+            branches = loaded
+            selectedBranchSource = BranchQuery.impliedSelectionSource(
+                in: filteredBranches,
+                query: query
+            )
+        } catch is CancellationError {
+            return
+        } catch {
+            guard !Task.isCancelled else { return }
+            branches = []
+            selectedBranchSource = nil
+            branchErrorMessage = error.localizedDescription
+        }
+        isLoadingBranches = false
     }
 
     private func ensureProjectSupportsSelectedMode() {

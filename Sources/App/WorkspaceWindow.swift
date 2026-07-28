@@ -667,6 +667,9 @@ struct WorkspaceWindow: View {
                 createWorktree: { [sceneModel] request in
                     try await sceneModel.createWorktree(request)
                 },
+                listBranches: { [sceneModel] projectID in
+                    try await sceneModel.branches(for: projectID)
+                },
                 listPullRequests: { [sceneModel] projectID in
                     try await sceneModel.pullRequests(for: projectID)
                 },

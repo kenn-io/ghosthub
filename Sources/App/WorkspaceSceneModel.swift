@@ -46,6 +46,9 @@ final class WorkspaceSceneModel: ObservableObject {
     typealias KwtWorktreeCreator = @Sendable (
         WorktreeCreateRequest, String, TmuxHost
     ) async throws -> Void
+    typealias KwtBranchLister = @Sendable (
+        String, TmuxHost
+    ) async throws -> [WorktreeBranchCandidate]
     typealias KwtPullRequestLister = @Sendable (
         String, TmuxHost
     ) async throws -> [PullRequestCandidate]
@@ -223,6 +226,7 @@ final class WorkspaceSceneModel: ObservableObject {
     private let notificationService: NotificationService
     private let kwtInventoryLoader: KwtInventoryLoader
     private let kwtWorktreeCreator: KwtWorktreeCreator
+    private let kwtBranchLister: KwtBranchLister
     private let kwtPullRequestLister: KwtPullRequestLister
     private let kwtPullRequestImporter: KwtPullRequestImporter
     private let kwtProjectRegistration: KwtProjectRegistration
@@ -332,6 +336,13 @@ final class WorkspaceSceneModel: ObservableObject {
                 on: host
             )
         },
+        kwtBranchLister: @escaping KwtBranchLister = {
+            projectPath, host in
+            try await KwtWorktreeClient().branches(
+                projectPath: projectPath,
+                on: host
+            )
+        },
         kwtPullRequestLister: @escaping KwtPullRequestLister = {
             projectIdentity, host in
             try await KwtPullRequestClient().list(
@@ -410,6 +421,7 @@ final class WorkspaceSceneModel: ObservableObject {
         self.terminalRuntime = terminalRuntime
         self.kwtInventoryLoader = kwtInventoryLoader
         self.kwtWorktreeCreator = kwtWorktreeCreator
+        self.kwtBranchLister = kwtBranchLister
         self.kwtPullRequestLister = kwtPullRequestLister
         self.kwtPullRequestImporter = kwtPullRequestImporter
         self.kwtProjectRegistration = kwtProjectRegistration
@@ -737,6 +749,19 @@ final class WorkspaceSceneModel: ObservableObject {
             in: snapshot,
             visibility: worktreeVisibility
         )
+    }
+
+    func branches(
+        for projectID: UUID
+    ) async throws -> [WorktreeBranchCandidate] {
+        guard let project = snapshot.project(id: projectID),
+              snapshot.canCreateWorktree(in: project),
+              let hostSummary = snapshot.host(id: project.hostID),
+              let host = TmuxHostResolver.resolve(hostSummary)
+        else {
+            throw KwtWorktreeError.projectUnavailable
+        }
+        return try await kwtBranchLister(project.rootPath, host)
     }
 
     func pullRequests(

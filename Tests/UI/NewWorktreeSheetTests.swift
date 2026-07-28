@@ -30,6 +30,41 @@ struct NewWorktreeSheetTests {
         #expect(PullRequestSelector.normalized(input) == expected)
     }
 
+    @Test("branch search selects only an exact existing candidate")
+    func exactExistingBranchSelection() {
+        let branches = [
+            WorktreeBranchCandidate(
+                name: "feature/local",
+                source: "feature/local",
+                isRemote: false
+            ),
+            WorktreeBranchCandidate(
+                name: "feature/remote",
+                source: "origin/feature/remote",
+                isRemote: true
+            ),
+        ]
+
+        let matches = BranchQuery.matches(
+            in: branches,
+            query: "remote"
+        )
+
+        #expect(matches.map(\.name) == ["feature/remote"])
+        #expect(
+            BranchQuery.impliedSelectionSource(
+                in: matches,
+                query: "feature/remote"
+            ) == "origin/feature/remote"
+        )
+        #expect(
+            BranchQuery.impliedSelectionSource(
+                in: matches,
+                query: "feature/new"
+            ) == nil
+        )
+    }
+
     private static func candidate(
         _ number: Int,
         title: String = "Some change",

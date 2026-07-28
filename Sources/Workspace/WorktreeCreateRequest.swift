@@ -6,15 +6,42 @@ public struct WorktreeCreateRequest: Equatable, Sendable {
     public let projectID: UUID
     public let branchName: String
     public let createsBranch: Bool
+    public let source: String?
 
     public init(
         projectID: UUID,
         branchName: String,
-        createsBranch: Bool
+        createsBranch: Bool,
+        source: String? = nil
     ) {
         self.projectID = projectID
         self.branchName = branchName
         self.createsBranch = createsBranch
+        self.source = source
+    }
+}
+
+public struct WorktreeBranchCandidate:
+    Codable, Equatable, Identifiable, Sendable {
+    public let name: String
+    public let source: String
+    public let isRemote: Bool
+
+    public var id: String { source }
+
+    public init(
+        name: String,
+        source: String,
+        isRemote: Bool
+    ) {
+        self.name = name
+        self.source = source
+        self.isRemote = isRemote
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case name, source
+        case isRemote = "is_remote"
     }
 }
 

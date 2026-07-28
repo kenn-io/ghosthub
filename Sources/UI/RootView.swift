@@ -86,6 +86,12 @@ public struct RootView: View {
                         }
                         try await create(request)
                     },
+                    onListBranches: { projectID in
+                        guard let list = handlers.listBranches else {
+                            return []
+                        }
+                        return try await list(projectID)
+                    },
                     onListPullRequests: { projectID in
                         guard let list = handlers.listPullRequests else {
                             return []
