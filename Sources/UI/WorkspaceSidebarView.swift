@@ -236,36 +236,59 @@ struct WorkspaceSidebarView: View {
                         disclosureKey: projectsKey
                     )
                     if isExpanded(projectsKey) {
-                        ForEach(section.projects) { project in
-                            let projectKey = WorkspaceSidebarDisclosureState
-                                .project(project.project.id)
-                            projectHierarchyRow(
-                                project,
-                                disclosureKey: projectKey
-                            )
-                            .contextMenu {
-                                Button("New Worktree…") {
-                                    onNewWorktree(project.project)
+                        VStack(alignment: .leading, spacing: 2) {
+                            ForEach(section.projects) { project in
+                                let projectKey = WorkspaceSidebarDisclosureState
+                                    .project(project.project.id)
+                                projectHierarchyRow(
+                                    project,
+                                    disclosureKey: projectKey
+                                )
+                                .contextMenu {
+                                    Button("New Worktree…") {
+                                        onNewWorktree(project.project)
+                                    }
+                                    .disabled(
+                                        !snapshot.canCreateWorktree(
+                                            in: project.project
+                                        )
+                                    )
+                                    Button("Import Pull Request…") {
+                                        onImportPullRequest(project.project)
+                                    }
+                                    .disabled(
+                                        !snapshot.canImportPullRequest(
+                                            in: project.project
+                                        )
+                                    )
                                 }
-                                .disabled(
-                                    !snapshot.canCreateWorktree(
-                                        in: project.project
+                                if isExpanded(projectKey) {
+                                    ForEach(project.worktreeRows) { row in
+                                        worktreeButton(row)
+                                    }
+                                }
+                            }
+                        }
+                        .padding(.vertical, 2)
+                        .background {
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(
+                                    Color.primary.opacity(
+                                        colorSchemeContrast == .increased
+                                            ? 0.09 : 0.035
                                     )
                                 )
-                                Button("Import Pull Request…") {
-                                    onImportPullRequest(project.project)
-                                }
-                                .disabled(
-                                    !snapshot.canImportPullRequest(
-                                        in: project.project
+                        }
+                        .overlay(alignment: .leading) {
+                            RoundedRectangle(cornerRadius: 1)
+                                .fill(
+                                    Color.primary.opacity(
+                                        colorSchemeContrast == .increased
+                                            ? 0.5 : 0.2
                                     )
                                 )
-                            }
-                            if isExpanded(projectKey) {
-                                ForEach(project.worktreeRows) { row in
-                                    worktreeButton(row)
-                                }
-                            }
+                                .frame(width: 2)
+                                .padding(.vertical, 4)
                         }
                     }
                 }
