@@ -111,6 +111,11 @@ enter the absolute path to an existing checkout. Ghosthub registers that one
 repository through its bundled or managed kwt helper and does not scan the
 machine.
 
+Pull-request import requires the
+[GitHub CLI (`gh`)](https://cli.github.com/) on the host containing the project:
+your Mac for a local project or the SSH machine for a remote one. Install it
+there and run `gh auth login` on that same host before importing.
+
 Select a project and press <kbd>⌘</kbd><kbd>⇧</kbd><kbd>N</kbd> to create a Git
 worktree or import a GitHub pull request. Selecting a listed worktree creates
 or repairs its canonical tmux session when needed, then attaches an ordinary
