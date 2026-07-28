@@ -372,17 +372,21 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         ).map(shellQuotedCommandArgument).joined(separator: " ")
         return [
             "exec 3<&0",
-            "ghosthub_existing_clients=\" $(\(listClients) 2>/dev/null "
-                + "| /usr/bin/tr '\\n' ' ') \"",
+            "ghosthub_existing_clients=\"$(\(listClients) 2>/dev/null)\"",
             "\(kwtCommand) <&3 3<&- & ghosthub_kwt_pid=$!",
             "ghosthub_kwt_client_ready=",
             "while kill -0 \"$ghosthub_kwt_pid\" 2>/dev/null; do "
                 + "for ghosthub_client_pid in $(\(listClients) 2>/dev/null); "
-                + "do case \"$ghosthub_existing_clients\" in "
-                + "*\" $ghosthub_client_pid \"*) ;; "
-                + "*) ghosthub_kwt_client_ready=1; break ;; esac; done; "
+                + "do ghosthub_client_was_existing=; "
+                + "for ghosthub_existing_client_pid in "
+                + "$ghosthub_existing_clients; do "
+                + "if [ \"$ghosthub_existing_client_pid\" = "
+                + "\"$ghosthub_client_pid\" ]; then "
+                + "ghosthub_client_was_existing=1; break; fi; done; "
+                + "if [ -z \"$ghosthub_client_was_existing\" ]; then "
+                + "ghosthub_kwt_client_ready=1; break; fi; done; "
                 + "[ -n \"$ghosthub_kwt_client_ready\" ] && break; "
-                + "/bin/sleep 0.01; done",
+                + "sleep 0.01; done",
             "if [ -n \"$ghosthub_kwt_client_ready\" ]; then "
                 + "\(presentationSetupCommand(tmuxPath: tmuxPath)); fi",
             "wait \"$ghosthub_kwt_pid\"",

@@ -424,6 +424,21 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
         XCTAssertNil(runtime.configReloadNotice)
     }
 
+    func testSilentSuccessfulReloadPreservesExplicitSuccessNotice() throws {
+        let ctx = try makeIsolatedRuntime()
+        let explicitResult = ctx.runtime.reloadActiveConfig()
+        XCTAssertEqual(explicitResult, .applied)
+        XCTAssertEqual(ctx.runtime.configReloadNotice?.kind, .success)
+        let explicitNoticeID = ctx.runtime.configReloadNotice?.id
+
+        let silentResult = ctx.runtime.reloadActiveConfig(
+            notifyOnSuccess: false
+        )
+
+        XCTAssertEqual(silentResult, .applied)
+        XCTAssertEqual(ctx.runtime.configReloadNotice?.id, explicitNoticeID)
+    }
+
     func testMonitorUpdateFailurePublishesDegradedReload() throws {
         try skipUnlessLibghosttyReady()
         let (pipeline, tempRoot) = makeIsolatedPipeline()
