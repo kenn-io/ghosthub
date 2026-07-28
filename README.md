@@ -7,7 +7,7 @@
 <h1 align="center">Ghosthub</h1>
 
 <p align="center">
-  <strong>A native terminal for your fleet of tmux sessions.</strong>
+  <strong>A power terminal for your fleet of tmux sessions.</strong>
   <br>
   Find and enter the sessions behind your projects and coding agents,
   on your Mac or over SSH.
@@ -54,9 +54,9 @@ There is no proprietary session format, background daemon, or migration.
   and worktrees—even when their tmux sessions were created outside Ghosthub.
 - **Resilient SSH.** Keepalives and automatic reconnect preserve remote
   presentations through ordinary network interruptions.
-- **Worktree and pull-request workflows.** The bundled
-  [kwt](https://kwt.sh) helper supplies project identity, worktrees, and exact
-  tmux session names without requiring a system kwt installation.
+- **Built-in worktree and pull-request workflows.** Add projects, create Git
+  worktrees, and import GitHub pull requests through the bundled
+  [kwt](https://kwt.sh) helper—no system kwt installation required.
 - **Native tmux lifecycle.** Closing a presentation detaches. Ending a session
   requires the explicit, confirmed **Kill Session** action.
 - **Native workspaces.** Open independent windows or macOS tabs, and search
@@ -111,10 +111,10 @@ enter the absolute path to an existing checkout. Ghosthub registers that one
 repository through its bundled or managed kwt helper and does not scan the
 machine.
 
-Select a project and press <kbd>⌘</kbd><kbd>⇧</kbd><kbd>N</kbd> to create a
-worktree from a branch or pull request. Selecting a listed worktree creates or
-repairs its canonical tmux session when needed, then attaches an ordinary tmux
-client.
+Select a project and press <kbd>⌘</kbd><kbd>⇧</kbd><kbd>N</kbd> to create a Git
+worktree or import a GitHub pull request. Selecting a listed worktree creates
+or repairs its canonical tmux session when needed, then attaches an ordinary
+tmux client.
 
 ## Navigation
 
