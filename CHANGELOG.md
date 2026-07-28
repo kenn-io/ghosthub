@@ -58,9 +58,9 @@ test, and documentation-only changes are omitted.
 
 ## [0.1.0] - 2026-07-22
 
-- Initial public release with native libghostty terminal surfaces, local and
-  SSH tmux session discovery, automatic reconnect, and kwt-backed project and
-  worktree navigation.
+- Initial development release with native libghostty terminal surfaces, local
+  and SSH tmux session discovery, automatic reconnect, and kwt-backed project
+  and worktree navigation.
 
 [Unreleased]: https://github.com/kenn-io/ghosthub/compare/v0.3.0...HEAD
 [0.3.0]: https://github.com/kenn-io/ghosthub/compare/v0.2.1...v0.3.0
