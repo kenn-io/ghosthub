@@ -502,7 +502,9 @@ struct TmuxAttachmentInfoTests {
                 platform: .windows
             ))
         ).attachCommand(
-            tmuxPath: #"C:\Program Files\psmux\tmux.exe"#
+            tmuxPath: #"C:\Program Files\psmux\tmux.exe"#,
+            windowsKwtRelativePath:
+            #".ghosthub\helpers\kwt\0123456789012345678901234567890123456789\kwt.exe"#
         )
 
         #expect(command.contains("'/usr/bin/ssh' '-tt'"))
@@ -560,13 +562,21 @@ struct TmuxAttachmentInfoTests {
             )),
             workspacePath: #"C:\code\release work"#
         ).attachCommand(
-            tmuxPath: #"C:\Program Files\psmux\tmux.exe"#
+            tmuxPath: #"C:\Program Files\psmux\tmux.exe"#,
+            windowsKwtRelativePath:
+            #".ghosthub\helpers\kwt\0123456789012345678901234567890123456789\kwt.exe"#
         )
 
         #expect(command.contains("ghosthub-ssh-kwt-attach"))
         #expect(command.contains("ghosthub-ssh-kwt-probe"))
         let decoded = try Self.decodedPowerShellScripts(from: command)
         let scripts = try #require(decoded.count == 3 ? decoded : nil)
+        #expect(scripts[0].contains(
+            powerShellEncodedArgument(
+                #".ghosthub\helpers\kwt\0123456789012345678901234567890123456789\kwt.exe"#
+            )
+        ))
+        #expect(!scripts[0].contains("Get-Command kwt.exe"))
         #expect(scripts[0].contains(
             "& $ghosthubKwt 'open' "
                 + powerShellEncodedArgument(#"C:\code\release work"#)

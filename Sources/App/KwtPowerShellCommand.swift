@@ -1,24 +1,33 @@
 import GhosthubTmux
 
 enum KwtPowerShellCommand {
-    static var resolutionPrelude: String {
-        powerShellKwtResolutionPrelude()
+    static func resolutionPrelude(
+        managedRelativePath: String?
+    ) -> String {
+        powerShellKwtResolutionPrelude(
+            managedRelativePath: managedRelativePath
+        )
     }
 
-    static var availabilityPrelude: String {
-        powerShellKwtAvailabilityPrelude()
+    static func availabilityPrelude(
+        managedRelativePath: String?
+    ) -> String {
+        powerShellKwtAvailabilityPrelude(
+            managedRelativePath: managedRelativePath
+        )
     }
 
     static func run(
         arguments: [String],
         workingDirectory: String? = nil,
-        marker: String? = nil
+        marker: String? = nil,
+        managedRelativePath: String?
     ) -> String {
         var lines = [
             "$ErrorActionPreference = 'Stop'",
             "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)",
             "$OutputEncoding = [Console]::OutputEncoding",
-            resolutionPrelude,
+            resolutionPrelude(managedRelativePath: managedRelativePath),
         ]
         if let workingDirectory {
             lines.append(

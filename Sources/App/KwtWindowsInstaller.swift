@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import GhosthubSettings
 import GhosthubTmux
@@ -6,6 +7,7 @@ enum KwtWindowsInstallError: Error, Equatable, LocalizedError {
     case invalidDestination
     case architectureProbeFailed(status: Int32)
     case unsupportedArchitecture(String)
+    case bundleIncomplete
     case bundledHelperMissing(String)
     case transferFailed(status: Int32)
     case activationFailed(status: Int32)
@@ -19,6 +21,8 @@ enum KwtWindowsInstallError: Error, Equatable, LocalizedError {
             return "Could not determine the Windows architecture over SSH (status \(status))."
         case let .unsupportedArchitecture(value):
             return "The Windows architecture \(value) is not supported. Ghosthub currently bundles AMD64 and ARM64 kwt."
+        case .bundleIncomplete:
+            return "This Ghosthub build does not identify a pinned Windows kwt helper."
         case let .bundledHelperMissing(path):
             return "The bundled Windows kwt helper is missing at \(path)."
         case let .transferFailed(status):
@@ -46,6 +50,7 @@ struct KwtWindowsInstaller: Sendable {
     private static let installedMarker = "GHOSTHUB_KWT_INSTALLED"
 
     private let bundleURL: URL
+    private let revision: String?
     private let isReadableFile: @Sendable (String) -> Bool
     private let remoteRunner: RemoteRunner
     private let transferRunner: TransferRunner
@@ -53,6 +58,7 @@ struct KwtWindowsInstaller: Sendable {
 
     init(
         bundleURL: URL = Bundle.main.bundleURL,
+        revision: String? = KwtBinaryLocator.bundledRemoteRevision(),
         isReadableFile: @escaping @Sendable (String) -> Bool = {
             FileManager.default.isReadableFile(atPath: $0)
         },
@@ -63,6 +69,7 @@ struct KwtWindowsInstaller: Sendable {
         }
     ) {
         self.bundleURL = bundleURL
+        self.revision = revision
         self.isReadableFile = isReadableFile
         self.remoteRunner = remoteRunner ?? { host, command in
             TmuxBinaryResolver.runRemoteLoginShell(
@@ -77,6 +84,14 @@ struct KwtWindowsInstaller: Sendable {
 
     func install(on configuredHost: SSHHost) async
         -> Result<Void, KwtWindowsInstallError> {
+        guard let revision,
+              let managedRelativePath =
+              KwtBinaryLocator.windowsRemoteManagedRelativePath(
+                  revision: revision
+              )
+        else {
+            return .failure(.bundleIncomplete)
+        }
         guard let parsed = TmuxHostResolver.parseSSHDestination(
             configuredHost.sshDestination
         ) else {
@@ -115,6 +130,14 @@ struct KwtWindowsInstaller: Sendable {
         guard isReadableFile(localPath) else {
             return .failure(.bundledHelperMissing(localPath))
         }
+        guard let helperData = try? Data(
+            contentsOf: URL(fileURLWithPath: localPath)
+        ) else {
+            return .failure(.bundledHelperMissing(localPath))
+        }
+        let digest = SHA256.hash(data: helperData)
+            .map { String(format: "%02x", $0) }
+            .joined()
 
         let uploadName = uploadNameProvider()
         let transferRunner = transferRunner
@@ -128,7 +151,12 @@ struct KwtWindowsInstaller: Sendable {
         let activationResult = await Task.detached {
             remoteRunner(
                 host,
-                Self.activationCommand(uploadName: uploadName)
+                Self.activationCommand(
+                    uploadName: uploadName,
+                    managedRelativePath: managedRelativePath,
+                    revision: revision,
+                    digest: digest
+                )
             )
         }.value
         guard activationResult.status == 0 else {
@@ -152,15 +180,21 @@ struct KwtWindowsInstaller: Sendable {
     """
 
     private static func activationCommand(
-        uploadName: String
+        uploadName: String,
+        managedRelativePath: String,
+        revision: String,
+        digest: String
     ) -> String {
-        """
+        let expectedVersion = "kwt version \(revision)"
+        return """
         $ErrorActionPreference = 'Stop'
         [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
         $OutputEncoding = [Console]::OutputEncoding
         $ghosthubUpload = Join-Path $env:USERPROFILE \(powerShellEncodedArgument(uploadName))
-        $ghosthubDirectory = Join-Path $env:USERPROFILE '.ghosthub\\bin'
-        $ghosthubDestination = Join-Path $ghosthubDirectory 'kwt.exe'
+        $ghosthubDestination = Join-Path $env:USERPROFILE \(
+            powerShellEncodedArgument(managedRelativePath)
+        )
+        $ghosthubDirectory = Split-Path -Parent $ghosthubDestination
         $ghosthubStaging = Join-Path $ghosthubDirectory ('kwt-stage-' + [System.Guid]::NewGuid().ToString('N') + '.exe')
         $ghosthubBackup = Join-Path $ghosthubDirectory ('kwt-backup-' + [System.Guid]::NewGuid().ToString('N') + '.exe')
         $ghosthubHadPrevious = $false
@@ -168,9 +202,19 @@ struct KwtWindowsInstaller: Sendable {
         try {
             New-Item -ItemType Directory -Force -Path $ghosthubDirectory | Out-Null
             Move-Item -LiteralPath $ghosthubUpload -Destination $ghosthubStaging
-            & $ghosthubStaging '--version' *> $null
-            if ($LASTEXITCODE -ne 0) {
-                exit $LASTEXITCODE
+            $ghosthubDigest = (Get-FileHash -LiteralPath $ghosthubStaging -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($ghosthubDigest -cne \(powerShellEncodedArgument(digest))) {
+                exit 65
+            }
+            $ghosthubVersionOutput = @(& $ghosthubStaging 'version')
+            $ghosthubVersionStatus = $LASTEXITCODE
+            if ($ghosthubVersionStatus -ne 0) {
+                exit $ghosthubVersionStatus
+            }
+            if (($ghosthubVersionOutput.Count -eq 0) -or ([string]$ghosthubVersionOutput[0] -cne \(
+                powerShellEncodedArgument(expectedVersion)
+            ))) {
+                exit 66
             }
             if (Test-Path -LiteralPath $ghosthubDestination -PathType Leaf) {
                 $ghosthubHadPrevious = $true
@@ -179,9 +223,15 @@ struct KwtWindowsInstaller: Sendable {
                 [System.IO.File]::Move($ghosthubStaging, $ghosthubDestination)
             }
             $ghosthubReplacementComplete = $true
-            & $ghosthubDestination '--version' *> $null
-            if ($LASTEXITCODE -ne 0) {
-                $ghosthubVerificationStatus = $LASTEXITCODE
+            $ghosthubInstalledVersionOutput = @(& $ghosthubDestination 'version')
+            $ghosthubVerificationStatus = $LASTEXITCODE
+            $ghosthubInstalledVersionMatches = ($ghosthubInstalledVersionOutput.Count -gt 0) -and ([string]$ghosthubInstalledVersionOutput[0] -ceq \(
+                powerShellEncodedArgument(expectedVersion)
+            ))
+            if (($ghosthubVerificationStatus -ne 0) -or (-not $ghosthubInstalledVersionMatches)) {
+                if ($ghosthubVerificationStatus -eq 0) {
+                    $ghosthubVerificationStatus = 66
+                }
                 if ($ghosthubHadPrevious -and (Test-Path -LiteralPath $ghosthubBackup -PathType Leaf)) {
                     [System.IO.File]::Replace($ghosthubBackup, $ghosthubDestination, $null, $true)
                 } else {
@@ -211,12 +261,20 @@ struct KwtWindowsInstaller: Sendable {
         in output: String,
         marker: String
     ) -> String? {
-        output
-            .split(whereSeparator: \.isNewline)
-            .lazy
-            .map(String.init)
-            .first { $0.hasPrefix(marker) }
-            .map { String($0.dropFirst(marker.count)) }
+        let normalizedOutput = output.replacingOccurrences(
+            of: "\r\n",
+            with: "\n"
+        )
+        guard let markerRange = normalizedOutput.range(
+            of: marker,
+            options: .backwards
+        ) else {
+            return nil
+        }
+        let value = normalizedOutput[markerRange.upperBound...]
+            .prefix(while: { !$0.isNewline })
+            .trimmingCharacters(in: .whitespaces)
+        return value.isEmpty ? nil : value
     }
 
     private static func transfer(

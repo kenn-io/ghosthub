@@ -48,28 +48,33 @@ public func powerShellEncodedCommand(_ command: String) -> String {
     ].joined(separator: " ")
 }
 
-public let ghosthubManagedWindowsKwtRelativePath =
-    #".ghosthub\bin\kwt.exe"#
-
-public func powerShellKwtResolutionPrelude() -> String {
-    """
-    $ghosthubManagedKwt = Join-Path $env:USERPROFILE \(
-        powerShellEncodedArgument(ghosthubManagedWindowsKwtRelativePath)
+public func powerShellKwtResolutionPrelude(
+    managedRelativePath: String?
+) -> String {
+    guard let managedRelativePath else {
+        return "throw 'Ghosthub managed kwt is unavailable'"
+    }
+    return """
+    $ghosthubKwt = Join-Path $env:USERPROFILE \(
+        powerShellEncodedArgument(managedRelativePath)
     )
-    if (Test-Path -LiteralPath $ghosthubManagedKwt -PathType Leaf) {
-        $ghosthubKwt = $ghosthubManagedKwt
-    } else {
-        $ghosthubKwt = (Get-Command kwt.exe -CommandType Application -ErrorAction Stop).Source
+    if (-not (Test-Path -LiteralPath $ghosthubKwt -PathType Leaf)) {
+        throw 'Ghosthub managed kwt is unavailable'
     }
     """
 }
 
-public func powerShellKwtAvailabilityPrelude() -> String {
-    """
+public func powerShellKwtAvailabilityPrelude(
+    managedRelativePath: String?
+) -> String {
+    guard let managedRelativePath else {
+        return "$ghosthubKwtAvailable = $false"
+    }
+    return """
     $ghosthubManagedKwt = Join-Path $env:USERPROFILE \(
-        powerShellEncodedArgument(ghosthubManagedWindowsKwtRelativePath)
+        powerShellEncodedArgument(managedRelativePath)
     )
-    $ghosthubKwtAvailable = (Test-Path -LiteralPath $ghosthubManagedKwt -PathType Leaf) -or ($null -ne (Get-Command kwt.exe -CommandType Application -ErrorAction SilentlyContinue))
+    $ghosthubKwtAvailable = Test-Path -LiteralPath $ghosthubManagedKwt -PathType Leaf
     """
 }
 
@@ -198,6 +203,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         tmuxPath: String = "tmux",
         kwtPath: String? = nil,
         remoteKwtCommandPrelude: String? = nil,
+        windowsKwtRelativePath: String? = nil,
         workingDirectory: String? = nil,
         sshConnectionArguments: [String] = tmuxSSHConnectionArguments()
     ) -> String {
@@ -222,12 +228,14 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                     return windowsRemoteWorkspaceAttachCommand(
                         info: info,
                         tmuxPath: tmuxPath,
+                        windowsKwtRelativePath: windowsKwtRelativePath,
                         sshConnectionArguments: sshConnectionArguments
                     )
                 }
                 return windowsRemoteAttachCommand(
                     info: info,
                     tmuxPath: tmuxPath,
+                    windowsKwtRelativePath: windowsKwtRelativePath,
                     sshConnectionArguments: sshConnectionArguments
                 )
             }
@@ -615,12 +623,14 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
     private func windowsRemoteWorkspaceAttachCommand(
         info: SSHHostInfo,
         tmuxPath: String,
+        windowsKwtRelativePath: String?,
         sshConnectionArguments: [String]
     ) -> String {
         guard let workspacePath else {
             return windowsRemoteAttachCommand(
                 info: info,
                 tmuxPath: tmuxPath,
+                windowsKwtRelativePath: windowsKwtRelativePath,
                 sshConnectionArguments: sshConnectionArguments
             )
         }
@@ -629,7 +639,9 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
         $OutputEncoding = [Console]::OutputEncoding
         Remove-Item Env:TMUX, Env:TMUX_PANE -ErrorAction SilentlyContinue
-        \(powerShellKwtResolutionPrelude())
+        \(powerShellKwtResolutionPrelude(
+            managedRelativePath: windowsKwtRelativePath
+        ))
         & $ghosthubKwt 'open' \(powerShellEncodedArgument(workspacePath))
         exit $LASTEXITCODE
         """
@@ -665,6 +677,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         let reconnectAttach = windowsRemoteAttachCommand(
             info: info,
             tmuxPath: tmuxPath,
+            windowsKwtRelativePath: windowsKwtRelativePath,
             sshConnectionArguments: sshConnectionArguments
         )
         return shellCommand([
@@ -677,12 +690,15 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
     private func windowsRemoteAttachCommand(
         info: SSHHostInfo,
         tmuxPath: String,
+        windowsKwtRelativePath: String? = nil,
         sshConnectionArguments: [String]
     ) -> String {
         let attach: String
         if let protectedWorkspacePath {
             attach = """
-            \(powerShellKwtResolutionPrelude())
+            \(powerShellKwtResolutionPrelude(
+                managedRelativePath: windowsKwtRelativePath
+            ))
             & $ghosthubKwt 'pr' 'attach' \(powerShellEncodedArgument(protectedWorkspacePath))
             """
         } else {

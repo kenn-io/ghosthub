@@ -8,6 +8,12 @@ import Testing
 struct KwtWindowsInstallerTests {
     @Test("installs the matching bundled helper at the managed path")
     func installsArm64Helper() async throws {
+        let revision = String(repeating: "a", count: 40)
+        let managedPath = try #require(
+            KwtBinaryLocator.windowsRemoteManagedRelativePath(
+                revision: revision
+            )
+        )
         let bundleURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(
                 "Ghosthub-\(UUID().uuidString).app",
@@ -25,31 +31,50 @@ struct KwtWindowsInstallerTests {
 
         let installer = KwtWindowsInstaller(
             bundleURL: bundleURL,
+            revision: revision,
             remoteRunner: { host, command in
                 #expect(host.platform == .windows)
                 if command.contains("OSArchitecture") {
                     return (
                         status: 0,
-                        stdout: "GHOSTHUB_WINDOWS_ARCH=Arm64\n"
+                        stdout:
+                        "banner without newline"
+                            + "GHOSTHUB_WINDOWS_ARCH=Arm64\r\n"
                     )
                 }
-                #expect(command.contains(#".ghosthub\bin"#))
+                #expect(command.contains(
+                    powerShellEncodedArgument(managedPath)
+                ))
                 #expect(command.contains(
                     powerShellEncodedArgument("ghosthub-upload.exe")
                 ))
-                #expect(command.contains("'kwt.exe'"))
+                #expect(command.contains("Get-FileHash"))
+                #expect(command.contains("-Algorithm SHA256"))
+                #expect(command.contains("$ghosthubDigest -cne "))
+                #expect(command.contains(
+                    powerShellEncodedArgument(
+                        "kwt version \(revision)"
+                    )
+                ))
                 #expect(command.contains("[System.IO.File]::Replace"))
                 #expect(command.contains("$ghosthubBackup"))
                 let stagedVerification = command.range(
-                    of: "& $ghosthubStaging '--version'"
+                    of: "& $ghosthubStaging 'version'"
+                )?.lowerBound
+                let digestVerification = command.range(
+                    of: "Get-FileHash"
                 )?.lowerBound
                 let replacement = command.range(
                     of: "[System.IO.File]::Replace("
                 )?.lowerBound
                 #expect(stagedVerification != nil)
+                #expect(digestVerification != nil)
                 #expect(replacement != nil)
-                if let stagedVerification, let replacement {
+                if let stagedVerification,
+                   let digestVerification,
+                   let replacement {
                     #expect(stagedVerification < replacement)
+                    #expect(digestVerification < replacement)
                 }
                 return (
                     status: 0,
@@ -78,6 +103,7 @@ struct KwtWindowsInstallerTests {
     @Test("rejects a Windows architecture without a bundled target")
     func rejectsUnsupportedArchitecture() async {
         let installer = KwtWindowsInstaller(
+            revision: String(repeating: "b", count: 40),
             remoteRunner: { _, _ in
                 (
                     status: 0,

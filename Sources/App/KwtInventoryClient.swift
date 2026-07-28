@@ -139,12 +139,17 @@ struct KwtInventoryClient: Sendable {
         case .local: "this Mac"
         case let .ssh(info): info.displayName
         }
+        let windowsKwtRelativePath =
+            KwtBinaryLocator.windowsRemoteManagedRelativePath(
+                revision: remoteBinaryRevision
+            )
         let projects: [KwtProjectRecord] = try decode(
             run(
                 host: host,
                 command: Self.projectsCommand(
                     platform: platform(for: host),
-                    binaryPrelude: binaryPrelude(for: host)
+                    binaryPrelude: binaryPrelude(for: host),
+                    windowsKwtRelativePath: windowsKwtRelativePath
                 )
             ),
             hostLabel: hostLabel
@@ -161,7 +166,8 @@ struct KwtInventoryClient: Sendable {
                         command: Self.worktreesCommand(
                             projectPath: project.path,
                             platform: platform(for: host),
-                            binaryPrelude: binaryPrelude(for: host)
+                            binaryPrelude: binaryPrelude(for: host),
+                            windowsKwtRelativePath: windowsKwtRelativePath
                         )
                     )
                     do {
@@ -265,12 +271,14 @@ struct KwtInventoryClient: Sendable {
 
     private static func projectsCommand(
         platform: SSHHostInfo.Platform,
-        binaryPrelude: String
+        binaryPrelude: String,
+        windowsKwtRelativePath: String?
     ) -> String {
         if platform == .windows {
             return KwtPowerShellCommand.run(
                 arguments: ["projects", "--json"],
-                marker: "GHOSTHUB_KWT_JSON"
+                marker: "GHOSTHUB_KWT_JSON",
+                managedRelativePath: windowsKwtRelativePath
             )
         }
         return binaryPrelude
@@ -281,13 +289,15 @@ struct KwtInventoryClient: Sendable {
     private static func worktreesCommand(
         projectPath: String,
         platform: SSHHostInfo.Platform,
-        binaryPrelude: String
+        binaryPrelude: String,
+        windowsKwtRelativePath: String?
     ) -> String {
         if platform == .windows {
             return KwtPowerShellCommand.run(
                 arguments: ["list", "--json"],
                 workingDirectory: projectPath,
-                marker: "GHOSTHUB_KWT_JSON"
+                marker: "GHOSTHUB_KWT_JSON",
+                managedRelativePath: windowsKwtRelativePath
             )
         }
         return binaryPrelude

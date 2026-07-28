@@ -1956,11 +1956,20 @@ struct WorkspaceTmuxDiscoveryTests {
                 #expect(host.platform == .windows)
                 #expect(command.contains("Get-Command tmux.exe"))
                 #expect(command.contains("GHOSTHUB_KWT_AVAILABLE"))
-                #expect(command.contains(
-                    powerShellEncodedArgument(
-                        ghosthubManagedWindowsKwtRelativePath
-                    )
-                ))
+                if let managedPath =
+                    KwtBinaryLocator.windowsRemoteManagedRelativePath(
+                        revision:
+                        KwtBinaryLocator.bundledRemoteRevision()
+                    ) {
+                    #expect(command.contains(
+                        powerShellEncodedArgument(managedPath)
+                    ))
+                } else {
+                    #expect(command.contains(
+                        "$ghosthubKwtAvailable = $false"
+                    ))
+                }
+                #expect(!command.contains("Get-Command kwt.exe"))
                 #expect(!command.contains("command -v"))
                 return (
                     status: 0,

@@ -1418,6 +1418,10 @@ final class WorkspaceSceneModel: ObservableObject {
         let kwtPrelude = KwtBinaryLocator.remoteCommandPrelude(
             revision: KwtBinaryLocator.bundledRemoteRevision()
         )
+        let windowsKwtRelativePath =
+            KwtBinaryLocator.windowsRemoteManagedRelativePath(
+                revision: KwtBinaryLocator.bundledRemoteRevision()
+            )
         let probeCommand: String
         if host.platform == .windows {
             probeCommand = """
@@ -1436,7 +1440,9 @@ final class WorkspaceSceneModel: ObservableObject {
             if ($LASTEXITCODE -ne 0) {
                 exit $LASTEXITCODE
             }
-            \(KwtPowerShellCommand.availabilityPrelude)
+            \(KwtPowerShellCommand.availabilityPrelude(
+                managedRelativePath: windowsKwtRelativePath
+            ))
             if ($ghosthubKwtAvailable) {
                 Write-Output 'GHOSTHUB_KWT_AVAILABLE'
             } else {

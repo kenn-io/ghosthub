@@ -84,6 +84,12 @@ struct KwtWorktreeClientTests {
         let recorder = CommandRecorder()
         let projectPath = #"C:\code\ghost hub"#
         let branchName = #"x’;iex("attacker-command");#‘&|$()"#
+        let revision = String(repeating: "e", count: 40)
+        let managedPath = try #require(
+            KwtBinaryLocator.windowsRemoteManagedRelativePath(
+                revision: revision
+            )
+        )
         let ssh = SSHHostInfo(
             user: "wesm",
             hostname: "arm-builder",
@@ -94,7 +100,8 @@ struct KwtWorktreeClientTests {
             remoteRunner: { host, command in
                 recorder.record(host: host, command: command)
                 return (0, "")
-            }
+            },
+            remoteBinaryRevision: revision
         )
 
         try await client.create(
@@ -108,7 +115,10 @@ struct KwtWorktreeClientTests {
         )
 
         #expect(recorder.host == ssh)
-        #expect(recorder.command?.contains("Get-Command kwt.exe") == true)
+        #expect(recorder.command?.contains(
+            powerShellEncodedArgument(managedPath)
+        ) == true)
+        #expect(recorder.command?.contains("Get-Command kwt.exe") == false)
         #expect(recorder.command?.contains(
             "Set-Location -LiteralPath "
                 + powerShellEncodedArgument(projectPath)

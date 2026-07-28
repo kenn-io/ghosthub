@@ -99,7 +99,11 @@ struct KwtPullRequestClient: Sendable {
             Self.listCommand(
                 projectIdentity: projectIdentity,
                 platform: platform(for: host),
-                binaryPrelude: binaryPrelude(for: host)
+                binaryPrelude: binaryPrelude(for: host),
+                windowsKwtRelativePath:
+                KwtBinaryLocator.windowsRemoteManagedRelativePath(
+                    revision: remoteBinaryRevision
+                )
             ),
             on: host
         )
@@ -116,7 +120,11 @@ struct KwtPullRequestClient: Sendable {
                 id: id,
                 projectIdentity: projectIdentity,
                 platform: platform(for: host),
-                binaryPrelude: binaryPrelude(for: host)
+                binaryPrelude: binaryPrelude(for: host),
+                windowsKwtRelativePath:
+                KwtBinaryLocator.windowsRemoteManagedRelativePath(
+                    revision: remoteBinaryRevision
+                )
             ),
             on: host
         )
@@ -228,7 +236,8 @@ struct KwtPullRequestClient: Sendable {
     static func listCommand(
         projectIdentity: String,
         platform: SSHHostInfo.Platform = .posix,
-        binaryPrelude: String
+        binaryPrelude: String,
+        windowsKwtRelativePath: String? = nil
     ) -> String {
         if platform == .windows {
             return KwtPowerShellCommand.run(
@@ -236,7 +245,8 @@ struct KwtPullRequestClient: Sendable {
                     "pr", "list", "--project", projectIdentity,
                     "--state", "open", "--json",
                 ],
-                marker: "GHOSTHUB_KWT_PR_JSON"
+                marker: "GHOSTHUB_KWT_PR_JSON",
+                managedRelativePath: windowsKwtRelativePath
             )
         }
         return commandPrelude(binaryPrelude: binaryPrelude)
@@ -249,7 +259,8 @@ struct KwtPullRequestClient: Sendable {
         id: String,
         projectIdentity: String,
         platform: SSHHostInfo.Platform = .posix,
-        binaryPrelude: String
+        binaryPrelude: String,
+        windowsKwtRelativePath: String? = nil
     ) -> String {
         if platform == .windows {
             return KwtPowerShellCommand.run(
@@ -257,7 +268,8 @@ struct KwtPullRequestClient: Sendable {
                     "pr", "import", id, "--project", projectIdentity,
                     "--json",
                 ],
-                marker: "GHOSTHUB_KWT_PR_JSON"
+                marker: "GHOSTHUB_KWT_PR_JSON",
+                managedRelativePath: windowsKwtRelativePath
             )
         }
         return commandPrelude(binaryPrelude: binaryPrelude)

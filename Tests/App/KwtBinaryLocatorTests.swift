@@ -63,4 +63,23 @@ struct KwtBinaryLocatorTests {
             )
         )
     }
+
+    @Test("Windows managed helper path is revision-pinned")
+    func windowsManagedHelperPath() {
+        let revision = String(repeating: "f", count: 40)
+
+        #expect(
+            KwtBinaryLocator.windowsRemoteManagedRelativePath(
+                revision: revision
+            )
+                == #".ghosthub\helpers\kwt\"#
+                + revision
+                + #"\kwt.exe"#
+        )
+        #expect(
+            KwtBinaryLocator.windowsRemoteManagedRelativePath(
+                revision: "unpinned"
+            ) == nil
+        )
+    }
 }

@@ -85,6 +85,12 @@ struct KwtPullRequestClientTests {
     @Test("Windows listing uses the native kwt PowerShell contract")
     func windowsRemoteListing() async throws {
         let recorder = PullRequestCommandRecorder()
+        let revision = String(repeating: "d", count: 40)
+        let managedPath = try #require(
+            KwtBinaryLocator.windowsRemoteManagedRelativePath(
+                revision: revision
+            )
+        )
         let ssh = SSHHostInfo(
             user: "wesm",
             hostname: "arm-builder",
@@ -106,7 +112,8 @@ struct KwtPullRequestClientTests {
                             with: "\r\n"
                         )
                 )
-            }
+            },
+            remoteBinaryRevision: revision
         )
 
         let candidates = try await client.list(
@@ -115,7 +122,10 @@ struct KwtPullRequestClientTests {
         )
 
         #expect(recorder.host == ssh)
-        #expect(recorder.command?.contains("Get-Command kwt.exe") == true)
+        #expect(recorder.command?.contains(
+            powerShellEncodedArgument(managedPath)
+        ) == true)
+        #expect(recorder.command?.contains("Get-Command kwt.exe") == false)
         #expect(recorder.command?.contains(
             ["pr", "list", "--project", "github.com/kenn-io/ghosthub"]
                 .map(powerShellEncodedArgument)

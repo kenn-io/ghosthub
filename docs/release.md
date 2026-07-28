@@ -17,8 +17,9 @@ arm64.
 Ghosthub uploads a variant only after the user chooses Install or Update,
 verifies its SHA-256 remotely, and invokes the exact revisioned path under
 `~/.ghosthub/helpers/kwt/`; it never replaces or resolves a system `kwt`.
-Experimental Windows installation instead uses PowerShell to place the
-matching PE helper at `%USERPROFILE%\.ghosthub\bin\kwt.exe`. These Windows
+Experimental Windows installation follows the same pinning contract through
+PowerShell, placing the matching PE helper at
+`%USERPROFILE%\.ghosthub\helpers\kwt\<revision>\kwt.exe`. These Windows
 payloads remain unsigned until an approved Authenticode/DigiCert signing step
 is added, so they are not enterprise-ready release artifacts.
 

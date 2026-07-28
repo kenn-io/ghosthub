@@ -185,8 +185,10 @@ endpoint changed while Add Project was open. No filesystem scan occurs.
 
 On experimental Windows hosts, an explicit Install Bundled kwt action probes
 the process architecture, uploads the matching pinned AMD64 or ARM64 helper,
-and activates it at `%USERPROFILE%\.ghosthub\bin\kwt.exe`. Inventory prefers
-that per-user managed helper and otherwise resolves `kwt.exe` from `PATH`.
+verifies its SHA-256 and exact revision, and activates it at
+`%USERPROFILE%\.ghosthub\helpers\kwt\<revision>\kwt.exe`. Inventory and
+workspace operations use only that exact per-user helper and never resolve
+`kwt.exe` from `PATH`.
 Project registration is not yet supported on Windows, so its Add Project
 actions are hidden. Discovery never installs or updates remote software
 implicitly.

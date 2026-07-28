@@ -76,17 +76,23 @@ struct KwtWorktreeClient: Sendable {
         on host: TmuxHost
     ) async throws {
         let binaryPrelude: String
+        let windowsKwtRelativePath: String?
         let platform: SSHHostInfo.Platform
         switch host {
         case .local:
             binaryPrelude = KwtBinaryLocator.commandPrelude(
                 exactPath: localBinaryPath
             )
+            windowsKwtRelativePath = nil
             platform = .posix
         case let .ssh(info):
             binaryPrelude = KwtBinaryLocator.remoteCommandPrelude(
                 revision: remoteBinaryRevision
             )
+            windowsKwtRelativePath =
+                KwtBinaryLocator.windowsRemoteManagedRelativePath(
+                    revision: remoteBinaryRevision
+                )
             platform = info.platform
         }
         let command = Self.command(
@@ -94,7 +100,8 @@ struct KwtWorktreeClient: Sendable {
             createsBranch: request.createsBranch,
             projectPath: projectPath,
             platform: platform,
-            binaryPrelude: binaryPrelude
+            binaryPrelude: binaryPrelude,
+            windowsKwtRelativePath: windowsKwtRelativePath
         )
         let localRunner = localRunner
         let remoteRunner = remoteRunner
@@ -120,7 +127,8 @@ struct KwtWorktreeClient: Sendable {
         createsBranch: Bool,
         projectPath: String,
         platform: SSHHostInfo.Platform = .posix,
-        binaryPrelude: String
+        binaryPrelude: String,
+        windowsKwtRelativePath: String? = nil
     ) -> String {
         if platform == .windows {
             var arguments = ["add"]
@@ -130,7 +138,8 @@ struct KwtWorktreeClient: Sendable {
             arguments += [branchName, "--no-launch"]
             return KwtPowerShellCommand.run(
                 arguments: arguments,
-                workingDirectory: projectPath
+                workingDirectory: projectPath,
+                managedRelativePath: windowsKwtRelativePath
             )
         }
         let branchFlag = createsBranch ? " --branch" : ""

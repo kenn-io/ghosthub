@@ -78,6 +78,12 @@ struct KwtInventoryClientTests {
 
     @Test("Windows inventory invokes native kwt through PowerShell")
     func windowsRemoteInventory() async throws {
+        let revision = String(repeating: "b", count: 40)
+        let managedPath = try #require(
+            KwtBinaryLocator.windowsRemoteManagedRelativePath(
+                revision: revision
+            )
+        )
         let ssh = SSHHostInfo(
             user: "wesm",
             hostname: "arm-builder",
@@ -87,7 +93,10 @@ struct KwtInventoryClientTests {
         let client = KwtInventoryClient(
             remoteRunner: { host, command in
                 #expect(host == ssh)
-                #expect(command.contains("Get-Command kwt.exe"))
+                #expect(command.contains(
+                    powerShellEncodedArgument(managedPath)
+                ))
+                #expect(!command.contains("Get-Command kwt.exe"))
                 #expect(command.contains(
                     ["projects", "--json"]
                         .map(powerShellEncodedArgument)
@@ -103,7 +112,8 @@ struct KwtInventoryClientTests {
                     "PowerShell banner without newline"
                         + "GHOSTHUB_KWT_JSON\r\n[]\r\n"
                 )
-            }
+            },
+            remoteBinaryRevision: revision
         )
 
         let inventory = try await client.load(from: .ssh(ssh))

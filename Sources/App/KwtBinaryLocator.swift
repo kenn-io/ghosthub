@@ -89,6 +89,17 @@ enum KwtBinaryLocator {
             + "[ -x \"$ghosthub_kwt_path\" ] || exit 127; "
     }
 
+    static func windowsRemoteManagedRelativePath(
+        revision: String?
+    ) -> String? {
+        guard let revision = validRevision(revision) else {
+            return nil
+        }
+        return #".ghosthub\helpers\kwt\"#
+            + revision
+            + #"\kwt.exe"#
+    }
+
     static func windowsBundledPath(
         architecture: WindowsArchitecture,
         bundleURL: URL = Bundle.main.bundleURL
