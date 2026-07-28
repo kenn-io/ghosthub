@@ -367,9 +367,27 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
             remoteKwtCommandPrelude: nil,
             sshConnectionArguments: sshConnectionArguments
         )
+        let hasSession = tmuxArguments(
+            tmuxPath,
+            "has-session", "-t", "=\(sessionName)"
+        ).map(shellQuotedCommandArgument).joined(separator: " ")
+        let remoteProbe = "unset TMUX TMUX_PANE; "
+            + "exec \(hasSession) >/dev/null 2>&1"
+        let sessionProbe = shellCommand(
+            [
+                "/bin/sh", "-c", Self.sshReconnectScript,
+                "ghosthub-ssh-kwt-probe",
+            ] + sshArguments(
+                info: info,
+                allocateTTY: false,
+                remoteCommand: remoteProbe,
+                sshConnectionArguments: sshConnectionArguments
+            )
+        )
         return shellCommand([
             "/bin/sh", "-c", Self.remoteWorkspaceAttachScript,
-            "ghosthub-ssh-kwt-attach", initialAttach, reconnectAttach,
+            "ghosthub-ssh-kwt-attach",
+            initialAttach, sessionProbe, reconnectAttach,
         ])
     }
 
@@ -479,14 +497,24 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
     exec /bin/sh -c "$2"
     """
 
-    /// The first kwt client stays attached while it creates the workspace.
-    /// Only an SSH transport loss hands the live session to the ordinary
-    /// attach-only reconnect loop.
+    /// The first kwt client stays attached while it creates the workspace. An
+    /// SSH transport loss probes the exact session through the ordinary retry
+    /// loop: confirmed presence advances to attach-only reconnect, while
+    /// confirmed absence retries kwt because the original SSH connection may
+    /// have failed before the remote command ran.
     static let remoteWorkspaceAttachScript = """
-    /bin/sh -c "$1"
-    status=$?
-    [ "$status" -eq 255 ] || exit "$status"
-    exec /bin/sh -c "$2"
+    while :; do
+        /bin/sh -c "$1"
+        status=$?
+        [ "$status" -eq 255 ] || exit "$status"
+        /bin/sh -c "$2"
+        status=$?
+        case "$status" in
+            0) exec /bin/sh -c "$3" ;;
+            1) ;;
+            *) exit "$status" ;;
+        esac
+    done
     """
 
     /// OpenSSH reserves status 255 for transport/setup failure. Clean detach

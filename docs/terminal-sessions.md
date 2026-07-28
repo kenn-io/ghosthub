@@ -83,8 +83,11 @@ configured layout when it is absent, without an intermediate detached session
 that `destroy-unattached` could remove. A session already confirmed by direct
 discovery uses ordinary `tmux attach-session`, so cached kwt inventory remains
 usable while the managed helper is unavailable. On a remote host, only an SSH
-transport loss hands a kwt-opened session to Ghosthub's attach-only reconnect
-loop. Unbound discovered sessions remain attach-only. Ghosthub does not expose
+transport loss can hand a kwt-opened session to Ghosthub's attach-only
+reconnect loop. Ghosthub first retries SSH to probe the exact session: confirmed
+presence advances to ordinary attachment, while confirmed absence reruns
+`kwt open` because the failed SSH connection may never have executed it.
+Unbound discovered sessions remain attach-only. Ghosthub does not expose
 rename, split, resize, window, or pane operations. Kill Session is exposed
 separately from presentation only for a session known to be running and always
 requires confirmation.

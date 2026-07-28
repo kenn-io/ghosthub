@@ -438,11 +438,8 @@ struct TmuxAttachmentInfoTests {
         #expect(command.contains("'-tt'"))
         #expect(command.contains("/srv/widget feature"))
         #expect(!command.contains("--start-session"))
-        #expect(
-            command.components(
-                separatedBy: "SSH disconnected; reconnecting"
-            ).count == 2
-        )
+        #expect(command.contains("ghosthub-ssh-kwt-probe"))
+        #expect(command.contains("has-session"))
     }
 
     @Test("remote worktree switches to tmux only after transport loss")
@@ -454,15 +451,19 @@ struct TmuxAttachmentInfoTests {
         )
         defer { try? FileManager.default.removeItem(at: directory) }
         let initial = directory.appendingPathComponent("initial")
+        let probe = directory.appendingPathComponent("probe")
         let reconnect = directory.appendingPathComponent("reconnect")
         try "#!/bin/sh\nexit 255\n".write(
             to: initial, atomically: true, encoding: .utf8
+        )
+        try "#!/bin/sh\nexit 0\n".write(
+            to: probe, atomically: true, encoding: .utf8
         )
         try """
         #!/bin/sh
         : > "$GHOSTHUB_RECONNECT_MARKER"
         """.write(to: reconnect, atomically: true, encoding: .utf8)
-        for executable in [initial, reconnect] {
+        for executable in [initial, probe, reconnect] {
             try FileManager.default.setAttributes(
                 [.posixPermissions: 0o755], ofItemAtPath: executable.path
             )
@@ -471,7 +472,7 @@ struct TmuxAttachmentInfoTests {
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = [
             "-c", TmuxAttachmentInfo.remoteWorkspaceAttachScript,
-            "ghosthub-test", initial.path, reconnect.path,
+            "ghosthub-test", initial.path, probe.path, reconnect.path,
         ]
         process.environment = ProcessInfo.processInfo.environment.merging([
             "GHOSTHUB_RECONNECT_MARKER": reconnect.path + ".ran",
@@ -483,6 +484,61 @@ struct TmuxAttachmentInfoTests {
 
         #expect(process.terminationStatus == 0)
         #expect(FileManager.default.fileExists(
+            atPath: reconnect.path + ".ran"
+        ))
+    }
+
+    @Test("remote worktree retries kwt when transport fails before creation")
+    func remoteWorktreeRetriesKwtWhenSessionIsAbsent() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let initialCounter = directory.appendingPathComponent("initial-count")
+        let initial = directory.appendingPathComponent("initial")
+        let probe = directory.appendingPathComponent("probe")
+        let reconnect = directory.appendingPathComponent("reconnect")
+        try """
+        #!/bin/sh
+        printf x >> "$GHOSTHUB_INITIAL_COUNTER"
+        [ "$(wc -c < "$GHOSTHUB_INITIAL_COUNTER")" -gt 1 ] && exit 0
+        exit 255
+        """.write(to: initial, atomically: true, encoding: .utf8)
+        try "#!/bin/sh\nexit 1\n".write(
+            to: probe, atomically: true, encoding: .utf8
+        )
+        try """
+        #!/bin/sh
+        : > "$GHOSTHUB_RECONNECT_MARKER"
+        """.write(to: reconnect, atomically: true, encoding: .utf8)
+        for executable in [initial, probe, reconnect] {
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o755], ofItemAtPath: executable.path
+            )
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = [
+            "-c", TmuxAttachmentInfo.remoteWorkspaceAttachScript,
+            "ghosthub-test", initial.path, probe.path, reconnect.path,
+        ]
+        process.environment = ProcessInfo.processInfo.environment.merging([
+            "GHOSTHUB_INITIAL_COUNTER": initialCounter.path,
+            "GHOSTHUB_RECONNECT_MARKER": reconnect.path + ".ran",
+        ]) { _, new in new }
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+
+        #expect(process.terminationStatus == 0)
+        #expect(
+            try String(contentsOf: initialCounter, encoding: .utf8) == "xx"
+        )
+        #expect(!FileManager.default.fileExists(
             atPath: reconnect.path + ".ran"
         ))
     }

@@ -64,7 +64,9 @@ through kwt's ordinary default-server open paths. It must also support
 workspace's canonical session and keeps its initial tmux client attached.
 Exact-path resolution must operate from the supplied Git worktree rather than
 depending on the configured global base because repository-local inventory
-can report linked worktrees stored elsewhere.
+can report linked worktrees stored elsewhere. Its start-only automation mode
+must never prompt for target-config trust or fuzzy layout selection; callers
+may still select a deterministic layout explicitly.
 
 Because a separately installed kwt can access the same user-owned kwt state,
 kwt must preserve backward compatibility for supported on-disk state and
