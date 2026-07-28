@@ -98,6 +98,7 @@ struct KwtPullRequestClient: Sendable {
         let response: ListResponse = try await execute(
             Self.listCommand(
                 projectIdentity: projectIdentity,
+                platform: platform(for: host),
                 binaryPrelude: binaryPrelude(for: host)
             ),
             on: host
@@ -114,6 +115,7 @@ struct KwtPullRequestClient: Sendable {
             Self.importCommand(
                 id: id,
                 projectIdentity: projectIdentity,
+                platform: platform(for: host),
                 binaryPrelude: binaryPrelude(for: host)
             ),
             on: host
@@ -169,6 +171,15 @@ struct KwtPullRequestClient: Sendable {
         }
     }
 
+    private func platform(
+        for host: TmuxHost
+    ) -> SSHHostInfo.Platform {
+        switch host {
+        case .local: .posix
+        case let .ssh(info): info.platform
+        }
+    }
+
     private static func decode<Value: Decodable>(
         _ result: (status: Int32, stdout: String),
         hostLabel: String
@@ -211,9 +222,19 @@ struct KwtPullRequestClient: Sendable {
 
     static func listCommand(
         projectIdentity: String,
+        platform: SSHHostInfo.Platform = .posix,
         binaryPrelude: String
     ) -> String {
-        commandPrelude(binaryPrelude: binaryPrelude)
+        if platform == .windows {
+            return KwtPowerShellCommand.run(
+                arguments: [
+                    "pr", "list", "--project", projectIdentity,
+                    "--state", "open", "--json",
+                ],
+                marker: "GHOSTHUB_KWT_PR_JSON"
+            )
+        }
+        return commandPrelude(binaryPrelude: binaryPrelude)
             + "exec \"$ghosthub_kwt_path\" pr list --project "
             + shellQuotedCommandArgument(projectIdentity)
             + " --state open --json"
@@ -222,9 +243,19 @@ struct KwtPullRequestClient: Sendable {
     static func importCommand(
         id: String,
         projectIdentity: String,
+        platform: SSHHostInfo.Platform = .posix,
         binaryPrelude: String
     ) -> String {
-        commandPrelude(binaryPrelude: binaryPrelude)
+        if platform == .windows {
+            return KwtPowerShellCommand.run(
+                arguments: [
+                    "pr", "import", id, "--project", projectIdentity,
+                    "--json",
+                ],
+                marker: "GHOSTHUB_KWT_PR_JSON"
+            )
+        }
+        return commandPrelude(binaryPrelude: binaryPrelude)
             + "exec \"$ghosthub_kwt_path\" pr import "
             + shellQuotedCommandArgument(id)
             + " --project "

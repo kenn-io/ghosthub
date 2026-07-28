@@ -117,6 +117,35 @@ struct TmuxBinaryResolverTests {
         #expect(resolver.discoverSessions(on: host) == .failure(expected))
     }
 
+    @Test("Windows resolution discovers the psmux tmux alias")
+    func resolvesWindowsPsmuxPath() throws {
+        let host = SSHHostInfo(
+            user: "wesm",
+            hostname: "arm-builder",
+            port: 2222,
+            platform: .windows
+        )
+        let resolver = TmuxBinaryResolver(
+            remoteProcessRunner: { received, command in
+                #expect(received == host)
+                #expect(command.contains("Get-Command tmux.exe"))
+                #expect(command.contains("[Console]::OutputEncoding"))
+                #expect(!command.contains("command -v"))
+                return (
+                    status: 0,
+                    stdout:
+                    #"C:\Users\wesm\scoop\apps\psmux\current\tmux.exe"#
+                        + "\ntmux 3.3.7\n"
+                )
+            }
+        )
+
+        #expect(
+            try resolver.resolveTmuxPath(on: host).get()
+                == #"C:\Users\wesm\scoop\apps\psmux\current\tmux.exe"#
+        )
+    }
+
     @Test("discovers every local tmux session without control-mode attachment")
     func discoversLocalSessions() throws {
         let resolver = TmuxBinaryResolver(processRunner: { _, command in
@@ -207,6 +236,45 @@ struct TmuxBinaryResolverTests {
                     name: "remote-work", windowCount: 3,
                     serverPID: "202",
                     sessionID: "$7", createdAt: "99", managed: false
+                )]
+        )
+    }
+
+    @Test("Windows discovery uses psmux formatted session output")
+    func discoversWindowsPsmuxSessions() throws {
+        let host = SSHHostInfo(
+            user: "wesm",
+            hostname: "arm-builder",
+            port: nil,
+            platform: .windows
+        )
+        let resolver = TmuxBinaryResolver(
+            remoteProcessRunner: { received, command in
+                #expect(received == host)
+                #expect(command.contains("Get-Command tmux.exe"))
+                #expect(command.contains("'list-sessions' '-F'"))
+                #expect(command.contains("#{session_name}"))
+                return (
+                    status: 0,
+                    stdout: """
+                    C:\\Tools\\psmux\\tmux.exe
+                    tmux 3.3.7
+                    GHOSTHUB_TMUX_SESSION\t2\t202\t$7\t1783344091\t\twindows-work
+
+                    """
+                )
+            }
+        )
+
+        #expect(
+            try resolver.discoverSessions(on: host).get()
+                == [DiscoveredTmuxSession(
+                    name: "windows-work",
+                    windowCount: 2,
+                    serverPID: "202",
+                    sessionID: "$7",
+                    createdAt: "1783344091",
+                    managed: false
                 )]
         )
     }

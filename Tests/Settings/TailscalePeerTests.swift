@@ -33,14 +33,16 @@ struct TailscalePeerTests {
     func mapsSupportedPlatforms() {
         #expect(peer(os: "macOS").platform == .macOS)
         #expect(peer(os: "linux").platform == .linux)
+        #expect(peer(os: "windows").platform == .windows)
         #expect(peer(os: "ios").platform == .linux)
     }
 
-    @Test("marks only linux and macOS peers as SSH capable")
+    @Test("marks desktop peers as SSH capable")
     func sshCapability() {
         #expect(peer(os: "linux").isSSHCapable)
         #expect(peer(os: "macOS").isSSHCapable)
-        #expect(!peer(os: "windows").isSSHCapable)
+        #expect(peer(os: "windows").isSSHCapable)
+        #expect(!peer(os: "ios").isSSHCapable)
     }
 
     private func peer(os: String) -> TailscalePeer {

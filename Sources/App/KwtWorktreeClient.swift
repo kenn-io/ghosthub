@@ -76,20 +76,24 @@ struct KwtWorktreeClient: Sendable {
         on host: TmuxHost
     ) async throws {
         let binaryPrelude: String
+        let platform: SSHHostInfo.Platform
         switch host {
         case .local:
             binaryPrelude = KwtBinaryLocator.commandPrelude(
                 exactPath: localBinaryPath
             )
-        case .ssh:
+            platform = .posix
+        case let .ssh(info):
             binaryPrelude = KwtBinaryLocator.remoteCommandPrelude(
                 revision: remoteBinaryRevision
             )
+            platform = info.platform
         }
         let command = Self.command(
             branchName: request.branchName,
             createsBranch: request.createsBranch,
             projectPath: projectPath,
+            platform: platform,
             binaryPrelude: binaryPrelude
         )
         let localRunner = localRunner
@@ -115,8 +119,20 @@ struct KwtWorktreeClient: Sendable {
         branchName: String,
         createsBranch: Bool,
         projectPath: String,
+        platform: SSHHostInfo.Platform = .posix,
         binaryPrelude: String
     ) -> String {
+        if platform == .windows {
+            var arguments = ["add"]
+            if createsBranch {
+                arguments.append("--branch")
+            }
+            arguments += [branchName, "--no-launch"]
+            return KwtPowerShellCommand.run(
+                arguments: arguments,
+                workingDirectory: projectPath
+            )
+        }
         let branchFlag = createsBranch ? " --branch" : ""
         return binaryPrelude
             + "cd -- \(shellQuotedCommandArgument(projectPath)) || exit $?; "

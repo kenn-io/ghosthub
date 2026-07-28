@@ -28,6 +28,47 @@ public func shellQuotedCommandArgument(_ value: String) -> String {
     "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
 }
 
+public func powerShellQuotedCommandArgument(_ value: String) -> String {
+    "'\(value.replacingOccurrences(of: "'", with: "''"))'"
+}
+
+public func powerShellEncodedCommand(_ command: String) -> String {
+    let data = command.data(using: .utf16LittleEndian) ?? Data()
+    return [
+        "powershell.exe",
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-EncodedCommand",
+        data.base64EncodedString(),
+    ].joined(separator: " ")
+}
+
+public let ghosthubManagedWindowsKwtRelativePath =
+    #".ghosthub\bin\kwt.exe"#
+
+public func powerShellKwtResolutionPrelude() -> String {
+    """
+    $ghosthubManagedKwt = Join-Path $env:USERPROFILE \(
+        powerShellQuotedCommandArgument(ghosthubManagedWindowsKwtRelativePath)
+    )
+    if (Test-Path -LiteralPath $ghosthubManagedKwt -PathType Leaf) {
+        $ghosthubKwt = $ghosthubManagedKwt
+    } else {
+        $ghosthubKwt = (Get-Command kwt.exe -CommandType Application -ErrorAction Stop).Source
+    }
+    """
+}
+
+public func powerShellKwtAvailabilityPrelude() -> String {
+    """
+    $ghosthubManagedKwt = Join-Path $env:USERPROFILE \(
+        powerShellQuotedCommandArgument(ghosthubManagedWindowsKwtRelativePath)
+    )
+    $ghosthubKwtAvailable = (Test-Path -LiteralPath $ghosthubManagedKwt -PathType Leaf) -or ($null -ne (Get-Command kwt.exe -CommandType Application -ErrorAction SilentlyContinue))
+    """
+}
+
 /// Initializes the remote account's login environment, then delegates
 /// Ghosthub-owned POSIX command text to `/bin/sh`. The outer simple command is
 /// accepted by POSIX shells and non-POSIX account shells such as fish.
@@ -48,14 +89,26 @@ public enum ConnectionState: Codable, Equatable, Sendable {
 }
 
 public struct SSHHostInfo: Codable, Hashable, Sendable {
+    public enum Platform: String, Codable, Hashable, Sendable {
+        case posix
+        case windows
+    }
+
     public let user: String?
     public let hostname: String
     public let port: Int?
+    public let platform: Platform
 
-    public init(user: String?, hostname: String, port: Int?) {
+    public init(
+        user: String?,
+        hostname: String,
+        port: Int?,
+        platform: Platform = .posix
+    ) {
         self.user = user
         self.hostname = hostname
         self.port = port
+        self.platform = platform
     }
 
     public var displayName: String {
@@ -403,6 +456,13 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         sshConnectionArguments: [String],
         useAccountLoginShell: Bool = false
     ) -> String {
+        if info.platform == .windows {
+            return windowsRemoteAttachCommand(
+                info: info,
+                tmuxPath: tmuxPath,
+                sshConnectionArguments: sshConnectionArguments
+            )
+        }
         let attach: String
         if let protectedWorkspacePath {
             let protectedAttach: String
@@ -526,17 +586,71 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         ])
     }
 
+    private func windowsRemoteAttachCommand(
+        info: SSHHostInfo,
+        tmuxPath: String,
+        sshConnectionArguments: [String]
+    ) -> String {
+        let attach: String
+        if let protectedWorkspacePath {
+            attach = """
+            \(powerShellKwtResolutionPrelude())
+            & $ghosthubKwt 'pr' 'attach' \(powerShellQuotedCommandArgument(protectedWorkspacePath))
+            """
+        } else {
+            attach = windowsMuxCommand(
+                tmuxPath: tmuxPath,
+                arguments: [
+                    "attach-session", "-E", "-t", "=\(sessionName)",
+                ]
+            )
+        }
+        let script = """
+        $ErrorActionPreference = 'Stop'
+        [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+        Remove-Item Env:TMUX, Env:TMUX_PANE -ErrorAction SilentlyContinue
+        \(attach)
+        exit $LASTEXITCODE
+        """
+        let remoteCommand = powerShellEncodedCommand(script)
+        return shellCommand(
+            [
+                "/bin/sh", "-c", Self.sshReconnectScript,
+                "ghosthub-ssh-psmux",
+            ] + sshArguments(
+                info: info,
+                allocateTTY: true,
+                remoteCommand: remoteCommand,
+                sshConnectionArguments: sshConnectionArguments
+            )
+        )
+    }
+
     private func remoteCreateThenAttachCommand(
         info: SSHHostInfo,
         tmuxPath: String,
         workingDirectory: String?,
         sshConnectionArguments: [String]
     ) -> String {
-        let remoteCreate = "unset TMUX TMUX_PANE; "
-            + createIfAbsentCommand(
+        let remoteCreate: String
+        if info.platform == .windows {
+            let script = """
+            $ErrorActionPreference = 'Stop'
+            [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+            Remove-Item Env:TMUX, Env:TMUX_PANE -ErrorAction SilentlyContinue
+            \(windowsCreateIfAbsentScript(
                 tmuxPath: tmuxPath,
                 workingDirectory: workingDirectory
-            )
+            ))
+            """
+            remoteCreate = powerShellEncodedCommand(script)
+        } else {
+            remoteCreate = "unset TMUX TMUX_PANE; "
+                + createIfAbsentCommand(
+                    tmuxPath: tmuxPath,
+                    workingDirectory: workingDirectory
+                )
+        }
         let createOnce = shellCommand(
             sshArguments(
                 info: info,
@@ -575,6 +689,39 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
             + "\(createSession) || \(hasSession)"
     }
 
+    private func windowsCreateIfAbsentScript(
+        tmuxPath: String,
+        workingDirectory: String?
+    ) -> String {
+        let target = "=\(sessionName)"
+        let hasSession = windowsMuxCommand(
+            tmuxPath: tmuxPath,
+            arguments: ["has-session", "-t", target]
+        )
+        var createArguments = [
+            "new-session", "-d", "-E", "-s", sessionName,
+        ]
+        if let workingDirectory {
+            createArguments += ["-c", workingDirectory]
+        }
+        let createSession = windowsMuxCommand(
+            tmuxPath: tmuxPath,
+            arguments: createArguments
+        ) + " '-e' ('PATH=' + $env:PATH)"
+        return """
+        & { \(hasSession) } *> $null
+        if ($LASTEXITCODE -ne 0) {
+            \(createSession)
+            $ghosthubCreateStatus = $LASTEXITCODE
+            if ($ghosthubCreateStatus -ne 0) {
+                & { \(hasSession) } *> $null
+                exit $LASTEXITCODE
+            }
+        }
+        exit 0
+        """
+    }
+
     private func tmuxArguments(
         _ tmuxPath: String,
         _ arguments: String...
@@ -584,6 +731,20 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
             result.append(contentsOf: ["-L", socketName])
         }
         return result + arguments
+    }
+
+    private func windowsMuxCommand(
+        tmuxPath: String,
+        arguments: [String]
+    ) -> String {
+        var values = [tmuxPath]
+        if let socketName, !socketName.isEmpty {
+            values += ["-L", socketName]
+        }
+        values += arguments
+        return "& " + values
+            .map(powerShellQuotedCommandArgument)
+            .joined(separator: " ")
     }
 
     private func sshArguments(

@@ -14,6 +14,8 @@ TARGETS = {
     "darwin-arm64": ("mach-o", 0x0100000C),
     "linux-amd64": ("elf", 62),
     "linux-arm64": ("elf", 183),
+    "windows-amd64": ("pe", 0x8664),
+    "windows-arm64": ("pe", 0xAA64),
 }
 
 
@@ -41,7 +43,7 @@ def validate_variant(path: Path, target: str, revision: str) -> None:
         if len(contents) < 8 or contents[:4] != b"\xcf\xfa\xed\xfe":
             raise ValueError(f"{path} is not a 64-bit little-endian Mach-O")
         actual_cpu = struct.unpack_from("<I", contents, 4)[0]
-    else:
+    elif binary_format == "elf":
         if (
             len(contents) < 20
             or contents[:4] != b"\x7fELF"
@@ -50,6 +52,16 @@ def validate_variant(path: Path, target: str, revision: str) -> None:
         ):
             raise ValueError(f"{path} is not a 64-bit little-endian ELF")
         actual_cpu = struct.unpack_from("<H", contents, 18)[0]
+    else:
+        if len(contents) < 64 or contents[:2] != b"MZ":
+            raise ValueError(f"{path} is not a PE executable")
+        pe_offset = struct.unpack_from("<I", contents, 0x3C)[0]
+        if (
+            pe_offset + 6 > len(contents)
+            or contents[pe_offset : pe_offset + 4] != b"PE\0\0"
+        ):
+            raise ValueError(f"{path} is not a PE executable")
+        actual_cpu = struct.unpack_from("<H", contents, pe_offset + 4)[0]
 
     if actual_cpu != expected_cpu:
         raise ValueError(f"{path} does not match target {target}")

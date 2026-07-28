@@ -26,6 +26,7 @@ public enum HostTransport: String, Codable, Equatable, Sendable {
 public enum HostPlatform: String, Equatable, Sendable {
     case macOS
     case linux
+    case windows
 }
 
 extension HostPlatform: Codable {
@@ -35,6 +36,7 @@ extension HostPlatform: Codable {
         switch raw {
         case "macos", "macOS": self = .macOS
         case "linux": self = .linux
+        case "windows": self = .windows
         default:
             throw DecodingError.dataCorrupted(
                 .init(
@@ -52,6 +54,7 @@ extension HostPlatform: Codable {
         switch self {
         case .macOS: try container.encode("macos")
         case .linux: try container.encode("linux")
+        case .windows: try container.encode("windows")
         }
     }
 }
@@ -70,6 +73,9 @@ extension HostPlatform {
         if lower.hasPrefix("macos")
             || lower.hasPrefix("darwin") {
             return .macOS
+        }
+        if lower.hasPrefix("windows") {
+            return .windows
         }
         return .linux
     }

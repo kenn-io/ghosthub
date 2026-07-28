@@ -613,6 +613,18 @@ struct WorkspaceWindow: View {
                                             on: host
                                         )
                                 },
+                                installWindowsKwt: {
+                                    host in
+                                    switch await KwtWindowsInstaller()
+                                        .install(on: host) {
+                                    case .success:
+                                        return .success(())
+                                    case let .failure(error):
+                                        return .failure(.message(
+                                            error.localizedDescription
+                                        ))
+                                    }
+                                },
                                 reloadTerminalConfig: {
                                     sceneModel.reloadTerminalConfig()
                                 }

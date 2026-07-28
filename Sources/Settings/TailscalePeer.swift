@@ -33,6 +33,8 @@ public struct TailscalePeer: Identifiable, Equatable, Sendable {
             return .macOS
         case "linux":
             return .linux
+        case "windows":
+            return .windows
         default:
             return .linux
         }
@@ -40,7 +42,7 @@ public struct TailscalePeer: Identifiable, Equatable, Sendable {
 
     public var isSSHCapable: Bool {
         let lower = os.lowercased()
-        return lower == "linux" || lower == "macos"
+        return lower == "linux" || lower == "macos" || lower == "windows"
     }
 }
 

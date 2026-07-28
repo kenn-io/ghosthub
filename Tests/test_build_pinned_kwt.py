@@ -53,6 +53,20 @@ def bootstrap_fixture(tmp_path: Path) -> tuple[Path, str, str, Path]:
     fake_go.write_text(
         """#!/bin/sh
 set -eu
+if [ "$#" -eq 2 ] && [ "$1" = "env" ]; then
+  case "$2" in
+    GOOS) printf 'darwin\\n' ;;
+    GOARCH) printf 'arm64\\n' ;;
+    *) exit 1 ;;
+  esac
+  exit 0
+fi
+if [ "$#" -eq 3 ] && [ "$1" = "version" ] && [ "$2" = "-m" ]; then
+  printf '%s: go1.test\\n' "$3"
+  printf '\\tbuild\\tGOOS=darwin\\n'
+  printf '\\tbuild\\tGOARCH=arm64\\n'
+  exit 0
+fi
 output=
 revision=
 while [ "$#" -gt 0 ]; do

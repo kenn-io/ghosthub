@@ -20,13 +20,19 @@ def test_variant_validation_accepts_exact_target_and_revision(
     binary_format, cpu = TARGETS[target]
     if binary_format == "mach-o":
         header = b"\xcf\xfa\xed\xfe" + struct.pack("<I", cpu)
-    else:
+    elif binary_format == "elf":
         header = (
             b"\x7fELF"
             + bytes([2, 1])
             + bytes(12)
             + struct.pack("<H", cpu)
         )
+    else:
+        header = bytearray(128)
+        header[:2] = b"MZ"
+        struct.pack_into("<I", header, 0x3C, 64)
+        header[64:68] = b"PE\0\0"
+        struct.pack_into("<H", header, 68, cpu)
     helper = tmp_path / "kwt"
     helper.write_bytes(header + bytes(32) + revision.encode())
 

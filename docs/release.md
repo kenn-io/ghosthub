@@ -11,11 +11,16 @@ The application bundles an ordinary `kwt` CLI helper at
 local project inventory and worktree operations. It does not resolve a local
 `kwt` from `PATH`, including when the bundle is damaged or incomplete: the
 local operation fails instead of drifting to another installation. Remote
-hosts use one of four pinned, CGO-disabled variants sealed under
-`Contents/Resources/KwtRemote`: Darwin and Linux, each for amd64 and arm64.
+hosts use one of six pinned, CGO-disabled variants sealed under
+`Contents/Resources/KwtRemote`: Darwin, Linux, and Windows, each for amd64 and
+arm64.
 Ghosthub uploads a variant only after the user chooses Install or Update,
 verifies its SHA-256 remotely, and invokes the exact revisioned path under
 `~/.ghosthub/helpers/kwt/`; it never replaces or resolves a system `kwt`.
+Experimental Windows installation instead uses PowerShell to place the
+matching PE helper at `%USERPROFILE%\.ghosthub\bin\kwt.exe`. These Windows
+payloads remain unsigned until an approved Authenticode/DigiCert signing step
+is added, so they are not enterprise-ready release artifacts.
 
 `make run-app` follows the same rule. Its `bootstrap-kwt` dependency builds and
 caches `KWT_REF` under `.build`, then stages that exact helper into the debug
@@ -23,7 +28,7 @@ app. A developer can override the repository, revision, source directory, or
 binary path deliberately, but the default never embeds the system kwt.
 `bootstrap-kwt-variants` cross-compiles the complete remote matrix from the
 same pin. Before either debug or release packaging, every variant is checked
-for its expected Mach-O/ELF architecture and embedded pinned revision.
+for its expected Mach-O/ELF/PE architecture and embedded pinned revision.
 
 Every packaged app also carries Ghosthub's AGPL-3.0 license and all notices in
 the repository's `LICENSES` directory under `Contents/Resources/Licenses`.
@@ -204,13 +209,14 @@ gh workflow run release.yml \
 
 The manual path imports the signing certificate into an ephemeral keychain,
 builds the pinned local kwt helper, verifies that it is an Apple Silicon
-Mach-O, cross-compiles the Darwin/Linux amd64/arm64 remote matrix,
+Mach-O, cross-compiles the Darwin/Linux/Windows amd64/arm64 remote matrix,
 builds release-optimized libghostty and Ghosthub, re-signs Sparkle's nested
 helpers and framework with Ghosthub's Developer ID identity, signs the local
 kwt helper and both Darwin remote kwt variants with hardened runtime and secure
 timestamps, then signs the enclosing app and DMG, submits it to Apple, staples
 and validates the ticket, and uploads a seven-day candidate artifact. Linux
-remote variants remain unsigned ELF resources. The candidate does not consume
+and experimental Windows remote variants remain unsigned ELF/PE resources.
+The candidate does not consume
 the production Sparkle private key, generate an appcast, create a tag, or
 create a GitHub release. Both checksum files name the DMG by basename, so they
 remain valid after download.
@@ -294,8 +300,8 @@ make release-app \
 
 `KWT_BINARY_PATH` changes only the local helper. Remote variants remain pinned
 to `KWT_REF`; use `KWT_VARIANTS_DIR` only when deliberately supplying a
-complete four-target matrix. An explicit variants directory is treated as
-prebuilt input: packaging verifies all four binary formats, target
+complete six-target matrix. An explicit variants directory is treated as
+prebuilt input: packaging verifies all six binary formats, target
 architectures, and embedded `KWT_REF`, and never rebuilds or modifies that
 directory. The default variants directory continues to be built from the
 pinned kwt source. Installation additionally runs the uploaded helper and

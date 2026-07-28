@@ -5,6 +5,24 @@ enum KwtBinaryLocator {
     private static let remoteRevisionKey =
         "GhosthubRemoteKwtSourceRevision"
 
+    enum WindowsArchitecture: String, Equatable, Sendable {
+        case amd64
+        case arm64
+
+        init?(remoteValue: String) {
+            switch remoteValue
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased() {
+            case "x64", "amd64", "x86_64":
+                self = .amd64
+            case "arm64", "aarch64":
+                self = .arm64
+            default:
+                return nil
+            }
+        }
+    }
+
     static func bundledPath(
         bundle: Bundle = .main,
         fileManager: FileManager = .default
@@ -69,6 +87,17 @@ enum KwtBinaryLocator {
         }
         return "ghosthub_kwt_path=\"\(path)\"; "
             + "[ -x \"$ghosthub_kwt_path\" ] || exit 127; "
+    }
+
+    static func windowsBundledPath(
+        architecture: WindowsArchitecture,
+        bundleURL: URL = Bundle.main.bundleURL
+    ) -> String {
+        bundleURL
+            .appendingPathComponent("Contents/Resources/KwtRemote")
+            .appendingPathComponent("windows-\(architecture.rawValue)")
+            .appendingPathComponent("kwt")
+            .path
     }
 
     private static func validRevision(_ value: String?) -> String? {

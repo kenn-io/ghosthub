@@ -59,6 +59,8 @@ def make_release_inputs(
         "darwin-arm64",
         "linux-amd64",
         "linux-arm64",
+        "windows-amd64",
+        "windows-arm64",
     ):
         make_executable(kwt_variants_dir / target / "kwt")
     licenses_dir = tmp_path / "Licenses"
@@ -199,6 +201,8 @@ def test_assemble_app_bundle_stages_icon_and_binary(tmp_path):
         "darwin-arm64",
         "linux-amd64",
         "linux-arm64",
+        "windows-amd64",
+        "windows-arm64",
     ):
         helper = remote_helpers / target / "kwt"
         assert helper.is_file()

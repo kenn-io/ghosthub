@@ -143,6 +143,7 @@ struct KwtInventoryClient: Sendable {
             run(
                 host: host,
                 command: Self.projectsCommand(
+                    platform: platform(for: host),
                     binaryPrelude: binaryPrelude(for: host)
                 )
             ),
@@ -159,6 +160,7 @@ struct KwtInventoryClient: Sendable {
                         host: host,
                         command: Self.worktreesCommand(
                             projectPath: project.path,
+                            platform: platform(for: host),
                             binaryPrelude: binaryPrelude(for: host)
                         )
                     )
@@ -209,6 +211,15 @@ struct KwtInventoryClient: Sendable {
         }
     }
 
+    private func platform(
+        for host: TmuxHost
+    ) -> SSHHostInfo.Platform {
+        switch host {
+        case .local: .posix
+        case let .ssh(info): info.platform
+        }
+    }
+
     private func run(
         host: TmuxHost,
         command: String
@@ -248,17 +259,34 @@ struct KwtInventoryClient: Sendable {
         }
     }
 
-    private static func projectsCommand(binaryPrelude: String) -> String {
-        binaryPrelude
+    private static func projectsCommand(
+        platform: SSHHostInfo.Platform,
+        binaryPrelude: String
+    ) -> String {
+        if platform == .windows {
+            return KwtPowerShellCommand.run(
+                arguments: ["projects", "--json"],
+                marker: "GHOSTHUB_KWT_JSON"
+            )
+        }
+        return binaryPrelude
             + "printf 'GHOSTHUB_KWT_JSON\\n'; "
             + "exec \"$ghosthub_kwt_path\" projects --json"
     }
 
     private static func worktreesCommand(
         projectPath: String,
+        platform: SSHHostInfo.Platform,
         binaryPrelude: String
     ) -> String {
-        binaryPrelude
+        if platform == .windows {
+            return KwtPowerShellCommand.run(
+                arguments: ["list", "--json"],
+                workingDirectory: projectPath,
+                marker: "GHOSTHUB_KWT_JSON"
+            )
+        }
+        return binaryPrelude
             + "cd -- \(shellQuotedCommandArgument(projectPath)) || exit $?; "
             + "printf 'GHOSTHUB_KWT_JSON\\n'; "
             + "exec \"$ghosthub_kwt_path\" list --json"

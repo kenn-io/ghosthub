@@ -1403,72 +1403,109 @@ final class WorkspaceSceneModel: ObservableObject {
         HostProbeSummary,
         HostProbeError
     > {
-        guard let sshHost = TmuxHostResolver.parseSSHDestination(
+        guard let parsedSSHHost = TmuxHostResolver.parseSSHDestination(
             host.sshDestination
         ) else {
             return .failure(.message("Enter a valid SSH destination."))
         }
+        let sshHost = SSHHostInfo(
+            user: parsedSSHHost.user,
+            hostname: parsedSSHHost.hostname,
+            port: parsedSSHHost.port,
+            platform: host.platform == .windows ? .windows : .posix
+        )
         let sshHostProbeRunner = sshHostProbeRunner
         let kwtPrelude = KwtBinaryLocator.remoteCommandPrelude(
             revision: KwtBinaryLocator.bundledRemoteRevision()
         )
-        let reachedMarker = "GHOSTHUB_REMOTE_PROBE_REACHED"
-        return await Task.detached {
-            let result = sshHostProbeRunner(
-                sshHost,
-                "printf '\(reachedMarker)\\n'; "
-                    + "if command -v tmux >/dev/null; then "
+        let probeCommand: String
+        if host.platform == .windows {
+            probeCommand = """
+            $ErrorActionPreference = 'Stop'
+            [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+            $OutputEncoding = [Console]::OutputEncoding
+            Write-Output 'GHOSTHUB_SSH_REACHED'
+            $ghosthubMuxCommand = Get-Command tmux.exe -CommandType Application -ErrorAction SilentlyContinue
+            if ($null -eq $ghosthubMuxCommand) {
+                Write-Output 'GHOSTHUB_TMUX_UNAVAILABLE'
+                exit 127
+            }
+            Write-Output 'GHOSTHUB_TMUX_AVAILABLE'
+            $ghosthubMux = $ghosthubMuxCommand.Source
+            & $ghosthubMux '-V' *> $null
+            if ($LASTEXITCODE -ne 0) {
+                exit $LASTEXITCODE
+            }
+            \(KwtPowerShellCommand.availabilityPrelude)
+            if ($ghosthubKwtAvailable) {
+                Write-Output 'GHOSTHUB_KWT_AVAILABLE'
+            } else {
+                Write-Output 'GHOSTHUB_KWT_UNAVAILABLE'
+            }
+            """
+        } else {
+            probeCommand =
+                "printf 'GHOSTHUB_SSH_REACHED\\n'; "
+                    + "ghosthub_tmux_path=$(command -v tmux) || { "
+                    + "printf 'GHOSTHUB_TMUX_UNAVAILABLE\\n'; exit 127; }; "
                     + "printf 'GHOSTHUB_TMUX_AVAILABLE\\n'; "
-                    + "else printf 'GHOSTHUB_TMUX_UNAVAILABLE\\n'; fi; "
+                    + "\"$ghosthub_tmux_path\" -V >/dev/null || exit $?; "
                     + "if ( \(kwtPrelude): ); then "
                     + "printf 'GHOSTHUB_KWT_AVAILABLE\\n'; "
                     + "else printf 'GHOSTHUB_KWT_UNAVAILABLE\\n'; fi"
+        }
+        return await Task.detached {
+            let result = sshHostProbeRunner(
+                sshHost,
+                probeCommand
             )
-            let reachable = result.stdout.contains(reachedMarker)
-            let probeSucceeded = result.status == 0 && reachable
+            let sshReached = result.stdout.contains(
+                "GHOSTHUB_SSH_REACHED"
+            )
             let tmuxAvailable = result.stdout.contains(
                 "GHOSTHUB_TMUX_AVAILABLE"
             )
             let kwtAvailable = result.stdout.contains(
                 "GHOSTHUB_KWT_AVAILABLE"
             )
-            var diagnostics: [RemoteHostDiagnostic] = []
-            if !reachable, result.status == 255 {
-                diagnostics.append(RemoteHostDiagnostic(
+            let diagnostics: [RemoteHostDiagnostic]
+            if !sshReached {
+                diagnostics = [RemoteHostDiagnostic(
                     code: .sshConnectionFailed,
                     severity: .error,
-                    summary: "SSH connection failed.",
+                    summary: "SSH could not be reached.",
                     recoverySuggestion:
-                    "Verify the SSH address, key authorization, and network, "
-                        + "then test the connection again."
-                ))
-            } else if !reachable {
-                diagnostics.append(RemoteHostDiagnostic(
+                    "Run `ssh \(host.sshDestination)` in Terminal once to "
+                        + "accept the host key, then verify key-based "
+                        + "authentication works without a prompt."
+                )]
+            } else if !tmuxAvailable {
+                diagnostics = [RemoteHostDiagnostic(
+                    code: .missingTmux,
+                    severity: .error,
+                    summary: host.platform == .windows
+                        ? "psmux is not available."
+                        : "tmux is not available.",
+                    recoverySuggestion: host.platform == .windows
+                        ? "Install psmux and ensure its tmux.exe alias is on "
+                        + "PATH for this SSH account, then test again."
+                        : "Install tmux on this host, then test again."
+                )]
+            } else if result.status != 0 {
+                diagnostics = [RemoteHostDiagnostic(
                     code: .probeFailure,
                     severity: .error,
-                    summary: "Remote verification did not reach the host"
-                        + " (status \(result.status)).",
+                    summary: host.platform == .windows
+                        ? "psmux did not respond successfully."
+                        : "tmux did not respond successfully.",
                     recoverySuggestion:
-                    "Verify the SSH address, network, and local SSH process, "
-                        + "then test the connection again."
-                ))
-            } else if !probeSucceeded {
-                diagnostics.append(RemoteHostDiagnostic(
-                    code: .probeFailure,
-                    severity: .error,
-                    summary: "Remote verification failed"
-                        + " (status \(result.status)).",
-                    recoverySuggestion:
-                    "Check the remote account’s login-shell startup files "
-                        + "and test the connection again."
-                ))
+                    "Run the tmux version command on the host and resolve "
+                        + "the reported error, then test again."
+                )]
+            } else if !kwtAvailable {
+                diagnostics = [.missingKwtCapability]
             } else {
-                if !tmuxAvailable {
-                    diagnostics.append(.missingTmuxCapability)
-                }
-                if !kwtAvailable {
-                    diagnostics.append(.missingKwtCapability)
-                }
+                diagnostics = []
             }
             return .success(HostProbeSummary(
                 host: HostSummary(
@@ -1479,12 +1516,12 @@ final class WorkspaceSceneModel: ObservableObject {
                     platform: host.platform,
                     sshDestination: host.sshDestination,
                     preferredTransport: .ssh,
-                    lastKnownReachable: reachable,
-                    lastSeenAt: reachable ? Date() : nil,
+                    lastKnownReachable: sshReached,
+                    lastSeenAt: sshReached ? Date() : nil,
                     remoteDiagnostics: diagnostics,
-                    decodedConnectionState: probeSucceeded
-                        ? .online
-                        : (reachable ? .degraded : .offline)
+                    decodedConnectionState: !sshReached
+                        ? .offline
+                        : result.status == 0 ? .online : .degraded
                 )
             ))
         }.value

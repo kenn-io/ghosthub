@@ -79,6 +79,43 @@ struct KwtWorktreeClientTests {
         #expect(recorder.command?.contains("--branch") == false)
     }
 
+    @Test("Windows creation quotes paths and branch names for PowerShell")
+    func windowsRemoteCreation() async throws {
+        let recorder = CommandRecorder()
+        let ssh = SSHHostInfo(
+            user: "wesm",
+            hostname: "arm-builder",
+            port: nil,
+            platform: .windows
+        )
+        let client = KwtWorktreeClient(
+            remoteRunner: { host, command in
+                recorder.record(host: host, command: command)
+                return (0, "")
+            }
+        )
+
+        try await client.create(
+            request: WorktreeCreateRequest(
+                projectID: UUID(),
+                branchName: "wesm's-fix",
+                createsBranch: true
+            ),
+            projectPath: #"C:\code\ghost hub"#,
+            on: .ssh(ssh)
+        )
+
+        #expect(recorder.host == ssh)
+        #expect(recorder.command?.contains("Get-Command kwt.exe") == true)
+        #expect(recorder.command?.contains(
+            #"Set-Location -LiteralPath 'C:\code\ghost hub'"#
+        ) == true)
+        #expect(recorder.command?.contains(
+            #"& $ghosthubKwt 'add' '--branch' 'wesm''s-fix' '--no-launch'"#
+        ) == true)
+        #expect(recorder.command?.contains("command -v") == false)
+    }
+
     @Test("a nonzero kwt exit is reported")
     func reportsFailure() async {
         let client = KwtWorktreeClient(

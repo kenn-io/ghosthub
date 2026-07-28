@@ -82,6 +82,39 @@ struct KwtPullRequestClientTests {
         #expect(result.pullRequest.isImported)
     }
 
+    @Test("Windows listing uses the native kwt PowerShell contract")
+    func windowsRemoteListing() async throws {
+        let recorder = PullRequestCommandRecorder()
+        let ssh = SSHHostInfo(
+            user: "wesm",
+            hostname: "arm-builder",
+            port: nil,
+            platform: .windows
+        )
+        let client = KwtPullRequestClient(
+            remoteRunner: { host, command in
+                recorder.record(host: host, command: command)
+                return (0, Self.listResponse)
+            }
+        )
+
+        let candidates = try await client.list(
+            projectIdentity: "github.com/kenn-io/ghosthub",
+            on: .ssh(ssh)
+        )
+
+        #expect(recorder.host == ssh)
+        #expect(recorder.command?.contains("Get-Command kwt.exe") == true)
+        #expect(recorder.command?.contains(
+            "'pr' 'list' '--project' 'github.com/kenn-io/ghosthub'"
+        ) == true)
+        #expect(recorder.command?.contains(
+            "Write-Output 'GHOSTHUB_KWT_PR_JSON'"
+        ) == true)
+        #expect(recorder.command?.contains("command -v") == false)
+        #expect(candidates.map(\.number) == [32])
+    }
+
     @Test(
         "successful imports require an isolated tmux socket",
         arguments: [false, true]
