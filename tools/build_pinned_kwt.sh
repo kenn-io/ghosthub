@@ -107,8 +107,15 @@ else
     exit 1
   fi
 
-  git -C "$source_dir" fetch --no-tags origin "$revision"
-  git -C "$source_dir" checkout --detach "$revision"
+  current_revision="$(git -C "$source_dir" rev-parse HEAD)"
+  requested_revision="$(
+    git -C "$source_dir" rev-parse --verify "${revision}^{commit}" 2>/dev/null \
+      || true
+  )"
+  if [[ -z "$requested_revision" || "$current_revision" != "$requested_revision" ]]; then
+    git -C "$source_dir" fetch --no-tags origin "$revision"
+    git -C "$source_dir" checkout --detach "$revision"
+  fi
 fi
 
 mkdir -p "$(dirname "$output")"

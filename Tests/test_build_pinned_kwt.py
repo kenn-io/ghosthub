@@ -249,3 +249,49 @@ fi
         capture_output=True,
         text=True,
     ).stdout
+
+
+def test_reuses_source_checkout_for_multiple_outputs(tmp_path: Path) -> None:
+    repository, revision, _, fake_bin = bootstrap_fixture(tmp_path)
+    real_git = shutil.which("git")
+    assert real_git is not None
+
+    fetch_log = tmp_path / "fetches"
+    fake_git = fake_bin / "git"
+    fake_git.write_text(
+        f"""#!/bin/sh
+set -eu
+for argument in "$@"; do
+  if [ "$argument" = "fetch" ]; then
+    printf 'fetch\\n' >>"$GIT_FETCH_LOG"
+  fi
+done
+exec "{real_git}" "$@"
+"""
+    )
+    fake_git.chmod(fake_git.stat().st_mode | stat.S_IXUSR)
+
+    source = tmp_path / "source"
+    environment = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "GIT_FETCH_LOG": str(fetch_log),
+    }
+    for output_name in ("local-kwt", "variant-kwt"):
+        result = subprocess.run(
+            [
+                "bash",
+                "tools/build_pinned_kwt.sh",
+                str(repository),
+                revision,
+                str(source),
+                str(tmp_path / output_name),
+            ],
+            cwd=Path(__file__).parents[1],
+            env=environment,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+
+    assert fetch_log.read_text().splitlines() == ["fetch"]
