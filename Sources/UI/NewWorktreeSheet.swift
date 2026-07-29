@@ -40,10 +40,28 @@ enum BranchQuery {
         in candidates: [WorktreeBranchCandidate],
         query: String
     ) -> String? {
+        selectionSource(
+            in: candidates,
+            query: query,
+            preserving: nil
+        )
+    }
+
+    static func selectionSource(
+        in candidates: [WorktreeBranchCandidate],
+        query: String,
+        preserving selectedSource: String?
+    ) -> String? {
         let normalized = query.trimmingCharacters(
             in: .whitespacesAndNewlines
         )
-        return candidates.first { $0.name == normalized }?.source
+        let exactMatches = candidates.filter { $0.name == normalized }
+        if let selectedSource,
+           exactMatches.contains(where: { $0.source == selectedSource }) {
+            return selectedSource
+        }
+        guard exactMatches.count == 1 else { return nil }
+        return exactMatches[0].source
     }
 }
 
@@ -313,9 +331,10 @@ struct NewWorktreeSheet: View {
         .onChange(of: query) { _, _ in
             switch selectedMode {
             case .branch:
-                selectedBranchSource = BranchQuery.impliedSelectionSource(
+                selectedBranchSource = BranchQuery.selectionSource(
                     in: filteredBranches,
-                    query: query
+                    query: query,
+                    preserving: selectedBranchSource
                 )
             case .pullRequest:
                 selectedPullRequestID = PullRequestQuery.impliedSelectionID(
@@ -841,9 +860,10 @@ struct NewWorktreeSheet: View {
             let loaded = try await onListBranches(selectedProject.id)
             guard !Task.isCancelled else { return }
             branches = loaded
-            selectedBranchSource = BranchQuery.impliedSelectionSource(
+            selectedBranchSource = BranchQuery.selectionSource(
                 in: filteredBranches,
-                query: query
+                query: query,
+                preserving: selectedBranchSource
             )
         } catch is CancellationError {
             return

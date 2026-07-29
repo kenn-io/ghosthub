@@ -170,6 +170,23 @@ public enum WorkspaceSidebarModel {
         } == true
     }
 
+    public static func killableTmuxSession(
+        for worktree: WorktreeSummary,
+        in snapshot: WorkspaceSnapshot,
+        activeSelection: WorkspaceTmuxSessionSelection? = nil,
+        activeSelectionIsConnected: Bool = false
+    ) -> WorkspaceTmuxSessionSelection? {
+        guard let selection = tmuxSessionSelection(for: worktree),
+              canRequestKill(
+                  selection,
+                  in: snapshot,
+                  activeSelection: activeSelection,
+                  activeSelectionIsConnected: activeSelectionIsConnected
+              )
+        else { return nil }
+        return selection
+    }
+
     public static func sections(
         in snapshot: WorkspaceSnapshot,
         visibility: WorktreeVisibility = .default

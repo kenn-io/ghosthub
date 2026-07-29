@@ -144,22 +144,33 @@ struct KwtWorktreeClient: Sendable {
         on host: TmuxHost
     ) async throws -> [WorktreeBranchCandidate] {
         let binaryPrelude: String
+        let windowsKwtRelativePath: String?
+        let platform: SSHHostInfo.Platform
         let hostLabel: String
         switch host {
         case .local:
             binaryPrelude = KwtBinaryLocator.commandPrelude(
                 exactPath: localBinaryPath
             )
+            windowsKwtRelativePath = nil
+            platform = .posix
             hostLabel = "this Mac"
         case let .ssh(info):
             binaryPrelude = KwtBinaryLocator.remoteCommandPrelude(
                 revision: remoteBinaryRevision
             )
+            windowsKwtRelativePath =
+                KwtBinaryLocator.windowsRemoteManagedRelativePath(
+                    revision: remoteBinaryRevision
+                )
+            platform = info.platform
             hostLabel = info.displayName
         }
         let command = Self.branchesCommand(
             projectPath: projectPath,
-            binaryPrelude: binaryPrelude
+            platform: platform,
+            binaryPrelude: binaryPrelude,
+            windowsKwtRelativePath: windowsKwtRelativePath
         )
         let localRunner = localRunner
         let remoteRunner = remoteRunner
@@ -178,13 +189,17 @@ struct KwtWorktreeClient: Sendable {
                 status: result.status
             )
         }
-        guard let markerRange = result.stdout.range(
+        let normalizedOutput = result.stdout.replacingOccurrences(
+            of: "\r\n",
+            with: "\n"
+        )
+        guard let markerRange = normalizedOutput.range(
             of: Self.jsonMarker,
             options: .backwards
         ) else {
             throw KwtWorktreeError.malformedBranches(host: hostLabel)
         }
-        let json = result.stdout[markerRange.upperBound...]
+        let json = normalizedOutput[markerRange.upperBound...]
         do {
             return try JSONDecoder().decode(
                 [WorktreeBranchCandidate].self,
@@ -285,9 +300,19 @@ struct KwtWorktreeClient: Sendable {
 
     private static func branchesCommand(
         projectPath: String,
-        binaryPrelude: String
+        platform: SSHHostInfo.Platform,
+        binaryPrelude: String,
+        windowsKwtRelativePath: String?
     ) -> String {
-        binaryPrelude
+        if platform == .windows {
+            return KwtPowerShellCommand.run(
+                arguments: ["branches", "--json"],
+                workingDirectory: projectPath,
+                marker: "GHOSTHUB_KWT_JSON",
+                managedRelativePath: windowsKwtRelativePath
+            )
+        }
+        return binaryPrelude
             + "cd -- \(shellQuotedCommandArgument(projectPath)) || exit $?; "
             + "printf 'GHOSTHUB_KWT_JSON\\n'; "
             + "exec \"$ghosthub_kwt_path\" branches --json"

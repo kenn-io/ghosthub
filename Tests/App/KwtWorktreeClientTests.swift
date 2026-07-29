@@ -183,6 +183,69 @@ struct KwtWorktreeClientTests {
         )
     }
 
+    @Test("Windows branch listing uses the managed helper and decodes CRLF")
+    func windowsBranchListing() async throws {
+        let recorder = CommandRecorder()
+        let revision = String(repeating: "f", count: 40)
+        let managedPath = try #require(
+            KwtBinaryLocator.windowsRemoteManagedRelativePath(
+                revision: revision
+            )
+        )
+        let projectPath = #"C:\code\ghost hub"#
+        let ssh = SSHHostInfo(
+            user: "wesm",
+            hostname: "arm-builder",
+            port: nil,
+            platform: .windows
+        )
+        let client = KwtWorktreeClient(
+            remoteRunner: { host, command in
+                recorder.record(host: host, command: command)
+                return (
+                    0,
+                    "PowerShell noise\r\nGHOSTHUB_KWT_JSON\r\n"
+                        + """
+                        [{"name":"topic","source":"origin/topic","is_remote":true}]
+                        """
+                        + "\r\n"
+                )
+            },
+            remoteBinaryRevision: revision
+        )
+
+        let branches = try await client.branches(
+            projectPath: projectPath,
+            on: .ssh(ssh)
+        )
+
+        #expect(branches == [
+            WorktreeBranchCandidate(
+                name: "topic",
+                source: "origin/topic",
+                isRemote: true
+            ),
+        ])
+        #expect(recorder.host == ssh)
+        #expect(recorder.command?.contains(
+            powerShellEncodedArgument(managedPath)
+        ) == true)
+        #expect(recorder.command?.contains(
+            "Set-Location -LiteralPath "
+                + powerShellEncodedArgument(projectPath)
+        ) == true)
+        #expect(recorder.command?.contains(
+            ["branches", "--json"]
+                .map(powerShellEncodedArgument)
+                .joined(separator: " ")
+        ) == true)
+        #expect(recorder.command?.contains(
+            "Write-Output "
+                + powerShellEncodedArgument("GHOSTHUB_KWT_JSON")
+        ) == true)
+        #expect(recorder.command?.contains("cd --") == false)
+    }
+
     @Test("local removal delegates the exact worktree path to kwt")
     func localRemoval() async throws {
         let recorder = CommandRecorder()

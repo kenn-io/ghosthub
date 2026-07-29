@@ -65,6 +65,44 @@ struct NewWorktreeSheetTests {
         )
     }
 
+    @Test("duplicate remote branch names require an explicit source")
+    func duplicateRemoteBranchSelection() {
+        let branches = [
+            WorktreeBranchCandidate(
+                name: "topic",
+                source: "origin/topic",
+                isRemote: true
+            ),
+            WorktreeBranchCandidate(
+                name: "topic",
+                source: "upstream/topic",
+                isRemote: true
+            ),
+        ]
+
+        #expect(
+            BranchQuery.selectionSource(
+                in: branches,
+                query: "topic",
+                preserving: nil
+            ) == nil
+        )
+        #expect(
+            BranchQuery.selectionSource(
+                in: branches,
+                query: "topic",
+                preserving: "upstream/topic"
+            ) == "upstream/topic"
+        )
+        #expect(
+            BranchQuery.selectionSource(
+                in: branches,
+                query: "different",
+                preserving: "upstream/topic"
+            ) == nil
+        )
+    }
+
     private static func candidate(
         _ number: Int,
         title: String = "Some change",

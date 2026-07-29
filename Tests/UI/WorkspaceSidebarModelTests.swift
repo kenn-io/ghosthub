@@ -170,6 +170,43 @@ struct WorkspaceSidebarModelTests {
         )
     }
 
+    @Test("a worktree keeps its standalone kill action when its session is live")
+    func resolvesKillableWorktreeSession() {
+        let hostID = UUID()
+        var worktree = WorktreeSummary.fixture(hostID: hostID)
+        worktree.tmuxSessionName = "kwt-ghosthub-topic"
+        let snapshot = WorkspaceSnapshot.fixture(
+            hosts: [
+                .fixture(
+                    id: hostID,
+                    tmuxSessions: [
+                        TmuxSessionSummary(
+                            name: "kwt-ghosthub-topic",
+                            managed: true,
+                            windows: [],
+                            serverPID: "4242",
+                            sessionID: "$3",
+                            createdAt: "1785190000"
+                        ),
+                    ]
+                ),
+            ],
+            worktrees: [worktree]
+        )
+
+        #expect(
+            WorkspaceSidebarModel.killableTmuxSession(
+                for: worktree,
+                in: snapshot
+            ) == WorkspaceTmuxSessionSelection(
+                hostID: hostID,
+                name: "kwt-ghosthub-topic",
+                worktreeID: worktree.id,
+                worktreePath: worktree.path
+            )
+        )
+    }
+
     @Test("kill eligibility requires discovery or an active attachment")
     func runningSessionEvidence() {
         let hostID = UUID()

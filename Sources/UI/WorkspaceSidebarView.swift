@@ -471,11 +471,10 @@ struct WorkspaceSidebarView: View {
 
     private func sidebarButton(
         _ row: WorkspaceSidebarRow,
-        showsTmuxSessionAction: Bool = true,
         reservedTrailingActionWidth: CGFloat = 0
     ) -> some View {
         let tmuxSession = tmuxSessionSelection(for: row)
-        let runningTmuxSession = showsTmuxSessionAction ? tmuxSession.flatMap {
+        let runningTmuxSession = tmuxSession.flatMap {
             WorkspaceSidebarModel.canRequestKill(
                 $0,
                 in: snapshot,
@@ -483,7 +482,7 @@ struct WorkspaceSidebarView: View {
                 activeSelectionIsConnected:
                 activeTmuxSessionIsConnected
             ) ? $0 : nil
-        } : nil
+        }
         let isSelected: Bool
         if case let .tmuxSession(hostID, name) = row.target {
             isSelected = activeTmuxSession
@@ -569,10 +568,8 @@ struct WorkspaceSidebarView: View {
                 .padding(.horizontal, 8)
                 .padding(
                     .trailing,
-                    max(
-                        actionPresentation.reservedWidth,
-                        reservedTrailingActionWidth
-                    )
+                    actionPresentation.reservedWidth
+                        + reservedTrailingActionWidth
                 )
                 .padding(.vertical, 6)
                 .background {
@@ -668,6 +665,7 @@ struct WorkspaceSidebarView: View {
                 }
                 .help("Session actions")
                 .accessibilityHint("Includes the option to kill this session.")
+                .padding(.trailing, reservedTrailingActionWidth)
             }
         }
         .onHover { isHovered in
@@ -731,6 +729,12 @@ struct WorkspaceSidebarView: View {
             return AnyView(sidebarButton(row))
         }
         let isRemovable = !worktree.isPrimary
+        let runningTmuxSession = WorkspaceSidebarModel.killableTmuxSession(
+            for: worktree,
+            in: snapshot,
+            activeSelection: activeTmuxSession,
+            activeSelectionIsConnected: activeTmuxSessionIsConnected
+        )
         let isActionHovered = hoveredWorktreeActionID == worktreeID
         let actionPresentation =
             WorkspaceWorktreeRemovalActionPresentation(
@@ -741,7 +745,6 @@ struct WorkspaceSidebarView: View {
         return AnyView(
             sidebarButton(
                 row,
-                showsTmuxSessionAction: false,
                 reservedTrailingActionWidth:
                 actionPresentation.reservedWidth
             )
@@ -806,6 +809,11 @@ struct WorkspaceSidebarView: View {
                 }
             }
             .contextMenu {
+                if let runningTmuxSession {
+                    Button("Kill Session…", role: .destructive) {
+                        onRequestKillTmuxSession(runningTmuxSession)
+                    }
+                }
                 if isRemovable {
                     Button("Remove Worktree…", role: .destructive) {
                         onRequestRemoveWorktree(worktree)
@@ -815,6 +823,11 @@ struct WorkspaceSidebarView: View {
             .accessibilityAction(named: "Remove Worktree") {
                 if isRemovable {
                     onRequestRemoveWorktree(worktree)
+                }
+            }
+            .accessibilityAction(named: "Kill Session") {
+                if let runningTmuxSession {
+                    onRequestKillTmuxSession(runningTmuxSession)
                 }
             }
         )
