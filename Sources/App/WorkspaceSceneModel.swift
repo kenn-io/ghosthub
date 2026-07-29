@@ -105,9 +105,7 @@ final class WorkspaceSceneModel: ObservableObject {
     private var kwtAvailabilityByHost: [UUID: Bool] = [:]
     private var kwtInventoryFailuresByHost: [UUID: String] = [:]
     private var isKwtInventoryLoading = false
-    private var isWorktreeCreationInProgress = false
-    private var isPullRequestImportInProgress = false
-    private var isWorktreeRemovalInProgress = false
+    private var isWorktreeMutationInProgress = false
 
     var workspaceResourceSummary: WorkspaceResourceSummary {
         activityController.workspaceResourceSummary
@@ -705,7 +703,7 @@ final class WorkspaceSceneModel: ObservableObject {
     }
 
     func createWorktree(_ request: WorktreeCreateRequest) async throws {
-        guard !isWorktreeCreationInProgress else {
+        guard !isWorktreeMutationInProgress else {
             throw KwtWorktreeError.creationInProgress
         }
         guard GitBranchName.isValid(request.branchName) else {
@@ -719,13 +717,13 @@ final class WorkspaceSceneModel: ObservableObject {
             throw KwtWorktreeError.projectUnavailable
         }
 
-        isWorktreeCreationInProgress = true
+        isWorktreeMutationInProgress = true
         // The scene-wide refresh is cancelled so it cannot race the mutation,
         // and only the mutated host is reloaded inline. Every exit therefore
         // owes the remaining hosts a fresh sweep.
         invalidateKwtInventoryRefresh()
         defer {
-            isWorktreeCreationInProgress = false
+            isWorktreeMutationInProgress = false
             scheduleKwtInventory()
         }
 
@@ -837,7 +835,7 @@ final class WorkspaceSceneModel: ObservableObject {
     func removeWorktree(
         _ request: WorktreeRemovalRequest
     ) async throws {
-        guard !isWorktreeRemovalInProgress else {
+        guard !isWorktreeMutationInProgress else {
             throw KwtWorktreeError.removalInProgress
         }
         guard let requestedWorktree = snapshot.worktree(
@@ -854,10 +852,10 @@ final class WorkspaceSceneModel: ObservableObject {
             throw KwtWorktreeError.worktreeUnavailable
         }
 
-        isWorktreeRemovalInProgress = true
+        isWorktreeMutationInProgress = true
         invalidateKwtInventoryRefresh()
         defer {
-            isWorktreeRemovalInProgress = false
+            isWorktreeMutationInProgress = false
             scheduleKwtInventory()
         }
 
@@ -1071,7 +1069,7 @@ final class WorkspaceSceneModel: ObservableObject {
     func importPullRequest(
         _ request: PullRequestImportRequest
     ) async throws {
-        guard !isPullRequestImportInProgress else {
+        guard !isWorktreeMutationInProgress else {
             throw KwtPullRequestError.importInProgress
         }
         guard let project = snapshot.project(id: request.projectID),
@@ -1082,12 +1080,12 @@ final class WorkspaceSceneModel: ObservableObject {
             throw KwtPullRequestError.projectUnavailable
         }
 
-        isPullRequestImportInProgress = true
+        isWorktreeMutationInProgress = true
         // See `createWorktree`: cancelling the scene-wide refresh leaves every
         // host but this one stale, including on the success path.
         invalidateKwtInventoryRefresh()
         defer {
-            isPullRequestImportInProgress = false
+            isWorktreeMutationInProgress = false
             scheduleKwtInventory()
         }
 
@@ -1316,14 +1314,7 @@ final class WorkspaceSceneModel: ObservableObject {
 
     private func scheduleKwtInventory() {
         guard kwtInventoryEnabled,
-              Self.canScheduleKwtInventory(
-                  isWorktreeCreationInProgress:
-                  isWorktreeCreationInProgress,
-                  isPullRequestImportInProgress:
-                  isPullRequestImportInProgress,
-                  isWorktreeRemovalInProgress:
-                  isWorktreeRemovalInProgress
-              ) else { return }
+              !isWorktreeMutationInProgress else { return }
         let targets = Array(inventoryHosts)
         kwtInventoryGeneration += 1
         let generation = kwtInventoryGeneration
@@ -1396,16 +1387,6 @@ final class WorkspaceSceneModel: ObservableObject {
             isKwtInventoryLoading = false
             updateWorkspaceInventoryState()
         }
-    }
-
-    static func canScheduleKwtInventory(
-        isWorktreeCreationInProgress: Bool,
-        isPullRequestImportInProgress: Bool,
-        isWorktreeRemovalInProgress: Bool
-    ) -> Bool {
-        !isWorktreeCreationInProgress
-            && !isPullRequestImportInProgress
-            && !isWorktreeRemovalInProgress
     }
 
     private func invalidateKwtInventoryRefresh() {

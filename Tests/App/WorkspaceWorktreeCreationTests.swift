@@ -34,25 +34,103 @@ private actor KwtInventoryRaceStub {
 
 @Suite("Workspace worktree creation")
 struct WorkspaceWorktreeCreationTests {
-    @Test(
-        "workspace mutations fence background kwt inventory",
-        arguments: [
-            (creating: true, importing: false, removing: false),
-            (creating: false, importing: true, removing: false),
-            (creating: false, importing: false, removing: true),
-        ]
-    )
+    @Test("removal excludes concurrent create and import mutations")
     @MainActor
-    func workspaceMutationsFenceInventory(
-        creating: Bool,
-        importing: Bool,
-        removing: Bool
-    ) {
-        #expect(!WorkspaceSceneModel.canScheduleKwtInventory(
-            isWorktreeCreationInProgress: creating,
-            isPullRequestImportInProgress: importing,
-            isWorktreeRemovalInProgress: removing
-        ))
+    func removalExcludesOtherMutations() async throws {
+        let environment = try setupStandardEnvironment()
+        var snapshot = environment.snapshot
+        snapshot.projects[0].scopedKey =
+            "github.com/kenn-io/ghosthub"
+        var removable = WorktreeSummary.fixture(
+            hostID: environment.host.id,
+            projectID: environment.project.id,
+            scopedKey: "/tmp/ghosthub-remove",
+            name: "feature/remove",
+            path: "/tmp/ghosthub-remove",
+            branch: "feature/remove"
+        )
+        removable.tmuxSessionName = "kwt-feature-remove"
+        snapshot.worktrees.append(removable)
+        let beforeRemoval = inventory(
+            project: environment.project,
+            worktrees: [
+                worktree(
+                    path: environment.worktree.path,
+                    branch: environment.worktree.branch,
+                    isMain: true
+                ),
+                worktree(
+                    path: removable.path,
+                    branch: removable.branch,
+                    isMain: false
+                ),
+            ]
+        )
+        let afterRemoval = inventory(
+            project: environment.project,
+            worktrees: [
+                worktree(
+                    path: environment.worktree.path,
+                    branch: environment.worktree.branch,
+                    isMain: true
+                ),
+            ]
+        )
+        let loader = KwtInventoryRaceStub(
+            stale: beforeRemoval,
+            refreshed: afterRemoval
+        )
+        let attemptedMutations = LockedValue<[String]>([])
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtInventoryLoader: { _ in await loader.load() },
+            kwtWorktreeCreator: { _, _, _ in
+                attemptedMutations.withLock { $0.append("create") }
+            },
+            kwtWorktreeRemover: { _, _, _ in },
+            kwtPullRequestImporter: { _, _, _ in
+                attemptedMutations.withLock { $0.append("import") }
+                throw KwtPullRequestError.malformedOutput(host: "test")
+            },
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        let removal = Task {
+            try await model.removeWorktree(request)
+        }
+        for _ in 0 ..< 1_000 {
+            if await loader.firstCallStarted {
+                break
+            }
+            await Task.yield()
+        }
+        #expect(await loader.firstCallStarted)
+
+        await #expect(throws: KwtWorktreeError.creationInProgress) {
+            try await model.createWorktree(WorktreeCreateRequest(
+                projectID: environment.project.id,
+                branchName: "feature/create",
+                createsBranch: true
+            ))
+        }
+        await #expect(throws: KwtPullRequestError.importInProgress) {
+            try await model.importPullRequest(PullRequestImportRequest(
+                projectID: environment.project.id,
+                pullRequestID: "github:github.com/kenn-io/ghosthub#47"
+            ))
+        }
+
+        await loader.releaseFirstCall()
+        try await removal.value
+        #expect(attemptedMutations.load().isEmpty)
+        await model.shutdown()
     }
 
     @Test("selecting a kwt worktree preserves the authoritative inventory")

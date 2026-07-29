@@ -114,4 +114,13 @@ struct HostSummaryStateTests {
         #expect(host.canDeleteWorktree == canDelete)
         #expect(snapshot.canRemoveWorktree(worktree) == canDelete)
     }
+
+    @Test("missing tmux disables worktree deletion")
+    func missingTmuxDisablesWorktreeDeletion() {
+        var host = HostSummary.onlineRemoteFixture()
+        host.remoteDiagnostics = [.missingTmuxCapability]
+
+        #expect(host.canCreateWorktree)
+        #expect(!host.canDeleteWorktree)
+    }
 }

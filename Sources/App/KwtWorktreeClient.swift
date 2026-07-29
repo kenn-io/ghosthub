@@ -23,13 +23,13 @@ enum KwtWorktreeError: Error, Equatable, LocalizedError {
         case .projectUnavailable:
             "The selected kwt project or host is no longer available."
         case .creationInProgress:
-            "Another worktree is already being created."
+            "Another worktree change is already in progress."
         case .worktreeUnavailable:
             "The selected kwt worktree or host is no longer available."
         case .primaryWorktreeCannotBeRemoved:
             "The primary checkout cannot be removed."
         case .removalInProgress:
-            "Another worktree is already being removed."
+            "Another worktree change is already in progress."
         case .removalTargetChanged:
             "The worktree or its tmux session changed after confirmation."
                 + " Review the refreshed workspace and try again."

@@ -482,12 +482,17 @@ public struct HostSummary: Identifiable, Equatable, Sendable {
             return false
         }
         if remoteDiagnostics.contains(
-            where: \.blocksWorktreeCreate
+            where: {
+                $0.blocksWorktreeCreate
+                    || $0.blocksDurableSessions
+            }
         ) {
             return false
         }
-        return remoteCapabilities?.commands
-            .worktreeDelete ?? true
+        guard let commands = remoteCapabilities?.commands else {
+            return true
+        }
+        return commands.worktreeDelete && commands.sessionKill
     }
 
     public var canImportPullRequest: Bool {
