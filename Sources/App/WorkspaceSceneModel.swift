@@ -792,6 +792,9 @@ final class WorkspaceSceneModel: ObservableObject {
         guard snapshot.canRemoveWorktree(worktree) else {
             throw KwtWorktreeError.worktreeUnavailable
         }
+        guard worktree.createdAt != nil else {
+            throw KwtWorktreeError.removalIdentityUnavailable
+        }
 
         let sessionKillRequest: TmuxSessionKillRequest?
         if let session = WorkspaceSidebarModel.tmuxSessionSelection(
@@ -958,8 +961,8 @@ final class WorkspaceSceneModel: ObservableObject {
             record.repository == request.project.scopedKey,
             record.branch == request.worktree.branch,
             record.isMain == request.worktree.isPrimary,
-            request.worktree.createdAt == nil
-            || record.createdAt == request.worktree.createdAt,
+            let confirmedCreatedAt = request.worktree.createdAt,
+            record.createdAt == confirmedCreatedAt,
             record.sessionName == request.worktree.tmuxSessionName,
             record.tmuxSocketName == request.worktree.tmuxSocketName,
             let worktree = snapshot.worktree(id: request.worktree.id),
@@ -987,6 +990,7 @@ final class WorkspaceSceneModel: ObservableObject {
               worktree.path == request.worktree.path,
               worktree.branch == request.worktree.branch,
               worktree.isPrimary == request.worktree.isPrimary,
+              worktree.createdAt == request.worktree.createdAt,
               worktree.tmuxSessionName == request.worktree.tmuxSessionName,
               worktree.tmuxSocketName == request.worktree.tmuxSocketName,
               project.id == request.project.id,

@@ -45,8 +45,6 @@ struct TmuxSessionKiller: Sendable {
         "GHOSTHUB_TMUX_SESSION_IDENTITY_MISMATCH"
     private static let identityMarker =
         "GHOSTHUB_TMUX_SESSION_IDENTITY\t"
-    private static let absenceMarker =
-        "GHOSTHUB_TMUX_SESSION_ABSENT"
 
     typealias PathResolver = @Sendable (TmuxHost)
         -> Result<String, TmuxBinaryError>
@@ -133,29 +131,45 @@ struct TmuxSessionKiller: Sendable {
         on host: TmuxHost
     ) async throws -> TmuxSessionIdentity {
         let tmuxPath = try pathResolver(host).get()
-        let command = Self.identityCommand(
+        let platform = Self.platform(for: host)
+        let probeCommand = Self.sessionProbeCommand(
             tmuxPath: tmuxPath,
             sessionName: selection.name,
             socketName: selection.socketName,
-            platform: Self.platform(for: host)
+            platform: platform
         )
         let runner = runner
+        let probe = await Task.detached(priority: .userInitiated) {
+            runner(host, probeCommand)
+        }.value
+        guard probe.status == 0 else {
+            if probe.status == 1,
+               Self.isConfirmedAbsence(probe.stdout) {
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+            throw TmuxSessionKillError.identityCommandFailed(
+                host: host.displayName,
+                session: selection.name,
+                status: probe.status
+            )
+        }
+        let identityCommand = Self.identityCommand(
+            tmuxPath: tmuxPath,
+            sessionName: selection.name,
+            socketName: selection.socketName,
+            platform: platform
+        )
         let result = await Task.detached(priority: .userInitiated) {
-            runner(host, command)
+            runner(host, identityCommand)
         }.value
         guard result.status == 0 else {
             throw TmuxSessionKillError.identityCommandFailed(
                 host: host.displayName,
                 session: selection.name,
                 status: result.status
-            )
-        }
-        if result.stdout.split(whereSeparator: \.isNewline).contains(
-            Substring(Self.absenceMarker)
-        ) {
-            throw TmuxSessionKillError.sessionNotRunning(
-                host: host.displayName,
-                session: selection.name
             )
         }
         guard let identity = Self.parseIdentity(result.stdout) else {
@@ -209,70 +223,70 @@ struct TmuxSessionKiller: Sendable {
         socketName: String?,
         platform: SSHHostInfo.Platform
     ) -> String {
-        var baseArguments = [tmuxPath]
+        var arguments = [tmuxPath]
         if let socketName {
-            baseArguments.append(contentsOf: ["-L", socketName])
+            arguments.append(contentsOf: ["-L", socketName])
         }
-        let target = "=\(sessionName):"
-        let hasSessionArguments = baseArguments + [
-            "has-session",
-            "-t",
-            target,
-        ]
-        let identityArguments = baseArguments + [
+        arguments.append(contentsOf: [
             "display-message",
             "-p",
             "-t",
-            target,
+            "=\(sessionName):",
             identityMarker + "#{pid}\t#{session_id}\t#{session_created}",
-        ]
+        ])
         if platform == .windows {
-            return identityPowerShellCommand(
-                hasSessionArguments: hasSessionArguments,
-                identityArguments: identityArguments
+            return powerShellCommand(arguments)
+        }
+        return arguments
+            .map(shellQuotedCommandArgument)
+            .joined(separator: " ")
+    }
+
+    private static func sessionProbeCommand(
+        tmuxPath: String,
+        sessionName: String,
+        socketName: String?,
+        platform: SSHHostInfo.Platform
+    ) -> String {
+        var arguments = [tmuxPath]
+        if let socketName {
+            arguments.append(contentsOf: ["-L", socketName])
+        }
+        arguments.append(contentsOf: [
+            "has-session",
+            "-t",
+            "=\(sessionName):",
+        ])
+        if platform == .windows {
+            return powerShellCommand(
+                arguments,
+                captureStandardError: true
             )
         }
-        let hasSessionCommand = hasSessionArguments
+        return arguments
             .map(shellQuotedCommandArgument)
             .joined(separator: " ")
-        let identityCommand = identityArguments
-            .map(shellQuotedCommandArgument)
-            .joined(separator: " ")
-        return "\(hasSessionCommand); status=$?; "
-            + "if [ \"$status\" -eq 1 ]; then printf '%s\\n' "
-            + "\(shellQuotedCommandArgument(absenceMarker)); exit 0; fi; "
-            + "[ \"$status\" -eq 0 ] || exit \"$status\"; "
-            + identityCommand
+            + " 2>&1"
     }
 
-    private static func identityPowerShellCommand(
-        hasSessionArguments: [String],
-        identityArguments: [String]
+    static func isConfirmedAbsence(_ output: String) -> Bool {
+        let normalized = output.lowercased()
+        return normalized.contains("can't find session:")
+            || normalized.contains("no server running on ")
+    }
+
+    private static func powerShellCommand(
+        _ arguments: [String],
+        captureStandardError: Bool = false
     ) -> String {
-        """
+        let invocation = "& "
+            + arguments.map(powerShellEncodedArgument).joined(separator: " ")
+            + (captureStandardError ? " 2>&1" : "")
+        return """
         $ErrorActionPreference = 'Stop'
         [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
         $OutputEncoding = [Console]::OutputEncoding
-        & \(hasSessionArguments.map(powerShellEncodedArgument).joined(separator: " "))
-        $status = $LASTEXITCODE
-        if ($status -eq 1) {
-            Write-Output \(powerShellEncodedArgument(absenceMarker))
-            exit 0
-        }
-        if ($status -ne 0) {
-            exit $status
-        }
-        & \(identityArguments.map(powerShellEncodedArgument).joined(separator: " "))
-        exit $LASTEXITCODE
-        """
-    }
-
-    private static func powerShellCommand(_ arguments: [String]) -> String {
-        """
-        $ErrorActionPreference = 'Stop'
-        [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-        $OutputEncoding = [Console]::OutputEncoding
-        & \(arguments.map(powerShellEncodedArgument).joined(separator: " "))
+        \(invocation)
         exit $LASTEXITCODE
         """
     }

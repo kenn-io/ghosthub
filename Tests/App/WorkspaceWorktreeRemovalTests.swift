@@ -4,10 +4,12 @@ import GhosthubWorkspace
 import Testing
 @testable import GhosthubApp
 
+private let stableWorktreeCreatedAt = "2026-07-29T19:00:00Z"
+
 private func inventory(
     _ environment: StandardEnvironment,
     including worktree: WorktreeSummary? = nil,
-    createdAt: String? = nil
+    createdAt: String? = stableWorktreeCreatedAt
 ) -> KwtHostInventory {
     var worktrees = [
         KwtWorktreeRecord(
@@ -61,7 +63,8 @@ struct WorkspaceWorktreeRemovalTests {
             scopedKey: "/tmp/ghosthub-feature",
             name: "feature/remove",
             path: "/tmp/ghosthub-feature",
-            branch: "feature/remove"
+            branch: "feature/remove",
+            createdAt: stableWorktreeCreatedAt
         )
         var removable = feature
         removable.tmuxSessionName = "kwt-ghosthub-feature"
@@ -156,10 +159,39 @@ struct WorkspaceWorktreeRemovalTests {
     }
 
     @MainActor
+    @Test("removal requires a stable worktree creation identity")
+    func missingCreationIdentityAbortsPreparation() async throws {
+        let environment = try setupStandardEnvironment()
+        let removable = WorktreeSummary.fixture(
+            hostID: environment.host.id,
+            projectID: environment.project.id,
+            scopedKey: "/tmp/ghosthub-feature",
+            name: "feature/remove",
+            path: "/tmp/ghosthub-feature",
+            branch: "feature/remove"
+        )
+        var snapshot = environment.snapshot
+        snapshot.worktrees.append(removable)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot
+        )
+
+        await #expect(
+            throws: KwtWorktreeError.removalIdentityUnavailable
+        ) {
+            try await model.prepareWorktreeRemoval(removable.id)
+        }
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("kwt availability is checked before terminating a session")
     func unavailableKwtDoesNotKillSession() async throws {
         let environment = try setupRemoteEnvironment()
         var worktree = try #require(environment.snapshot.worktrees.first)
+        worktree.createdAt = stableWorktreeCreatedAt
         worktree.tmuxSessionName = "kwt-ghosthub-feature"
         var snapshot = environment.snapshot
         snapshot.worktrees = [worktree]
@@ -209,6 +241,7 @@ struct WorkspaceWorktreeRemovalTests {
             name: "feature/remove",
             path: "/tmp/ghosthub-feature"
         )
+        removable.createdAt = stableWorktreeCreatedAt
         removable.tmuxSessionName = "kwt-ghosthub-feature"
         var snapshot = environment.snapshot
         snapshot.worktrees.append(removable)
@@ -270,6 +303,7 @@ struct WorkspaceWorktreeRemovalTests {
             name: "feature/remove",
             path: "/tmp/ghosthub-feature"
         )
+        removable.createdAt = stableWorktreeCreatedAt
         removable.tmuxSessionName = "kwt-ghosthub-feature"
         var snapshot = environment.snapshot
         snapshot.worktrees.append(removable)
@@ -341,7 +375,8 @@ struct WorkspaceWorktreeRemovalTests {
             scopedKey: "/tmp/ghosthub-feature",
             name: "feature/remove",
             path: "/tmp/ghosthub-feature",
-            branch: "feature/remove"
+            branch: "feature/remove",
+            createdAt: stableWorktreeCreatedAt
         )
         removable.tmuxSessionName = "kwt-ghosthub-feature"
         var replacement = removable
@@ -409,7 +444,7 @@ struct WorkspaceWorktreeRemovalTests {
             name: "feature/remove",
             path: "/tmp/ghosthub-feature",
             branch: "feature/remove",
-            createdAt: "2026-07-29T19:00:00Z"
+            createdAt: stableWorktreeCreatedAt
         )
         removable.tmuxSessionName = "kwt-ghosthub-feature"
         var snapshot = environment.snapshot
