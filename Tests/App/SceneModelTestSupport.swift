@@ -283,6 +283,8 @@ func makeModel(
             on: host
         )
     },
+    worktreeMutationCoordinator: WorktreeMutationCoordinator =
+        WorktreeMutationCoordinator(),
     kwtPullRequestLister:
     @escaping WorkspaceSceneModel.KwtPullRequestLister = {
         projectIdentity, host in
@@ -350,6 +352,7 @@ func makeModel(
         kwtInventoryLoader: kwtInventoryLoader,
         kwtWorktreeCreator: kwtWorktreeCreator,
         kwtWorktreeRemover: kwtWorktreeRemover,
+        worktreeMutationCoordinator: worktreeMutationCoordinator,
         kwtPullRequestLister: kwtPullRequestLister,
         kwtPullRequestImporter: kwtPullRequestImporter,
         kwtProjectRegistration: kwtProjectRegistration,

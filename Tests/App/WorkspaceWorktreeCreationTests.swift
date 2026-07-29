@@ -32,8 +32,115 @@ private actor KwtInventoryRaceStub {
     }
 }
 
+private actor WorktreeMutationHold {
+    private(set) var started = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func wait() async {
+        started = true
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+    }
+
+    func release() {
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
+private enum WorktreeMutationProbeError: Error, Equatable {
+    case firstFinished
+    case invoked(projectPath: String)
+}
+
 @Suite("Workspace worktree creation")
 struct WorkspaceWorktreeCreationTests {
+    @Test("separate scene models serialize mutations by host and project")
+    @MainActor
+    func separateModelsShareMutationGate() async throws {
+        let environment = try setupStandardEnvironment()
+        var snapshot = environment.snapshot
+        let otherProject = ProjectSummary.fixture(
+            hostID: environment.host.id,
+            name: "Other",
+            rootPath: "/tmp/other"
+        )
+        snapshot.projects.append(otherProject)
+        let hold = WorktreeMutationHold()
+        let mutationCoordinator = WorktreeMutationCoordinator()
+        let firstModel = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtWorktreeCreator: { _, _, _ in
+                await hold.wait()
+                throw WorktreeMutationProbeError.firstFinished
+            },
+            worktreeMutationCoordinator: mutationCoordinator
+        )
+        let secondModel = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtWorktreeCreator: { _, projectPath, _ in
+                throw WorktreeMutationProbeError.invoked(
+                    projectPath: projectPath
+                )
+            },
+            worktreeMutationCoordinator: mutationCoordinator
+        )
+
+        let firstMutation = Task { @MainActor in
+            do {
+                try await firstModel.createWorktree(
+                    WorktreeCreateRequest(
+                        projectID: environment.project.id,
+                        branchName: "feature/first",
+                        createsBranch: true
+                    )
+                )
+                return nil as WorktreeMutationProbeError?
+            } catch {
+                return error as? WorktreeMutationProbeError
+            }
+        }
+        for _ in 0 ..< 1_000 {
+            if await hold.started {
+                break
+            }
+            await Task.yield()
+        }
+        #expect(await hold.started)
+
+        await #expect(throws: KwtWorktreeError.creationInProgress) {
+            try await secondModel.createWorktree(
+                WorktreeCreateRequest(
+                    projectID: environment.project.id,
+                    branchName: "feature/second",
+                    createsBranch: true
+                )
+            )
+        }
+        await #expect {
+            try await secondModel.createWorktree(
+                WorktreeCreateRequest(
+                    projectID: otherProject.id,
+                    branchName: "feature/other",
+                    createsBranch: true
+                )
+            )
+        } throws: { error in
+            error as? WorktreeMutationProbeError
+                == .invoked(projectPath: otherProject.rootPath)
+        }
+
+        await hold.release()
+        #expect(await firstMutation.value == .firstFinished)
+        await firstModel.shutdown()
+        await secondModel.shutdown()
+    }
+
     @Test("removal excludes concurrent create and import mutations")
     @MainActor
     func removalExcludesOtherMutations() async throws {

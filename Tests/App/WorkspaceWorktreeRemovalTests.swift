@@ -4,7 +4,8 @@ import GhosthubWorkspace
 import Testing
 @testable import GhosthubApp
 
-private let stableWorktreeCreatedAt = "2026-07-29T19:00:00Z"
+private let stableWorktreeCreatedAt =
+    "2026-07-29T19:00:00.123456789-05:00"
 
 private func inventory(
     _ environment: StandardEnvironment,
@@ -159,8 +160,20 @@ struct WorkspaceWorktreeRemovalTests {
     }
 
     @MainActor
-    @Test("removal requires a stable worktree creation identity")
-    func missingCreationIdentityAbortsPreparation() async throws {
+    @Test(
+        "removal requires a canonical worktree creation identity",
+        arguments: [
+            nil,
+            "",
+            "   ",
+            "not-a-timestamp",
+            "2026-07-29 19:00:00Z",
+            "0001-01-01T00:00:00Z",
+        ] as [String?]
+    )
+    func invalidCreationIdentityAbortsPreparation(
+        createdAt: String?
+    ) async throws {
         let environment = try setupStandardEnvironment()
         let removable = WorktreeSummary.fixture(
             hostID: environment.host.id,
@@ -168,7 +181,8 @@ struct WorkspaceWorktreeRemovalTests {
             scopedKey: "/tmp/ghosthub-feature",
             name: "feature/remove",
             path: "/tmp/ghosthub-feature",
-            branch: "feature/remove"
+            branch: "feature/remove",
+            createdAt: createdAt
         )
         var snapshot = environment.snapshot
         snapshot.worktrees.append(removable)
