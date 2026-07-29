@@ -36,6 +36,32 @@ struct WorkspaceSidebarModelTests {
         #expect(idle.reservedWidth > 0)
     }
 
+    @Test("worktree removal is subtle without shrinking its hit target")
+    func worktreeRemovalHoverKeepsStableHitTarget() {
+        let idle = WorkspaceWorktreeRemovalActionPresentation(
+            isRemovable: true,
+            isRowHovered: false,
+            isActionHovered: false
+        )
+        let hovered = WorkspaceWorktreeRemovalActionPresentation(
+            isRemovable: true,
+            isRowHovered: true,
+            isActionHovered: false
+        )
+        let primary = WorkspaceWorktreeRemovalActionPresentation(
+            isRemovable: false,
+            isRowHovered: true,
+            isActionHovered: true
+        )
+
+        #expect(!idle.isVisible)
+        #expect(hovered.isVisible)
+        #expect(idle.reservedWidth == hovered.reservedWidth)
+        #expect(hovered.hitTargetWidth >= 28)
+        #expect(!primary.isVisible)
+        #expect(primary.reservedWidth == 0)
+    }
+
     @Test("hosts remain visible before they have projects or tmux sessions")
     func exposesEmptyHosts() {
         let local = HostSummary.fixture(name: "This Mac")

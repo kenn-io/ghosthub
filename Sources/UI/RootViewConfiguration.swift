@@ -103,6 +103,22 @@ public struct TmuxSessionKillRequest: Equatable, Sendable {
     }
 }
 
+public struct WorktreeRemovalRequest: Equatable, Sendable {
+    public let worktree: WorktreeSummary
+    public let project: ProjectSummary
+    public let sessionKillRequest: TmuxSessionKillRequest?
+
+    public init(
+        worktree: WorktreeSummary,
+        project: ProjectSummary,
+        sessionKillRequest: TmuxSessionKillRequest? = nil
+    ) {
+        self.worktree = worktree
+        self.project = project
+        self.sessionKillRequest = sessionKillRequest
+    }
+}
+
 public struct InteractionHandlers {
     public let closeWindow: (() -> Void)?
     public let dismissLogViewer: (() -> Void)?
@@ -126,6 +142,10 @@ public struct InteractionHandlers {
         ((UUID) async throws -> [PullRequestCandidate])?
     public let importPullRequest:
         ((PullRequestImportRequest) async throws -> Void)?
+    public let prepareWorktreeRemoval:
+        ((UUID) async throws -> WorktreeRemovalRequest)?
+    public let removeWorktree:
+        ((WorktreeRemovalRequest) async throws -> Void)?
 
     public init(
         closeWindow: (() -> Void)? = nil,
@@ -149,7 +169,11 @@ public struct InteractionHandlers {
         listPullRequests:
         ((UUID) async throws -> [PullRequestCandidate])? = nil,
         importPullRequest:
-        ((PullRequestImportRequest) async throws -> Void)? = nil
+        ((PullRequestImportRequest) async throws -> Void)? = nil,
+        prepareWorktreeRemoval:
+        ((UUID) async throws -> WorktreeRemovalRequest)? = nil,
+        removeWorktree:
+        ((WorktreeRemovalRequest) async throws -> Void)? = nil
     ) {
         self.closeWindow = closeWindow
         self.dismissLogViewer = dismissLogViewer
@@ -165,5 +189,7 @@ public struct InteractionHandlers {
         self.listBranches = listBranches
         self.listPullRequests = listPullRequests
         self.importPullRequest = importPullRequest
+        self.prepareWorktreeRemoval = prepareWorktreeRemoval
+        self.removeWorktree = removeWorktree
     }
 }

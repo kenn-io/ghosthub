@@ -18,6 +18,25 @@ struct WorkspaceTmuxSessionActionPresentation: Equatable {
     }
 }
 
+struct WorkspaceWorktreeRemovalActionPresentation: Equatable {
+    static let controlWidth: CGFloat = 30
+
+    let isVisible: Bool
+    let reservedWidth: CGFloat
+    let hitTargetWidth: CGFloat
+
+    init(
+        isRemovable: Bool,
+        isRowHovered: Bool,
+        isActionHovered: Bool
+    ) {
+        isVisible = isRemovable
+            && (isRowHovered || isActionHovered)
+        reservedWidth = isRemovable ? Self.controlWidth : 0
+        hitTargetWidth = isRemovable ? Self.controlWidth : 0
+    }
+}
+
 enum WorkspaceSidebarHierarchy {
     private static let step: CGFloat = 14
 
@@ -41,6 +60,7 @@ struct WorkspaceSidebarView: View {
     let onOpenTmuxSession: (WorkspaceTmuxSessionSelection) -> Void
     let onNavigateAwayFromTmuxSession: () -> Void
     let onRequestKillTmuxSession: (WorkspaceTmuxSessionSelection) -> Void
+    let onRequestRemoveWorktree: (WorktreeSummary) -> Void
     let onNewWorktree: (ProjectSummary) -> Void
     let onImportPullRequest: (ProjectSummary) -> Void
     let onNewTmuxSession: (HostSummary) -> Void
@@ -54,6 +74,9 @@ struct WorkspaceSidebarView: View {
     @State private var hoveredTmuxSessionID: String?
     @State private var hoveredTmuxSessionActionID: String?
     @State private var tmuxSessionHoverDismissTask: Task<Void, Never>?
+    @State private var hoveredWorktreeID: UUID?
+    @State private var hoveredWorktreeActionID: UUID?
+    @State private var worktreeHoverDismissTask: Task<Void, Never>?
     @AppStorage("workspaceSidebarDisclosureStateV2")
     private var disclosureState = ""
     @AppStorage("workspaceSidebarCollapsedItems")
@@ -71,6 +94,9 @@ struct WorkspaceSidebarView: View {
         onNavigateAwayFromTmuxSession: @escaping () -> Void = {},
         onRequestKillTmuxSession: @escaping (
             WorkspaceTmuxSessionSelection
+        ) -> Void = { _ in },
+        onRequestRemoveWorktree: @escaping (
+            WorktreeSummary
         ) -> Void = { _ in },
         onNewWorktree: @escaping (ProjectSummary) -> Void = { _ in },
         onImportPullRequest: @escaping (ProjectSummary) -> Void = { _ in },
@@ -90,6 +116,7 @@ struct WorkspaceSidebarView: View {
         self.onOpenTmuxSession = onOpenTmuxSession
         self.onNavigateAwayFromTmuxSession = onNavigateAwayFromTmuxSession
         self.onRequestKillTmuxSession = onRequestKillTmuxSession
+        self.onRequestRemoveWorktree = onRequestRemoveWorktree
         self.onNewWorktree = onNewWorktree
         self.onImportPullRequest = onImportPullRequest
         self.onNewTmuxSession = onNewTmuxSession
@@ -442,9 +469,13 @@ struct WorkspaceSidebarView: View {
 
     // MARK: - Row builders
 
-    private func sidebarButton(_ row: WorkspaceSidebarRow) -> some View {
+    private func sidebarButton(
+        _ row: WorkspaceSidebarRow,
+        showsTmuxSessionAction: Bool = true,
+        reservedTrailingActionWidth: CGFloat = 0
+    ) -> some View {
         let tmuxSession = tmuxSessionSelection(for: row)
-        let runningTmuxSession = tmuxSession.flatMap {
+        let runningTmuxSession = showsTmuxSessionAction ? tmuxSession.flatMap {
             WorkspaceSidebarModel.canRequestKill(
                 $0,
                 in: snapshot,
@@ -452,7 +483,7 @@ struct WorkspaceSidebarView: View {
                 activeSelectionIsConnected:
                 activeTmuxSessionIsConnected
             ) ? $0 : nil
-        }
+        } : nil
         let isSelected: Bool
         if case let .tmuxSession(hostID, name) = row.target {
             isSelected = activeTmuxSession
@@ -536,7 +567,13 @@ struct WorkspaceSidebarView: View {
                     )
                 )
                 .padding(.horizontal, 8)
-                .padding(.trailing, actionPresentation.reservedWidth)
+                .padding(
+                    .trailing,
+                    max(
+                        actionPresentation.reservedWidth,
+                        reservedTrailingActionWidth
+                    )
+                )
                 .padding(.vertical, 6)
                 .background {
                     RoundedRectangle(cornerRadius: 6)
@@ -688,7 +725,111 @@ struct WorkspaceSidebarView: View {
     }
 
     private func worktreeButton(_ row: WorkspaceSidebarRow) -> some View {
-        sidebarButton(row)
+        guard case let .worktree(worktreeID) = row.target,
+              let worktree = snapshot.worktree(id: worktreeID)
+        else {
+            return AnyView(sidebarButton(row))
+        }
+        let isRemovable = !worktree.isPrimary
+        let isActionHovered = hoveredWorktreeActionID == worktreeID
+        let actionPresentation =
+            WorkspaceWorktreeRemovalActionPresentation(
+                isRemovable: isRemovable,
+                isRowHovered: hoveredWorktreeID == worktreeID,
+                isActionHovered: isActionHovered
+            )
+        return AnyView(
+            sidebarButton(
+                row,
+                showsTmuxSessionAction: false,
+                reservedTrailingActionWidth:
+                actionPresentation.reservedWidth
+            )
+            .overlay(alignment: .trailing) {
+                if isRemovable {
+                    Button {
+                        onRequestRemoveWorktree(worktree)
+                    } label: {
+                        ZStack {
+                            Color.clear
+                            if actionPresentation.isVisible {
+                                Image(systemName: "xmark")
+                                    .font(.system(
+                                        size: 10,
+                                        weight: .semibold
+                                    ))
+                            }
+                        }
+                        .frame(
+                            width: actionPresentation.hitTargetWidth,
+                            height: 30
+                        )
+                        .background {
+                            if actionPresentation.isVisible {
+                                RoundedRectangle(cornerRadius: 5)
+                                    .fill(
+                                        Color.primary.opacity(
+                                            isActionHovered ? 0.14 : 0.05
+                                        )
+                                    )
+                            }
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .onHover { isHovered in
+                        if isHovered {
+                            worktreeHoverDismissTask?.cancel()
+                            hoveredWorktreeActionID = worktreeID
+                        } else if hoveredWorktreeActionID == worktreeID {
+                            hoveredWorktreeActionID = nil
+                            scheduleWorktreeHoverDismiss(worktreeID)
+                        }
+                    }
+                    .help("Remove worktree…")
+                    .accessibilityLabel(
+                        "Remove worktree \(worktree.name)"
+                    )
+                    .accessibilityIdentifier(
+                        "remove-worktree-\(worktree.id.uuidString)"
+                    )
+                }
+            }
+            .onHover { isHovered in
+                guard isRemovable else { return }
+                if isHovered {
+                    worktreeHoverDismissTask?.cancel()
+                    hoveredWorktreeID = worktreeID
+                } else {
+                    scheduleWorktreeHoverDismiss(worktreeID)
+                }
+            }
+            .contextMenu {
+                if isRemovable {
+                    Button("Remove Worktree…", role: .destructive) {
+                        onRequestRemoveWorktree(worktree)
+                    }
+                }
+            }
+            .accessibilityAction(named: "Remove Worktree") {
+                if isRemovable {
+                    onRequestRemoveWorktree(worktree)
+                }
+            }
+        )
+    }
+
+    private func scheduleWorktreeHoverDismiss(_ worktreeID: UUID) {
+        worktreeHoverDismissTask?.cancel()
+        worktreeHoverDismissTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(150))
+            guard !Task.isCancelled,
+                  hoveredWorktreeActionID != worktreeID,
+                  hoveredWorktreeID == worktreeID
+            else { return }
+            hoveredWorktreeID = nil
+        }
     }
 
     private func hierarchyRow(

@@ -675,6 +675,12 @@ struct WorkspaceWindow: View {
                 },
                 importPullRequest: { [sceneModel] request in
                     try await sceneModel.importPullRequest(request)
+                },
+                prepareWorktreeRemoval: { [sceneModel] worktreeID in
+                    try await sceneModel.prepareWorktreeRemoval(worktreeID)
+                },
+                removeWorktree: { [sceneModel] request in
+                    try await sceneModel.removeWorktree(request)
                 }
             ),
             settingsStore: settingsStore,

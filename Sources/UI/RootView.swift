@@ -27,6 +27,7 @@ public struct RootView: View {
     @State private var newTmuxSessionHost: HostSummary?
     @State private var addProjectHost: HostSummary?
     @State private var sessionKillAlert: SessionKillAlert?
+    @State private var worktreeRemovalAlert: WorktreeRemovalAlert?
 
     public init(
         display: WorkspaceDisplayState,
@@ -139,6 +140,9 @@ public struct RootView: View {
             }
             .alert(item: $sessionKillAlert) { alert in
                 sessionKillAlertView(alert)
+            }
+            .alert(item: $worktreeRemovalAlert) { alert in
+                worktreeRemovalAlertView(alert)
             }
     }
 
@@ -361,6 +365,7 @@ public struct RootView: View {
                 deactivateTmuxSession()
             },
             onRequestKillTmuxSession: requestSessionKill,
+            onRequestRemoveWorktree: requestWorktreeRemoval,
             onNewWorktree: openNewWorktree,
             onImportPullRequest: openImportPullRequest,
             onNewTmuxSession: { host in
@@ -481,6 +486,71 @@ public struct RootView: View {
         case let .failure(session, message):
             return Alert(
                 title: Text("Could Not Kill “\(session)”"),
+                message: Text(message),
+                dismissButton: .default(Text("OK"))
+            )
+        }
+    }
+
+    private func requestWorktreeRemoval(_ worktree: WorktreeSummary) {
+        guard let prepare = handlers.prepareWorktreeRemoval else {
+            worktreeRemovalAlert = .failure(
+                worktree: worktree.name,
+                message: "Worktree removal is unavailable."
+            )
+            return
+        }
+        Task {
+            do {
+                worktreeRemovalAlert = await .confirmation(
+                    try prepare(worktree.id)
+                )
+            } catch {
+                worktreeRemovalAlert = .failure(
+                    worktree: worktree.name,
+                    message: error.localizedDescription
+                )
+            }
+        }
+    }
+
+    private func worktreeRemovalAlertView(
+        _ alert: WorktreeRemovalAlert
+    ) -> Alert {
+        switch alert {
+        case let .confirmation(request):
+            let sessionMessage = request.sessionKillRequest == nil
+                ? ""
+                : " Its live tmux session will be terminated first,"
+                + " including every window, pane, and process."
+            return Alert(
+                title: Text("Remove “\(request.worktree.name)”?”"),
+                message: Text(
+                    "This removes the worktree at "
+                        + "\(request.worktree.path)."
+                        + sessionMessage
+                        + " The Git branch will be kept."
+                ),
+                primaryButton: .destructive(Text("Remove Worktree")) {
+                    Task {
+                        do {
+                            guard let remove = handlers.removeWorktree else {
+                                throw WorktreeRemovalUnavailableError()
+                            }
+                            try await remove(request)
+                        } catch {
+                            worktreeRemovalAlert = .failure(
+                                worktree: request.worktree.name,
+                                message: error.localizedDescription
+                            )
+                        }
+                    }
+                },
+                secondaryButton: .cancel()
+            )
+        case let .failure(worktree, message):
+            return Alert(
+                title: Text("Could Not Remove “\(worktree)”"),
                 message: Text(message),
                 dismissButton: .default(Text("OK"))
             )
@@ -920,5 +990,25 @@ private enum SessionKillAlert: Identifiable {
 private struct SessionKillUnavailableError: LocalizedError {
     var errorDescription: String? {
         "Session termination is unavailable."
+    }
+}
+
+private enum WorktreeRemovalAlert: Identifiable {
+    case confirmation(WorktreeRemovalRequest)
+    case failure(worktree: String, message: String)
+
+    var id: String {
+        switch self {
+        case let .confirmation(request):
+            return "confirm:\(request.worktree.id.uuidString)"
+        case let .failure(worktree, message):
+            return "failure:\(worktree):\(message)"
+        }
+    }
+}
+
+private struct WorktreeRemovalUnavailableError: LocalizedError {
+    var errorDescription: String? {
+        "Worktree removal is unavailable."
     }
 }

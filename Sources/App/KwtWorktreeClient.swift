@@ -6,7 +6,11 @@ enum KwtWorktreeError: Error, Equatable, LocalizedError {
     case invalidBranchName
     case projectUnavailable
     case creationInProgress
+    case worktreeUnavailable
+    case primaryWorktreeCannotBeRemoved
+    case removalInProgress
     case commandFailed(host: String, status: Int32)
+    case removalFailed(host: String, status: Int32)
     case createdWorktreeMissing(branch: String)
     case malformedBranches(host: String)
 
@@ -18,8 +22,16 @@ enum KwtWorktreeError: Error, Equatable, LocalizedError {
             "The selected kwt project or host is no longer available."
         case .creationInProgress:
             "Another worktree is already being created."
+        case .worktreeUnavailable:
+            "The selected kwt worktree or host is no longer available."
+        case .primaryWorktreeCannotBeRemoved:
+            "The primary checkout cannot be removed."
+        case .removalInProgress:
+            "Another worktree is already being removed."
         case let .commandFailed(host, status):
             "kwt could not create the worktree on \(host) (status \(status))."
+        case let .removalFailed(host, status):
+            "kwt could not remove the worktree on \(host) (status \(status))."
         case let .createdWorktreeMissing(branch):
             "kwt completed, but \(branch) was not present in the refreshed inventory."
         case let .malformedBranches(host):
@@ -183,6 +195,57 @@ struct KwtWorktreeClient: Sendable {
         }
     }
 
+    func remove(
+        worktreePath: String,
+        projectPath: String,
+        on host: TmuxHost
+    ) async throws {
+        let binaryPrelude: String
+        let windowsKwtRelativePath: String?
+        let platform: SSHHostInfo.Platform
+        switch host {
+        case .local:
+            binaryPrelude = KwtBinaryLocator.commandPrelude(
+                exactPath: localBinaryPath
+            )
+            windowsKwtRelativePath = nil
+            platform = .posix
+        case let .ssh(info):
+            binaryPrelude = KwtBinaryLocator.remoteCommandPrelude(
+                revision: remoteBinaryRevision
+            )
+            windowsKwtRelativePath =
+                KwtBinaryLocator.windowsRemoteManagedRelativePath(
+                    revision: remoteBinaryRevision
+                )
+            platform = info.platform
+        }
+        let command = Self.removeCommand(
+            worktreePath: worktreePath,
+            projectPath: projectPath,
+            platform: platform,
+            binaryPrelude: binaryPrelude,
+            windowsKwtRelativePath: windowsKwtRelativePath
+        )
+        let localRunner = localRunner
+        let remoteRunner = remoteRunner
+        let shell = loginShellProvider()
+        let result = await Task.detached(priority: .userInitiated) {
+            switch host {
+            case .local:
+                localRunner(shell, command)
+            case let .ssh(info):
+                remoteRunner(info, command)
+            }
+        }.value
+        guard result.status == 0 else {
+            throw KwtWorktreeError.removalFailed(
+                host: host.displayName,
+                status: result.status
+            )
+        }
+    }
+
     static func command(
         branchName: String,
         createsBranch: Bool,
@@ -228,5 +291,25 @@ struct KwtWorktreeClient: Sendable {
             + "cd -- \(shellQuotedCommandArgument(projectPath)) || exit $?; "
             + "printf 'GHOSTHUB_KWT_JSON\\n'; "
             + "exec \"$ghosthub_kwt_path\" branches --json"
+    }
+
+    private static func removeCommand(
+        worktreePath: String,
+        projectPath: String,
+        platform: SSHHostInfo.Platform,
+        binaryPrelude: String,
+        windowsKwtRelativePath: String?
+    ) -> String {
+        if platform == .windows {
+            return KwtPowerShellCommand.run(
+                arguments: ["remove", worktreePath],
+                workingDirectory: projectPath,
+                managedRelativePath: windowsKwtRelativePath
+            )
+        }
+        return binaryPrelude
+            + "cd -- \(shellQuotedCommandArgument(projectPath)) || exit $?; "
+            + "exec \"$ghosthub_kwt_path\" remove "
+            + shellQuotedCommandArgument(worktreePath)
     }
 }

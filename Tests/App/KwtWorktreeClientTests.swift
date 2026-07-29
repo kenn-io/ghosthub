@@ -183,6 +183,66 @@ struct KwtWorktreeClientTests {
         )
     }
 
+    @Test("local removal delegates the exact worktree path to kwt")
+    func localRemoval() async throws {
+        let recorder = CommandRecorder()
+        let client = KwtWorktreeClient(
+            localRunner: { shell, command in
+                recorder.record(shell: shell, command: command)
+                return (0, "")
+            },
+            localBinaryPath: "/Applications/Ghost Hub.app/Contents/Helpers/kwt",
+            loginShellProvider: { "/bin/zsh" }
+        )
+
+        try await client.remove(
+            worktreePath: "/worktrees/ghost hub/feature",
+            projectPath: "/code/ghost hub",
+            on: .local
+        )
+
+        #expect(recorder.command?.contains(
+            "cd -- '/code/ghost hub'"
+        ) == true)
+        #expect(recorder.command?.contains(
+            "remove '/worktrees/ghost hub/feature'"
+        ) == true)
+        #expect(recorder.command?.contains("--delete-branch") == false)
+        #expect(recorder.command?.contains("--force") == false)
+    }
+
+    @Test("Windows removal uses the managed kwt helper")
+    func windowsRemoteRemoval() async throws {
+        let recorder = CommandRecorder()
+        let revision = String(repeating: "e", count: 40)
+        let ssh = SSHHostInfo(
+            user: "wesm",
+            hostname: "arm-builder",
+            port: nil,
+            platform: .windows
+        )
+        let client = KwtWorktreeClient(
+            remoteRunner: { host, command in
+                recorder.record(host: host, command: command)
+                return (0, "")
+            },
+            remoteBinaryRevision: revision
+        )
+
+        try await client.remove(
+            worktreePath: #"C:\worktrees\ghost hub\feature"#,
+            projectPath: #"C:\code\ghost hub"#,
+            on: .ssh(ssh)
+        )
+
+        #expect(recorder.host == ssh)
+        #expect(recorder.command?.contains(
+            ["remove", #"C:\worktrees\ghost hub\feature"#]
+                .map(powerShellEncodedArgument)
+                .joined(separator: " ")
+        ) == true)
+    }
+
     @Test("a nonzero kwt exit is reported")
     func reportsFailure() async {
         let client = KwtWorktreeClient(

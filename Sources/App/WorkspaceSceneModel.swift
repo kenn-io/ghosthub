@@ -46,6 +46,9 @@ final class WorkspaceSceneModel: ObservableObject {
     typealias KwtWorktreeCreator = @Sendable (
         WorktreeCreateRequest, String, TmuxHost
     ) async throws -> Void
+    typealias KwtWorktreeRemover = @Sendable (
+        String, String, TmuxHost
+    ) async throws -> Void
     typealias KwtBranchLister = @Sendable (
         String, TmuxHost
     ) async throws -> [WorktreeBranchCandidate]
@@ -104,6 +107,7 @@ final class WorkspaceSceneModel: ObservableObject {
     private var isKwtInventoryLoading = false
     private var isWorktreeCreationInProgress = false
     private var isPullRequestImportInProgress = false
+    private var isWorktreeRemovalInProgress = false
 
     var workspaceResourceSummary: WorkspaceResourceSummary {
         activityController.workspaceResourceSummary
@@ -226,6 +230,7 @@ final class WorkspaceSceneModel: ObservableObject {
     private let notificationService: NotificationService
     private let kwtInventoryLoader: KwtInventoryLoader
     private let kwtWorktreeCreator: KwtWorktreeCreator
+    private let kwtWorktreeRemover: KwtWorktreeRemover
     private let kwtBranchLister: KwtBranchLister
     private let kwtPullRequestLister: KwtPullRequestLister
     private let kwtPullRequestImporter: KwtPullRequestImporter
@@ -336,6 +341,14 @@ final class WorkspaceSceneModel: ObservableObject {
                 on: host
             )
         },
+        kwtWorktreeRemover: @escaping KwtWorktreeRemover = {
+            worktreePath, projectPath, host in
+            try await KwtWorktreeClient().remove(
+                worktreePath: worktreePath,
+                projectPath: projectPath,
+                on: host
+            )
+        },
         kwtBranchLister: @escaping KwtBranchLister = {
             projectPath, host in
             try await KwtWorktreeClient().branches(
@@ -421,6 +434,7 @@ final class WorkspaceSceneModel: ObservableObject {
         self.terminalRuntime = terminalRuntime
         self.kwtInventoryLoader = kwtInventoryLoader
         self.kwtWorktreeCreator = kwtWorktreeCreator
+        self.kwtWorktreeRemover = kwtWorktreeRemover
         self.kwtBranchLister = kwtBranchLister
         self.kwtPullRequestLister = kwtPullRequestLister
         self.kwtPullRequestImporter = kwtPullRequestImporter
@@ -764,6 +778,120 @@ final class WorkspaceSceneModel: ObservableObject {
         return try await kwtBranchLister(project.rootPath, host)
     }
 
+    func prepareWorktreeRemoval(
+        _ worktreeID: UUID
+    ) async throws -> WorktreeRemovalRequest {
+        guard let worktree = snapshot.worktree(id: worktreeID),
+              let project = snapshot.project(id: worktree.projectID),
+              let hostSummary = snapshot.host(id: worktree.hostID),
+              let host = TmuxHostResolver.resolve(hostSummary)
+        else {
+            throw KwtWorktreeError.worktreeUnavailable
+        }
+        guard !worktree.isPrimary else {
+            throw KwtWorktreeError.primaryWorktreeCannotBeRemoved
+        }
+
+        let sessionKillRequest: TmuxSessionKillRequest?
+        if let session = WorkspaceSidebarModel.tmuxSessionSelection(
+            for: worktree
+        ) {
+            if WorkspaceSidebarModel.canRequestKill(
+                session,
+                in: snapshot,
+                activeSelection: activeBorrowedTmuxSelection,
+                activeSelectionIsConnected:
+                activeBorrowedTmuxSessionIsConnected
+            ) {
+                sessionKillRequest = try await prepareTmuxSessionKill(session)
+            } else {
+                do {
+                    let identity = try await tmuxSessionIdentityReader(
+                        session,
+                        host
+                    )
+                    sessionKillRequest = TmuxSessionKillRequest(
+                        session: session,
+                        confirmedHost: hostSummary,
+                        serverPID: identity.serverPID,
+                        sessionID: identity.sessionID,
+                        sessionCreatedAt: identity.createdAt
+                    )
+                } catch TmuxSessionKillError.sessionNotRunning {
+                    sessionKillRequest = nil
+                }
+            }
+        } else {
+            sessionKillRequest = nil
+        }
+        return WorktreeRemovalRequest(
+            worktree: worktree,
+            project: project,
+            sessionKillRequest: sessionKillRequest
+        )
+    }
+
+    func removeWorktree(
+        _ request: WorktreeRemovalRequest
+    ) async throws {
+        guard !isWorktreeRemovalInProgress else {
+            throw KwtWorktreeError.removalInProgress
+        }
+        guard let worktree = snapshot.worktree(id: request.worktree.id),
+              worktree.path == request.worktree.path,
+              worktree.projectID == request.project.id,
+              !worktree.isPrimary,
+              let project = snapshot.project(id: request.project.id),
+              project.rootPath == request.project.rootPath,
+              let hostSummary = snapshot.host(id: worktree.hostID),
+              let host = TmuxHostResolver.resolve(hostSummary)
+        else {
+            throw KwtWorktreeError.worktreeUnavailable
+        }
+
+        let selectionBeforeRemoval = selection
+        isWorktreeRemovalInProgress = true
+        invalidateKwtInventoryRefresh()
+        defer {
+            isWorktreeRemovalInProgress = false
+            scheduleKwtInventory()
+        }
+
+        do {
+            if let sessionKillRequest = request.sessionKillRequest {
+                try await killTmuxSession(sessionKillRequest)
+            }
+            try await kwtWorktreeRemover(
+                worktree.path,
+                project.rootPath,
+                host
+            )
+
+            let refreshed = try await kwtInventoryLoader(host)
+            let previous = kwtInventoriesByHost[project.hostID]
+            kwtInventoriesByHost[project.hostID] =
+                refreshed.retainingFailedProjectWorktrees(from: previous)
+            kwtAvailabilityByHost[project.hostID] = true
+            kwtInventoryFailuresByHost.removeValue(forKey: project.hostID)
+            applyInventoryOverlayIfNeeded()
+            updateWorkspaceInventoryState()
+            scheduleTmuxSessionDiscovery()
+            selection = selectionBeforeRemoval
+                .normalizedBySelectingVisibleFallback(
+                    in: snapshot,
+                    visibility: worktreeVisibility
+                )
+        } catch {
+            if isRemoteKwtUnavailable(error, hostID: project.hostID) {
+                kwtAvailabilityByHost[project.hostID] = false
+                kwtInventoryFailuresByHost.removeValue(forKey: project.hostID)
+                applyInventoryOverlayIfNeeded()
+                updateWorkspaceInventoryState()
+            }
+            throw error
+        }
+    }
+
     func pullRequests(
         for projectID: UUID
     ) async throws -> [PullRequestCandidate] {
@@ -1041,7 +1169,9 @@ final class WorkspaceSceneModel: ObservableObject {
                   isWorktreeCreationInProgress:
                   isWorktreeCreationInProgress,
                   isPullRequestImportInProgress:
-                  isPullRequestImportInProgress
+                  isPullRequestImportInProgress,
+                  isWorktreeRemovalInProgress:
+                  isWorktreeRemovalInProgress
               ) else { return }
         let targets = Array(inventoryHosts)
         kwtInventoryGeneration += 1
@@ -1119,9 +1249,12 @@ final class WorkspaceSceneModel: ObservableObject {
 
     static func canScheduleKwtInventory(
         isWorktreeCreationInProgress: Bool,
-        isPullRequestImportInProgress: Bool
+        isPullRequestImportInProgress: Bool,
+        isWorktreeRemovalInProgress: Bool
     ) -> Bool {
-        !isWorktreeCreationInProgress && !isPullRequestImportInProgress
+        !isWorktreeCreationInProgress
+            && !isPullRequestImportInProgress
+            && !isWorktreeRemovalInProgress
     }
 
     private func invalidateKwtInventoryRefresh() {
@@ -1143,6 +1276,10 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         if let worktreeError = error as? KwtWorktreeError,
            case .commandFailed(_, 127) = worktreeError {
+            return true
+        }
+        if let worktreeError = error as? KwtWorktreeError,
+           case .removalFailed(_, 127) = worktreeError {
             return true
         }
         if let pullRequestError = error as? KwtPullRequestError,

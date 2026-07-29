@@ -37,18 +37,21 @@ struct WorkspaceWorktreeCreationTests {
     @Test(
         "workspace mutations fence background kwt inventory",
         arguments: [
-            (creating: true, importing: false),
-            (creating: false, importing: true),
+            (creating: true, importing: false, removing: false),
+            (creating: false, importing: true, removing: false),
+            (creating: false, importing: false, removing: true),
         ]
     )
     @MainActor
     func workspaceMutationsFenceInventory(
         creating: Bool,
-        importing: Bool
+        importing: Bool,
+        removing: Bool
     ) {
         #expect(!WorkspaceSceneModel.canScheduleKwtInventory(
             isWorktreeCreationInProgress: creating,
-            isPullRequestImportInProgress: importing
+            isPullRequestImportInProgress: importing,
+            isWorktreeRemovalInProgress: removing
         ))
     }
 
