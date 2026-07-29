@@ -224,6 +224,7 @@ struct KwtWorktreeClient: Sendable {
 
     func remove(
         worktreePath: String,
+        createdAt: String,
         projectPath: String,
         on host: TmuxHost
     ) async throws {
@@ -249,6 +250,7 @@ struct KwtWorktreeClient: Sendable {
         }
         let command = Self.removeCommand(
             worktreePath: worktreePath,
+            createdAt: createdAt,
             projectPath: projectPath,
             platform: platform,
             binaryPrelude: binaryPrelude,
@@ -332,6 +334,7 @@ struct KwtWorktreeClient: Sendable {
 
     private static func removeCommand(
         worktreePath: String,
+        createdAt: String,
         projectPath: String,
         platform: SSHHostInfo.Platform,
         binaryPrelude: String,
@@ -339,14 +342,21 @@ struct KwtWorktreeClient: Sendable {
     ) -> String {
         if platform == .windows {
             return KwtPowerShellCommand.run(
-                arguments: ["remove", worktreePath],
+                arguments: [
+                    "remove",
+                    "--if-created-at",
+                    createdAt,
+                    worktreePath,
+                ],
                 workingDirectory: projectPath,
                 managedRelativePath: windowsKwtRelativePath
             )
         }
         return binaryPrelude
             + "cd -- \(shellQuotedCommandArgument(projectPath)) || exit $?; "
-            + "exec \"$ghosthub_kwt_path\" remove "
+            + "exec \"$ghosthub_kwt_path\" remove --if-created-at "
+            + shellQuotedCommandArgument(createdAt)
+            + " "
             + shellQuotedCommandArgument(worktreePath)
     }
 }

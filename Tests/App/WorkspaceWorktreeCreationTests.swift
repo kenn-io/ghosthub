@@ -16,6 +16,7 @@ private actor KwtInventoryRaceStub {
     }
 
     var firstCallStarted: Bool { callCount > 0 }
+    var calls: Int { callCount }
 
     func load() async -> KwtHostInventory {
         callCount += 1
@@ -141,6 +142,107 @@ struct WorkspaceWorktreeCreationTests {
         await secondModel.shutdown()
     }
 
+    @Test("mutation completion refreshes inventory in other scene models")
+    @MainActor
+    func separateModelsFenceAndRefreshInventory() async throws {
+        let environment = try setupStandardEnvironment()
+        let stale = inventory(
+            project: environment.project,
+            worktrees: [
+                worktree(
+                    path: environment.worktree.path,
+                    branch: environment.worktree.branch,
+                    isMain: true
+                ),
+            ]
+        )
+        let refreshed = inventory(
+            project: environment.project,
+            worktrees: [
+                worktree(
+                    path: environment.worktree.path,
+                    branch: environment.worktree.branch,
+                    isMain: true
+                ),
+                worktree(
+                    path: "/tmp/ghosthub-refreshed",
+                    branch: "feature/refreshed",
+                    isMain: false
+                ),
+            ]
+        )
+        let inventoryRace = KwtInventoryRaceStub(
+            stale: stale,
+            refreshed: refreshed
+        )
+        let mutationHold = WorktreeMutationHold()
+        let mutationCoordinator = WorktreeMutationCoordinator()
+        let firstModel = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            kwtWorktreeCreator: { _, _, _ in
+                await mutationHold.wait()
+                throw WorktreeMutationProbeError.firstFinished
+            },
+            worktreeMutationCoordinator: mutationCoordinator
+        )
+        let secondModel = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            kwtInventoryLoader: { _ in
+                await inventoryRace.load()
+            },
+            worktreeMutationCoordinator: mutationCoordinator
+        )
+
+        secondModel.startKwtInventory()
+        for _ in 0 ..< 1_000 {
+            if await inventoryRace.firstCallStarted {
+                break
+            }
+            await Task.yield()
+        }
+        #expect(await inventoryRace.firstCallStarted)
+
+        let mutation = Task { @MainActor in
+            try? await firstModel.createWorktree(
+                WorktreeCreateRequest(
+                    projectID: environment.project.id,
+                    branchName: "feature/first",
+                    createsBranch: true
+                )
+            )
+        }
+        for _ in 0 ..< 1_000 {
+            if await mutationHold.started {
+                break
+            }
+            await Task.yield()
+        }
+        #expect(await mutationHold.started)
+        await inventoryRace.releaseFirstCall()
+        await mutationHold.release()
+        await mutation.value
+
+        for _ in 0 ..< 10_000 {
+            if await inventoryRace.calls >= 2,
+               secondModel.snapshot.worktrees.contains(where: {
+                   $0.branch == "feature/refreshed"
+               }) {
+                break
+            }
+            await Task.yield()
+        }
+        #expect(await inventoryRace.calls >= 2)
+        #expect(secondModel.snapshot.worktrees.contains {
+            $0.branch == "feature/refreshed"
+        })
+        await firstModel.shutdown()
+        await secondModel.shutdown()
+    }
+
     @Test("removal excludes concurrent create and import mutations")
     @MainActor
     func removalExcludesOtherMutations() async throws {
@@ -198,7 +300,7 @@ struct WorkspaceWorktreeCreationTests {
             kwtWorktreeCreator: { _, _, _ in
                 attemptedMutations.withLock { $0.append("create") }
             },
-            kwtWorktreeRemover: { _, _, _ in },
+            kwtWorktreeRemover: { _, _, _, _ in },
             kwtPullRequestImporter: { _, _, _ in
                 attemptedMutations.withLock { $0.append("import") }
                 throw KwtPullRequestError.malformedOutput(host: "test")

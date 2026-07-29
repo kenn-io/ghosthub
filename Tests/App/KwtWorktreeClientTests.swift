@@ -260,6 +260,7 @@ struct KwtWorktreeClientTests {
 
         try await client.remove(
             worktreePath: "/worktrees/ghost hub/feature",
+            createdAt: "2026-07-29T19:00:00.123456789-05:00",
             projectPath: "/code/ghost hub",
             on: .local
         )
@@ -268,7 +269,9 @@ struct KwtWorktreeClientTests {
             "cd -- '/code/ghost hub'"
         ) == true)
         #expect(recorder.command?.contains(
-            "remove '/worktrees/ghost hub/feature'"
+            "remove --if-created-at "
+                + "'2026-07-29T19:00:00.123456789-05:00' "
+                + "'/worktrees/ghost hub/feature'"
         ) == true)
         #expect(recorder.command?.contains("--delete-branch") == false)
         #expect(recorder.command?.contains("--force") == false)
@@ -294,15 +297,21 @@ struct KwtWorktreeClientTests {
 
         try await client.remove(
             worktreePath: #"C:\worktrees\ghost hub\feature"#,
+            createdAt: "2026-07-29T19:00:00.123456789-05:00",
             projectPath: #"C:\code\ghost hub"#,
             on: .ssh(ssh)
         )
 
         #expect(recorder.host == ssh)
         #expect(recorder.command?.contains(
-            ["remove", #"C:\worktrees\ghost hub\feature"#]
-                .map(powerShellEncodedArgument)
-                .joined(separator: " ")
+            [
+                "remove",
+                "--if-created-at",
+                "2026-07-29T19:00:00.123456789-05:00",
+                #"C:\worktrees\ghost hub\feature"#,
+            ]
+            .map(powerShellEncodedArgument)
+            .joined(separator: " ")
         ) == true)
     }
 

@@ -40,33 +40,60 @@ private func presentGhosthubAlert(
 
 @MainActor
 final class WorktreeMutationCoordinator {
-    private struct Scope: Hashable {
+    struct Scope: Hashable, Sendable {
         let hostID: UUID
         let projectIdentity: String
+    }
+
+    enum Phase: Sendable {
+        case began
+        case ended
+    }
+
+    struct Event: Sendable {
+        let phase: Phase
+        let scope: Scope
     }
 
     static let shared = WorktreeMutationCoordinator()
 
     private var activeScopes: Set<Scope> = []
+    private let eventSubject = PassthroughSubject<Event, Never>()
+
+    var events: AnyPublisher<Event, Never> {
+        eventSubject.eraseToAnyPublisher()
+    }
+
+    var scopes: Set<Scope> {
+        activeScopes
+    }
 
     func acquire(
         hostID: UUID,
         projectIdentity: String
     ) -> Bool {
-        activeScopes.insert(Scope(
+        let scope = Scope(
             hostID: hostID,
             projectIdentity: projectIdentity
-        )).inserted
+        )
+        let inserted = activeScopes.insert(scope).inserted
+        if inserted {
+            eventSubject.send(Event(phase: .began, scope: scope))
+        }
+        return inserted
     }
 
     func release(
         hostID: UUID,
         projectIdentity: String
     ) {
-        activeScopes.remove(Scope(
+        let scope = Scope(
             hostID: hostID,
             projectIdentity: projectIdentity
-        ))
+        )
+        if activeScopes.remove(scope) != nil {
+            eventSubject.send(Event(phase: .ended, scope: scope))
+        }
     }
 }
 
@@ -79,7 +106,7 @@ final class WorkspaceSceneModel: ObservableObject {
         WorktreeCreateRequest, String, TmuxHost
     ) async throws -> Void
     typealias KwtWorktreeRemover = @Sendable (
-        String, String, TmuxHost
+        String, String, String, TmuxHost
     ) async throws -> Void
     typealias KwtBranchLister = @Sendable (
         String, TmuxHost
@@ -139,6 +166,8 @@ final class WorkspaceSceneModel: ObservableObject {
     private var isKwtInventoryLoading = false
     private var ownsWorktreeMutation = false
     private let worktreeMutationCoordinator: WorktreeMutationCoordinator
+    private var fencedWorktreeMutationScopes:
+        Set<WorktreeMutationCoordinator.Scope> = []
 
     var workspaceResourceSummary: WorkspaceResourceSummary {
         activityController.workspaceResourceSummary
@@ -272,6 +301,7 @@ final class WorkspaceSceneModel: ObservableObject {
     private let sshHostProbeRunner: SSHHostProbeRunner
     private let configuredSSHHostsProvider: () -> [SSHHost]
     private var configuredSSHHostsCancellable: AnyCancellable?
+    private var worktreeMutationCancellable: AnyCancellable?
     private var activityControllerBacking: ActivityMonitoringController?
     var activityController: ActivityMonitoringController {
         guard let activityControllerBacking else {
@@ -373,9 +403,10 @@ final class WorkspaceSceneModel: ObservableObject {
             )
         },
         kwtWorktreeRemover: @escaping KwtWorktreeRemover = {
-            worktreePath, projectPath, host in
+            worktreePath, createdAt, projectPath, host in
             try await KwtWorktreeClient().remove(
                 worktreePath: worktreePath,
+                createdAt: createdAt,
                 projectPath: projectPath,
                 on: host
             )
@@ -652,6 +683,11 @@ final class WorkspaceSceneModel: ObservableObject {
             .objectWillChange.sink { [weak self] _ in
                 self?.objectWillChange.send()
             }
+        worktreeMutationCancellable = worktreeMutationCoordinator.events.sink {
+            [weak self] event in
+            self?.worktreeMutationEvent(event)
+        }
+        fencedWorktreeMutationScopes = worktreeMutationCoordinator.scopes
         let sshHostsPublisher = configuredSSHHostsPublisher
             ?? SettingsStore.shared.$sshHosts.eraseToAnyPublisher()
         // Defer post-init work that mutates @Published state to
@@ -695,6 +731,7 @@ final class WorkspaceSceneModel: ObservableObject {
         activityCancellable?.cancel()
         panelRoutingCancellable?.cancel()
         configuredSSHHostsCancellable?.cancel()
+        worktreeMutationCancellable?.cancel()
         kwtInventoryTask?.cancel()
         tmuxDiscoveryTask?.cancel()
         createdSessionDiscoveryTasks.values.forEach { $0.cancel() }
@@ -751,13 +788,17 @@ final class WorkspaceSceneModel: ObservableObject {
 
         let mutationHostID = project.hostID
         let mutationProjectIdentity = project.scopedKey
+        guard !ownsWorktreeMutation else {
+            throw KwtWorktreeError.creationInProgress
+        }
+        ownsWorktreeMutation = true
         guard worktreeMutationCoordinator.acquire(
             hostID: mutationHostID,
             projectIdentity: mutationProjectIdentity
         ) else {
+            ownsWorktreeMutation = false
             throw KwtWorktreeError.creationInProgress
         }
-        ownsWorktreeMutation = true
         // The scene-wide refresh is cancelled so it cannot race the mutation,
         // and only the mutated host is reloaded inline. Every exit therefore
         // owes the remaining hosts a fresh sweep.
@@ -768,7 +809,6 @@ final class WorkspaceSceneModel: ObservableObject {
                 hostID: mutationHostID,
                 projectIdentity: mutationProjectIdentity
             )
-            scheduleKwtInventory()
         }
 
         do {
@@ -877,6 +917,7 @@ final class WorkspaceSceneModel: ObservableObject {
         return WorktreeRemovalRequest(
             worktree: worktree,
             project: project,
+            confirmedHost: hostSummary,
             sessionKillRequest: sessionKillRequest
         )
     }
@@ -893,20 +934,32 @@ final class WorkspaceSceneModel: ObservableObject {
             let requestedProject = snapshot.project(id: request.project.id),
             requestedProject.rootPath == request.project.rootPath,
             let hostSummary = snapshot.host(id: requestedWorktree.hostID),
-            let host = TmuxHostResolver.resolve(hostSummary)
+            let currentHost = TmuxHostResolver.resolve(hostSummary)
         else {
             throw KwtWorktreeError.worktreeUnavailable
+        }
+        guard request.confirmedHost.id == requestedWorktree.hostID,
+              let confirmedHost = TmuxHostResolver.resolve(
+                  request.confirmedHost
+              ),
+              currentHost == confirmedHost
+        else {
+            throw KwtWorktreeError.removalTargetChanged
         }
 
         let mutationHostID = requestedProject.hostID
         let mutationProjectIdentity = requestedProject.scopedKey
+        guard !ownsWorktreeMutation else {
+            throw KwtWorktreeError.removalInProgress
+        }
+        ownsWorktreeMutation = true
         guard worktreeMutationCoordinator.acquire(
             hostID: mutationHostID,
             projectIdentity: mutationProjectIdentity
         ) else {
+            ownsWorktreeMutation = false
             throw KwtWorktreeError.removalInProgress
         }
-        ownsWorktreeMutation = true
         invalidateKwtInventoryRefresh()
         defer {
             ownsWorktreeMutation = false
@@ -914,12 +967,11 @@ final class WorkspaceSceneModel: ObservableObject {
                 hostID: mutationHostID,
                 projectIdentity: mutationProjectIdentity
             )
-            scheduleKwtInventory()
         }
 
         let preflight: KwtHostInventory
         do {
-            preflight = try await kwtInventoryLoader(host)
+            preflight = try await kwtInventoryLoader(confirmedHost)
         } catch {
             recordKwtUnavailability(
                 error,
@@ -937,7 +989,10 @@ final class WorkspaceSceneModel: ObservableObject {
                for: worktree
            ) {
             do {
-                _ = try await tmuxSessionIdentityReader(session, host)
+                _ = try await tmuxSessionIdentityReader(
+                    session,
+                    confirmedHost
+                )
                 throw KwtWorktreeError.sessionStartedAfterConfirmation(
                     session: session.name
                 )
@@ -950,10 +1005,17 @@ final class WorkspaceSceneModel: ObservableObject {
             if let sessionKillRequest = request.sessionKillRequest {
                 try await killTmuxSession(sessionKillRequest)
             }
+            guard removalHostEndpointMatches(request) else {
+                throw KwtWorktreeError.removalTargetChanged
+            }
+            guard let createdAt = worktree.createdAt else {
+                throw KwtWorktreeError.removalTargetChanged
+            }
             try await kwtWorktreeRemover(
                 worktree.path,
+                createdAt,
                 project.rootPath,
-                host
+                confirmedHost
             )
         } catch {
             recordKwtUnavailability(error, hostID: project.hostID)
@@ -967,7 +1029,7 @@ final class WorkspaceSceneModel: ObservableObject {
         scheduleTmuxSessionDiscovery()
 
         do {
-            let refreshed = try await kwtInventoryLoader(host)
+            let refreshed = try await kwtInventoryLoader(confirmedHost)
             let previous = kwtInventoriesByHost[project.hostID]
             kwtInventoriesByHost[project.hostID] =
                 refreshed.retainingFailedProjectWorktrees(
@@ -1080,6 +1142,23 @@ final class WorkspaceSceneModel: ObservableObject {
             && killRequest.session.socketName == worktree.tmuxSocketName
     }
 
+    private func removalHostEndpointMatches(
+        _ request: WorktreeRemovalRequest
+    ) -> Bool {
+        guard request.confirmedHost.id == request.worktree.hostID,
+              let currentSummary = snapshot.host(
+                  id: request.worktree.hostID
+              ),
+              let currentHost = TmuxHostResolver.resolve(currentSummary),
+              let confirmedHost = TmuxHostResolver.resolve(
+                  request.confirmedHost
+              )
+        else {
+            return false
+        }
+        return currentHost == confirmedHost
+    }
+
     private func removeWorktreeFromCachedState(
         _ worktree: WorktreeSummary,
         hostID: UUID
@@ -1159,13 +1238,17 @@ final class WorkspaceSceneModel: ObservableObject {
 
         let mutationHostID = project.hostID
         let mutationProjectIdentity = project.scopedKey
+        guard !ownsWorktreeMutation else {
+            throw KwtPullRequestError.importInProgress
+        }
+        ownsWorktreeMutation = true
         guard worktreeMutationCoordinator.acquire(
             hostID: mutationHostID,
             projectIdentity: mutationProjectIdentity
         ) else {
+            ownsWorktreeMutation = false
             throw KwtPullRequestError.importInProgress
         }
-        ownsWorktreeMutation = true
         // See `createWorktree`: cancelling the scene-wide refresh leaves every
         // host but this one stale, including on the success path.
         invalidateKwtInventoryRefresh()
@@ -1175,7 +1258,6 @@ final class WorkspaceSceneModel: ObservableObject {
                 hostID: mutationHostID,
                 projectIdentity: mutationProjectIdentity
             )
-            scheduleKwtInventory()
         }
 
         let result: KwtPullRequestImportResult
@@ -1404,10 +1486,21 @@ final class WorkspaceSceneModel: ObservableObject {
     private func scheduleKwtInventory() {
         guard kwtInventoryEnabled,
               !ownsWorktreeMutation else { return }
-        let targets = Array(inventoryHosts)
+        let fencedHostIDs = Set(
+            fencedWorktreeMutationScopes.map(\.hostID)
+        )
+        let targets = inventoryHosts.filter {
+            !fencedHostIDs.contains($0.key)
+        }
         kwtInventoryGeneration += 1
         let generation = kwtInventoryGeneration
         kwtInventoryTask?.cancel()
+        guard !targets.isEmpty else {
+            kwtInventoryTask = nil
+            isKwtInventoryLoading = false
+            updateWorkspaceInventoryState()
+            return
+        }
         isKwtInventoryLoading = true
         updateWorkspaceInventoryState()
         let kwtInventoryLoader = kwtInventoryLoader
@@ -1484,6 +1577,20 @@ final class WorkspaceSceneModel: ObservableObject {
         kwtInventoryTask = nil
         isKwtInventoryLoading = false
         updateWorkspaceInventoryState()
+    }
+
+    private func worktreeMutationEvent(
+        _ event: WorktreeMutationCoordinator.Event
+    ) {
+        switch event.phase {
+        case .began:
+            fencedWorktreeMutationScopes.insert(event.scope)
+        case .ended:
+            fencedWorktreeMutationScopes.remove(event.scope)
+        }
+        guard inventoryHosts[event.scope.hostID] != nil else { return }
+        invalidateKwtInventoryRefresh()
+        scheduleKwtInventory()
     }
 
     private func isRemoteKwtUnavailable(

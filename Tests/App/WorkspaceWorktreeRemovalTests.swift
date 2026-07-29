@@ -1,11 +1,45 @@
 import Foundation
 import GhosthubTestSupport
+import GhosthubTmux
+import GhosthubUI
 import GhosthubWorkspace
 import Testing
 @testable import GhosthubApp
 
 private let stableWorktreeCreatedAt =
     "2026-07-29T19:00:00.123456789-05:00"
+
+private actor RemovalSessionAbsenceHold {
+    private var callCount = 0
+    private(set) var started = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func verify(
+        selection: WorkspaceTmuxSessionSelection,
+        host: TmuxHost
+    ) async throws -> TmuxSessionIdentity {
+        callCount += 1
+        if callCount == 1 {
+            throw TmuxSessionKillError.sessionNotRunning(
+                host: host.displayName,
+                session: selection.name
+            )
+        }
+        started = true
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+        throw TmuxSessionKillError.sessionNotRunning(
+            host: host.displayName,
+            session: selection.name
+        )
+    }
+
+    func release() {
+        continuation?.resume()
+        continuation = nil
+    }
+}
 
 private func inventory(
     _ environment: StandardEnvironment,
@@ -45,6 +79,35 @@ private func inventory(
                 lastTouched: nil
             ),
             worktrees: worktrees,
+            warning: nil
+        ),
+    ])
+}
+
+private func inventory(
+    _ environment: RemoteEnvironment,
+    including worktree: WorktreeSummary
+) -> KwtHostInventory {
+    KwtHostInventory(projects: [
+        KwtProjectInventory(
+            project: KwtProjectRecord(
+                repository: environment.project.scopedKey,
+                name: environment.project.name,
+                path: environment.project.rootPath,
+                lastTouched: nil
+            ),
+            worktrees: [
+                KwtWorktreeRecord(
+                    path: worktree.path,
+                    branch: worktree.branch,
+                    commitHash: "",
+                    isMain: worktree.isPrimary,
+                    createdAt: worktree.createdAt,
+                    repository: environment.project.scopedKey,
+                    sessionName: worktree.tmuxSessionName ?? "",
+                    tmuxSocketName: worktree.tmuxSocketName
+                ),
+            ],
             warning: nil
         ),
     ])
@@ -108,7 +171,7 @@ struct WorkspaceWorktreeRemovalTests {
                 loads.withLock { $0 += 1 }
                 return loads.load() == 1 ? beforeRemoval : afterRemoval
             },
-            kwtWorktreeRemover: { path, projectPath, _ in
+            kwtWorktreeRemover: { path, _, projectPath, _ in
                 events.withLock {
                     $0.append("remove:\(projectPath):\(path)")
                 }
@@ -220,7 +283,7 @@ struct WorkspaceWorktreeRemovalTests {
                     status: 127
                 )
             },
-            kwtWorktreeRemover: { _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _ in
                 events.withLock { $0.append("remove") }
             },
             tmuxSessionKiller: { _, _, _ in
@@ -241,6 +304,84 @@ struct WorkspaceWorktreeRemovalTests {
         }
 
         #expect(events.load().isEmpty)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("removal rejects a host endpoint changed after confirmation")
+    func changedHostEndpointAbortsRemoval() async throws {
+        let environment = try setupRemoteEnvironment()
+        var worktree = try #require(environment.snapshot.worktrees.first)
+        worktree.createdAt = stableWorktreeCreatedAt
+        var snapshot = environment.snapshot
+        snapshot.worktrees = [worktree]
+        let removals = LockedValue(0)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtWorktreeRemover: { _, _, _, _ in
+                removals.withLock { $0 += 1 }
+            }
+        )
+
+        let request = try await model.prepareWorktreeRemoval(worktree.id)
+        #expect(
+            request.confirmedHost.sshDestination
+                == environment.host.sshDestination
+        )
+        model.snapshot.hosts[0].sshDestination = "replacement.example.com"
+
+        await #expect(throws: KwtWorktreeError.removalTargetChanged) {
+            try await model.removeWorktree(request)
+        }
+        #expect(removals.load() == 0)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("removal rechecks the confirmed host after preflight")
+    func hostEndpointChangedDuringPreflightAbortsRemoval() async throws {
+        let environment = try setupRemoteEnvironment()
+        var worktree = try #require(environment.snapshot.worktrees.first)
+        worktree.createdAt = stableWorktreeCreatedAt
+        worktree.scopedKey = worktree.path
+        worktree.tmuxSessionName = "kwt-remote-feature"
+        var snapshot = environment.snapshot
+        snapshot.worktrees = [worktree]
+        let hold = RemovalSessionAbsenceHold()
+        let preflight = inventory(environment, including: worktree)
+        let removals = LockedValue(0)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtInventoryLoader: { _ in preflight },
+            kwtWorktreeRemover: { _, _, _, _ in
+                removals.withLock { $0 += 1 }
+            },
+            tmuxSessionIdentityReader: { selection, host in
+                try await hold.verify(selection: selection, host: host)
+            }
+        )
+        let request = try await model.prepareWorktreeRemoval(worktree.id)
+        let removal = Task { @MainActor in
+            try await model.removeWorktree(request)
+        }
+        for _ in 0 ..< 1_000 {
+            if await hold.started {
+                break
+            }
+            await Task.yield()
+        }
+        #expect(await hold.started)
+        model.snapshot.hosts[0].sshDestination = "replacement.example.com"
+        await hold.release()
+
+        await #expect(throws: KwtWorktreeError.removalTargetChanged) {
+            try await removal.value
+        }
+        #expect(removals.load() == 0)
         await model.shutdown()
     }
 
@@ -267,7 +408,7 @@ struct WorkspaceWorktreeRemovalTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             kwtInventoryLoader: { _ in beforeRemoval },
-            kwtWorktreeRemover: { _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _ in
                 removals.withLock { $0 += 1 }
             },
             tmuxSessionIdentityReader: { selection, host in
@@ -339,7 +480,7 @@ struct WorkspaceWorktreeRemovalTests {
                     status: 23
                 )
             },
-            kwtWorktreeRemover: { _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _ in
                 removals.withLock { $0 += 1 }
             },
             tmuxSessionIdentityReader: { selection, host in
@@ -409,7 +550,7 @@ struct WorkspaceWorktreeRemovalTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             kwtInventoryLoader: { _ in replacementInventory },
-            kwtWorktreeRemover: { _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _ in
                 events.withLock { $0.append("remove") }
             },
             tmuxSessionKiller: { _, _, _ in
@@ -474,7 +615,7 @@ struct WorkspaceWorktreeRemovalTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             kwtInventoryLoader: { _ in recreatedInventory },
-            kwtWorktreeRemover: { _, _, _ in
+            kwtWorktreeRemover: { _, _, _, _ in
                 removals.withLock { $0 += 1 }
             },
             tmuxSessionIdentityReader: { selection, host in

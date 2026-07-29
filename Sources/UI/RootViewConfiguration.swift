@@ -106,15 +106,18 @@ public struct TmuxSessionKillRequest: Equatable, Sendable {
 public struct WorktreeRemovalRequest: Equatable, Sendable {
     public let worktree: WorktreeSummary
     public let project: ProjectSummary
+    public let confirmedHost: HostSummary
     public let sessionKillRequest: TmuxSessionKillRequest?
 
     public init(
         worktree: WorktreeSummary,
         project: ProjectSummary,
+        confirmedHost: HostSummary,
         sessionKillRequest: TmuxSessionKillRequest? = nil
     ) {
         self.worktree = worktree
         self.project = project
+        self.confirmedHost = confirmedHost
         self.sessionKillRequest = sessionKillRequest
     }
 }
