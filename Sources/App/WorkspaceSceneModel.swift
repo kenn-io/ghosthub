@@ -840,19 +840,20 @@ final class WorkspaceSceneModel: ObservableObject {
         guard !isWorktreeRemovalInProgress else {
             throw KwtWorktreeError.removalInProgress
         }
-        guard let worktree = snapshot.worktree(id: request.worktree.id),
-              worktree.path == request.worktree.path,
-              worktree.projectID == request.project.id,
-              snapshot.canRemoveWorktree(worktree),
-              let project = snapshot.project(id: request.project.id),
-              project.rootPath == request.project.rootPath,
-              let hostSummary = snapshot.host(id: worktree.hostID),
-              let host = TmuxHostResolver.resolve(hostSummary)
+        guard let requestedWorktree = snapshot.worktree(
+            id: request.worktree.id
+        ),
+            requestedWorktree.path == request.worktree.path,
+            requestedWorktree.projectID == request.project.id,
+            snapshot.canRemoveWorktree(requestedWorktree),
+            let requestedProject = snapshot.project(id: request.project.id),
+            requestedProject.rootPath == request.project.rootPath,
+            let hostSummary = snapshot.host(id: requestedWorktree.hostID),
+            let host = TmuxHostResolver.resolve(hostSummary)
         else {
             throw KwtWorktreeError.worktreeUnavailable
         }
 
-        let selectionBeforeRemoval = selection
         isWorktreeRemovalInProgress = true
         invalidateKwtInventoryRefresh()
         defer {
@@ -860,12 +861,20 @@ final class WorkspaceSceneModel: ObservableObject {
             scheduleKwtInventory()
         }
 
+        let preflight: KwtHostInventory
         do {
-            _ = try await kwtInventoryLoader(host)
+            preflight = try await kwtInventoryLoader(host)
         } catch {
-            recordKwtUnavailability(error, hostID: project.hostID)
+            recordKwtUnavailability(
+                error,
+                hostID: requestedProject.hostID
+            )
             throw error
         }
+        let (worktree, project) = try reconcileRemovalPreflight(
+            preflight,
+            request: request
+        )
 
         if request.sessionKillRequest == nil,
            let session = WorkspaceSidebarModel.tmuxSessionSelection(
@@ -897,8 +906,7 @@ final class WorkspaceSceneModel: ObservableObject {
 
         removeWorktreeFromCachedState(
             worktree,
-            hostID: project.hostID,
-            selectionBeforeRemoval: selectionBeforeRemoval
+            hostID: project.hostID
         )
         scheduleTmuxSessionDiscovery()
 
@@ -926,10 +934,77 @@ final class WorkspaceSceneModel: ObservableObject {
         }
     }
 
+    private func reconcileRemovalPreflight(
+        _ inventory: KwtHostInventory,
+        request: WorktreeRemovalRequest
+    ) throws -> (WorktreeSummary, ProjectSummary) {
+        let hostID = request.project.hostID
+        let previous = kwtInventoriesByHost[hostID]
+        kwtInventoriesByHost[hostID] =
+            inventory.retainingFailedProjectWorktrees(from: previous)
+        kwtAvailabilityByHost[hostID] = true
+        kwtInventoryFailuresByHost.removeValue(forKey: hostID)
+        applyInventoryOverlayIfNeeded()
+        updateWorkspaceInventoryState()
+
+        guard let item = inventory.projects.first(where: {
+            $0.project.repository == request.project.scopedKey
+                || $0.project.path == request.project.rootPath
+        }),
+            item.warning == nil,
+            item.project.repository == request.project.scopedKey,
+            item.project.path == request.project.rootPath,
+            let record = item.worktrees.first(where: {
+                $0.path == request.worktree.path
+            }),
+            record.repository == request.project.scopedKey,
+            record.branch == request.worktree.branch,
+            record.isMain == request.worktree.isPrimary,
+            record.sessionName == request.worktree.tmuxSessionName,
+            record.tmuxSocketName == request.worktree.tmuxSocketName,
+            let worktree = snapshot.worktree(id: request.worktree.id),
+            let project = snapshot.project(id: request.project.id),
+            removalRequest(
+                request,
+                matches: worktree,
+                project: project
+            )
+        else {
+            throw KwtWorktreeError.removalTargetChanged
+        }
+        return (worktree, project)
+    }
+
+    private func removalRequest(
+        _ request: WorktreeRemovalRequest,
+        matches worktree: WorktreeSummary,
+        project: ProjectSummary
+    ) -> Bool {
+        guard worktree.id == request.worktree.id,
+              worktree.hostID == request.worktree.hostID,
+              worktree.projectID == request.worktree.projectID,
+              worktree.scopedKey == request.worktree.scopedKey,
+              worktree.path == request.worktree.path,
+              worktree.branch == request.worktree.branch,
+              worktree.isPrimary == request.worktree.isPrimary,
+              worktree.tmuxSessionName == request.worktree.tmuxSessionName,
+              worktree.tmuxSocketName == request.worktree.tmuxSocketName,
+              project.id == request.project.id,
+              project.hostID == request.project.hostID,
+              project.scopedKey == request.project.scopedKey,
+              project.rootPath == request.project.rootPath
+        else { return false }
+        guard let killRequest = request.sessionKillRequest else { return true }
+        return killRequest.session.hostID == worktree.hostID
+            && killRequest.session.name == worktree.tmuxSessionName
+            && killRequest.session.worktreeID == worktree.id
+            && killRequest.session.worktreePath == worktree.path
+            && killRequest.session.socketName == worktree.tmuxSocketName
+    }
+
     private func removeWorktreeFromCachedState(
         _ worktree: WorktreeSummary,
-        hostID: UUID,
-        selectionBeforeRemoval: WorkspaceSelection
+        hostID: UUID
     ) {
         if let inventory = kwtInventoriesByHost[hostID] {
             kwtInventoriesByHost[hostID] =
@@ -940,12 +1015,23 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         snapshot.sessions.removeAll { $0.worktreeID == worktree.id }
         applyInventoryOverlayIfNeeded()
-        selection = selectionBeforeRemoval
-            .normalizedBySelectingVisibleFallback(
-                in: snapshot,
-                visibility: worktreeVisibility
-            )
+        selection = Self.selectionAfterWorktreeRemoval(
+            selection,
+            in: snapshot,
+            visibility: worktreeVisibility
+        )
         updateWorkspaceInventoryState()
+    }
+
+    static func selectionAfterWorktreeRemoval(
+        _ current: WorkspaceSelection,
+        in snapshot: WorkspaceSnapshot,
+        visibility: WorktreeVisibility
+    ) -> WorkspaceSelection {
+        current.normalizedBySelectingVisibleFallback(
+            in: snapshot,
+            visibility: visibility
+        )
     }
 
     private func recordKwtUnavailability(

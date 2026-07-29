@@ -4,6 +4,48 @@ import GhosthubWorkspace
 import Testing
 @testable import GhosthubApp
 
+private func inventory(
+    _ environment: StandardEnvironment,
+    including worktree: WorktreeSummary? = nil
+) -> KwtHostInventory {
+    var worktrees = [
+        KwtWorktreeRecord(
+            path: environment.worktree.path,
+            branch: environment.worktree.branch,
+            commitHash: "",
+            isMain: true,
+            createdAt: nil,
+            repository: environment.project.scopedKey,
+            sessionName: "kwt-ghosthub-main",
+            tmuxSocketName: nil
+        ),
+    ]
+    if let worktree {
+        worktrees.append(KwtWorktreeRecord(
+            path: worktree.path,
+            branch: worktree.branch,
+            commitHash: "",
+            isMain: worktree.isPrimary,
+            createdAt: nil,
+            repository: environment.project.scopedKey,
+            sessionName: worktree.tmuxSessionName ?? "",
+            tmuxSocketName: worktree.tmuxSocketName
+        ))
+    }
+    return KwtHostInventory(projects: [
+        KwtProjectInventory(
+            project: KwtProjectRecord(
+                repository: environment.project.scopedKey,
+                name: environment.project.name,
+                path: environment.project.rootPath,
+                lastTouched: nil
+            ),
+            worktrees: worktrees,
+            warning: nil
+        ),
+    ])
+}
+
 @Suite("Workspace worktree removal")
 struct WorkspaceWorktreeRemovalTests {
     @MainActor
@@ -26,36 +68,17 @@ struct WorkspaceWorktreeRemovalTests {
         var snapshot = environment.snapshot
         snapshot.worktrees.append(removable)
         let events = LockedValue<[String]>([])
-        let refreshedInventory = KwtHostInventory(projects: [
-            KwtProjectInventory(
-                project: KwtProjectRecord(
-                    repository: environment.project.scopedKey,
-                    name: environment.project.name,
-                    path: environment.project.rootPath,
-                    lastTouched: nil
-                ),
-                worktrees: [
-                    KwtWorktreeRecord(
-                        path: environment.worktree.path,
-                        branch: environment.worktree.branch,
-                        commitHash: "",
-                        isMain: true,
-                        createdAt: nil,
-                        repository: environment.project.scopedKey,
-                        sessionName: "kwt-ghosthub-main",
-                        tmuxSocketName: nil
-                    ),
-                ],
-                warning: nil
-            ),
-        ])
+        let loads = LockedValue(0)
+        let beforeRemoval = inventory(environment, including: removable)
+        let afterRemoval = inventory(environment)
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
             snapshot: snapshot,
             kwtInventoryLoader: { _ in
                 events.withLock { $0.append("refresh") }
-                return refreshedInventory
+                loads.withLock { $0 += 1 }
+                return loads.load() == 1 ? beforeRemoval : afterRemoval
             },
             kwtWorktreeRemover: { path, projectPath, _ in
                 events.withLock {
@@ -157,6 +180,7 @@ struct WorkspaceWorktreeRemovalTests {
         var removable = WorktreeSummary.fixture(
             hostID: environment.host.id,
             projectID: environment.project.id,
+            scopedKey: "/tmp/ghosthub-feature",
             name: "feature/remove",
             path: "/tmp/ghosthub-feature"
         )
@@ -165,11 +189,12 @@ struct WorkspaceWorktreeRemovalTests {
         snapshot.worktrees.append(removable)
         let reads = LockedValue(0)
         let removals = LockedValue(0)
+        let beforeRemoval = inventory(environment, including: removable)
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
             snapshot: snapshot,
-            kwtInventoryLoader: { _ in KwtHostInventory(projects: []) },
+            kwtInventoryLoader: { _ in beforeRemoval },
             kwtWorktreeRemover: { _, _, _ in
                 removals.withLock { $0 += 1 }
             },
@@ -216,6 +241,7 @@ struct WorkspaceWorktreeRemovalTests {
         var removable = WorktreeSummary.fixture(
             hostID: environment.host.id,
             projectID: environment.project.id,
+            scopedKey: "/tmp/ghosthub-feature",
             name: "feature/remove",
             path: "/tmp/ghosthub-feature"
         )
@@ -224,6 +250,7 @@ struct WorkspaceWorktreeRemovalTests {
         snapshot.worktrees.append(removable)
         let loads = LockedValue(0)
         let removals = LockedValue(0)
+        let beforeRemoval = inventory(environment, including: removable)
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
@@ -232,7 +259,7 @@ struct WorkspaceWorktreeRemovalTests {
                 loads.withLock { $0 += 1 }
                 let attempt = loads.load()
                 if attempt == 1 {
-                    return KwtHostInventory(projects: [])
+                    return beforeRemoval
                 }
                 throw KwtInventoryError.commandFailed(
                     host: "this Mac",
@@ -262,5 +289,117 @@ struct WorkspaceWorktreeRemovalTests {
             ] != nil
         )
         await model.shutdown()
+    }
+
+    @MainActor
+    @Test(
+        "changed target metadata invalidates the removal confirmation",
+        arguments: [
+            (
+                branch: "feature/replacement",
+                session: "kwt-ghosthub-feature"
+            ),
+            (
+                branch: "feature/remove",
+                session: "kwt-ghosthub-replacement"
+            ),
+        ]
+    )
+    func changedTargetAbortsRemoval(
+        replacementBranch: String,
+        replacementSession: String
+    ) async throws {
+        let environment = try setupStandardEnvironment()
+        var removable = WorktreeSummary.fixture(
+            hostID: environment.host.id,
+            projectID: environment.project.id,
+            scopedKey: "/tmp/ghosthub-feature",
+            name: "feature/remove",
+            path: "/tmp/ghosthub-feature",
+            branch: "feature/remove"
+        )
+        removable.tmuxSessionName = "kwt-ghosthub-feature"
+        var replacement = removable
+        replacement.branch = replacementBranch
+        replacement.name = replacementBranch
+        replacement.tmuxSessionName = replacementSession
+        var snapshot = environment.snapshot
+        snapshot.worktrees.append(removable)
+        let events = LockedValue<[String]>([])
+        let replacementInventory = inventory(
+            environment,
+            including: replacement
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtInventoryLoader: { _ in replacementInventory },
+            kwtWorktreeRemover: { _, _, _ in
+                events.withLock { $0.append("remove") }
+            },
+            tmuxSessionKiller: { _, _, _ in
+                events.withLock { $0.append("kill") }
+            },
+            tmuxSessionIdentityReader: { _, _ in
+                TmuxSessionIdentity(
+                    serverPID: "31415",
+                    sessionID: "$8",
+                    createdAt: "1721552400"
+                )
+            }
+        )
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        do {
+            try await model.removeWorktree(request)
+            Issue.record("Changed worktree metadata should require confirmation")
+        } catch {
+            #expect(
+                error as? KwtWorktreeError
+                    == KwtWorktreeError.removalTargetChanged
+            )
+        }
+
+        #expect(events.load().isEmpty)
+        #expect(
+            model.snapshot.worktree(id: removable.id)?.branch
+                == replacementBranch
+        )
+        #expect(
+            model.snapshot.worktree(id: removable.id)?.tmuxSessionName
+                == replacementSession
+        )
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("removal completion preserves newer navigation")
+    func removalPreservesCurrentSelection() throws {
+        let environment = try setupStandardEnvironment()
+        let removed = WorktreeSummary.fixture(
+            hostID: environment.host.id,
+            projectID: environment.project.id,
+            name: "feature/remove",
+            path: "/tmp/ghosthub-feature"
+        )
+        var snapshot = environment.snapshot
+        snapshot.worktrees.append(removed)
+        var current = WorkspaceSelection(
+            selectedHostID: environment.host.id
+        )
+        current.select(
+            WorkspaceNavigationTarget.worktree(environment.worktree.id),
+            in: snapshot
+        )
+        snapshot.worktrees.removeAll { $0.id == removed.id }
+
+        let resolved = WorkspaceSceneModel.selectionAfterWorktreeRemoval(
+            current,
+            in: snapshot,
+            visibility: WorktreeVisibility.default
+        )
+
+        #expect(resolved.selectedWorktreeID == environment.worktree.id)
     }
 }
