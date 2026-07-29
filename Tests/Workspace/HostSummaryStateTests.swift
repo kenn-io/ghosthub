@@ -79,4 +79,39 @@ struct HostSummaryStateTests {
         #expect(!host.canCreateWorktree)
         #expect(host.primaryDiagnostic?.blocksDurableSessions == false)
     }
+
+    @Test(
+        "worktree deletion follows its own remote capability",
+        arguments: [
+            (
+                canCreate: true,
+                canDelete: false
+            ),
+            (
+                canCreate: false,
+                canDelete: true
+            ),
+        ]
+    )
+    func asymmetricWorktreeCapabilities(
+        canCreate: Bool,
+        canDelete: Bool
+    ) {
+        var host = HostSummary.onlineRemoteFixture()
+        host.remoteCapabilities = .fixture(commands: .fixture(
+            worktreeCreate: canCreate,
+            worktreeDelete: canDelete
+        ))
+        let project = ProjectSummary.fixture(for: host)
+        let worktree = WorktreeSummary.fixture(for: project)
+        let snapshot = WorkspaceSnapshot.fixture(
+            hosts: [host],
+            projects: [project],
+            worktrees: [worktree]
+        )
+
+        #expect(host.canCreateWorktree == canCreate)
+        #expect(host.canDeleteWorktree == canDelete)
+        #expect(snapshot.canRemoveWorktree(worktree) == canDelete)
+    }
 }

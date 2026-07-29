@@ -49,7 +49,9 @@ private func inventory(
 @Suite("Workspace worktree removal")
 struct WorkspaceWorktreeRemovalTests {
     @MainActor
-    @Test("a live kwt session is killed before its worktree is removed")
+    @Test(
+        "live session removal leaves a same-path worktree on another host"
+    )
     func liveSessionIsKilledFirst() async throws {
         let environment = try setupStandardEnvironment()
         let feature = WorktreeSummary.fixture(
@@ -66,7 +68,28 @@ struct WorkspaceWorktreeRemovalTests {
         removable.sessionBackend = .localTmux
 
         var snapshot = environment.snapshot
-        snapshot.worktrees.append(removable)
+        let otherHost = HostSummary.fixture(
+            name: "Build Box",
+            kind: .remote,
+            platform: .linux,
+            sshDestination: "build-box"
+        )
+        let otherProject = ProjectSummary.fixture(
+            hostID: otherHost.id,
+            name: "Ghosthub",
+            rootPath: "/srv/ghosthub"
+        )
+        let samePath = WorktreeSummary.fixture(
+            hostID: otherHost.id,
+            projectID: otherProject.id,
+            scopedKey: removable.path,
+            name: "other-host",
+            path: removable.path,
+            branch: "other-host"
+        )
+        snapshot.hosts.append(otherHost)
+        snapshot.projects.append(otherProject)
+        snapshot.worktrees += [removable, samePath]
         let events = LockedValue<[String]>([])
         let loads = LockedValue(0)
         let beforeRemoval = inventory(environment, including: removable)
@@ -112,6 +135,7 @@ struct WorkspaceWorktreeRemovalTests {
             "refresh",
         ])
         #expect(model.snapshot.worktree(id: removable.id) == nil)
+        #expect(model.snapshot.worktree(id: samePath.id) == samePath)
         #expect(
             model.selection.selectedWorktreeID
                 == environment.worktree.id

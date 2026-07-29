@@ -1010,9 +1010,7 @@ final class WorkspaceSceneModel: ObservableObject {
             kwtInventoriesByHost[hostID] =
                 inventory.removingWorktree(atPath: worktree.path)
         }
-        snapshot.worktrees.removeAll {
-            $0.id == worktree.id || $0.path == worktree.path
-        }
+        snapshot.worktrees.removeAll { $0.id == worktree.id }
         snapshot.sessions.removeAll { $0.worktreeID == worktree.id }
         applyInventoryOverlayIfNeeded()
         selection = Self.selectionAfterWorktreeRemoval(
