@@ -66,8 +66,10 @@ enum BranchQuery {
 
     static func canCreateBranch(
         in candidates: [WorktreeBranchCandidate],
-        query: String
+        query: String,
+        listIsAvailable: Bool = true
     ) -> Bool {
+        guard listIsAvailable else { return false }
         let normalized = query.trimmingCharacters(
             in: .whitespacesAndNewlines
         )
@@ -211,6 +213,8 @@ struct NewWorktreeSheet: View {
     @State private var query = ""
     @State private var isWorking = false
     @State private var isLoadingBranches = false
+    @State private var isBranchListAvailable = false
+    @State private var branchLoadAttempt = 0
     @State private var isLoadingPullRequests = false
     @State private var errorMessage: String?
     @State private var branchErrorMessage: String?
@@ -254,6 +258,7 @@ struct NewWorktreeSheet: View {
         selectedMode == .branch
             && !isWorking
             && !isLoadingBranches
+            && isBranchListAvailable
             && canCreateWorktree(in: selectedProject)
             && GitBranchName.isValid(normalizedBranchName)
             && (selectedBranch != nil || canCreateNewBranch)
@@ -262,7 +267,8 @@ struct NewWorktreeSheet: View {
     private var canCreateNewBranch: Bool {
         BranchQuery.canCreateBranch(
             in: branches,
-            query: query
+            query: query,
+            listIsAvailable: isBranchListAvailable
         )
     }
 
@@ -313,6 +319,7 @@ struct NewWorktreeSheet: View {
 
     private var branchLoadID: String {
         "\(selectedMode.rawValue):\(selectedProject.id.uuidString)"
+            + ":\(branchLoadAttempt)"
     }
 
     var body: some View {
@@ -343,6 +350,7 @@ struct NewWorktreeSheet: View {
             branchErrorMessage = nil
             selectedBranchSource = nil
             isLoadingBranches = false
+            isBranchListAvailable = false
             ensureProjectSupportsSelectedMode()
             isSearchFieldFocused = true
         }
@@ -385,6 +393,7 @@ struct NewWorktreeSheet: View {
                             errorMessage = nil
                             branchErrorMessage = nil
                             selectedBranchSource = nil
+                            isBranchListAvailable = false
                         }
                     },
                 ]
@@ -520,11 +529,18 @@ struct NewWorktreeSheet: View {
         }
 
         if let branchErrorMessage {
-            Text(branchErrorMessage)
-                .font(.callout)
-                .foregroundStyle(.red)
-                .padding(.horizontal, 16)
-                .padding(.bottom, 10)
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text(branchErrorMessage)
+                    .font(.callout)
+                    .foregroundStyle(.red)
+                Spacer()
+                Button("Retry") {
+                    branchLoadAttempt += 1
+                }
+                .disabled(isLoadingBranches)
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 10)
         }
         errorView
     }
@@ -741,9 +757,13 @@ struct NewWorktreeSheet: View {
     private var bottomStrip: some View {
         HStack(spacing: 10) {
             if selectedMode == .branch {
-                Text("\(branches.count) available branches")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Text(
+                    isBranchListAvailable
+                        ? "\(branches.count) available branches"
+                        : "Branches unavailable"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
             } else {
                 Text("\(pullRequests.count) open pull requests")
                     .font(.caption)
@@ -875,11 +895,13 @@ struct NewWorktreeSheet: View {
     private func loadBranches() async {
         guard canCreateWorktree(in: selectedProject) else { return }
         isLoadingBranches = true
+        isBranchListAvailable = false
         branchErrorMessage = nil
         do {
             let loaded = try await onListBranches(selectedProject.id)
             guard !Task.isCancelled else { return }
             branches = loaded
+            isBranchListAvailable = true
             selectedBranchSource = BranchQuery.selectionSource(
                 in: filteredBranches,
                 query: query,
@@ -891,6 +913,7 @@ struct NewWorktreeSheet: View {
             guard !Task.isCancelled else { return }
             branches = []
             selectedBranchSource = nil
+            isBranchListAvailable = false
             branchErrorMessage = error.localizedDescription
         }
         isLoadingBranches = false

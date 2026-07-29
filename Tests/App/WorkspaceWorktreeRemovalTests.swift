@@ -6,7 +6,8 @@ import Testing
 
 private func inventory(
     _ environment: StandardEnvironment,
-    including worktree: WorktreeSummary? = nil
+    including worktree: WorktreeSummary? = nil,
+    createdAt: String? = nil
 ) -> KwtHostInventory {
     var worktrees = [
         KwtWorktreeRecord(
@@ -26,7 +27,7 @@ private func inventory(
             branch: worktree.branch,
             commitHash: "",
             isMain: worktree.isPrimary,
-            createdAt: nil,
+            createdAt: createdAt,
             repository: environment.project.scopedKey,
             sessionName: worktree.tmuxSessionName ?? "",
             tmuxSocketName: worktree.tmuxSocketName
@@ -394,6 +395,53 @@ struct WorkspaceWorktreeRemovalTests {
             model.snapshot.worktree(id: removable.id)?.tmuxSessionName
                 == replacementSession
         )
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("a recreated worktree invalidates removal confirmation")
+    func recreatedWorktreeAbortsRemoval() async throws {
+        let environment = try setupStandardEnvironment()
+        var removable = WorktreeSummary.fixture(
+            hostID: environment.host.id,
+            projectID: environment.project.id,
+            scopedKey: "/tmp/ghosthub-feature",
+            name: "feature/remove",
+            path: "/tmp/ghosthub-feature",
+            branch: "feature/remove",
+            createdAt: "2026-07-29T19:00:00Z"
+        )
+        removable.tmuxSessionName = "kwt-ghosthub-feature"
+        var snapshot = environment.snapshot
+        snapshot.worktrees.append(removable)
+        let removals = LockedValue(0)
+        let recreatedInventory = inventory(
+            environment,
+            including: removable,
+            createdAt: "2026-07-29T19:05:00Z"
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtInventoryLoader: { _ in recreatedInventory },
+            kwtWorktreeRemover: { _, _, _ in
+                removals.withLock { $0 += 1 }
+            },
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        await #expect(throws: KwtWorktreeError.removalTargetChanged) {
+            try await model.removeWorktree(request)
+        }
+
+        #expect(removals.load() == 0)
         await model.shutdown()
     }
 

@@ -107,7 +107,17 @@ struct NewWorktreeSheetTests {
         ))
         #expect(BranchQuery.canCreateBranch(
             in: branches,
-            query: "new-topic"
+            query: "new-topic",
+            listIsAvailable: true
+        ))
+    }
+
+    @Test("branch creation waits for successful branch discovery")
+    func failedBranchDiscoveryDisablesCreation() {
+        #expect(!BranchQuery.canCreateBranch(
+            in: [],
+            query: "feature/existing",
+            listIsAvailable: false
         ))
     }
 

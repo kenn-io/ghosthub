@@ -326,12 +326,80 @@ struct TmuxSessionKillerTests {
             sessionID: "$42",
             createdAt: "1785182057"
         ))
-        #expect(
-            recordedCommand.load()
-                == "'/usr/bin/tmux' '-L' 'protected' 'display-message'"
+        let command = try #require(recordedCommand.load())
+        #expect(command.contains(
+            "'/usr/bin/tmux' '-L' 'protected' 'has-session'"
+                + " '-t' '=worker:'"
+        ))
+        #expect(command.contains(
+            "'/usr/bin/tmux' '-L' 'protected' 'display-message'"
                 + " '-p' '-t' '=worker:'"
-                + " 'GHOSTHUB_TMUX_SESSION_IDENTITY\t"
-                + "#{pid}\t#{session_id}\t#{session_created}'"
+        ))
+    }
+
+    @Test("identity command failure is not reported as session absence")
+    func identityCommandFailure() async {
+        let killer = TmuxSessionKiller(
+            pathResolver: { _ in .success("/usr/bin/tmux") },
+            runner: { _, _ in (23, "") }
         )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: UUID(),
+            name: "worker"
+        )
+
+        await #expect {
+            try await killer.sessionIdentity(selection, on: .local)
+        } throws: { error in
+            error as? TmuxSessionKillError == .identityCommandFailed(
+                host: "localhost",
+                session: "worker",
+                status: 23
+            )
+        }
+    }
+
+    @Test("malformed identity is not reported as session absence")
+    func malformedIdentity() async {
+        let killer = TmuxSessionKiller(
+            pathResolver: { _ in .success("/usr/bin/tmux") },
+            runner: { _, _ in (0, "unexpected output") }
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: UUID(),
+            name: "worker"
+        )
+
+        await #expect {
+            try await killer.sessionIdentity(selection, on: .local)
+        } throws: { error in
+            error as? TmuxSessionKillError == .identityUnavailable(
+                host: "localhost",
+                session: "worker"
+            )
+        }
+    }
+
+    @Test("explicit absence is reported as session not running")
+    func explicitAbsence() async {
+        let killer = TmuxSessionKiller(
+            pathResolver: { _ in .success("/usr/bin/tmux") },
+            runner: { _, _ in
+                (0, "GHOSTHUB_TMUX_SESSION_ABSENT\n")
+            }
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: UUID(),
+            name: "worker"
+        )
+
+        await #expect {
+            try await killer.sessionIdentity(selection, on: .local)
+        } throws: { error in
+            error as? TmuxSessionKillError == .sessionNotRunning(
+                host: "localhost",
+                session: "worker"
+            )
+        }
     }
 }

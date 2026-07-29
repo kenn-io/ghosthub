@@ -11,6 +11,8 @@ struct TmuxSessionIdentity: Equatable, Sendable {
 enum TmuxSessionKillError: Error, Equatable, LocalizedError {
     case commandFailed(host: String, session: String, status: Int32)
     case hostChanged(session: String)
+    case identityCommandFailed(host: String, session: String, status: Int32)
+    case identityUnavailable(host: String, session: String)
     case sessionChanged(host: String, session: String)
     case sessionNotRunning(host: String, session: String)
 
@@ -22,6 +24,12 @@ enum TmuxSessionKillError: Error, Equatable, LocalizedError {
         case let .hostChanged(session):
             return "The connection for session “\(session)” changed after"
                 + " confirmation. Review the host and try again."
+        case let .identityCommandFailed(host, session, status):
+            return "Tmux could not verify session “\(session)” on \(host)"
+                + " (status \(status)). Refresh the host and try again."
+        case let .identityUnavailable(host, session):
+            return "Tmux returned an invalid identity for session “\(session)”"
+                + " on \(host). Refresh the host and try again."
         case let .sessionChanged(host, session):
             return "Session “\(session)” on \(host) was replaced after"
                 + " confirmation. Refresh the host and review the new session."
@@ -37,6 +45,8 @@ struct TmuxSessionKiller: Sendable {
         "GHOSTHUB_TMUX_SESSION_IDENTITY_MISMATCH"
     private static let identityMarker =
         "GHOSTHUB_TMUX_SESSION_IDENTITY\t"
+    private static let absenceMarker =
+        "GHOSTHUB_TMUX_SESSION_ABSENT"
 
     typealias PathResolver = @Sendable (TmuxHost)
         -> Result<String, TmuxBinaryError>
@@ -133,10 +143,23 @@ struct TmuxSessionKiller: Sendable {
         let result = await Task.detached(priority: .userInitiated) {
             runner(host, command)
         }.value
-        guard result.status == 0,
-              let identity = Self.parseIdentity(result.stdout)
-        else {
+        guard result.status == 0 else {
+            throw TmuxSessionKillError.identityCommandFailed(
+                host: host.displayName,
+                session: selection.name,
+                status: result.status
+            )
+        }
+        if result.stdout.split(whereSeparator: \.isNewline).contains(
+            Substring(Self.absenceMarker)
+        ) {
             throw TmuxSessionKillError.sessionNotRunning(
+                host: host.displayName,
+                session: selection.name
+            )
+        }
+        guard let identity = Self.parseIdentity(result.stdout) else {
+            throw TmuxSessionKillError.identityUnavailable(
                 host: host.displayName,
                 session: selection.name
             )
@@ -186,23 +209,62 @@ struct TmuxSessionKiller: Sendable {
         socketName: String?,
         platform: SSHHostInfo.Platform
     ) -> String {
-        var arguments = [tmuxPath]
+        var baseArguments = [tmuxPath]
         if let socketName {
-            arguments.append(contentsOf: ["-L", socketName])
+            baseArguments.append(contentsOf: ["-L", socketName])
         }
-        arguments.append(contentsOf: [
+        let target = "=\(sessionName):"
+        let hasSessionArguments = baseArguments + [
+            "has-session",
+            "-t",
+            target,
+        ]
+        let identityArguments = baseArguments + [
             "display-message",
             "-p",
             "-t",
-            "=\(sessionName):",
+            target,
             identityMarker + "#{pid}\t#{session_id}\t#{session_created}",
-        ])
+        ]
         if platform == .windows {
-            return powerShellCommand(arguments)
+            return identityPowerShellCommand(
+                hasSessionArguments: hasSessionArguments,
+                identityArguments: identityArguments
+            )
         }
-        return arguments
+        let hasSessionCommand = hasSessionArguments
             .map(shellQuotedCommandArgument)
             .joined(separator: " ")
+        let identityCommand = identityArguments
+            .map(shellQuotedCommandArgument)
+            .joined(separator: " ")
+        return "\(hasSessionCommand); status=$?; "
+            + "if [ \"$status\" -eq 1 ]; then printf '%s\\n' "
+            + "\(shellQuotedCommandArgument(absenceMarker)); exit 0; fi; "
+            + "[ \"$status\" -eq 0 ] || exit \"$status\"; "
+            + identityCommand
+    }
+
+    private static func identityPowerShellCommand(
+        hasSessionArguments: [String],
+        identityArguments: [String]
+    ) -> String {
+        """
+        $ErrorActionPreference = 'Stop'
+        [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+        $OutputEncoding = [Console]::OutputEncoding
+        & \(hasSessionArguments.map(powerShellEncodedArgument).joined(separator: " "))
+        $status = $LASTEXITCODE
+        if ($status -eq 1) {
+            Write-Output \(powerShellEncodedArgument(absenceMarker))
+            exit 0
+        }
+        if ($status -ne 0) {
+            exit $status
+        }
+        & \(identityArguments.map(powerShellEncodedArgument).joined(separator: " "))
+        exit $LASTEXITCODE
+        """
     }
 
     private static func powerShellCommand(_ arguments: [String]) -> String {

@@ -958,6 +958,8 @@ final class WorkspaceSceneModel: ObservableObject {
             record.repository == request.project.scopedKey,
             record.branch == request.worktree.branch,
             record.isMain == request.worktree.isPrimary,
+            request.worktree.createdAt == nil
+            || record.createdAt == request.worktree.createdAt,
             record.sessionName == request.worktree.tmuxSessionName,
             record.tmuxSocketName == request.worktree.tmuxSocketName,
             let worktree = snapshot.worktree(id: request.worktree.id),

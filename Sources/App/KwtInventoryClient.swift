@@ -397,6 +397,7 @@ enum KwtSnapshotMerger {
                 worktree.branch = record.branch
                 worktree.isPrimary = record.isMain
                 worktree.isStale = false
+                worktree.createdAt = record.createdAt
                 worktree.tmuxSessionName = record.sessionName
                 // The protected socket is a fail-closed marker: it keeps
                 // contributor-authored terminal configuration out of the app

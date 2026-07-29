@@ -220,7 +220,7 @@ struct KwtInventoryClientTests {
                         branch: "main",
                         commitHash: "abc",
                         isMain: true,
-                        createdAt: nil,
+                        createdAt: "2026-07-29T19:00:00Z",
                         repository: "github.com/kenn-io/docbank",
                         sessionName: "kwt-docbank-main"
                     ),
@@ -240,6 +240,10 @@ struct KwtInventoryClientTests {
         #expect(merged.projects[0].registryID == nil)
         #expect(merged.worktrees[0].id == oldWorktreeID)
         #expect(merged.worktrees[0].registryID == nil)
+        #expect(
+            merged.worktrees[0].createdAt
+                == "2026-07-29T19:00:00Z"
+        )
         #expect(merged.worktrees[0].tmuxSessionName == "kwt-docbank-main")
         #expect(merged.worktrees[0].sessionBackend == .localTmux)
     }

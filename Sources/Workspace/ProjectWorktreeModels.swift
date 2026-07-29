@@ -281,6 +281,8 @@ public struct WorktreeSummary: Identifiable, Equatable, Sendable {
     public var isPrimary: Bool
     public var isHidden: Bool
     public var isStale: Bool
+    /// Stable creation identity reported by kwt when available.
+    public var createdAt: String?
     public var diffAdded: Int?
     public var diffRemoved: Int?
     public var syncAhead: Int?
@@ -320,6 +322,7 @@ public struct WorktreeSummary: Identifiable, Equatable, Sendable {
         isPrimary: Bool = false,
         isHidden: Bool = false,
         isStale: Bool = false,
+        createdAt: String? = nil,
         diffAdded: Int? = nil,
         diffRemoved: Int? = nil,
         syncAhead: Int? = nil,
@@ -355,6 +358,7 @@ public struct WorktreeSummary: Identifiable, Equatable, Sendable {
         self.isPrimary = isPrimary
         self.isHidden = isHidden
         self.isStale = isStale
+        self.createdAt = createdAt
         self.diffAdded = diffAdded
         self.diffRemoved = diffRemoved
         self.syncAhead = syncAhead
