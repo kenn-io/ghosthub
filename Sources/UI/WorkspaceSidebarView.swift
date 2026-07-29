@@ -728,7 +728,7 @@ struct WorkspaceSidebarView: View {
         else {
             return AnyView(sidebarButton(row))
         }
-        let isRemovable = !worktree.isPrimary
+        let isRemovable = snapshot.canRemoveWorktree(worktree)
         let runningTmuxSession = WorkspaceSidebarModel.killableTmuxSession(
             for: worktree,
             in: snapshot,

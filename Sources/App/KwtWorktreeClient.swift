@@ -9,6 +9,7 @@ enum KwtWorktreeError: Error, Equatable, LocalizedError {
     case worktreeUnavailable
     case primaryWorktreeCannotBeRemoved
     case removalInProgress
+    case sessionStartedAfterConfirmation(session: String)
     case commandFailed(host: String, status: Int32)
     case removalFailed(host: String, status: Int32)
     case createdWorktreeMissing(branch: String)
@@ -28,6 +29,9 @@ enum KwtWorktreeError: Error, Equatable, LocalizedError {
             "The primary checkout cannot be removed."
         case .removalInProgress:
             "Another worktree is already being removed."
+        case let .sessionStartedAfterConfirmation(session):
+            "Tmux session “\(session)” started after confirmation. Review the"
+                + " updated removal warning and try again."
         case let .commandFailed(host, status):
             "kwt could not create the worktree on \(host) (status \(status))."
         case let .removalFailed(host, status):

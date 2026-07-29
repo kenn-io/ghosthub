@@ -791,6 +791,9 @@ final class WorkspaceSceneModel: ObservableObject {
         guard !worktree.isPrimary else {
             throw KwtWorktreeError.primaryWorktreeCannotBeRemoved
         }
+        guard snapshot.canRemoveWorktree(worktree) else {
+            throw KwtWorktreeError.worktreeUnavailable
+        }
 
         let sessionKillRequest: TmuxSessionKillRequest?
         if let session = WorkspaceSidebarModel.tmuxSessionSelection(
@@ -840,7 +843,7 @@ final class WorkspaceSceneModel: ObservableObject {
         guard let worktree = snapshot.worktree(id: request.worktree.id),
               worktree.path == request.worktree.path,
               worktree.projectID == request.project.id,
-              !worktree.isPrimary,
+              snapshot.canRemoveWorktree(worktree),
               let project = snapshot.project(id: request.project.id),
               project.rootPath == request.project.rootPath,
               let hostSummary = snapshot.host(id: worktree.hostID),
@@ -858,6 +861,27 @@ final class WorkspaceSceneModel: ObservableObject {
         }
 
         do {
+            _ = try await kwtInventoryLoader(host)
+        } catch {
+            recordKwtUnavailability(error, hostID: project.hostID)
+            throw error
+        }
+
+        if request.sessionKillRequest == nil,
+           let session = WorkspaceSidebarModel.tmuxSessionSelection(
+               for: worktree
+           ) {
+            do {
+                _ = try await tmuxSessionIdentityReader(session, host)
+                throw KwtWorktreeError.sessionStartedAfterConfirmation(
+                    session: session.name
+                )
+            } catch TmuxSessionKillError.sessionNotRunning {
+                // The confirmation remains accurate.
+            }
+        }
+
+        do {
             if let sessionKillRequest = request.sessionKillRequest {
                 try await killTmuxSession(sessionKillRequest)
             }
@@ -866,30 +890,73 @@ final class WorkspaceSceneModel: ObservableObject {
                 project.rootPath,
                 host
             )
+        } catch {
+            recordKwtUnavailability(error, hostID: project.hostID)
+            throw error
+        }
 
+        removeWorktreeFromCachedState(
+            worktree,
+            hostID: project.hostID,
+            selectionBeforeRemoval: selectionBeforeRemoval
+        )
+        scheduleTmuxSessionDiscovery()
+
+        do {
             let refreshed = try await kwtInventoryLoader(host)
             let previous = kwtInventoriesByHost[project.hostID]
             kwtInventoriesByHost[project.hostID] =
-                refreshed.retainingFailedProjectWorktrees(from: previous)
+                refreshed.retainingFailedProjectWorktrees(
+                    from: previous,
+                    excludingWorktreePaths: [worktree.path]
+                )
             kwtAvailabilityByHost[project.hostID] = true
             kwtInventoryFailuresByHost.removeValue(forKey: project.hostID)
             applyInventoryOverlayIfNeeded()
             updateWorkspaceInventoryState()
-            scheduleTmuxSessionDiscovery()
-            selection = selectionBeforeRemoval
-                .normalizedBySelectingVisibleFallback(
-                    in: snapshot,
-                    visibility: worktreeVisibility
-                )
         } catch {
             if isRemoteKwtUnavailable(error, hostID: project.hostID) {
                 kwtAvailabilityByHost[project.hostID] = false
-                kwtInventoryFailuresByHost.removeValue(forKey: project.hostID)
-                applyInventoryOverlayIfNeeded()
-                updateWorkspaceInventoryState()
             }
-            throw error
+            kwtInventoryFailuresByHost[project.hostID] =
+                "The worktree was removed, but inventory refresh failed: "
+                    + error.localizedDescription
+            applyInventoryOverlayIfNeeded()
+            updateWorkspaceInventoryState()
         }
+    }
+
+    private func removeWorktreeFromCachedState(
+        _ worktree: WorktreeSummary,
+        hostID: UUID,
+        selectionBeforeRemoval: WorkspaceSelection
+    ) {
+        if let inventory = kwtInventoriesByHost[hostID] {
+            kwtInventoriesByHost[hostID] =
+                inventory.removingWorktree(atPath: worktree.path)
+        }
+        snapshot.worktrees.removeAll {
+            $0.id == worktree.id || $0.path == worktree.path
+        }
+        snapshot.sessions.removeAll { $0.worktreeID == worktree.id }
+        applyInventoryOverlayIfNeeded()
+        selection = selectionBeforeRemoval
+            .normalizedBySelectingVisibleFallback(
+                in: snapshot,
+                visibility: worktreeVisibility
+            )
+        updateWorkspaceInventoryState()
+    }
+
+    private func recordKwtUnavailability(
+        _ error: Error,
+        hostID: UUID
+    ) {
+        guard isRemoteKwtUnavailable(error, hostID: hostID) else { return }
+        kwtAvailabilityByHost[hostID] = false
+        kwtInventoryFailuresByHost.removeValue(forKey: hostID)
+        applyInventoryOverlayIfNeeded()
+        updateWorkspaceInventoryState()
     }
 
     func pullRequests(

@@ -51,20 +51,31 @@ struct KwtHostInventory: Equatable, Sendable {
     var projects: [KwtProjectInventory]
 
     func retainingFailedProjectWorktrees(
-        from previous: KwtHostInventory?
+        from previous: KwtHostInventory?,
+        excludingWorktreePaths: Set<String> = []
     ) -> KwtHostInventory {
-        guard let previous else { return self }
-        return KwtHostInventory(projects: projects.map { item in
-            guard item.warning != nil,
-                  item.worktrees.isEmpty,
-                  let prior = previous.projects.first(where: {
-                      $0.project.repository == item.project.repository
-                          || $0.project.path == item.project.path
-                  })
-            else { return item }
+        KwtHostInventory(projects: projects.map { item in
             var retained = item
-            retained.worktrees = prior.worktrees
+            if item.warning != nil,
+               item.worktrees.isEmpty,
+               let prior = previous?.projects.first(where: {
+                   $0.project.repository == item.project.repository
+                       || $0.project.path == item.project.path
+               }) {
+                retained.worktrees = prior.worktrees
+            }
+            retained.worktrees.removeAll {
+                excludingWorktreePaths.contains($0.path)
+            }
             return retained
+        })
+    }
+
+    func removingWorktree(atPath path: String) -> KwtHostInventory {
+        KwtHostInventory(projects: projects.map { item in
+            var updated = item
+            updated.worktrees.removeAll { $0.path == path }
+            return updated
         })
     }
 }

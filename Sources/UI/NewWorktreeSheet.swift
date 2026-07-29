@@ -63,6 +63,16 @@ enum BranchQuery {
         guard exactMatches.count == 1 else { return nil }
         return exactMatches[0].source
     }
+
+    static func canCreateBranch(
+        in candidates: [WorktreeBranchCandidate],
+        query: String
+    ) -> Bool {
+        let normalized = query.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        return !candidates.contains { $0.name == normalized }
+    }
 }
 
 enum PullRequestSelector {
@@ -240,12 +250,20 @@ struct NewWorktreeSheet: View {
         query.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private var canCreateBranch: Bool {
+    private var canSubmitBranch: Bool {
         selectedMode == .branch
             && !isWorking
             && !isLoadingBranches
             && canCreateWorktree(in: selectedProject)
             && GitBranchName.isValid(normalizedBranchName)
+            && (selectedBranch != nil || canCreateNewBranch)
+    }
+
+    private var canCreateNewBranch: Bool {
+        BranchQuery.canCreateBranch(
+            in: branches,
+            query: query
+        )
     }
 
     private var filteredBranches: [WorktreeBranchCandidate] {
@@ -466,6 +484,7 @@ struct NewWorktreeSheet: View {
                 LazyVStack(spacing: 2) {
                     if !normalizedBranchName.isEmpty,
                        selectedBranch == nil,
+                       canCreateNewBranch,
                        GitBranchName.isValid(normalizedBranchName) {
                         Button(action: createBranch) {
                             HStack(spacing: 10) {
@@ -746,9 +765,10 @@ struct NewWorktreeSheet: View {
     private var primaryActionTitle: String {
         switch selectedMode {
         case .branch:
-            return selectedBranch == nil
-                ? "Create Branch"
-                : "Create Worktree"
+            if selectedBranch != nil {
+                return "Create Worktree"
+            }
+            return canCreateNewBranch ? "Create Branch" : "Select Branch"
         case .pullRequest:
             return selectedPullRequest?.isImported == true
                 ? "Open Worktree"
@@ -758,7 +778,7 @@ struct NewWorktreeSheet: View {
 
     private var canSubmit: Bool {
         switch selectedMode {
-        case .branch: canCreateBranch
+        case .branch: canSubmitBranch
         case .pullRequest: canImportPullRequest
         }
     }
@@ -780,7 +800,7 @@ struct NewWorktreeSheet: View {
     }
 
     private func createBranch() {
-        guard canCreateBranch else { return }
+        guard canSubmitBranch else { return }
         isWorking = true
         errorMessage = nil
         let request = WorktreeCreateRequest(

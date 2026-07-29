@@ -400,6 +400,46 @@ struct KwtInventoryClientTests {
         #expect(retained.projects[0].warning == "temporary failure")
     }
 
+    @Test("failed project retention excludes a worktree already removed")
+    func failedProjectDoesNotRestoreRemovedWorktree() {
+        let project = KwtProjectRecord(
+            repository: "repo",
+            name: "repo",
+            path: "/repo",
+            lastTouched: nil
+        )
+        let removed = KwtWorktreeRecord(
+            path: "/worktrees/removed",
+            branch: "removed",
+            commitHash: "abc",
+            isMain: false,
+            createdAt: nil,
+            repository: "repo",
+            sessionName: "kwt-repo-removed"
+        )
+        let previous = KwtHostInventory(projects: [
+            KwtProjectInventory(
+                project: project,
+                worktrees: [removed],
+                warning: nil
+            ),
+        ])
+        let failed = KwtHostInventory(projects: [
+            KwtProjectInventory(
+                project: project,
+                worktrees: [],
+                warning: "temporary failure"
+            ),
+        ])
+
+        let retained = failed.retainingFailedProjectWorktrees(
+            from: previous,
+            excludingWorktreePaths: [removed.path]
+        )
+
+        #expect(retained.projects[0].worktrees.isEmpty)
+    }
+
     @Test("warning inventory records merge over a fresh snapshot")
     func warningRecordsMergeOverFreshSnapshot() {
         let hostID = UUID()

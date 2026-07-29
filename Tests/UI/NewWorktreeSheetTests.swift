@@ -101,6 +101,14 @@ struct NewWorktreeSheetTests {
                 preserving: "upstream/topic"
             ) == nil
         )
+        #expect(!BranchQuery.canCreateBranch(
+            in: branches,
+            query: "topic"
+        ))
+        #expect(BranchQuery.canCreateBranch(
+            in: branches,
+            query: "new-topic"
+        ))
     }
 
     private static func candidate(
