@@ -276,10 +276,10 @@ func makeModel(
         )
     },
     kwtWorktreeRemover: @escaping WorkspaceSceneModel.KwtWorktreeRemover = {
-        worktreePath, createdAt, projectPath, host in
+        worktreePath, generation, projectPath, host in
         try await KwtWorktreeClient().remove(
             worktreePath: worktreePath,
-            createdAt: createdAt,
+            generation: generation,
             projectPath: projectPath,
             on: host
         )

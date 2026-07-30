@@ -403,10 +403,10 @@ final class WorkspaceSceneModel: ObservableObject {
             )
         },
         kwtWorktreeRemover: @escaping KwtWorktreeRemover = {
-            worktreePath, createdAt, projectPath, host in
+            worktreePath, generation, projectPath, host in
             try await KwtWorktreeClient().remove(
                 worktreePath: worktreePath,
-                createdAt: createdAt,
+                generation: generation,
                 projectPath: projectPath,
                 on: host
             )
@@ -876,8 +876,8 @@ final class WorkspaceSceneModel: ObservableObject {
         guard snapshot.canRemoveWorktree(worktree) else {
             throw KwtWorktreeError.worktreeUnavailable
         }
-        guard Self.isCanonicalWorktreeCreationIdentity(
-            worktree.createdAt
+        guard Self.isCanonicalWorktreeGeneration(
+            worktree.generation
         ) else {
             throw KwtWorktreeError.removalIdentityUnavailable
         }
@@ -1008,12 +1008,12 @@ final class WorkspaceSceneModel: ObservableObject {
             guard removalHostEndpointMatches(request) else {
                 throw KwtWorktreeError.removalTargetChanged
             }
-            guard let createdAt = worktree.createdAt else {
+            guard let generation = worktree.generation else {
                 throw KwtWorktreeError.removalTargetChanged
             }
             try await kwtWorktreeRemover(
                 worktree.path,
-                createdAt,
+                generation,
                 project.rootPath,
                 confirmedHost
             )
@@ -1078,8 +1078,8 @@ final class WorkspaceSceneModel: ObservableObject {
             record.repository == request.project.scopedKey,
             record.branch == request.worktree.branch,
             record.isMain == request.worktree.isPrimary,
-            let confirmedCreatedAt = request.worktree.createdAt,
-            record.createdAt == confirmedCreatedAt,
+            let confirmedGeneration = request.worktree.generation,
+            record.generation == confirmedGeneration,
             record.sessionName == request.worktree.tmuxSessionName,
             record.tmuxSocketName == request.worktree.tmuxSocketName,
             let worktree = snapshot.worktree(id: request.worktree.id),
@@ -1095,23 +1095,18 @@ final class WorkspaceSceneModel: ObservableObject {
         return (worktree, project)
     }
 
-    private static func isCanonicalWorktreeCreationIdentity(
+    private static func isCanonicalWorktreeGeneration(
         _ value: String?
     ) -> Bool {
         guard let value,
-              value != "0001-01-01T00:00:00Z",
               value.range(
-                  of: #"^\d{4}-(0[1-9]|1[0-2])-([0-2]\d|3[01])T([01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,9})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$"#,
+                  of: #"^[0-9a-f]{32}$"#,
                   options: .regularExpression
               ) != nil
         else {
             return false
         }
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = value.contains(".")
-            ? [.withInternetDateTime, .withFractionalSeconds]
-            : [.withInternetDateTime]
-        return formatter.date(from: value) != nil
+        return true
     }
 
     private func removalRequest(
@@ -1126,7 +1121,7 @@ final class WorkspaceSceneModel: ObservableObject {
               worktree.path == request.worktree.path,
               worktree.branch == request.worktree.branch,
               worktree.isPrimary == request.worktree.isPrimary,
-              worktree.createdAt == request.worktree.createdAt,
+              worktree.generation == request.worktree.generation,
               worktree.tmuxSessionName == request.worktree.tmuxSessionName,
               worktree.tmuxSocketName == request.worktree.tmuxSocketName,
               project.id == request.project.id,

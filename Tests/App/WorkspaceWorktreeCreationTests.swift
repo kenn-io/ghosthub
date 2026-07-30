@@ -257,7 +257,7 @@ struct WorkspaceWorktreeCreationTests {
             name: "feature/remove",
             path: "/tmp/ghosthub-remove",
             branch: "feature/remove",
-            createdAt: "2026-07-29T19:00:00Z"
+            generation: "0123456789abcdef0123456789abcdef"
         )
         removable.tmuxSessionName = "kwt-feature-remove"
         snapshot.worktrees.append(removable)
@@ -273,7 +273,7 @@ struct WorkspaceWorktreeCreationTests {
                     path: removable.path,
                     branch: removable.branch,
                     isMain: false,
-                    createdAt: "2026-07-29T19:00:00Z"
+                    generation: "0123456789abcdef0123456789abcdef"
                 ),
             ]
         )
@@ -577,7 +577,8 @@ struct WorkspaceWorktreeCreationTests {
         path: String,
         branch: String,
         isMain: Bool,
-        createdAt: String? = nil
+        createdAt: String? = nil,
+        generation: String? = nil
     ) -> KwtWorktreeRecord {
         KwtWorktreeRecord(
             path: path,
@@ -585,6 +586,7 @@ struct WorkspaceWorktreeCreationTests {
             commitHash: "abc123",
             isMain: isMain,
             createdAt: createdAt,
+            generation: generation,
             repository: "github.com/kenn-io/ghosthub",
             sessionName: "kwt-\(branch.replacingOccurrences(of: "/", with: "-"))"
         )

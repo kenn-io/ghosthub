@@ -27,6 +27,7 @@ struct KwtWorktreeRecord: Codable, Equatable, Sendable {
     var commitHash: String
     var isMain: Bool
     var createdAt: String?
+    var generation: String?
     var repository: String
     var sessionName: String
     var tmuxSocketName: String?
@@ -36,6 +37,7 @@ struct KwtWorktreeRecord: Codable, Equatable, Sendable {
         case commitHash = "commit_hash"
         case isMain = "is_main"
         case createdAt = "created_at"
+        case generation
         case sessionName = "session_name"
         case tmuxSocketName = "tmux_socket_name"
     }
@@ -398,6 +400,7 @@ enum KwtSnapshotMerger {
                 worktree.isPrimary = record.isMain
                 worktree.isStale = false
                 worktree.createdAt = record.createdAt
+                worktree.generation = record.generation
                 worktree.tmuxSessionName = record.sessionName
                 // The protected socket is a fail-closed marker: it keeps
                 // contributor-authored terminal configuration out of the app
