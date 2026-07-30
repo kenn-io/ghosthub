@@ -2,10 +2,11 @@ import SwiftUI
 import GhosthubWorkspace
 
 struct WorkspaceTmuxSessionActionPresentation: Equatable {
-    static let controlWidth: CGFloat = 28
+    static let controlWidth: CGFloat = 30
 
     let isVisible: Bool
     let reservedWidth: CGFloat
+    let hitTargetWidth: CGFloat
 
     init(
         hasTmuxSession: Bool,
@@ -15,6 +16,7 @@ struct WorkspaceTmuxSessionActionPresentation: Equatable {
         isVisible = hasTmuxSession
             && (isRowHovered || isActionHovered)
         reservedWidth = hasTmuxSession ? Self.controlWidth : 0
+        hitTargetWidth = hasTmuxSession ? Self.controlWidth : 0
     }
 }
 
@@ -504,6 +506,12 @@ struct WorkspaceSidebarView: View {
             } ?? false,
             isActionHovered: isActionHovered
         )
+        let usesDirectKillAction: Bool
+        if case .tmuxSession = row.target {
+            usesDirectKillAction = true
+        } else {
+            usesDirectKillAction = false
+        }
         return HStack(spacing: 0) {
             Button {
                 if case let .tmuxSession(hostID, name) = row.target {
@@ -609,49 +617,50 @@ struct WorkspaceSidebarView: View {
         }
         .overlay(alignment: .trailing) {
             if let tmuxSession = runningTmuxSession {
-                NativePopupMenuButton(
-                    groups: [
-                        [
-                            NativePopupMenuAction(
-                                "Kill Session…",
-                                role: .destructive
-                            ) {
-                                onRequestKillTmuxSession(tmuxSession)
-                            },
-                        ],
-                    ]
-                ) {
-                    ZStack {
-                        Color.clear
-                        if actionPresentation.isVisible {
-                            Image(systemName: "ellipsis")
+                Group {
+                    if usesDirectKillAction {
+                        Button {
+                            onRequestKillTmuxSession(tmuxSession)
+                        } label: {
+                            tmuxSessionActionLabel(
+                                actionPresentation,
+                                isActionHovered: isActionHovered,
+                                imageName: "xmark"
+                            )
                         }
-                    }
-                    .frame(width: 28, height: 28)
-                    .background {
-                        if actionPresentation.isVisible {
-                            RoundedRectangle(cornerRadius: 5)
-                                .fill(
-                                    Color.primary.opacity(
-                                        isActionHovered ? 0.14 : 0.06
-                                    )
-                                )
+                        .accessibilityLabel(
+                            "Kill tmux session \(tmuxSession.name)"
+                        )
+                        .accessibilityIdentifier(
+                            "kill-tmux-session-\(tmuxSession.id)"
+                        )
+                    } else {
+                        NativePopupMenuButton(
+                            groups: [
+                                [
+                                    NativePopupMenuAction(
+                                        "Kill Session…",
+                                        role: .destructive
+                                    ) {
+                                        onRequestKillTmuxSession(tmuxSession)
+                                    },
+                                ],
+                            ]
+                        ) {
+                            tmuxSessionActionLabel(
+                                actionPresentation,
+                                isActionHovered: isActionHovered,
+                                imageName: "ellipsis"
+                            )
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel(
+                                "Session actions for \(row.title)"
+                            )
                         }
+                        .accessibilityHint(
+                            "Includes the option to kill this session."
+                        )
                     }
-                    .overlay {
-                        if actionPresentation.isVisible {
-                            RoundedRectangle(cornerRadius: 5)
-                                .stroke(
-                                    isActionHovered
-                                        ? Color.accentColor.opacity(0.8)
-                                        : Color.primary.opacity(0.22),
-                                    lineWidth: isActionHovered ? 1 : 0.5
-                                )
-                        }
-                    }
-                    .contentShape(Rectangle())
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel("Session actions for \(row.title)")
                 }
                 .buttonStyle(.plain)
                 .onHover { isHovered in
@@ -663,8 +672,9 @@ struct WorkspaceSidebarView: View {
                         scheduleTmuxSessionHoverDismiss(tmuxSession.id)
                     }
                 }
-                .help("Session actions")
-                .accessibilityHint("Includes the option to kill this session.")
+                .help(
+                    usesDirectKillAction ? "Kill session…" : "Session actions"
+                )
                 .padding(.trailing, reservedTrailingActionWidth)
             }
         }
@@ -689,6 +699,35 @@ struct WorkspaceSidebarView: View {
                 onRequestKillTmuxSession(tmuxSession)
             }
         }
+    }
+
+    private func tmuxSessionActionLabel(
+        _ presentation: WorkspaceTmuxSessionActionPresentation,
+        isActionHovered: Bool,
+        imageName: String
+    ) -> some View {
+        ZStack {
+            Color.clear
+            if presentation.isVisible {
+                Image(systemName: imageName)
+                    .font(.system(size: 10, weight: .semibold))
+            }
+        }
+        .frame(
+            width: presentation.hitTargetWidth,
+            height: 30
+        )
+        .background {
+            if presentation.isVisible {
+                RoundedRectangle(cornerRadius: 5)
+                    .fill(
+                        Color.primary.opacity(
+                            isActionHovered ? 0.14 : 0.05
+                        )
+                    )
+            }
+        }
+        .contentShape(Rectangle())
     }
 
     private func scheduleTmuxSessionHoverDismiss(_ sessionID: String) {

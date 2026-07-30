@@ -34,6 +34,7 @@ struct WorkspaceSidebarModelTests {
         #expect(hovered.isVisible)
         #expect(idle.reservedWidth == hovered.reservedWidth)
         #expect(idle.reservedWidth > 0)
+        #expect(hovered.hitTargetWidth >= 28)
     }
 
     @Test("worktree removal is subtle without shrinking its hit target")
