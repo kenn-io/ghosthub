@@ -10,49 +10,22 @@ enum ConfigSectionEditor {
 
     /// Render the terminal appearance overlay file content.
     ///
-    /// Returns `nil` when no overlay is needed (followConfig theme
-    /// with no custom font), which signals the caller to delete the
-    /// overlay file.
+    /// Tmux themes are intentionally absent from this libghostty overlay.
+    /// They are applied to new tmux sessions, and optionally to shared
+    /// sessions, at the tmux boundary. Returns `nil` when no custom font is
+    /// configured, which signals the caller to delete the overlay file.
     static func renderTerminalAppearanceOverlay(
         for preferences: TerminalAppearancePreferences
     ) -> String? {
         var lines: [String] = []
 
-        if let theme = preferences.theme.spec {
+        if preferences.usesCustomFont {
             lines.append(
                 "# Ghosthub terminal appearance overlay"
             )
             lines.append(
                 "# Generated automatically from Settings > Appearance"
             )
-            lines.append(
-                "background = \(theme.background.hexRGB)"
-            )
-            lines.append(
-                "foreground = \(theme.foreground.hexRGB)"
-            )
-            lines.append(
-                "cursor-color = \(theme.cursorColor.hexRGB)"
-            )
-            if let selection = theme.selection {
-                lines.append(
-                    "selection-background = \(selection.hexRGB)"
-                )
-            }
-            lines.append(
-                "background-opacity = \(TOMLConfigParser.renderTOMLNumber(theme.background.alpha))"
-            )
-        }
-
-        if preferences.usesCustomFont {
-            if lines.isEmpty {
-                lines.append(
-                    "# Ghosthub terminal appearance overlay"
-                )
-                lines.append(
-                    "# Generated automatically from Settings > Appearance"
-                )
-            }
             let trimmedFamily = preferences.fontFamily
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmedFamily.isEmpty {

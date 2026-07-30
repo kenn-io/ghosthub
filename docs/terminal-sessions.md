@@ -59,17 +59,17 @@ leaves the presentation open. After success it rechecks the active attachment,
 closing that exact current selection and navigating away only if it is the
 killed target.
 
-Ghosthub does not modify shared tmux colors by default. Users may explicitly
-enable the Tmux Theme shared-session override. Before attachment, that override
-resets the exact session's `status-style`, `message-style`, and
+Ghosthub applies the selected Tmux Theme when it creates a new bare tmux
+session. Existing sessions retain their own appearance by default: Ghosthub
+neither places a client-local palette over them nor changes their tmux options.
+Users may explicitly enable the shared-session override. Before attachment,
+that override resets the exact session's `status-style`, `message-style`, and
 `message-command-style` to terminal-default colors and sets each existing
 window's default foreground and background. For kwt-backed workspaces, styling
 runs only after kwt has created or repaired the complete session and layout.
-This gives tmux a deterministic answer to OSC 10/11 color queries; otherwise
-tmux may report the first attached client's theme even when Ghosthub uses
-different colors. Tmux shares the override with every attached client. These
-best-effort style commands do not change tmux interaction: prefix and key
-tables, mouse behavior, windows, panes, history, and layout remain untouched.
+Tmux shares those settings with every attached client. These best-effort style
+commands do not change tmux interaction: prefix and key tables, mouse behavior,
+windows, panes, history, and layout remain untouched.
 Native Windows attachment leaves psmux's status and message styles user-owned;
 psmux does not preserve tmux's session-scoped rendering for these style resets
 and may apply `reverse` across the client rather than only its status line.
@@ -226,8 +226,9 @@ session model and die with the app process.
 - Keep `TERM_PROGRAM=ghosthub`.
 - Do not leak launcher-terminal `EDITOR` or `VISUAL` into embedded shells.
 - Keep Ghosthub terminal config at `~/.config/ghosthub/ghostty.conf`.
-- Keep the generated base config independent of optional named-theme files;
-  built-in Appearance themes use an explicit Ghosthub-owned color overlay.
+- Keep the generated base config independent of tmux themes. Built-in Tmux
+  Theme colors are applied at session creation or through the explicit
+  shared-session override, never as a client-local libghostty overlay.
 - Keep mutable Ghosthub app state under `~/.ghosthub/`.
 - Do not read or depend on Ghostty.app global config.
 - Do not install Ghosthub split, zoom, or tab keybindings. Native tmux owns

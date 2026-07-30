@@ -702,17 +702,63 @@ struct WorkspaceTmuxDiscoveryTests {
             surfaceStore.surface.closeObservers.values.first
         )
         close(true)
+        #expect(!model.activeBorrowedTmuxSessionIsConfirmedEnded)
 
         await waitUntilMainActor {
             discoveryCalls.count >= 2
                 && model.snapshot.host(id: environment.host.id)?
                 .tmuxSessions.isEmpty == true
         }
+        #expect(model.activeBorrowedTmuxSessionIsConfirmedEnded)
 
         model.retryBorrowedTmuxSession(selection)
 
         #expect(model.activeBorrowedTmuxLaunchMode == .create)
         #expect(model.pendingCreatedTmuxSessionCount == 1)
+    }
+
+    @MainActor
+    @Test("a closed client reconnects when discovery finds the session")
+    func exitedClientKeepsRunningSessionReconnectable() async throws {
+        let environment = try setupStandardEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let discoveryCalls = Counter()
+        let discovered = DiscoveredTmuxSession(
+            name: "release-work",
+            windowCount: 1,
+            serverPID: "31415",
+            sessionID: "$42",
+            createdAt: "1721552400",
+            managed: true
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            tmuxSessionDiscovery: { _ in
+                _ = discoveryCalls.increment()
+                return .success([discovered])
+            }
+        )
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor { discoveryCalls.count == 1 }
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "release-work"
+        )
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+
+        let close = try #require(
+            surfaceStore.surface.closeObservers.values.first
+        )
+        close(true)
+        await waitUntilMainActor { discoveryCalls.count >= 2 }
+
+        #expect(!model.activeBorrowedTmuxSessionIsConfirmedEnded)
+        model.retryBorrowedTmuxSession(selection)
+        #expect(model.activeBorrowedTmuxLaunchMode == .attach)
     }
 
     @MainActor

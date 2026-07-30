@@ -235,14 +235,16 @@ Ghosthub supplies keepalives and retries
 transport status 255. Tmux owns all windows, panes, history, input, rendering,
 and server-side lifetime.
 
-Ghosthub does not modify shared tmux colors by default. The explicit Tmux Theme
-override is the only presentation exception: before attachment it resets
-status and message styles to terminal defaults and supplies the selected
-built-in theme's foreground and background to existing windows in the exact
-session. This gives tmux deterministic OSC 10/11 responses, but tmux shares the
-result with every attached client. The best-effort styling can never prevent
-attachment. Tmux still owns all interaction behavior; Ghosthub does not modify
-its prefix, key tables, mouse mode, window/pane commands, history, or layout.
+Ghosthub applies the selected Tmux Theme when it creates a new bare session.
+Existing sessions retain their own appearance by default; Ghosthub neither
+places a client-local palette over them nor changes their tmux options. The
+explicit shared-session override is the only exception: before attachment it
+resets status and message styles to terminal defaults and supplies the selected
+foreground and background to existing windows in the exact session. Tmux
+shares the result with every attached client. The best-effort styling can never
+prevent attachment. Tmux still owns all interaction behavior; Ghosthub does
+not modify its prefix, key tables, mouse mode, window/pane commands, history,
+or layout.
 
 An explicit New Tmux Session action is the sole boundary where Ghosthub
 creates a bare tmux session itself. For a user-supplied exact name, local

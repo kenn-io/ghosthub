@@ -40,7 +40,7 @@ struct ConfigSectionEditorTests {
         #expect(text.contains("# Ghosthub terminal appearance overlay"))
     }
 
-    @Test func renderTerminalAppearanceOverlay_includesThemeColors() {
+    @Test func renderTerminalAppearanceOverlay_ignoresTmuxTheme() {
         let prefs = TerminalAppearancePreferences(
             theme: .clearLight,
             appliesThemeToTmuxSessions: false,
@@ -52,15 +52,10 @@ struct ConfigSectionEditorTests {
         let result = ConfigSectionEditor
             .renderTerminalAppearanceOverlay(for: prefs)
 
-        #expect(result != nil)
-        let text = result!
-        #expect(text.contains("background = "))
-        #expect(text.contains("foreground = "))
-        #expect(text.contains("cursor-color = "))
-        #expect(text.contains("background-opacity = "))
+        #expect(result == nil)
     }
 
-    @Test func renderTerminalAppearanceOverlay_themeAndFont() {
+    @Test func renderTerminalAppearanceOverlay_themeAndFontOnlyWritesFont() {
         let prefs = TerminalAppearancePreferences(
             theme: .homebrew,
             appliesThemeToTmuxSessions: false,
@@ -74,10 +69,11 @@ struct ConfigSectionEditorTests {
 
         #expect(result != nil)
         let text = result!
-        #expect(text.contains("background = "))
         #expect(
             text.contains("font-family = \"JetBrains Mono\"")
         )
         #expect(text.contains("font-size = 16"))
+        #expect(!text.contains("background = "))
+        #expect(!text.contains("foreground = "))
     }
 }

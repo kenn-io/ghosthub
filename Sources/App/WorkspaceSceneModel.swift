@@ -45,10 +45,7 @@ final class WorktreeMutationCoordinator {
         let projectIdentity: String
     }
 
-    struct RemovalTombstone: Hashable, Sendable {
-        let path: String
-        let generation: String
-    }
+    typealias RemovalTombstone = KwtWorktreeIdentity
 
     enum Phase: Sendable {
         case began
@@ -170,6 +167,7 @@ final class WorkspaceSceneModel: ObservableObject {
     private var createdSessionDiscoveryTasks: [UUID: Task<Void, Never>] = [:]
     private var exhaustedCreatedTmuxSessionHandles: Set<UUID> = []
     private var endedCreatedTmuxSessionHandles: Set<UUID> = []
+    private var confirmedEndedTmuxSessionHandles: Set<UUID> = []
     private let createdSessionDiscoveryDelays: [Duration]
     @Published private(set) var workspaceInventoryState:
         WorkspaceInventoryState = .loading
@@ -237,6 +235,10 @@ final class WorkspaceSceneModel: ObservableObject {
             return false
         }
         return borrowedTmuxConnectionStates[handle.id] == .connected
+    }
+    var activeBorrowedTmuxSessionIsConfirmedEnded: Bool {
+        guard let handle = activeBorrowedTmuxHandle else { return false }
+        return confirmedEndedTmuxSessionHandles.contains(handle.id)
     }
 
     var activityReferenceDate: Date {
@@ -383,13 +385,16 @@ final class WorkspaceSceneModel: ObservableObject {
                 tmuxPresentationStyleProvider: {
                     let preferences = SettingsStore.shared
                         .terminalAppearancePreferences
-                    guard preferences.appliesThemeToTmuxSessions,
-                          let spec = preferences.theme.spec
+                    guard let spec = preferences.theme.spec
                     else { return nil }
                     return TmuxPresentationStyle(
                         foreground: spec.foreground.hexRGB,
                         background: spec.background.hexRGB
                     )
+                },
+                appliesTmuxPresentationStyleToExistingSessionsProvider: {
+                    SettingsStore.shared.terminalAppearancePreferences
+                        .appliesThemeToTmuxSessions
                 },
                 localHostID: boot.localHostID,
                 startServices: true
@@ -415,6 +420,8 @@ final class WorkspaceSceneModel: ObservableObject {
             },
         tmuxPresentationStyleProvider:
         @escaping () -> TmuxPresentationStyle? = { nil },
+        appliesTmuxPresentationStyleToExistingSessionsProvider:
+        @escaping () -> Bool = { false },
         kwtInventoryLoader: @escaping KwtInventoryLoader = { host in
             try await KwtInventoryClient().load(from: host)
         },
@@ -590,6 +597,8 @@ final class WorkspaceSceneModel: ObservableObject {
                 tmuxPathCache.resolveTmuxPath()
             },
             presentationStyleProvider: tmuxPresentationStyleProvider,
+            appliesPresentationStyleToExistingSessionsProvider:
+            appliesTmuxPresentationStyleToExistingSessionsProvider,
             remoteTmuxPathProvider: remoteTmuxPathProvider
         )
         nativeTmuxSessionCoordinatorBacking?.onStateChanged = {
@@ -779,6 +788,7 @@ final class WorkspaceSceneModel: ObservableObject {
         createdSessionDiscoveryTasks.removeAll()
         exhaustedCreatedTmuxSessionHandles.removeAll()
         endedCreatedTmuxSessionHandles.removeAll()
+        confirmedEndedTmuxSessionHandles.removeAll()
         nativeTmuxSessionCoordinatorBacking?.shutdown()
     }
 
@@ -1010,6 +1020,9 @@ final class WorkspaceSceneModel: ObservableObject {
             preflight,
             request: request
         )
+        guard let generation = worktree.generation else {
+            throw KwtWorktreeError.removalTargetChanged
+        }
 
         if request.sessionKillRequest == nil,
            let session = WorkspaceSidebarModel.tmuxSessionSelection(
@@ -1033,9 +1046,6 @@ final class WorkspaceSceneModel: ObservableObject {
                 try await killTmuxSession(sessionKillRequest)
             }
             guard removalHostEndpointMatches(request) else {
-                throw KwtWorktreeError.removalTargetChanged
-            }
-            guard let generation = worktree.generation else {
                 throw KwtWorktreeError.removalTargetChanged
             }
             try await kwtWorktreeRemover(
@@ -1067,7 +1077,12 @@ final class WorkspaceSceneModel: ObservableObject {
             kwtInventoriesByHost[project.hostID] =
                 refreshed.retainingFailedProjectWorktrees(
                     from: previous,
-                    excludingWorktreePaths: [worktree.path]
+                    excludingWorktrees: [
+                        KwtWorktreeIdentity(
+                            path: worktree.path,
+                            generation: generation
+                        ),
+                    ]
                 )
             kwtAvailabilityByHost[project.hostID] = true
             kwtInventoryFailuresByHost.removeValue(forKey: project.hostID)
@@ -1562,15 +1577,15 @@ final class WorkspaceSceneModel: ObservableObject {
                     switch result {
                     case let .success(inventory):
                         let previous = self.kwtInventoriesByHost[hostID]
-                        let tombstonePaths =
-                            self.activeRemovalTombstonePaths(
+                        let tombstones =
+                            self.activeRemovalTombstones(
                                 after: inventory,
                                 hostID: hostID
                             )
                         self.kwtInventoriesByHost[hostID] =
                             inventory.retainingFailedProjectWorktrees(
                                 from: previous,
-                                excludingWorktreePaths: tombstonePaths
+                                excludingWorktrees: tombstones
                             )
                         self.kwtAvailabilityByHost[hostID] = true
                         // A host inventory is useful even when one project
@@ -1682,11 +1697,11 @@ final class WorkspaceSceneModel: ObservableObject {
         updateWorkspaceInventoryState()
     }
 
-    private func activeRemovalTombstonePaths(
+    private func activeRemovalTombstones(
         after inventory: KwtHostInventory,
         hostID: UUID
-    ) -> Set<String> {
-        var activePaths: Set<String> = []
+    ) -> Set<KwtWorktreeIdentity> {
+        var activeTombstones: Set<KwtWorktreeIdentity> = []
         let scopes = worktreeRemovalTombstones.keys.filter {
             $0.hostID == hostID
         }
@@ -1711,10 +1726,10 @@ final class WorkspaceSceneModel: ObservableObject {
                 worktreeRemovalTombstones.removeValue(forKey: scope)
             } else {
                 worktreeRemovalTombstones[scope] = active
-                activePaths.formUnion(active.map(\.path))
+                activeTombstones.formUnion(active)
             }
         }
-        return activePaths
+        return activeTombstones
     }
 
     private func isRemoteKwtUnavailable(
@@ -1807,6 +1822,10 @@ final class WorkspaceSceneModel: ObservableObject {
                     self.tmuxDiscoveryFailuresByHost.removeValue(forKey: hostID)
                     self.tmuxReachabilityByHost[hostID] = true
                     self.tmuxLastSeenByHost[hostID] = Date()
+                    self.reconcileEndedTmuxSession(
+                        discovered,
+                        hostID: hostID
+                    )
                     self.tmuxSessionsByHost[hostID] =
                         self.reconciledTmuxSessions(
                             discovered,
@@ -1820,6 +1839,25 @@ final class WorkspaceSceneModel: ObservableObject {
                   generation == tmuxDiscoveryGeneration else { return }
             isTmuxDiscoveryLoading = false
             updateWorkspaceInventoryState()
+        }
+    }
+
+    private func reconcileEndedTmuxSession(
+        _ discovered: [DiscoveredTmuxSession],
+        hostID: UUID
+    ) {
+        guard let selection = activeBorrowedTmuxSelection,
+              selection.hostID == hostID,
+              selection.socketName == nil,
+              let handle = activeBorrowedTmuxHandle,
+              nativeTmuxSessionCoordinator.hasClosedAttachment(handle)
+        else {
+            return
+        }
+        if discovered.contains(where: { $0.name == selection.name }) {
+            confirmedEndedTmuxSessionHandles.remove(handle.id)
+        } else {
+            confirmedEndedTmuxSessionHandles.insert(handle.id)
         }
     }
 
@@ -2340,7 +2378,10 @@ final class WorkspaceSceneModel: ObservableObject {
                         && $0.tmuxSessionName == sessionName
                 }?.name,
                 connectionState: borrowedTmuxConnectionStates[handle.id],
-                sessionClosed: nativeTmuxSessionCoordinator.hasEnded(handle),
+                attachmentClosed:
+                nativeTmuxSessionCoordinator.hasClosedAttachment(handle),
+                sessionClosed:
+                confirmedEndedTmuxSessionHandles.contains(handle.id),
                 surface: { [weak self] in
                     self?.nativeTmuxSessionCoordinator.surface(handle: handle)
                 },
@@ -2485,6 +2526,7 @@ final class WorkspaceSceneModel: ObservableObject {
     func closeBorrowedTmuxSession(_ selection: WorkspaceTmuxSessionSelection) {
         guard activeBorrowedTmuxSelection == selection else { return }
         if let handle = activeBorrowedTmuxHandle {
+            confirmedEndedTmuxSessionHandles.remove(handle.id)
             borrowedTmuxConnectionStates.removeValue(forKey: handle.id)
             if pendingCreatedTmuxSessions[handle.id] != nil,
                nativeTmuxSessionCoordinator.hasLaunched(handle) {
@@ -2837,7 +2879,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 && selection.worktreeID == nil
                 && selection.worktreePath == nil
                 && activeBorrowedTmuxHandle.map {
-                    nativeTmuxSessionCoordinator.hasEnded($0)
+                    confirmedEndedTmuxSessionHandles.contains($0.id)
                 } == true
         let launchMode = activeBorrowedTmuxLaunchMode ?? .attach
         closeBorrowedTmuxSession(selection)

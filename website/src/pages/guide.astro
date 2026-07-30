@@ -327,11 +327,12 @@ const imageAlt = {
           <p>
             The file uses{' '}<a href="https://ghostty.org/docs/config/reference">Ghostty’s
               configuration format</a>, but is isolated from Ghostty.app.
-            The Tmux Theme picker controls how sessions appear inside
-            Ghosthub. Shared tmux colors remain untouched by default. An
-            explicit opt-in applies a built-in theme to the session’s existing
+            The Tmux Theme picker supplies colors for new sessions created by
+            Ghosthub. Existing sessions keep their own appearance by default;
+            Ghosthub does not place a local palette over them. An explicit
+            opt-in applies the selected colors to the session’s existing
             windows and chrome for every attached terminal. Ghosthub reloads
-            the active configuration when it changes.
+            terminal configuration when it changes.
           </p>
         </div>
       </div>

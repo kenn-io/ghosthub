@@ -7,6 +7,7 @@ struct BorrowedTmuxSessionView: View {
     var hostName: String
     var displayTitle: String?
     var connectionState: ConnectionState?
+    var attachmentClosed: Bool
     var sessionClosed: Bool
     var surface: () -> TerminalSurfaceView?
     var onCloseRequest: () -> Void
@@ -17,6 +18,7 @@ struct BorrowedTmuxSessionView: View {
         hostName: String,
         displayTitle: String? = nil,
         connectionState: ConnectionState?,
+        attachmentClosed: Bool = false,
         sessionClosed: Bool = false,
         surface: @escaping () -> TerminalSurfaceView?,
         onCloseRequest: @escaping () -> Void,
@@ -26,6 +28,7 @@ struct BorrowedTmuxSessionView: View {
         self.hostName = hostName
         self.displayTitle = displayTitle
         self.connectionState = connectionState
+        self.attachmentClosed = attachmentClosed
         self.sessionClosed = sessionClosed
         self.surface = surface
         self.onCloseRequest = onCloseRequest
@@ -44,6 +47,8 @@ struct BorrowedTmuxSessionView: View {
                     disconnectionTitle,
                     systemImage: sessionClosed
                         ? "rectangle.portrait.and.arrow.right"
+                        : attachmentClosed
+                        ? "rectangle.portrait.and.arrow.right"
                         : "network.slash"
                 )
             } description: {
@@ -58,6 +63,10 @@ struct BorrowedTmuxSessionView: View {
     }
 
     var disconnectionReason: String? {
+        if sessionClosed {
+            return "The tmux session “\(handle.name)” ended. Reopen to create"
+                + " a new session with the same name."
+        }
         guard case let .disconnected(reason) = connectionState else {
             return nil
         }
@@ -65,11 +74,17 @@ struct BorrowedTmuxSessionView: View {
     }
 
     var disconnectionTitle: String {
-        sessionClosed ? "Session closed" : "Unable to attach"
+        if sessionClosed {
+            return "Session ended"
+        }
+        return attachmentClosed ? "Attachment closed" : "Unable to attach"
     }
 
     var recoveryActionTitle: String {
-        sessionClosed ? "Reopen" : "Retry"
+        if sessionClosed {
+            return "Reopen"
+        }
+        return attachmentClosed ? "Reconnect" : "Retry"
     }
 }
 

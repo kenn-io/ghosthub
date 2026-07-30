@@ -422,7 +422,7 @@ public struct SettingsView: View {
                 .disabled(draft.terminalTheme == .followConfig)
 
                 Text(
-                    "The selected theme controls how tmux appears in Ghosthub. The shared-session override also changes tmux window, status, and message colors when Ghosthub next attaches. Tmux shares those settings, so every attached terminal sees the change. Follow ghostty.conf leaves the configured tmux theme untouched."
+                    "Ghosthub applies the selected colors when it creates a new tmux session. Existing sessions keep their current appearance unless the shared-session override is enabled. That override changes tmux window, status, and message colors for every attached client. Follow ghostty.conf leaves tmux colors untouched."
                 )
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
@@ -455,7 +455,7 @@ public struct SettingsView: View {
                 }
 
                 Text(
-                    "When font override is off, Ghosthub leaves font-family and font-size entirely to ghostty.conf. When it is on, the override lives in the same Ghosthub-owned appearance overlay as the built-in theme."
+                    "When font override is off, Ghosthub leaves font-family and font-size entirely to ghostty.conf. When it is on, the override lives in a Ghosthub-owned terminal appearance file."
                 )
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)

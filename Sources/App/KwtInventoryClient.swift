@@ -54,7 +54,7 @@ struct KwtHostInventory: Equatable, Sendable {
 
     func retainingFailedProjectWorktrees(
         from previous: KwtHostInventory?,
-        excludingWorktreePaths: Set<String> = []
+        excludingWorktrees: Set<KwtWorktreeIdentity> = []
     ) -> KwtHostInventory {
         KwtHostInventory(projects: projects.map { item in
             var retained = item
@@ -67,7 +67,13 @@ struct KwtHostInventory: Equatable, Sendable {
                 retained.worktrees = prior.worktrees
             }
             retained.worktrees.removeAll {
-                excludingWorktreePaths.contains($0.path)
+                guard let generation = $0.generation else { return false }
+                return excludingWorktrees.contains(
+                    KwtWorktreeIdentity(
+                        path: $0.path,
+                        generation: generation
+                    )
+                )
             }
             return retained
         })
@@ -80,6 +86,11 @@ struct KwtHostInventory: Equatable, Sendable {
             return updated
         })
     }
+}
+
+struct KwtWorktreeIdentity: Hashable, Sendable {
+    let path: String
+    let generation: String
 }
 
 enum KwtInventoryError: Error, Equatable, LocalizedError {
