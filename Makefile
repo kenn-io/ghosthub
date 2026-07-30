@@ -22,7 +22,10 @@ RELEASE_BUNDLE_ID ?= com.ghosthub
 DEBUG_BUNDLE_ID ?= $(RELEASE_BUNDLE_ID).debug
 RELEASE_APP_VERSION ?= 0.1.0
 ifeq ($(origin DEVELOPMENT_APP_VERSION),undefined)
-DEVELOPMENT_APP_VERSION := $(shell $(PYTHON) tools/development_version.py)
+DEVELOPMENT_APP_VERSION := $(shell $(PYTHON) tools/development_version.py --component short)
+endif
+ifeq ($(origin DEVELOPMENT_VERSION_DESCRIPTION),undefined)
+DEVELOPMENT_VERSION_DESCRIPTION := $(shell $(PYTHON) tools/development_version.py --component display)
 endif
 RELEASE_BUILD_VERSION ?= $(shell git rev-list --count HEAD 2>/dev/null || echo 0)
 RELEASE_MIN_MACOS ?= 26.0
@@ -120,7 +123,8 @@ help:
 		'  LIBGHOSTTY_XCFRAMEWORK_TARGET=aarch64' \
 		'  LIBGHOSTTY_OPTIMIZE=ReleaseFast' \
 		'  RELEASE_ROOT=dist/release' \
-		'  DEVELOPMENT_APP_VERSION=0.3.0-1-gabcdef0' \
+		'  DEVELOPMENT_APP_VERSION=0.3.0' \
+		'  DEVELOPMENT_VERSION_DESCRIPTION=0.3.0-1-gabcdef0' \
 		'  RELEASE_APP_VERSION=0.1.0' \
 		'  RELEASE_BUILD_VERSION=0.1.0' \
 		'  KWT_BINARY_PATH=/absolute/path/to/kwt' \
@@ -302,6 +306,7 @@ debug-app: ensure-kwt ensure-kwt-variants bootstrap-libghostty
 		--display-name "$(GHOSTHUB_APP)" \
 		--version "$(DEVELOPMENT_APP_VERSION)" \
 		--build-version "$(RELEASE_BUILD_VERSION)" \
+		--development-version "$(DEVELOPMENT_VERSION_DESCRIPTION)" \
 		--min-macos "$(RELEASE_MIN_MACOS)" \
 		--icon-path "$(APP_ICON_PATH)" \
 		--app-license-path "$(APP_LICENSE_PATH)" \

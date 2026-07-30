@@ -32,6 +32,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--display-name", required=True)
     parser.add_argument("--version", required=True)
     parser.add_argument("--build-version", required=True)
+    parser.add_argument("--development-version")
     parser.add_argument("--min-macos", required=True)
     parser.add_argument("--icon-path", required=True, type=Path)
     parser.add_argument("--app-license-path", required=True, type=Path)
@@ -71,6 +72,7 @@ def assemble_app_bundle(
     kwt_version: str,
     kwt_source_revision: str,
     remote_kwt_source_revision: str,
+    development_version: str | None = None,
     include_updates: bool = False,
 ) -> Path:
     if not kwt_binary.is_file() or not kwt_binary.stat().st_mode & 0o111:
@@ -174,6 +176,8 @@ def assemble_app_bundle(
         "NSHumanReadableCopyright": copyright,
         "NSPrincipalClass": "NSApplication",
     }
+    if development_version:
+        plist["GhosthubDevelopmentVersion"] = development_version
     if include_updates:
         plist.update(
             {
@@ -208,6 +212,7 @@ def main() -> int:
         display_name=args.display_name,
         version=args.version,
         build_version=args.build_version,
+        development_version=args.development_version,
         min_macos=args.min_macos,
         icon_path=args.icon_path,
         app_license_path=args.app_license_path,

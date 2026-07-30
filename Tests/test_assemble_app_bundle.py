@@ -176,8 +176,9 @@ def test_assemble_app_bundle_stages_icon_and_binary(tmp_path):
         app_root=app_root,
         bundle_id="com.ghosthub",
         display_name="Ghosthub",
-        version="0.1.0",
+        version="0.3.0",
         build_version="123",
+        development_version="0.3.0-8-g3c67741-dirty",
         min_macos="14.0",
         icon_path=icon_path,
         app_license_path=app_license,
@@ -254,6 +255,11 @@ def test_assemble_app_bundle_stages_icon_and_binary(tmp_path):
         "SUVerifyUpdateBeforeExtraction",
     }
     assert update_keys.isdisjoint(plist)
+    assert plist["CFBundleShortVersionString"] == "0.3.0"
+    assert plist["CFBundleVersion"] == "123"
+    assert plist["GhosthubDevelopmentVersion"] == (
+        "0.3.0-8-g3c67741-dirty"
+    )
     assert plist["GhosthubRemoteKwtSourceRevision"] == "def456"
 
 
