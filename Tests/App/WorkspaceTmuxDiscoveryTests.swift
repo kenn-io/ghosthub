@@ -666,7 +666,7 @@ struct WorkspaceTmuxDiscoveryTests {
         let surfaceStore = SceneTmuxSurfaceStoreStub()
         let discoveryCalls = Counter()
         let discovered = DiscoveredTmuxSession(
-            name: "kwt-ghosthub-main",
+            name: "release-work",
             windowCount: 1,
             serverPID: "31415",
             sessionID: "$42",
@@ -689,13 +689,11 @@ struct WorkspaceTmuxDiscoveryTests {
         await waitUntilMainActor {
             discoveryCalls.count == 1
                 && model.snapshot.host(id: environment.host.id)?
-                .tmuxSessions.map { $0.name } == ["kwt-ghosthub-main"]
+                .tmuxSessions.map { $0.name } == ["release-work"]
         }
         let selection = WorkspaceTmuxSessionSelection(
             hostID: environment.host.id,
-            name: "kwt-ghosthub-main",
-            worktreeID: environment.worktree.id,
-            worktreePath: environment.worktree.path
+            name: "release-work"
         )
         model.openBorrowedTmuxSession(selection)
         await launchActiveTmuxSurface(model, store: surfaceStore)
@@ -710,6 +708,11 @@ struct WorkspaceTmuxDiscoveryTests {
                 && model.snapshot.host(id: environment.host.id)?
                 .tmuxSessions.isEmpty == true
         }
+
+        model.retryBorrowedTmuxSession(selection)
+
+        #expect(model.activeBorrowedTmuxLaunchMode == .create)
+        #expect(model.pendingCreatedTmuxSessionCount == 1)
     }
 
     @MainActor

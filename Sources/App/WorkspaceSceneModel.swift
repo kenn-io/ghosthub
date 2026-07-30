@@ -2832,8 +2832,24 @@ final class WorkspaceSceneModel: ObservableObject {
         _ selection: WorkspaceTmuxSessionSelection
     ) {
         guard activeBorrowedTmuxSelection == selection else { return }
+        let recreateEndedNamedSession =
+            selection.socketName == nil
+                && selection.worktreeID == nil
+                && selection.worktreePath == nil
+                && activeBorrowedTmuxHandle.map {
+                    nativeTmuxSessionCoordinator.hasEnded($0)
+                } == true
         let launchMode = activeBorrowedTmuxLaunchMode ?? .attach
         closeBorrowedTmuxSession(selection)
+        if recreateEndedNamedSession {
+            guard let handle = presentTmuxSession(
+                selection,
+                launchMode: .create
+            ) else { return }
+            pendingCreatedTmuxSessions[handle.id] = selection
+            _ = publishCreatedTmuxSession(selection)
+            return
+        }
         switch launchMode {
         case .create:
             createTmuxSession(selection)

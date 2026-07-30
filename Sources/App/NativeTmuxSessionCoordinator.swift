@@ -388,8 +388,8 @@ final class NativeTmuxSessionCoordinator {
         onStateChanged?(
             handle,
             .disconnected(
-                reason: "The tmux client exited. Reopen to start or reattach"
-                    + " to this workspace session."
+                reason: "The tmux session “\(handle.name)” ended. Reopen to"
+                    + " create a new session with the same name."
             )
         )
     }

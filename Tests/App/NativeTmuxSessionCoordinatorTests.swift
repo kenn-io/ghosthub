@@ -280,8 +280,8 @@ struct NativeTmuxSessionCoordinatorTests {
 
         #expect(coordinator.hasEnded(handle))
         #expect(states.last == .disconnected(
-            reason: "The tmux client exited. Reopen to start or reattach"
-                + " to this workspace session."
+            reason: "The tmux session “release-work” ended. Reopen to create"
+                + " a new session with the same name."
         ))
     }
 }
