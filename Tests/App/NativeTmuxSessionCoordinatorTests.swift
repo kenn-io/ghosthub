@@ -254,6 +254,36 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(!coordinator.hasLaunched(handle))
         #expect(store.removedKeys.count == 1)
     }
+
+    @Test("an exited tmux client records an ended attachment")
+    func exitedClientEndsAttachment() async throws {
+        let store = TmuxSurfaceStoreStub()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { .success("/usr/bin/tmux") }
+        )
+        var states: [ConnectionState] = []
+        var isSurfaceReady = false
+        coordinator.onStateChanged = { _, state in states.append(state) }
+        coordinator.onSurfaceReady = { _ in isSurfaceReady = true }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "release-work",
+            host: .local
+        )
+        await waitUntilMainActor { isSurfaceReady }
+        _ = coordinator.surface(handle: handle)
+        await waitUntilMainActor { states.contains(.connected) }
+
+        let close = try #require(store.surface.closeObservers[handle.id])
+        close(true)
+
+        #expect(coordinator.hasEnded(handle))
+        #expect(states.last == .disconnected(
+            reason: "The tmux client exited. Reopen to start or reattach"
+                + " to this workspace session."
+        ))
+    }
 }
 
 private enum SurfaceLaunchTestError: LocalizedError {
@@ -282,7 +312,7 @@ private final class TmuxPaneSurfaceStub: TmuxPaneSurfacing {
 
 @MainActor
 private final class TmuxSurfaceStoreStub: TmuxSurfaceStoring {
-    private let surface: TmuxPaneSurfaceStub
+    let surface: TmuxPaneSurfaceStub
     private(set) var requestedKeys: [SurfaceKey] = []
     private(set) var requestedConfigurations: [TerminalSurfaceConfiguration] = []
     private(set) var removedKeys: [SurfaceKey] = []

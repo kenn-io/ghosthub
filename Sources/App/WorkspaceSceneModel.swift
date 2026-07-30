@@ -45,6 +45,11 @@ final class WorktreeMutationCoordinator {
         let projectIdentity: String
     }
 
+    struct RemovalTombstone: Hashable, Sendable {
+        let path: String
+        let generation: String
+    }
+
     enum Phase: Sendable {
         case began
         case ended
@@ -53,6 +58,7 @@ final class WorktreeMutationCoordinator {
     struct Event: Sendable {
         let phase: Phase
         let scope: Scope
+        let removalTombstones: Set<RemovalTombstone>
     }
 
     static let shared = WorktreeMutationCoordinator()
@@ -78,21 +84,34 @@ final class WorktreeMutationCoordinator {
         )
         let inserted = activeScopes.insert(scope).inserted
         if inserted {
-            eventSubject.send(Event(phase: .began, scope: scope))
+            eventSubject.send(
+                Event(
+                    phase: .began,
+                    scope: scope,
+                    removalTombstones: []
+                )
+            )
         }
         return inserted
     }
 
     func release(
         hostID: UUID,
-        projectIdentity: String
+        projectIdentity: String,
+        removalTombstones: Set<RemovalTombstone> = []
     ) {
         let scope = Scope(
             hostID: hostID,
             projectIdentity: projectIdentity
         )
         if activeScopes.remove(scope) != nil {
-            eventSubject.send(Event(phase: .ended, scope: scope))
+            eventSubject.send(
+                Event(
+                    phase: .ended,
+                    scope: scope,
+                    removalTombstones: removalTombstones
+                )
+            )
         }
     }
 }
@@ -168,6 +187,11 @@ final class WorkspaceSceneModel: ObservableObject {
     private let worktreeMutationCoordinator: WorktreeMutationCoordinator
     private var fencedWorktreeMutationScopes:
         Set<WorktreeMutationCoordinator.Scope> = []
+    private var worktreeRemovalTombstones:
+        [
+            WorktreeMutationCoordinator.Scope:
+                Set<WorktreeMutationCoordinator.RemovalTombstone>
+        ] = [:]
 
     var workspaceResourceSummary: WorkspaceResourceSummary {
         activityController.workspaceResourceSummary
@@ -960,12 +984,15 @@ final class WorkspaceSceneModel: ObservableObject {
             ownsWorktreeMutation = false
             throw KwtWorktreeError.removalInProgress
         }
+        var removalTombstones:
+            Set<WorktreeMutationCoordinator.RemovalTombstone> = []
         invalidateKwtInventoryRefresh()
         defer {
             ownsWorktreeMutation = false
             worktreeMutationCoordinator.release(
                 hostID: mutationHostID,
-                projectIdentity: mutationProjectIdentity
+                projectIdentity: mutationProjectIdentity,
+                removalTombstones: removalTombstones
             )
         }
 
@@ -1016,6 +1043,12 @@ final class WorkspaceSceneModel: ObservableObject {
                 generation,
                 project.rootPath,
                 confirmedHost
+            )
+            removalTombstones.insert(
+                WorktreeMutationCoordinator.RemovalTombstone(
+                    path: worktree.path,
+                    generation: generation
+                )
             )
         } catch {
             recordKwtUnavailability(error, hostID: project.hostID)
@@ -1464,6 +1497,9 @@ final class WorkspaceSceneModel: ObservableObject {
         tmuxDiscoveryFailuresByHost = tmuxDiscoveryFailuresByHost.filter {
             retainedHostIDs.contains($0.key)
         }
+        worktreeRemovalTombstones = worktreeRemovalTombstones.filter {
+            retainedHostIDs.contains($0.key.hostID)
+        }
         inventoryHosts = resolved
         applyInventoryOverlayIfNeeded()
         scheduleKwtInventory()
@@ -1526,9 +1562,15 @@ final class WorkspaceSceneModel: ObservableObject {
                     switch result {
                     case let .success(inventory):
                         let previous = self.kwtInventoriesByHost[hostID]
+                        let tombstonePaths =
+                            self.activeRemovalTombstonePaths(
+                                after: inventory,
+                                hostID: hostID
+                            )
                         self.kwtInventoriesByHost[hostID] =
                             inventory.retainingFailedProjectWorktrees(
-                                from: previous
+                                from: previous,
+                                excludingWorktreePaths: tombstonePaths
                             )
                         self.kwtAvailabilityByHost[hostID] = true
                         // A host inventory is useful even when one project
@@ -1582,10 +1624,97 @@ final class WorkspaceSceneModel: ObservableObject {
             fencedWorktreeMutationScopes.insert(event.scope)
         case .ended:
             fencedWorktreeMutationScopes.remove(event.scope)
+            if !event.removalTombstones.isEmpty {
+                worktreeRemovalTombstones[event.scope, default: []]
+                    .formUnion(event.removalTombstones)
+                applyRemovalTombstones(
+                    event.removalTombstones,
+                    hostID: event.scope.hostID
+                )
+            }
         }
         guard inventoryHosts[event.scope.hostID] != nil else { return }
         invalidateKwtInventoryRefresh()
         scheduleKwtInventory()
+        if event.phase == .ended {
+            scheduleTmuxSessionDiscovery()
+        }
+    }
+
+    private func applyRemovalTombstones(
+        _ tombstones: Set<WorktreeMutationCoordinator.RemovalTombstone>,
+        hostID: UUID
+    ) {
+        let matches: (String, String?) -> Bool = { path, generation in
+            tombstones.contains {
+                $0.path == path && $0.generation == generation
+            }
+        }
+        if var inventory = kwtInventoriesByHost[hostID] {
+            for index in inventory.projects.indices {
+                inventory.projects[index].worktrees.removeAll {
+                    matches($0.path, $0.generation)
+                }
+            }
+            kwtInventoriesByHost[hostID] = inventory
+        }
+        let removedIDs = Set<UUID>(
+            snapshot.worktrees.compactMap { worktree in
+                guard worktree.hostID == hostID,
+                      matches(worktree.path, worktree.generation)
+                else {
+                    return nil
+                }
+                return worktree.id
+            }
+        )
+        snapshot.worktrees.removeAll { removedIDs.contains($0.id) }
+        snapshot.sessions.removeAll {
+            guard let worktreeID = $0.worktreeID else { return false }
+            return removedIDs.contains(worktreeID)
+        }
+        applyInventoryOverlayIfNeeded()
+        selection = Self.selectionAfterWorktreeRemoval(
+            selection,
+            in: snapshot,
+            visibility: worktreeVisibility
+        )
+        updateWorkspaceInventoryState()
+    }
+
+    private func activeRemovalTombstonePaths(
+        after inventory: KwtHostInventory,
+        hostID: UUID
+    ) -> Set<String> {
+        var activePaths: Set<String> = []
+        let scopes = worktreeRemovalTombstones.keys.filter {
+            $0.hostID == hostID
+        }
+        for scope in scopes {
+            guard let tombstones = worktreeRemovalTombstones[scope] else {
+                continue
+            }
+            let project = inventory.projects.first {
+                $0.project.repository == scope.projectIdentity
+            }
+            let active = tombstones.filter { tombstone in
+                guard let project else { return false }
+                if project.warning != nil {
+                    return true
+                }
+                return project.worktrees.contains {
+                    $0.path == tombstone.path
+                        && $0.generation == tombstone.generation
+                }
+            }
+            if active.isEmpty {
+                worktreeRemovalTombstones.removeValue(forKey: scope)
+            } else {
+                worktreeRemovalTombstones[scope] = active
+                activePaths.formUnion(active.map(\.path))
+            }
+        }
+        return activePaths
     }
 
     private func isRemoteKwtUnavailable(
@@ -2211,6 +2340,7 @@ final class WorkspaceSceneModel: ObservableObject {
                         && $0.tmuxSessionName == sessionName
                 }?.name,
                 connectionState: borrowedTmuxConnectionStates[handle.id],
+                sessionClosed: nativeTmuxSessionCoordinator.hasEnded(handle),
                 surface: { [weak self] in
                     self?.nativeTmuxSessionCoordinator.surface(handle: handle)
                 },
@@ -2504,6 +2634,10 @@ final class WorkspaceSceneModel: ObservableObject {
         state: ConnectionState
     ) {
         borrowedTmuxConnectionStates[handle.id] = state
+        if case .disconnected = state,
+           nativeTmuxSessionCoordinator.hasLaunched(handle) {
+            scheduleTmuxSessionDiscovery()
+        }
         guard pendingCreatedTmuxSessions[handle.id] != nil else {
             return
         }

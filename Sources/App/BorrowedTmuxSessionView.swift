@@ -7,6 +7,7 @@ struct BorrowedTmuxSessionView: View {
     var hostName: String
     var displayTitle: String?
     var connectionState: ConnectionState?
+    var sessionClosed: Bool
     var surface: () -> TerminalSurfaceView?
     var onCloseRequest: () -> Void
     var onRetryRequest: () -> Void
@@ -16,6 +17,7 @@ struct BorrowedTmuxSessionView: View {
         hostName: String,
         displayTitle: String? = nil,
         connectionState: ConnectionState?,
+        sessionClosed: Bool = false,
         surface: @escaping () -> TerminalSurfaceView?,
         onCloseRequest: @escaping () -> Void,
         onRetryRequest: @escaping () -> Void
@@ -24,6 +26,7 @@ struct BorrowedTmuxSessionView: View {
         self.hostName = hostName
         self.displayTitle = displayTitle
         self.connectionState = connectionState
+        self.sessionClosed = sessionClosed
         self.surface = surface
         self.onCloseRequest = onCloseRequest
         self.onRetryRequest = onRetryRequest
@@ -37,11 +40,16 @@ struct BorrowedTmuxSessionView: View {
             )
         } else if let disconnectionReason {
             ContentUnavailableView {
-                Label("Unable to attach", systemImage: "network.slash")
+                Label(
+                    disconnectionTitle,
+                    systemImage: sessionClosed
+                        ? "rectangle.portrait.and.arrow.right"
+                        : "network.slash"
+                )
             } description: {
                 Text(disconnectionReason)
             } actions: {
-                Button("Retry", action: onRetryRequest)
+                Button(recoveryActionTitle, action: onRetryRequest)
             }
         } else {
             ProgressView("Opening \(displayTitle ?? handle.name)…")
@@ -54,6 +62,14 @@ struct BorrowedTmuxSessionView: View {
             return nil
         }
         return reason ?? "The tmux session disconnected."
+    }
+
+    var disconnectionTitle: String {
+        sessionClosed ? "Session closed" : "Unable to attach"
+    }
+
+    var recoveryActionTitle: String {
+        sessionClosed ? "Reopen" : "Retry"
     }
 }
 

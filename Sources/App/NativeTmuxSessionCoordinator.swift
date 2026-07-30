@@ -299,6 +299,10 @@ final class NativeTmuxSessionCoordinator {
         launchedHandles.contains(handle.id)
     }
 
+    func hasEnded(_ handle: BorrowedTmuxSessionHandle) -> Bool {
+        endedHandles.contains(handle.id)
+    }
+
     func surface(handle: BorrowedTmuxSessionHandle) -> TerminalSurfaceView? {
         guard !endedHandles.contains(handle.id),
               let attachment = attachments[handle.id]
@@ -384,7 +388,8 @@ final class NativeTmuxSessionCoordinator {
         onStateChanged?(
             handle,
             .disconnected(
-                reason: "The tmux client exited. Retry to attach again."
+                reason: "The tmux client exited. Reopen to start or reattach"
+                    + " to this workspace session."
             )
         )
     }

@@ -119,6 +119,108 @@ private func inventory(
 @Suite("Workspace worktree removal")
 struct WorkspaceWorktreeRemovalTests {
     @MainActor
+    @Test("removal reconciles worktree and session state in other scenes")
+    func removalReconcilesOtherScenes() async throws {
+        let environment = try setupStandardEnvironment()
+        var removable = WorktreeSummary.fixture(
+            hostID: environment.host.id,
+            projectID: environment.project.id,
+            scopedKey: "/tmp/ghosthub-feature",
+            name: "feature/remove",
+            path: "/tmp/ghosthub-feature",
+            branch: "feature/remove",
+            generation: stableWorktreeGeneration
+        )
+        removable.tmuxSessionName = "kwt-ghosthub-feature"
+        var snapshot = environment.snapshot
+        snapshot.worktrees.append(removable)
+        snapshot.hosts[0].tmuxSessions = [
+            TmuxSessionSummary(
+                name: "kwt-ghosthub-feature",
+                managed: true,
+                windows: [],
+                serverPID: "31415",
+                sessionID: "$8",
+                createdAt: "1721552400"
+            ),
+        ]
+        let beforeRemoval = inventory(environment, including: removable)
+        let afterRemoval = inventory(environment)
+        let warningAfterRemoval: KwtHostInventory = {
+            var inventory = beforeRemoval
+            inventory.projects[0].worktrees = []
+            inventory.projects[0].warning = "inventory unavailable"
+            return inventory
+        }()
+        let coordinator = WorktreeMutationCoordinator()
+        let firstLoads = LockedValue(0)
+        let secondLoads = LockedValue(0)
+        let secondDiscoveries = LockedValue(0)
+        let firstModel = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtInventoryLoader: { _ in
+                firstLoads.withLock { $0 += 1 }
+                return firstLoads.load() == 1
+                    ? beforeRemoval
+                    : afterRemoval
+            },
+            kwtWorktreeRemover: { _, _, _, _ in },
+            worktreeMutationCoordinator: coordinator,
+            tmuxSessionKiller: { _, _, _ in }
+        )
+        let secondModel = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtInventoryLoader: { _ in
+                secondLoads.withLock { $0 += 1 }
+                return secondLoads.load() == 1
+                    ? beforeRemoval
+                    : warningAfterRemoval
+            },
+            worktreeMutationCoordinator: coordinator,
+            tmuxSessionDiscovery: { _ in
+                secondDiscoveries.withLock { $0 += 1 }
+                return secondDiscoveries.load() == 1
+                    ? .success([
+                        DiscoveredTmuxSession(
+                            name: "kwt-ghosthub-feature",
+                            windowCount: 1,
+                            serverPID: "31415",
+                            sessionID: "$8",
+                            createdAt: "1721552400",
+                            managed: true
+                        ),
+                    ])
+                    : .success([])
+            }
+        )
+        secondModel.startKwtInventory()
+        secondModel.startTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            secondLoads.load() == 1
+                && secondDiscoveries.load() == 1
+        }
+
+        let request = try await firstModel.prepareWorktreeRemoval(removable.id)
+        try await firstModel.removeWorktree(request)
+
+        await waitUntilMainActor {
+            secondLoads.load() >= 2
+                && secondDiscoveries.load() >= 2
+        }
+        #expect(secondModel.snapshot.worktree(id: removable.id) == nil)
+        #expect(
+            secondModel.snapshot.host(id: environment.host.id)?
+                .tmuxSessions.isEmpty == true
+        )
+        await firstModel.shutdown()
+        await secondModel.shutdown()
+    }
+
+    @MainActor
     @Test(
         "live session removal leaves a same-path worktree on another host"
     )
