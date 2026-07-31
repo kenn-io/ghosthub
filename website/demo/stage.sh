@@ -234,17 +234,14 @@ new_session agentsview--add-session-filters \
   "clear; cat $(printf '%q' "$scratch/session-transcript.txt")"
 
 # Raw local sessions (unbound: not in any kwt inventory).
-new_session scratch "$scratch/repos/msgvault"
-tmux send-keys -t scratch "clear; git log --oneline -4" Enter
-new_session docbank-export "$scratch"
-tmux send-keys -t docbank-export \
-  "clear; echo 'exported 4,812 threads (2.1 GiB) in 96s'; echo done." Enter
-new_session release-watch "$scratch/repos/ghosthub"
-tmux send-keys -t release-watch \
-  "clear; printf 'release v0.2.1\\n\\n  ✓ build\\n  ✓ swift tests\\n  ✓ notarization\\n  ● publish\\n'" Enter
-new_session test-matrix "$scratch/repos/agentsview"
-tmux send-keys -t test-matrix \
-  "clear; printf 'test matrix\\n\\nmacOS 26 arm64     ✓ 523 passed\\nUbuntu 24.04       ✓ 118 passed\\nSSH integration    ✓  42 passed\\n'" Enter
+new_session scratch "$scratch/repos/msgvault" \
+  "clear; git log --oneline -4"
+new_session docbank-export "$scratch" \
+  "clear; echo 'exported 4,812 threads (2.1 GiB) in 96s'; echo done."
+new_session release-watch "$scratch/repos/ghosthub" \
+  "clear; printf 'release v0.4.0\\n\\n  ✓ build\\n  ✓ swift tests\\n  ✓ notarization\\n  ● publish\\n'"
+new_session test-matrix "$scratch/repos/agentsview" \
+  "clear; printf 'test matrix\\n\\nmacOS 26 arm64     ✓ 680 passed\\nUbuntu 24.04       ✓ 149 passed\\nSSH integration    ✓  42 passed\\n'"
 
 echo "==> staging patched app copy"
 # Build the release app first (make release-app in the app repo) or point

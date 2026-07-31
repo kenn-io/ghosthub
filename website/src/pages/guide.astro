@@ -23,14 +23,14 @@ const imageAlt = {
     'Ghosthub workspace showing local sessions, projects, worktrees, and a remote host in the sidebar',
   hosts: 'Ghosthub Hosts settings with a configured remote GPU host',
   worktree:
-    'Ghosthub new worktree sheet ready to create a feature branch or import a pull request',
+    'Ghosthub new worktree sheet listing available local and remote branches',
   commandPalette: 'Ghosthub Command Palette filtered to a reconnect worktree',
   commandCenter:
     'Six real Ghosthub windows arranged in a tight three-by-two matrix, each attached to a different tmux session with its sidebar collapsed',
   nativeTabs:
     'Six native Ghosthub workspace tabs, each attached to a different tmux session',
   terminal:
-    'Ghosthub Terminal settings showing interaction and configuration options',
+    'Ghosthub Appearance settings showing the theme for new tmux sessions',
 };
 ---
 
@@ -88,8 +88,10 @@ const imageAlt = {
           </p>
           <p>
             Closing the Ghosthub window only detaches—your work keeps running
-            in tmux. To end a session Ghosthub knows is running, hover its row,
-            open the action menu, and choose <strong>Kill Session…</strong>.
+            in tmux. To end a standalone session Ghosthub knows is running,
+            hover its row and click the subtle <strong>×</strong>. A
+            worktree-backed session keeps <strong>Kill Session…</strong> in
+            its action menu, beside the separate worktree-removal control.
             Ghosthub confirms the host and exact tmux instance before
             terminating its windows, panes, and processes. It cancels the
             action if that host’s connection changes or if the session
@@ -211,14 +213,21 @@ const imageAlt = {
           <p>
             Select a project and press <kbd>⌘⇧N</kbd>. Use
             <strong>Branch</strong> to search local and remote branches that
-            are not already checked out. Pick one to create its worktree and
-            tracking branch, or type a new branch name. Use
+            are not already checked out. Pick one to create its worktree,
+            including a local tracking branch when the source is remote, or
+            type a new branch name. Use
             <strong>Pull Request</strong> to find and import an open GitHub
             pull request. You do not need to install or run kwt separately.
             Selecting a listed worktree creates or repairs its canonical tmux
             session when needed, then attaches an ordinary tmux client.
             Kwt remains optional if you only want a local and remote tmux
             session switcher.
+          </p>
+          <p>
+            To remove a non-primary worktree, hover its sidebar row and click
+            the <strong>×</strong>. After confirmation, Ghosthub terminates
+            that worktree’s live tmux session if necessary and asks kwt to
+            remove the checkout. The Git branch is kept.
           </p>
         </div>
       </div>
@@ -330,9 +339,10 @@ const imageAlt = {
             The Tmux Theme picker supplies colors for new sessions created by
             Ghosthub. Existing sessions keep their own appearance by default;
             Ghosthub does not place a local palette over them. An explicit
-            opt-in applies the selected colors to the session’s existing
-            windows and chrome for every attached terminal. Ghosthub reloads
-            terminal configuration when it changes.
+            <strong>Apply theme to shared tmux sessions</strong> opt-in applies
+            the selected colors to the session’s existing windows and chrome
+            for every attached terminal. Ghosthub reloads terminal
+            configuration when it changes.
           </p>
         </div>
       </div>
