@@ -12,9 +12,21 @@ enum TailscaleDiscovery {
     static func discoverPeers() async -> Result<
         [TailscalePeer], TailscaleError
     > {
+        await discoverPeers(
+            tailscalePaths: tailscalePaths,
+            environment: ProcessInfo.processInfo.environment
+        )
+    }
+
+    static func discoverPeers(
+        tailscalePaths: [String],
+        environment: [String: String]
+    ) async -> Result<[TailscalePeer], TailscaleError> {
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
-                guard let binary = findTailscaleBinary()
+                guard let binary = findTailscaleBinary(
+                    in: tailscalePaths
+                )
                 else {
                     continuation.resume(
                         returning: .failure(.notInstalled)
@@ -27,6 +39,9 @@ enum TailscaleDiscovery {
                     fileURLWithPath: binary
                 )
                 process.arguments = ["status", "--json"]
+                var processEnvironment = environment
+                processEnvironment["TAILSCALE_BE_CLI"] = "1"
+                process.environment = processEnvironment
 
                 let pipe = Pipe()
                 process.standardOutput = pipe
@@ -70,8 +85,10 @@ enum TailscaleDiscovery {
         }
     }
 
-    private static func findTailscaleBinary() -> String? {
-        for path in tailscalePaths {
+    private static func findTailscaleBinary(
+        in paths: [String]
+    ) -> String? {
+        for path in paths {
             if FileManager.default.isExecutableFile(
                 atPath: path
             ) {
