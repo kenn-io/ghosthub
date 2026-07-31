@@ -9,10 +9,11 @@ import AppKit
 
 enum QuitPolicy {
     static func needsConfirmation(
+        confirmBeforeQuitting: Bool,
         runtimeNeedsConfirmQuit: Bool,
         openTerminalSurfaceCount: Int
     ) -> Bool {
-        true
+        confirmBeforeQuitting
     }
 }
 
@@ -61,6 +62,8 @@ struct GhosthubApp: App {
                 }
                 appDelegate.needsConfirmQuit = {
                     QuitPolicy.needsConfirmation(
+                        confirmBeforeQuitting:
+                        settingsStore.confirmBeforeQuitting,
                         runtimeNeedsConfirmQuit:
                         terminalRuntime
                             .needsConfirmQuit,
