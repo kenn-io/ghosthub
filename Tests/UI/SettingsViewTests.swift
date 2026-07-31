@@ -73,6 +73,19 @@ final class SettingsViewTests: XCTestCase {
         return hostingView.fittingSize
     }
 
+    private func waitForAttachedSheet(
+        on window: NSWindow,
+        timeout: TimeInterval = 1
+    ) -> NSWindow? {
+        let deadline = Date().addingTimeInterval(timeout)
+        while window.attachedSheet == nil, Date() < deadline {
+            RunLoop.main.run(
+                until: Date().addingTimeInterval(0.01)
+            )
+        }
+        return window.attachedSheet
+    }
+
     func testHostsDomainWithSSHHostKeepsStableMinimumSize() {
         let store = makeSettingsStore()
         store.selectedDomain = .hosts
@@ -114,4 +127,78 @@ final class SettingsViewTests: XCTestCase {
         }
     }
 
+    func testSettingsViewOpeningSizeAdaptsToLayoutProposal() {
+        let store = makeSettingsStore()
+        let proposals = [
+            CGSize(width: 1400, height: 900),
+            CGSize(width: 1600, height: 1000),
+        ]
+        let controller = NSHostingController(
+            rootView: SettingsView(store: store)
+        )
+
+        XCTAssertNotEqual(
+            controller.sizeThatFits(in: proposals[0]),
+            controller.sizeThatFits(in: proposals[1])
+        )
+    }
+
+    func testPresentedSettingsKeepsSizeWhenDomainChanges() throws {
+        let store = makeSettingsStore()
+        store.selectedDomain = .appearance
+        let hostingView = NSHostingView(
+            rootView: SettingsSheetHost(store: store)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1600, height: 1000),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = hostingView
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        window.displayIfNeeded()
+        addTeardownBlock {
+            window.close()
+        }
+
+        let sheet = try XCTUnwrap(waitForAttachedSheet(on: window))
+        let initialSize = sheet.frame.size
+        let sheetContent = try XCTUnwrap(sheet.contentView)
+        let settingsList = try XCTUnwrap(
+            viewDescendants(of: sheetContent)
+                .compactMap { $0 as? NSTableView }
+                .first { $0.selectedRow >= 0 }
+        )
+        let appearanceIndex = try XCTUnwrap(
+            SettingsDomain.allCases.firstIndex(of: .appearance)
+        )
+        let terminalIndex = try XCTUnwrap(
+            SettingsDomain.allCases.firstIndex(of: .terminal)
+        )
+        let terminalRow = settingsList.selectedRow
+            + terminalIndex - appearanceIndex
+
+        settingsList.selectRowIndexes(
+            IndexSet(integer: terminalRow),
+            byExtendingSelection: false
+        )
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+
+        XCTAssertEqual(settingsList.selectedRow, terminalRow)
+        XCTAssertEqual(sheet.frame.size, initialSize)
+    }
+
+}
+
+private struct SettingsSheetHost: View {
+    @ObservedObject var store: SettingsStore
+
+    var body: some View {
+        Color.clear
+            .sheet(isPresented: .constant(true)) {
+                SettingsView(store: store)
+            }
+    }
 }

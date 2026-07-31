@@ -111,6 +111,7 @@ public struct SettingsView: View {
 
     public var body: some View {
         settingsContent
+            .presentationSizing(.form)
             .onDisappear {
                 persist()
             }
