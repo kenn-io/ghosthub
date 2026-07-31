@@ -1774,6 +1774,41 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         )
     }
 
+    func testLiveWindowResizeAppliesOnlyTheFinalSurfaceSize() throws {
+        let appHandle = try requireAppHandle()
+        let previousSetter = TerminalSurfaceView.sizeSetter
+        var appliedSizes: [(width: UInt32, height: UInt32)] = []
+        TerminalSurfaceView.sizeSetter = { surface, width, height in
+            appliedSizes.append((width, height))
+            ghostty_surface_set_size(surface, width, height)
+        }
+        defer {
+            TerminalSurfaceView.sizeSetter = previousSetter
+        }
+
+        let view = TerminalSurfaceView(
+            app: appHandle,
+            configuration: TerminalSurfaceConfiguration()
+        )
+        let window = hostInWindow(view)
+        defer { window.orderOut(nil) }
+        appliedSizes.removeAll()
+
+        view.viewWillStartLiveResize()
+        view.setFrameSize(NSSize(width: 700, height: 450))
+        view.setFrameSize(NSSize(width: 760, height: 480))
+        view.viewDidEndLiveResize()
+
+        let expectedSize = view.convertToBacking(view.bounds.size)
+        XCTAssertEqual(
+            appliedSizes.count,
+            1,
+            "A live window drag must notify the PTY only after the final size is known."
+        )
+        XCTAssertEqual(appliedSizes.last?.width, UInt32(expectedSize.width))
+        XCTAssertEqual(appliedSizes.last?.height, UInt32(expectedSize.height))
+    }
+
     func testDetachingViewMarksSurfaceOccluded() throws {
         let appHandle = try requireAppHandle()
         let previousSetter = TerminalSurfaceView.occlusionSetter

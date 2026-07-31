@@ -266,8 +266,6 @@ struct SurfaceResizeState: Equatable {
         let height: UInt32
     }
 
-    private(set) var lastAppliedAt: TimeInterval?
-    private(set) var lastEventAt: TimeInterval?
     private(set) var lastPixelSize: Size?
     private(set) var pendingPixelSize: Size?
 
@@ -276,10 +274,6 @@ struct SurfaceResizeState: Equatable {
     ) -> Bool {
         let size = Size(width: width, height: height)
         return pendingPixelSize != size || lastPixelSize != size
-    }
-
-    mutating func recordEvent(at timestamp: TimeInterval) {
-        lastEventAt = timestamp
     }
 
     mutating func setPending(width: UInt32, height: UInt32) {
@@ -292,12 +286,10 @@ struct SurfaceResizeState: Equatable {
     }
 
     mutating func apply(
-        width: UInt32, height: UInt32, at timestamp: TimeInterval
+        width: UInt32, height: UInt32
     ) {
         pendingPixelSize = nil
         lastPixelSize = Size(width: width, height: height)
-        lastAppliedAt = timestamp
-        lastEventAt = timestamp
     }
 }
 
