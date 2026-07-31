@@ -883,7 +883,7 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
 
     override public func becomeFirstResponder() -> Bool {
         let result = super.becomeFirstResponder()
-        if result {
+        if result, window?.isKeyWindow == true {
             focusDidChange(true)
         }
         return result

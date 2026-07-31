@@ -1633,7 +1633,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         XCTAssertTrue(descendantViews(in: window.contentView).contains(surfaceB))
     }
 
-    func testRequestingFocusInNonKeyWindowDoesNotFocusTerminal() throws {
+    func testNonKeyWindowCannotMarkTerminalFocused() throws {
         let appHandle = try requireAppHandle()
         let view = TerminalSurfaceView(
             app: appHandle,
@@ -1653,11 +1653,12 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         window.contentView = view
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))
         view.requestKeyboardFocus()
+        XCTAssertTrue(window.makeFirstResponder(view))
 
         XCTAssertFalse(window.isKeyWindow)
         XCTAssertFalse(
             view.focused,
-            "A terminal in a background window must reject keyboard focus requests."
+            "A terminal in a background window must reject every positive focus transition."
         )
     }
 
