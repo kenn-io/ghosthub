@@ -10,12 +10,15 @@ demo_new_session() {
     return 1
   fi
 
+  local -a pane_command=(/bin/zsh -l)
+  if (( $# == 1 )); then
+    local startup
+    startup="$1"$'\n''exec /bin/zsh -l'
+    pane_command=(/bin/zsh -lc "$startup")
+  fi
   tmux new-session -d -x 210 -y 55 -s "$name" -c "$dir" \
     -e HOME="$scratch/home" \
     -e ZDOTDIR="$scratch/home" \
     -e SHELL=/bin/zsh \
-    "/bin/zsh -l"
-  if (( $# == 1 )); then
-    tmux send-keys -t "$name" "$1" Enter
-  fi
+    "${pane_command[@]}"
 }

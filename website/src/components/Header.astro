@@ -161,19 +161,23 @@ import AppIcon from './AppIcon.astro';
   .repo {
     display: inline-flex;
     align-items: center;
-    gap: 0.55rem;
+    gap: 0.5rem;
     font-family: var(--font-mono);
-    font-size: 0.8rem;
     color: var(--text-dim);
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    padding: 0.3rem 0.7rem;
-    transition: color 0.15s, border-color 0.15s;
+    border-radius: 6px;
+    padding: 0.2rem 0.25rem;
+    transition: color 0.15s, background-color 0.15s;
   }
 
   .repo:hover {
     color: var(--text);
-    border-color: var(--text-faint);
+    background: var(--surface);
+  }
+
+  .repo > svg {
+    width: 20px;
+    height: 20px;
+    flex: 0 0 auto;
   }
 
   .repo-meta {
@@ -183,10 +187,14 @@ import AppIcon from './AppIcon.astro';
     line-height: 1.2;
   }
 
+  .repo-name {
+    font-size: 0.72rem;
+  }
+
   .facts {
     display: flex;
-    gap: 0.6rem;
-    font-size: 0.68rem;
+    gap: 0.5rem;
+    font-size: 0.64rem;
     color: var(--text-faint);
   }
 

@@ -248,13 +248,11 @@ sleep 2
 capture_state guide-hosts.png
 dismiss_sheet
 
-echo "==> guide: new worktree"
+echo "==> guide: existing branch picker"
 palette "fix-reconnect-backoff"
 sleep 2
 palette "New Worktree in ghosthub" true sheet
-sleep 1
-demo_input text "improve-session-search"
-sleep 1
+sleep 2
 capture_state guide-worktree.png
 dismiss_sheet
 
@@ -263,8 +261,8 @@ palette "reconnect" false
 capture_state guide-quick-launch.png
 dismiss_sheet
 
-echo "==> guide: terminal settings"
-palette "Open Terminal Settings" true sheet
+echo "==> guide: appearance settings"
+palette "Open Appearance Settings" true sheet
 sleep 2
 capture_state guide-terminal.png
 dismiss_sheet

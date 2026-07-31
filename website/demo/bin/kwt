@@ -70,9 +70,72 @@ list_json() {
   echo "]"
 }
 
+branches_json() {
+  local project
+  project="$(basename "$PWD")"
+  case "$project" in
+    ghosthub)
+      cat <<'EOF'
+[
+  {"name": "feature/session-search",
+   "source": "feature/session-search", "is_remote": false},
+  {"name": "feature/sidebar-groups",
+   "source": "origin/feature/sidebar-groups", "is_remote": true},
+  {"name": "release/0.4.0",
+   "source": "origin/release/0.4.0", "is_remote": true}
+]
+EOF
+      ;;
+    agentsview)
+      cat <<'EOF'
+[
+  {"name": "feature/live-filters",
+   "source": "feature/live-filters", "is_remote": false},
+  {"name": "feature/session-groups",
+   "source": "origin/feature/session-groups", "is_remote": true}
+]
+EOF
+      ;;
+    msgvault)
+      cat <<'EOF'
+[
+  {"name": "feature/export-progress",
+   "source": "origin/feature/export-progress", "is_remote": true}
+]
+EOF
+      ;;
+    *)
+      echo "[]"
+      ;;
+  esac
+}
+
+open_worktree() {
+  local path="${2:-}" relative project branch session
+  case "$path" in
+    "$scratch/worktrees/"*)
+      relative="${path#"$scratch/worktrees/"}"
+      project="${relative%%/*}"
+      branch="${relative#*/}"
+      ;;
+    "$scratch/repos/"*)
+      project="$(basename "$path")"
+      branch="main"
+      ;;
+    *)
+      echo "faux kwt: unknown demo worktree: $path" >&2
+      exit 64
+      ;;
+  esac
+  session="$project--${branch//\//-}"
+  exec tmux new-session -A -s "$session" -c "$path"
+}
+
 case "${1:-}" in
   projects) projects_json ;;
   list) list_json ;;
+  branches) branches_json ;;
+  open) open_worktree "$@" ;;
   *)
     echo "faux kwt: unsupported command: ${1:-<none>}" >&2
     exit 64
