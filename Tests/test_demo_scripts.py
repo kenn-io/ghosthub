@@ -281,8 +281,8 @@ def test_demo_session_ignores_launcher_shell_configuration(
     tmux = bin_dir / "tmux"
     tmux.write_text(
         "#!/usr/bin/env bash\n"
-        "printf 'CALL\\n' >> \"$CAPTURE\"\n"
-        "printf '%s\\n' \"$@\" >> \"$CAPTURE\"\n"
+        "printf 'CALL\\0' >> \"$CAPTURE\"\n"
+        "printf '%s\\0' \"$@\" >> \"$CAPTURE\"\n"
     )
     tmux.chmod(0o755)
     scratch = tmp_path / "scratch"
@@ -303,13 +303,18 @@ def test_demo_session_ignores_launcher_shell_configuration(
     )
 
     assert result.returncode == 0, result.stderr
-    calls = [call.splitlines() for call in capture.read_text().split("CALL\n")[1:]]
-    new_session, send_keys = calls
+    captured = capture.read_bytes().split(b"\0")
+    assert captured[0] == b"CALL"
+    assert captured[-1] == b""
+    new_session = [argument.decode() for argument in captured[1:-1]]
     assert f"HOME={scratch}/home" in new_session
     assert f"ZDOTDIR={scratch}/home" in new_session
     assert "SHELL=/bin/zsh" in new_session
-    assert new_session[-1] == "/bin/zsh -l"
-    assert send_keys == ["send-keys", "-t", "demo", "printf demo-ready", "Enter"]
+    assert new_session[-3:] == [
+        "/bin/zsh",
+        "-lc",
+        "printf demo-ready\nexec /bin/zsh -l",
+    ]
     if launcher_zdotdir:
         assert launcher_zdotdir not in new_session
     if launcher_shell != "/bin/zsh":
