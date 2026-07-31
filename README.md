@@ -54,13 +54,21 @@ There is no proprietary session format, background daemon, or migration.
   and worktrees—even when their tmux sessions were created outside Ghosthub.
 - **Resilient SSH.** Keepalives and automatic reconnect preserve remote
   presentations through ordinary network interruptions.
-- **Built-in worktree and pull-request workflows.** Add projects, create Git
-  worktrees, and import GitHub pull requests through the bundled
-  [kwt](https://kwt.sh) helper—no system kwt installation required.
-- **Native tmux lifecycle.** Closing a presentation detaches. Ending a session
-  requires the explicit, confirmed **Kill Session** action.
+- **Complete worktree workflows.** Register an existing checkout, continue a
+  local or remote branch, create a branch, import a GitHub pull request, and
+  remove a linked worktree through the bundled [kwt](https://kwt.sh)
+  helper—no system kwt installation required.
+- **Deliberate tmux lifecycle.** Closing a presentation detaches. Confirmed
+  controls end standalone or worktree-backed sessions, and a bare session that
+  exits can be reopened under its exact previous name.
+- **Experimental native Windows hosts.** Connect to OpenSSH hosts running
+  PowerShell and [psmux](https://github.com/marlocarlo/psmux), with managed
+  AMD64 and ARM64 kwt helpers for already registered project inventory.
 - **Native workspaces.** Open independent windows or macOS tabs, and search
   sessions and common actions from the Command Palette.
+- **Predictable tmux theming.** New sessions created by Ghosthub use the
+  selected Tmux Theme. Existing sessions keep their appearance unless you
+  explicitly opt into shared-session styling.
 - **Fast terminal rendering.** Ghosthub embeds libghostty with an isolated,
   Ghostty-compatible configuration—no Electron and no Ghostty.app dependency.
 
@@ -70,7 +78,11 @@ Ghosthub requires:
 
 - an Apple Silicon Mac
 - macOS 26 (Tahoe) or newer
-- tmux 3.2 or newer on each machine whose sessions you want to use
+- tmux 3.2 or newer locally and on remote macOS or Linux hosts
+
+Experimental native Windows hosts require Windows 11 build 22523 or newer,
+OpenSSH, Windows PowerShell 5.1 or newer, and psmux with its `tmux.exe`
+compatibility alias available.
 
 1. Download the latest notarized
    [Ghosthub DMG](https://github.com/kenn-io/ghosthub/releases).
@@ -81,8 +93,9 @@ Ghosthub requires:
    brew install tmux
    ```
 
-Remote hosts need tmux and non-interactive SSH authentication backed by a key
-or SSH agent. Password-only hosts cannot populate the sidebar.
+Remote macOS and Linux hosts need tmux. Every remote host needs
+non-interactive SSH authentication backed by a key or SSH agent; password-only
+hosts cannot populate the sidebar.
 
 ## Quick start
 
@@ -90,7 +103,10 @@ or SSH agent. Password-only hosts cannot populate the sidebar.
 
 Expand your Mac in the sidebar and select an existing tmux session. Use the
 host's **+** menu to create a named session. Closing its Ghosthub window or tab
-only detaches; use the session action menu when you explicitly want to kill it.
+only detaches. To end a standalone session, hover its sidebar row and click the
+**×**; worktree-backed sessions keep **Kill Session…** in their action menu.
+Both paths confirm the exact host and session before terminating it. If a bare
+session exits on its own, **Reopen** creates the same named session again.
 
 ### Add an SSH host
 
@@ -103,6 +119,12 @@ Tmux-only hosts need no other setup. For project and worktree context, choose
 **Install kwt Worktree Helper** in Host Settings. Ghosthub copies the pinned
 helper for that host's operating system and CPU; it does not install or replace
 a system kwt.
+
+Native Windows support is experimental. Select **Windows (psmux)** for a
+Windows OpenSSH host with PowerShell and psmux installed. Ghosthub can upload
+its matching AMD64 or ARM64 kwt helper after explicit confirmation, but the
+Windows helper is currently unsigned and project registration is not yet
+available on Windows.
 
 ### Add projects and worktrees
 
@@ -117,9 +139,15 @@ your Mac for a local project or the SSH machine for a remote one. Install it
 there and run `gh auth login` on that same host before importing.
 
 Select a project and press <kbd>⌘</kbd><kbd>⇧</kbd><kbd>N</kbd> to create a Git
-worktree or import a GitHub pull request. Selecting a listed worktree creates
-or repairs its canonical tmux session when needed, then attaches an ordinary
-tmux client.
+worktree or import a GitHub pull request. The branch picker searches available
+local and remote branches, distinguishes same-named sources, and creates a
+local tracking branch when needed; unmatched input creates a new branch.
+Selecting the primary checkout or a linked worktree creates or repairs its
+canonical tmux session when needed, then attaches an ordinary tmux client.
+
+To remove a non-primary worktree, hover its sidebar row and click the **×**.
+After confirmation, Ghosthub terminates that worktree's verified live tmux
+session if needed and asks kwt to remove the checkout. The Git branch is kept.
 
 ## Navigation
 
@@ -148,11 +176,12 @@ The file uses
 [Ghostty's configuration format](https://ghostty.org/docs/config/reference),
 but remains independent of Ghostty.app configuration and state. Ghosthub
 reloads the active configuration when the base file, an included file, or a
-project override changes. The **Tmux Theme** setting controls how sessions
-appear in Ghosthub. Shared tmux colors remain untouched by default; an explicit
-opt-in applies the selected built-in theme to the session's existing windows
-and chrome for every attached terminal. Use **Ghosthub → Reload Configuration**
-for an explicit reload and diagnostic result.
+project override changes. The **Tmux Theme** setting supplies colors for new
+sessions created by Ghosthub. Existing sessions keep their own appearance by
+default; **Apply theme to shared tmux sessions** explicitly applies the
+selected colors to the session's existing windows and chrome for every
+attached terminal. Use **Ghosthub → Reload Configuration** for an explicit
+reload and diagnostic result.
 
 ## How the pieces fit
 
