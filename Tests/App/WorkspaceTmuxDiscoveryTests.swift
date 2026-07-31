@@ -2180,10 +2180,10 @@ struct WorkspaceTmuxDiscoveryTests {
             model.snapshot.hosts.first { $0.configKey == remote.configKey }?.id
         )
         #expect(!message.contains("Offline Host"))
-        #expect(!message.contains("255"))
+        #expect(!message.contains("status 255"))
         #expect(
             model.workspaceInventoryWarningsByHost[remoteHostID]?
-                .contains("255") == true
+                .contains("status 255") == true
         )
         await model.shutdown()
     }
