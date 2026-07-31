@@ -198,11 +198,12 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
             handleSizeChange(bounds.size)
         }
         syncInitialOcclusionState(for: window)
-        guard !suppressAutoFocus else { return }
+        guard !suppressAutoFocus, window.isKeyWindow else { return }
         DispatchQueue.main.async { [weak self] in
             guard let self, !self.suppressAutoFocus,
                   let currentWindow = self.window,
-                  currentWindow === window else { return }
+                  currentWindow === window,
+                  currentWindow.isKeyWindow else { return }
             if isCompetingFirstResponder(window.firstResponder) {
                 return
             }
