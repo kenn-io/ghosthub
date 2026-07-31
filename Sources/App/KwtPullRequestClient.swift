@@ -20,7 +20,7 @@ enum KwtPullRequestError: Error, Equatable, LocalizedError {
         case .projectUnavailable:
             return "The selected kwt project or host is no longer available."
         case .importInProgress:
-            return "Another pull request is already being imported."
+            return "Another worktree change is already in progress."
         case let .importedWorkspaceMissing(path):
             return "kwt imported the pull request, but \(path) was not present in workspace inventory."
         case let .commandFailed(

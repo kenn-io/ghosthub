@@ -30,6 +30,97 @@ struct NewWorktreeSheetTests {
         #expect(PullRequestSelector.normalized(input) == expected)
     }
 
+    @Test("branch search selects only an exact existing candidate")
+    func exactExistingBranchSelection() {
+        let branches = [
+            WorktreeBranchCandidate(
+                name: "feature/local",
+                source: "feature/local",
+                isRemote: false
+            ),
+            WorktreeBranchCandidate(
+                name: "feature/remote",
+                source: "origin/feature/remote",
+                isRemote: true
+            ),
+        ]
+
+        let matches = BranchQuery.matches(
+            in: branches,
+            query: "remote"
+        )
+
+        #expect(matches.map(\.name) == ["feature/remote"])
+        #expect(
+            BranchQuery.impliedSelectionSource(
+                in: matches,
+                query: "feature/remote"
+            ) == "origin/feature/remote"
+        )
+        #expect(
+            BranchQuery.impliedSelectionSource(
+                in: matches,
+                query: "feature/new"
+            ) == nil
+        )
+    }
+
+    @Test("duplicate remote branch names require an explicit source")
+    func duplicateRemoteBranchSelection() {
+        let branches = [
+            WorktreeBranchCandidate(
+                name: "topic",
+                source: "origin/topic",
+                isRemote: true
+            ),
+            WorktreeBranchCandidate(
+                name: "topic",
+                source: "upstream/topic",
+                isRemote: true
+            ),
+        ]
+
+        #expect(
+            BranchQuery.selectionSource(
+                in: branches,
+                query: "topic",
+                preserving: nil
+            ) == nil
+        )
+        #expect(
+            BranchQuery.selectionSource(
+                in: branches,
+                query: "topic",
+                preserving: "upstream/topic"
+            ) == "upstream/topic"
+        )
+        #expect(
+            BranchQuery.selectionSource(
+                in: branches,
+                query: "different",
+                preserving: "upstream/topic"
+            ) == nil
+        )
+        #expect(!BranchQuery.canCreateBranch(
+            in: branches,
+            query: "topic"
+        ))
+        #expect(BranchQuery.canCreateBranch(
+            in: branches,
+            query: "new-topic",
+            listIsAvailable: true
+        ))
+    }
+
+    @Test("branch creation waits for successful branch discovery")
+    func failedBranchDiscoveryDisablesCreation() {
+        #expect(!BranchQuery.canCreateBranch(
+            in: [],
+            query: "feature/existing",
+            listIsAvailable: false
+        ))
+    }
+
     private static func candidate(
         _ number: Int,
         title: String = "Some change",

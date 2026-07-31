@@ -50,8 +50,8 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(!command.contains("status-style"))
     }
 
-    @Test("surface launch reads the current terminal presentation style")
-    func surfaceLaunchReadsCurrentPresentationStyle() async throws {
+    @Test("new session launch reads the current terminal presentation style")
+    func newSessionLaunchReadsCurrentPresentationStyle() async throws {
         let store = TmuxSurfaceStoreStub()
         var style = TmuxPresentationStyle(
             foreground: "#3B4851",
@@ -67,7 +67,8 @@ struct NativeTmuxSessionCoordinatorTests {
         let handle = coordinator.attach(
             hostID: UUID(),
             name: "docbank",
-            host: .local
+            host: .local,
+            launchMode: .create
         )
         style = TmuxPresentationStyle(
             foreground: "#EEEEEE",
@@ -85,6 +86,69 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(!command.contains("fg=#3B4851,bg=#FFFFFF"))
     }
 
+    @Test("existing sessions keep their current presentation by default")
+    func existingSessionKeepsCurrentPresentation() async throws {
+        let store = TmuxSurfaceStoreStub()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { .success("/opt/homebrew/bin/tmux") },
+            presentationStyleProvider: {
+                TmuxPresentationStyle(
+                    foreground: "#3B4851",
+                    background: "#FFFFFF"
+                )
+            }
+        )
+        var isReady = false
+        coordinator.onSurfaceReady = { _ in isReady = true }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "existing",
+            host: .local
+        )
+
+        await waitUntilMainActor { isReady }
+        _ = coordinator.surface(handle: handle)
+
+        let command = try #require(
+            store.requestedConfigurations.last?.command
+        )
+        #expect(!command.contains("window-style"))
+        #expect(!command.contains("status-style"))
+    }
+
+    @Test("existing sessions accept the shared presentation opt-in")
+    func existingSessionAcceptsPresentationOptIn() async throws {
+        let store = TmuxSurfaceStoreStub()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { .success("/opt/homebrew/bin/tmux") },
+            presentationStyleProvider: {
+                TmuxPresentationStyle(
+                    foreground: "#3B4851",
+                    background: "#FFFFFF"
+                )
+            },
+            appliesPresentationStyleToExistingSessionsProvider: { true }
+        )
+        var isReady = false
+        coordinator.onSurfaceReady = { _ in isReady = true }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "existing",
+            host: .local
+        )
+
+        await waitUntilMainActor { isReady }
+        _ = coordinator.surface(handle: handle)
+
+        let command = try #require(
+            store.requestedConfigurations.last?.command
+        )
+        #expect(command.contains("fg=#3B4851,bg=#FFFFFF"))
+        #expect(command.contains("status-style"))
+    }
+
     @Test("isolated session socket participates in command routing")
     func isolatedSessionUsesReturnedSocket() async throws {
         let store = TmuxSurfaceStoreStub()
@@ -99,7 +163,8 @@ struct NativeTmuxSessionCoordinatorTests {
                     foreground: "#3B4851",
                     background: "#FFFFFF"
                 )
-            }
+            },
+            appliesPresentationStyleToExistingSessionsProvider: { true }
         )
         var isReady = false
         coordinator.onSurfaceReady = { _ in isReady = true }
@@ -254,6 +319,35 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(!coordinator.hasLaunched(handle))
         #expect(store.removedKeys.count == 1)
     }
+
+    @Test("an exited tmux client records a closed attachment")
+    func exitedClientClosesAttachment() async throws {
+        let store = TmuxSurfaceStoreStub()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { .success("/usr/bin/tmux") }
+        )
+        var states: [ConnectionState] = []
+        var isSurfaceReady = false
+        coordinator.onStateChanged = { _, state in states.append(state) }
+        coordinator.onSurfaceReady = { _ in isSurfaceReady = true }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "release-work",
+            host: .local
+        )
+        await waitUntilMainActor { isSurfaceReady }
+        _ = coordinator.surface(handle: handle)
+        await waitUntilMainActor { states.contains(.connected) }
+
+        let close = try #require(store.surface.closeObservers[handle.id])
+        close(true)
+
+        #expect(coordinator.hasClosedAttachment(handle))
+        #expect(states.last == .disconnected(
+            reason: "The tmux attachment to “release-work” closed."
+        ))
+    }
 }
 
 private enum SurfaceLaunchTestError: LocalizedError {
@@ -282,7 +376,7 @@ private final class TmuxPaneSurfaceStub: TmuxPaneSurfacing {
 
 @MainActor
 private final class TmuxSurfaceStoreStub: TmuxSurfaceStoring {
-    private let surface: TmuxPaneSurfaceStub
+    let surface: TmuxPaneSurfaceStub
     private(set) var requestedKeys: [SurfaceKey] = []
     private(set) var requestedConfigurations: [TerminalSurfaceConfiguration] = []
     private(set) var removedKeys: [SurfaceKey] = []

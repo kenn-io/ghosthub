@@ -667,11 +667,20 @@ struct WorkspaceWindow: View {
                 createWorktree: { [sceneModel] request in
                     try await sceneModel.createWorktree(request)
                 },
+                listBranches: { [sceneModel] projectID in
+                    try await sceneModel.branches(for: projectID)
+                },
                 listPullRequests: { [sceneModel] projectID in
                     try await sceneModel.pullRequests(for: projectID)
                 },
                 importPullRequest: { [sceneModel] request in
                     try await sceneModel.importPullRequest(request)
+                },
+                prepareWorktreeRemoval: { [sceneModel] worktreeID in
+                    try await sceneModel.prepareWorktreeRemoval(worktreeID)
+                },
+                removeWorktree: { [sceneModel] request in
+                    try await sceneModel.removeWorktree(request)
                 }
             ),
             settingsStore: settingsStore,

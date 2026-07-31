@@ -85,6 +85,16 @@ struct GhosthubApp: App {
         .windowStyle(.hiddenTitleBar)
         .commands {
             #if canImport(AppKit)
+            CommandGroup(replacing: .appInfo) {
+                Button("About Ghosthub") {
+                    let options = ApplicationVersion.aboutPanelVersion().map {
+                        [NSApplication.AboutPanelOptionKey.version: $0]
+                    } ?? [:]
+                    NSApplication.shared.orderFrontStandardAboutPanel(
+                        options: options
+                    )
+                }
+            }
             CommandGroup(replacing: .appTermination) {
                 Button("Quit Ghosthub") {
                     appDelegate.requestApplicationTermination()

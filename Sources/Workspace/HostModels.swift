@@ -477,6 +477,24 @@ public struct HostSummary: Identifiable, Equatable, Sendable {
             .worktreeCreate ?? true
     }
 
+    public var canDeleteWorktree: Bool {
+        if kind == .remote, connectionState == .offline {
+            return false
+        }
+        if remoteDiagnostics.contains(
+            where: {
+                $0.blocksWorktreeCreate
+                    || $0.blocksDurableSessions
+            }
+        ) {
+            return false
+        }
+        guard let commands = remoteCapabilities?.commands else {
+            return true
+        }
+        return commands.worktreeDelete && commands.sessionKill
+    }
+
     public var canImportPullRequest: Bool {
         if let avail = operationAvailability?[
             "pullRequestImport"

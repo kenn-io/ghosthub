@@ -11,6 +11,8 @@ struct TmuxSessionIdentity: Equatable, Sendable {
 enum TmuxSessionKillError: Error, Equatable, LocalizedError {
     case commandFailed(host: String, session: String, status: Int32)
     case hostChanged(session: String)
+    case identityCommandFailed(host: String, session: String, status: Int32)
+    case identityUnavailable(host: String, session: String)
     case sessionChanged(host: String, session: String)
     case sessionNotRunning(host: String, session: String)
 
@@ -22,6 +24,12 @@ enum TmuxSessionKillError: Error, Equatable, LocalizedError {
         case let .hostChanged(session):
             return "The connection for session “\(session)” changed after"
                 + " confirmation. Review the host and try again."
+        case let .identityCommandFailed(host, session, status):
+            return "Tmux could not verify session “\(session)” on \(host)"
+                + " (status \(status)). Refresh the host and try again."
+        case let .identityUnavailable(host, session):
+            return "Tmux returned an invalid identity for session “\(session)”"
+                + " on \(host). Refresh the host and try again."
         case let .sessionChanged(host, session):
             return "Session “\(session)” on \(host) was replaced after"
                 + " confirmation. Refresh the host and review the new session."
@@ -123,20 +131,49 @@ struct TmuxSessionKiller: Sendable {
         on host: TmuxHost
     ) async throws -> TmuxSessionIdentity {
         let tmuxPath = try pathResolver(host).get()
-        let command = Self.identityCommand(
+        let platform = Self.platform(for: host)
+        let probeCommand = Self.sessionProbeCommand(
             tmuxPath: tmuxPath,
             sessionName: selection.name,
             socketName: selection.socketName,
-            platform: Self.platform(for: host)
+            platform: platform
         )
         let runner = runner
-        let result = await Task.detached(priority: .userInitiated) {
-            runner(host, command)
+        let probe = await Task.detached(priority: .userInitiated) {
+            runner(host, probeCommand)
         }.value
-        guard result.status == 0,
-              let identity = Self.parseIdentity(result.stdout)
-        else {
-            throw TmuxSessionKillError.sessionNotRunning(
+        guard probe.status == 0 else {
+            if probe.status == 1,
+               Self.isConfirmedAbsence(probe.stdout) {
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+            throw TmuxSessionKillError.identityCommandFailed(
+                host: host.displayName,
+                session: selection.name,
+                status: probe.status
+            )
+        }
+        let identityCommand = Self.identityCommand(
+            tmuxPath: tmuxPath,
+            sessionName: selection.name,
+            socketName: selection.socketName,
+            platform: platform
+        )
+        let result = await Task.detached(priority: .userInitiated) {
+            runner(host, identityCommand)
+        }.value
+        guard result.status == 0 else {
+            throw TmuxSessionKillError.identityCommandFailed(
+                host: host.displayName,
+                session: selection.name,
+                status: result.status
+            )
+        }
+        guard let identity = Self.parseIdentity(result.stdout) else {
+            throw TmuxSessionKillError.identityUnavailable(
                 host: host.displayName,
                 session: selection.name
             )
@@ -205,12 +242,51 @@ struct TmuxSessionKiller: Sendable {
             .joined(separator: " ")
     }
 
-    private static func powerShellCommand(_ arguments: [String]) -> String {
-        """
+    private static func sessionProbeCommand(
+        tmuxPath: String,
+        sessionName: String,
+        socketName: String?,
+        platform: SSHHostInfo.Platform
+    ) -> String {
+        var arguments = [tmuxPath]
+        if let socketName {
+            arguments.append(contentsOf: ["-L", socketName])
+        }
+        arguments.append(contentsOf: [
+            "has-session",
+            "-t",
+            "=\(sessionName):",
+        ])
+        if platform == .windows {
+            return powerShellCommand(
+                arguments,
+                captureStandardError: true
+            )
+        }
+        return arguments
+            .map(shellQuotedCommandArgument)
+            .joined(separator: " ")
+            + " 2>&1"
+    }
+
+    static func isConfirmedAbsence(_ output: String) -> Bool {
+        let normalized = output.lowercased()
+        return normalized.contains("can't find session:")
+            || normalized.contains("no server running on ")
+    }
+
+    private static func powerShellCommand(
+        _ arguments: [String],
+        captureStandardError: Bool = false
+    ) -> String {
+        let invocation = "& "
+            + arguments.map(powerShellEncodedArgument).joined(separator: " ")
+            + (captureStandardError ? " 2>&1" : "")
+        return """
         $ErrorActionPreference = 'Stop'
         [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
         $OutputEncoding = [Console]::OutputEncoding
-        & \(arguments.map(powerShellEncodedArgument).joined(separator: " "))
+        \(invocation)
         exit $LASTEXITCODE
         """
     }

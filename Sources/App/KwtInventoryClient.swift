@@ -27,6 +27,7 @@ struct KwtWorktreeRecord: Codable, Equatable, Sendable {
     var commitHash: String
     var isMain: Bool
     var createdAt: String?
+    var generation: String?
     var repository: String
     var sessionName: String
     var tmuxSocketName: String?
@@ -36,6 +37,7 @@ struct KwtWorktreeRecord: Codable, Equatable, Sendable {
         case commitHash = "commit_hash"
         case isMain = "is_main"
         case createdAt = "created_at"
+        case generation
         case sessionName = "session_name"
         case tmuxSocketName = "tmux_socket_name"
     }
@@ -51,22 +53,44 @@ struct KwtHostInventory: Equatable, Sendable {
     var projects: [KwtProjectInventory]
 
     func retainingFailedProjectWorktrees(
-        from previous: KwtHostInventory?
+        from previous: KwtHostInventory?,
+        excludingWorktrees: Set<KwtWorktreeIdentity> = []
     ) -> KwtHostInventory {
-        guard let previous else { return self }
-        return KwtHostInventory(projects: projects.map { item in
-            guard item.warning != nil,
-                  item.worktrees.isEmpty,
-                  let prior = previous.projects.first(where: {
-                      $0.project.repository == item.project.repository
-                          || $0.project.path == item.project.path
-                  })
-            else { return item }
+        KwtHostInventory(projects: projects.map { item in
             var retained = item
-            retained.worktrees = prior.worktrees
+            if item.warning != nil,
+               item.worktrees.isEmpty,
+               let prior = previous?.projects.first(where: {
+                   $0.project.repository == item.project.repository
+                       || $0.project.path == item.project.path
+               }) {
+                retained.worktrees = prior.worktrees
+            }
+            retained.worktrees.removeAll {
+                guard let generation = $0.generation else { return false }
+                return excludingWorktrees.contains(
+                    KwtWorktreeIdentity(
+                        path: $0.path,
+                        generation: generation
+                    )
+                )
+            }
             return retained
         })
     }
+
+    func removingWorktree(atPath path: String) -> KwtHostInventory {
+        KwtHostInventory(projects: projects.map { item in
+            var updated = item
+            updated.worktrees.removeAll { $0.path == path }
+            return updated
+        })
+    }
+}
+
+struct KwtWorktreeIdentity: Hashable, Sendable {
+    let path: String
+    let generation: String
 }
 
 enum KwtInventoryError: Error, Equatable, LocalizedError {
@@ -386,6 +410,8 @@ enum KwtSnapshotMerger {
                 worktree.branch = record.branch
                 worktree.isPrimary = record.isMain
                 worktree.isStale = false
+                worktree.createdAt = record.createdAt
+                worktree.generation = record.generation
                 worktree.tmuxSessionName = record.sessionName
                 // The protected socket is a fail-closed marker: it keeps
                 // contributor-authored terminal configuration out of the app

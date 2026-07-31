@@ -281,6 +281,10 @@ public struct WorktreeSummary: Identifiable, Equatable, Sendable {
     public var isPrimary: Bool
     public var isHidden: Bool
     public var isStale: Bool
+    /// Directory modification time reported by kwt when available.
+    public var createdAt: String?
+    /// Durable worktree identity used for conditional removal.
+    public var generation: String?
     public var diffAdded: Int?
     public var diffRemoved: Int?
     public var syncAhead: Int?
@@ -320,6 +324,8 @@ public struct WorktreeSummary: Identifiable, Equatable, Sendable {
         isPrimary: Bool = false,
         isHidden: Bool = false,
         isStale: Bool = false,
+        createdAt: String? = nil,
+        generation: String? = nil,
         diffAdded: Int? = nil,
         diffRemoved: Int? = nil,
         syncAhead: Int? = nil,
@@ -355,6 +361,8 @@ public struct WorktreeSummary: Identifiable, Equatable, Sendable {
         self.isPrimary = isPrimary
         self.isHidden = isHidden
         self.isStale = isStale
+        self.createdAt = createdAt
+        self.generation = generation
         self.diffAdded = diffAdded
         self.diffRemoved = diffRemoved
         self.syncAhead = syncAhead

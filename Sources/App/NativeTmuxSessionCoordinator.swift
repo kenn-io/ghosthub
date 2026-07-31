@@ -90,10 +90,12 @@ final class NativeTmuxSessionCoordinator {
     private let remoteKwtCommandPreludeProvider: @Sendable () -> String?
     private let windowsKwtRelativePathProvider: @Sendable () -> String?
     private let presentationStyleProvider: () -> TmuxPresentationStyle?
+    private let appliesPresentationStyleToExistingSessionsProvider:
+        () -> Bool
     private var handlesByKey: [NativeTmuxSessionKey: BorrowedTmuxSessionHandle] = [:]
     private var targetHostsByHandle: [UUID: TmuxHost] = [:]
     private var attachments: [UUID: NativeTmuxAttachment] = [:]
-    private var endedHandles: Set<UUID> = []
+    private var closedAttachmentHandles: Set<UUID> = []
     private var launchedHandles: Set<UUID> = []
     private var tmuxPathsByHost: [TmuxHost: String] = [:]
     private var provisioningHandles: Set<UUID> = []
@@ -123,6 +125,8 @@ final class NativeTmuxSessionCoordinator {
         },
         presentationStyleProvider:
         @escaping () -> TmuxPresentationStyle? = { nil },
+        appliesPresentationStyleToExistingSessionsProvider:
+        @escaping () -> Bool = { false },
         remoteTmuxPathProvider: @escaping @Sendable (SSHHostInfo)
             -> Result<String, TmuxBinaryError> = {
                 TmuxBinaryResolver().resolveTmuxPath(on: $0)
@@ -136,6 +140,8 @@ final class NativeTmuxSessionCoordinator {
         self.windowsKwtRelativePathProvider =
             windowsKwtRelativePathProvider
         self.presentationStyleProvider = presentationStyleProvider
+        self.appliesPresentationStyleToExistingSessionsProvider =
+            appliesPresentationStyleToExistingSessionsProvider
         self.remoteTmuxPathProvider = remoteTmuxPathProvider
     }
 
@@ -167,7 +173,7 @@ final class NativeTmuxSessionCoordinator {
             )
         handlesByKey[key] = handle
         targetHostsByHandle[handle.id] = host
-        endedHandles.remove(handle.id)
+        closedAttachmentHandles.remove(handle.id)
 
         guard !isShuttingDown,
               attachments[handle.id] == nil,
@@ -290,7 +296,7 @@ final class NativeTmuxSessionCoordinator {
         provisioningHandles.remove(handle.id)
         targetHostsByHandle.removeValue(forKey: handle.id)
         attachments.removeValue(forKey: handle.id)
-        endedHandles.remove(handle.id)
+        closedAttachmentHandles.remove(handle.id)
         launchedHandles.remove(handle.id)
         terminalCoordinator.removeSurface(for: surfaceKey(handle))
     }
@@ -299,10 +305,17 @@ final class NativeTmuxSessionCoordinator {
         launchedHandles.contains(handle.id)
     }
 
+    func hasClosedAttachment(_ handle: BorrowedTmuxSessionHandle) -> Bool {
+        closedAttachmentHandles.contains(handle.id)
+    }
+
     func surface(handle: BorrowedTmuxSessionHandle) -> TerminalSurfaceView? {
-        guard !endedHandles.contains(handle.id),
+        guard !closedAttachmentHandles.contains(handle.id),
               let attachment = attachments[handle.id]
         else { return nil }
+        let appliesPresentationStyle =
+            attachment.launchMode == .create
+                || appliesPresentationStyleToExistingSessionsProvider()
         let info = TmuxAttachmentInfo(
             sessionName: handle.name,
             host: attachment.host,
@@ -311,7 +324,9 @@ final class NativeTmuxSessionCoordinator {
                 ? attachment.workingDirectory
                 : nil,
             protectedWorkspacePath: attachment.protectedWorkspacePath,
-            presentationStyle: presentationStyleProvider(),
+            presentationStyle: appliesPresentationStyle
+                ? presentationStyleProvider()
+                : nil,
             launchMode: attachment.launchMode
         )
         let surface = terminalCoordinator.paneSurface(
@@ -331,7 +346,7 @@ final class NativeTmuxSessionCoordinator {
         )
         guard let surface else { return nil }
         if let error = surface.launchError {
-            endedHandles.insert(handle.id)
+            closedAttachmentHandles.insert(handle.id)
             attachments.removeValue(forKey: handle.id)
             terminalCoordinator.removeSurface(for: surfaceKey(handle))
             reportSurfaceStateLater(
@@ -368,7 +383,7 @@ final class NativeTmuxSessionCoordinator {
             guard handlesByKey[key] == handle else { return }
             if requiresLiveSurface {
                 guard launchedHandles.contains(handle.id),
-                      !endedHandles.contains(handle.id)
+                      !closedAttachmentHandles.contains(handle.id)
                 else { return }
             }
             onStateChanged?(handle, state)
@@ -378,13 +393,13 @@ final class NativeTmuxSessionCoordinator {
     private func surfaceDidClose(_ handle: BorrowedTmuxSessionHandle) {
         let key = sessionKey(handle)
         guard handlesByKey[key] == handle else { return }
-        endedHandles.insert(handle.id)
+        closedAttachmentHandles.insert(handle.id)
         attachments.removeValue(forKey: handle.id)
         terminalCoordinator.removeSurface(for: surfaceKey(handle))
         onStateChanged?(
             handle,
             .disconnected(
-                reason: "The tmux client exited. Retry to attach again."
+                reason: "The tmux attachment to “\(handle.name)” closed."
             )
         )
     }
@@ -398,7 +413,7 @@ final class NativeTmuxSessionCoordinator {
         handlesByKey.removeAll()
         targetHostsByHandle.removeAll()
         attachments.removeAll()
-        endedHandles.removeAll()
+        closedAttachmentHandles.removeAll()
         launchedHandles.removeAll()
         for handle in handles {
             terminalCoordinator.removeSurface(for: surfaceKey(handle))

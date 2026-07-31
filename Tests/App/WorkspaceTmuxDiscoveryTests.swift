@@ -660,6 +660,108 @@ struct WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("an exited tmux client refreshes stale session inventory")
+    func exitedClientRefreshesSessionInventory() async throws {
+        let environment = try setupStandardEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let discoveryCalls = Counter()
+        let discovered = DiscoveredTmuxSession(
+            name: "release-work",
+            windowCount: 1,
+            serverPID: "31415",
+            sessionID: "$42",
+            createdAt: "1721552400",
+            managed: true
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            tmuxSessionDiscovery: { _ in
+                discoveryCalls.increment() == 1
+                    ? .success([discovered])
+                    : .success([])
+            }
+        )
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            discoveryCalls.count == 1
+                && model.snapshot.host(id: environment.host.id)?
+                .tmuxSessions.map { $0.name } == ["release-work"]
+        }
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "release-work"
+        )
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+
+        let close = try #require(
+            surfaceStore.surface.closeObservers.values.first
+        )
+        close(true)
+        #expect(!model.activeBorrowedTmuxSessionIsConfirmedEnded)
+
+        await waitUntilMainActor {
+            discoveryCalls.count >= 2
+                && model.snapshot.host(id: environment.host.id)?
+                .tmuxSessions.isEmpty == true
+        }
+        #expect(model.activeBorrowedTmuxSessionIsConfirmedEnded)
+
+        model.retryBorrowedTmuxSession(selection)
+
+        #expect(model.activeBorrowedTmuxLaunchMode == .create)
+        #expect(model.pendingCreatedTmuxSessionCount == 1)
+    }
+
+    @MainActor
+    @Test("a closed client reconnects when discovery finds the session")
+    func exitedClientKeepsRunningSessionReconnectable() async throws {
+        let environment = try setupStandardEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let discoveryCalls = Counter()
+        let discovered = DiscoveredTmuxSession(
+            name: "release-work",
+            windowCount: 1,
+            serverPID: "31415",
+            sessionID: "$42",
+            createdAt: "1721552400",
+            managed: true
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            tmuxSessionDiscovery: { _ in
+                _ = discoveryCalls.increment()
+                return .success([discovered])
+            }
+        )
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor { discoveryCalls.count == 1 }
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "release-work"
+        )
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+
+        let close = try #require(
+            surfaceStore.surface.closeObservers.values.first
+        )
+        close(true)
+        await waitUntilMainActor { discoveryCalls.count >= 2 }
+
+        #expect(!model.activeBorrowedTmuxSessionIsConfirmedEnded)
+        model.retryBorrowedTmuxSession(selection)
+        #expect(model.activeBorrowedTmuxLaunchMode == .attach)
+    }
+
+    @MainActor
     @Test("kill completion preserves a session selected while it runs")
     func killCompletionPreservesNewActiveSession() async throws {
         let environment = try setupStandardEnvironment()
@@ -2135,16 +2237,19 @@ struct WorkspaceTmuxDiscoveryTests {
 private final class SceneTmuxPaneSurfaceStub: TmuxPaneSurfacing {
     var blocksClipboardAccess = false
     var launchError: Error? { nil }
+    private(set) var closeObservers: [UUID: (Bool) -> Void] = [:]
 
     func registerSurfaceCloseObserver(
         id: UUID,
         onSurfaceClosed: @escaping (Bool) -> Void
-    ) {}
+    ) {
+        closeObservers[id] = onSurfaceClosed
+    }
 }
 
 @MainActor
 private final class SceneTmuxSurfaceStoreStub: TmuxSurfaceStoring {
-    private let surface = SceneTmuxPaneSurfaceStub()
+    let surface = SceneTmuxPaneSurfaceStub()
     private(set) var requestCount = 0
     private(set) var lastConfiguration: TerminalSurfaceConfiguration?
 

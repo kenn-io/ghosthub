@@ -48,6 +48,16 @@ public struct WorkspaceSnapshot: Equatable, Sendable {
             && host(id: project.hostID)?.canCreateWorktree == true
     }
 
+    public func canRemoveWorktree(_ worktree: WorktreeSummary) -> Bool {
+        guard !worktree.isPrimary,
+              !worktree.isStale,
+              let project = project(id: worktree.projectID),
+              !project.isSynthesized,
+              !project.isStale
+        else { return false }
+        return host(id: project.hostID)?.canDeleteWorktree == true
+    }
+
     public func canImportPullRequest(in project: ProjectSummary) -> Bool {
         !project.isSynthesized
             && !project.isStale

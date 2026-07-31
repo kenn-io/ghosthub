@@ -221,12 +221,11 @@ final class SettingsStoreTests {
 
         assertContainsAll(
             overlay,
-            "background = #000000",
-            "foreground = #28FE14",
-            "background-opacity = 0.9",
             "font-family = \"Monaco\"",
             "font-size = 14.5"
         )
+        #expect(!overlay.contains("background = "))
+        #expect(!overlay.contains("foreground = "))
 
         assertContainsAll(
             globalConfig,
@@ -238,24 +237,20 @@ final class SettingsStoreTests {
     }
 
     @Test
-    func testFollowingTerminalConfigRemovesTerminalAppearanceOverlay() {
+    func testTmuxThemeDoesNotCreateTerminalAppearanceOverlay() {
         let store = makeSUT()
 
         store.setTerminalTheme(.ocean)
         #expect(
             FileManager.default.fileExists(
                 atPath: paths.terminalAppearanceConfigFile.path
-            )
-        )
-
-        store.setTerminalTheme(.followConfig)
-        store.setUseCustomTerminalFont(false)
-
-        #expect(
-            FileManager.default.fileExists(
-                atPath: paths.terminalAppearanceConfigFile.path
             ) == false
         )
+
+        store.setUseCustomTerminalFont(true)
+        #expect(FileManager.default.fileExists(
+            atPath: paths.terminalAppearanceConfigFile.path
+        ))
     }
 
     @Test

@@ -26,7 +26,7 @@ public struct RootView: View {
     @State private var newWorktreeMode: NewWorktreeMode = .branch
     @State private var newTmuxSessionHost: HostSummary?
     @State private var addProjectHost: HostSummary?
-    @State private var sessionKillAlert: SessionKillAlert?
+    @State private var destructiveAlert: WorkspaceDestructiveAlert?
 
     public init(
         display: WorkspaceDisplayState,
@@ -86,6 +86,12 @@ public struct RootView: View {
                         }
                         try await create(request)
                     },
+                    onListBranches: { projectID in
+                        guard let list = handlers.listBranches else {
+                            return []
+                        }
+                        return try await list(projectID)
+                    },
                     onListPullRequests: { projectID in
                         guard let list = handlers.listPullRequests else {
                             return []
@@ -131,8 +137,8 @@ public struct RootView: View {
                     onAdded: { addProjectHost = nil }
                 )
             }
-            .alert(item: $sessionKillAlert) { alert in
-                sessionKillAlertView(alert)
+            .alert(item: $destructiveAlert) { alert in
+                destructiveAlertView(alert)
             }
     }
 
@@ -355,6 +361,7 @@ public struct RootView: View {
                 deactivateTmuxSession()
             },
             onRequestKillTmuxSession: requestSessionKill,
+            onRequestRemoveWorktree: requestWorktreeRemoval,
             onNewWorktree: openNewWorktree,
             onImportPullRequest: openImportPullRequest,
             onNewTmuxSession: { host in
@@ -420,7 +427,7 @@ public struct RootView: View {
         _ tmuxSession: WorkspaceTmuxSessionSelection
     ) {
         guard let prepare = handlers.prepareTmuxSessionKill else {
-            sessionKillAlert = .failure(
+            destructiveAlert = .sessionKillFailure(
                 session: tmuxSession.name,
                 message: "Session termination is unavailable."
             )
@@ -428,11 +435,11 @@ public struct RootView: View {
         }
         Task {
             do {
-                sessionKillAlert = await .confirmation(
+                destructiveAlert = await .sessionKillConfirmation(
                     try prepare(tmuxSession)
                 )
             } catch {
-                sessionKillAlert = .failure(
+                destructiveAlert = .sessionKillFailure(
                     session: tmuxSession.name,
                     message: error.localizedDescription
                 )
@@ -440,9 +447,11 @@ public struct RootView: View {
         }
     }
 
-    private func sessionKillAlertView(_ alert: SessionKillAlert) -> Alert {
+    private func destructiveAlertView(
+        _ alert: WorkspaceDestructiveAlert
+    ) -> Alert {
         switch alert {
-        case let .confirmation(request):
+        case let .sessionKillConfirmation(request):
             let tmuxSession = request.session
             let recreation = tmuxSession.worktreeID == nil
                 ? ""
@@ -463,7 +472,7 @@ public struct RootView: View {
                             }
                             try await kill(request)
                         } catch {
-                            sessionKillAlert = .failure(
+                            destructiveAlert = .sessionKillFailure(
                                 session: tmuxSession.name,
                                 message: error.localizedDescription
                             )
@@ -472,12 +481,70 @@ public struct RootView: View {
                 },
                 secondaryButton: .cancel()
             )
-        case let .failure(session, message):
+        case let .sessionKillFailure(session, message):
             return Alert(
                 title: Text("Could Not Kill “\(session)”"),
                 message: Text(message),
                 dismissButton: .default(Text("OK"))
             )
+        case let .worktreeRemovalConfirmation(request):
+            let sessionMessage = request.sessionKillRequest == nil
+                ? ""
+                : " Its live tmux session will be terminated first,"
+                + " including every window, pane, and process."
+            return Alert(
+                title: Text("Remove “\(request.worktree.name)”?”"),
+                message: Text(
+                    "This removes the worktree at "
+                        + "\(request.worktree.path)."
+                        + sessionMessage
+                        + " The Git branch will be kept."
+                ),
+                primaryButton: .destructive(Text("Remove Worktree")) {
+                    Task {
+                        do {
+                            guard let remove = handlers.removeWorktree else {
+                                throw WorktreeRemovalUnavailableError()
+                            }
+                            try await remove(request)
+                        } catch {
+                            destructiveAlert = .worktreeRemovalFailure(
+                                worktree: request.worktree.name,
+                                message: error.localizedDescription
+                            )
+                        }
+                    }
+                },
+                secondaryButton: .cancel()
+            )
+        case let .worktreeRemovalFailure(worktree, message):
+            return Alert(
+                title: Text("Could Not Remove “\(worktree)”"),
+                message: Text(message),
+                dismissButton: .default(Text("OK"))
+            )
+        }
+    }
+
+    private func requestWorktreeRemoval(_ worktree: WorktreeSummary) {
+        guard let prepare = handlers.prepareWorktreeRemoval else {
+            destructiveAlert = .worktreeRemovalFailure(
+                worktree: worktree.name,
+                message: "Worktree removal is unavailable."
+            )
+            return
+        }
+        Task {
+            do {
+                destructiveAlert = await .worktreeRemovalConfirmation(
+                    try prepare(worktree.id)
+                )
+            } catch {
+                destructiveAlert = .worktreeRemovalFailure(
+                    worktree: worktree.name,
+                    message: error.localizedDescription
+                )
+            }
         }
     }
 
@@ -897,16 +964,22 @@ struct TmuxSessionPresentationLifecycleModifier: ViewModifier {
     }
 }
 
-private enum SessionKillAlert: Identifiable {
-    case confirmation(TmuxSessionKillRequest)
-    case failure(session: String, message: String)
+enum WorkspaceDestructiveAlert: Identifiable {
+    case sessionKillConfirmation(TmuxSessionKillRequest)
+    case sessionKillFailure(session: String, message: String)
+    case worktreeRemovalConfirmation(WorktreeRemovalRequest)
+    case worktreeRemovalFailure(worktree: String, message: String)
 
     var id: String {
         switch self {
-        case let .confirmation(request):
-            return "confirm:\(request.session.id)"
-        case let .failure(session, message):
-            return "failure:\(session):\(message)"
+        case let .sessionKillConfirmation(request):
+            return "session:confirm:\(request.session.id)"
+        case let .sessionKillFailure(session, message):
+            return "session:failure:\(session):\(message)"
+        case let .worktreeRemovalConfirmation(request):
+            return "worktree:confirm:\(request.worktree.id.uuidString)"
+        case let .worktreeRemovalFailure(worktree, message):
+            return "worktree:failure:\(worktree):\(message)"
         }
     }
 }
@@ -914,5 +987,11 @@ private enum SessionKillAlert: Identifiable {
 private struct SessionKillUnavailableError: LocalizedError {
     var errorDescription: String? {
         "Session termination is unavailable."
+    }
+}
+
+private struct WorktreeRemovalUnavailableError: LocalizedError {
+    var errorDescription: String? {
+        "Worktree removal is unavailable."
     }
 }

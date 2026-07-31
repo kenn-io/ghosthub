@@ -275,6 +275,17 @@ func makeModel(
             on: host
         )
     },
+    kwtWorktreeRemover: @escaping WorkspaceSceneModel.KwtWorktreeRemover = {
+        worktreePath, generation, projectPath, host in
+        try await KwtWorktreeClient().remove(
+            worktreePath: worktreePath,
+            generation: generation,
+            projectPath: projectPath,
+            on: host
+        )
+    },
+    worktreeMutationCoordinator: WorktreeMutationCoordinator =
+        WorktreeMutationCoordinator(),
     kwtPullRequestLister:
     @escaping WorkspaceSceneModel.KwtPullRequestLister = {
         projectIdentity, host in
@@ -341,6 +352,8 @@ func makeModel(
         remoteTmuxPathProvider: remoteTmuxPathProvider,
         kwtInventoryLoader: kwtInventoryLoader,
         kwtWorktreeCreator: kwtWorktreeCreator,
+        kwtWorktreeRemover: kwtWorktreeRemover,
+        worktreeMutationCoordinator: worktreeMutationCoordinator,
         kwtPullRequestLister: kwtPullRequestLister,
         kwtPullRequestImporter: kwtPullRequestImporter,
         kwtProjectRegistration: kwtProjectRegistration,

@@ -34,6 +34,33 @@ struct WorkspaceSidebarModelTests {
         #expect(hovered.isVisible)
         #expect(idle.reservedWidth == hovered.reservedWidth)
         #expect(idle.reservedWidth > 0)
+        #expect(hovered.hitTargetWidth >= 28)
+    }
+
+    @Test("worktree removal is subtle without shrinking its hit target")
+    func worktreeRemovalHoverKeepsStableHitTarget() {
+        let idle = WorkspaceWorktreeRemovalActionPresentation(
+            isRemovable: true,
+            isRowHovered: false,
+            isActionHovered: false
+        )
+        let hovered = WorkspaceWorktreeRemovalActionPresentation(
+            isRemovable: true,
+            isRowHovered: true,
+            isActionHovered: false
+        )
+        let primary = WorkspaceWorktreeRemovalActionPresentation(
+            isRemovable: false,
+            isRowHovered: true,
+            isActionHovered: true
+        )
+
+        #expect(!idle.isVisible)
+        #expect(hovered.isVisible)
+        #expect(idle.reservedWidth == hovered.reservedWidth)
+        #expect(hovered.hitTargetWidth >= 28)
+        #expect(!primary.isVisible)
+        #expect(primary.reservedWidth == 0)
     }
 
     @Test("hosts remain visible before they have projects or tmux sessions")
@@ -138,6 +165,43 @@ struct WorkspaceSidebarModelTests {
             ) == WorkspaceTmuxSessionSelection(
                 hostID: hostID,
                 name: "kwt-ghosthub-main",
+                worktreeID: worktree.id,
+                worktreePath: worktree.path
+            )
+        )
+    }
+
+    @Test("a worktree keeps its standalone kill action when its session is live")
+    func resolvesKillableWorktreeSession() {
+        let hostID = UUID()
+        var worktree = WorktreeSummary.fixture(hostID: hostID)
+        worktree.tmuxSessionName = "kwt-ghosthub-topic"
+        let snapshot = WorkspaceSnapshot.fixture(
+            hosts: [
+                .fixture(
+                    id: hostID,
+                    tmuxSessions: [
+                        TmuxSessionSummary(
+                            name: "kwt-ghosthub-topic",
+                            managed: true,
+                            windows: [],
+                            serverPID: "4242",
+                            sessionID: "$3",
+                            createdAt: "1785190000"
+                        ),
+                    ]
+                ),
+            ],
+            worktrees: [worktree]
+        )
+
+        #expect(
+            WorkspaceSidebarModel.killableTmuxSession(
+                for: worktree,
+                in: snapshot
+            ) == WorkspaceTmuxSessionSelection(
+                hostID: hostID,
+                name: "kwt-ghosthub-topic",
                 worktreeID: worktree.id,
                 worktreePath: worktree.path
             )

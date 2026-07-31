@@ -2,10 +2,11 @@ import SwiftUI
 import GhosthubWorkspace
 
 struct WorkspaceTmuxSessionActionPresentation: Equatable {
-    static let controlWidth: CGFloat = 28
+    static let controlWidth: CGFloat = 30
 
     let isVisible: Bool
     let reservedWidth: CGFloat
+    let hitTargetWidth: CGFloat
 
     init(
         hasTmuxSession: Bool,
@@ -15,6 +16,26 @@ struct WorkspaceTmuxSessionActionPresentation: Equatable {
         isVisible = hasTmuxSession
             && (isRowHovered || isActionHovered)
         reservedWidth = hasTmuxSession ? Self.controlWidth : 0
+        hitTargetWidth = hasTmuxSession ? Self.controlWidth : 0
+    }
+}
+
+struct WorkspaceWorktreeRemovalActionPresentation: Equatable {
+    static let controlWidth: CGFloat = 30
+
+    let isVisible: Bool
+    let reservedWidth: CGFloat
+    let hitTargetWidth: CGFloat
+
+    init(
+        isRemovable: Bool,
+        isRowHovered: Bool,
+        isActionHovered: Bool
+    ) {
+        isVisible = isRemovable
+            && (isRowHovered || isActionHovered)
+        reservedWidth = isRemovable ? Self.controlWidth : 0
+        hitTargetWidth = isRemovable ? Self.controlWidth : 0
     }
 }
 
@@ -41,6 +62,7 @@ struct WorkspaceSidebarView: View {
     let onOpenTmuxSession: (WorkspaceTmuxSessionSelection) -> Void
     let onNavigateAwayFromTmuxSession: () -> Void
     let onRequestKillTmuxSession: (WorkspaceTmuxSessionSelection) -> Void
+    let onRequestRemoveWorktree: (WorktreeSummary) -> Void
     let onNewWorktree: (ProjectSummary) -> Void
     let onImportPullRequest: (ProjectSummary) -> Void
     let onNewTmuxSession: (HostSummary) -> Void
@@ -54,6 +76,9 @@ struct WorkspaceSidebarView: View {
     @State private var hoveredTmuxSessionID: String?
     @State private var hoveredTmuxSessionActionID: String?
     @State private var tmuxSessionHoverDismissTask: Task<Void, Never>?
+    @State private var hoveredWorktreeID: UUID?
+    @State private var hoveredWorktreeActionID: UUID?
+    @State private var worktreeHoverDismissTask: Task<Void, Never>?
     @AppStorage("workspaceSidebarDisclosureStateV2")
     private var disclosureState = ""
     @AppStorage("workspaceSidebarCollapsedItems")
@@ -71,6 +96,9 @@ struct WorkspaceSidebarView: View {
         onNavigateAwayFromTmuxSession: @escaping () -> Void = {},
         onRequestKillTmuxSession: @escaping (
             WorkspaceTmuxSessionSelection
+        ) -> Void = { _ in },
+        onRequestRemoveWorktree: @escaping (
+            WorktreeSummary
         ) -> Void = { _ in },
         onNewWorktree: @escaping (ProjectSummary) -> Void = { _ in },
         onImportPullRequest: @escaping (ProjectSummary) -> Void = { _ in },
@@ -90,6 +118,7 @@ struct WorkspaceSidebarView: View {
         self.onOpenTmuxSession = onOpenTmuxSession
         self.onNavigateAwayFromTmuxSession = onNavigateAwayFromTmuxSession
         self.onRequestKillTmuxSession = onRequestKillTmuxSession
+        self.onRequestRemoveWorktree = onRequestRemoveWorktree
         self.onNewWorktree = onNewWorktree
         self.onImportPullRequest = onImportPullRequest
         self.onNewTmuxSession = onNewTmuxSession
@@ -442,7 +471,10 @@ struct WorkspaceSidebarView: View {
 
     // MARK: - Row builders
 
-    private func sidebarButton(_ row: WorkspaceSidebarRow) -> some View {
+    private func sidebarButton(
+        _ row: WorkspaceSidebarRow,
+        reservedTrailingActionWidth: CGFloat = 0
+    ) -> some View {
         let tmuxSession = tmuxSessionSelection(for: row)
         let runningTmuxSession = tmuxSession.flatMap {
             WorkspaceSidebarModel.canRequestKill(
@@ -474,6 +506,12 @@ struct WorkspaceSidebarView: View {
             } ?? false,
             isActionHovered: isActionHovered
         )
+        let usesDirectKillAction: Bool
+        if case .tmuxSession = row.target {
+            usesDirectKillAction = true
+        } else {
+            usesDirectKillAction = false
+        }
         return HStack(spacing: 0) {
             Button {
                 if case let .tmuxSession(hostID, name) = row.target {
@@ -536,7 +574,11 @@ struct WorkspaceSidebarView: View {
                     )
                 )
                 .padding(.horizontal, 8)
-                .padding(.trailing, actionPresentation.reservedWidth)
+                .padding(
+                    .trailing,
+                    actionPresentation.reservedWidth
+                        + reservedTrailingActionWidth
+                )
                 .padding(.vertical, 6)
                 .background {
                     RoundedRectangle(cornerRadius: 6)
@@ -575,49 +617,50 @@ struct WorkspaceSidebarView: View {
         }
         .overlay(alignment: .trailing) {
             if let tmuxSession = runningTmuxSession {
-                NativePopupMenuButton(
-                    groups: [
-                        [
-                            NativePopupMenuAction(
-                                "Kill Session…",
-                                role: .destructive
-                            ) {
-                                onRequestKillTmuxSession(tmuxSession)
-                            },
-                        ],
-                    ]
-                ) {
-                    ZStack {
-                        Color.clear
-                        if actionPresentation.isVisible {
-                            Image(systemName: "ellipsis")
+                Group {
+                    if usesDirectKillAction {
+                        Button {
+                            onRequestKillTmuxSession(tmuxSession)
+                        } label: {
+                            tmuxSessionActionLabel(
+                                actionPresentation,
+                                isActionHovered: isActionHovered,
+                                imageName: "xmark"
+                            )
                         }
-                    }
-                    .frame(width: 28, height: 28)
-                    .background {
-                        if actionPresentation.isVisible {
-                            RoundedRectangle(cornerRadius: 5)
-                                .fill(
-                                    Color.primary.opacity(
-                                        isActionHovered ? 0.14 : 0.06
-                                    )
-                                )
+                        .accessibilityLabel(
+                            "Kill tmux session \(tmuxSession.name)"
+                        )
+                        .accessibilityIdentifier(
+                            "kill-tmux-session-\(tmuxSession.id)"
+                        )
+                    } else {
+                        NativePopupMenuButton(
+                            groups: [
+                                [
+                                    NativePopupMenuAction(
+                                        "Kill Session…",
+                                        role: .destructive
+                                    ) {
+                                        onRequestKillTmuxSession(tmuxSession)
+                                    },
+                                ],
+                            ]
+                        ) {
+                            tmuxSessionActionLabel(
+                                actionPresentation,
+                                isActionHovered: isActionHovered,
+                                imageName: "ellipsis"
+                            )
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel(
+                                "Session actions for \(row.title)"
+                            )
                         }
+                        .accessibilityHint(
+                            "Includes the option to kill this session."
+                        )
                     }
-                    .overlay {
-                        if actionPresentation.isVisible {
-                            RoundedRectangle(cornerRadius: 5)
-                                .stroke(
-                                    isActionHovered
-                                        ? Color.accentColor.opacity(0.8)
-                                        : Color.primary.opacity(0.22),
-                                    lineWidth: isActionHovered ? 1 : 0.5
-                                )
-                        }
-                    }
-                    .contentShape(Rectangle())
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel("Session actions for \(row.title)")
                 }
                 .buttonStyle(.plain)
                 .onHover { isHovered in
@@ -629,8 +672,10 @@ struct WorkspaceSidebarView: View {
                         scheduleTmuxSessionHoverDismiss(tmuxSession.id)
                     }
                 }
-                .help("Session actions")
-                .accessibilityHint("Includes the option to kill this session.")
+                .help(
+                    usesDirectKillAction ? "Kill session…" : "Session actions"
+                )
+                .padding(.trailing, reservedTrailingActionWidth)
             }
         }
         .onHover { isHovered in
@@ -654,6 +699,35 @@ struct WorkspaceSidebarView: View {
                 onRequestKillTmuxSession(tmuxSession)
             }
         }
+    }
+
+    private func tmuxSessionActionLabel(
+        _ presentation: WorkspaceTmuxSessionActionPresentation,
+        isActionHovered: Bool,
+        imageName: String
+    ) -> some View {
+        ZStack {
+            Color.clear
+            if presentation.isVisible {
+                Image(systemName: imageName)
+                    .font(.system(size: 10, weight: .semibold))
+            }
+        }
+        .frame(
+            width: presentation.hitTargetWidth,
+            height: 30
+        )
+        .background {
+            if presentation.isVisible {
+                RoundedRectangle(cornerRadius: 5)
+                    .fill(
+                        Color.primary.opacity(
+                            isActionHovered ? 0.14 : 0.05
+                        )
+                    )
+            }
+        }
+        .contentShape(Rectangle())
     }
 
     private func scheduleTmuxSessionHoverDismiss(_ sessionID: String) {
@@ -688,7 +762,126 @@ struct WorkspaceSidebarView: View {
     }
 
     private func worktreeButton(_ row: WorkspaceSidebarRow) -> some View {
-        sidebarButton(row)
+        guard case let .worktree(worktreeID) = row.target,
+              let worktree = snapshot.worktree(id: worktreeID)
+        else {
+            return AnyView(sidebarButton(row))
+        }
+        let isRemovable = snapshot.canRemoveWorktree(worktree)
+        let runningTmuxSession = WorkspaceSidebarModel.killableTmuxSession(
+            for: worktree,
+            in: snapshot,
+            activeSelection: activeTmuxSession,
+            activeSelectionIsConnected: activeTmuxSessionIsConnected
+        )
+        let isActionHovered = hoveredWorktreeActionID == worktreeID
+        let actionPresentation =
+            WorkspaceWorktreeRemovalActionPresentation(
+                isRemovable: isRemovable,
+                isRowHovered: hoveredWorktreeID == worktreeID,
+                isActionHovered: isActionHovered
+            )
+        return AnyView(
+            sidebarButton(
+                row,
+                reservedTrailingActionWidth:
+                actionPresentation.reservedWidth
+            )
+            .overlay(alignment: .trailing) {
+                if isRemovable {
+                    Button {
+                        onRequestRemoveWorktree(worktree)
+                    } label: {
+                        ZStack {
+                            Color.clear
+                            if actionPresentation.isVisible {
+                                Image(systemName: "xmark")
+                                    .font(.system(
+                                        size: 10,
+                                        weight: .semibold
+                                    ))
+                            }
+                        }
+                        .frame(
+                            width: actionPresentation.hitTargetWidth,
+                            height: 30
+                        )
+                        .background {
+                            if actionPresentation.isVisible {
+                                RoundedRectangle(cornerRadius: 5)
+                                    .fill(
+                                        Color.primary.opacity(
+                                            isActionHovered ? 0.14 : 0.05
+                                        )
+                                    )
+                            }
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .onHover { isHovered in
+                        if isHovered {
+                            worktreeHoverDismissTask?.cancel()
+                            hoveredWorktreeActionID = worktreeID
+                        } else if hoveredWorktreeActionID == worktreeID {
+                            hoveredWorktreeActionID = nil
+                            scheduleWorktreeHoverDismiss(worktreeID)
+                        }
+                    }
+                    .help("Remove worktree…")
+                    .accessibilityLabel(
+                        "Remove worktree \(worktree.name)"
+                    )
+                    .accessibilityIdentifier(
+                        "remove-worktree-\(worktree.id.uuidString)"
+                    )
+                }
+            }
+            .onHover { isHovered in
+                guard isRemovable else { return }
+                if isHovered {
+                    worktreeHoverDismissTask?.cancel()
+                    hoveredWorktreeID = worktreeID
+                } else {
+                    scheduleWorktreeHoverDismiss(worktreeID)
+                }
+            }
+            .contextMenu {
+                if let runningTmuxSession {
+                    Button("Kill Session…", role: .destructive) {
+                        onRequestKillTmuxSession(runningTmuxSession)
+                    }
+                }
+                if isRemovable {
+                    Button("Remove Worktree…", role: .destructive) {
+                        onRequestRemoveWorktree(worktree)
+                    }
+                }
+            }
+            .accessibilityAction(named: "Remove Worktree") {
+                if isRemovable {
+                    onRequestRemoveWorktree(worktree)
+                }
+            }
+            .accessibilityAction(named: "Kill Session") {
+                if let runningTmuxSession {
+                    onRequestKillTmuxSession(runningTmuxSession)
+                }
+            }
+        )
+    }
+
+    private func scheduleWorktreeHoverDismiss(_ worktreeID: UUID) {
+        worktreeHoverDismissTask?.cancel()
+        worktreeHoverDismissTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(150))
+            guard !Task.isCancelled,
+                  hoveredWorktreeActionID != worktreeID,
+                  hoveredWorktreeID == worktreeID
+            else { return }
+            hoveredWorktreeID = nil
+        }
     }
 
     private func hierarchyRow(

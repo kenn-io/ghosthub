@@ -103,6 +103,25 @@ public struct TmuxSessionKillRequest: Equatable, Sendable {
     }
 }
 
+public struct WorktreeRemovalRequest: Equatable, Sendable {
+    public let worktree: WorktreeSummary
+    public let project: ProjectSummary
+    public let confirmedHost: HostSummary
+    public let sessionKillRequest: TmuxSessionKillRequest?
+
+    public init(
+        worktree: WorktreeSummary,
+        project: ProjectSummary,
+        confirmedHost: HostSummary,
+        sessionKillRequest: TmuxSessionKillRequest? = nil
+    ) {
+        self.worktree = worktree
+        self.project = project
+        self.confirmedHost = confirmedHost
+        self.sessionKillRequest = sessionKillRequest
+    }
+}
+
 public struct InteractionHandlers {
     public let closeWindow: (() -> Void)?
     public let dismissLogViewer: (() -> Void)?
@@ -120,10 +139,16 @@ public struct InteractionHandlers {
         ((HostSummary, String) async -> Result<String, HostProbeError>)?
     public let createWorktree:
         ((WorktreeCreateRequest) async throws -> Void)?
+    public let listBranches:
+        ((UUID) async throws -> [WorktreeBranchCandidate])?
     public let listPullRequests:
         ((UUID) async throws -> [PullRequestCandidate])?
     public let importPullRequest:
         ((PullRequestImportRequest) async throws -> Void)?
+    public let prepareWorktreeRemoval:
+        ((UUID) async throws -> WorktreeRemovalRequest)?
+    public let removeWorktree:
+        ((WorktreeRemovalRequest) async throws -> Void)?
 
     public init(
         closeWindow: (() -> Void)? = nil,
@@ -142,10 +167,16 @@ public struct InteractionHandlers {
         ((HostSummary, String) async -> Result<String, HostProbeError>)? = nil,
         createWorktree:
         ((WorktreeCreateRequest) async throws -> Void)? = nil,
+        listBranches:
+        ((UUID) async throws -> [WorktreeBranchCandidate])? = nil,
         listPullRequests:
         ((UUID) async throws -> [PullRequestCandidate])? = nil,
         importPullRequest:
-        ((PullRequestImportRequest) async throws -> Void)? = nil
+        ((PullRequestImportRequest) async throws -> Void)? = nil,
+        prepareWorktreeRemoval:
+        ((UUID) async throws -> WorktreeRemovalRequest)? = nil,
+        removeWorktree:
+        ((WorktreeRemovalRequest) async throws -> Void)? = nil
     ) {
         self.closeWindow = closeWindow
         self.dismissLogViewer = dismissLogViewer
@@ -158,7 +189,10 @@ public struct InteractionHandlers {
         self.refreshWorkspaceInventory = refreshWorkspaceInventory
         self.registerProject = registerProject
         self.createWorktree = createWorktree
+        self.listBranches = listBranches
         self.listPullRequests = listPullRequests
         self.importPullRequest = importPullRequest
+        self.prepareWorktreeRemoval = prepareWorktreeRemoval
+        self.removeWorktree = removeWorktree
     }
 }

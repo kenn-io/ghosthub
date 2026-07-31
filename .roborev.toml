@@ -1,3 +1,20 @@
 review_guidelines = """
 We are not performing database migrations before the first production release.
+
+Threat model:
+- A branch the user explicitly chooses to check out locally is trusted as local
+  working content, regardless of whether its source ref is local or remote.
+  Ghosthub may inspect that checkout with ordinary Git commands and may use its
+  repository-local terminal configuration. Do not report those expected actions
+  as untrusted-workspace or credential-exposure vulnerabilities.
+- Continue to report actual command/argument injection, unsafe interpolation,
+  automatic execution that is not a consequence of the user's explicit checkout
+  or open action, and violations of an established credential boundary.
+
+Session lifecycle:
+- Confirmed removal of a non-primary worktree intentionally terminates its live
+  kwt tmux session through the identity-checked kill path before invoking
+  `kwt remove`. This is one atomic destructive workflow and must not require a
+  separate kill confirmation. A standalone Kill Session action should remain
+  available for users who only want to end the session.
 """

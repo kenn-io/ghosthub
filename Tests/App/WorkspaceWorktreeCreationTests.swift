@@ -16,6 +16,7 @@ private actor KwtInventoryRaceStub {
     }
 
     var firstCallStarted: Bool { callCount > 0 }
+    var calls: Int { callCount }
 
     func load() async -> KwtHostInventory {
         callCount += 1
@@ -32,24 +33,315 @@ private actor KwtInventoryRaceStub {
     }
 }
 
+private actor WorktreeMutationHold {
+    private(set) var started = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func wait() async {
+        started = true
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+    }
+
+    func release() {
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
+private enum WorktreeMutationProbeError: Error, Equatable {
+    case firstFinished
+    case invoked(projectPath: String)
+}
+
 @Suite("Workspace worktree creation")
 struct WorkspaceWorktreeCreationTests {
-    @Test(
-        "workspace mutations fence background kwt inventory",
-        arguments: [
-            (creating: true, importing: false),
-            (creating: false, importing: true),
-        ]
-    )
+    @Test("separate scene models serialize mutations by host and project")
     @MainActor
-    func workspaceMutationsFenceInventory(
-        creating: Bool,
-        importing: Bool
-    ) {
-        #expect(!WorkspaceSceneModel.canScheduleKwtInventory(
-            isWorktreeCreationInProgress: creating,
-            isPullRequestImportInProgress: importing
-        ))
+    func separateModelsShareMutationGate() async throws {
+        let environment = try setupStandardEnvironment()
+        var snapshot = environment.snapshot
+        let otherProject = ProjectSummary.fixture(
+            hostID: environment.host.id,
+            name: "Other",
+            rootPath: "/tmp/other"
+        )
+        snapshot.projects.append(otherProject)
+        let hold = WorktreeMutationHold()
+        let mutationCoordinator = WorktreeMutationCoordinator()
+        let firstModel = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtWorktreeCreator: { _, _, _ in
+                await hold.wait()
+                throw WorktreeMutationProbeError.firstFinished
+            },
+            worktreeMutationCoordinator: mutationCoordinator
+        )
+        let secondModel = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtWorktreeCreator: { _, projectPath, _ in
+                throw WorktreeMutationProbeError.invoked(
+                    projectPath: projectPath
+                )
+            },
+            worktreeMutationCoordinator: mutationCoordinator
+        )
+
+        let firstMutation = Task { @MainActor in
+            do {
+                try await firstModel.createWorktree(
+                    WorktreeCreateRequest(
+                        projectID: environment.project.id,
+                        branchName: "feature/first",
+                        createsBranch: true
+                    )
+                )
+                return nil as WorktreeMutationProbeError?
+            } catch {
+                return error as? WorktreeMutationProbeError
+            }
+        }
+        for _ in 0 ..< 1_000 {
+            if await hold.started {
+                break
+            }
+            await Task.yield()
+        }
+        #expect(await hold.started)
+
+        await #expect(throws: KwtWorktreeError.creationInProgress) {
+            try await secondModel.createWorktree(
+                WorktreeCreateRequest(
+                    projectID: environment.project.id,
+                    branchName: "feature/second",
+                    createsBranch: true
+                )
+            )
+        }
+        await #expect {
+            try await secondModel.createWorktree(
+                WorktreeCreateRequest(
+                    projectID: otherProject.id,
+                    branchName: "feature/other",
+                    createsBranch: true
+                )
+            )
+        } throws: { error in
+            error as? WorktreeMutationProbeError
+                == .invoked(projectPath: otherProject.rootPath)
+        }
+
+        await hold.release()
+        #expect(await firstMutation.value == .firstFinished)
+        await firstModel.shutdown()
+        await secondModel.shutdown()
+    }
+
+    @Test("mutation completion refreshes inventory in other scene models")
+    @MainActor
+    func separateModelsFenceAndRefreshInventory() async throws {
+        let environment = try setupStandardEnvironment()
+        let stale = inventory(
+            project: environment.project,
+            worktrees: [
+                worktree(
+                    path: environment.worktree.path,
+                    branch: environment.worktree.branch,
+                    isMain: true
+                ),
+            ]
+        )
+        let refreshed = inventory(
+            project: environment.project,
+            worktrees: [
+                worktree(
+                    path: environment.worktree.path,
+                    branch: environment.worktree.branch,
+                    isMain: true
+                ),
+                worktree(
+                    path: "/tmp/ghosthub-refreshed",
+                    branch: "feature/refreshed",
+                    isMain: false
+                ),
+            ]
+        )
+        let inventoryRace = KwtInventoryRaceStub(
+            stale: stale,
+            refreshed: refreshed
+        )
+        let mutationHold = WorktreeMutationHold()
+        let mutationCoordinator = WorktreeMutationCoordinator()
+        let firstModel = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            kwtWorktreeCreator: { _, _, _ in
+                await mutationHold.wait()
+                throw WorktreeMutationProbeError.firstFinished
+            },
+            worktreeMutationCoordinator: mutationCoordinator
+        )
+        let secondModel = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            kwtInventoryLoader: { _ in
+                await inventoryRace.load()
+            },
+            worktreeMutationCoordinator: mutationCoordinator
+        )
+
+        secondModel.startKwtInventory()
+        for _ in 0 ..< 1_000 {
+            if await inventoryRace.firstCallStarted {
+                break
+            }
+            await Task.yield()
+        }
+        #expect(await inventoryRace.firstCallStarted)
+
+        let mutation = Task { @MainActor in
+            try? await firstModel.createWorktree(
+                WorktreeCreateRequest(
+                    projectID: environment.project.id,
+                    branchName: "feature/first",
+                    createsBranch: true
+                )
+            )
+        }
+        for _ in 0 ..< 1_000 {
+            if await mutationHold.started {
+                break
+            }
+            await Task.yield()
+        }
+        #expect(await mutationHold.started)
+        await inventoryRace.releaseFirstCall()
+        await mutationHold.release()
+        await mutation.value
+
+        for _ in 0 ..< 10_000 {
+            if await inventoryRace.calls >= 2,
+               secondModel.snapshot.worktrees.contains(where: {
+                   $0.branch == "feature/refreshed"
+               }) {
+                break
+            }
+            await Task.yield()
+        }
+        #expect(await inventoryRace.calls >= 2)
+        #expect(secondModel.snapshot.worktrees.contains {
+            $0.branch == "feature/refreshed"
+        })
+        await firstModel.shutdown()
+        await secondModel.shutdown()
+    }
+
+    @Test("removal excludes concurrent create and import mutations")
+    @MainActor
+    func removalExcludesOtherMutations() async throws {
+        let environment = try setupStandardEnvironment()
+        var snapshot = environment.snapshot
+        snapshot.projects[0].scopedKey =
+            "github.com/kenn-io/ghosthub"
+        var removable = WorktreeSummary.fixture(
+            hostID: environment.host.id,
+            projectID: environment.project.id,
+            scopedKey: "/tmp/ghosthub-remove",
+            name: "feature/remove",
+            path: "/tmp/ghosthub-remove",
+            branch: "feature/remove",
+            generation: "0123456789abcdef0123456789abcdef"
+        )
+        removable.tmuxSessionName = "kwt-feature-remove"
+        snapshot.worktrees.append(removable)
+        let beforeRemoval = inventory(
+            project: environment.project,
+            worktrees: [
+                worktree(
+                    path: environment.worktree.path,
+                    branch: environment.worktree.branch,
+                    isMain: true
+                ),
+                worktree(
+                    path: removable.path,
+                    branch: removable.branch,
+                    isMain: false,
+                    generation: "0123456789abcdef0123456789abcdef"
+                ),
+            ]
+        )
+        let afterRemoval = inventory(
+            project: environment.project,
+            worktrees: [
+                worktree(
+                    path: environment.worktree.path,
+                    branch: environment.worktree.branch,
+                    isMain: true
+                ),
+            ]
+        )
+        let loader = KwtInventoryRaceStub(
+            stale: beforeRemoval,
+            refreshed: afterRemoval
+        )
+        let attemptedMutations = LockedValue<[String]>([])
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtInventoryLoader: { _ in await loader.load() },
+            kwtWorktreeCreator: { _, _, _ in
+                attemptedMutations.withLock { $0.append("create") }
+            },
+            kwtWorktreeRemover: { _, _, _, _ in },
+            kwtPullRequestImporter: { _, _, _ in
+                attemptedMutations.withLock { $0.append("import") }
+                throw KwtPullRequestError.malformedOutput(host: "test")
+            },
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        let removal = Task {
+            try await model.removeWorktree(request)
+        }
+        for _ in 0 ..< 1_000 {
+            if await loader.firstCallStarted {
+                break
+            }
+            await Task.yield()
+        }
+        #expect(await loader.firstCallStarted)
+
+        await #expect(throws: KwtWorktreeError.creationInProgress) {
+            try await model.createWorktree(WorktreeCreateRequest(
+                projectID: environment.project.id,
+                branchName: "feature/create",
+                createsBranch: true
+            ))
+        }
+        await #expect(throws: KwtPullRequestError.importInProgress) {
+            try await model.importPullRequest(PullRequestImportRequest(
+                projectID: environment.project.id,
+                pullRequestID: "github:github.com/kenn-io/ghosthub#47"
+            ))
+        }
+
+        await loader.releaseFirstCall()
+        try await removal.value
+        #expect(attemptedMutations.load().isEmpty)
+        await model.shutdown()
     }
 
     @Test("selecting a kwt worktree preserves the authoritative inventory")
@@ -284,14 +576,17 @@ struct WorkspaceWorktreeCreationTests {
     private func worktree(
         path: String,
         branch: String,
-        isMain: Bool
+        isMain: Bool,
+        createdAt: String? = nil,
+        generation: String? = nil
     ) -> KwtWorktreeRecord {
         KwtWorktreeRecord(
             path: path,
             branch: branch,
             commitHash: "abc123",
             isMain: isMain,
-            createdAt: nil,
+            createdAt: createdAt,
+            generation: generation,
             repository: "github.com/kenn-io/ghosthub",
             sessionName: "kwt-\(branch.replacingOccurrences(of: "/", with: "-"))"
         )

@@ -24,4 +24,44 @@ struct BorrowedTmuxSessionViewTests {
         view.onRetryRequest()
         #expect(retryCount == 1)
     }
+
+    @Test("an exited tmux client is presented as a closed session")
+    func endedSessionPresentation() {
+        let view = BorrowedTmuxSessionView(
+            handle: BorrowedTmuxSessionHandle(
+                id: UUID(), hostID: UUID(), name: "editor", surfaceID: UUID()
+            ),
+            hostName: "build-box",
+            connectionState: .disconnected(
+                reason: "The tmux client exited."
+            ),
+            sessionClosed: true,
+            surface: { nil },
+            onCloseRequest: {},
+            onRetryRequest: {}
+        )
+
+        #expect(view.disconnectionTitle == "Session ended")
+        #expect(view.recoveryActionTitle == "Reopen")
+    }
+
+    @Test("a closed attachment does not claim the session ended")
+    func closedAttachmentPresentation() {
+        let view = BorrowedTmuxSessionView(
+            handle: BorrowedTmuxSessionHandle(
+                id: UUID(), hostID: UUID(), name: "editor", surfaceID: UUID()
+            ),
+            hostName: "build-box",
+            connectionState: .disconnected(
+                reason: "The tmux attachment closed."
+            ),
+            attachmentClosed: true,
+            surface: { nil },
+            onCloseRequest: {},
+            onRetryRequest: {}
+        )
+
+        #expect(view.disconnectionTitle == "Attachment closed")
+        #expect(view.recoveryActionTitle == "Reconnect")
+    }
 }

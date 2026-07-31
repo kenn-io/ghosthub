@@ -220,7 +220,8 @@ struct KwtInventoryClientTests {
                         branch: "main",
                         commitHash: "abc",
                         isMain: true,
-                        createdAt: nil,
+                        createdAt: "2026-07-29T19:00:00Z",
+                        generation: "0123456789abcdef0123456789abcdef",
                         repository: "github.com/kenn-io/docbank",
                         sessionName: "kwt-docbank-main"
                     ),
@@ -240,6 +241,14 @@ struct KwtInventoryClientTests {
         #expect(merged.projects[0].registryID == nil)
         #expect(merged.worktrees[0].id == oldWorktreeID)
         #expect(merged.worktrees[0].registryID == nil)
+        #expect(
+            merged.worktrees[0].createdAt
+                == "2026-07-29T19:00:00Z"
+        )
+        #expect(
+            merged.worktrees[0].generation
+                == "0123456789abcdef0123456789abcdef"
+        )
         #expect(merged.worktrees[0].tmuxSessionName == "kwt-docbank-main")
         #expect(merged.worktrees[0].sessionBackend == .localTmux)
     }
@@ -398,6 +407,98 @@ struct KwtInventoryClientTests {
 
         #expect(retained.projects[0].worktrees == [worktree])
         #expect(retained.projects[0].warning == "temporary failure")
+    }
+
+    @Test("failed project retention excludes a worktree already removed")
+    func failedProjectDoesNotRestoreRemovedWorktree() {
+        let project = KwtProjectRecord(
+            repository: "repo",
+            name: "repo",
+            path: "/repo",
+            lastTouched: nil
+        )
+        let removed = KwtWorktreeRecord(
+            path: "/worktrees/removed",
+            branch: "removed",
+            commitHash: "abc",
+            isMain: false,
+            createdAt: nil,
+            generation: "removed-generation",
+            repository: "repo",
+            sessionName: "kwt-repo-removed"
+        )
+        let previous = KwtHostInventory(projects: [
+            KwtProjectInventory(
+                project: project,
+                worktrees: [removed],
+                warning: nil
+            ),
+        ])
+        let failed = KwtHostInventory(projects: [
+            KwtProjectInventory(
+                project: project,
+                worktrees: [],
+                warning: "temporary failure"
+            ),
+        ])
+
+        let retained = failed.retainingFailedProjectWorktrees(
+            from: previous,
+            excludingWorktrees: [
+                KwtWorktreeIdentity(
+                    path: removed.path,
+                    generation: "removed-generation"
+                ),
+            ]
+        )
+
+        #expect(retained.projects[0].worktrees.isEmpty)
+    }
+
+    @Test("failed project retention keeps a replacement generation")
+    func failedProjectKeepsReplacementGeneration() {
+        let project = KwtProjectRecord(
+            repository: "repo",
+            name: "repo",
+            path: "/repo",
+            lastTouched: nil
+        )
+        let replacement = KwtWorktreeRecord(
+            path: "/worktrees/reused",
+            branch: "replacement",
+            commitHash: "def",
+            isMain: false,
+            createdAt: nil,
+            generation: "replacement-generation",
+            repository: "repo",
+            sessionName: "kwt-repo-replacement"
+        )
+        let previous = KwtHostInventory(projects: [
+            KwtProjectInventory(
+                project: project,
+                worktrees: [replacement],
+                warning: nil
+            ),
+        ])
+        let failed = KwtHostInventory(projects: [
+            KwtProjectInventory(
+                project: project,
+                worktrees: [],
+                warning: "temporary failure"
+            ),
+        ])
+
+        let retained = failed.retainingFailedProjectWorktrees(
+            from: previous,
+            excludingWorktrees: [
+                KwtWorktreeIdentity(
+                    path: replacement.path,
+                    generation: "removed-generation"
+                ),
+            ]
+        )
+
+        #expect(retained.projects[0].worktrees == [replacement])
     }
 
     @Test("warning inventory records merge over a fresh snapshot")

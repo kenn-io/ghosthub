@@ -193,12 +193,26 @@ struct TmuxSessionKillerTests {
         )
 
         let recorded = try #require(
-            commands.load().count == 2 ? commands.load() : nil
+            commands.load().count == 3 ? commands.load() : nil
         )
         #expect(recorded.allSatisfy { $0.contains(
             "[Console]::OutputEncoding"
         ) })
         #expect(recorded[0].contains(
+            "& "
+                + [
+                    #"C:\Program Files\psmux\tmux.exe"#,
+                    "-L",
+                    "kwt-pr-windows",
+                    "has-session",
+                    "-t",
+                    "=review's session:",
+                ]
+                .map(powerShellEncodedArgument)
+                .joined(separator: " ")
+        ))
+        #expect(recorded[0].contains(" 2>&1"))
+        #expect(recorded[1].contains(
             "& "
                 + [
                     #"C:\Program Files\psmux\tmux.exe"#,
@@ -212,17 +226,17 @@ struct TmuxSessionKillerTests {
                 .map(powerShellEncodedArgument)
                 .joined(separator: " ")
         ))
-        #expect(recorded[1].contains(
+        #expect(recorded[2].contains(
             ["if-shell", "-F"]
                 .map(powerShellEncodedArgument)
                 .joined(separator: " ")
         ))
-        #expect(recorded[1].contains(
+        #expect(recorded[2].contains(
             ["-t", "=review's session:"]
                 .map(powerShellEncodedArgument)
                 .joined(separator: " ")
         ))
-        #expect(recorded[1].contains(
+        #expect(recorded[2].contains(
             powerShellEncodedArgument("kill-session -t $42")
         ))
         #expect(!recorded.joined().contains("review's session"))
@@ -296,11 +310,14 @@ struct TmuxSessionKillerTests {
 
     @Test("session identity is read from the selected socket")
     func readsIdentity() async throws {
-        let recordedCommand = LockedValue<String?>(nil)
+        let recordedCommands = LockedValue<[String]>([])
         let killer = TmuxSessionKiller(
             pathResolver: { _ in .success("/usr/bin/tmux") },
             runner: { _, command in
-                recordedCommand.store(command)
+                recordedCommands.withLock { $0.append(command) }
+                guard command.contains("display-message") else {
+                    return (0, "")
+                }
                 return (
                     0,
                     "Welcome to the host\n"
@@ -326,12 +343,105 @@ struct TmuxSessionKillerTests {
             sessionID: "$42",
             createdAt: "1785182057"
         ))
-        #expect(
-            recordedCommand.load()
-                == "'/usr/bin/tmux' '-L' 'protected' 'display-message'"
+        let commands = try #require(
+            recordedCommands.load().count == 2
+                ? recordedCommands.load()
+                : nil
+        )
+        #expect(commands[0].contains(
+            "'/usr/bin/tmux' '-L' 'protected' 'has-session'"
+                + " '-t' '=worker:'"
+        ))
+        #expect(commands[0].hasSuffix(" 2>&1"))
+        #expect(commands[1].contains(
+            "'/usr/bin/tmux' '-L' 'protected' 'display-message'"
                 + " '-p' '-t' '=worker:'"
-                + " 'GHOSTHUB_TMUX_SESSION_IDENTITY\t"
-                + "#{pid}\t#{session_id}\t#{session_created}'"
+        ))
+    }
+
+    @Test("identity command failure is not reported as session absence")
+    func identityCommandFailure() async {
+        let killer = TmuxSessionKiller(
+            pathResolver: { _ in .success("/usr/bin/tmux") },
+            runner: { _, _ in
+                (1, "error connecting to socket (Permission denied)")
+            }
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: UUID(),
+            name: "worker"
+        )
+
+        await #expect {
+            try await killer.sessionIdentity(selection, on: .local)
+        } throws: { error in
+            error as? TmuxSessionKillError == .identityCommandFailed(
+                host: "localhost",
+                session: "worker",
+                status: 1
+            )
+        }
+    }
+
+    @Test("malformed identity is not reported as session absence")
+    func malformedIdentity() async {
+        let killer = TmuxSessionKiller(
+            pathResolver: { _ in .success("/usr/bin/tmux") },
+            runner: { _, _ in (0, "unexpected output") }
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: UUID(),
+            name: "worker"
+        )
+
+        await #expect {
+            try await killer.sessionIdentity(selection, on: .local)
+        } throws: { error in
+            error as? TmuxSessionKillError == .identityUnavailable(
+                host: "localhost",
+                session: "worker"
+            )
+        }
+    }
+
+    @Test("explicit absence is reported as session not running")
+    func explicitAbsence() async {
+        let killer = TmuxSessionKiller(
+            pathResolver: { _ in .success("/usr/bin/tmux") },
+            runner: { _, _ in
+                (1, "can't find session: worker\n")
+            }
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: UUID(),
+            name: "worker"
+        )
+
+        await #expect {
+            try await killer.sessionIdentity(selection, on: .local)
+        } throws: { error in
+            error as? TmuxSessionKillError == .sessionNotRunning(
+                host: "localhost",
+                session: "worker"
+            )
+        }
+    }
+
+    @Test(
+        "only missing session or server diagnostics confirm absence",
+        arguments: [
+            ("can't find session: worker", true),
+            ("no server running on /tmp/tmux-501/default", true),
+            ("error connecting to socket (Permission denied)", false),
+            ("", false),
+        ]
+    )
+    func confirmedAbsenceDiagnostics(
+        output: String,
+        expected: Bool
+    ) {
+        #expect(
+            TmuxSessionKiller.isConfirmedAbsence(output) == expected
         )
     }
 }
