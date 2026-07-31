@@ -198,11 +198,12 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
             handleSizeChange(bounds.size)
         }
         syncInitialOcclusionState(for: window)
-        guard !suppressAutoFocus else { return }
+        guard !suppressAutoFocus, window.isKeyWindow else { return }
         DispatchQueue.main.async { [weak self] in
             guard let self, !self.suppressAutoFocus,
                   let currentWindow = self.window,
-                  currentWindow === window else { return }
+                  currentWindow === window,
+                  currentWindow.isKeyWindow else { return }
             if isCompetingFirstResponder(window.firstResponder) {
                 return
             }
@@ -242,6 +243,12 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
             self,
             selector: #selector(windowDidBecomeKey),
             name: NSWindow.didBecomeKeyNotification,
+            object: nil
+        )
+        center.addObserver(
+            self,
+            selector: #selector(windowDidResignKey),
+            name: NSWindow.didResignKeyNotification,
             object: nil
         )
         center.addObserver(
@@ -726,6 +733,15 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
         ensureFirstResponder()
     }
 
+    @objc private func windowDidResignKey(
+        notification: Notification
+    ) {
+        guard let window,
+              let object = notification.object as? NSWindow,
+              window == object else { return }
+        focusDidChange(false)
+    }
+
     @objc private func windowDidChangeOcclusionState(
         notification: Notification
     ) {
@@ -867,7 +883,7 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
 
     override public func becomeFirstResponder() -> Bool {
         let result = super.becomeFirstResponder()
-        if result {
+        if result, window?.isKeyWindow == true {
             focusDidChange(true)
         }
         return result
@@ -1385,7 +1401,7 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     }
 
     func ensureFirstResponder() {
-        guard let window else { return }
+        guard let window, window.isKeyWindow else { return }
         if window.firstResponder === self {
             if !focused {
                 focusDidChange(true)

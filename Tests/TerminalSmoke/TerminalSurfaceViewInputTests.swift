@@ -337,10 +337,13 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         _ view: TerminalSurfaceView,
         size: CGSize = CGSize(width: 960, height: 640)
     ) -> NSWindow {
-        hostSwiftUIWindow(
+        let window = hostSwiftUIWindow(
             rootView: TerminalSurfaceSwiftUIView(surfaceView: view),
             size: size
         )
+        window.makeFirstResponder(view)
+        view.focusDidChange(true)
+        return window
     }
 
     private func hostInWorkspaceWindow(
@@ -400,12 +403,15 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         _ view: TerminalSurfaceView,
         size: CGSize = CGSize(width: 960, height: 640)
     ) -> NSWindow {
-        return hostInWorkspaceWindow(
+        let window = hostInWorkspaceWindow(
             size: size,
             tmuxContentBuilder: {
                 return AnyView(TerminalSurfaceSwiftUIView(surfaceView: view))
             }
         )
+        window.makeFirstResponder(view)
+        view.focusDidChange(true)
+        return window
     }
 
     private func descendantViews(
@@ -1017,6 +1023,11 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             configuration: TerminalSurfaceConfiguration()
         )
         let window = hostInWindow(view)
+        guard window.isKeyWindow else {
+            throw XCTSkip(
+                "Test requires window server - skipping in headless environment"
+            )
+        }
 
         var interactions = 0
         var focusedTransitions = 0
@@ -1620,6 +1631,57 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
 
         XCTAssertFalse(descendantViews(in: window.contentView).contains(surfaceA))
         XCTAssertTrue(descendantViews(in: window.contentView).contains(surfaceB))
+    }
+
+    func testNonKeyWindowCannotMarkTerminalFocused() throws {
+        let appHandle = try requireAppHandle()
+        let view = TerminalSurfaceView(
+            app: appHandle,
+            configuration: TerminalSurfaceConfiguration()
+        )
+        let window = NSWindow(
+            contentRect: NSRect(
+                origin: .zero,
+                size: CGSize(width: 960, height: 640)
+            ),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        defer { window.orderOut(nil) }
+
+        window.contentView = view
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        view.requestKeyboardFocus()
+        XCTAssertTrue(window.makeFirstResponder(view))
+
+        XCTAssertFalse(window.isKeyWindow)
+        XCTAssertFalse(
+            view.focused,
+            "A terminal in a background window must reject every positive focus transition."
+        )
+    }
+
+    func testWindowResigningKeyClearsTerminalFocus() throws {
+        let appHandle = try requireAppHandle()
+
+        let view = TerminalSurfaceView(
+            app: appHandle,
+            configuration: TerminalSurfaceConfiguration()
+        )
+        let window = hostInWindow(view)
+        defer { window.orderOut(nil) }
+        view.focusDidChange(true)
+
+        NotificationCenter.default.post(
+            name: NSWindow.didResignKeyNotification,
+            object: window
+        )
+
+        XCTAssertFalse(
+            view.focused,
+            "A terminal must lose libghostty focus when its window resigns key status."
+        )
     }
 
     func testDetachingViewClearsFocusState() throws {

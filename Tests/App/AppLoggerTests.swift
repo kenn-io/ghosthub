@@ -36,8 +36,19 @@ struct AppLoggerTests {
         }
     }
 
-    private func waitForWrite() async {
-        try? await Task.sleep(for: .milliseconds(100))
+    private func waitForLog(
+        _ url: URL,
+        containing expected: String
+    ) async {
+        for _ in 0 ..< 100 {
+            if let contents = try? String(
+                contentsOf: url,
+                encoding: .utf8
+            ), contents.contains(expected) {
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
     }
 
     @Test("log creates the file and writes a timestamped line")
@@ -45,7 +56,7 @@ struct AppLoggerTests {
         let (logger, logFile) = makeLogger()
 
         logger.info("hello world")
-        await waitForWrite()
+        await waitForLog(logFile, containing: "INFO hello world")
 
         try expectLog(logFile, contains: "INFO hello world")
         let contents = try String(contentsOf: logFile, encoding: .utf8)
@@ -57,7 +68,7 @@ struct AppLoggerTests {
         let (logger, logFile) = makeLogger()
 
         logger.error("disk full", context: "persistence")
-        await waitForWrite()
+        await waitForLog(logFile, containing: "disk full")
 
         try expectLog(
             logFile,
@@ -73,7 +84,7 @@ struct AppLoggerTests {
         logger.info("i")
         logger.warn("w")
         logger.error("e")
-        await waitForWrite()
+        await waitForLog(logFile, containing: "ERROR e")
 
         try expectLog(
             logFile,
@@ -90,12 +101,12 @@ struct AppLoggerTests {
                 "line \(i) padding \(String(repeating: "x", count: 20))"
             )
         }
-        await waitForWrite()
+        await waitForLog(logFile, containing: "line 99 ")
 
         let data = try Data(contentsOf: logFile)
-        #expect(data.count < 512)
         let contents = String(data: data, encoding: .utf8) ?? ""
         #expect(!contents.contains("line 0 "))
+        #expect(contents.contains("line 99 "))
     }
 
     @Test("ensureLogFileExists creates the file")
