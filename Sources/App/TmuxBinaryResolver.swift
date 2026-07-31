@@ -136,7 +136,10 @@ struct TmuxBinaryResolver: Sendable {
         }
         self.remoteProcessRunner = remoteProcessRunner ?? { host, command in
             Self.runRemoteLoginShell(
-                host: host, command: command, timeout: processTimeout
+                host: host,
+                command: command,
+                timeout: processTimeout,
+                accountShell: loginShellProvider()
             )
         }
         self.loginShellProvider = loginShellProvider
@@ -357,19 +360,40 @@ struct TmuxBinaryResolver: Sendable {
     static func runLoginShell(
         shell: String,
         command: String,
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        captureStandardError: Bool = false
     ) -> (status: Int32, stdout: String) {
         runProcess(
             executable: shell,
-            arguments: ["-lc", posixCommand(command)],
-            timeout: timeout
+            arguments: ["-lc", accountShellCommand(command)],
+            timeout: timeout,
+            captureStandardError: captureStandardError
+        )
+    }
+
+    static func runProcessInLoginShell(
+        executable: String,
+        arguments: [String],
+        timeout: TimeInterval,
+        captureStandardError: Bool = false,
+        accountShell: String = loginShell()
+    ) -> (status: Int32, stdout: String) {
+        let command = ([executable] + arguments)
+            .map(shellQuotedCommandArgument)
+            .joined(separator: " ")
+        return runLoginShell(
+            shell: accountShell,
+            command: command,
+            timeout: timeout,
+            captureStandardError: captureStandardError
         )
     }
 
     static func runRemoteLoginShell(
         host: SSHHostInfo,
         command: String,
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        accountShell: String = loginShell()
     ) -> (status: Int32, stdout: String) {
         var arguments = ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
         arguments.append(contentsOf: tmuxSSHConnectionArguments())
@@ -380,10 +404,11 @@ struct TmuxBinaryResolver: Sendable {
         arguments.append(contentsOf: [
             "--", target, remoteLoginCommand(host: host, command: command),
         ])
-        return runProcess(
+        return runProcessInLoginShell(
             executable: "/usr/bin/ssh",
             arguments: arguments,
-            timeout: timeout
+            timeout: timeout,
+            accountShell: accountShell
         )
     }
 
@@ -394,9 +419,7 @@ struct TmuxBinaryResolver: Sendable {
         if host.platform == .windows {
             return powerShellEncodedCommand(command)
         }
-        let accountShellCommand = "exec \"${SHELL:-/bin/sh}\" -lc "
-            + shellQuotedCommandArgument(posixCommand(command))
-        return posixCommand(accountShellCommand)
+        return accountLoginShellCommand(command)
     }
 
     /// The account shell owns login-environment initialization, but Ghosthub's

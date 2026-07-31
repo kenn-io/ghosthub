@@ -2133,9 +2133,8 @@ final class WorkspaceSceneModel: ObservableObject {
                     severity: .error,
                     summary: "SSH could not be reached.",
                     recoverySuggestion:
-                    "Run `ssh \(host.sshDestination)` in Terminal once to "
-                        + "accept the host key, then verify key-based "
-                        + "authentication works without a prompt."
+                    "Confirm the host key is trusted and key-based "
+                        + "authentication is available from your login shell."
                 )]
             } else if !tmuxAvailable {
                 diagnostics = [RemoteHostDiagnostic(

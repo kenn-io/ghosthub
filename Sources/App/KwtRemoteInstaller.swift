@@ -320,7 +320,7 @@ struct KwtRemoteInstaller: Sendable {
         source: URL,
         destination: String
     ) -> (status: Int32, output: String) {
-        let result = TmuxBinaryResolver.runProcess(
+        let result = TmuxBinaryResolver.runProcessInLoginShell(
             executable: "/usr/bin/scp",
             arguments: uploadArguments(
                 host: host,

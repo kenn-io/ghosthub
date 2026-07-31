@@ -300,7 +300,7 @@ struct KwtWindowsInstaller: Sendable {
             localPath,
             "\(destination):\(remoteName)",
         ]
-        return TmuxBinaryResolver.runProcess(
+        return TmuxBinaryResolver.runProcessInLoginShell(
             executable: "/usr/bin/scp",
             arguments: arguments,
             timeout: 120

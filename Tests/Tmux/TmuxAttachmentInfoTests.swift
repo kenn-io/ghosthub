@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Testing
 @testable import GhosthubTmux
@@ -473,7 +474,10 @@ struct TmuxAttachmentInfoTests {
 
         let command = info.attachCommand(tmuxPath: "/opt/bin/tmux")
 
-        #expect(command.contains("'/usr/bin/ssh' '-tt'"))
+        #expect(command.contains("/usr/bin/ssh"))
+        #expect(command.contains("-tt"))
+        #expect(command.contains("${SHELL:-/bin/sh}"))
+        #expect(command.contains(" -lc "))
         #expect(command.contains("'ServerAliveInterval=15'"))
         #expect(command.contains("'ServerAliveCountMax=3'"))
         #expect(command.contains("'TCPKeepAlive=yes'"))
@@ -484,7 +488,9 @@ struct TmuxAttachmentInfoTests {
         #expect(!command.contains("status-style"))
         #expect(!command.contains("message-style"))
         #expect(!command.contains("message-command-style"))
-        #expect(command.contains("[ \"$status\" -eq 255 ] || exit \"$status\""))
+        #expect(command.contains(
+            "[ \\\"\\$status\\\" -eq 255 ] || exit \\\"\\$status\\\""
+        ))
         #expect(!command.contains("-CC"))
         #expect(!command.contains("KexAlgorithms"))
         #expect(!command.contains("bind-key"))
@@ -507,7 +513,8 @@ struct TmuxAttachmentInfoTests {
             #".ghosthub\helpers\kwt\0123456789012345678901234567890123456789\kwt.exe"#
         )
 
-        #expect(command.contains("'/usr/bin/ssh' '-tt'"))
+        #expect(command.contains("/usr/bin/ssh"))
+        #expect(command.contains("-tt"))
         #expect(command.contains("'wesm@arm-builder'"))
         #expect(command.contains("-EncodedCommand"))
         #expect(command.contains("ghosthub-ssh-psmux"))
@@ -630,9 +637,8 @@ struct TmuxAttachmentInfoTests {
         ))
         #expect(command.contains("${SHELL:-/bin/sh}"))
         #expect(command.contains("-lc"))
-        #expect(command.contains(
-            "[ -x \"$ghosthub_kwt_path\" ] || exit 127"
-        ))
+        #expect(command.contains("ghosthub_kwt_path"))
+        #expect(command.contains("exit 127"))
         #expect(!command.contains("exec ghosthub_kwt_path="))
         #expect(command.contains("pr"))
         #expect(command.contains("attach"))
@@ -644,6 +650,14 @@ struct TmuxAttachmentInfoTests {
         if let kwtPosition, let stylePosition {
             #expect(kwtPosition < stylePosition)
         }
+    }
+
+    @Test("normal SSH arguments preserve OpenSSH connection sharing")
+    func normalSSHArgumentsPreserveOpenSSHConnectionSharing() {
+        let arguments = tmuxSSHConnectionArguments(environment: [:])
+
+        #expect(!arguments.contains("ControlMaster=no"))
+        #expect(!arguments.contains("ControlPath=none"))
     }
 
     @Test("demo SSH arguments isolate config, trust, and routing")
@@ -663,14 +677,16 @@ struct TmuxAttachmentInfoTests {
             sshConnectionArguments: arguments
         )
 
-        #expect(command.contains("'-F' '/tmp/ghosthub demo/ssh/config'"))
+        #expect(command.contains("/tmp/ghosthub demo/ssh/config"))
         #expect(command.contains(
-            "'UserKnownHostsFile=/tmp/ghosthub demo/ssh/known_hosts'"
+            "UserKnownHostsFile=/tmp/ghosthub demo/ssh/known_hosts"
         ))
-        #expect(command.contains("'GlobalKnownHostsFile=/dev/null'"))
-        #expect(command.contains("'StrictHostKeyChecking=yes'"))
-        #expect(command.contains("'ProxyCommand=none'"))
-        #expect(command.contains("'ProxyJump=none'"))
+        #expect(command.contains("GlobalKnownHostsFile=/dev/null"))
+        #expect(command.contains("StrictHostKeyChecking=yes"))
+        #expect(command.contains("ProxyCommand=none"))
+        #expect(command.contains("ProxyJump=none"))
+        #expect(command.contains("ControlMaster=no"))
+        #expect(command.contains("ControlPath=none"))
     }
 
     @Test("local creation atomically attaches under destroy-unattached")
@@ -751,7 +767,7 @@ struct TmuxAttachmentInfoTests {
         #expect(
             command.components(
                 separatedBy: "${SHELL:-/bin/sh}"
-            ).count - 1 == 3
+            ).count - 1 == 4
         )
     }
 
@@ -809,6 +825,35 @@ struct TmuxAttachmentInfoTests {
         if let loginShellPosition, let presentationPosition {
             #expect(loginShellPosition < presentationPosition)
         }
+    }
+
+    @Test("account login handoff runs under the configured shell")
+    func accountLoginHandoffRunsUnderConfiguredShell() throws {
+        let password = try #require(getpwuid(getuid()))
+        let shell = String(cString: password.pointee.pw_shell)
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: shell)
+        process.arguments = [
+            "-c", accountLoginShellCommand(
+                "printf 'GHOSTHUB_ACCOUNT_SHELL_READY\\n'"
+            ),
+        ]
+        process.environment = ProcessInfo.processInfo.environment.merging([
+            "SHELL": shell,
+        ]) { _, new in new }
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+
+        try process.run()
+        process.waitUntilExit()
+        let text = String(
+            decoding: output.fileHandleForReading.readDataToEndOfFile(),
+            as: UTF8.self
+        )
+
+        #expect(process.terminationStatus == 0)
+        #expect(text == "GHOSTHUB_ACCOUNT_SHELL_READY\n")
     }
 
     @Test("remote worktree switches to tmux only after transport loss")
