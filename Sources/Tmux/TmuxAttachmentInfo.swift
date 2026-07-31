@@ -3,29 +3,43 @@ import Foundation
 public func tmuxSSHConnectionArguments(
     environment: [String: String] = ProcessInfo.processInfo.environment
 ) -> [String] {
-    var arguments = [
+    // The screenshot app is ad-hoc signed and runs against guarded scratch
+    // state. Keep its SSH isolation explicit without changing normal clients.
+    guard let scratch = environment["GHOSTHUB_DEMO_SCRATCH"],
+          let directory = environment["GHOSTHUB_DEMO_SSH_DIR"],
+          scratch.hasPrefix("/"), directory == "\(scratch)/ssh"
+    else { return [] }
+
+    return [
+        "-F", "\(directory)/config",
+        "-o", "UserKnownHostsFile=\(directory)/known_hosts",
+        "-o", "GlobalKnownHostsFile=/dev/null",
+        "-o", "StrictHostKeyChecking=yes",
+        "-o", "ProxyCommand=none",
+        "-o", "ProxyJump=none",
         "-o", "ControlMaster=no",
         "-o", "ControlPath=none",
     ]
-    // The screenshot app is ad-hoc signed and runs against guarded scratch
-    // state. Keep its SSH isolation explicit without changing normal clients.
-    if let scratch = environment["GHOSTHUB_DEMO_SCRATCH"],
-       let directory = environment["GHOSTHUB_DEMO_SSH_DIR"],
-       scratch.hasPrefix("/"), directory == "\(scratch)/ssh" {
-        arguments.insert(contentsOf: [
-            "-F", "\(directory)/config",
-            "-o", "UserKnownHostsFile=\(directory)/known_hosts",
-            "-o", "GlobalKnownHostsFile=/dev/null",
-            "-o", "StrictHostKeyChecking=yes",
-            "-o", "ProxyCommand=none",
-            "-o", "ProxyJump=none",
-        ], at: 0)
-    }
-    return arguments
 }
 
 public func shellQuotedCommandArgument(_ value: String) -> String {
     "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+}
+
+private func accountShellCommandArgument(_ value: String) -> String {
+    value.split(separator: "`", omittingEmptySubsequences: false)
+        .map { segment in
+            let escaped = String(segment)
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
+                .replacingOccurrences(of: "$", with: "\\$")
+            return "\"\(escaped)\""
+        }
+        .joined(separator: "'`'")
+}
+
+public func accountShellCommand(_ command: String) -> String {
+    "exec /bin/sh -c " + accountShellCommandArgument(command)
 }
 
 /// Keeps caller-controlled text out of PowerShell source. The generated
@@ -78,16 +92,15 @@ public func powerShellKwtAvailabilityPrelude(
     """
 }
 
-/// Initializes the remote account's login environment, then delegates
-/// Ghosthub-owned POSIX command text to `/bin/sh`. The outer simple command is
-/// accepted by POSIX shells and non-POSIX account shells such as fish.
-public func remoteAccountLoginShellCommand(_ command: String) -> String {
+/// Initializes an account's login environment, then delegates
+/// Ghosthub-owned POSIX command text to `/bin/sh`. The outer command argument
+/// is accepted by POSIX shells and non-POSIX account shells such as fish.
+public func accountLoginShellCommand(_ command: String) -> String {
     let posixCommand = "exec /bin/sh -c "
         + shellQuotedCommandArgument(command)
-    let accountShellCommand = "exec \"${SHELL:-/bin/sh}\" -lc "
+    let loginCommand = "exec \"${SHELL:-/bin/sh}\" -lc "
         + shellQuotedCommandArgument(posixCommand)
-    return "exec /bin/sh -c "
-        + shellQuotedCommandArgument(accountShellCommand)
+    return accountShellCommand(loginCommand)
 }
 
 public enum ConnectionState: Codable, Equatable, Sendable {
@@ -215,52 +228,54 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                 workingDirectory: workingDirectory
             )
         case let .ssh(info):
+            let command: String
             if info.platform == .windows {
                 if launchMode == .create {
-                    return remoteCreateThenAttachCommand(
+                    command = remoteCreateThenAttachCommand(
                         info: info,
                         tmuxPath: tmuxPath,
                         workingDirectory: workingDirectory,
                         sshConnectionArguments: sshConnectionArguments
                     )
-                }
-                if protectedWorkspacePath == nil, workspacePath != nil {
-                    return windowsRemoteWorkspaceAttachCommand(
+                } else if protectedWorkspacePath == nil,
+                          workspacePath != nil {
+                    command = windowsRemoteWorkspaceAttachCommand(
+                        info: info,
+                        tmuxPath: tmuxPath,
+                        windowsKwtRelativePath: windowsKwtRelativePath,
+                        sshConnectionArguments: sshConnectionArguments
+                    )
+                } else {
+                    command = windowsRemoteAttachCommand(
                         info: info,
                         tmuxPath: tmuxPath,
                         windowsKwtRelativePath: windowsKwtRelativePath,
                         sshConnectionArguments: sshConnectionArguments
                     )
                 }
-                return windowsRemoteAttachCommand(
-                    info: info,
-                    tmuxPath: tmuxPath,
-                    windowsKwtRelativePath: windowsKwtRelativePath,
-                    sshConnectionArguments: sshConnectionArguments
-                )
-            }
-            if launchMode == .create {
-                return remoteCreateThenAttachCommand(
+            } else if launchMode == .create {
+                command = remoteCreateThenAttachCommand(
                     info: info,
                     tmuxPath: tmuxPath,
                     workingDirectory: workingDirectory,
                     sshConnectionArguments: sshConnectionArguments
                 )
-            }
-            if protectedWorkspacePath == nil, workspacePath != nil {
-                return remoteWorkspaceAttachCommand(
+            } else if protectedWorkspacePath == nil, workspacePath != nil {
+                command = remoteWorkspaceAttachCommand(
+                    info: info,
+                    tmuxPath: tmuxPath,
+                    remoteKwtCommandPrelude: remoteKwtCommandPrelude,
+                    sshConnectionArguments: sshConnectionArguments
+                )
+            } else {
+                command = remoteAttachCommand(
                     info: info,
                     tmuxPath: tmuxPath,
                     remoteKwtCommandPrelude: remoteKwtCommandPrelude,
                     sshConnectionArguments: sshConnectionArguments
                 )
             }
-            return remoteAttachCommand(
-                info: info,
-                tmuxPath: tmuxPath,
-                remoteKwtCommandPrelude: remoteKwtCommandPrelude,
-                sshConnectionArguments: sshConnectionArguments
-            )
+            return accountLoginShellCommand(command)
         }
     }
 
@@ -534,7 +549,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                 || protectedWorkspacePath != nil
                 || presentationStyle != nil
         let remoteAttach = requiresAccountLoginShell
-            ? remoteAccountLoginShellCommand(remoteAttachBody)
+            ? accountLoginShellCommand(remoteAttachBody)
             : remoteAttachBody
         return shellCommand(
             [
@@ -585,7 +600,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
             sshArguments(
                 info: info,
                 allocateTTY: true,
-                remoteCommand: remoteAccountLoginShellCommand(initialBody),
+                remoteCommand: accountLoginShellCommand(initialBody),
                 sshConnectionArguments: sshConnectionArguments
             )
         )
@@ -609,7 +624,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
             ] + sshArguments(
                 info: info,
                 allocateTTY: false,
-                remoteCommand: remoteAccountLoginShellCommand(remoteProbe),
+                remoteCommand: accountLoginShellCommand(remoteProbe),
                 sshConnectionArguments: sshConnectionArguments
             )
         )

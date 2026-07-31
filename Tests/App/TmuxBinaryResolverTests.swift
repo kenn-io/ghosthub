@@ -70,6 +70,49 @@ struct TmuxBinaryResolverTests {
         #expect(resolver.resolveTmuxPath() == .success(tmux.path))
     }
 
+    @Test("configured account shell launches a quoted executable")
+    func configuredAccountShellLaunchesExecutable() throws {
+        let password = try #require(getpwuid(getuid()))
+        let shell = String(cString: password.pointee.pw_shell)
+        let argument = #"exec /bin/sh -c "marker=$(printf '%s' 'ready'); printf '%s\n' "$marker"""#
+
+        let result = TmuxBinaryResolver.runProcessInLoginShell(
+            executable: "/usr/bin/printf",
+            arguments: ["%s", argument],
+            timeout: 2,
+            accountShell: shell
+        )
+
+        #expect(result.status == 0)
+        #expect(result.stdout == argument)
+    }
+
+    @Test("remote POSIX command runs under the configured account shell")
+    func remotePOSIXCommandRunsUnderConfiguredAccountShell() throws {
+        let password = try #require(getpwuid(getuid()))
+        let shell = String(cString: password.pointee.pw_shell)
+        let host = SSHHostInfo(
+            user: nil,
+            hostname: "remote.example",
+            port: nil
+        )
+        let command = TmuxBinaryResolver.remoteLoginCommand(
+            host: host,
+            command:
+            "marker=$(printf '%s' 'REMOTE_SHELL_READY'); "
+                + "printf 'GHOSTHUB_%s\\n' \"$marker\""
+        )
+
+        let result = TmuxBinaryResolver.runProcess(
+            executable: shell,
+            arguments: ["-c", command],
+            timeout: 2
+        )
+
+        #expect(result.status == 0)
+        #expect(result.stdout == "GHOSTHUB_REMOTE_SHELL_READY\n")
+    }
+
     @Test("rejects unsupported tmux versions")
     func rejectsOldVersion() {
         let resolver = TmuxBinaryResolver(processRunner: { _, _ in
