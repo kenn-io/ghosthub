@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import Darwin
 import Foundation
 import GhosttyKit
@@ -426,10 +427,27 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
 
     func testSilentSuccessfulReloadPreservesExplicitSuccessNotice() throws {
         let ctx = try makeIsolatedRuntime()
+        var received: [LibghosttyConfigReloadNotice?] = []
+        let existingWindow = ctx.runtime.configReloadNotices.sink {
+            received.append($0)
+        }
+        defer { existingWindow.cancel() }
+
         let explicitResult = ctx.runtime.reloadActiveConfig()
         XCTAssertEqual(explicitResult, .applied)
         XCTAssertEqual(ctx.runtime.configReloadNotice?.kind, .success)
         let explicitNoticeID = ctx.runtime.configReloadNotice?.id
+        let receivedNotices = received.compactMap { $0 }
+        XCTAssertEqual(receivedNotices.count, 1)
+        XCTAssertEqual(receivedNotices.first?.kind, .success)
+        XCTAssertEqual(receivedNotices.first?.id, explicitNoticeID)
+
+        var replayed: [LibghosttyConfigReloadNotice?] = []
+        let newWindow = ctx.runtime.configReloadNotices.sink {
+            replayed.append($0)
+        }
+        newWindow.cancel()
+        XCTAssertTrue(replayed.isEmpty)
 
         let silentResult = ctx.runtime.reloadActiveConfig(
             notifyOnSuccess: false

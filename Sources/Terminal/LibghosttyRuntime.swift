@@ -43,6 +43,8 @@ public final class LibghosttyRuntime: ObservableObject {
     public let runtimeState: LibghosttyRuntimeState
     public let renderTracker = SurfaceRenderTracker()
 
+    private let configReloadNoticeSubject =
+        PassthroughSubject<LibghosttyConfigReloadNotice?, Never>()
     private let pipeline: LibghosttyConfigPipeline
     private let configMonitorFactory: ConfigMonitorFactory
     private nonisolated(unsafe) var appHandle: ghostty_app_t?
@@ -56,6 +58,11 @@ public final class LibghosttyRuntime: ObservableObject {
 
     public var configPaths: LibghosttyConfigPaths {
         pipeline.paths
+    }
+
+    public var configReloadNotices:
+        AnyPublisher<LibghosttyConfigReloadNotice?, Never> {
+        configReloadNoticeSubject.eraseToAnyPublisher()
     }
 
     public var needsConfirmQuit: Bool {
@@ -211,12 +218,14 @@ public final class LibghosttyRuntime: ObservableObject {
             clearMonitorFailure()
             diagnostics = []
             if notifyOnSuccess {
-                configReloadNotice = LibghosttyConfigReloadNotice(
-                    kind: .success,
-                    message: "Terminal configuration reloaded."
+                setConfigReloadNotice(
+                    LibghosttyConfigReloadNotice(
+                        kind: .success,
+                        message: "Terminal configuration reloaded."
+                    )
                 )
             } else if configReloadNotice?.kind == .error {
-                configReloadNotice = nil
+                setConfigReloadNotice(nil)
             }
             return .applied
         } catch {
@@ -464,9 +473,11 @@ public final class LibghosttyRuntime: ObservableObject {
         let suffix = messages.count > 1
             ? " (+\(messages.count - 1) more)"
             : ""
-        configReloadNotice = LibghosttyConfigReloadNotice(
-            kind: .error,
-            message: "Configuration not reloaded: \(first)\(suffix)"
+        setConfigReloadNotice(
+            LibghosttyConfigReloadNotice(
+                kind: .error,
+                message: "Configuration not reloaded: \(first)\(suffix)"
+            )
         )
     }
 
@@ -494,7 +505,7 @@ public final class LibghosttyRuntime: ObservableObject {
             """
         )
         monitorFailureNoticeID = notice.id
-        configReloadNotice = notice
+        setConfigReloadNotice(notice)
     }
 
     private func clearMonitorFailure() {
@@ -502,9 +513,16 @@ public final class LibghosttyRuntime: ObservableObject {
         diagnostics.removeAll { $0 == message }
         monitorFailureMessage = nil
         if configReloadNotice?.id == monitorFailureNoticeID {
-            configReloadNotice = nil
+            setConfigReloadNotice(nil)
         }
         monitorFailureNoticeID = nil
+    }
+
+    private func setConfigReloadNotice(
+        _ notice: LibghosttyConfigReloadNotice?
+    ) {
+        configReloadNotice = notice
+        configReloadNoticeSubject.send(notice)
     }
 
     private static func ensureLibraryInitialized() -> Bool {

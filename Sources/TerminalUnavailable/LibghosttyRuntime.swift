@@ -23,12 +23,19 @@ public final class LibghosttyRuntime: ObservableObject {
     public let runtimeState: LibghosttyRuntimeState
     public let renderTracker = SurfaceRenderTracker()
 
+    private let configReloadNoticeSubject =
+        PassthroughSubject<LibghosttyConfigReloadNotice?, Never>()
     private let pipeline: LibghosttyConfigPipeline
     private var activeConfigRoot: URL?
     private var configMonitor: LibghosttyConfigFileMonitor?
 
     public var configPaths: LibghosttyConfigPaths {
         pipeline.paths
+    }
+
+    public var configReloadNotices:
+        AnyPublisher<LibghosttyConfigReloadNotice?, Never> {
+        configReloadNoticeSubject.eraseToAnyPublisher()
     }
 
     public var needsConfirmQuit: Bool { false }
