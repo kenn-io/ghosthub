@@ -150,8 +150,9 @@ public struct SettingsView: View {
             content.toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") {
-                        persist()
-                        dismiss()
+                        if persist().didPersistTmuxSessionPatterns {
+                            dismiss()
+                        }
                     }
                 }
             }
@@ -320,6 +321,41 @@ public struct SettingsView: View {
                 .fixedSize(horizontal: false, vertical: true)
             }
 
+            settingsSection("Standalone Tmux Sessions") {
+                Text("Hidden session patterns")
+                    .font(.system(size: 13, weight: .semibold))
+
+                TextEditor(text: hiddenTmuxSessionPatternsText)
+                    .font(.system(size: 12, design: .monospaced))
+                    .frame(minHeight: 96)
+                    .padding(6)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(.background)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(.separator, lineWidth: 1)
+                    )
+                    .accessibilityLabel("Hidden tmux session patterns")
+
+                Text(
+                    "Enter one case-sensitive wildcard pattern per line."
+                        + " Use * for any number of characters and ? for one."
+                        + " Matching standalone sessions are hidden from the"
+                        + " sidebar and command palette; kwt workspaces remain"
+                        + " discoverable under their projects."
+                )
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+                configPathRow(
+                    "Ghosthub stores these patterns in:",
+                    path: store.appConfigFile.path
+                )
+            }
+
             settingsSection("Workspace Sessions") {
                 Label(
                     "Kwt supplies each workspace’s exact tmux session name.",
@@ -340,6 +376,19 @@ public struct SettingsView: View {
                 .foregroundStyle(.secondary)
             }
         }
+    }
+
+    private var hiddenTmuxSessionPatternsText: Binding<String> {
+        Binding(
+            get: {
+                draft.hiddenTmuxSessionPatterns.joined(separator: "\n")
+            },
+            set: { value in
+                draft.hiddenTmuxSessionPatterns = value.components(
+                    separatedBy: .newlines
+                )
+            }
+        )
     }
 
     private var agentsDetail: some View {
@@ -611,7 +660,8 @@ public struct SettingsView: View {
         }
     }
 
-    private func persist() {
+    @discardableResult
+    private func persist() -> SettingsPersistResult {
         let result = draft.persist(to: store)
         if result.shouldRefreshHosts {
             actions.refreshHosts()
@@ -619,6 +669,7 @@ public struct SettingsView: View {
         if result.shouldReloadTerminalConfig {
             actions.reloadTerminalConfig()
         }
+        return result
     }
 
 }

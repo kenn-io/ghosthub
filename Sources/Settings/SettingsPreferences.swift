@@ -14,6 +14,14 @@ public struct WorktreePreferences: Equatable, Sendable {
     }
 }
 
+public struct TmuxSessionPreferences: Equatable, Sendable {
+    public var hiddenSessionPatterns: [String]
+
+    public init(hiddenSessionPatterns: [String] = []) {
+        self.hiddenSessionPatterns = hiddenSessionPatterns
+    }
+}
+
 public struct AgentPreferences: Equatable, Sendable {
     public init() {}
 }

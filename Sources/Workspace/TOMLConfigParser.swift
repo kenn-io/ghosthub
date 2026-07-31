@@ -9,25 +9,30 @@ public enum TOMLConfigParser {
     /// Strip inline comments from a raw TOML line, respecting quoted strings.
     public static func strippedTOMLLine(_ rawLine: String) -> String {
         var result = ""
-        var inQuotes = false
+        var quote: Character?
         var isEscaped = false
 
         for character in rawLine {
-            if character == "\"", !isEscaped {
-                inQuotes.toggle()
+            if let activeQuote = quote {
+                if character == activeQuote,
+                   activeQuote == "'" || !isEscaped {
+                    quote = nil
+                }
+            } else if character == "\"" || character == "'" {
+                quote = character
             }
-            if character == "#", !inQuotes {
+            if character == "#", quote == nil {
                 break
             }
             result.append(character)
-            if character == "\\", !isEscaped {
+            if quote == "\"", character == "\\", !isEscaped {
                 isEscaped = true
             } else {
                 isEscaped = false
             }
         }
 
-        return result.trimmingCharacters(in: .whitespaces)
+        return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: - Header / Key Extraction
@@ -65,9 +70,28 @@ public enum TOMLConfigParser {
 
     /// Wrap a string in double quotes with TOML escaping.
     public static func renderTOMLString(_ value: String) -> String {
-        let escaped = value
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
+        let escaped = value.unicodeScalars.map { scalar -> String in
+            switch scalar.value {
+            case 0x08:
+                return "\\b"
+            case 0x09:
+                return "\\t"
+            case 0x0A:
+                return "\\n"
+            case 0x0C:
+                return "\\f"
+            case 0x0D:
+                return "\\r"
+            case 0x22:
+                return "\\\""
+            case 0x5C:
+                return "\\\\"
+            case 0x00 ... 0x1F, 0x7F:
+                return String(format: "\\u%04X", scalar.value)
+            default:
+                return String(scalar)
+            }
+        }.joined()
         return "\"\(escaped)\""
     }
 
@@ -256,6 +280,49 @@ public enum TOMLConfigParser {
         )
     }
 
+    /// Parse a TOML array of basic or literal strings under a named section.
+    public static func parseAppConfigStringArrayValue(
+        sectionName: String,
+        key: String,
+        in contents: String
+    ) -> [String]? {
+        guard let assignment = appConfigAssignment(
+            sectionName: sectionName,
+            key: key,
+            in: contents
+        ) else {
+            return nil
+        }
+        var parser = TOMLStringArrayParser(assignment.value)
+        return parser.parse()?.values
+    }
+
+    /// Locate every line occupied by a valid string-array assignment.
+    public static func appConfigStringArrayLineRange(
+        sectionName: String,
+        key: String,
+        in contents: String
+    ) -> Range<Int>? {
+        guard let assignment = appConfigAssignment(
+            sectionName: sectionName,
+            key: key,
+            in: contents
+        ) else {
+            return nil
+        }
+        var parser = TOMLStringArrayParser(assignment.value)
+        guard let parsed = parser.parse() else { return nil }
+        let occupiedLineCount = assignment.value[..<parsed.endIndex]
+            .reduce(into: 1) { count, character in
+                if character.isNewline {
+                    count += 1
+                }
+            }
+        return assignment.lineIndex ..< (
+            assignment.lineIndex + occupiedLineCount
+        )
+    }
+
     /// Parse a boolean value under a named section.
     public static func parseAppConfigBoolValue(
         sectionName: String,
@@ -294,5 +361,254 @@ public enum TOMLConfigParser {
             return nil
         }
         return Double(value)
+    }
+
+    private static func appConfigAssignment(
+        sectionName: String,
+        key: String,
+        in contents: String
+    ) -> (value: String, lineIndex: Int)? {
+        let lines = contents.components(separatedBy: "\n")
+        var currentSection: String?
+
+        for (lineIndex, rawLine) in lines.enumerated() {
+            let line = strippedTOMLLine(rawLine)
+            guard !line.isEmpty else { continue }
+            if let headerName = sectionHeaderName(from: line) {
+                currentSection = headerName
+                continue
+            }
+            guard currentSection == sectionName,
+                  let separatorIndex = line.firstIndex(of: "=")
+            else {
+                continue
+            }
+            let candidateKey = line[..<separatorIndex]
+                .trimmingCharacters(in: .whitespaces)
+            guard candidateKey == key else { continue }
+
+            let firstLine = line[line.index(after: separatorIndex)...]
+                .trimmingCharacters(in: .whitespaces)
+            let sectionEnd = lines[(lineIndex + 1)...]
+                .firstIndex(where: { candidate in
+                    sectionHeaderName(
+                        from: strippedTOMLLine(candidate)
+                    ) != nil
+                }) ?? lines.endIndex
+            let continuation = lines[(lineIndex + 1) ..< sectionEnd]
+            return (
+                ([String(firstLine)] + Array(continuation))
+                    .joined(separator: "\n"),
+                lineIndex
+            )
+        }
+        return nil
+    }
+}
+
+private struct TOMLStringArrayParser {
+    struct Result {
+        var values: [String]
+        var endIndex: String.Index
+    }
+
+    private let source: String
+    private var index: String.Index
+
+    init(_ source: String) {
+        self.source = source
+        index = source.startIndex
+    }
+
+    mutating func parse() -> Result? {
+        skipTrivia()
+        guard consume("[") else { return nil }
+        skipTrivia()
+        if consume("]") {
+            return Result(values: [], endIndex: index)
+        }
+
+        var values: [String] = []
+        while true {
+            guard let value = parseString() else { return nil }
+            values.append(value)
+            skipTrivia()
+            if consume("]") {
+                return Result(values: values, endIndex: index)
+            }
+            guard consume(",") else { return nil }
+            skipTrivia()
+            if consume("]") {
+                return Result(values: values, endIndex: index)
+            }
+        }
+    }
+
+    private mutating func parseString() -> String? {
+        if hasPrefix("\"\"\"") {
+            return parseMultilineString(delimiter: "\"", basic: true)
+        }
+        if hasPrefix("'''") {
+            return parseMultilineString(delimiter: "'", basic: false)
+        }
+        if consume("\"") {
+            return parseSingleLineString(delimiter: "\"", basic: true)
+        }
+        if consume("'") {
+            return parseSingleLineString(delimiter: "'", basic: false)
+        }
+        return nil
+    }
+
+    private mutating func parseSingleLineString(
+        delimiter: Character,
+        basic: Bool
+    ) -> String? {
+        var result = ""
+        while let character = currentCharacter {
+            advance()
+            if character == delimiter {
+                return result
+            }
+            guard !character.isNewline else { return nil }
+            if basic, character == "\\" {
+                guard let escaped = parseEscape() else { return nil }
+                result.append(contentsOf: escaped)
+            } else {
+                result.append(character)
+            }
+        }
+        return nil
+    }
+
+    private mutating func parseMultilineString(
+        delimiter: Character,
+        basic: Bool
+    ) -> String? {
+        advance(by: 3)
+        consumeOpeningNewline()
+        var result = ""
+        let closing = String(repeating: delimiter, count: 3)
+
+        while currentCharacter != nil {
+            if hasPrefix(closing) {
+                advance(by: 3)
+                return result
+            }
+            guard let character = currentCharacter else { return nil }
+            advance()
+            if basic, character == "\\" {
+                if consumeNewline() {
+                    skipWhitespaceAndNewlines()
+                    continue
+                }
+                guard let escaped = parseEscape() else { return nil }
+                result.append(contentsOf: escaped)
+            } else {
+                result.append(character)
+            }
+        }
+        return nil
+    }
+
+    private mutating func parseEscape() -> String? {
+        guard let character = currentCharacter else { return nil }
+        advance()
+        switch character {
+        case "b":
+            return "\u{8}"
+        case "t":
+            return "\t"
+        case "n":
+            return "\n"
+        case "f":
+            return "\u{C}"
+        case "r":
+            return "\r"
+        case "\"":
+            return "\""
+        case "\\":
+            return "\\"
+        case "u":
+            return parseUnicodeEscape(length: 4)
+        case "U":
+            return parseUnicodeEscape(length: 8)
+        default:
+            return nil
+        }
+    }
+
+    private mutating func parseUnicodeEscape(length: Int) -> String? {
+        var digits = ""
+        for _ in 0 ..< length {
+            guard let character = currentCharacter,
+                  character.isHexDigit
+            else {
+                return nil
+            }
+            digits.append(character)
+            advance()
+        }
+        guard let value = UInt32(digits, radix: 16),
+              let scalar = UnicodeScalar(value)
+        else {
+            return nil
+        }
+        return String(scalar)
+    }
+
+    private mutating func skipTrivia() {
+        while let character = currentCharacter {
+            if character.isWhitespace {
+                advance()
+            } else if character == "#" {
+                while let commentCharacter = currentCharacter,
+                      !commentCharacter.isNewline {
+                    advance()
+                }
+            } else {
+                return
+            }
+        }
+    }
+
+    private mutating func consumeOpeningNewline() {
+        _ = consumeNewline()
+    }
+
+    private mutating func consumeNewline() -> Bool {
+        if consume("\r") {
+            _ = consume("\n")
+            return true
+        }
+        return consume("\n")
+    }
+
+    private mutating func skipWhitespaceAndNewlines() {
+        while let character = currentCharacter,
+              character.isWhitespace {
+            advance()
+        }
+    }
+
+    private var currentCharacter: Character? {
+        index < source.endIndex ? source[index] : nil
+    }
+
+    private func hasPrefix(_ value: String) -> Bool {
+        source[index...].hasPrefix(value)
+    }
+
+    @discardableResult
+    private mutating func consume(_ character: Character) -> Bool {
+        guard currentCharacter == character else { return false }
+        advance()
+        return true
+    }
+
+    private mutating func advance(by count: Int = 1) {
+        for _ in 0 ..< count where index < source.endIndex {
+            index = source.index(after: index)
+        }
     }
 }

@@ -69,6 +69,8 @@ public final class SettingsStore: ObservableObject {
         showHiddenWorktreesByDefault: false
     )
 
+    public static let defaultTmuxSessionPreferences = TmuxSessionPreferences()
+
     public static let defaultAgentPreferences = AgentPreferences()
 
     @Published public var selectedDomain: SettingsDomain = .appearance
@@ -80,6 +82,7 @@ public final class SettingsStore: ObservableObject {
     ) var terminalAppearancePreferences: TerminalAppearancePreferences
     @Published public private(set) var terminalPreferences: TerminalPreferences
     @Published public private(set) var worktreePreferences: WorktreePreferences
+    @Published public private(set) var tmuxSessionPreferences: TmuxSessionPreferences
     @Published public private(set) var agentPreferences: AgentPreferences
     @Published public private(set) var shareAnonymousUsageData: Bool
     @Published public private(set) var sshHosts: [SSHHost]
@@ -94,6 +97,13 @@ public final class SettingsStore: ObservableObject {
 
     public var terminalAppearanceConfigFile: URL {
         configPipeline.paths.terminalAppearanceConfigFile
+    }
+
+    public var appConfigFile: URL {
+        configPipeline.paths.configDirectory.appendingPathComponent(
+            "config.toml",
+            isDirectory: false
+        )
     }
 
     public init(
@@ -123,6 +133,12 @@ public final class SettingsStore: ObservableObject {
         let loadedWorktrees = Self.loadWorktreePreferences(
             using: userDefaults
         )
+        let loadedTmuxSessions = Self.loadTmuxSessionPreferences(
+            from: configPipeline.paths.configDirectory.appendingPathComponent(
+                "config.toml",
+                isDirectory: false
+            )
+        )
         let loadedAgents = Self.loadAgentPreferences(
             using: userDefaults
         )
@@ -138,6 +154,7 @@ public final class SettingsStore: ObservableObject {
         terminalAppearancePreferences = loadedTerminalAppearance
         terminalPreferences = loadedTerminal
         worktreePreferences = loadedWorktrees
+        tmuxSessionPreferences = loadedTmuxSessions
         agentPreferences = loadedAgents
         shareAnonymousUsageData = loadedShareAnonymousUsageData
         sshHosts = loadedSSHHosts
@@ -165,6 +182,9 @@ public final class SettingsStore: ObservableObject {
             userDefaults: userDefaults
         )
         worktreePreferences = Self.loadWorktreePreferences(using: userDefaults)
+        tmuxSessionPreferences = Self.loadTmuxSessionPreferences(
+            from: appConfigFile
+        )
         agentPreferences = Self.loadAgentPreferences(using: userDefaults)
         shareAnonymousUsageData =
             Self.loadShareAnonymousUsageData(
@@ -367,6 +387,23 @@ public final class SettingsStore: ObservableObject {
         userDefaults.set(enabled, forKey: DefaultsKey.showHiddenWorktreesByDefault)
     }
 
+    @discardableResult
+    public func setHiddenTmuxSessionPatterns(_ patterns: [String]) -> Bool {
+        let updated = TmuxSessionPreferences(
+            hiddenSessionPatterns: Self.normalizedPatterns(patterns)
+        )
+        guard updated != tmuxSessionPreferences else { return true }
+        do {
+            try persistTmuxSessionPreferences(updated)
+            tmuxSessionPreferences = updated
+            lastErrorMessage = nil
+            return true
+        } catch {
+            lastErrorMessage = error.localizedDescription
+            return false
+        }
+    }
+
     public func setSSHHosts(_ sshHosts: [SSHHost]) {
         self.sshHosts =
             SSHHostSanitizer.sshHosts(sshHosts)
@@ -498,6 +535,34 @@ public final class SettingsStore: ObservableObject {
         } catch {
             lastErrorMessage = error.localizedDescription
         }
+    }
+
+    private func persistTmuxSessionPreferences(
+        _ preferences: TmuxSessionPreferences
+    ) throws {
+        try configPipeline.fileManager.createDirectory(
+            at: configPipeline.paths.configDirectory,
+            withIntermediateDirectories: true,
+            attributes: nil
+        )
+        let contents = if configPipeline.fileManager.fileExists(
+            atPath: appConfigFile.path
+        ) {
+            try String(contentsOf: appConfigFile, encoding: .utf8)
+        } else {
+            ""
+        }
+        let updated = AppConfigEditor.replacingStringArray(
+            sectionName: "tmux",
+            key: "hidden_session_patterns",
+            values: preferences.hiddenSessionPatterns,
+            in: contents
+        )
+        try updated.write(
+            to: appConfigFile,
+            atomically: true,
+            encoding: .utf8
+        )
     }
 
     private static func loadSSHHosts(
@@ -655,6 +720,39 @@ public final class SettingsStore: ObservableObject {
                 forKey: DefaultsKey.showHiddenWorktreesByDefault
             ) as? Bool ?? defaults.showHiddenWorktreesByDefault
         )
+    }
+
+    private static func loadTmuxSessionPreferences(
+        from configFile: URL
+    ) -> TmuxSessionPreferences {
+        guard let contents = try? String(
+            contentsOf: configFile,
+            encoding: .utf8
+        ),
+            let patterns = TOMLConfigParser.parseAppConfigStringArrayValue(
+                sectionName: "tmux",
+                key: "hidden_session_patterns",
+                in: contents
+            )
+        else {
+            return defaultTmuxSessionPreferences
+        }
+        return TmuxSessionPreferences(
+            hiddenSessionPatterns: normalizedPatterns(patterns)
+        )
+    }
+
+    private static func normalizedPatterns(_ patterns: [String]) -> [String] {
+        var seen: Set<String> = []
+        return patterns.compactMap { pattern in
+            let trimmed = pattern.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            guard !trimmed.isEmpty, seen.insert(trimmed).inserted else {
+                return nil
+            }
+            return trimmed
+        }
     }
 
     private static func loadAgentPreferences(

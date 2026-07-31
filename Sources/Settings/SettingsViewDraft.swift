@@ -4,13 +4,16 @@ import GhosthubWorkspace
 public struct SettingsPersistResult: Equatable, Sendable {
     public var shouldRefreshHosts: Bool
     public var shouldReloadTerminalConfig: Bool
+    public var didPersistTmuxSessionPatterns: Bool
 
     public init(
         shouldRefreshHosts: Bool,
-        shouldReloadTerminalConfig: Bool
+        shouldReloadTerminalConfig: Bool,
+        didPersistTmuxSessionPatterns: Bool
     ) {
         self.shouldRefreshHosts = shouldRefreshHosts
         self.shouldReloadTerminalConfig = shouldReloadTerminalConfig
+        self.didPersistTmuxSessionPatterns = didPersistTmuxSessionPatterns
     }
 }
 
@@ -28,6 +31,7 @@ public struct SettingsViewDraft: Equatable {
     public var copySelectionToClipboard: Bool
     public var hideRootCheckout: Bool
     public var showHiddenWorktreesByDefault: Bool
+    public var hiddenTmuxSessionPatterns: [String]
     public var showMacOSNotifications: Bool
     public var attentionSound: WorkspaceNotificationSound
     public var sshHosts: [SSHHostDraft]
@@ -57,6 +61,8 @@ public struct SettingsViewDraft: Equatable {
         hideRootCheckout = store.worktreePreferences.hideRootCheckout
         showHiddenWorktreesByDefault = store.worktreePreferences
             .showHiddenWorktreesByDefault
+        hiddenTmuxSessionPatterns = store.tmuxSessionPreferences
+            .hiddenSessionPatterns
         showMacOSNotifications = store.notificationConfiguration
             .showMacOSNotifications
         attentionSound = store.notificationConfiguration.attentionSound
@@ -103,6 +109,8 @@ public struct SettingsViewDraft: Equatable {
         store.setShowHiddenWorktreesByDefault(
             showHiddenWorktreesByDefault
         )
+        let didPersistTmuxSessionPatterns = store
+            .setHiddenTmuxSessionPatterns(hiddenTmuxSessionPatterns)
         store.setShowMacOSNotifications(showMacOSNotifications)
         store.setNotificationAttentionSound(attentionSound)
 
@@ -111,7 +119,8 @@ public struct SettingsViewDraft: Equatable {
         }
         return SettingsPersistResult(
             shouldRefreshHosts: shouldRefreshHosts,
-            shouldReloadTerminalConfig: shouldReloadTerminalConfig
+            shouldReloadTerminalConfig: shouldReloadTerminalConfig,
+            didPersistTmuxSessionPatterns: didPersistTmuxSessionPatterns
         )
     }
 

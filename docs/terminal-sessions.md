@@ -194,9 +194,13 @@ actions are hidden. Discovery never installs or updates remote software
 implicitly.
 
 Kwt session names are removed from the generic session group and rendered
-under their project/worktree. Every remaining tmux session is shown in the
-host-level session group. No naming convention or ownership marker is used to
-hide Middleman-created sessions.
+under their project/worktree. Every remaining tmux session is eligible for the
+host-level session group. Case-sensitive `*` and `?` wildcard patterns in
+`hidden_session_patterns` under `[tmux]` inside
+`~/.config/ghosthub/config.toml` hide matching standalone sessions from the
+sidebar and command palette. Settings → Worktrees edits the same list, one
+pattern per line. Filtering occurs after discovery and never suppresses a kwt
+worktree, its running state, duplicate-name checks, or session identity.
 
 Pull-request imports are the one alternate-socket case. Kwt returns the named
 socket reserved for the workspace-specific server, and Ghosthub carries that

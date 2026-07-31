@@ -406,6 +406,63 @@ struct WorkspaceSidebarModelTests {
         #expect(sections[0].projects[0].worktrees.map(\.id) == [worktree.id])
     }
 
+    @Test("hidden patterns remove only standalone tmux session rows")
+    func hiddenPatternsRemoveStandaloneSessions() {
+        let hostID = UUID()
+        let projectID = UUID()
+        var worktree = WorktreeSummary.fixture(
+            hostID: hostID,
+            projectID: projectID,
+            name: "forge-project",
+            path: "/code/forge-project",
+            branch: "main"
+        )
+        worktree.tmuxSessionName = "forge-worktree"
+        let snapshot = WorkspaceSnapshot.fixture(
+            hosts: [
+                .fixture(
+                    id: hostID,
+                    tmuxSessions: [
+                        TmuxSessionSummary(
+                            name: "forge-2ce60210419f1730",
+                            managed: false,
+                            windows: []
+                        ),
+                        TmuxSessionSummary(
+                            name: "forge-worktree",
+                            managed: false,
+                            windows: []
+                        ),
+                        TmuxSessionSummary(
+                            name: "homelab",
+                            managed: false,
+                            windows: []
+                        ),
+                    ]
+                ),
+            ],
+            projects: [
+                .fixture(
+                    id: projectID,
+                    hostID: hostID,
+                    name: "forge-project",
+                    rootPath: "/code/forge-project"
+                ),
+            ],
+            worktrees: [worktree]
+        )
+
+        let sections = WorkspaceSidebarModel.sections(
+            in: snapshot,
+            tmuxSessionVisibility: TmuxSessionVisibility(
+                hiddenPatterns: ["forge-*"]
+            )
+        )
+
+        #expect(sections[0].tmuxSessionRows.map(\.title) == ["homelab"])
+        #expect(sections[0].projects[0].worktrees.map(\.id) == [worktree.id])
+    }
+
     @Test("protected workspace names never hide default-server sessions")
     func keepsDefaultServerSessionSharingProtectedName() {
         let hostID = UUID()

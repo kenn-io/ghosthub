@@ -19,6 +19,13 @@ struct TOMLConfigParserTests {
         #expect(result == "key = \"value # not a comment\"")
     }
 
+    @Test func strippedTOMLLine_preservesHashInsideLiteralString() {
+        let result = TOMLConfigParser.strippedTOMLLine(
+            "key = 'value#part' # comment"
+        )
+        #expect(result == "key = 'value#part'")
+    }
+
     @Test func strippedTOMLLine_handlesEscapedQuote() {
         let result = TOMLConfigParser.strippedTOMLLine(
             "key = \"val\\\"ue\" # comment"
@@ -461,5 +468,72 @@ struct TOMLConfigParserTests {
         let rendered = TOMLConfigParser.renderTOMLString(original)
         let recovered = TOMLConfigParser.unquoteTOMLString(rendered)
         #expect(recovered == original)
+    }
+
+    // MARK: - parseAppConfigStringArrayValue
+
+    @Test func parseAppConfigStringArrayValue_readsQuotedPatterns() {
+        let contents = #"""
+        [tmux]
+        hidden_session_patterns = ["forge-*", "scratch-?", "quoted-\"name\""]
+        """#
+
+        #expect(
+            TOMLConfigParser.parseAppConfigStringArrayValue(
+                sectionName: "tmux",
+                key: "hidden_session_patterns",
+                in: contents
+            ) == ["forge-*", "scratch-?", "quoted-\"name\""]
+        )
+    }
+
+    @Test func parseAppConfigStringArrayValue_readsMultilineArray() {
+        let contents = """
+        [tmux]
+        hidden_session_patterns = [
+            "forge-*",
+            'team/#*', # TOML literal string
+            "scratch-?",
+        ]
+        status = true
+        """
+
+        #expect(
+            TOMLConfigParser.parseAppConfigStringArrayValue(
+                sectionName: "tmux",
+                key: "hidden_session_patterns",
+                in: contents
+            ) == ["forge-*", "team/#*", "scratch-?"]
+        )
+    }
+
+    @Test func parseAppConfigStringArrayValue_preservesLiteralHash() {
+        let contents = """
+        [tmux]
+        hidden_session_patterns = ['team/#*', "forge-*"]
+        """
+
+        #expect(
+            TOMLConfigParser.parseAppConfigStringArrayValue(
+                sectionName: "tmux",
+                key: "hidden_session_patterns",
+                in: contents
+            ) == ["team/#*", "forge-*"]
+        )
+    }
+
+    @Test func parseAppConfigStringArrayValue_rejectsMalformedArray() {
+        let contents = """
+        [tmux]
+        hidden_session_patterns = "forge-*"
+        """
+
+        #expect(
+            TOMLConfigParser.parseAppConfigStringArrayValue(
+                sectionName: "tmux",
+                key: "hidden_session_patterns",
+                in: contents
+            ) == nil
+        )
     }
 }

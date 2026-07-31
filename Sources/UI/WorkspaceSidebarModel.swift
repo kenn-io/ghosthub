@@ -189,7 +189,8 @@ public enum WorkspaceSidebarModel {
 
     public static func sections(
         in snapshot: WorkspaceSnapshot,
-        visibility: WorktreeVisibility = .default
+        visibility: WorktreeVisibility = .default,
+        tmuxSessionVisibility: TmuxSessionVisibility = TmuxSessionVisibility()
     ) -> [WorkspaceSidebarSection] {
         snapshot.hosts.map { host in
             // Discovery only lists the host's default tmux server. A
@@ -228,7 +229,10 @@ public enum WorkspaceSidebarModel {
                 host: host,
                 projects: projects,
                 tmuxSessionRows: host.tmuxSessions
-                    .filter { !defaultServerSessionNames.contains($0.name) }
+                    .filter {
+                        !defaultServerSessionNames.contains($0.name)
+                            && !tmuxSessionVisibility.isHidden($0.name)
+                    }
                     .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
                     .map { tmuxSessionRow($0, hostID: host.id) }
             )

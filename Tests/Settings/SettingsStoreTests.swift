@@ -158,6 +158,7 @@ final class SettingsStoreTests {
                 .appliesThemeToTmuxSessions
         )
         #expect(!store.worktreePreferences.hideRootCheckout)
+        #expect(store.tmuxSessionPreferences.hiddenSessionPatterns.isEmpty)
         #expect(store.shareAnonymousUsageData)
     }
 
@@ -174,6 +175,87 @@ final class SettingsStoreTests {
         let reloaded = makeSUT()
 
         #expect(!reloaded.confirmBeforeQuitting)
+    }
+
+    @Test
+    func testLoadingHiddenTmuxSessionPatternsFromAppConfig() throws {
+        try writeAppConfig(toml: """
+        [tmux]
+        hidden_session_patterns = ["forge-*", "scratch-?"]
+        """)
+
+        let store = makeSUT()
+
+        #expect(
+            store.tmuxSessionPreferences.hiddenSessionPatterns
+                == ["forge-*", "scratch-?"]
+        )
+    }
+
+    @Test
+    func testUpdatingHiddenTmuxSessionPatternsPreservesAppConfig() throws {
+        try writeAppConfig(toml: """
+        [general]
+        default_shell = "/bin/bash"
+        """)
+        let store = makeSUT()
+
+        store.setHiddenTmuxSessionPatterns([
+            " forge-* ", "", "scratch-?", "forge-*",
+        ])
+
+        #expect(
+            store.tmuxSessionPreferences.hiddenSessionPatterns
+                == ["forge-*", "scratch-?"]
+        )
+        let contents = try readAppConfig()
+        #expect(contents.contains("default_shell = \"/bin/bash\""))
+
+        let reloaded = makeSUT()
+        #expect(
+            reloaded.tmuxSessionPreferences.hiddenSessionPatterns
+                == ["forge-*", "scratch-?"]
+        )
+    }
+
+    @Test
+    func testUnchangedHiddenTmuxSessionPatternsDoNotCreateAppConfig() {
+        let store = makeSUT()
+
+        store.setHiddenTmuxSessionPatterns([])
+
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: store.appConfigFile.path
+            )
+        )
+    }
+
+    @Test
+    func testFailedHiddenTmuxSessionPatternWriteCanBeRetried() throws {
+        try FileManager.default.createDirectory(
+            at: paths.configDirectory,
+            withIntermediateDirectories: true
+        )
+        let configFile = paths.configDirectory
+            .appendingPathComponent("config.toml")
+        try FileManager.default.createDirectory(
+            at: configFile,
+            withIntermediateDirectories: false
+        )
+        let store = makeSUT()
+
+        #expect(!store.setHiddenTmuxSessionPatterns(["forge-*"]))
+        #expect(store.tmuxSessionPreferences.hiddenSessionPatterns.isEmpty)
+        #expect(store.lastErrorMessage != nil)
+
+        try FileManager.default.removeItem(at: configFile)
+        #expect(store.setHiddenTmuxSessionPatterns(["forge-*"]))
+        #expect(
+            store.tmuxSessionPreferences.hiddenSessionPatterns
+                == ["forge-*"]
+        )
+        #expect(store.lastErrorMessage == nil)
     }
 
     @Test
@@ -320,8 +402,8 @@ final class SettingsStoreTests {
         let store = makeSUT()
         store.setInterfaceAppearance(.light)
 
-        // App-concept settings persist in UserDefaults, not in
-        // config.toml (which does not own configured SSH hosts).
+        // Appearance remains in UserDefaults. config.toml owns only explicit
+        // file-backed settings such as standalone tmux session visibility.
         let contents = try readAppConfig()
         #expect(contents.contains("appearance") == false)
 
