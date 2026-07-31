@@ -274,6 +274,24 @@ public struct SettingsView: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             }
+
+            settingsSection("Quit Behavior") {
+                Toggle(
+                    "Confirm before quitting Ghosthub",
+                    isOn: Binding(
+                        get: { store.confirmBeforeQuitting },
+                        set: { store.setConfirmBeforeQuitting($0) }
+                    )
+                )
+
+                Text(
+                    "Ghosthub asks before quitting or closing the final workspace."
+                        + " Tmux sessions keep running either way."
+                )
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
