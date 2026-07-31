@@ -1061,13 +1061,13 @@ final class WorkspaceSceneModel: ObservableObject {
                     project.rootPath,
                     confirmedHost
                 )
-                removalTombstones.insert(
-                    WorktreeMutationCoordinator.RemovalTombstone(
-                        path: worktree.path,
-                        generation: generation
-                    )
-                )
             }
+            removalTombstones.insert(
+                WorktreeMutationCoordinator.RemovalTombstone(
+                    path: worktree.path,
+                    generation: generation
+                )
+            )
         } catch {
             recordKwtUnavailability(error, hostID: project.hostID)
             throw error

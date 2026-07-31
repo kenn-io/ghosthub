@@ -127,8 +127,13 @@ private func inventory(
 @Suite("Workspace worktree removal")
 struct WorkspaceWorktreeRemovalTests {
     @MainActor
-    @Test("removal reconciles worktree and session state in other scenes")
-    func removalReconcilesOtherScenes() async throws {
+    @Test(
+        "removal reconciles worktree and session state in other scenes",
+        arguments: [false, true]
+    )
+    func removalReconcilesOtherScenes(
+        checkoutAlreadyAbsent: Bool
+    ) async throws {
         let environment = try setupStandardEnvironment()
         var removable = WorktreeSummary.fixture(
             hostID: environment.host.id,
@@ -170,6 +175,9 @@ struct WorkspaceWorktreeRemovalTests {
             snapshot: snapshot,
             kwtInventoryLoader: { _ in
                 firstLoads.withLock { $0 += 1 }
+                if checkoutAlreadyAbsent {
+                    return afterRemoval
+                }
                 return firstLoads.load() == 1
                     ? beforeRemoval
                     : afterRemoval
