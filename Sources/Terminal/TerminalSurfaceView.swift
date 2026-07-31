@@ -246,6 +246,12 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
         )
         center.addObserver(
             self,
+            selector: #selector(windowDidResignKey),
+            name: NSWindow.didResignKeyNotification,
+            object: nil
+        )
+        center.addObserver(
+            self,
             selector: #selector(windowDidChangeOcclusionState),
             name: NSWindow.didChangeOcclusionStateNotification,
             object: nil
@@ -724,6 +730,15 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
             return
         }
         ensureFirstResponder()
+    }
+
+    @objc private func windowDidResignKey(
+        notification: Notification
+    ) {
+        guard let window,
+              let object = notification.object as? NSWindow,
+              window == object else { return }
+        focusDidChange(false)
     }
 
     @objc private func windowDidChangeOcclusionState(

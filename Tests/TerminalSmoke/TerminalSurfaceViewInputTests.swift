@@ -1622,6 +1622,28 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         XCTAssertTrue(descendantViews(in: window.contentView).contains(surfaceB))
     }
 
+    func testWindowResigningKeyClearsTerminalFocus() throws {
+        let appHandle = try requireAppHandle()
+
+        let view = TerminalSurfaceView(
+            app: appHandle,
+            configuration: TerminalSurfaceConfiguration()
+        )
+        let window = hostInWindow(view)
+        defer { window.orderOut(nil) }
+        view.focusDidChange(true)
+
+        NotificationCenter.default.post(
+            name: NSWindow.didResignKeyNotification,
+            object: window
+        )
+
+        XCTAssertFalse(
+            view.focused,
+            "A terminal must lose libghostty focus when its window resigns key status."
+        )
+    }
+
     func testDetachingViewClearsFocusState() throws {
         let appHandle = try requireAppHandle()
 
