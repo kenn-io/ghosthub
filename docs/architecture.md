@@ -137,6 +137,10 @@ Kwt also owns pull-request provider integration: authentication, repository
 identity, candidate discovery, and worktree import. Ghosthub may present a
 machine-readable candidate list and submit the user's selection through a
 supported kwt command, but it does not query GitHub or another forge directly.
+Kwt keeps Git fetches noninteractive while allowing the host's ordinary system
+and global Git credential-helper configuration to authenticate HTTPS remotes.
+Its untrusted-tree lifecycle still suppresses repository-controlled execution
+before materializing the imported checkout.
 Candidate discovery begins only after the user opens the pull-request import
 surface for a project; startup inventory must not issue one provider request
 per project. The opaque candidate ID returned by kwt is passed back unchanged,
