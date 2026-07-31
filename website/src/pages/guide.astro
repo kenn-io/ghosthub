@@ -240,8 +240,9 @@ const imageAlt = {
             the <strong>×</strong>. After confirmation, Ghosthub terminates
             that worktree’s live tmux session if necessary and asks kwt to
             remove the checkout. If the checkout is already gone, Ghosthub
-            clears its stale worktree entry without removing anything again
-            or terminating a surviving tmux session. The Git branch is kept.
+            skips the redundant kwt removal but still reconciles the exact
+            live tmux session covered by the confirmation. The Git branch is
+            kept.
           </p>
         </div>
       </div>
