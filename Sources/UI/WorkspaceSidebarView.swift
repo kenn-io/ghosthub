@@ -153,10 +153,9 @@ struct WorkspaceSidebarView: View {
                 emptyState
             } else {
                 ScrollView {
-                    LazyVStack(
+                    VStack(
                         alignment: .leading,
-                        spacing: 2,
-                        pinnedViews: [.sectionHeaders]
+                        spacing: 2
                     ) {
                         ForEach(sections) { section in
                             let hostKey = WorkspaceSidebarDisclosureState.host(
