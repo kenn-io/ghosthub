@@ -15,6 +15,7 @@ struct SettingsViewDraftTests {
         store.setTerminalThemeAppliesToTmuxSessions(true)
         store.setHideRootCheckout(true)
         store.setShowHiddenWorktreesByDefault(true)
+        store.setHiddenTmuxSessionPatterns(["forge-*", "scratch-?"])
         store.setShowMacOSNotifications(false)
         store.setNotificationAttentionSound(.glass)
         store.setSSHHosts([host(configKey: "epyc", name: "EPYC")])
@@ -27,6 +28,9 @@ struct SettingsViewDraftTests {
         #expect(draft.appliesTerminalThemeToTmuxSessions)
         #expect(draft.hideRootCheckout)
         #expect(draft.showHiddenWorktreesByDefault)
+        #expect(
+            draft.hiddenTmuxSessionPatterns == ["forge-*", "scratch-?"]
+        )
         #expect(!draft.showMacOSNotifications)
         #expect(draft.attentionSound == .glass)
         #expect(draft.sshHosts.map(\.configKey) == ["epyc"])
@@ -57,6 +61,7 @@ struct SettingsViewDraftTests {
         var draft = SettingsViewDraft(store: store)
         draft.hideRootCheckout = true
         draft.showHiddenWorktreesByDefault = true
+        draft.hiddenTmuxSessionPatterns = ["forge-*", "scratch-?"]
         draft.showMacOSNotifications = false
         draft.attentionSound = .ping
 
@@ -64,8 +69,28 @@ struct SettingsViewDraftTests {
 
         #expect(store.worktreePreferences.hideRootCheckout)
         #expect(store.worktreePreferences.showHiddenWorktreesByDefault)
+        #expect(
+            store.tmuxSessionPreferences.hiddenSessionPatterns
+                == ["forge-*", "scratch-?"]
+        )
         #expect(!store.notificationConfiguration.showMacOSNotifications)
         #expect(store.notificationConfiguration.attentionSound == .ping)
+    }
+
+    @Test("persist reports a failed tmux pattern write")
+    func persistReportsFailedTmuxPatternWrite() throws {
+        let store = makeStore()
+        try FileManager.default.createDirectory(
+            at: store.appConfigFile,
+            withIntermediateDirectories: true
+        )
+        var draft = SettingsViewDraft(store: store)
+        draft.hiddenTmuxSessionPatterns = ["forge-*"]
+
+        let result = draft.persist(to: store)
+
+        #expect(!result.didPersistTmuxSessionPatterns)
+        #expect(store.tmuxSessionPreferences.hiddenSessionPatterns.isEmpty)
     }
 
     @Test("persist reports terminal reload for terminal settings")

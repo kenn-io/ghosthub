@@ -351,6 +351,7 @@ public struct RootView: View {
             snapshot: snapshot,
             selection: $selection,
             visibility: worktreeVisibility,
+            tmuxSessionVisibility: tmuxSessionVisibility,
             activeTmuxSession: activeTmuxSession,
             activeTmuxSessionIsConnected:
             display.activeTmuxSessionIsConnected,
@@ -668,6 +669,13 @@ public struct RootView: View {
         )
     }
 
+    private var tmuxSessionVisibility: TmuxSessionVisibility {
+        TmuxSessionVisibility(
+            hiddenPatterns: settingsStore.tmuxSessionPreferences
+                .hiddenSessionPatterns
+        )
+    }
+
     private var paletteCommands: [WorkspaceCommandItem] {
         CommandPaletteModel.commands(
             in: snapshot,
@@ -680,6 +688,7 @@ public struct RootView: View {
             isSidePanelVisible: isSidePanelVisible,
             interfaceAppearance: settingsStore.interfaceAppearance,
             worktreeVisibility: worktreeVisibility,
+            tmuxSessionVisibility: tmuxSessionVisibility,
             supportsSettings: content.settingsSheetBuilder != nil
         )
     }

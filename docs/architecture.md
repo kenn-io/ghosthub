@@ -14,9 +14,12 @@ the [Threat Model](threat-model.md).
 - **Session:** an ordinary tmux session on a host.
 
 The sidebar is a host-wide session navigator. It shows registered worktrees and
-every directly discovered tmux session on each host, including sessions that
-were not created by Ghosthub or kwt. General tmux sessions are presented as one
-ordinary native tmux client; tmux alone owns and renders their layout.
+directly discovered tmux sessions on each host, including sessions that were
+not created by Ghosthub or kwt. Users may hide matching standalone sessions
+from navigation with case-sensitive wildcard patterns; discovery retains the
+complete inventory so worktree status and session identity remain accurate.
+General tmux sessions are presented as one ordinary native tmux client; tmux
+alone owns and renders their layout.
 
 ## Window Model
 

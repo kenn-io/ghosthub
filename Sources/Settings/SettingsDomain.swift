@@ -40,7 +40,7 @@ public enum SettingsDomain: String, CaseIterable, Identifiable, Sendable {
         case .keyboard:
             return "Application and workspace navigation shortcuts."
         case .worktrees:
-            return "Kwt workspace visibility and sidebar behavior."
+            return "Workspace and standalone tmux session visibility."
         case .agents:
             return "Attention notifications for active agent sessions."
         case .privacy:

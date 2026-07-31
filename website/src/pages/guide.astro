@@ -87,6 +87,15 @@ const imageAlt = {
             plus commands to open any discovered session.
           </p>
           <p>
+            To keep tool-owned standalone sessions out of navigation, open{' '}
+            <strong>Settings → Worktrees</strong> and add hidden tmux session
+            patterns, one per line. Patterns are case-sensitive and support{' '}
+            <code>*</code> for any number of characters and <code>?</code> for
+            one character. Ghosthub stores them in{' '}
+            <code>~/.config/ghosthub/config.toml</code>; matching kwt workspaces
+            remain visible under their projects.
+          </p>
+          <p>
             Closing the Ghosthub window only detaches—your work keeps running
             in tmux. To end a standalone session Ghosthub knows is running,
             hover its row and click the subtle <strong>×</strong>. A

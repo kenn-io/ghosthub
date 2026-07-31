@@ -124,6 +124,7 @@ public enum CommandPaletteModel {
         isSidePanelVisible: Bool,
         interfaceAppearance: AppearancePreference = .system,
         worktreeVisibility: WorktreeVisibility = .default,
+        tmuxSessionVisibility: TmuxSessionVisibility = TmuxSessionVisibility(),
         supportsSettings: Bool = true
     ) -> [WorkspaceCommandItem] {
         var commands = [
@@ -187,7 +188,8 @@ public enum CommandPaletteModel {
             in: snapshot,
             activeSelection: activeTmuxSession,
             activeSelectionIsConnected: activeTmuxSessionIsConnected,
-            visibility: worktreeVisibility
+            visibility: worktreeVisibility,
+            tmuxSessionVisibility: tmuxSessionVisibility
         ))
         commands.append(contentsOf: newWorktreeCommands(
             in: snapshot,
@@ -377,11 +379,13 @@ public enum CommandPaletteModel {
         in snapshot: WorkspaceSnapshot,
         activeSelection: WorkspaceTmuxSessionSelection?,
         activeSelectionIsConnected: Bool,
-        visibility: WorktreeVisibility
+        visibility: WorktreeVisibility,
+        tmuxSessionVisibility: TmuxSessionVisibility
     ) -> [WorkspaceCommandItem] {
         let sections = WorkspaceSidebarModel.sections(
             in: snapshot,
-            visibility: visibility
+            visibility: visibility,
+            tmuxSessionVisibility: tmuxSessionVisibility
         )
         let sessions = sections.flatMap { section -> [(
             session: WorkspaceTmuxSessionSelection,

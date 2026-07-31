@@ -24,7 +24,7 @@ struct SettingsDomainTests {
             (
                 .worktrees,
                 "Worktrees",
-                "Kwt workspace visibility and sidebar behavior."
+                "Workspace and standalone tmux session visibility."
             ),
             (
                 .agents,

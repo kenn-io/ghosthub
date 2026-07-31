@@ -539,6 +539,42 @@ struct CommandPaletteModelTests {
         )
     }
 
+    @Test("hidden tmux session patterns remove lifecycle commands")
+    func hiddenTmuxSessionsAreNotDiscoverable() {
+        let host = HostSummary.fixture(
+            name: "This Mac",
+            tmuxSessions: [
+                TmuxSessionSummary(
+                    name: "forge-2ce60210419f1730",
+                    managed: false,
+                    windows: []
+                ),
+                TmuxSessionSummary(
+                    name: "homelab",
+                    managed: false,
+                    windows: []
+                ),
+            ]
+        )
+
+        let commands = makeCommandPaletteCommands(
+            snapshot: WorkspaceSnapshot(
+                hosts: [host],
+                projects: [],
+                worktrees: []
+            ),
+            selection: WorkspaceSelection(selectedHostID: host.id),
+            tmuxSessionVisibility: TmuxSessionVisibility(
+                hiddenPatterns: ["forge-*"]
+            )
+        )
+
+        commands.expectCommandNotContains(
+            title: "Open tmux session: forge-2ce60210419f1730"
+        )
+        commands.expectCommandContains(title: "Open tmux session: homelab")
+    }
+
     @Test("import PR command hidden without GitHub-linked projects")
     func importPRCommandHiddenWithoutGitHubLink() {
         let host = HostSummary.fixture(
@@ -665,6 +701,7 @@ private func makeCommandPaletteCommands(
     isSidebarVisible: Bool = true,
     isSidePanelVisible: Bool = false,
     interfaceAppearance: AppearancePreference = .system,
+    tmuxSessionVisibility: TmuxSessionVisibility = TmuxSessionVisibility(),
     supportsSettings: Bool = true
 ) -> [WorkspaceCommandItem] {
     let bootstrap = WorkspaceBootstrap.preview()
@@ -679,6 +716,7 @@ private func makeCommandPaletteCommands(
         isSidebarVisible: isSidebarVisible,
         isSidePanelVisible: isSidePanelVisible,
         interfaceAppearance: interfaceAppearance,
+        tmuxSessionVisibility: tmuxSessionVisibility,
         supportsSettings: supportsSettings
     )
 }

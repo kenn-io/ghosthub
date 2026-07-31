@@ -56,6 +56,7 @@ struct WorkspaceSidebarView: View {
     let snapshot: WorkspaceSnapshot
     @Binding var selection: WorkspaceSelection
     let visibility: WorktreeVisibility
+    let tmuxSessionVisibility: TmuxSessionVisibility
     let onOpen: (WorktreeSummary) -> Void
     let activeTmuxSession: WorkspaceTmuxSessionSelection?
     let activeTmuxSessionIsConnected: Bool
@@ -88,6 +89,7 @@ struct WorkspaceSidebarView: View {
         snapshot: WorkspaceSnapshot,
         selection: Binding<WorkspaceSelection>,
         visibility: WorktreeVisibility,
+        tmuxSessionVisibility: TmuxSessionVisibility = TmuxSessionVisibility(),
         activeTmuxSession: WorkspaceTmuxSessionSelection? = nil,
         activeTmuxSessionIsConnected: Bool = false,
         onOpenTmuxSession: @escaping (
@@ -113,6 +115,7 @@ struct WorkspaceSidebarView: View {
         self.snapshot = snapshot
         _selection = selection
         self.visibility = visibility
+        self.tmuxSessionVisibility = tmuxSessionVisibility
         self.activeTmuxSession = activeTmuxSession
         self.activeTmuxSessionIsConnected = activeTmuxSessionIsConnected
         self.onOpenTmuxSession = onOpenTmuxSession
@@ -135,7 +138,8 @@ struct WorkspaceSidebarView: View {
     private var sections: [WorkspaceSidebarSection] {
         WorkspaceSidebarModel.sections(
             in: snapshot,
-            visibility: visibility
+            visibility: visibility,
+            tmuxSessionVisibility: tmuxSessionVisibility
         )
     }
 
