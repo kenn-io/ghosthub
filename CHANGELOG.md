@@ -5,6 +5,46 @@ test, and documentation-only changes are omitted.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-30
+
+### Added
+
+- Existing local and remote branches can be selected when creating a
+  worktree, including source-qualified choices when multiple remotes contain
+  the same branch name.
+- Non-primary worktrees can be removed from the sidebar with confirmation.
+  Ghosthub terminates a verified live tmux session before delegating removal
+  to kwt, while preserving the Git branch.
+- Experimental native Windows hosts can connect over SSH through psmux,
+  discover and attach sessions, and install revision-pinned Windows kwt
+  helpers.
+
+### Changed
+
+- Project and worktree nesting is clearer in the sidebar, and registered
+  primary checkouts open normally even when they live outside kwt's global
+  worktree directory.
+- Standalone tmux sessions use a direct hover removal control, while
+  worktree-backed sessions keep distinct session and worktree lifecycle
+  actions.
+- Tmux Theme colors apply automatically only to new sessions created by
+  Ghosthub. Existing local and remote sessions retain their own appearance
+  unless **Apply theme to shared tmux sessions** is enabled.
+- Development builds show the nearest release tag, commit distance, revision,
+  and dirty state in About while preserving valid numeric macOS bundle
+  versions.
+
+### Fixed
+
+- Closing or disconnecting a tmux attachment no longer implies that the
+  server-side session ended. When a bare session does end, Ghosthub offers to
+  reopen that exact named session.
+- Generated terminal configuration is self-contained and reload failures are
+  reported without showing misleading errors after successful automatic
+  reloads.
+- Worktree creation, removal, and inventory refreshes are coordinated across
+  windows so stale rows and sessions do not reappear after mutations.
+
 ## [0.3.0] - 2026-07-28
 
 ### Added
@@ -62,7 +102,8 @@ test, and documentation-only changes are omitted.
   and SSH tmux session discovery, automatic reconnect, and kwt-backed project
   and worktree navigation.
 
-[Unreleased]: https://github.com/kenn-io/ghosthub/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/kenn-io/ghosthub/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/kenn-io/ghosthub/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/kenn-io/ghosthub/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/kenn-io/ghosthub/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/kenn-io/ghosthub/compare/v0.1.1...v0.2.0
