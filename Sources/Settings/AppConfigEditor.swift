@@ -13,20 +13,23 @@ enum AppConfigEditor {
         )
         let renderedValue = "[\(renderedValues.joined(separator: ", "))]"
         let renderedLine = "\(key) = \(renderedValue)"
-        var lines = contents.components(separatedBy: "\n")
+        let newline = contents.contains("\r\n") ? "\r\n" : "\n"
+        var lines = contents.components(separatedBy: newline)
         let sectionHeader = "[\(sectionName)]"
 
         guard let sectionIndex = lines.firstIndex(where: {
-            TOMLConfigParser.strippedTOMLLine($0) == sectionHeader
+            TOMLConfigParser.sectionHeaderName(
+                from: TOMLConfigParser.strippedTOMLLine($0)
+            ) == sectionName
         }) else {
             var updated = contents
-            if !updated.isEmpty, !updated.hasSuffix("\n") {
-                updated += "\n"
+            if !updated.isEmpty, !updated.hasSuffix(newline) {
+                updated += newline
             }
-            if !updated.isEmpty, !updated.hasSuffix("\n\n") {
-                updated += "\n"
+            if !updated.isEmpty, !updated.hasSuffix(newline + newline) {
+                updated += newline
             }
-            return updated + sectionHeader + "\n" + renderedLine + "\n"
+            return updated + sectionHeader + newline + renderedLine + newline
         }
 
         let sectionEnd = lines[(sectionIndex + 1)...].firstIndex(where: {
@@ -52,6 +55,6 @@ enum AppConfigEditor {
         } else {
             lines.insert(renderedLine, at: sectionEnd)
         }
-        return lines.joined(separator: "\n")
+        return lines.joined(separator: newline)
     }
 }

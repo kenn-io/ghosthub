@@ -1,5 +1,6 @@
 import Testing
 @testable import GhosthubSettings
+import GhosthubWorkspace
 
 struct AppConfigEditorTests {
     @Test("string array replacement preserves surrounding config")
@@ -57,6 +58,52 @@ struct AppConfigEditorTests {
         #expect(updated.contains(
             "hidden_session_patterns = [\"forge-*\"]"
         ))
+    }
+
+    @Test("string array replacement recognizes a spaced section header")
+    func recognizesSpacedSectionHeader() {
+        let updated = AppConfigEditor.replacingStringArray(
+            sectionName: "tmux",
+            key: "hidden_session_patterns",
+            values: ["forge-*"],
+            in: """
+            [ tmux ]
+            hidden_session_patterns = ["old-*"]
+            status = true
+            """
+        )
+
+        #expect(!updated.contains("[tmux]"))
+        #expect(updated.contains("[ tmux ]"))
+        #expect(
+            TOMLConfigParser.parseAppConfigStringArrayValue(
+                sectionName: "tmux",
+                key: "hidden_session_patterns",
+                in: updated
+            ) == ["forge-*"]
+        )
+    }
+
+    @Test("string array replacement preserves CRLF configuration")
+    func preservesCRLFConfiguration() {
+        let updated = AppConfigEditor.replacingStringArray(
+            sectionName: "tmux",
+            key: "hidden_session_patterns",
+            values: ["forge-*"],
+            in: "[tmux]\r\nhidden_session_patterns = [\"old-*\"]\r\n"
+                + "status = true\r\n"
+        )
+
+        #expect(updated.components(separatedBy: "[tmux]").count == 2)
+        #expect(updated.replacingOccurrences(of: "\r\n", with: "")
+            .contains("\n") == false)
+        #expect(
+            TOMLConfigParser.parseAppConfigStringArrayValue(
+                sectionName: "tmux",
+                key: "hidden_session_patterns",
+                in: updated
+            ) == ["forge-*"]
+        )
     }
 
     @Test("string array replacement removes a multiline old value")

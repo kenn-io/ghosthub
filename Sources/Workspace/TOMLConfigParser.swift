@@ -32,7 +32,7 @@ public enum TOMLConfigParser {
             }
         }
 
-        return result.trimmingCharacters(in: .whitespaces)
+        return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: - Header / Key Extraction
