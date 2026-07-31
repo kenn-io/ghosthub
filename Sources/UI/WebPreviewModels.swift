@@ -104,8 +104,10 @@ public enum WebPreviewLayoutPolicy {
             return .terminalOnly
         }
 
-        let availableWidth = windowWidth
-            - (isSidebarVisible ? sidebarWidth : 0)
+        let sidebarFootprint = isSidebarVisible
+            ? sidebarWidth + WorkspaceSidebarWidthPolicy.dividerHitWidth
+            : 0
+        let availableWidth = windowWidth - sidebarFootprint
         let minimumSplitWidth = minimumTerminalWidth
             + dividerWidth
             + minimumPreviewWidth

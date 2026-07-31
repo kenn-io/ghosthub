@@ -184,6 +184,24 @@ struct WebPreviewLayoutPolicyTests {
                 isPreviewRequested: true
             ) == .terminalOnly
         )
+        #expect(
+            WebPreviewLayoutPolicy.mode(
+                windowWidth: 1_114,
+                sidebarWidth: 320,
+                isSidebarVisible: true,
+                isPreviewAvailable: true,
+                isPreviewRequested: true
+            ) == .previewOnly
+        )
+        #expect(
+            WebPreviewLayoutPolicy.mode(
+                windowWidth: 1_115,
+                sidebarWidth: 320,
+                isSidebarVisible: true,
+                isPreviewAvailable: true,
+                isPreviewRequested: true
+            ) == .split
+        )
     }
 
     @Test("preview width leaves the terminal usable")
