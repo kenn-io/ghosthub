@@ -835,6 +835,7 @@ final class ApplicationDelegateTests: XCTestCase {
     func testQuitPolicyRequiresConfirmationWhenRuntimeRequestsIt() {
         XCTAssertTrue(
             QuitPolicy.needsConfirmation(
+                confirmBeforeQuitting: true,
                 runtimeNeedsConfirmQuit: true,
                 openTerminalSurfaceCount: 0
             )
@@ -844,17 +845,29 @@ final class ApplicationDelegateTests: XCTestCase {
     func testQuitPolicyRequiresConfirmationWhenTerminalSurfacesRemainOpen() {
         XCTAssertTrue(
             QuitPolicy.needsConfirmation(
+                confirmBeforeQuitting: true,
                 runtimeNeedsConfirmQuit: false,
                 openTerminalSurfaceCount: 2
             )
         )
     }
 
-    func testQuitPolicyAlwaysRequiresConfirmation() {
+    func testQuitPolicyRequiresConfirmationWhenEnabled() {
         XCTAssertTrue(
             QuitPolicy.needsConfirmation(
+                confirmBeforeQuitting: true,
                 runtimeNeedsConfirmQuit: false,
                 openTerminalSurfaceCount: 0
+            )
+        )
+    }
+
+    func testQuitPolicySkipsConfirmationWhenDisabled() {
+        XCTAssertFalse(
+            QuitPolicy.needsConfirmation(
+                confirmBeforeQuitting: false,
+                runtimeNeedsConfirmQuit: true,
+                openTerminalSurfaceCount: 2
             )
         )
     }

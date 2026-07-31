@@ -14,6 +14,8 @@ public final class SettingsStore: ObservableObject {
     private enum DefaultsKey {
         static let showPaneResourceUsage = "ghosthub.settings.terminal.showPaneResourceUsage"
         static let confirmPaneClose = "ghosthub.settings.terminal.confirmPaneClose"
+        static let confirmBeforeQuitting =
+            "ghosthub.settings.application.confirmBeforeQuitting"
         static let hideRootCheckout = "ghosthub.settings.worktrees.hideRootCheckout"
         static let showHiddenWorktreesByDefault = "ghosthub.settings.worktrees.showHiddenWorktreesByDefault"
         static let interfaceAppearance = "ghosthub.settings.appearance.interfaceAppearance"
@@ -70,6 +72,7 @@ public final class SettingsStore: ObservableObject {
     public static let defaultAgentPreferences = AgentPreferences()
 
     @Published public var selectedDomain: SettingsDomain = .appearance
+    @Published public private(set) var confirmBeforeQuitting: Bool
     @Published public private(set) var interfaceAppearance: AppearancePreference
     @Published public private(set) var notificationConfiguration: NotificationsConfiguration
     @Published public private(
@@ -100,6 +103,9 @@ public final class SettingsStore: ObservableObject {
         self.configPipeline = configPipeline
         self.userDefaults = userDefaults
 
+        let loadedConfirmBeforeQuitting = Self.loadConfirmBeforeQuitting(
+            using: userDefaults
+        )
         let loadedAppearance = Self.loadInterfaceAppearance(
             using: userDefaults
         )
@@ -126,6 +132,7 @@ public final class SettingsStore: ObservableObject {
             )
         let loadedSSHHosts = Self.loadSSHHosts(using: userDefaults)
 
+        confirmBeforeQuitting = loadedConfirmBeforeQuitting
         interfaceAppearance = loadedAppearance
         notificationConfiguration = loadedNotifications
         terminalAppearancePreferences = loadedTerminalAppearance
@@ -139,6 +146,9 @@ public final class SettingsStore: ObservableObject {
     }
 
     public func reload() {
+        confirmBeforeQuitting = Self.loadConfirmBeforeQuitting(
+            using: userDefaults
+        )
         interfaceAppearance = Self.loadInterfaceAppearance(
             using: userDefaults
         )
@@ -172,6 +182,14 @@ public final class SettingsStore: ObservableObject {
         userDefaults.set(
             appearance.rawValue,
             forKey: DefaultsKey.interfaceAppearance
+        )
+    }
+
+    public func setConfirmBeforeQuitting(_ enabled: Bool) {
+        confirmBeforeQuitting = enabled
+        userDefaults.set(
+            enabled,
+            forKey: DefaultsKey.confirmBeforeQuitting
         )
     }
 
@@ -559,6 +577,14 @@ public final class SettingsStore: ObservableObject {
         )
         .flatMap(AppearancePreference.init(rawValue:))
         ?? .system
+    }
+
+    private static func loadConfirmBeforeQuitting(
+        using userDefaults: UserDefaults
+    ) -> Bool {
+        userDefaults.object(
+            forKey: DefaultsKey.confirmBeforeQuitting
+        ) as? Bool ?? true
     }
 
     private static func loadNotificationConfiguration(

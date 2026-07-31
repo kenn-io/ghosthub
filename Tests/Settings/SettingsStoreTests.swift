@@ -161,6 +161,21 @@ final class SettingsStoreTests {
         #expect(store.shareAnonymousUsageData)
     }
 
+    @Test("quit confirmation is enabled by default")
+    func quitConfirmationDefaultsToEnabled() {
+        #expect(makeSUT().confirmBeforeQuitting)
+    }
+
+    @Test("quit confirmation preference persists")
+    func quitConfirmationPreferencePersists() {
+        let store = makeSUT()
+        store.setConfirmBeforeQuitting(false)
+
+        let reloaded = makeSUT()
+
+        #expect(!reloaded.confirmBeforeQuitting)
+    }
+
     @Test
     func testRefreshingAnonymousUsageDataReadsPersistedPreference() {
         let store = makeSUT()
