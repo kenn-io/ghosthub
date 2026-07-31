@@ -14,25 +14,49 @@ Ghosthub is a **worktree-centric terminal multiplexer** for macOS.
 - **Middleman:** Sessions created by Middleman remain discoverable because they are ordinary sessions on a host tmux server. Ghosthub does not use Middleman as session authority.
 - **Console Panel:** A host-scoped persistent terminal area (e.g., for `roborev`) that is independent of the active worktree.
 
+Ghosthub is pre-release. Treat the entire app, including its persistence layer,
+as subject to direct iteration.
+
+- Kwt's machine-readable CLI is authoritative for project/worktree identity
+  and exact tmux session names. Direct `tmux list-sessions` discovery supplies
+  every otherwise-unbound session on each configured host.
+- Packaged builds invoke their revision-pinned bundled kwt for local operations.
+  After explicit user permission, remote hosts invoke Ghosthub's matching
+  revision-pinned managed helper from `~/.ghosthub/`.
+- Fresh remote hosts gain project context through the explicit Host Settings
+  **Add Project** action, which delegates one absolute repository path to kwt;
+  Ghosthub never scans the remote filesystem or edits kwt configuration.
+- Ghosthub never uses `tmux -CC` or reconstructs tmux panes, windows, layouts,
+  history, or terminal output in Swift.
+- Ghosthub has no Middleman runtime or API dependency.
+
 ## Source of Truth Hierarchy
 
-1. `AGENTS.md`: This guide (Mandatory Workflow & Mental Model).
+1. `AGENTS.md`: This guide (mental model, mandatory workflow, development
+   workflow, build commands, and quality gates).
 2. `docs/architecture.md`: Architecture and Product source of truth.
 3. `docs/threat-model.md`: Security boundaries and trusted-peer assumptions.
-4. `CLAUDE.md`: Development workflow, build commands, and quality gates.
-5. `docs/terminal-sessions.md`: Source of truth for terminal ownership, shell startup, and restart semantics.
-6. `docs/release.md`: Signing, notarization, and release process source of truth.
+4. `docs/terminal-sessions.md`: Source of truth for terminal ownership, shell startup, and restart semantics.
+5. `docs/release.md`: Signing, notarization, and release process source of truth.
 
 ## Non-Negotiable Workflow Rules
 
+- When a task involves multiple steps, complete all requested steps in sequence
+  without stopping. If the task includes creating a branch, committing, and
+  opening a pull request, finish the entire chain.
 - Commit every turn when you make changes.
+- Commit before responding without asking whether to commit; committing is the
+  expected default after every change.
 - Never amend commits.
 - Do not leave the app build broken at the end of a turn.
 - If a turn touches Swift app code, terminal integration, `Package.swift`, or bootstrap logic, `make build` must pass before the turn is done.
+- If a turn changes kwt inventory, host resolution, tmux discovery, or native
+  tmux attachment, run `make test-essential-workflows` before claiming the
+  change is correct.
 - If a turn touches release packaging, signing, notarization, or `.github/workflows/release.yml`, update `docs/release.md` in the same turn.
 - For Python build tooling and tests, use `uv` rather than bare `python`, `pip`, or ad hoc virtualenv state.
 - Prefer Makefile targets over raw multi-flag test commands; if a Python or test invocation is complex enough to be copied around, add a `make` target for it.
-- Use `kata` for task management (see `CLAUDE.md`).
+- Use `kata` for task management (see Issue Tracking below).
 - User-facing workflow changes must update the website Guide when they affect
   documented behavior. Regenerate and publish the website screenshot set only
   at feature acceptance and when opening a pull request, and only when the
@@ -42,8 +66,44 @@ Ghosthub is a **worktree-centric terminal multiplexer** for macOS.
   development. Publish required refreshed binaries to the orphan
   `website-assets` branch so ghosthub.ai does not ship stale product views.
 - Pull request descriptions should be concise, rationale-first prose. Do not add boilerplate or navel-gazing sections like "Changes", "Tests", or "Verification"; mention validation only when it is genuinely useful reviewer context.
+- The canonical repository is `https://github.com/kenn-io/ghosthub`. Only push
+  or open pull requests when the user explicitly asks.
+- Never include superpowers planning documents (`docs/superpowers/specs/`,
+  `docs/superpowers/plans/`) in a pull request. They are local working
+  artifacts; remove them from the branch before pushing or opening a pull
+  request.
 - Do not poll or watch GitHub Actions through `gh`, the GitHub API, or browser automation unless the user explicitly asks you to do so.
 - **NO DATABASE MIGRATIONS** until the first production release. Update the current schema, bootstrap paths, fixtures, and tests directly.
+
+## Issue Tracking
+
+Use `kata` as the only work tracker for this project. The workspace is bound
+via `.kata.toml` at the repo root. Do not create markdown TODO lists or
+parallel planning systems.
+
+- See `kata quickstart` for the full agent guide.
+- List open work: `kata list --json` (filter further with `--status open`).
+- Read an issue: `kata show <number> --json`.
+- Search before creating: `kata search "<terms>" --json`.
+- Create follow-up work:
+  `kata create "<title>" --body "<body>" --label area:host --label priority:p2 --idempotency-key "<unique-key>" --json`.
+- Comment: `kata comment <number> --body "<text>" --json`.
+- Add/remove labels: `kata label add <number> <label>` / `kata label remove`.
+- Link issues via `kata edit <ref>`: `--parent <ref>` (set parent, at most one),
+  `--blocks <ref>` / `--blocked-by <ref>` (ordering), `--related <ref>`
+  (symmetric). Remove with the `--remove-*` variants.
+- Close: `kata close <number> --reason done --json` (only when the work is
+  actually complete).
+- Never run `kata delete` or `kata purge` without explicit user instruction.
+
+**Labels in use:** `area:{host,ui,infra,docs,remote,tests}`,
+`priority:{p1,p2,p3}`, `epic`, plus `bug` and `enhancement`. Label new issues
+appropriately; do not invent new label prefixes without updating this file.
+
+**Epics:** the parent issue is labeled `epic` and lists children via a
+markdown checklist in the body. Children also have a `parent` link via
+`kata edit <child> --parent <epic>`. When closing a child, re-check the
+parent's checklist.
 
 ## Test Suite Policy
 
@@ -53,6 +113,17 @@ Ghosthub is a **worktree-centric terminal multiplexer** for macOS.
 - Keep XCTest where the current harness still genuinely needs it, especially AppKit, SwiftUI host lifecycle, libghostty, and other UI/smoke paths that are already working.
 - When migrating repetitive tests, prefer parameterized Swift Testing coverage over copy-pasted single-case methods.
 - If you fix a regression, add or strengthen the narrowest test that would have caught it before moving on.
+- Every new executable or library module ships with tests in the same change.
+- Prefer deterministic unit tests around parsing, prompt generation, and
+  process orchestration.
+- Add integration tests at subprocess and file-system boundaries.
+
+## Quality Gates
+
+- Run `make format` before committing Swift changes. CI runs
+  `make format-check` and fails on drift.
+- Run Swift tests with `swift test` or targeted `xcodebuild test`.
+- Run Python tests with `make python-test`.
 
 ## Naming
 
@@ -101,8 +172,23 @@ If the change is specifically about interactive shell behavior, also verify the 
 - If you change libghostty bootstrap patches, bump the Ghosthub bootstrap schema and rebuild artifacts.
 - Keep Ghosthub-specific shell/config behavior documented when you change it.
 
+## Code Organization
+
+- Keep execution logic, issue-tracker access, and prompt rendering separated.
+- Favor small files with clear responsibilities.
+- Update `docs/architecture.md` when implementation changes an architectural
+  assumption.
+
+## Shell Safety
+
+Use non-interactive shell flags so agents do not hang on prompts: `cp -f`,
+`mv -f`, `rm -f`, `rm -rf`.
+
 ## Directory Map
 
+- `Sources/`: Swift app modules (`GhosthubApp`, `GhosthubUI`,
+  `GhosthubWorkspace`, `GhosthubSettings`, `GhosthubTerminal`,
+  `GhosthubTerminalSupport`, `GhosthubPersistence`, `GhosthubTmux`).
 - `Sources/App/`: Main macOS app logic and UI.
 - `Sources/UI/`: Reusable SwiftUI/AppKit presentation components.
 - `Sources/Workspace/`: Pure workspace, host, project, worktree, and session models.
@@ -110,5 +196,8 @@ If the change is specifically about interactive shell behavior, also verify the 
 - `Sources/Terminal/`: `libghostty` integration and surface management.
 - `Sources/TerminalSupport/`: libghostty config/bootstrap support that can compile without the linked library.
 - `Sources/Persistence/`: Database schema, models, and GRDB repositories.
-- `tools/`: Python-based build, bootstrap, and packaging automation.
-- `Tests/`: Swift and Python test suites.
+- `Sources/TmuxControl/`: Native tmux/SSH attachment command model.
+- `tools/`: Python-based build, bootstrap (including `libghostty`), and
+  packaging automation.
+- `Tests/`: Swift and Python test suites. Python tests are in `Tests/test_*.py`;
+  Swift tests are in `Tests/*/`.
