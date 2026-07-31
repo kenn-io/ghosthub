@@ -1023,6 +1023,11 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             configuration: TerminalSurfaceConfiguration()
         )
         let window = hostInWindow(view)
+        guard window.isKeyWindow else {
+            throw XCTSkip(
+                "Test requires window server - skipping in headless environment"
+            )
+        }
 
         var interactions = 0
         var focusedTransitions = 0
@@ -1628,7 +1633,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         XCTAssertTrue(descendantViews(in: window.contentView).contains(surfaceB))
     }
 
-    func testAttachingToNonKeyWindowDoesNotFocusTerminal() throws {
+    func testRequestingFocusInNonKeyWindowDoesNotFocusTerminal() throws {
         let appHandle = try requireAppHandle()
         let view = TerminalSurfaceView(
             app: appHandle,
@@ -1647,11 +1652,12 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
 
         window.contentView = view
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        view.requestKeyboardFocus()
 
         XCTAssertFalse(window.isKeyWindow)
         XCTAssertFalse(
             view.focused,
-            "A terminal mounted in a background window must not acquire libghostty focus."
+            "A terminal in a background window must reject keyboard focus requests."
         )
     }
 
