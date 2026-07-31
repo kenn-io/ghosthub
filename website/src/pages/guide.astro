@@ -217,7 +217,10 @@ const imageAlt = {
             <a href="https://cli.github.com/">GitHub CLI (<code>gh</code>)</a>{' '}
             on the host containing the project: your Mac for a local project
             or the SSH machine for a remote one. Install it there and run{' '}
-            <code>gh auth login</code> on that same host before importing.
+            <code>gh auth login</code> on that same host before importing. For
+            an HTTPS Git remote, ordinary Git authentication must also work on
+            that host; <code>gh auth setup-git</code> configures GitHub CLI as
+            a Git credential helper.
           </p>
           <p>
             Select a project and press <kbd>⌘⇧N</kbd>. Use
@@ -236,7 +239,9 @@ const imageAlt = {
             To remove a non-primary worktree, hover its sidebar row and click
             the <strong>×</strong>. After confirmation, Ghosthub terminates
             that worktree’s live tmux session if necessary and asks kwt to
-            remove the checkout. The Git branch is kept.
+            remove the checkout. If the checkout is already gone, Ghosthub
+            clears its stale worktree entry without removing anything again
+            or terminating a surviving tmux session. The Git branch is kept.
           </p>
         </div>
       </div>

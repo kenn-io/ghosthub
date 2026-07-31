@@ -1016,10 +1016,17 @@ final class WorkspaceSceneModel: ObservableObject {
             )
             throw error
         }
-        let (worktree, project) = try reconcileRemovalPreflight(
+        guard let (worktree, project) = try reconcileRemovalPreflight(
             preflight,
             request: request
-        )
+        ) else {
+            removeWorktreeFromCachedState(
+                request.worktree,
+                hostID: requestedProject.hostID
+            )
+            scheduleTmuxSessionDiscovery()
+            return
+        }
         guard let generation = worktree.generation else {
             throw KwtWorktreeError.removalTargetChanged
         }
@@ -1103,7 +1110,7 @@ final class WorkspaceSceneModel: ObservableObject {
     private func reconcileRemovalPreflight(
         _ inventory: KwtHostInventory,
         request: WorktreeRemovalRequest
-    ) throws -> (WorktreeSummary, ProjectSummary) {
+    ) throws -> (WorktreeSummary, ProjectSummary)? {
         let hostID = request.project.hostID
         let previous = kwtInventoriesByHost[hostID]
         kwtInventoriesByHost[hostID] =
@@ -1119,24 +1126,29 @@ final class WorkspaceSceneModel: ObservableObject {
         }),
             item.warning == nil,
             item.project.repository == request.project.scopedKey,
-            item.project.path == request.project.rootPath,
-            let record = item.worktrees.first(where: {
-                $0.path == request.worktree.path
-            }),
-            record.repository == request.project.scopedKey,
-            record.branch == request.worktree.branch,
-            record.isMain == request.worktree.isPrimary,
-            let confirmedGeneration = request.worktree.generation,
-            record.generation == confirmedGeneration,
-            record.sessionName == request.worktree.tmuxSessionName,
-            record.tmuxSocketName == request.worktree.tmuxSocketName,
-            let worktree = snapshot.worktree(id: request.worktree.id),
-            let project = snapshot.project(id: request.project.id),
-            removalRequest(
-                request,
-                matches: worktree,
-                project: project
-            )
+            item.project.path == request.project.rootPath
+        else {
+            throw KwtWorktreeError.removalTargetChanged
+        }
+        guard let record = item.worktrees.first(where: {
+            $0.path == request.worktree.path
+        }) else {
+            return nil
+        }
+        guard record.repository == request.project.scopedKey,
+              record.branch == request.worktree.branch,
+              record.isMain == request.worktree.isPrimary,
+              let confirmedGeneration = request.worktree.generation,
+              record.generation == confirmedGeneration,
+              record.sessionName == request.worktree.tmuxSessionName,
+              record.tmuxSocketName == request.worktree.tmuxSocketName,
+              let worktree = snapshot.worktree(id: request.worktree.id),
+              let project = snapshot.project(id: request.project.id),
+              removalRequest(
+                  request,
+                  matches: worktree,
+                  project: project
+              )
         else {
             throw KwtWorktreeError.removalTargetChanged
         }

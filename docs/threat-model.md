@@ -106,11 +106,13 @@ Ghosthub passes kwt's opaque candidate identity back
 unchanged and does not construct provider refs, worktree paths, branches, push
 destinations, or tmux names. The imported checkout remains
 untrusted contributor-controlled source. Kwt suppresses repository hooks,
-filters, setup commands, and credential prompts during import, but Ghosthub
-does not sandbox the checkout or commands the user later runs inside its tmux
-session. Import itself does not start tmux or execute a configured project
-layout, bootstrap, agent, or checkout command. It returns the deterministic
-workspace-specific socket identity without creating the server.
+filters, setup commands, and credential prompts during import. It may invoke
+the user's configured Git credential helpers noninteractively to authenticate
+an HTTPS fetch, but Ghosthub does not receive or manage those credentials.
+Ghosthub does not sandbox the checkout or commands the user later runs inside
+its tmux session. Import itself does not start tmux or execute a configured
+project layout, bootstrap, agent, or checkout command. It returns the
+deterministic workspace-specific socket identity without creating the server.
 
 Testing a newly configured SSH connection delegates host-key verification to
 the user's OpenSSH configuration, just like inventory, attachment, and helper

@@ -328,6 +328,54 @@ struct WorkspaceWorktreeRemovalTests {
     }
 
     @MainActor
+    @Test("an already-absent worktree completes cached removal")
+    func alreadyAbsentWorktreeCompletesRemoval() async throws {
+        let environment = try setupStandardEnvironment()
+        let removable = WorktreeSummary.fixture(
+            hostID: environment.host.id,
+            projectID: environment.project.id,
+            scopedKey: "/tmp/ghosthub-feature",
+            name: "feature/remove",
+            path: "/tmp/ghosthub-feature",
+            branch: "feature/remove",
+            generation: stableWorktreeGeneration
+        )
+        let session = TerminalSessionSummary(
+            id: UUID(),
+            hostID: environment.host.id,
+            worktreeID: removable.id,
+            scopedKey: removable.scopedKey,
+            isAlive: false
+        )
+        var snapshot = environment.snapshot
+        snapshot.worktrees.append(removable)
+        snapshot.sessions.append(session)
+        let removals = LockedValue(0)
+        let kills = LockedValue(0)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtInventoryLoader: { _ in inventory(environment) },
+            kwtWorktreeRemover: { _, _, _, _ in
+                removals.withLock { $0 += 1 }
+            },
+            tmuxSessionKiller: { _, _, _ in
+                kills.withLock { $0 += 1 }
+            }
+        )
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        try await model.removeWorktree(request)
+
+        #expect(removals.load() == 0)
+        #expect(kills.load() == 0)
+        #expect(model.snapshot.worktree(id: removable.id) == nil)
+        #expect(model.snapshot.sessions.contains { $0.id == session.id } == false)
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test(
         "removal requires a canonical worktree generation",
         arguments: [
