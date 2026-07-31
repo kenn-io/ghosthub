@@ -769,9 +769,13 @@ struct WorkspaceWindow: View {
         #endif
         .onAppear {
             registry.register(sceneModel)
+            if terminalRuntime.configReloadNotice?.kind == .error {
+                visibleConfigReloadNotice =
+                    terminalRuntime.configReloadNotice
+            }
         }
         .onReceive(
-            terminalRuntime.$configReloadNotice
+            terminalRuntime.configReloadNotices
         ) { notice in
             withAnimation(.easeOut(duration: 0.15)) {
                 visibleConfigReloadNotice = notice
