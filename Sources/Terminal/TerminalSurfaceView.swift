@@ -134,7 +134,7 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     var lastPerformKeyEvent: TimeInterval?
     private var consumedCommandKeyCodes: Set<UInt16> = []
     private var surfaceResizeState = SurfaceResizeState()
-    private var pendingSurfaceResizeTask: DispatchWorkItem?
+    private var isDeferringLiveResize = false
     private var hasSyncedFocusState = false
     private let keyEventInterpreter: (([NSEvent]) -> Void)?
     let textInputObserver: ((String) -> Void)?
@@ -392,50 +392,16 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
             height: height
         ) else { return }
 
-        let now = ProcessInfo.processInfo.systemUptime
-        defer { surfaceResizeState.recordEvent(at: now) }
-
-        // Only defer during live window resize (drag). Programmatic
-        // resizes (split pane close, tab switch) must apply
-        // immediately to avoid rendering at stale dimensions.
-        let decision: SurfaceResizeDecision
-        if inLiveResize {
-            decision = SurfaceResizePolicy.decision(
-                now: now,
-                lastAppliedAt: surfaceResizeState.lastAppliedAt,
-                lastEventAt: surfaceResizeState.lastEventAt
-            )
-        } else {
-            decision = .immediate
-        }
-
-        switch decision {
+        switch SurfaceResizePolicy.decision(
+            isLiveResize: isDeferringLiveResize
+        ) {
         case .immediate:
-            pendingSurfaceResizeTask?.cancel()
-            pendingSurfaceResizeTask = nil
-            applySurfaceSize(width: width, height: height, at: now)
+            applySurfaceSize(width: width, height: height)
 
-        case let .deferred(delay):
+        case .deferredUntilLiveResizeEnds:
             surfaceResizeState.setPending(
                 width: width,
                 height: height
-            )
-            pendingSurfaceResizeTask?.cancel()
-            let task = DispatchWorkItem { [weak self] in
-                guard let self,
-                      let pending = surfaceResizeState.consumePending()
-                else { return }
-                pendingSurfaceResizeTask = nil
-                applySurfaceSize(
-                    width: pending.width,
-                    height: pending.height,
-                    at: ProcessInfo.processInfo.systemUptime
-                )
-            }
-            pendingSurfaceResizeTask = task
-            DispatchQueue.main.asyncAfter(
-                deadline: .now() + delay,
-                execute: task
             )
         }
     }
@@ -472,13 +438,11 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
 
     private func applySurfaceSize(
         width: UInt32,
-        height: UInt32,
-        at timestamp: TimeInterval
+        height: UInt32
     ) {
         surfaceResizeState.apply(
             width: width,
-            height: height,
-            at: timestamp
+            height: height
         )
         setSurfaceSize(width: width, height: height)
     }
@@ -487,12 +451,9 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
         guard let pendingSurfacePixelSize = surfaceResizeState.consumePending() else {
             return
         }
-        pendingSurfaceResizeTask?.cancel()
-        pendingSurfaceResizeTask = nil
         applySurfaceSize(
             width: pendingSurfacePixelSize.width,
-            height: pendingSurfacePixelSize.height,
-            at: ProcessInfo.processInfo.systemUptime
+            height: pendingSurfacePixelSize.height
         )
     }
 
@@ -929,17 +890,20 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
         let xScale = fbFrame.size.width / frame.size.width
         let yScale = fbFrame.size.height / frame.size.height
         ghostty_surface_set_content_scale(surface, xScale, yScale)
-        pendingSurfaceResizeTask?.cancel()
-        pendingSurfaceResizeTask = nil
         applySurfaceSize(
             width: UInt32(fbFrame.size.width),
-            height: UInt32(fbFrame.size.height),
-            at: ProcessInfo.processInfo.systemUptime
+            height: UInt32(fbFrame.size.height)
         )
+    }
+
+    override public func viewWillStartLiveResize() {
+        super.viewWillStartLiveResize()
+        isDeferringLiveResize = true
     }
 
     override public func viewDidEndLiveResize() {
         super.viewDidEndLiveResize()
+        isDeferringLiveResize = false
         flushPendingSurfaceResize()
     }
 

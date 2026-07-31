@@ -1,4 +1,3 @@
-import Foundation
 import Testing
 @testable import GhosthubTerminal
 
@@ -8,14 +7,11 @@ struct SurfaceResizeStateTests {
     @Test("applying a backing-scale resize clears stale deferred state")
     mutating func applyClearsPendingDeferredResize() {
         state.setPending(width: 800, height: 600)
-        state.recordEvent(at: 10)
-        state.apply(width: 1600, height: 1200, at: 11)
+        state.apply(width: 1600, height: 1200)
 
         expectState(
             pending: nil,
-            last: .init(width: 1600, height: 1200),
-            lastAppliedAt: 11,
-            lastEventAt: 11
+            last: .init(width: 1600, height: 1200)
         )
     }
 
@@ -32,8 +28,6 @@ struct SurfaceResizeStateTests {
     private func expectState(
         pending: SurfaceResizeState.Size? = nil,
         last: SurfaceResizeState.Size? = nil,
-        lastAppliedAt: TimeInterval? = nil,
-        lastEventAt: TimeInterval? = nil,
         sourceLocation: SourceLocation = #_sourceLocation
     ) {
         #expect(
@@ -42,14 +36,6 @@ struct SurfaceResizeStateTests {
         )
         #expect(
             state.lastPixelSize == last,
-            sourceLocation: sourceLocation
-        )
-        #expect(
-            state.lastAppliedAt == lastAppliedAt,
-            sourceLocation: sourceLocation
-        )
-        #expect(
-            state.lastEventAt == lastEventAt,
             sourceLocation: sourceLocation
         )
     }
