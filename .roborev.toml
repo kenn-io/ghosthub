@@ -17,4 +17,9 @@ Session lifecycle:
   `kwt remove`. This is one atomic destructive workflow and must not require a
   separate kill confirmation. A standalone Kill Session action should remain
   available for users who only want to end the session.
+
+Disregard findings whose only substance is that the code does not compile or
+type-check. Ghosthub's required build and test gates are authoritative for
+compiler validation; reviewers should focus on behavioral and architectural
+defects.
 """
