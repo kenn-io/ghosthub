@@ -31,12 +31,13 @@ window's native tab group. AppKit owns the tab bar, tab movement, and window
 merging; Ghosthub does not render a custom tab strip or project tmux windows
 into native UI.
 
-Closing a native tab closes only that workspace presentation. Closing the last
-tab of the last workspace follows the same app-termination policy as closing
-the final standalone window. Ghosthub confirms app termination by default;
-users can disable the shared confirmation in **Settings -> Terminal**. This
-preference never terminates a tmux session: quitting still detaches clients,
-while Kill Session remains a separate confirmed action.
+Closing a native tab or window closes only that workspace presentation. Closing
+the final workspace window leaves Ghosthub running, matching ordinary macOS
+terminal behavior; Cmd-Q remains the explicit app-termination path. Ghosthub
+confirms app termination by default, and users can disable that confirmation in
+**Settings -> Terminal**. Closing presentations or quitting never terminates a
+tmux session: both detach clients, while Kill Session remains a separate
+confirmed action.
 
 ## Process Boundaries
 
