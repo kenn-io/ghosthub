@@ -455,8 +455,9 @@ final class ApplicationDelegateTests: XCTestCase {
         XCTAssertTrue(delegate.terminationConfirmed)
     }
 
-    func testApplicationWaitsForPreCloseConfirmation() {
+    func testApplicationDoesNotTerminateAfterLastWindowCloses() {
         let delegate = ApplicationDelegate.forTesting()
+        XCTAssertTrue(delegate.prepareUserInitiatedTermination())
 
         XCTAssertFalse(
             delegate.applicationShouldTerminateAfterLastWindowClosed(
@@ -480,81 +481,11 @@ final class ApplicationDelegateTests: XCTestCase {
         XCTAssertFalse(NSWindow.allowsAutomaticWindowTabbing)
     }
 
-    func testLastWindowStaysOpenWhenConfirmationCancels() {
-        let delegate = ApplicationDelegate.forTesting(
-            confirmTerminationResult: false
-        )
-        let window = CloseSpyWindow()
-        var terminationRequests = 0
-        delegate.terminateApplication = {
-            terminationRequests += 1
-        }
-
-        delegate.requestWorkspaceWindowClose(window)
-
-        XCTAssertEqual(window.closeCallCount, 0)
-        XCTAssertEqual(terminationRequests, 0)
-        XCTAssertFalse(delegate.terminationConfirmed)
-    }
-
-    func testLastWindowRequestsTerminationAfterConfirmation() {
+    func testLastWindowClosesWithoutRequestingTermination() {
         let delegate = ApplicationDelegate.forTesting(
             confirmTerminationResult: true
         )
         let window = CloseSpyWindow()
-        var terminationRequests = 0
-        delegate.terminateApplication = {
-            terminationRequests += 1
-        }
-
-        delegate.requestWorkspaceWindowClose(window)
-
-        XCTAssertEqual(window.closeCallCount, 0)
-        XCTAssertEqual(terminationRequests, 1)
-        XCTAssertTrue(delegate.terminationConfirmed)
-
-        // After confirmation, termination proceeds without
-        // a second dialog.
-        XCTAssertTrue(
-            delegate.applicationShouldTerminateAfterLastWindowClosed(
-                NSApplication.shared
-            )
-        )
-        XCTAssertEqual(
-            delegate.applicationShouldTerminate(NSApplication.shared),
-            .terminateNow
-        )
-    }
-
-    func testWindowCloseSkipsConfirmWhenNoActiveSessions() {
-        let delegate = ApplicationDelegate()
-        let window = CloseSpyWindow()
-        delegate.needsConfirmQuit = { false }
-        var terminationRequests = 0
-        delegate.terminateApplication = {
-            terminationRequests += 1
-        }
-
-        var confirmCalled = false
-        delegate.confirmTermination = {
-            confirmCalled = true
-            return false
-        }
-
-        delegate.requestWorkspaceWindowClose(window)
-
-        XCTAssertEqual(window.closeCallCount, 0)
-        XCTAssertEqual(terminationRequests, 1)
-        XCTAssertFalse(confirmCalled)
-        XCTAssertTrue(delegate.terminationConfirmed)
-    }
-
-    func testClosingNonLastWindowDoesNotArmTermination() {
-        let delegate = ApplicationDelegate.forTesting(
-            confirmTerminationResult: true
-        )
-        let window = CloseSpyWindow()
-        delegate.hasAnotherWorkspaceWindow = { _ in true }
         var terminationRequests = 0
         delegate.terminateApplication = {
             terminationRequests += 1
@@ -564,16 +495,11 @@ final class ApplicationDelegateTests: XCTestCase {
 
         XCTAssertEqual(window.closeCallCount, 1)
         XCTAssertEqual(terminationRequests, 0)
-        XCTAssertFalse(
-            delegate.terminationConfirmed,
-            "terminationConfirmed must not be set when other managed windows remain"
-        )
+        XCTAssertFalse(delegate.terminationConfirmed)
     }
 
-    func testClosingHiddenTabBarGroupConfirmsBeforeClosingTabs() {
-        let delegate = ApplicationDelegate.forTesting(
-            confirmTerminationResult: false
-        )
+    func testClosingHiddenTabBarGroupDoesNotRequestTermination() {
+        let delegate = ApplicationDelegate.forTesting()
         let window = HiddenTabBarWindow(
             contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
             styleMask: [.titled, .closable, .resizable],
@@ -587,27 +513,20 @@ final class ApplicationDelegateTests: XCTestCase {
             defer: false
         )
         window.addTabbedWindow(tab, ordered: .above)
-        var inspectedGroup: [NSWindow] = []
-        delegate.hasAnotherWorkspaceWindow = {
-            inspectedGroup = $0
-            return false
-        }
-        var confirmationRequests = 0
-        delegate.requestTerminationConfirmation = { completion in
-            confirmationRequests += 1
-            completion(false)
+        var terminationRequests = 0
+        delegate.terminateApplication = {
+            terminationRequests += 1
         }
 
         delegate.requestWorkspaceWindowClose(window)
 
-        XCTAssertEqual(inspectedGroup.count, 2)
-        XCTAssertEqual(confirmationRequests, 1)
-        XCTAssertEqual(window.closeCallCount, 0)
-        XCTAssertEqual(tab.closeCallCount, 0)
+        XCTAssertEqual(window.closeCallCount, 1)
+        XCTAssertEqual(tab.closeCallCount, 1)
+        XCTAssertEqual(terminationRequests, 0)
         XCTAssertFalse(delegate.terminationConfirmed)
     }
 
-    func testTrafficLightClosesHiddenTabBarGroupWhenAnotherWindowRemains()
+    func testTrafficLightClosesHiddenTabBarGroupWithoutTerminating()
         throws {
         let delegate = ApplicationDelegate.forTesting()
         let window = HiddenTabBarWindow(
@@ -623,7 +542,10 @@ final class ApplicationDelegateTests: XCTestCase {
             defer: false
         )
         window.addTabbedWindow(tab, ordered: .above)
-        delegate.hasAnotherWorkspaceWindow = { _ in true }
+        var terminationRequests = 0
+        delegate.terminateApplication = {
+            terminationRequests += 1
+        }
         let controller = CompactWorkspaceTitlebarController(
             applicationDelegate: delegate
         )
@@ -636,6 +558,7 @@ final class ApplicationDelegateTests: XCTestCase {
 
         XCTAssertEqual(window.closeCallCount, 1)
         XCTAssertEqual(tab.closeCallCount, 1)
+        XCTAssertEqual(terminationRequests, 0)
         XCTAssertFalse(delegate.terminationConfirmed)
     }
 
@@ -643,16 +566,9 @@ final class ApplicationDelegateTests: XCTestCase {
         let delegate = ApplicationDelegate.forTesting()
         let window = CloseSpyWindow()
         let sibling = CloseSpyWindow()
-        var inspectedWindows: [NSWindow] = []
-        delegate.hasAnotherWorkspaceWindow = {
-            inspectedWindows = $0
-            return true
-        }
 
         delegate.requestWorkspaceTabClose(window)
 
-        XCTAssertEqual(inspectedWindows.count, 1)
-        XCTAssertTrue(inspectedWindows.first === window)
         XCTAssertEqual(window.closeCallCount, 1)
         XCTAssertEqual(sibling.closeCallCount, 0)
         XCTAssertFalse(delegate.terminationConfirmed)
@@ -720,10 +636,8 @@ final class ApplicationDelegateTests: XCTestCase {
         )
     }
 
-    func testWindowCloseDelegateUsesGhosthubConfirmation() throws {
-        let delegate = ApplicationDelegate.forTesting(
-            confirmTerminationResult: false
-        )
+    func testWindowCloseDelegateClosesWithoutTerminating() throws {
+        let delegate = ApplicationDelegate.forTesting()
         var terminationRequests = 0
         delegate.terminateApplication = {
             terminationRequests += 1
@@ -743,23 +657,12 @@ final class ApplicationDelegateTests: XCTestCase {
             applicationDelegate: delegate
         )
         controller.install(on: window)
-        let closeButton = try XCTUnwrap(
-            window.standardWindowButton(.closeButton)
-        )
-
         let shouldClose = try XCTUnwrap(
             window.delegate?.windowShouldClose?(window)
         )
         XCTAssertFalse(shouldClose)
-        XCTAssertEqual(window.closeCallCount, 0)
+        XCTAssertEqual(window.closeCallCount, 1)
         XCTAssertEqual(terminationRequests, 0)
-
-        delegate.requestTerminationConfirmation = { completion in
-            completion(true)
-        }
-        closeButton.performClick(nil)
-        XCTAssertEqual(window.closeCallCount, 0)
-        XCTAssertEqual(terminationRequests, 1)
     }
 
     func testWindowCloseDelegateForwardsOtherCallbacks() throws {

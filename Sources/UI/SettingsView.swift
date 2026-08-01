@@ -286,8 +286,8 @@ public struct SettingsView: View {
                 )
 
                 Text(
-                    "Ghosthub asks before quitting or closing the final workspace."
-                        + " Tmux sessions keep running either way."
+                    "Ghosthub asks before quitting. Closing windows does not quit"
+                        + " Ghosthub, and tmux sessions keep running either way."
                 )
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
