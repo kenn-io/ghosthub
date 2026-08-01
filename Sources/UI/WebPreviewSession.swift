@@ -53,6 +53,8 @@ public final class WebPreviewSession: NSObject, ObservableObject {
     private var observations: [NSKeyValueObservation] = []
     private var auxiliaryWindows:
         [ObjectIdentifier: NSWindowController] = [:]
+    private var pendingDownloads:
+        [ObjectIdentifier: WebPreviewDownloadDestination] = [:]
     private var isTornDown = false
     private var navigationRecovery = WebPreviewNavigationRecovery()
 
@@ -129,6 +131,12 @@ public final class WebPreviewSession: NSObject, ObservableObject {
         auxiliaryWindows.removeAll()
         for controller in controllers {
             closeAuxiliaryWindow(controller)
+        }
+
+        let downloads = Array(pendingDownloads.values)
+        pendingDownloads.removeAll()
+        for download in downloads where download.cancel() != nil {
+            NSLog("Ghosthub could not remove a partial web preview download.")
         }
     }
 
@@ -239,6 +247,19 @@ public final class WebPreviewSession: NSObject, ObservableObject {
             alert.beginSheetModal(for: window, completionHandler: completion)
         } else {
             completion(alert.runModal())
+        }
+    }
+
+    private func presentDownloadError(
+        _ error: Error,
+        for download: WKDownload
+    ) {
+        let alert = NSAlert(error: error)
+        alert.messageText = "Download Could Not Finish"
+        if let window = download.webView?.window {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.runModal()
         }
     }
 }
@@ -437,9 +458,10 @@ extension WebPreviewSession: WKDownloadDelegate {
                 return
             }
             do {
-                completionHandler(
-                    try WebPreviewDownloadDestination.prepare(url)
-                )
+                let destination = try WebPreviewDownloadDestination
+                    .prepare(url)
+                self.pendingDownloads[ObjectIdentifier(download)] = destination
+                completionHandler(destination.temporaryURL)
             } catch {
                 completionHandler(nil)
                 let alert = NSAlert(error: error)
@@ -469,6 +491,41 @@ extension WebPreviewSession: WKDownloadDelegate {
     ) {
         completionHandler(.performDefaultHandling, nil)
     }
+
+    public func downloadDidFinish(_ download: WKDownload) {
+        guard let destination = pendingDownloads.removeValue(
+            forKey: ObjectIdentifier(download)
+        ) else {
+            return
+        }
+        do {
+            try destination.finish()
+        } catch {
+            presentDownloadError(
+                destination.cancel() ?? error,
+                for: download
+            )
+        }
+    }
+
+    public func download(
+        _ download: WKDownload,
+        didFailWithError error: Error,
+        resumeData: Data?
+    ) {
+        if let destination = pendingDownloads.removeValue(
+            forKey: ObjectIdentifier(download)
+        ), let cleanupError = destination.cancel() {
+            presentDownloadError(cleanupError, for: download)
+            return
+        }
+        guard !isTornDown,
+              (error as NSError).code != NSURLErrorCancelled
+        else {
+            return
+        }
+        presentDownloadError(error, for: download)
+    }
 }
 
 struct WebPreviewNavigationRecovery {
@@ -491,23 +548,62 @@ struct WebPreviewNavigationRecovery {
     }
 }
 
-enum WebPreviewDownloadDestination {
+struct WebPreviewDownloadDestination {
+    let selectedURL: URL
+    let temporaryURL: URL
+    private let fileManager: FileManager
+
     static func prepare(
         _ url: URL,
         fileManager: FileManager = .default
-    ) throws -> URL {
+    ) throws -> WebPreviewDownloadDestination {
         var isDirectory = ObjCBool(false)
-        guard fileManager.fileExists(
+        if fileManager.fileExists(
             atPath: url.path,
             isDirectory: &isDirectory
-        ) else {
-            return url
-        }
-        guard !isDirectory.boolValue else {
+        ), isDirectory.boolValue {
             throw CocoaError(.fileWriteFileExists)
         }
-        try fileManager.removeItem(at: url)
-        return url
+
+        let temporaryURL = url.deletingLastPathComponent()
+            .appendingPathComponent(
+                ".\(url.lastPathComponent).ghosthub-\(UUID().uuidString)"
+            )
+        return WebPreviewDownloadDestination(
+            selectedURL: url,
+            temporaryURL: temporaryURL,
+            fileManager: fileManager
+        )
+    }
+
+    func finish() throws {
+        var isDirectory = ObjCBool(false)
+        if fileManager.fileExists(
+            atPath: selectedURL.path,
+            isDirectory: &isDirectory
+        ) {
+            guard !isDirectory.boolValue else {
+                throw CocoaError(.fileWriteFileExists)
+            }
+            _ = try fileManager.replaceItemAt(
+                selectedURL,
+                withItemAt: temporaryURL
+            )
+        } else {
+            try fileManager.moveItem(at: temporaryURL, to: selectedURL)
+        }
+    }
+
+    func cancel() -> Error? {
+        guard fileManager.fileExists(atPath: temporaryURL.path) else {
+            return nil
+        }
+        do {
+            try fileManager.removeItem(at: temporaryURL)
+            return nil
+        } catch {
+            return error
+        }
     }
 }
 

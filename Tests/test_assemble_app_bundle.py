@@ -267,6 +267,9 @@ def test_assemble_app_bundle_stages_icon_and_binary(tmp_path):
     assert plist["NSMicrophoneUsageDescription"] == (
         "Allow websites opened in Ghosthub Web Preview to use the microphone."
     )
+    assert plist["NSAppTransportSecurity"] == {
+        "NSAllowsArbitraryLoadsInWebContent": True,
+    }
 
 
 def test_release_info_plist_contains_update_configuration(tmp_path):
@@ -329,6 +332,9 @@ def test_release_info_plist_contains_update_configuration(tmp_path):
     assert plist["NSMicrophoneUsageDescription"] == (
         "Allow websites opened in Ghosthub Web Preview to use the microphone."
     )
+    assert plist["NSAppTransportSecurity"] == {
+        "NSAllowsArbitraryLoadsInWebContent": True,
+    }
     assert plist["GhosthubKwtVersion"] == "0.1.0"
     assert plist["GhosthubKwtSourceRevision"] == "abc123"
     assert plist["SUFeedURL"] == assemble.SPARKLE_FEED_URL

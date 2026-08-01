@@ -357,8 +357,11 @@ compatibility symlinks at the `.app` root creates unsealed content that strict
 code-signing rejects. The containing app is signed with
 `Resources/Ghosthub.entitlements`, which grants camera and audio-input access
 only so WebKit can present the system permission flow for websites opened in
-Web Preview. Ghosthub's AGPL license and every third-party notice in `LICENSES`
-are staged during the same assembly step.
+Web Preview. Its `Info.plist` also permits arbitrary loads only inside WebKit so
+the explicitly entered HTTP development addresses supported by Web Preview do
+not relax App Transport Security for Ghosthub's other network clients.
+Ghosthub's AGPL license and every third-party notice in `LICENSES` are staged
+during the same assembly step.
 
 Update this document whenever release packaging, signing, notarization, the
 embedded kwt policy, or `.github/workflows/release.yml` changes.

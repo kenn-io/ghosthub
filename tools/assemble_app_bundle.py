@@ -174,6 +174,9 @@ def assemble_app_bundle(
         "GhosthubRemoteKwtSourceRevision": remote_kwt_source_revision,
         "NSHighResolutionCapable": True,
         "NSHumanReadableCopyright": copyright,
+        "NSAppTransportSecurity": {
+            "NSAllowsArbitraryLoadsInWebContent": True,
+        },
         "NSCameraUsageDescription": (
             "Allow websites opened in Ghosthub Web Preview to use the camera."
         ),

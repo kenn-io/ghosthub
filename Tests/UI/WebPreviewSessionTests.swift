@@ -96,8 +96,8 @@ struct WebPreviewSessionLifecycleTests {
         #expect(recovery.retryURL == failedURL)
     }
 
-    @Test("confirmed download replacement supplies a missing destination")
-    func preparesDownloadReplacement() throws {
+    @Test("download replacement preserves the original until success")
+    func downloadReplacementIsAtomic() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         let destination = directory.appendingPathComponent("artifact.zip")
@@ -110,8 +110,46 @@ struct WebPreviewSessionLifecycleTests {
 
         let prepared = try WebPreviewDownloadDestination.prepare(destination)
 
-        #expect(prepared == destination)
-        #expect(!FileManager.default.fileExists(atPath: destination.path))
+        #expect(try Data(contentsOf: destination) == Data("old".utf8))
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: prepared.temporaryURL.path
+            )
+        )
+
+        try Data("new".utf8).write(to: prepared.temporaryURL)
+        try prepared.finish()
+
+        #expect(try Data(contentsOf: destination) == Data("new".utf8))
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: prepared.temporaryURL.path
+            )
+        )
+    }
+
+    @Test("failed download removes only its temporary file")
+    func failedDownloadPreservesOriginal() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let destination = directory.appendingPathComponent("artifact.zip")
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data("old".utf8).write(to: destination)
+        let prepared = try WebPreviewDownloadDestination.prepare(destination)
+        try Data("partial".utf8).write(to: prepared.temporaryURL)
+
+        #expect(prepared.cancel() == nil)
+
+        #expect(try Data(contentsOf: destination) == Data("old".utf8))
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: prepared.temporaryURL.path
+            )
+        )
     }
 }
 

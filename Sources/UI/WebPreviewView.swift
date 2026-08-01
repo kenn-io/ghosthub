@@ -23,6 +23,11 @@ public struct WebPreviewWorkspaceLayout: View {
 
     public var body: some View {
         GeometryReader { geometry in
+            let effectivePreviewWidth = WebPreviewLayoutPolicy
+                .clampedPreviewWidth(
+                    previewWidth,
+                    availableWidth: geometry.size.width
+                )
             HStack(spacing: 0) {
                 terminal
                     .frame(
@@ -41,13 +46,16 @@ public struct WebPreviewWorkspaceLayout: View {
 
                 if mode != .terminalOnly {
                     if mode == .split {
-                        resizeDivider(availableWidth: geometry.size.width)
+                        resizeDivider(
+                            availableWidth: geometry.size.width,
+                            effectivePreviewWidth: effectivePreviewWidth
+                        )
                     }
 
                     preview
                         .frame(
                             width: mode == .split
-                                ? previewWidth
+                                ? effectivePreviewWidth
                                 : nil
                         )
                         .frame(
@@ -61,7 +69,10 @@ public struct WebPreviewWorkspaceLayout: View {
         }
     }
 
-    private func resizeDivider(availableWidth: CGFloat) -> some View {
+    private func resizeDivider(
+        availableWidth: CGFloat,
+        effectivePreviewWidth: CGFloat
+    ) -> some View {
         WebPreviewResizeCursorView()
             .frame(width: WebPreviewLayoutPolicy.dividerWidth)
             .overlay {
@@ -74,7 +85,7 @@ public struct WebPreviewWorkspaceLayout: View {
                 DragGesture(minimumDistance: 1)
                     .onChanged { value in
                         if dragStartWidth == nil {
-                            dragStartWidth = previewWidth
+                            dragStartWidth = effectivePreviewWidth
                         }
                         guard let dragStartWidth else { return }
                         previewWidth = WebPreviewLayoutPolicy
@@ -89,7 +100,9 @@ public struct WebPreviewWorkspaceLayout: View {
             )
             .accessibilityElement()
             .accessibilityLabel("Resize web preview")
-            .accessibilityValue("\(Int(previewWidth)) points wide")
+            .accessibilityValue(
+                "\(Int(effectivePreviewWidth)) points wide"
+            )
             .accessibilityAdjustableAction { direction in
                 let change: CGFloat = direction == .increment ? 40 : -40
                 previewWidth = WebPreviewLayoutPolicy.clampedPreviewWidth(
@@ -175,6 +188,7 @@ public struct WebPreviewView: View {
     private var browserContent: some View {
         ZStack {
             WebPreviewWebView(webView: session.webView)
+                .id(session.context.id)
 
             if let errorMessage = session.errorMessage {
                 ContentUnavailableView {

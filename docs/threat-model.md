@@ -101,7 +101,9 @@ can be disabled in Settings or through the documented environment switches.
 The local worktree web preview adds no Ghosthub listener, remote-browser path,
 SSH forwarding, or authentication service. Its page traffic follows WebKit's
 ordinary networking behavior from the local Mac and is separate from tmux and
-SSH transport.
+SSH transport. The app's transport-security exception is scoped to WebKit so
+HTTP preview support does not disable App Transport Security for Ghosthub's
+other network clients.
 
 ### Local external state tools
 
