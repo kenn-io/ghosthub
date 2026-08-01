@@ -50,16 +50,33 @@ public final class WebPreviewSession: NSObject, ObservableObject {
     @Published public private(set) var estimatedProgress = 0.0
     @Published public private(set) var errorMessage: String?
 
+    public var canRetry: Bool {
+        navigationRecovery.retryRequest != nil
+    }
+
     private var observations: [NSKeyValueObservation] = []
     private var auxiliaryWindows:
         [ObjectIdentifier: NSWindowController] = [:]
     private var pendingDownloads:
-        [ObjectIdentifier: WebPreviewDownloadDestination] = [:]
+        [ObjectIdentifier: PendingWebPreviewDownload] = [:]
+    private var pendingSavePanels:
+        [ObjectIdentifier: NSSavePanel] = [:]
     private var isTornDown = false
     private var navigationRecovery = WebPreviewNavigationRecovery()
+    private let requestLoader: (WKWebView, URLRequest) -> Void
 
-    public init(context: WebPreviewContext) {
+    public convenience init(context: WebPreviewContext) {
+        self.init(context: context) { webView, request in
+            webView.load(request)
+        }
+    }
+
+    init(
+        context: WebPreviewContext,
+        requestLoader: @escaping (WKWebView, URLRequest) -> Void
+    ) {
         self.context = context
+        self.requestLoader = requestLoader
         websiteDataStore = .nonPersistent()
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = websiteDataStore
@@ -74,7 +91,7 @@ public final class WebPreviewSession: NSObject, ObservableObject {
         do {
             let url = try WebPreviewAddress.parse(addressText)
             errorMessage = nil
-            webView.load(URLRequest(url: url))
+            requestLoader(webView, URLRequest(url: url))
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -101,15 +118,9 @@ public final class WebPreviewSession: NSObject, ObservableObject {
     }
 
     public func retry() {
-        if let retryURL = navigationRecovery.retryURL {
-            errorMessage = nil
-            webView.load(URLRequest(url: retryURL))
-        } else if webView.url != nil {
-            errorMessage = nil
-            webView.reload()
-        } else {
-            submitAddress()
-        }
+        guard let request = navigationRecovery.retryRequest else { return }
+        errorMessage = nil
+        requestLoader(webView, request)
     }
 
     public func openExternally() {
@@ -133,10 +144,22 @@ public final class WebPreviewSession: NSObject, ObservableObject {
             closeAuxiliaryWindow(controller)
         }
 
+        let panels = Array(pendingSavePanels.values)
+        pendingSavePanels.removeAll()
+        for panel in panels {
+            panel.cancel(nil)
+        }
+
         let downloads = Array(pendingDownloads.values)
         pendingDownloads.removeAll()
-        for download in downloads where download.cancel() != nil {
-            NSLog("Ghosthub could not remove a partial web preview download.")
+        for pending in downloads {
+            pending.download.cancel { _ in
+                if pending.destination.cancel() != nil {
+                    NSLog(
+                        "Ghosthub could not remove a partial web preview download."
+                    )
+                }
+            }
         }
     }
 
@@ -146,6 +169,10 @@ public final class WebPreviewSession: NSObject, ObservableObject {
     ) {
         controller.window?.delegate = self
         auxiliaryWindows[ObjectIdentifier(webView)] = controller
+    }
+
+    func recordMainFrameNavigation(_ request: URLRequest) {
+        navigationRecovery.begin(request)
     }
 
     private func observeNavigationState() {
@@ -199,7 +226,9 @@ public final class WebPreviewSession: NSObject, ObservableObject {
         guard webView === self.webView else { return }
         let nsError = error as NSError
         guard nsError.code != NSURLErrorCancelled else { return }
-        navigationRecovery.fail(fallbackURL: webView.url)
+        navigationRecovery.fail(
+            fallbackRequest: webView.url.map { URLRequest(url: $0) }
+        )
         errorMessage = nsError.localizedDescription
     }
 
@@ -274,8 +303,8 @@ extension WebPreviewSession: WKNavigationDelegate {
     ) {
         if webView === self.webView,
            navigationAction.targetFrame?.isMainFrame == true,
-           let url = navigationAction.request.url {
-            navigationRecovery.begin(url)
+           navigationAction.request.url != nil {
+            recordMainFrameNavigation(navigationAction.request)
         }
         decisionHandler(.allow)
     }
@@ -450,17 +479,31 @@ extension WebPreviewSession: WKDownloadDelegate {
         panel.canCreateDirectories = true
         panel.nameFieldStringValue = suggestedFilename
         let parentWindow = download.webView?.window
+        let panelID = ObjectIdentifier(panel)
+        pendingSavePanels[panelID] = panel
         let finish: @MainActor @Sendable (
             NSApplication.ModalResponse
-        ) -> Void = { response in
-            guard response == .OK, let url = panel.url else {
+        ) -> Void = { [weak self, weak panel] response in
+            guard let self else {
+                completionHandler(nil)
+                return
+            }
+            pendingSavePanels.removeValue(forKey: panelID)
+            guard !isTornDown,
+                  response == .OK,
+                  let url = panel?.url
+            else {
                 completionHandler(nil)
                 return
             }
             do {
                 let destination = try WebPreviewDownloadDestination
                     .prepare(url)
-                self.pendingDownloads[ObjectIdentifier(download)] = destination
+                pendingDownloads[ObjectIdentifier(download)] =
+                    PendingWebPreviewDownload(
+                        download: download,
+                        destination: destination
+                    )
                 completionHandler(destination.temporaryURL)
             } catch {
                 completionHandler(nil)
@@ -493,16 +536,16 @@ extension WebPreviewSession: WKDownloadDelegate {
     }
 
     public func downloadDidFinish(_ download: WKDownload) {
-        guard let destination = pendingDownloads.removeValue(
+        guard let pending = pendingDownloads.removeValue(
             forKey: ObjectIdentifier(download)
         ) else {
             return
         }
         do {
-            try destination.finish()
+            try pending.destination.finish()
         } catch {
             presentDownloadError(
-                destination.cancel() ?? error,
+                pending.destination.cancel() ?? error,
                 for: download
             )
         }
@@ -513,9 +556,9 @@ extension WebPreviewSession: WKDownloadDelegate {
         didFailWithError error: Error,
         resumeData: Data?
     ) {
-        if let destination = pendingDownloads.removeValue(
+        if let pending = pendingDownloads.removeValue(
             forKey: ObjectIdentifier(download)
-        ), let cleanupError = destination.cancel() {
+        ), let cleanupError = pending.destination.cancel() {
             presentDownloadError(cleanupError, for: download)
             return
         }
@@ -528,24 +571,40 @@ extension WebPreviewSession: WKDownloadDelegate {
     }
 }
 
-struct WebPreviewNavigationRecovery {
-    private(set) var pendingURL: URL?
-    private(set) var retryURL: URL?
+private struct PendingWebPreviewDownload {
+    let download: WKDownload
+    let destination: WebPreviewDownloadDestination
+}
 
-    mutating func begin(_ url: URL) {
-        pendingURL = url
-        retryURL = nil
+struct WebPreviewNavigationRecovery {
+    private(set) var pendingRequest: URLRequest?
+    private(set) var retryRequest: URLRequest?
+
+    mutating func begin(_ request: URLRequest) {
+        pendingRequest = request
+        retryRequest = nil
     }
 
     mutating func finish() {
-        pendingURL = nil
-        retryURL = nil
+        pendingRequest = nil
+        retryRequest = nil
     }
 
-    mutating func fail(fallbackURL: URL?) {
-        retryURL = pendingURL ?? fallbackURL
-        pendingURL = nil
+    mutating func fail(fallbackRequest: URLRequest?) {
+        let request = pendingRequest ?? fallbackRequest
+        pendingRequest = nil
+        guard let request,
+              Self.retryableMethods.contains(
+                  request.httpMethod?.uppercased() ?? "GET"
+              )
+        else {
+            retryRequest = nil
+            return
+        }
+        retryRequest = request
     }
+
+    private static let retryableMethods: Set<String> = ["GET", "HEAD"]
 }
 
 struct WebPreviewDownloadDestination {
@@ -587,7 +646,8 @@ struct WebPreviewDownloadDestination {
             }
             _ = try fileManager.replaceItemAt(
                 selectedURL,
-                withItemAt: temporaryURL
+                withItemAt: temporaryURL,
+                options: .usingNewMetadataOnly
             )
         } else {
             try fileManager.moveItem(at: temporaryURL, to: selectedURL)

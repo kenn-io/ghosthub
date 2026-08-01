@@ -141,4 +141,15 @@ public enum WebPreviewLayoutPolicy {
         }
         return min(max(proposedWidth, minimumPreviewWidth), upperBound)
     }
+
+    public static func adjustedPreviewWidth(
+        displayedWidth: CGFloat,
+        change: CGFloat,
+        availableWidth: CGFloat
+    ) -> CGFloat {
+        clampedPreviewWidth(
+            displayedWidth + change,
+            availableWidth: availableWidth
+        )
+    }
 }

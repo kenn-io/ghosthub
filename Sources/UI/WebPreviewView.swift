@@ -105,8 +105,9 @@ public struct WebPreviewWorkspaceLayout: View {
             )
             .accessibilityAdjustableAction { direction in
                 let change: CGFloat = direction == .increment ? 40 : -40
-                previewWidth = WebPreviewLayoutPolicy.clampedPreviewWidth(
-                    previewWidth + change,
+                previewWidth = WebPreviewLayoutPolicy.adjustedPreviewWidth(
+                    displayedWidth: effectivePreviewWidth,
+                    change: change,
                     availableWidth: availableWidth
                 )
             }
@@ -196,7 +197,9 @@ public struct WebPreviewView: View {
                 } description: {
                     Text(errorMessage)
                 } actions: {
-                    Button("Retry", action: session.retry)
+                    if session.canRetry {
+                        Button("Retry", action: session.retry)
+                    }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(.regularMaterial)

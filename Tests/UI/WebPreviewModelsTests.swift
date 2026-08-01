@@ -224,5 +224,12 @@ struct WebPreviewLayoutPolicyTests {
                 availableWidth: 1_500
             ) == 760
         )
+        #expect(
+            WebPreviewLayoutPolicy.adjustedPreviewWidth(
+                displayedWidth: 572,
+                change: -40,
+                availableWidth: 1_000
+            ) == 532
+        )
     }
 }

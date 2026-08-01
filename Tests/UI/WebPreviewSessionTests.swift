@@ -86,14 +86,70 @@ struct WebPreviewSessionLifecycleTests {
     func retryTargetsFailedNavigation() {
         let previousURL = URL(string: "https://example.com/previous")!
         let failedURL = URL(string: "http://localhost:3000/failed")!
+        var failedRequest = URLRequest(url: failedURL)
+        failedRequest.setValue("preview", forHTTPHeaderField: "X-Ghosthub-Test")
         var recovery = WebPreviewNavigationRecovery()
 
-        recovery.begin(previousURL)
+        recovery.begin(URLRequest(url: previousURL))
         recovery.finish()
-        recovery.begin(failedURL)
-        recovery.fail(fallbackURL: previousURL)
+        recovery.begin(failedRequest)
+        recovery.fail(fallbackRequest: URLRequest(url: previousURL))
 
-        #expect(recovery.retryURL == failedURL)
+        #expect(recovery.retryRequest?.url == failedURL)
+        #expect(recovery.retryRequest?.httpMethod == "GET")
+        #expect(
+            recovery.retryRequest?.value(
+                forHTTPHeaderField: "X-Ghosthub-Test"
+            ) == "preview"
+        )
+    }
+
+    @Test("non-idempotent navigation is not retried automatically")
+    func postNavigationIsNotRetried() {
+        var request = URLRequest(
+            url: URL(string: "https://example.com/submit")!
+        )
+        request.httpMethod = "POST"
+        request.httpBody = Data("payload".utf8)
+        var recovery = WebPreviewNavigationRecovery()
+
+        recovery.begin(request)
+        recovery.fail(fallbackRequest: nil)
+
+        #expect(recovery.retryRequest == nil)
+    }
+
+    @Test("session retry replays the delegate-recorded safe request")
+    func sessionRetryUsesNavigationDelegateRequest() {
+        var replayedRequest: URLRequest?
+        let session = WebPreviewSession(
+            context: makeWebPreviewContext(name: "retry-boundary"),
+            requestLoader: { _, request in
+                replayedRequest = request
+            }
+        )
+        var request = URLRequest(
+            url: URL(string: "https://127.0.0.1:1/failed")!
+        )
+        request.setValue("boundary", forHTTPHeaderField: "X-Ghosthub-Test")
+
+        session.recordMainFrameNavigation(request)
+        session.webView(
+            session.webView,
+            didFailProvisionalNavigation: nil,
+            withError: URLError(.cannotConnectToHost)
+        )
+        #expect(session.canRetry)
+
+        session.retry()
+
+        #expect(replayedRequest?.url == request.url)
+        #expect(replayedRequest?.httpMethod == "GET")
+        #expect(
+            replayedRequest?.value(
+                forHTTPHeaderField: "X-Ghosthub-Test"
+            ) == "boundary"
+        )
     }
 
     @Test("download replacement preserves the original until success")
@@ -150,6 +206,36 @@ struct WebPreviewSessionLifecycleTests {
                 atPath: prepared.temporaryURL.path
             )
         )
+    }
+
+    @Test("replacement uses the downloaded file metadata")
+    func replacementDoesNotPreserveExecutablePermission() throws {
+        let fileManager = FileManager.default
+        let directory = fileManager.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let destination = directory.appendingPathComponent("artifact")
+        try fileManager.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? fileManager.removeItem(at: directory) }
+        try Data("old".utf8).write(to: destination)
+        try fileManager.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: destination.path
+        )
+        let prepared = try WebPreviewDownloadDestination.prepare(destination)
+        try Data("new".utf8).write(to: prepared.temporaryURL)
+
+        try prepared.finish()
+
+        let attributes = try fileManager.attributesOfItem(
+            atPath: destination.path
+        )
+        let permissions = try #require(
+            attributes[.posixPermissions] as? NSNumber
+        )
+        #expect(permissions.intValue & 0o111 == 0)
     }
 }
 
