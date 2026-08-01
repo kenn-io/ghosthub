@@ -174,6 +174,12 @@ def assemble_app_bundle(
         "GhosthubRemoteKwtSourceRevision": remote_kwt_source_revision,
         "NSHighResolutionCapable": True,
         "NSHumanReadableCopyright": copyright,
+        "NSCameraUsageDescription": (
+            "Allow websites opened in Ghosthub Web Preview to use the camera."
+        ),
+        "NSMicrophoneUsageDescription": (
+            "Allow websites opened in Ghosthub Web Preview to use the microphone."
+        ),
         "NSPrincipalClass": "NSApplication",
     }
     if development_version:

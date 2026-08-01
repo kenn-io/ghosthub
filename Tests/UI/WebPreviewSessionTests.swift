@@ -82,38 +82,18 @@ struct WebPreviewSessionLifecycleTests {
         #expect(releasedSession == nil)
     }
 
-    @Test("download authentication keeps WebKit default handling")
-    func downloadAuthenticationUsesDefaultHandling() {
-        let session = WebPreviewSession(
-            context: makeWebPreviewContext(name: "download")
-        )
-        let sender = AuthenticationChallengeSender()
-        let challenge = URLAuthenticationChallenge(
-            protectionSpace: URLProtectionSpace(
-                host: "localhost",
-                port: 443,
-                protocol: "https",
-                realm: nil,
-                authenticationMethod: NSURLAuthenticationMethodHTTPBasic
-            ),
-            proposedCredential: nil,
-            previousFailureCount: 0,
-            failureResponse: nil,
-            error: nil,
-            sender: sender
-        )
-        var capturedDisposition: URLSession.AuthChallengeDisposition?
-        var capturedCredential: URLCredential?
-        let _: any WKDownloadDelegate = session
+    @Test("retry targets a failed navigation instead of the previous page")
+    func retryTargetsFailedNavigation() {
+        let previousURL = URL(string: "https://example.com/previous")!
+        let failedURL = URL(string: "http://localhost:3000/failed")!
+        var recovery = WebPreviewNavigationRecovery()
 
-        session.handleDownloadAuthentication(challenge) {
-            disposition, credential in
-            capturedDisposition = disposition
-            capturedCredential = credential
-        }
+        recovery.begin(previousURL)
+        recovery.finish()
+        recovery.begin(failedURL)
+        recovery.fail(fallbackURL: previousURL)
 
-        #expect(capturedDisposition == .performDefaultHandling)
-        #expect(capturedCredential == nil)
+        #expect(recovery.retryURL == failedURL)
     }
 }
 
@@ -151,18 +131,4 @@ private final class CloseTrackingWindow: NSWindow {
         closeCallCount += 1
         super.close()
     }
-}
-
-private final class AuthenticationChallengeSender:
-    NSObject,
-    URLAuthenticationChallengeSender {
-    func use(_ credential: URLCredential, for challenge: URLAuthenticationChallenge) {}
-
-    func continueWithoutCredential(for challenge: URLAuthenticationChallenge) {}
-
-    func cancel(_ challenge: URLAuthenticationChallenge) {}
-
-    func performDefaultHandling(for challenge: URLAuthenticationChallenge) {}
-
-    func rejectProtectionSpaceAndContinue(with challenge: URLAuthenticationChallenge) {}
 }

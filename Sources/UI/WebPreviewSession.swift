@@ -54,6 +54,7 @@ public final class WebPreviewSession: NSObject, ObservableObject {
     private var auxiliaryWindows:
         [ObjectIdentifier: NSWindowController] = [:]
     private var isTornDown = false
+    private var navigationRecovery = WebPreviewNavigationRecovery()
 
     public init(context: WebPreviewContext) {
         self.context = context
@@ -98,7 +99,10 @@ public final class WebPreviewSession: NSObject, ObservableObject {
     }
 
     public func retry() {
-        if webView.url != nil {
+        if let retryURL = navigationRecovery.retryURL {
+            errorMessage = nil
+            webView.load(URLRequest(url: retryURL))
+        } else if webView.url != nil {
             errorMessage = nil
             webView.reload()
         } else {
@@ -187,6 +191,7 @@ public final class WebPreviewSession: NSObject, ObservableObject {
         guard webView === self.webView else { return }
         let nsError = error as NSError
         guard nsError.code != NSURLErrorCancelled else { return }
+        navigationRecovery.fail(fallbackURL: webView.url)
         errorMessage = nsError.localizedDescription
     }
 
@@ -207,16 +212,6 @@ public final class WebPreviewSession: NSObject, ObservableObject {
         }
         controller.window = nil
         window?.windowController = nil
-    }
-
-    func handleDownloadAuthentication(
-        _ challenge: URLAuthenticationChallenge,
-        completionHandler: @escaping @MainActor @Sendable (
-            URLSession.AuthChallengeDisposition,
-            URLCredential?
-        ) -> Void
-    ) {
-        completionHandler(.performDefaultHandling, nil)
     }
 
     private func presentAlert(
@@ -251,6 +246,21 @@ public final class WebPreviewSession: NSObject, ObservableObject {
 extension WebPreviewSession: WKNavigationDelegate {
     public func webView(
         _ webView: WKWebView,
+        decidePolicyFor navigationAction: WKNavigationAction,
+        decisionHandler: @escaping @MainActor @Sendable (
+            WKNavigationActionPolicy
+        ) -> Void
+    ) {
+        if webView === self.webView,
+           navigationAction.targetFrame?.isMainFrame == true,
+           let url = navigationAction.request.url {
+            navigationRecovery.begin(url)
+        }
+        decisionHandler(.allow)
+    }
+
+    public func webView(
+        _ webView: WKWebView,
         didStartProvisionalNavigation navigation: WKNavigation?
     ) {
         guard webView === self.webView else { return }
@@ -262,6 +272,7 @@ extension WebPreviewSession: WKNavigationDelegate {
         didFinish navigation: WKNavigation?
     ) {
         guard webView === self.webView else { return }
+        navigationRecovery.finish()
         errorMessage = nil
     }
 
@@ -438,10 +449,27 @@ extension WebPreviewSession: WKDownloadDelegate {
             URLCredential?
         ) -> Void
     ) {
-        handleDownloadAuthentication(
-            challenge,
-            completionHandler: completionHandler
-        )
+        completionHandler(.performDefaultHandling, nil)
+    }
+}
+
+struct WebPreviewNavigationRecovery {
+    private(set) var pendingURL: URL?
+    private(set) var retryURL: URL?
+
+    mutating func begin(_ url: URL) {
+        pendingURL = url
+        retryURL = nil
+    }
+
+    mutating func finish() {
+        pendingURL = nil
+        retryURL = nil
+    }
+
+    mutating func fail(fallbackURL: URL?) {
+        retryURL = pendingURL ?? fallbackURL
+        pendingURL = nil
     }
 }
 
