@@ -77,12 +77,12 @@ trap 'forward_signal HUP' HUP
 export TMUX_TMPDIR="$tmux_tmpdir"
 export GHOSTHUB_TEST_TMUX_RUN_ID="$run_id"
 
-# macOS has no setsid utility. Start the test command as its own process-group
-# leader so cancellation reaches SwiftPM and every helper it launched.
-python3 -c 'import os, sys
-os.setpgid(0, 0)
-os.execvp(sys.argv[1], sys.argv[1:])' "$@" &
+# Monitor mode places the background command in its own process group so
+# cancellation reaches SwiftPM and every helper it launched.
+set -m
+"$@" &
 child_pid=$!
+set +m
 
 # A signal may arrive between fork and setpgid. Keep the trap active during
 # that window and deliver any pending signal once the group is published.
