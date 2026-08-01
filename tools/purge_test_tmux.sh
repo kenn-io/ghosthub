@@ -56,20 +56,38 @@ fi
 kill_socket() {
     socket=$1
     if [ -n "$tmux_bin" ]; then
-        "$tmux_bin" -S "$socket" kill-server >/dev/null 2>&1 || true
+        set -m
+        "$tmux_bin" -S "$socket" kill-server >/dev/null 2>&1 &
+        socket_client_pid=$!
+        (
+            sleep 1
+            kill -KILL -- -"$socket_client_pid" 2>/dev/null ||
+                kill -KILL "$socket_client_pid" 2>/dev/null || true
+        ) &
+        socket_deadline_pid=$!
+        set +m
+        wait "$socket_client_pid" 2>/dev/null || true
+        kill -TERM -- -"$socket_deadline_pid" 2>/dev/null || true
+        wait "$socket_deadline_pid" 2>/dev/null || true
     fi
     rm -f "$socket"
 }
 
 run_tmux_pids() {
     run_id=$1
-    ps -axo pid=,command= | awk -v run_id="$run_id" '
+    run_dir=$2
+    ps -axo pid=,command= | awk -v run_id="$run_id" \
+        -v run_dir="$run_dir" '
         BEGIN {
             socket_pattern = "^ghosthub-(test|kill|style|ready)-" run_id "$"
         }
         /^[[:space:]]*[0-9]+[[:space:]]+([^[:space:]]*\/)?tmux[[:space:]]/ {
             for (field = 2; field < NF; field++) {
-                if ($field == "-L" && $(field + 1) ~ socket_pattern) {
+                socket_path = $(field + 1)
+                if (($field == "-L" && $(field + 1) ~ socket_pattern) ||
+                    ($field == "-S" &&
+                     index(socket_path, run_dir "/") == 1 &&
+                     socket_path !~ /(^|\/)\.\.(\/|$)/)) {
                     print $1
                     break
                 }
@@ -89,13 +107,14 @@ signal_pids() {
 
 kill_run_tmux_processes() {
     run_id=$1
-    pids=$(run_tmux_pids "$run_id")
+    run_dir=$2
+    pids=$(run_tmux_pids "$run_id" "$run_dir")
     if [ -n "$pids" ]; then
         signal_pids TERM "$pids"
         sleep 1
     fi
 
-    pids=$(run_tmux_pids "$run_id")
+    pids=$(run_tmux_pids "$run_id" "$run_dir")
     if [ -n "$pids" ]; then
         signal_pids KILL "$pids"
     fi
@@ -110,7 +129,7 @@ purge_run_directory() {
         while IFS= read -r socket; do
             kill_socket "$socket"
         done
-    kill_run_tmux_processes "$run_id"
+    kill_run_tmux_processes "$run_id" "$directory"
     rm -rf "$directory"
 }
 

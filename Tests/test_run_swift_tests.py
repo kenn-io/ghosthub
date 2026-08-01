@@ -4,6 +4,7 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -188,3 +189,56 @@ def test_cleanup_stops_every_socket_in_private_run_directory(
     else:
         os.kill(server_pid, signal.SIGKILL)
         pytest.fail("tmux server on an unexpected test socket survived cleanup")
+
+
+def test_cleanup_bounds_a_stalled_tmux_client(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_pid_file = tmp_path / "fake-tmux.pid"
+    fake_tmux = fake_bin / "tmux"
+    fake_tmux.write_text(
+        "#!/bin/sh\n"
+        f'echo $$ > "{fake_pid_file}"\n'
+        "trap '' TERM\n"
+        "sleep 30\n"
+    )
+    fake_tmux.chmod(0o755)
+
+    socket_writer = tmp_path / "write-socket.py"
+    socket_writer.write_text(
+        "import socket\n"
+        "import sys\n"
+        "sock = socket.socket(socket.AF_UNIX)\n"
+        "sock.bind(sys.argv[1])\n"
+        "sock.close()\n"
+    )
+    tmux_dir_file = tmp_path / "tmux-dir"
+    command = tmp_path / "create-socket.sh"
+    command.write_text(
+        "#!/bin/sh\n"
+        f'echo "$TMUX_TMPDIR" > "{tmux_dir_file}"\n'
+        f'"{sys.executable}" "{socket_writer}" '
+        '"$TMUX_TMPDIR/stalled-socket"\n'
+    )
+    command.chmod(0o755)
+    environment = os.environ.copy()
+    environment["PATH"] = f"{fake_bin}{os.pathsep}{environment['PATH']}"
+
+    result = subprocess.run(
+        ["sh", str(SCRIPT), str(command)],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        env=environment,
+    )
+
+    assert result.returncode == 0, result.stderr
+    fake_pid = int(fake_pid_file.read_text().strip())
+    try:
+        os.kill(fake_pid, 0)
+    except ProcessLookupError:
+        pass
+    else:
+        os.killpg(fake_pid, signal.SIGKILL)
+        pytest.fail("stalled tmux client survived its cleanup deadline")
+    assert not Path(tmux_dir_file.read_text().strip()).exists()
