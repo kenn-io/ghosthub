@@ -33,7 +33,9 @@ start_kill_deadline() {
 
     set -m
     (
-        sleep 5
+        # Leave ample time for run_with_timeout.sh to reap this wrapper and
+        # purge its tmux directory before that outer guard escalates at 5s.
+        sleep 2
         : > "$deadline_marker"
         kill -KILL -- -"$child_pid" 2>/dev/null ||
             kill -KILL "$child_pid" 2>/dev/null || true

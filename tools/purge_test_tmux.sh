@@ -107,9 +107,6 @@ purge_run_directory() {
     require_secure_directory "$directory" "tmux test run"
     run_id=${directory##*.}
     find "$directory" -type s -print |
-        awk -F/ -v run_id="$run_id" '
-            $NF ~ "^ghosthub-(test|kill|style|ready)-" run_id "$"
-        ' |
         while IFS= read -r socket; do
             kill_socket "$socket"
         done

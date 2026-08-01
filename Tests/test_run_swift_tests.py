@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import shutil
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -8,6 +10,7 @@ from pathlib import Path
 import pytest
 
 SCRIPT = Path(__file__).resolve().parents[1] / "tools" / "run_swift_tests.sh"
+TIMEOUT_SCRIPT = SCRIPT.with_name("run_with_timeout.sh")
 
 
 @pytest.mark.parametrize(
@@ -93,3 +96,95 @@ def test_terminating_wrapper_stops_group_before_cleanup(
     if not ignores_term:
         assert signal_marker.read_text().strip() == "present"
     assert not tmux_dir.exists()
+
+
+def test_outer_timeout_leaves_inner_wrapper_time_to_cleanup(
+    tmp_path: Path,
+) -> None:
+    pid_file = tmp_path / "command-pids"
+    tmux_dirs_file = tmp_path / "tmux-dirs"
+    command = tmp_path / "ignore-term.sh"
+    command.write_text(
+        "#!/bin/sh\n"
+        "trap '' TERM\n"
+        f'echo $$ >> "{pid_file}"\n'
+        f'echo "$TMUX_TMPDIR" >> "{tmux_dirs_file}"\n'
+        "sleep 30\n"
+    )
+    command.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            "sh",
+            str(TIMEOUT_SCRIPT),
+            "1",
+            "sh",
+            str(SCRIPT),
+            str(command),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+    assert result.returncode != 0
+    command_pids = [
+        int(value) for value in pid_file.read_text().splitlines()
+    ]
+    tmux_dirs = [
+        Path(value) for value in tmux_dirs_file.read_text().splitlines()
+    ]
+    assert len(command_pids) == 2
+    assert len(tmux_dirs) == 2
+
+    alive = []
+    for pid in command_pids:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            continue
+        alive.append(pid)
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+    assert not alive, "nested timeout left a test command running"
+    assert not any(directory.exists() for directory in tmux_dirs)
+
+
+def test_cleanup_stops_every_socket_in_private_run_directory(
+    tmp_path: Path,
+) -> None:
+    if shutil.which("tmux") is None:
+        pytest.skip("tmux is unavailable")
+
+    server_pid_file = tmp_path / "server.pid"
+    command = tmp_path / "start-unexpected-server.sh"
+    command.write_text(
+        "#!/bin/sh\n"
+        'socket="$TMUX_TMPDIR/unexpected-socket"\n'
+        'tmux -S "$socket" new-session -d\n'
+        f'tmux -S "$socket" display-message -p "#{{pid}}" > "{server_pid_file}"\n'
+    )
+    command.chmod(0o755)
+
+    result = subprocess.run(
+        ["sh", str(SCRIPT), str(command)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    server_pid = int(server_pid_file.read_text().strip())
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            os.kill(server_pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    else:
+        os.kill(server_pid, signal.SIGKILL)
+        pytest.fail("tmux server on an unexpected test socket survived cleanup")
