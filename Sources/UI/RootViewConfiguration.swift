@@ -19,6 +19,8 @@ public struct WorkspaceDisplayState {
     public let workspaceInventoryError: String?
     public let workspaceInventoryWarning: String?
     public let workspaceInventoryWarningsByHost: [UUID: String]
+    public let isWorkspaceRestorationPending: Bool
+    public let suppressesAutomaticWorktreeSessionOpen: Bool
     public let activeTmuxSession: WorkspaceTmuxSessionSelection?
     public let activeTmuxSessionIsConnected: Bool
 
@@ -37,6 +39,8 @@ public struct WorkspaceDisplayState {
         workspaceInventoryError: String? = nil,
         workspaceInventoryWarning: String? = nil,
         workspaceInventoryWarningsByHost: [UUID: String] = [:],
+        isWorkspaceRestorationPending: Bool = false,
+        suppressesAutomaticWorktreeSessionOpen: Bool = false,
         activeTmuxSession: WorkspaceTmuxSessionSelection? = nil,
         activeTmuxSessionIsConnected: Bool = false
     ) {
@@ -55,6 +59,10 @@ public struct WorkspaceDisplayState {
         self.workspaceInventoryWarning = workspaceInventoryWarning
         self.workspaceInventoryWarningsByHost =
             workspaceInventoryWarningsByHost
+        self.isWorkspaceRestorationPending =
+            isWorkspaceRestorationPending
+        self.suppressesAutomaticWorktreeSessionOpen =
+            suppressesAutomaticWorktreeSessionOpen
         self.activeTmuxSession = activeTmuxSession
         self.activeTmuxSessionIsConnected =
             activeTmuxSessionIsConnected
@@ -126,6 +134,7 @@ public struct InteractionHandlers {
     public let closeWindow: (() -> Void)?
     public let dismissLogViewer: (() -> Void)?
     public let reloadTerminalConfig: (() -> Void)?
+    public let selectWorkspace: ((WorkspaceSelection) -> Void)?
     public let openTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)?
     public let closeTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)?
     public let prepareTmuxSessionKill:
@@ -154,6 +163,7 @@ public struct InteractionHandlers {
         closeWindow: (() -> Void)? = nil,
         dismissLogViewer: (() -> Void)? = nil,
         reloadTerminalConfig: (() -> Void)? = nil,
+        selectWorkspace: ((WorkspaceSelection) -> Void)? = nil,
         openTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)? = nil,
         closeTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)? = nil,
         prepareTmuxSessionKill:
@@ -181,6 +191,7 @@ public struct InteractionHandlers {
         self.closeWindow = closeWindow
         self.dismissLogViewer = dismissLogViewer
         self.reloadTerminalConfig = reloadTerminalConfig
+        self.selectWorkspace = selectWorkspace
         self.openTmuxSession = openTmuxSession
         self.closeTmuxSession = closeTmuxSession
         self.prepareTmuxSessionKill = prepareTmuxSessionKill

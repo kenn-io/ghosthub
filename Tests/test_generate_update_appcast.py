@@ -10,6 +10,12 @@ from pathlib import Path
 import pytest
 
 
+TOOLS_DIR = Path(__file__).resolve().parents[1] / "tools"
+sys.path.insert(0, str(TOOLS_DIR))
+
+from extract_changelog import ChangelogError, extract_release_notes  # noqa: E402
+
+
 PUBLIC_KEY = "MKL5y44upnEoZrnm3VLLDocsBTD+3DgnH161eEQPhMQ="
 LEGACY_PRIVATE_KEY = bytes(
     [
@@ -33,6 +39,60 @@ LEGACY_PUBLIC_KEY = bytes(
 )
 
 
+def test_extracts_the_exact_release_section():
+    changelog = """# Changelog
+
+## [Unreleased]
+
+## [1.2.0] - 2026-07-31
+
+### Added
+
+- Restored windows.
+
+### Fixed
+
+- Preserved exact tmux sockets.
+
+## [1.1.0] - 2026-07-01
+
+### Fixed
+
+- Older fix.
+"""
+
+    notes = extract_release_notes(
+        changelog,
+        version="1.2.0",
+        release_url="https://github.com/kenn-io/ghosthub/releases/tag/v1.2.0",
+    )
+
+    assert notes.startswith("# Ghosthub 1.2.0\n\n")
+    assert "### Added\n\n- Restored windows." in notes
+    assert "### Fixed\n\n- Preserved exact tmux sockets." in notes
+    assert "Older fix" not in notes
+    assert "releases/tag/v1.2.0" in notes
+
+
+@pytest.mark.parametrize(
+    "changelog",
+    [
+        "# Changelog\n\n## [1.1.0] - 2026-07-01\n\n### Fixed\n\n- Old.\n",
+        "# Changelog\n\n## [1.2.0] - 2026-07-31\n\n## [1.2.0] - 2026-07-31\n",
+        "# Changelog\n\n## [1.2.0] - 2026-07-31\n\n",
+        "# Changelog\n\n## [1.2.0]\n\n### Fixed\n\n- Missing date.\n",
+        "# Changelog\n\n## [1.2.0] - 2026-07-31\n\nRelease prose without a subsection or list.\n",
+    ],
+)
+def test_rejects_unusable_release_sections(changelog):
+    with pytest.raises(ChangelogError):
+        extract_release_notes(
+            changelog,
+            version="1.2.0",
+            release_url="https://example.test/v1.2.0",
+        )
+
+
 def write_fake_generator(path: Path) -> None:
     path.write_text(
         """#!/usr/bin/env python3
@@ -43,6 +103,9 @@ assert sys.stdin.read() == "private-seed"
 prefix = sys.argv[sys.argv.index("--download-url-prefix") + 1]
 release_root = pathlib.Path(sys.argv[-1])
 archive = next(release_root.glob("*.dmg"))
+notes = archive.with_suffix(".md")
+assert notes.is_file()
+(release_root / "captured-release-notes.md").write_text(notes.read_text())
 (release_root / "appcast.xml").write_text(
     '<?xml version="1.0"?>'
     '<rss xmlns:sparkle="https://sparkle-project.org/xml-namespaces/sparkle">'
@@ -84,6 +147,18 @@ def make_release(tmp_path: Path, public_key: str = PUBLIC_KEY) -> dict[str, str]
 
     dmg_name = "Ghosthub_0.1.2_macos_arm64.dmg"
     (release_root / dmg_name).write_bytes(b"dmg")
+    changelog = tmp_path / "CHANGELOG.md"
+    changelog.write_text(
+        """# Changelog
+
+## [0.1.2] - 2026-07-31
+
+### Fixed
+
+- Restores exact tmux sessions.
+""",
+        encoding="utf-8",
+    )
     generator = tmp_path / "generate_appcast"
     write_fake_generator(generator)
     deriver = tmp_path / "derive_public_key"
@@ -98,6 +173,7 @@ def make_release(tmp_path: Path, public_key: str = PUBLIC_KEY) -> dict[str, str]
         "RELEASE_DMG_NAME": dmg_name,
         "RELEASE_DMG_PATH": str(release_root / dmg_name),
         "RELEASE_TAG": "v0.1.2",
+        "CHANGELOG_PATH": str(changelog),
         "SPARKLE_GENERATE_APPCAST": str(generator),
         "SPARKLE_DERIVE_PUBLIC_KEY": str(deriver),
         "SPARKLE_ED_PRIVATE_KEY": "private-seed",
@@ -126,6 +202,11 @@ def test_generates_signed_appcast_without_exposing_the_private_key(tmp_path):
         "https://github.com/kenn-io/ghosthub/releases/download/v0.1.2/"
         "Ghosthub_0.1.2_macos_arm64.dmg"
     ) in appcast
+    captured = (tmp_path / "release" / "captured-release-notes.md").read_text()
+    assert "# Ghosthub 0.1.2" in captured
+    assert "### Fixed" in captured
+    assert "- Restores exact tmux sessions." in captured
+    assert "releases/tag/v0.1.2" in captured
     assert not (tmp_path / "release" / "Ghosthub_0.1.2_macos_arm64.md").exists()
 
 

@@ -520,7 +520,7 @@ private struct CompactToolbarButton: View {
 struct WorkspaceWindow: View {
     #if canImport(AppKit)
     let applicationDelegate: ApplicationDelegate
-    let requestID: UUID?
+    @Binding var windowState: WorkspaceWindowState
     #endif
     @StateObject private var sceneModel = WorkspaceSceneModel()
     @EnvironmentObject private var terminalRuntime: LibghosttyRuntime
@@ -564,6 +564,10 @@ struct WorkspaceWindow: View {
                 sceneModel.workspaceInventoryWarning,
                 workspaceInventoryWarningsByHost:
                 sceneModel.workspaceInventoryWarningsByHost,
+                isWorkspaceRestorationPending:
+                sceneModel.isWorkspaceRestorationPending,
+                suppressesAutomaticWorktreeSessionOpen:
+                sceneModel.suppressesAutomaticWorktreeSessionOpen,
                 activeTmuxSession:
                 sceneModel.activeBorrowedTmuxSelection,
                 activeTmuxSessionIsConnected:
@@ -643,6 +647,9 @@ struct WorkspaceWindow: View {
                 reloadTerminalConfig: {
                     sceneModel.reloadTerminalConfig()
                 },
+                selectWorkspace: { [sceneModel] selection in
+                    sceneModel.selectFromUser(selection)
+                },
                 openTmuxSession: { [sceneModel] selection in
                     sceneModel.openBorrowedTmuxSession(selection)
                 },
@@ -684,7 +691,10 @@ struct WorkspaceWindow: View {
                 }
             ),
             settingsStore: settingsStore,
-            selection: $sceneModel.selection,
+            selection: Binding(
+                get: { sceneModel.selection },
+                set: { sceneModel.synchronizeSelection($0) }
+            ),
             isSidePanelVisible: Binding(
                 get: { sceneModel.isSidePanelVisible },
                 set: { sceneModel.setSidePanelVisible($0) }
@@ -731,7 +741,7 @@ struct WorkspaceWindow: View {
         .background(
             WindowFocusTracker(
                 applicationDelegate: applicationDelegate,
-                requestID: requestID,
+                requestID: windowState.windowID,
                 isFocused: Binding(
                     get: { sceneModel.isFocusedWindow },
                     set: { sceneModel.isFocusedWindow = $0 }
@@ -767,8 +777,18 @@ struct WorkspaceWindow: View {
             )
         )
         #endif
+        .onChange(of: sceneModel.restorationState(
+            windowID: windowState.windowID
+        )) { _, state in
+            windowState = state
+        }
         .onAppear {
-            registry.register(sceneModel)
+            sceneModel.beginRestoration(windowState)
+            refreshWindowState()
+            registry.register(
+                sceneModel,
+                refreshRestorationState: refreshWindowState
+            )
             if terminalRuntime.configReloadNotice?.kind == .error {
                 visibleConfigReloadNotice =
                     terminalRuntime.configReloadNotice
@@ -793,11 +813,18 @@ struct WorkspaceWindow: View {
             }
         }
         .onDisappear {
+            sceneModel.cancelPendingRestoration()
             registry.unregister(sceneModel)
             Task { [sceneModel] in
                 await sceneModel.shutdown()
             }
         }
+    }
+
+    private func refreshWindowState() {
+        windowState = sceneModel.restorationState(
+            windowID: windowState.windowID
+        )
     }
 
     private var canCreateWorktree: Bool {

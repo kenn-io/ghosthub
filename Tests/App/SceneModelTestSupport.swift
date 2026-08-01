@@ -373,6 +373,51 @@ func makeModel(
 
 // MARK: - Protocol Stubs
 
+@MainActor
+final class RecordingTmuxSurfaceStore: TmuxSurfaceStoring {
+    let surface: RecordingTmuxPaneSurface
+    private(set) var requestedKeys: [SurfaceKey] = []
+    private(set) var requestedConfigurations: [TerminalSurfaceConfiguration] = []
+    private(set) var removedKeys: [SurfaceKey] = []
+
+    var lastCommand: String? { requestedConfigurations.last?.command }
+
+    init(launchError: Error? = nil) {
+        surface = RecordingTmuxPaneSurface(launchError: launchError)
+    }
+
+    func paneSurface(
+        for key: SurfaceKey,
+        configuration: TerminalSurfaceConfiguration
+    ) -> (any TmuxPaneSurfacing)? {
+        requestedKeys.append(key)
+        requestedConfigurations.append(configuration)
+        return surface
+    }
+
+    func removeSurface(for key: SurfaceKey) {
+        removedKeys.append(key)
+    }
+}
+
+@MainActor
+final class RecordingTmuxPaneSurface: TmuxPaneSurfacing {
+    var blocksClipboardReads = false
+    let launchError: Error?
+    private(set) var closeObservers: [UUID: (Bool) -> Void] = [:]
+
+    init(launchError: Error? = nil) {
+        self.launchError = launchError
+    }
+
+    func registerSurfaceCloseObserver(
+        id: UUID,
+        onSurfaceClosed: @escaping (Bool) -> Void
+    ) {
+        closeObservers[id] = onSurfaceClosed
+    }
+}
+
 final class NotificationServiceStub: NotificationService {
     struct IdleNotification: Equatable {
         let worktreeName: String

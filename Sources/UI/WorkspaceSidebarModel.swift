@@ -7,6 +7,7 @@ public struct WorkspaceTmuxSessionSelection:
     public var name: String
     public var worktreeID: UUID?
     public var worktreePath: String?
+    public var worktreeGeneration: String?
     public var socketName: String?
 
     public init(
@@ -14,12 +15,14 @@ public struct WorkspaceTmuxSessionSelection:
         name: String,
         worktreeID: UUID? = nil,
         worktreePath: String? = nil,
+        worktreeGeneration: String? = nil,
         socketName: String? = nil
     ) {
         self.hostID = hostID
         self.name = name
         self.worktreeID = worktreeID
         self.worktreePath = worktreePath
+        self.worktreeGeneration = worktreeGeneration
         self.socketName = socketName
     }
 
@@ -148,6 +151,7 @@ public enum WorkspaceSidebarModel {
             name: name,
             worktreeID: worktree.id,
             worktreePath: worktree.path,
+            worktreeGeneration: worktree.generation,
             socketName: worktree.tmuxSocketName
         )
     }

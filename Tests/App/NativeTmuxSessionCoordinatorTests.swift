@@ -10,7 +10,7 @@ import Testing
 struct NativeTmuxSessionCoordinatorTests {
     @Test("new named sessions use tmux create-or-attach mode")
     func namedSessionUsesCreateMode() async throws {
-        let store = TmuxSurfaceStoreStub()
+        let store = RecordingTmuxSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
             tmuxPathProvider: { .success("/opt/homebrew/bin/tmux") }
@@ -52,7 +52,7 @@ struct NativeTmuxSessionCoordinatorTests {
 
     @Test("new session launch reads the current terminal presentation style")
     func newSessionLaunchReadsCurrentPresentationStyle() async throws {
-        let store = TmuxSurfaceStoreStub()
+        let store = RecordingTmuxSurfaceStore()
         var style = TmuxPresentationStyle(
             foreground: "#3B4851",
             background: "#FFFFFF"
@@ -88,7 +88,7 @@ struct NativeTmuxSessionCoordinatorTests {
 
     @Test("existing sessions keep their current presentation by default")
     func existingSessionKeepsCurrentPresentation() async throws {
-        let store = TmuxSurfaceStoreStub()
+        let store = RecordingTmuxSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
             tmuxPathProvider: { .success("/opt/homebrew/bin/tmux") },
@@ -119,7 +119,7 @@ struct NativeTmuxSessionCoordinatorTests {
 
     @Test("existing sessions accept the shared presentation opt-in")
     func existingSessionAcceptsPresentationOptIn() async throws {
-        let store = TmuxSurfaceStoreStub()
+        let store = RecordingTmuxSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
             tmuxPathProvider: { .success("/opt/homebrew/bin/tmux") },
@@ -151,7 +151,7 @@ struct NativeTmuxSessionCoordinatorTests {
 
     @Test("isolated session socket participates in command routing")
     func isolatedSessionUsesReturnedSocket() async throws {
-        let store = TmuxSurfaceStoreStub()
+        let store = RecordingTmuxSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
             tmuxPathProvider: { .success("/usr/bin/tmux") },
@@ -186,12 +186,14 @@ struct NativeTmuxSessionCoordinatorTests {
             "/Applications/Ghosthub.app/Contents/Helpers/kwt"
         ))
         #expect(command.contains("/worktrees/pr-32"))
+        #expect(command.contains(#"'\''pr'\'' '\''attach'\''"#))
         #expect(command.contains("kwt-pr-0123456789abcdef"))
+        #expect(!command.contains("'open'"))
     }
 
     @Test("ordinary worktree path attaches directly through kwt")
     func ordinaryWorktreeUsesKwtAttachment() async throws {
-        let store = TmuxSurfaceStoreStub()
+        let store = RecordingTmuxSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
             tmuxPathProvider: { .success("/usr/bin/tmux") },
@@ -224,7 +226,7 @@ struct NativeTmuxSessionCoordinatorTests {
 
     @Test("endpoint changes replace provisioning and active handles")
     func endpointChangesReplaceHandles() async throws {
-        let store = TmuxSurfaceStoreStub()
+        let store = RecordingTmuxSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
             tmuxPathProvider: { .success("/usr/bin/tmux") },
@@ -280,7 +282,7 @@ struct NativeTmuxSessionCoordinatorTests {
 
     @Test("rejected terminal surfaces never report command launch")
     func rejectedSurfaceDoesNotLaunch() async {
-        let store = TmuxSurfaceStoreStub(
+        let store = RecordingTmuxSurfaceStore(
             launchError: SurfaceLaunchTestError.rejected
         )
         let coordinator = NativeTmuxSessionCoordinator(
@@ -322,7 +324,7 @@ struct NativeTmuxSessionCoordinatorTests {
 
     @Test("an exited tmux client records a closed attachment")
     func exitedClientClosesAttachment() async throws {
-        let store = TmuxSurfaceStoreStub()
+        let store = RecordingTmuxSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
             tmuxPathProvider: { .success("/usr/bin/tmux") }
@@ -354,47 +356,4 @@ private enum SurfaceLaunchTestError: LocalizedError {
     case rejected
 
     var errorDescription: String? { "Surface launch rejected" }
-}
-
-@MainActor
-private final class TmuxPaneSurfaceStub: TmuxPaneSurfacing {
-    var blocksClipboardReads = false
-    let launchError: Error?
-    private(set) var closeObservers: [UUID: (Bool) -> Void] = [:]
-
-    init(launchError: Error? = nil) {
-        self.launchError = launchError
-    }
-
-    func registerSurfaceCloseObserver(
-        id: UUID,
-        onSurfaceClosed: @escaping (Bool) -> Void
-    ) {
-        closeObservers[id] = onSurfaceClosed
-    }
-}
-
-@MainActor
-private final class TmuxSurfaceStoreStub: TmuxSurfaceStoring {
-    let surface: TmuxPaneSurfaceStub
-    private(set) var requestedKeys: [SurfaceKey] = []
-    private(set) var requestedConfigurations: [TerminalSurfaceConfiguration] = []
-    private(set) var removedKeys: [SurfaceKey] = []
-
-    init(launchError: Error? = nil) {
-        surface = TmuxPaneSurfaceStub(launchError: launchError)
-    }
-
-    func paneSurface(
-        for key: SurfaceKey,
-        configuration: TerminalSurfaceConfiguration
-    ) -> (any TmuxPaneSurfacing)? {
-        requestedKeys.append(key)
-        requestedConfigurations.append(configuration)
-        return surface
-    }
-
-    func removeSurface(for key: SurfaceKey) {
-        removedKeys.append(key)
-    }
 }

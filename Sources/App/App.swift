@@ -9,9 +9,7 @@ import AppKit
 
 enum QuitPolicy {
     static func needsConfirmation(
-        confirmBeforeQuitting: Bool,
-        runtimeNeedsConfirmQuit: Bool,
-        openTerminalSurfaceCount: Int
+        confirmBeforeQuitting: Bool
     ) -> Bool {
         confirmBeforeQuitting
     }
@@ -42,11 +40,11 @@ struct GhosthubApp: App {
         WindowGroup(
             "Ghosthub",
             id: "workspace",
-            for: UUID.self
-        ) { requestID in
+            for: WorkspaceWindowState.self
+        ) { windowState in
             WorkspaceWindow(
                 applicationDelegate: appDelegate,
-                requestID: requestID.wrappedValue
+                windowState: windowState
             )
             .environmentObject(terminalRuntime)
             .onAppear {
@@ -54,24 +52,29 @@ struct GhosthubApp: App {
                 AppAppearance.apply(
                     settingsStore.interfaceAppearance
                 )
-                appDelegate.openWorkspaceWindow = { requestID in
+                appDelegate.openWorkspaceWindow = { windowState in
                     openWindow(
                         id: "workspace",
-                        value: requestID
+                        value: windowState
                     )
                 }
                 appDelegate.needsConfirmQuit = {
                     QuitPolicy.needsConfirmation(
                         confirmBeforeQuitting:
-                        settingsStore.confirmBeforeQuitting,
-                        runtimeNeedsConfirmQuit:
-                        terminalRuntime
-                            .needsConfirmQuit,
-                        openTerminalSurfaceCount:
-                        WindowRegistry.shared
-                            .totalOpenTerminalSurfaceCount
+                        settingsStore.confirmBeforeQuitting
                     )
                 }
+                updateController.configureRelaunch(
+                    refreshRestorationState: {
+                        WindowRegistry.shared.refreshRestorationStates()
+                    },
+                    authorizeTermination: {
+                        appDelegate.authorizeNextUpdaterTermination()
+                    },
+                    clearTerminationAuthorization: {
+                        appDelegate.clearUpdaterTerminationAuthorization()
+                    }
+                )
                 updateController.start()
                 requestLaunchActivationIfNeeded()
                 #endif
@@ -83,6 +86,8 @@ struct GhosthubApp: App {
                 AppAppearance.apply(appearance)
                 #endif
             }
+        } defaultValue: {
+            WorkspaceWindowState.fresh()
         }
         .defaultSize(width: 1600, height: 1000)
         .windowStyle(.hiddenTitleBar)

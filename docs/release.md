@@ -266,10 +266,16 @@ appcast, and creates
 - `SHA256SUMS`
 - `appcast.xml`
 
-The appcast contains only the current full DMG, embeds a link to the GitHub
-release notes, and uses the tag-specific asset URL. The stable `latest/download`
-feed redirects clients to this release's appcast. Publishing is aborted if the
-protected private key does not match the public key embedded in the app.
+The appcast contains only the current full DMG and embeds the exact dated
+`CHANGELOG.md` section for `RELEASE_APP_VERSION`, along with a link to the
+tag-specific GitHub release. Appcast generation stops before signing when that
+section is missing, duplicated, empty, or malformed; it never publishes
+placeholder release notes. The tag workflow also runs this same changelog
+extraction as a validation step before building anything, so a bad changelog
+fails the release in seconds instead of after signing and notarization.
+The stable `latest/download` feed redirects clients
+to this release's appcast. Publishing is also aborted if the protected private
+key does not match the public key embedded in the app.
 Release bundles set `SUSignedFeedFailureExpirationInterval` to `0`, so an
 invalid feed never ages into Sparkle's key-rotation fallback. This is the exact
 Info.plist key declared by Sparkle 2.9.4's

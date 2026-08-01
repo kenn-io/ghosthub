@@ -108,11 +108,12 @@ final class ApplicationDelegate: NSObject,
         NSApplication.shared.terminate(nil)
     }
 
-    var openWorkspaceWindow: (UUID) -> Void = { _ in }
+    var openWorkspaceWindow: (WorkspaceWindowState) -> Void = { _ in }
 
     private let windowRequests = WorkspaceWindowRequests<NSWindow>()
     private(set) var terminationConfirmed = false
     private(set) var terminationConfirmationPending = false
+    private var updaterTerminationAuthorized = false
 
     override init() {
         confirmTermination = { false }
@@ -182,10 +183,12 @@ final class ApplicationDelegate: NSObject,
         window.makeKeyAndOrderFront(nil)
     }
 
-    private func requestWorkspaceWindow(parent: NSWindow?) -> UUID {
-        let id = UUID()
-        windowRequests.add(id, parent: parent)
-        return id
+    private func requestWorkspaceWindow(
+        parent: NSWindow?
+    ) -> WorkspaceWindowState {
+        let state = WorkspaceWindowState.fresh()
+        windowRequests.add(state.windowID, parent: parent)
+        return state
     }
 
     @discardableResult
@@ -266,15 +269,32 @@ final class ApplicationDelegate: NSObject,
         }
     }
 
+    func authorizeNextUpdaterTermination() {
+        updaterTerminationAuthorized = true
+    }
+
+    func clearUpdaterTerminationAuthorization() {
+        updaterTerminationAuthorized = false
+    }
+
+    private func consumeUpdaterTerminationAuthorization() -> Bool {
+        guard updaterTerminationAuthorized else { return false }
+        updaterTerminationAuthorized = false
+        return true
+    }
+
     func applicationShouldTerminate(
         _ sender: NSApplication
     ) -> NSApplication.TerminateReply {
+        if consumeUpdaterTerminationAuthorization() {
+            return .terminateNow
+        }
         if terminationConfirmed {
             return .terminateNow
         }
-        // Shutdown, restart, logout, and system-update requests intentionally
-        // use the same confirmation gate. Ghosthub must not silently disappear
-        // while terminal presentations are still open.
+        // Shutdown, restart, logout, and ordinary quit requests intentionally
+        // use the same confirmation gate. Only Sparkle receives the narrow
+        // one-shot authorization above after the user accepts its relaunch.
         return prepareUserInitiatedTermination()
             ? .terminateNow : .terminateCancel
     }
@@ -299,8 +319,8 @@ final class ApplicationDelegate: NSObject,
     private func makeTerminationAlert() -> NSAlert {
         let alert = NSAlert()
         alert.messageText = "Quit Ghosthub?"
-        alert.informativeText = "This will close Ghosthub "
-            + "and all active terminal surfaces."
+        alert.informativeText = "Ghosthub will close its terminal "
+            + "presentations. Your tmux sessions will remain running."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Quit")
         alert.addButton(withTitle: "Cancel")

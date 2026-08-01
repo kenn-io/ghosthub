@@ -19,26 +19,26 @@ struct WorkspaceTabRequestTests {
 
     @Test("outstanding requests retain their own tab parents")
     func outstandingRequestsRetainParents() {
-        let firstID = UUID()
-        let secondID = UUID()
+        let firstState = WorkspaceWindowState.fresh()
+        let secondState = WorkspaceWindowState.fresh()
         let firstParent = Window(isWorkspace: true)
         let secondParent = Window(isWorkspace: true)
         let firstWindow = Window(isWorkspace: true)
         let secondWindow = Window(isWorkspace: true)
         let requests = WorkspaceWindowRequests<Window>()
 
-        requests.add(firstID, parent: firstParent)
-        requests.add(secondID, parent: secondParent)
+        requests.add(firstState.windowID, parent: firstParent)
+        requests.add(secondState.windowID, parent: secondParent)
 
         #expect(
             requests.consumeParent(
-                for: secondID,
+                for: secondState.windowID,
                 window: secondWindow
             ) === secondParent
         )
         #expect(
             requests.consumeParent(
-                for: firstID,
+                for: firstState.windowID,
                 window: firstWindow
             ) === firstParent
         )
@@ -46,31 +46,38 @@ struct WorkspaceTabRequestTests {
 
     @Test("an independent request does not overwrite tab intent")
     func independentRequestDoesNotOverwriteTab() {
-        let tabID = UUID()
-        let windowID = UUID()
+        let tabState = WorkspaceWindowState.fresh()
+        let independentState = WorkspaceWindowState.fresh()
+        let restoredState = WorkspaceWindowState.fresh()
         let parent = Window(isWorkspace: true)
         let tabWindow = Window(isWorkspace: true)
         let independentWindow = Window(isWorkspace: true)
         let requests = WorkspaceWindowRequests<Window>()
 
-        requests.add(tabID, parent: parent)
-        requests.add(windowID, parent: nil)
+        requests.add(tabState.windowID, parent: parent)
+        requests.add(independentState.windowID, parent: nil)
 
         #expect(
             requests.consumeParent(
-                for: windowID,
+                for: independentState.windowID,
                 window: independentWindow
             ) == nil
         )
         #expect(
             requests.consumeParent(
-                for: tabID,
+                for: restoredState.windowID,
+                window: independentWindow
+            ) == nil
+        )
+        #expect(
+            requests.consumeParent(
+                for: tabState.windowID,
                 window: tabWindow
             ) === parent
         )
         #expect(
             requests.consumeParent(
-                for: tabID,
+                for: tabState.windowID,
                 window: tabWindow
             ) == nil
         )

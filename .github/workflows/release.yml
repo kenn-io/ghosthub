@@ -141,6 +141,20 @@ jobs:
             echo "dmg_name=Ghosthub_${VERSION}_macos_$(uname -m).dmg"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Validate release changelog section
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        env:
+          RELEASE_APP_VERSION: ${{ steps.release.outputs.version }}
+        shell: bash
+        # The appcast step runs this same extraction after signing and
+        # notarization; validating here fails a bad changelog in seconds.
+        run: |
+          uv run --frozen python tools/extract_changelog.py \
+            --changelog CHANGELOG.md \
+            --version "$RELEASE_APP_VERSION" \
+            --release-url "https://github.com/$GITHUB_REPOSITORY/releases/tag/v$RELEASE_APP_VERSION" \
+            --output /dev/null
+
       - name: Build pinned kwt helper
         shell: bash
         working-directory: .release-inputs/kwt-source

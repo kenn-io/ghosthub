@@ -177,6 +177,7 @@ public struct RootView: View {
             .onAppear {
                 normalizeSelectionForWorktreeVisibilityChanges()
                 synchronizeSelectedWorktreeSession()
+                initializeTmuxSelectionBaselineIfNeeded()
             }
             .onChange(of: worktreeVisibility) { _, _ in
                 normalizeSelectionForWorktreeVisibilityChanges()
@@ -185,10 +186,18 @@ public struct RootView: View {
             .onChange(of: selection) { _, _ in
                 synchronizeSelectedWorktreeSession()
             }
+            .onChange(
+                of: display.suppressesAutomaticWorktreeSessionOpen
+            ) { wasSuppressed, isSuppressed in
+                guard wasSuppressed, !isSuppressed else { return }
+                synchronizeSelectedWorktreeSession()
+            }
             .onChange(of: activeTmuxSession) { _, activeSession in
-                if activeSession == nil {
+                guard activeSession != nil else {
                     tmuxSelectionBaseline = nil
+                    return
                 }
+                initializeTmuxSelectionBaselineIfNeeded()
             }
             .onReceive(
                 NotificationCenter.default.publisher(
@@ -349,7 +358,10 @@ public struct RootView: View {
     private var workspaceSidebarColumn: some View {
         WorkspaceSidebarView(
             snapshot: snapshot,
-            selection: $selection,
+            selection: Binding(
+                get: { selection },
+                set: { selectWorkspace($0) }
+            ),
             visibility: worktreeVisibility,
             tmuxSessionVisibility: tmuxSessionVisibility,
             activeTmuxSession: activeTmuxSession,
@@ -382,11 +394,7 @@ public struct RootView: View {
             inventoryWarningsByHost:
             display.workspaceInventoryWarningsByHost,
             onOpen: { worktree in
-                selection.select(
-                    .worktree(worktree.id),
-                    in: snapshot,
-                    visibility: worktreeVisibility
-                )
+                selectWorkspace(.worktree(worktree.id))
             }
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -406,6 +414,12 @@ public struct RootView: View {
         handlers.openTmuxSession?(session)
     }
 
+    private func initializeTmuxSelectionBaselineIfNeeded() {
+        guard activeTmuxSession != nil,
+              tmuxSelectionBaseline == nil else { return }
+        tmuxSelectionBaseline = selection
+    }
+
     private func createTmuxSession(on host: HostSummary, name: String) {
         let session = WorkspaceTmuxSessionSelection(
             hostID: host.id,
@@ -414,12 +428,12 @@ public struct RootView: View {
         if let previous = activeTmuxSession {
             handlers.closeTmuxSession?(previous)
         }
-        selection = Self.selectionForHostTmuxSession(
+        selectWorkspace(Self.selectionForHostTmuxSession(
             session,
             from: selection,
             in: snapshot,
             visibility: worktreeVisibility
-        )
+        ))
         tmuxSelectionBaseline = selection
         handlers.createTmuxSession?(session)
     }
@@ -572,13 +586,36 @@ public struct RootView: View {
 
     private var selectedWorktreeTmuxSession:
         WorkspaceTmuxSessionSelection? {
-        WorkspaceSidebarModel.tmuxSessionSelection(
+        let selected = WorkspaceSidebarModel.tmuxSessionSelection(
             for: selection,
             in: snapshot
         )
+        guard let selected,
+              let activeTmuxSession,
+              selected.worktreeID == activeTmuxSession.worktreeID,
+              selected.worktreeGeneration
+              != activeTmuxSession.worktreeGeneration else {
+            return selected
+        }
+        if activeTmuxSession.worktreeGeneration == nil {
+            // A presentation opened before its canonical generation was
+            // available is enriched, not replaced, as long as the tmux
+            // endpoint is unchanged; keep the live terminal.
+            guard selected.hostID == activeTmuxSession.hostID,
+                  selected.name == activeTmuxSession.name,
+                  selected.socketName == activeTmuxSession.socketName
+            else { return selected }
+            return activeTmuxSession
+        }
+
+        // Inventory may reuse a runtime worktree ID after a same-path
+        // replacement or temporarily omit its generation. Keep the observed
+        // presentation until the user explicitly selects a canonical target.
+        return activeTmuxSession
     }
 
     private func synchronizeSelectedWorktreeSession() {
+        guard !display.suppressesAutomaticWorktreeSessionOpen else { return }
         guard let session = selectedWorktreeTmuxSession else {
             if activeTmuxSession?.worktreeID != nil {
                 deactivateTmuxSession()
@@ -600,6 +637,14 @@ public struct RootView: View {
                 presentedSession.name
             ) {
             view
+        } else if display.suppressesAutomaticWorktreeSessionOpen,
+                  !display.isWorkspaceRestorationPending,
+                  selectedWorktreeTmuxSession != nil {
+            ContentUnavailableView {
+                Label("Session detached", systemImage: "terminal")
+            } description: {
+                Text("Select this worktree to attach its tmux session.")
+            }
         } else if let pendingSession = selectedWorktreeTmuxSession {
             ProgressView("Opening \(displayName(for: pendingSession))…")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -728,7 +773,7 @@ public struct RootView: View {
                 step: -1,
                 visibility: worktreeVisibility
             ) {
-                selection = updatedSelection
+                selectWorkspace(updatedSelection)
             }
         case .nextWorktree:
             if let updatedSelection = KeyboardNavigationModel.steppedSelection(
@@ -737,7 +782,7 @@ public struct RootView: View {
                 step: 1,
                 visibility: worktreeVisibility
             ) {
-                selection = updatedSelection
+                selectWorkspace(updatedSelection)
             }
         case let .newTmuxSession(hostID):
             guard let host = snapshot.host(id: hostID) else { return }
@@ -747,18 +792,14 @@ public struct RootView: View {
             addProjectHost = host
         case let .openTmuxSession(tmuxSession):
             if let worktreeID = tmuxSession.worktreeID {
-                selection.select(
-                    .worktree(worktreeID),
-                    in: snapshot,
-                    visibility: worktreeVisibility
-                )
+                selectWorkspace(.worktree(worktreeID))
             } else {
-                selection = Self.selectionForHostTmuxSession(
+                selectWorkspace(Self.selectionForHostTmuxSession(
                     tmuxSession,
                     from: selection,
                     in: snapshot,
                     visibility: worktreeVisibility
-                )
+                ))
             }
             activateTmuxSession(tmuxSession)
         case let .killTmuxSession(tmuxSession):
@@ -776,11 +817,7 @@ public struct RootView: View {
         case let .setInterfaceAppearance(appearance):
             settingsStore.setInterfaceAppearance(appearance)
         case let .select(target):
-            selection.select(
-                target,
-                in: snapshot,
-                visibility: worktreeVisibility
-            )
+            selectWorkspace(target)
         case .showLogViewer:
             isLogViewerPresented = true
         }
@@ -866,6 +903,24 @@ public struct RootView: View {
             in: snapshot,
             visibility: worktreeVisibility
         ) {
+            selectWorkspace(updatedSelection)
+        }
+    }
+
+    private func selectWorkspace(_ target: WorkspaceNavigationTarget) {
+        var updatedSelection = selection
+        updatedSelection.select(
+            target,
+            in: snapshot,
+            visibility: worktreeVisibility
+        )
+        selectWorkspace(updatedSelection)
+    }
+
+    private func selectWorkspace(_ updatedSelection: WorkspaceSelection) {
+        if let selectWorkspace = handlers.selectWorkspace {
+            selectWorkspace(updatedSelection)
+        } else {
             selection = updatedSelection
         }
     }

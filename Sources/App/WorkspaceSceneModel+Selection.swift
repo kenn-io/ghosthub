@@ -55,7 +55,7 @@ extension WorkspaceSceneModel {
             index, from: selection, in: snapshot,
             visibility: worktreeVisibility
         ) {
-            selection = updated
+            selectFromUser(updated)
         }
     }
 
@@ -64,7 +64,7 @@ extension WorkspaceSceneModel {
             from: selection, in: snapshot, step: step,
             visibility: worktreeVisibility
         ) {
-            selection = updated
+            selectFromUser(updated)
         }
     }
 }

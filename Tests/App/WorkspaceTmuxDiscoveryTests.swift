@@ -333,10 +333,13 @@ struct WorkspaceTmuxDiscoveryTests {
     @Test("ordinary worktree navigation attaches without creating")
     func worktreeNavigationUsesAttachMode() throws {
         let environment = try setupStandardEnvironment()
+        var snapshot = environment.snapshot
+        snapshot.worktrees[0].generation =
+            "0123456789abcdef0123456789abcdef"
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
-            snapshot: environment.snapshot,
+            snapshot: snapshot,
             nativeTmuxPathProvider: { .success("/opt/homebrew/bin/tmux") }
         )
         let selection = WorkspaceTmuxSessionSelection(
@@ -350,6 +353,51 @@ struct WorkspaceTmuxDiscoveryTests {
 
         #expect(model.activeBorrowedTmuxLaunchMode == .attach)
         #expect(model.pendingCreatedTmuxSessionCount == 0)
+        #expect(
+            model.activeBorrowedTmuxSelection?.worktreeGeneration
+                == "0123456789abcdef0123456789abcdef"
+        )
+    }
+
+    @MainActor
+    @Test("explicit reselection attaches a replaced worktree's session")
+    func explicitReselectionAttachesReplacedSession() throws {
+        let environment = try setupStandardEnvironment()
+        var snapshot = environment.snapshot
+        snapshot.worktrees[0].tmuxSessionName = "editor"
+        snapshot.worktrees[0].generation =
+            "fedcba9876543210fedcba9876543210"
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxPathProvider: { .success("/opt/homebrew/bin/tmux") }
+        )
+        let observed = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "editor",
+            worktreeID: environment.worktree.id,
+            worktreePath: environment.worktree.path,
+            worktreeGeneration: "0123456789abcdef0123456789abcdef"
+        )
+        model.openBorrowedTmuxSession(observed)
+        #expect(
+            model.activeBorrowedTmuxSelection?.worktreeGeneration
+                == "0123456789abcdef0123456789abcdef"
+        )
+
+        var reselection = model.selection
+        reselection.select(
+            .worktree(environment.worktree.id),
+            in: model.snapshot
+        )
+        model.selectFromUser(reselection)
+
+        #expect(
+            model.activeBorrowedTmuxSelection?.worktreeGeneration
+                == "fedcba9876543210fedcba9876543210"
+        )
+        #expect(model.activeBorrowedTmuxLaunchMode == .attach)
     }
 
     @MainActor
@@ -657,6 +705,89 @@ struct WorkspaceTmuxDiscoveryTests {
         #expect(request.sessionID == "$42")
         #expect(request.sessionCreatedAt == "1721552400")
         #expect(identityReads.count == 1)
+    }
+
+    @MainActor
+    @Test("protected kill availability survives a generation change")
+    func protectedKillSurvivesGenerationChange() async throws {
+        let environment = try setupStandardEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let identityReads = Counter()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            tmuxSessionIdentityReader: { _, _ in
+                _ = identityReads.increment()
+                return TmuxSessionIdentity(
+                    serverPID: "31415",
+                    sessionID: "$42",
+                    createdAt: "1721552400"
+                )
+            }
+        )
+        var selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "kwt-ghosthub-main",
+            worktreeID: environment.worktree.id,
+            worktreePath: environment.worktree.path,
+            worktreeGeneration: "0123456789abcdef0123456789abcdef",
+            socketName: "protected"
+        )
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        await Task.yield()
+
+        selection.worktreeGeneration =
+            "fedcba9876543210fedcba9876543210"
+        let request = try await model.prepareTmuxSessionKill(selection)
+
+        #expect(request.serverPID == "31415")
+        #expect(identityReads.count == 1)
+    }
+
+    @MainActor
+    @Test("kill closes the active attachment across a generation change")
+    func killClosesAttachmentAcrossGenerationChange() async throws {
+        let environment = try setupStandardEnvironment()
+        var snapshot = environment.snapshot
+        snapshot.hosts[0].tmuxSessions = [
+            TmuxSessionSummary(
+                name: "kwt-ghosthub-main",
+                managed: false,
+                windows: [],
+                serverPID: "31415",
+                sessionID: "$8",
+                createdAt: "1721552400"
+            ),
+        ]
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxPathProvider: { .success("/opt/homebrew/bin/tmux") },
+            tmuxSessionKiller: { _, _, _ in }
+        )
+        var selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "kwt-ghosthub-main",
+            worktreeID: environment.worktree.id,
+            worktreePath: environment.worktree.path,
+            worktreeGeneration: "0123456789abcdef0123456789abcdef"
+        )
+        model.openBorrowedTmuxSession(selection)
+
+        selection.worktreeGeneration =
+            "fedcba9876543210fedcba9876543210"
+        let request = try await model.prepareTmuxSessionKill(selection)
+        try await model.killTmuxSession(request)
+
+        #expect(model.activeBorrowedTmuxSelection == nil)
+        #expect(
+            model.selection.selectedHostID == environment.host.id
+        )
     }
 
     @MainActor
