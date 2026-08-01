@@ -153,13 +153,7 @@ public final class WebPreviewSession: NSObject, ObservableObject {
         let downloads = Array(pendingDownloads.values)
         pendingDownloads.removeAll()
         for pending in downloads {
-            pending.download.cancel { _ in
-                if pending.destination.cancel() != nil {
-                    NSLog(
-                        "Ghosthub could not remove a partial web preview download."
-                    )
-                }
-            }
+            cancelDownload(pending)
         }
     }
 
@@ -173,6 +167,36 @@ public final class WebPreviewSession: NSObject, ObservableObject {
 
     func recordMainFrameNavigation(_ request: URLRequest) {
         navigationRecovery.begin(request)
+    }
+
+    private func beginDownload(_ download: WKDownload) {
+        guard !isTornDown else {
+            download.cancel { _ in }
+            return
+        }
+        pendingDownloads[ObjectIdentifier(download)] =
+            PendingWebPreviewDownload(download: download)
+        download.delegate = self
+    }
+
+    private func cancelDownload(_ pending: PendingWebPreviewDownload) {
+        pending.download.cancel { _ in
+            if pending.destination?.cancel() != nil {
+                NSLog(
+                    "Ghosthub could not remove a partial web preview download."
+                )
+            }
+        }
+    }
+
+    private func cancelDownload(_ download: WKDownload) {
+        guard let pending = pendingDownloads.removeValue(
+            forKey: ObjectIdentifier(download)
+        ) else {
+            download.cancel { _ in }
+            return
+        }
+        cancelDownload(pending)
     }
 
     private func observeNavigationState() {
@@ -347,7 +371,7 @@ extension WebPreviewSession: WKNavigationDelegate {
         navigationAction: WKNavigationAction,
         didBecome download: WKDownload
     ) {
-        download.delegate = self
+        beginDownload(download)
     }
 
     public func webView(
@@ -355,7 +379,7 @@ extension WebPreviewSession: WKNavigationDelegate {
         navigationResponse: WKNavigationResponse,
         didBecome download: WKDownload
     ) {
-        download.delegate = self
+        beginDownload(download)
     }
 }
 
@@ -475,6 +499,12 @@ extension WebPreviewSession: WKDownloadDelegate {
         suggestedFilename: String,
         completionHandler: @escaping @MainActor @Sendable (URL?) -> Void
     ) {
+        guard !isTornDown,
+              pendingDownloads[ObjectIdentifier(download)] != nil
+        else {
+            completionHandler(nil)
+            return
+        }
         let panel = NSSavePanel()
         panel.canCreateDirectories = true
         panel.nameFieldStringValue = suggestedFilename
@@ -489,24 +519,30 @@ extension WebPreviewSession: WKDownloadDelegate {
                 return
             }
             pendingSavePanels.removeValue(forKey: panelID)
-            guard !isTornDown,
-                  response == .OK,
-                  let url = panel?.url
-            else {
+            guard !isTornDown else {
                 completionHandler(nil)
+                return
+            }
+            guard response == .OK, let url = panel?.url else {
+                completionHandler(nil)
+                cancelDownload(download)
                 return
             }
             do {
                 let destination = try WebPreviewDownloadDestination
                     .prepare(url)
-                pendingDownloads[ObjectIdentifier(download)] =
-                    PendingWebPreviewDownload(
-                        download: download,
-                        destination: destination
-                    )
+                guard var pending = pendingDownloads[
+                    ObjectIdentifier(download)
+                ] else {
+                    completionHandler(nil)
+                    return
+                }
+                pending.destination = destination
+                pendingDownloads[ObjectIdentifier(download)] = pending
                 completionHandler(destination.temporaryURL)
             } catch {
                 completionHandler(nil)
+                cancelDownload(download)
                 let alert = NSAlert(error: error)
                 alert.messageText = "Download Could Not Start"
                 if let parentWindow {
@@ -541,11 +577,12 @@ extension WebPreviewSession: WKDownloadDelegate {
         ) else {
             return
         }
+        guard let destination = pending.destination else { return }
         do {
-            try pending.destination.finish()
+            try destination.finish()
         } catch {
             presentDownloadError(
-                pending.destination.cancel() ?? error,
+                destination.cancel() ?? error,
                 for: download
             )
         }
@@ -558,7 +595,7 @@ extension WebPreviewSession: WKDownloadDelegate {
     ) {
         if let pending = pendingDownloads.removeValue(
             forKey: ObjectIdentifier(download)
-        ), let cleanupError = pending.destination.cancel() {
+        ), let cleanupError = pending.destination?.cancel() {
             presentDownloadError(cleanupError, for: download)
             return
         }
@@ -573,7 +610,7 @@ extension WebPreviewSession: WKDownloadDelegate {
 
 private struct PendingWebPreviewDownload {
     let download: WKDownload
-    let destination: WebPreviewDownloadDestination
+    var destination: WebPreviewDownloadDestination?
 }
 
 struct WebPreviewNavigationRecovery {
