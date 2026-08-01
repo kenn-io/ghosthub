@@ -165,7 +165,7 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     /// clipboard through terminal escape sequences. Explicit user paste
     /// remains available because libghostty labels semantic paste requests
     /// before the runtime reads the pasteboard.
-    public var blocksClipboardAccess = false
+    public var blocksClipboardReads = false
     private var isClipboardConfirmationPending = false
     private var tmuxTerminalModeTracker = AttachedTmuxTerminalModeTracker()
     /// The surface's grid dimensions (columns, rows) changed. Task-8 addition:

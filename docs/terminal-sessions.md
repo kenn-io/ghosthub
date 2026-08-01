@@ -151,13 +151,15 @@ psmux `ssh -T` wrapper and is not part of this experiment.
 
 Tmux remains alive on the remote host while the network is unavailable. After
 connectivity returns, the client reattaches to the same exact session and tmux
-renders its authoritative state. Remote terminal surfaces cannot read the
-local Mac clipboard through terminal escape sequences, regardless of the
-user's `clipboard-read` or `clipboard-write` configuration. libghostty exposes
-the semantic type of every clipboard request: Ghosthub supplies clipboard
-contents only for a configured `paste_from_clipboard` action, independent of
-which key triggers it. libghostty retains bracketed-paste framing and requires
-confirmation before unsafe unbracketed text can reach the PTY.
+renders its authoritative state. Copy-mode and programs on configured remote
+hosts may write the Mac clipboard through OSC 52 when allowed by the user's
+`clipboard-write` configuration, so remote tmux copy behaves like local tmux
+copy. Remote terminal surfaces cannot read the local Mac clipboard through
+OSC 52, regardless of `clipboard-read`. libghostty exposes the semantic type
+of every clipboard request: Ghosthub supplies clipboard contents only for a
+configured `paste_from_clipboard` action, independent of which key triggers
+it. libghostty retains bracketed-paste framing and requires confirmation before
+unsafe unbracketed text can reach the PTY.
 
 ## Inventory and Startup
 

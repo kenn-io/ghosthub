@@ -806,7 +806,7 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
         )
     }
 
-    func testRemoteClipboardPolicyAllowsCopyButRejectsOSC52Write() throws {
+    func testRemoteClipboardPolicyAllowsCopyAndOSC52Write() throws {
         try skipUnlessLibghosttyReady()
         let runtime = retainedRuntime()
         let appHandle = try XCTUnwrap(runtime.unsafeAppHandle)
@@ -814,7 +814,7 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
             app: appHandle,
             configuration: TerminalSurfaceConfiguration()
         )
-        view.blocksClipboardAccess = true
+        view.blocksClipboardReads = true
         let userdata = Unmanaged.passUnretained(view.callbackToken).toOpaque()
         let pasteboard = NSPasteboard.general
         let priorContents = pasteboard.string(forType: .string)
@@ -870,8 +870,8 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
         }
         XCTAssertEqual(
             pasteboard.string(forType: .string),
-            "selected text",
-            "OSC 52 must not overwrite the clipboard on an SSH surface"
+            "remote payload",
+            "OSC 52 copy must reach the clipboard from an SSH surface"
         )
     }
 

@@ -60,18 +60,19 @@ a supported security boundary.
 Trusting a host does not grant it every local app capability. Ghosthub still
 applies its clipboard policy and other explicit terminal-integration controls
 so routine remote programs cannot silently exercise local UI capabilities that
-the user did not enable. In particular, remote surfaces never service OSC 52
-clipboard reads or writes, regardless of the `clipboard-read` or
-`clipboard-write` values in the user's Ghostty-compatible configuration.
-Ghosthub reads libghostty's semantic request type before touching the Mac
-pasteboard. Only `paste_from_clipboard` may receive clipboard contents;
-OSC 52 reads receive an empty value. This follows the configured binding
-instead of assuming a physical shortcut. Bracketed-paste framing remains
-authoritative, and unsafe unbracketed text requires user confirmation before
-reaching the PTY. Selecting Copy may
-similarly write the user's chosen terminal selection. Those intentional
-interactions necessarily disclose their selected contents to the attached
-pane.
+the user did not enable. Remote panes may write the Mac clipboard through OSC
+52 when allowed by the user's `clipboard-write` configuration. This is a
+required terminal capability so copy-mode in a configured remote tmux session
+can propagate copied text to macOS. Remote surfaces never service OSC 52
+clipboard reads, regardless of `clipboard-read`. Ghosthub reads libghostty's
+semantic request type before touching the Mac pasteboard. Only
+`paste_from_clipboard` may receive clipboard contents; OSC 52 reads receive an
+empty value. This follows the configured binding instead of assuming a
+physical shortcut. Bracketed-paste framing remains authoritative, and unsafe
+unbracketed text requires user confirmation before reaching the PTY. Selecting
+Copy may similarly write the user's chosen terminal selection. Those
+intentional interactions necessarily disclose their selected contents to the
+attached pane.
 
 ### Network
 

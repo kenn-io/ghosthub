@@ -233,7 +233,9 @@ const imageAlt = {
             Selecting a listed worktree creates or repairs its canonical tmux
             session when needed, then attaches an ordinary tmux client.
             Kwt remains optional if you only want a local and remote tmux
-            session switcher.
+            session switcher. Remote tmux copy-mode can write copied text to
+            the Mac clipboard through OSC 52, while paste follows the
+            configured terminal shortcut and libghostty’s safe paste path.
           </p>
           <p>
             To remove a non-primary worktree, hover its sidebar row and click
