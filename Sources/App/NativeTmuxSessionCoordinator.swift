@@ -5,7 +5,7 @@ import GhosthubWorkspace
 
 @MainActor
 protocol TmuxPaneSurfacing: AnyObject {
-    var blocksClipboardAccess: Bool { get set }
+    var blocksClipboardReads: Bool { get set }
     var launchError: Error? { get }
     func registerSurfaceCloseObserver(
         id: UUID,
@@ -355,7 +355,7 @@ final class NativeTmuxSessionCoordinator {
             )
             return nil
         }
-        surface.blocksClipboardAccess = attachment.host.isRemote
+        surface.blocksClipboardReads = attachment.host.isRemote
         surface.registerSurfaceCloseObserver(
             id: handle.id,
             onSurfaceClosed: { [weak self] _ in

@@ -358,7 +358,7 @@ private enum SurfaceLaunchTestError: LocalizedError {
 
 @MainActor
 private final class TmuxPaneSurfaceStub: TmuxPaneSurfacing {
-    var blocksClipboardAccess = false
+    var blocksClipboardReads = false
     let launchError: Error?
     private(set) var closeObservers: [UUID: (Bool) -> Void] = [:]
 

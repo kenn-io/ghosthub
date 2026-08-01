@@ -2235,7 +2235,7 @@ struct WorkspaceTmuxDiscoveryTests {
 
 @MainActor
 private final class SceneTmuxPaneSurfaceStub: TmuxPaneSurfacing {
-    var blocksClipboardAccess = false
+    var blocksClipboardReads = false
     var launchError: Error? { nil }
     private(set) var closeObservers: [UUID: (Bool) -> Void] = [:]
 

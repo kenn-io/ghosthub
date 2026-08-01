@@ -73,8 +73,8 @@ struct ClipboardAccessPolicyTests {
         )
     }
 
-    @Test("remote OSC 52 writes are rejected before touching the pasteboard")
-    func blockedOSC52WriteIsRejected() {
+    @Test("OSC 52 writes discard the private origin marker")
+    func osc52WriteDiscardsOriginMarker() {
         let entries = [
             LibghosttyRuntime.ClipboardWriteEntry(
                 mime: "text/plain",
@@ -88,14 +88,13 @@ struct ClipboardAccessPolicyTests {
 
         #expect(
             LibghosttyRuntime.acceptedClipboardWriteEntries(
-                blocked: true,
-                entries: entries
-            ) == nil
+                entries
+            ) == [entries[0]]
         )
     }
 
-    @Test("user-initiated copy remains available on remote surfaces")
-    func blockedSurfaceAcceptsOrdinaryCopy() {
+    @Test("user-initiated copy remains available")
+    func acceptsOrdinaryCopy() {
         let copy = LibghosttyRuntime.ClipboardWriteEntry(
             mime: "text/plain",
             data: "selected text"
@@ -103,28 +102,8 @@ struct ClipboardAccessPolicyTests {
 
         #expect(
             LibghosttyRuntime.acceptedClipboardWriteEntries(
-                blocked: true,
-                entries: [copy]
+                [copy]
             ) == [copy]
-        )
-    }
-
-    @Test("local OSC 52 writes discard the private origin marker")
-    func ordinarySurfaceAcceptsOSC52WithoutMarker() {
-        let payload = LibghosttyRuntime.ClipboardWriteEntry(
-            mime: "text/plain",
-            data: "local payload"
-        )
-        let marker = LibghosttyRuntime.ClipboardWriteEntry(
-            mime: LibghosttyRuntime.osc52ClipboardWriteMIME,
-            data: ""
-        )
-
-        #expect(
-            LibghosttyRuntime.acceptedClipboardWriteEntries(
-                blocked: false,
-                entries: [payload, marker]
-            ) == [payload]
         )
     }
 }

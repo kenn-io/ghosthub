@@ -88,8 +88,8 @@ public final class TerminalSurfaceView: ObservableObject {
     public var onChildWrite: ((Data) -> Void)?
     /// Mirrors `TerminalSurfaceView.onGridSizeChanged`.
     public var onGridSizeChanged: ((Int, Int) -> Void)?
-    /// Mirrors clipboard isolation for remote and control-mode surfaces.
-    public var blocksClipboardAccess: Bool = false
+    /// Mirrors clipboard-read isolation for remote surfaces.
+    public var blocksClipboardReads: Bool = false
     var fontZoomShortcutHandler: ((TerminalFontZoomCommand) -> Bool)?
 
     public init(

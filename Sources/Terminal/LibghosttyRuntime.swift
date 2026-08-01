@@ -759,7 +759,7 @@ public final class LibghosttyRuntime: ObservableObject {
             // User-configured paste bindings may read the clipboard, while
             // OSC 52 reads remain empty regardless of `clipboard-read`.
             let contents = clipboardReadContents(
-                blocked: surfaceView.blocksClipboardAccess,
+                blocked: surfaceView.blocksClipboardReads,
                 request: request,
                 contents: NSPasteboard.general.string(forType: .string)
             )
@@ -787,7 +787,7 @@ public final class LibghosttyRuntime: ObservableObject {
             guard let surfaceHandle = surfaceView.surfaceHandle else { return }
             let requestState = stateValue.flatMap(UnsafeMutableRawPointer.init(bitPattern:))
             if !allowsClipboardConfirmation(
-                blocked: surfaceView.blocksClipboardAccess,
+                blocked: surfaceView.blocksClipboardReads,
                 request: request
             ) {
                 "".withCString { buffer in
@@ -842,11 +842,8 @@ public final class LibghosttyRuntime: ObservableObject {
             )
         }
         dispatchToMainSync {
-            guard let surfaceView = surfaceView(from: userdataValue),
-                  let acceptedEntries = acceptedClipboardWriteEntries(
-                      blocked: surfaceView.blocksClipboardAccess,
-                      entries: entries
-                  ) else { return }
+            guard surfaceView(from: userdataValue) != nil else { return }
+            let acceptedEntries = acceptedClipboardWriteEntries(entries)
             let pasteboard = NSPasteboard.general
             pasteboard.clearContents()
             let types = acceptedEntries.compactMap {
@@ -884,12 +881,9 @@ public final class LibghosttyRuntime: ObservableObject {
     }
 
     static func acceptedClipboardWriteEntries(
-        blocked: Bool,
-        entries: [ClipboardWriteEntry]
-    ) -> [ClipboardWriteEntry]? {
-        let isOSC52 = entries.contains { $0.mime == osc52ClipboardWriteMIME }
-        guard !blocked || !isOSC52 else { return nil }
-        return entries.filter { $0.mime != osc52ClipboardWriteMIME }
+        _ entries: [ClipboardWriteEntry]
+    ) -> [ClipboardWriteEntry] {
+        entries.filter { $0.mime != osc52ClipboardWriteMIME }
     }
 
     static func pasteboardType(

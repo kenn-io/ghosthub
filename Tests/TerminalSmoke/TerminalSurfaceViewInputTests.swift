@@ -2288,7 +2288,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
                 command: "python3 '\(scriptURL.path)'"
             )
         )
-        view.blocksClipboardAccess = true
+        view.blocksClipboardReads = true
         let previousPresenter =
             TerminalSurfaceView.clipboardConfirmationPresenter
         var confirmation: ((Bool) -> Void)?
@@ -2371,7 +2371,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
                 command: "python3 '\(scriptURL.path)'"
             )
         )
-        view.blocksClipboardAccess = true
+        view.blocksClipboardReads = true
 
         let previousPresenter =
             TerminalSurfaceView.clipboardConfirmationPresenter
@@ -2442,7 +2442,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
                 command: "python3 '\(scriptURL.path)'"
             )
         )
-        view.blocksClipboardAccess = true
+        view.blocksClipboardReads = true
         let window = hostInWindow(view)
         waitUntil(timeout: 5.0) { view.error == nil }
         waitForProbeReady(in: view)
@@ -2502,7 +2502,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
                 command: "python3 '\(scriptURL.path)'"
             )
         )
-        view.blocksClipboardAccess = true
+        view.blocksClipboardReads = true
 
         let pasteboard = NSPasteboard.general
         let priorContents = pasteboard.string(forType: .string)
@@ -2532,6 +2532,54 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
                 Data("local-secret".utf8).base64EncodedString()
             ),
             "Remote OSC 52 reads must never receive local clipboard data."
+        )
+    }
+
+    func testRemoteSurfaceWritesOSC52CopyToPasteboard() throws {
+        let runtime = try runtimeWithTerminalConfig(
+            "clipboard-write = allow\n"
+        )
+        let appHandle = try requireAppHandle(from: runtime)
+        let copiedText = "remote tmux copy"
+        let encodedText = Data(copiedText.utf8).base64EncodedString()
+        let scriptURL = makeExecutableScript(
+            """
+            #!/usr/bin/env python3
+            import os
+
+            os.write(1, b"\\x1b]52;c;\(encodedText)\\x07")
+            print("<WROTE>", flush=True)
+            """
+        )
+        let view = TerminalSurfaceView(
+            app: appHandle,
+            configuration: TerminalSurfaceConfiguration(
+                command: "python3 '\(scriptURL.path)'"
+            )
+        )
+        view.blocksClipboardReads = true
+
+        let pasteboard = NSPasteboard.general
+        let priorContents = pasteboard.string(forType: .string)
+        pasteboard.clearContents()
+        defer {
+            pasteboard.clearContents()
+            if let priorContents {
+                pasteboard.setString(priorContents, forType: .string)
+            }
+        }
+
+        _ = hostInWindow(view)
+        waitUntil(timeout: 5.0) { view.error == nil }
+        waitForViewportText("<WROTE>", in: view)
+        waitUntil(timeout: 3.0) {
+            pasteboard.string(forType: .string) == copiedText
+        }
+
+        XCTAssertEqual(
+            pasteboard.string(forType: .string),
+            copiedText,
+            "OSC 52 copy from a remote surface must reach the Mac clipboard."
         )
     }
 
