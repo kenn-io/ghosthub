@@ -96,8 +96,7 @@ public func powerShellKwtAvailabilityPrelude(
 /// Ghosthub-owned POSIX command text to `/bin/sh`. The outer command argument
 /// is accepted by POSIX shells and non-POSIX account shells such as fish.
 private func accountLoginCommand(_ command: String) -> String {
-    let posixCommand = "exec /bin/sh -c "
-        + shellQuotedCommandArgument(command)
+    let posixCommand = accountShellCommand(command)
     return "exec \"${SHELL:-/bin/sh}\" -lc "
         + shellQuotedCommandArgument(posixCommand)
 }

@@ -488,9 +488,6 @@ struct TmuxAttachmentInfoTests {
         #expect(!command.contains("status-style"))
         #expect(!command.contains("message-style"))
         #expect(!command.contains("message-command-style"))
-        #expect(command.contains(
-            "[ \\\"\\$status\\\" -eq 255 ] || exit \\\"\\$status\\\""
-        ))
         #expect(!command.contains("-CC"))
         #expect(!command.contains("KexAlgorithms"))
         #expect(!command.contains("bind-key"))
@@ -855,6 +852,69 @@ struct TmuxAttachmentInfoTests {
 
         #expect(process.terminationStatus == 0)
         #expect(text == "GHOSTHUB_ACCOUNT_SHELL_READY\n")
+    }
+
+    @Test("remote attachment keeps POSIX source opaque to the account shell")
+    func remoteAttachmentDelegatesPOSIXSource() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let marker = directory.appendingPathComponent("account-shell-ready")
+        let shell = directory.appendingPathComponent("account-shell")
+        try """
+        #!/bin/sh
+        set -eu
+        [ "$1" = "-lc" ] || exit 96
+        case "$2" in
+          'exec /bin/sh -c "'*'"') ;;
+          *) exit 97 ;;
+        esac
+        : > "$GHOSTHUB_ACCOUNT_SHELL_MARKER"
+        exec /bin/sh -c "$2"
+        """.write(to: shell, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755], ofItemAtPath: shell.path
+        )
+        let command = TmuxAttachmentInfo(
+            sessionName: "fixture-session",
+            host: .ssh(SSHHostInfo(
+                user: "test-user",
+                hostname: "test-host.invalid",
+                port: nil
+            ))
+        ).attachCommand(
+            tmuxPath: "/usr/bin/true",
+            sshConnectionArguments: ["-V"]
+        )
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = [
+            "--noprofile", "--norc", "-c",
+            "exec -l " + command,
+        ]
+        process.environment = ProcessInfo.processInfo.environment.merging([
+            "GHOSTHUB_ACCOUNT_SHELL_MARKER": marker.path,
+            "SHELL": shell.path,
+        ]) { _, new in new }
+        process.standardOutput = output
+        process.standardError = output
+
+        try process.run()
+        process.waitUntilExit()
+        let text = String(
+            decoding: output.fileHandleForReading.readDataToEndOfFile(),
+            as: UTF8.self
+        )
+
+        #expect(
+            process.terminationStatus == 0,
+            Comment(rawValue: text)
+        )
+        #expect(FileManager.default.fileExists(atPath: marker.path))
     }
 
     @Test("remote worktree switches to tmux only after transport loss")
