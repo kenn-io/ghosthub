@@ -13,7 +13,10 @@ struct TmuxSessionKillerTests {
         else {
             return
         }
-        let socketName = "ghosthub-kill-\(UUID().uuidString.lowercased())"
+        let socketName = ProcessInfo.processInfo.environment[
+            "GHOSTHUB_TEST_TMUX_RUN_ID"
+        ].map { "ghosthub-kill-\($0)" }
+            ?? "ghosthub-kill-\(UUID().uuidString.lowercased())"
         let sessionName = "same-name"
         defer {
             _ = TmuxBinaryResolver.runProcess(

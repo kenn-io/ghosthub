@@ -50,9 +50,14 @@ make format-check   # report without changing anything
 Run Swift tests:
 
 ```bash
-swift test
+make swift-test
 swift test list   # enumerate tests without running
 ```
+
+The test target gives every run its own pre-created `TMUX_TMPDIR` and removes
+its tmux servers and sockets afterward. If a test runner was hard-killed, use
+`make purge-test-tmux` to stop only Ghosthub's test-prefixed tmux processes and
+remove their isolated and legacy sockets.
 
 ## Python tooling
 

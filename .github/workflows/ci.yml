@@ -123,6 +123,7 @@ jobs:
         # Keep tests marked Pasteboard out of this lane because they mutate
         # NSPasteboard.general, which is shared across worker processes.
         run: >-
+          sh tools/run_swift_tests.sh
           swift test --skip-build --disable-swift-testing
           --filter GhosthubTerminalSmokeTests
           --skip 'Clipboard|Paste'
@@ -130,17 +131,21 @@ jobs:
 
       - name: Run pasteboard terminal smoke tests
         run: >-
+          sh tools/run_swift_tests.sh
           swift test --skip-build --disable-swift-testing
           --filter 'Clipboard|Paste' --no-parallel
 
       - name: Run remaining XCTest suites
         # Keep deadline-sensitive monitor and lifecycle tests serialized.
         run: >-
+          sh tools/run_swift_tests.sh
           swift test --skip-build --disable-swift-testing
           --skip GhosthubTerminalSmokeTests --no-parallel
 
       - name: Run Swift Testing suites
-        run: swift test --skip-build --disable-xctest --no-parallel
+        run: >-
+          sh tools/run_swift_tests.sh
+          swift test --skip-build --disable-xctest --no-parallel
 
       - name: Run essential kwt and tmux workflows
         run: make test-essential-workflows
