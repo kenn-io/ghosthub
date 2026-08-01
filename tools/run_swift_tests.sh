@@ -23,8 +23,32 @@ sh "$script_dir/purge_test_tmux.sh" --stale
 tmux_tmpdir=$(mktemp -d "$test_root/run.$$.XXXXXX")
 run_id=${tmux_tmpdir##*.}
 child_pid=
+deadline_marker="$tmux_tmpdir/stop-deadline"
+deadline_pid=
 pending_signal=
 signal_status=
+
+start_kill_deadline() {
+    [ -z "$deadline_pid" ] || return 0
+
+    set -m
+    (
+        sleep 5
+        : > "$deadline_marker"
+        kill -KILL -- -"$child_pid" 2>/dev/null ||
+            kill -KILL "$child_pid" 2>/dev/null || true
+    ) &
+    deadline_pid=$!
+    set +m
+}
+
+cancel_kill_deadline() {
+    [ -n "$deadline_pid" ] || return 0
+
+    kill -TERM -- -"$deadline_pid" 2>/dev/null || true
+    wait "$deadline_pid" 2>/dev/null || true
+    deadline_pid=
+}
 
 forward_signal() {
     signal=$1
@@ -36,29 +60,42 @@ forward_signal() {
     esac
     if [ -n "$child_pid" ]; then
         kill -"$signal" -- -"$child_pid" 2>/dev/null || true
+        start_kill_deadline
     fi
+}
+
+group_has_live_processes() {
+    ps -axo pgid=,state= | awk -v pgid="$child_pid" '
+        $1 == pgid && $2 !~ /^Z/ { found = 1; exit }
+        END { exit found ? 0 : 1 }
+    '
 }
 
 stop_child_group() {
     [ -n "$child_pid" ] || return 0
 
-    if kill -0 -- -"$child_pid" 2>/dev/null; then
+    if group_has_live_processes; then
         kill -TERM -- -"$child_pid" 2>/dev/null || true
     elif kill -0 "$child_pid" 2>/dev/null; then
         kill -TERM "$child_pid" 2>/dev/null || true
+    else
+        cancel_kill_deadline
+        wait "$child_pid" 2>/dev/null || true
+        return 0
     fi
-    wait "$child_pid" 2>/dev/null || true
 
-    attempts=0
-    while kill -0 -- -"$child_pid" 2>/dev/null &&
-        [ "$attempts" -lt 50 ]
+    start_kill_deadline
+    while group_has_live_processes && [ ! -e "$deadline_marker" ]
     do
         sleep 0.1
-        attempts=$((attempts + 1))
     done
-    if kill -0 -- -"$child_pid" 2>/dev/null; then
+    if group_has_live_processes; then
         kill -KILL -- -"$child_pid" 2>/dev/null || true
+    elif kill -0 "$child_pid" 2>/dev/null; then
+        kill -KILL "$child_pid" 2>/dev/null || true
     fi
+    cancel_kill_deadline
+    wait "$child_pid" 2>/dev/null || true
 }
 
 cleanup() {
@@ -96,7 +133,7 @@ if [ -n "$signal_status" ]; then
 fi
 
 set +e
-while :; do
+while [ -z "$signal_status" ]; do
     wait "$child_pid"
     status=$?
     if ! kill -0 "$child_pid" 2>/dev/null; then

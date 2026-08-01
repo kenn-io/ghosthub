@@ -10,26 +10,38 @@ import pytest
 SCRIPT = Path(__file__).resolve().parents[1] / "tools" / "run_swift_tests.sh"
 
 
+@pytest.mark.parametrize(
+    "ignores_term",
+    [False, True],
+    ids=["handles-term", "ignores-term"],
+)
 def test_terminating_wrapper_stops_group_before_cleanup(
     tmp_path: Path,
+    ignores_term: bool,
 ) -> None:
     child_pid_file = tmp_path / "child.pid"
     grandchild_pid_file = tmp_path / "grandchild.pid"
     tmux_dir_file = tmp_path / "tmux-dir"
     signal_marker = tmp_path / "signal-marker"
     command = tmp_path / "command.sh"
+    if ignores_term:
+        term_trap = "trap '' TERM\n"
+    else:
+        term_trap = (
+            "trap 'if [ -d \"$TMUX_TMPDIR\" ]; then "
+            f'echo present > "{signal_marker}"; '
+            "else "
+            f'echo missing > "{signal_marker}"; '
+            "fi; wait \"$grandchild\" 2>/dev/null || true; exit 0' TERM\n"
+        )
     command.write_text(
         "#!/bin/sh\n"
         f'echo $$ > "{child_pid_file}"\n'
         f'echo "$TMUX_TMPDIR" > "{tmux_dir_file}"\n'
+        f"{term_trap}"
         "sleep 30 &\n"
         "grandchild=$!\n"
         f'echo "$grandchild" > "{grandchild_pid_file}"\n'
-        "trap 'if [ -d \"$TMUX_TMPDIR\" ]; then "
-        f'echo present > "{signal_marker}"; '
-        "else "
-        f'echo missing > "{signal_marker}"; '
-        "fi; wait \"$grandchild\" 2>/dev/null || true; exit 0' TERM\n"
         "wait \"$grandchild\"\n"
     )
     command.chmod(0o755)
@@ -62,7 +74,7 @@ def test_terminating_wrapper_stops_group_before_cleanup(
     tmux_dir = Path(tmux_dir_file.read_text().strip())
 
     wrapper.terminate()
-    assert wrapper.wait(timeout=10) == 143
+    assert wrapper.wait(timeout=12) == 143
 
     deadline = time.monotonic() + 5
     alive = child_pids
@@ -78,5 +90,6 @@ def test_terminating_wrapper_stops_group_before_cleanup(
             time.sleep(0.05)
 
     assert not alive, "test process group survived wrapper termination"
-    assert signal_marker.read_text().strip() == "present"
+    if not ignores_term:
+        assert signal_marker.read_text().strip() == "present"
     assert not tmux_dir.exists()
