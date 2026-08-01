@@ -55,9 +55,12 @@ swift test list   # enumerate tests without running
 ```
 
 The test target gives every run its own pre-created `TMUX_TMPDIR` and removes
-its tmux servers and sockets afterward. If a test runner was hard-killed, use
-`make purge-test-tmux` to stop only Ghosthub's test-prefixed tmux processes and
-remove their isolated and legacy sockets.
+its tmux servers and sockets afterward. Cancelling a run forwards the signal
+and gives the test group `GHOSTHUB_TEST_STOP_GRACE` seconds (default 20, or 2
+under `tools/run_with_timeout.sh`) to unwind before it is force-killed. If a
+test runner was hard-killed, use `make purge-test-tmux` to stop only
+Ghosthub's test-prefixed tmux processes and remove their isolated and legacy
+sockets; runs whose owning wrapper is still alive are left untouched.
 
 ## Python tooling
 

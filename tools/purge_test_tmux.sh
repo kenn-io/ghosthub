@@ -79,7 +79,7 @@ run_tmux_pids() {
     ps -axo pid=,command= | awk -v run_id="$run_id" \
         -v run_dir="$run_dir" '
         BEGIN {
-            socket_pattern = "^ghosthub-(test|kill|style|ready)-" run_id "$"
+            socket_pattern = "^ghosthub-(test|kill)-" run_id "$"
         }
         /^[[:space:]]*[0-9]+[[:space:]]+([^[:space:]]*\/)?tmux[[:space:]]/ {
             for (field = 2; field < NF; field++) {
@@ -149,19 +149,19 @@ if [ -e "$test_root" ] || [ -L "$test_root" ]; then
     find "$test_root" -mindepth 1 -maxdepth 1 -type d \
         -name 'run.*.??????' -print |
         while IFS= read -r directory; do
-            if [ "$mode" = stale ]; then
-                run_name=$(basename -- "$directory")
-                owner_pid=${run_name#run.}
-                owner_pid=${owner_pid%%.*}
-                case "$owner_pid" in
-                    '' | *[!0-9]*) continue ;;
-                    *)
-                        if kill -0 "$owner_pid" 2>/dev/null; then
-                            continue
-                        fi
-                        ;;
-                esac
-            fi
+            # A live owner PID marks an active run. Never purge one out from
+            # under a concurrent test invocation, in any mode.
+            run_name=$(basename -- "$directory")
+            owner_pid=${run_name#run.}
+            owner_pid=${owner_pid%%.*}
+            case "$owner_pid" in
+                '' | *[!0-9]*) continue ;;
+                *)
+                    if kill -0 "$owner_pid" 2>/dev/null; then
+                        continue
+                    fi
+                    ;;
+            esac
             purge_run_directory "$directory"
         done
 fi
@@ -174,7 +174,7 @@ if [ -e "$legacy_socket_root" ] || [ -L "$legacy_socket_root" ]; then
     require_secure_directory "$legacy_socket_root" "legacy tmux socket"
     find "$legacy_socket_root" -mindepth 1 -maxdepth 1 -type s -print |
         awk -F/ '
-            $NF ~ /^ghosthub-(test|kill|style|ready)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+            $NF ~ /^ghosthub-(test|kill)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
         ' |
         while IFS= read -r socket; do
             kill_socket "$socket"
@@ -184,7 +184,7 @@ fi
 legacy_test_tmux_pids() {
     ps -axo pid=,command= | awk '
         /^[[:space:]]*[0-9]+[[:space:]]+([^[:space:]]*\/)?tmux[[:space:]]/ &&
-        /-L[[:space:]]+ghosthub-(test|kill|style|ready)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}([[:space:]]|$)/ {
+        /-L[[:space:]]+ghosthub-(test|kill)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}([[:space:]]|$)/ {
             print $1
         }
     '

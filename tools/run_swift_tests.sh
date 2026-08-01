@@ -22,6 +22,14 @@ sh "$script_dir/purge_test_tmux.sh" --stale
 # concurrent stale sweeps distinguish active runs without a marker-file race.
 tmux_tmpdir=$(mktemp -d "$test_root/run.$$.XXXXXX")
 run_id=${tmux_tmpdir##*.}
+# Seconds a cancelled test group gets to unwind before it is force-killed.
+# run_with_timeout.sh lowers this so the inner KILL lands before that outer
+# guard escalates; interactive cancellation keeps the longer default so
+# SwiftPM can finish its own teardown.
+stop_grace=${GHOSTHUB_TEST_STOP_GRACE:-20}
+case "$stop_grace" in
+    '' | *[!0-9]*) stop_grace=20 ;;
+esac
 child_pid=
 deadline_marker="$tmux_tmpdir/stop-deadline"
 deadline_pid=
@@ -33,10 +41,10 @@ start_kill_deadline() {
 
     set -m
     (
-        # Leave ample time for run_with_timeout.sh to reap this wrapper and
-        # purge its tmux directory before that outer guard escalates at 5s.
-        sleep 2
-        : > "$deadline_marker"
+        sleep "$stop_grace"
+        # The run directory may already be gone. The KILL must still fire so
+        # stop_child_group's wait ends through group exit, not the marker.
+        : > "$deadline_marker" 2>/dev/null || true
         kill -KILL -- -"$child_pid" 2>/dev/null ||
             kill -KILL "$child_pid" 2>/dev/null || true
     ) &
@@ -100,6 +108,7 @@ stop_child_group() {
     wait "$child_pid" 2>/dev/null || true
 }
 
+# shellcheck disable=SC2329  # invoked via the EXIT trap below
 cleanup() {
     status=$1
     trap - EXIT INT TERM HUP

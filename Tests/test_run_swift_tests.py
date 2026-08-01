@@ -12,6 +12,7 @@ import pytest
 
 SCRIPT = Path(__file__).resolve().parents[1] / "tools" / "run_swift_tests.sh"
 TIMEOUT_SCRIPT = SCRIPT.with_name("run_with_timeout.sh")
+PURGE_SCRIPT = SCRIPT.with_name("purge_test_tmux.sh")
 
 
 @pytest.mark.parametrize(
@@ -54,6 +55,7 @@ def test_terminating_wrapper_stops_group_before_cleanup(
         ["sh", str(SCRIPT), str(command)],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        env={**os.environ, "GHOSTHUB_TEST_STOP_GRACE": "2"},
     )
     required_files = [
         child_pid_file,
@@ -97,6 +99,57 @@ def test_terminating_wrapper_stops_group_before_cleanup(
     if not ignores_term:
         assert signal_marker.read_text().strip() == "present"
     assert not tmux_dir.exists()
+
+
+def test_cancellation_still_kills_group_without_run_directory(
+    tmp_path: Path,
+) -> None:
+    child_pid_file = tmp_path / "child.pid"
+    tmux_dir_file = tmp_path / "tmux-dir"
+    command = tmp_path / "ignore-term.sh"
+    command.write_text(
+        "#!/bin/sh\n"
+        "trap '' TERM\n"
+        f'echo $$ > "{child_pid_file}"\n'
+        f'echo "$TMUX_TMPDIR" > "{tmux_dir_file}"\n'
+        "sleep 30\n"
+    )
+    command.chmod(0o755)
+
+    wrapper = subprocess.Popen(
+        ["sh", str(SCRIPT), str(command)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env={**os.environ, "GHOSTHUB_TEST_STOP_GRACE": "1"},
+    )
+    deadline = time.monotonic() + 10
+    while (
+        not (child_pid_file.exists() and tmux_dir_file.exists())
+        and time.monotonic() < deadline
+    ):
+        time.sleep(0.05)
+    if not (child_pid_file.exists() and tmux_dir_file.exists()):
+        wrapper.kill()
+        wrapper.wait(timeout=10)
+        pytest.fail("test command did not start")
+    child_pid = int(child_pid_file.read_text().strip())
+
+    # The deadline KILL must not depend on the run directory: an external
+    # deletion mid-run previously left the wrapper waiting forever for a
+    # marker it could no longer create.
+    shutil.rmtree(tmux_dir_file.read_text().strip())
+    wrapper.terminate()
+    assert wrapper.wait(timeout=10) == 143
+
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            os.kill(child_pid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.05)
+    os.killpg(child_pid, signal.SIGKILL)
+    pytest.fail("test command survived cancellation without its run directory")
 
 
 def test_outer_timeout_leaves_inner_wrapper_time_to_cleanup(
@@ -189,6 +242,44 @@ def test_cleanup_stops_every_socket_in_private_run_directory(
     else:
         os.kill(server_pid, signal.SIGKILL)
         pytest.fail("tmux server on an unexpected test socket survived cleanup")
+
+
+def test_default_purge_skips_active_run_directories() -> None:
+    test_root = Path(f"/tmp/ghosthub-{os.getuid()}/tmux-tests")
+    test_root.parent.mkdir(mode=0o700, exist_ok=True)
+    test_root.mkdir(mode=0o700, exist_ok=True)
+
+    dead_pid = None
+    for _ in range(5):
+        probe = subprocess.Popen(["true"])
+        probe.wait(timeout=10)
+        try:
+            os.kill(probe.pid, 0)
+        except ProcessLookupError:
+            dead_pid = probe.pid
+            break
+    if dead_pid is None:
+        pytest.skip("could not obtain a dead PID")
+
+    live_dir = test_root / f"run.{os.getpid()}.aaaaaa"
+    dead_dir = test_root / f"run.{dead_pid}.bbbbbb"
+    try:
+        live_dir.mkdir(mode=0o700)
+        dead_dir.mkdir(mode=0o700)
+
+        result = subprocess.run(
+            ["sh", str(PURGE_SCRIPT)],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert live_dir.exists(), "purge removed an active run directory"
+        assert not dead_dir.exists(), "purge kept a dead run directory"
+    finally:
+        for directory in (live_dir, dead_dir):
+            shutil.rmtree(directory, ignore_errors=True)
 
 
 def test_cleanup_bounds_a_stalled_tmux_client(tmp_path: Path) -> None:
