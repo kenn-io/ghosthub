@@ -22,18 +22,94 @@ sh "$script_dir/purge_test_tmux.sh" --stale
 # concurrent stale sweeps distinguish active runs without a marker-file race.
 tmux_tmpdir=$(mktemp -d "$test_root/run.$$.XXXXXX")
 run_id=${tmux_tmpdir##*.}
+child_pid=
+pending_signal=
+signal_status=
+
+forward_signal() {
+    signal=$1
+    pending_signal=$signal
+    case "$signal" in
+        INT) signal_status=130 ;;
+        TERM) signal_status=143 ;;
+        HUP) signal_status=129 ;;
+    esac
+    if [ -n "$child_pid" ]; then
+        kill -"$signal" -- -"$child_pid" 2>/dev/null || true
+    fi
+}
+
+stop_child_group() {
+    [ -n "$child_pid" ] || return 0
+
+    if kill -0 -- -"$child_pid" 2>/dev/null; then
+        kill -TERM -- -"$child_pid" 2>/dev/null || true
+    elif kill -0 "$child_pid" 2>/dev/null; then
+        kill -TERM "$child_pid" 2>/dev/null || true
+    fi
+    wait "$child_pid" 2>/dev/null || true
+
+    attempts=0
+    while kill -0 -- -"$child_pid" 2>/dev/null &&
+        [ "$attempts" -lt 50 ]
+    do
+        sleep 0.1
+        attempts=$((attempts + 1))
+    done
+    if kill -0 -- -"$child_pid" 2>/dev/null; then
+        kill -KILL -- -"$child_pid" 2>/dev/null || true
+    fi
+}
 
 cleanup() {
     status=$1
     trap - EXIT INT TERM HUP
+    set +e
+    stop_child_group
     sh "$script_dir/purge_test_tmux.sh" "$tmux_tmpdir" || true
     exit "$status"
 }
 trap 'cleanup $?' EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
-trap 'exit 129' HUP
+trap 'forward_signal INT' INT
+trap 'forward_signal TERM' TERM
+trap 'forward_signal HUP' HUP
 
 export TMUX_TMPDIR="$tmux_tmpdir"
 export GHOSTHUB_TEST_TMUX_RUN_ID="$run_id"
-"$@"
+
+# macOS has no setsid utility. Start the test command as its own process-group
+# leader so cancellation reaches SwiftPM and every helper it launched.
+python3 -c 'import os, sys
+os.setpgid(0, 0)
+os.execvp(sys.argv[1], sys.argv[1:])' "$@" &
+child_pid=$!
+
+# A signal may arrive between fork and setpgid. Keep the trap active during
+# that window and deliver any pending signal once the group is published.
+while kill -0 "$child_pid" 2>/dev/null &&
+    ! kill -0 -- -"$child_pid" 2>/dev/null
+do
+    :
+done
+if [ -n "$signal_status" ]; then
+    forward_signal "$pending_signal"
+fi
+
+set +e
+while :; do
+    wait "$child_pid"
+    status=$?
+    if ! kill -0 "$child_pid" 2>/dev/null; then
+        break
+    fi
+done
+set -e
+
+# The test command may finish before one of its helpers. Do not remove the
+# tmux directory until every process left in the test group has stopped.
+stop_child_group
+child_pid=
+if [ -n "$signal_status" ]; then
+    status=$signal_status
+fi
+exit "$status"
