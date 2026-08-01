@@ -74,6 +74,43 @@ Native Windows attachment leaves psmux's status and message styles user-owned;
 psmux does not preserve tmux's session-scoped rendering for these style resets
 and may apply `reverse` across the client rather than only its status line.
 
+## Relaunch Restoration
+
+Quitting Ghosthub or installing an update only drops disposable clients. When
+macOS restores workspace scenes, Ghosthub resolves each scene's stable logical
+descriptor against current inventory and uses attach-only restoration; it
+never creates a missing session or falls back to a same-named target on a
+different host or socket. Worktree identity is the durable generation reported
+by kwt, so removing and recreating a worktree at the same path cannot inherit a
+saved presentation; a missing generation restores only as far as the project.
+Once a worktree presentation has observed a generation, incomplete inventory
+cannot erase it and a different non-nil generation is treated as a replacement;
+explicitly reselecting the worktree detaches the observed presentation and
+attaches the replacement session.
+An ordinary local session must be present in direct discovery before Ghosthub
+runs the exact `attach-session` path. Remote sessions use that same rule and the
+existing SSH keepalive and transport-reconnect loop.
+Offline or otherwise unavailable targets remain pending and retry when normal
+inventory refreshes publish new state. Navigating the window elsewhere cancels
+the pending target. If a scene was captured without an active tmux
+presentation, Ghosthub restores its host, project, and worktree navigation but
+does not open or create the worktree session until the user explicitly selects
+it.
+
+A protected worktree is distinct from a same-named session on the default tmux
+server. Restoration first probes the descriptor's exact host, protected socket,
+and session name. Only a successful probe may delegate attachment to `kwt pr
+attach`, which remains authoritative for validating and repairing that
+workspace before executing the ordinary tmux client. The session can still
+disappear between Ghosthub's probe and kwt's command; eliminating that benign
+race requires a future atomic kwt attach-only contract. Ghosthub does not use
+the default server as a fallback when the probe is absent or fails.
+
+The host-scoped console surface is outside workspace scene restoration and is
+reopened by the user. Restoring one session into multiple windows preserves
+the same tmux-native shared-presentation behavior that existed before quit;
+the broader collision and console policy remains tracked by kata `s75s`.
+
 Explicit local creation uses one atomic `new-session -A` create-or-attach
 client invocation. This closes the detached-session race when the user's tmux
 server has `destroy-unattached` enabled. Explicit remote creation performs a

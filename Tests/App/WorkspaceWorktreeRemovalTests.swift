@@ -835,6 +835,59 @@ struct WorkspaceWorktreeRemovalTests {
     }
 
     @MainActor
+    @Test("successful removal cancels pending window restoration")
+    func removalCancelsPendingRestoration() async throws {
+        let environment = try setupStandardEnvironment()
+        var removable = WorktreeSummary.fixture(
+            hostID: environment.host.id,
+            projectID: environment.project.id,
+            scopedKey: "/tmp/ghosthub-restoration-boundary",
+            name: "feature/restoration-boundary",
+            path: "/tmp/ghosthub-restoration-boundary",
+            branch: "feature/restoration-boundary",
+            generation: stableWorktreeGeneration
+        )
+        removable.tmuxSessionName = "kwt-ghosthub-restoration-boundary"
+        var snapshot = environment.snapshot
+        snapshot.worktrees.append(removable)
+        let loads = LockedValue(0)
+        let beforeRemoval = inventory(environment, including: removable)
+        let afterRemoval = inventory(environment)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtInventoryLoader: { _ in
+                loads.withLock { $0 += 1 }
+                return loads.load() == 1 ? beforeRemoval : afterRemoval
+            },
+            kwtWorktreeRemover: { _, _, _, _ in },
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+        model.beginRestoration(WorkspaceWindowState(
+            windowID: UUID(),
+            navigation: .init(
+                hostKey: "unavailable-host",
+                projectKey: nil,
+                worktreeGeneration: nil
+            ),
+            tmux: nil
+        ))
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        try await model.removeWorktree(request)
+
+        #expect(!model.isWorkspaceRestorationPending)
+        #expect(model.snapshot.worktree(id: removable.id) == nil)
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test(
         "changed target metadata invalidates the removal confirmation",
         arguments: [

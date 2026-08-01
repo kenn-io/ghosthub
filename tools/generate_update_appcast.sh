@@ -19,6 +19,7 @@ SPARKLE_DERIVE_PUBLIC_KEY="${SPARKLE_DERIVE_PUBLIC_KEY:-tools/derive_sparkle_pub
 SPARKLE_PUBLIC_ED_KEY="${SPARKLE_PUBLIC_ED_KEY:-}"
 SPARKLE_ED_PRIVATE_KEY="${SPARKLE_ED_PRIVATE_KEY:-}"
 RELEASE_REPOSITORY="${RELEASE_REPOSITORY:-kenn-io/ghosthub}"
+CHANGELOG_PATH="${CHANGELOG_PATH:-CHANGELOG.md}"
 
 if [[ -z "$SPARKLE_PUBLIC_ED_KEY" ]]; then
   echo "SPARKLE_PUBLIC_ED_KEY must contain the reviewed public key." >&2
@@ -83,10 +84,11 @@ cleanup_notes() {
 }
 trap cleanup_notes EXIT
 
-{
-  printf '# Ghosthub %s\n\n' "$RELEASE_APP_VERSION"
-  printf 'See the [GitHub release](%s) for details.\n' "$RELEASE_URL"
-} > "$NOTES_PATH"
+uv run --frozen python tools/extract_changelog.py \
+  --changelog "$CHANGELOG_PATH" \
+  --version "$RELEASE_APP_VERSION" \
+  --release-url "$RELEASE_URL" \
+  --output "$NOTES_PATH"
 
 printf '%s' "$SPARKLE_ED_PRIVATE_KEY" \
   | "$SPARKLE_GENERATE_APPCAST" \

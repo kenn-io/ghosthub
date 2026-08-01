@@ -230,6 +230,12 @@ final class WorkspaceSceneModel: ObservableObject {
     private var activeBorrowedTmuxHandle: BorrowedTmuxSessionHandle?
     private(set) var activeBorrowedTmuxLaunchMode:
         TmuxAttachmentLaunchMode?
+    @Published private(set) var isWorkspaceRestorationPending = false
+    @Published private(set) var suppressesAutomaticWorktreeSessionOpen = false
+    private var pendingRestoration: WorkspaceWindowState?
+    private var protectedRestorationProbeTask: Task<Void, Never>?
+    private var protectedRestorationProbeID: UUID?
+    private var protectedRestorationRefreshPending = false
     var activeBorrowedTmuxSessionIsConnected: Bool {
         guard let handle = activeBorrowedTmuxHandle else {
             return false
@@ -778,6 +784,192 @@ final class WorkspaceSceneModel: ObservableObject {
         activityControllerBacking = nil
     }
 
+    func beginRestoration(_ state: WorkspaceWindowState) {
+        guard state.navigation != nil || state.tmux != nil else { return }
+        pendingRestoration = state
+        isWorkspaceRestorationPending = true
+        suppressesAutomaticWorktreeSessionOpen = true
+        attemptPendingRestoration()
+    }
+
+    func cancelPendingRestoration() {
+        pendingRestoration = nil
+        isWorkspaceRestorationPending = false
+        suppressesAutomaticWorktreeSessionOpen = false
+        protectedRestorationProbeTask?.cancel()
+        protectedRestorationProbeTask = nil
+        protectedRestorationProbeID = nil
+        protectedRestorationRefreshPending = false
+    }
+
+    func restorationState(windowID: UUID) -> WorkspaceWindowState {
+        if var pendingRestoration {
+            pendingRestoration.windowID = windowID
+            return pendingRestoration
+        }
+        return WorkspaceWindowState.capture(
+            windowID: windowID,
+            selection: selection,
+            activeTmux: activeBorrowedTmuxSelection,
+            snapshot: snapshot
+        )
+    }
+
+    func selectFromUser(_ newSelection: WorkspaceSelection) {
+        cancelPendingRestoration()
+        selection = newSelection
+        attachReplacedWorktreeSessionIfNeeded()
+    }
+
+    /// An active presentation keeps the worktree generation it observed even
+    /// when inventory replaces the worktree behind the same runtime ID.
+    /// Explicitly reselecting that worktree is the user asking for the
+    /// canonical target, so attach the replacement session.
+    private func attachReplacedWorktreeSessionIfNeeded() {
+        guard let active = activeBorrowedTmuxSelection,
+              let activeGeneration = active.worktreeGeneration,
+              let replacement = WorkspaceSidebarModel.tmuxSessionSelection(
+                  for: selection,
+                  in: snapshot
+              ),
+              replacement.worktreeID == active.worktreeID,
+              let generation = WorktreeGeneration.canonical(
+                  replacement.worktreeGeneration
+              ),
+              generation != activeGeneration
+        else { return }
+        openBorrowedTmuxSession(replacement)
+    }
+
+    func synchronizeSelection(_ newSelection: WorkspaceSelection) {
+        guard newSelection != selection else { return }
+        selection = newSelection
+    }
+
+    private func applyRestoredSelection(_ restored: WorkspaceSelection) {
+        selection = restored
+    }
+
+    private func attemptPendingRestoration() {
+        guard let pendingRestoration else { return }
+        guard protectedRestorationProbeTask == nil else {
+            protectedRestorationRefreshPending = true
+            return
+        }
+        switch WorkspaceWindowRestorationResolver.resolve(
+            pendingRestoration,
+            in: snapshot
+        ) {
+        case .invalid:
+            cancelPendingRestoration()
+        case let .pending(resolvedSelection):
+            if let resolvedSelection {
+                applyRestoredSelection(resolvedSelection)
+            }
+        case let .ready(resolvedSelection, tmuxSelection):
+            applyRestoredSelection(resolvedSelection)
+            if let tmuxSelection {
+                _ = presentTmuxSession(
+                    tmuxSelection,
+                    launchMode: .attach,
+                    intent: .restoreOnly
+                )
+                suppressesAutomaticWorktreeSessionOpen = false
+            }
+            self.pendingRestoration = nil
+            isWorkspaceRestorationPending = false
+        case let .needsProtectedProbe(resolvedSelection, tmuxSelection):
+            beginProtectedRestorationProbe(
+                selection: resolvedSelection,
+                tmuxSelection: tmuxSelection,
+                expectedState: pendingRestoration
+            )
+        }
+    }
+
+    private func beginProtectedRestorationProbe(
+        selection resolvedSelection: WorkspaceSelection,
+        tmuxSelection: WorkspaceTmuxSessionSelection,
+        expectedState: WorkspaceWindowState
+    ) {
+        guard protectedRestorationProbeTask == nil,
+              let hostSummary = snapshot.host(id: tmuxSelection.hostID),
+              let host = TmuxHostResolver.resolve(hostSummary)
+        else { return }
+        let probeID = UUID()
+        protectedRestorationProbeID = probeID
+        protectedRestorationProbeTask = Task { [weak self] in
+            defer {
+                if self?.protectedRestorationProbeID == probeID {
+                    self?.protectedRestorationProbeTask = nil
+                    self?.protectedRestorationProbeID = nil
+                }
+            }
+            do {
+                _ = try await self?.tmuxSessionIdentityReader(
+                    tmuxSelection,
+                    host
+                )
+            } catch {
+                self?.retryProtectedRestorationAfterProbeCleanupIfNeeded(
+                    probeID
+                )
+                return
+            }
+            guard !Task.isCancelled,
+                  let self,
+                  protectedRestorationProbeID == probeID else {
+                return
+            }
+            guard pendingRestoration == expectedState,
+                  case let .needsProtectedProbe(
+                      currentSelection,
+                      currentTmuxSelection
+                  ) = WorkspaceWindowRestorationResolver.resolve(
+                      expectedState,
+                      in: snapshot
+                  ),
+                  let currentHostSummary = snapshot.host(
+                      id: tmuxSelection.hostID
+                  ),
+                  let currentHost = TmuxHostResolver.resolve(
+                      currentHostSummary
+                  )
+            else {
+                retryProtectedRestorationAfterProbeCleanupIfNeeded(probeID)
+                return
+            }
+            guard currentSelection == resolvedSelection,
+                  currentTmuxSelection == tmuxSelection,
+                  currentHost == host else {
+                retryProtectedRestorationAfterProbeCleanupIfNeeded(probeID)
+                return
+            }
+            protectedRestorationRefreshPending = false
+            applyRestoredSelection(resolvedSelection)
+            _ = presentTmuxSession(
+                tmuxSelection,
+                launchMode: .attach,
+                intent: .restoreOnly
+            )
+            pendingRestoration = nil
+            isWorkspaceRestorationPending = false
+            suppressesAutomaticWorktreeSessionOpen = false
+        }
+    }
+
+    private func retryProtectedRestorationAfterProbeCleanupIfNeeded(
+        _ probeID: UUID
+    ) {
+        guard protectedRestorationProbeID == probeID,
+              protectedRestorationRefreshPending else { return }
+        protectedRestorationRefreshPending = false
+        Task { @MainActor [weak self] in
+            await Task.yield()
+            self?.attemptPendingRestoration()
+        }
+    }
+
     /// Releases per-window terminal connection resources while preserving the
     /// tmux server sessions they attach to. Called by `WorkspaceWindow` before
     /// the scene model leaves the app-level window registry.
@@ -847,6 +1039,7 @@ final class WorkspaceSceneModel: ObservableObject {
 
         do {
             try await kwtWorktreeCreator(request, project.rootPath, host)
+            cancelPendingRestoration()
 
             let refreshed = try await kwtInventoryLoader(host)
             let previous = kwtInventoriesByHost[project.hostID]
@@ -874,11 +1067,13 @@ final class WorkspaceSceneModel: ObservableObject {
                 branch: request.branchName
             )
         }
-        selection.select(
+        var createdSelection = selection
+        createdSelection.select(
             .worktree(created.id),
             in: snapshot,
             visibility: worktreeVisibility
         )
+        selectFromUser(createdSelection)
     }
 
     func branches(
@@ -910,7 +1105,7 @@ final class WorkspaceSceneModel: ObservableObject {
         guard snapshot.canRemoveWorktree(worktree) else {
             throw KwtWorktreeError.worktreeUnavailable
         }
-        guard Self.isCanonicalWorktreeGeneration(
+        guard WorktreeGeneration.isCanonical(
             worktree.generation
         ) else {
             throw KwtWorktreeError.removalIdentityUnavailable
@@ -1062,6 +1257,7 @@ final class WorkspaceSceneModel: ObservableObject {
                     confirmedHost
                 )
             }
+            cancelPendingRestoration()
             removalTombstones.insert(
                 WorktreeMutationCoordinator.RemovalTombstone(
                     path: worktree.path,
@@ -1156,20 +1352,6 @@ final class WorkspaceSceneModel: ObservableObject {
         return (worktree, project)
     }
 
-    private static func isCanonicalWorktreeGeneration(
-        _ value: String?
-    ) -> Bool {
-        guard let value,
-              value.range(
-                  of: #"^[0-9a-f]{32}$"#,
-                  options: .regularExpression
-              ) != nil
-        else {
-            return false
-        }
-        return true
-    }
-
     private func removalRequest(
         _ request: WorktreeRemovalRequest,
         matches worktree: WorktreeSummary,
@@ -1226,11 +1408,12 @@ final class WorkspaceSceneModel: ObservableObject {
         snapshot.worktrees.removeAll { $0.id == worktree.id }
         snapshot.sessions.removeAll { $0.worktreeID == worktree.id }
         applyInventoryOverlayIfNeeded()
-        selection = Self.selectionAfterWorktreeRemoval(
+        let removalSelection = Self.selectionAfterWorktreeRemoval(
             selection,
             in: snapshot,
             visibility: worktreeVisibility
         )
+        selectFromUser(removalSelection)
         updateWorkspaceInventoryState()
     }
 
@@ -1323,6 +1506,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 project.scopedKey,
                 host
             )
+            cancelPendingRestoration()
         } catch {
             if isRemoteKwtUnavailable(error, hostID: project.hostID) {
                 kwtAvailabilityByHost[project.hostID] = false
@@ -1369,11 +1553,13 @@ final class WorkspaceSceneModel: ObservableObject {
                 path: result.workspace.path
             )
         }
-        selection.select(
+        var importedSelection = selection
+        importedSelection.select(
             .worktree(imported.id),
             in: snapshot,
             visibility: worktreeVisibility
         )
+        selectFromUser(importedSelection)
     }
 
     private func mergeImportedWorkspace(
@@ -1536,10 +1722,12 @@ final class WorkspaceSceneModel: ObservableObject {
 
     private func applyInventoryOverlayIfNeeded() {
         let overlaid = applyingCachedInventories(to: snapshot)
-        guard overlaid != snapshot else { return }
-        isApplyingInventoryOverlay = true
-        snapshot = overlaid
-        isApplyingInventoryOverlay = false
+        if overlaid != snapshot {
+            isApplyingInventoryOverlay = true
+            snapshot = overlaid
+            isApplyingInventoryOverlay = false
+        }
+        attemptPendingRestoration()
     }
 
     private func scheduleKwtInventory() {
@@ -2418,6 +2606,7 @@ final class WorkspaceSceneModel: ObservableObject {
     }
 
     func openBorrowedTmuxSession(_ selection: WorkspaceTmuxSessionSelection) {
+        cancelPendingRestoration()
         let hasPendingCreation = pendingCreatedTmuxSessions.values.contains {
             Self.sameTmuxSession($0, selection)
         }
@@ -2430,6 +2619,7 @@ final class WorkspaceSceneModel: ObservableObject {
     }
 
     func createTmuxSession(_ selection: WorkspaceTmuxSessionSelection) {
+        cancelPendingRestoration()
         let hasPendingCreation = pendingCreatedTmuxSessions.values.contains {
             Self.sameTmuxSession($0, selection)
         }
@@ -2456,11 +2646,24 @@ final class WorkspaceSceneModel: ObservableObject {
         }
     }
 
+    private enum TmuxPresentationIntent: Equatable {
+        case userInitiated
+        case restoreOnly
+    }
+
     @discardableResult
     private func presentTmuxSession(
         _ selection: WorkspaceTmuxSessionSelection,
-        launchMode: TmuxAttachmentLaunchMode
+        launchMode: TmuxAttachmentLaunchMode,
+        intent: TmuxPresentationIntent = .userInitiated
     ) -> BorrowedTmuxSessionHandle? {
+        var selection = selection
+        if let worktreeID = selection.worktreeID,
+           selection.worktreeGeneration == nil,
+           let generation = snapshot.worktree(id: worktreeID)?.generation,
+           WorktreeGeneration.isCanonical(generation) {
+            selection.worktreeGeneration = generation
+        }
         let effectiveLaunchMode: TmuxAttachmentLaunchMode =
             selection.socketName == nil ? launchMode : .attach
         if let active = activeBorrowedTmuxSelection, active != selection {
@@ -2481,7 +2684,8 @@ final class WorkspaceSceneModel: ObservableObject {
         let managedKwtUnavailable = host.remoteDiagnostics.contains {
             $0.code == .missingKwt
         }
-        let openWorkspace = effectiveLaunchMode == .attach
+        let openWorkspace = intent == .userInitiated
+            && effectiveLaunchMode == .attach
             && selection.socketName == nil
             && selection.worktreePath != nil
             && (!sessionIsDiscovered || !managedKwtUnavailable)
@@ -2505,6 +2709,17 @@ final class WorkspaceSceneModel: ObservableObject {
     }
 
     private static func sameTmuxSession(
+        _ lhs: WorkspaceTmuxSessionSelection,
+        _ rhs: WorkspaceTmuxSessionSelection
+    ) -> Bool {
+        sameTmuxEndpoint(lhs, rhs)
+            && lhs.worktreeGeneration == rhs.worktreeGeneration
+    }
+
+    /// Kill targets a live tmux endpoint; inventory can change the owning
+    /// worktree generation while that endpoint keeps running, so kill
+    /// probing and cleanup must not compare generations.
+    private static func sameTmuxEndpoint(
         _ lhs: WorkspaceTmuxSessionSelection,
         _ rhs: WorkspaceTmuxSessionSelection
     ) -> Bool {
@@ -2536,6 +2751,7 @@ final class WorkspaceSceneModel: ObservableObject {
     }
 
     func closeBorrowedTmuxSession(_ selection: WorkspaceTmuxSessionSelection) {
+        cancelPendingRestoration()
         guard activeBorrowedTmuxSelection == selection else { return }
         if let handle = activeBorrowedTmuxHandle {
             confirmedEndedTmuxSessionHandles.remove(handle.id)
@@ -2643,7 +2859,7 @@ final class WorkspaceSceneModel: ObservableObject {
         )
 
         let activeTargetAfterKill = activeBorrowedTmuxSelection.flatMap {
-            Self.sameTmuxSession($0, tmuxSelection) ? $0 : nil
+            Self.sameTmuxEndpoint($0, tmuxSelection) ? $0 : nil
         }
         if let activeTargetAfterKill {
             closeBorrowedTmuxSession(activeTargetAfterKill)
@@ -2669,7 +2885,7 @@ final class WorkspaceSceneModel: ObservableObject {
         _ selection: WorkspaceTmuxSessionSelection
     ) -> Bool {
         guard let activeSelection = activeBorrowedTmuxSelection,
-              Self.sameTmuxSession(activeSelection, selection),
+              Self.sameTmuxEndpoint(activeSelection, selection),
               let activeHandle = activeBorrowedTmuxHandle
         else {
             return false

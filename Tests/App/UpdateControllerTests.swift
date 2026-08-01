@@ -75,4 +75,74 @@ struct UpdateControllerTests {
             ).isReady
         )
     }
+
+    @MainActor
+    @Test("pre-relaunch refreshes scenes before arming termination")
+    func preRelaunchOrdering() {
+        var events: [String] = []
+        let delegate = UpdateInstallationDelegate(
+            refreshRestorationState: { events.append("refresh") },
+            authorizeTermination: { events.append("authorize") },
+            clearTerminationAuthorization: { events.append("clear") }
+        )
+
+        delegate.prepareForRelaunch()
+
+        #expect(events == ["refresh", "authorize"])
+    }
+
+    @MainActor
+    @Test("aborted or finished update sessions clear unused authorization")
+    func updateSessionCleanup() {
+        var clearCount = 0
+        let delegate = UpdateInstallationDelegate(
+            refreshRestorationState: {},
+            authorizeTermination: {},
+            clearTerminationAuthorization: { clearCount += 1 }
+        )
+
+        delegate.updateSessionDidAbort()
+        delegate.updateSessionDidFinish(error: false)
+
+        #expect(clearCount == 2)
+    }
+
+    @MainActor
+    @Test("a cycle finish racing a pending relaunch keeps termination armed")
+    func pendingRelaunchSurvivesCycleFinish() {
+        var clearCount = 0
+        let delegate = UpdateInstallationDelegate(
+            refreshRestorationState: {},
+            authorizeTermination: {},
+            clearTerminationAuthorization: { clearCount += 1 }
+        )
+
+        delegate.prepareForRelaunch()
+        delegate.updateSessionDidFinish(error: false)
+
+        #expect(clearCount == 0)
+    }
+
+    @MainActor
+    @Test(
+        "a failed relaunch disarms termination",
+        arguments: [true, false]
+    )
+    func failedRelaunchDisarmsTermination(_ aborts: Bool) {
+        var clearCount = 0
+        let delegate = UpdateInstallationDelegate(
+            refreshRestorationState: {},
+            authorizeTermination: {},
+            clearTerminationAuthorization: { clearCount += 1 }
+        )
+
+        delegate.prepareForRelaunch()
+        if aborts {
+            delegate.updateSessionDidAbort()
+        } else {
+            delegate.updateSessionDidFinish(error: true)
+        }
+
+        #expect(clearCount == 1)
+    }
 }

@@ -461,6 +461,122 @@ struct WorkspaceWorktreeCreationTests {
         await model.shutdown()
     }
 
+    @Test("successful creation cancels pending window restoration")
+    @MainActor
+    func creationCancelsPendingRestoration() async throws {
+        let environment = try setupStandardEnvironment()
+        let createdBranch = "feature/restoration-boundary"
+        let loadedInventory = inventory(
+            project: environment.project,
+            worktrees: [
+                worktree(
+                    path: environment.worktree.path,
+                    branch: environment.worktree.branch,
+                    isMain: true
+                ),
+                worktree(
+                    path: "/tmp/ghosthub-restoration-boundary",
+                    branch: createdBranch,
+                    isMain: false
+                ),
+            ]
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            kwtInventoryLoader: { _ in loadedInventory },
+            kwtWorktreeCreator: { _, _, _ in }
+        )
+        model.beginRestoration(WorkspaceWindowState(
+            windowID: UUID(),
+            navigation: .init(
+                hostKey: "unavailable-host",
+                projectKey: nil,
+                worktreeGeneration: nil
+            ),
+            tmux: nil
+        ))
+
+        try await model.createWorktree(WorktreeCreateRequest(
+            projectID: environment.project.id,
+            branchName: createdBranch,
+            createsBranch: true
+        ))
+
+        #expect(!model.isWorkspaceRestorationPending)
+        let selectedID = try #require(model.selection.selectedWorktreeID)
+        #expect(model.snapshot.worktree(id: selectedID)?.branch == createdBranch)
+        await model.shutdown()
+    }
+
+    @Test("successful PR import cancels pending window restoration")
+    @MainActor
+    func pullRequestImportCancelsPendingRestoration() async throws {
+        let environment = try setupStandardEnvironment()
+        var snapshot = environment.snapshot
+        snapshot.projects[0].scopedKey = "github.com/kenn-io/ghosthub"
+        let workspace = PullRequestWorkspace(
+            id: "workspace-43",
+            repository: "github.com/kenn-io/ghosthub",
+            branch: "pr-43-restoration-boundary",
+            path: "/tmp/ghosthub-pr-43",
+            state: "ready",
+            sessionName: "kwt-workspace-pr-43",
+            tmuxSocketName: "kwt-pr-fedcba9876543210"
+        )
+        let candidate = PullRequestCandidate(
+            id: "github:github.com/kenn-io/ghosthub#43",
+            number: 43,
+            url: "https://github.com/kenn-io/ghosthub/pull/43",
+            title: "Preserve user mutation authority",
+            author: "wesm",
+            sourceBranch: "feature/restoration-boundary",
+            targetBranch: "main",
+            isDraft: false,
+            state: "open",
+            isImported: true,
+            workspace: workspace
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtInventoryLoader: { _ in
+                throw KwtInventoryError.commandFailed(
+                    host: "this Mac",
+                    status: 1
+                )
+            },
+            kwtPullRequestImporter: { _, _, _ in
+                KwtPullRequestImportResult(
+                    status: "created",
+                    pullRequest: candidate,
+                    workspace: workspace
+                )
+            }
+        )
+        model.beginRestoration(WorkspaceWindowState(
+            windowID: UUID(),
+            navigation: .init(
+                hostKey: "unavailable-host",
+                projectKey: nil,
+                worktreeGeneration: nil
+            ),
+            tmux: nil
+        ))
+
+        try await model.importPullRequest(PullRequestImportRequest(
+            projectID: environment.project.id,
+            pullRequestID: candidate.id
+        ))
+
+        #expect(!model.isWorkspaceRestorationPending)
+        let selectedID = try #require(model.selection.selectedWorktreeID)
+        #expect(model.snapshot.worktree(id: selectedID)?.path == workspace.path)
+        await model.shutdown()
+    }
+
     @Test("PR import survives a failed inventory refresh")
     @MainActor
     func pullRequestSurvivesInventoryFailure() async throws {

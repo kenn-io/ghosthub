@@ -31,6 +31,34 @@ window's native tab group. AppKit owns the tab bar, tab movement, and window
 merging; Ghosthub does not render a custom tab strip or project tmux windows
 into native UI.
 
+The workspace `WindowGroup` is data-backed. Each scene continuously captures a
+small logical descriptor containing stable host and project keys, the durable
+kwt worktree generation, and exact tmux session and protected-socket identity.
+Its window UUID exists only for native scene adoption; runtime model UUIDs and
+paths are never persisted as host, project, or worktree identity. A worktree
+without a canonical generation degrades to project-only navigation and does
+not persist its worktree-owned tmux presentation. SwiftUI and macOS remain
+responsible for restoring scene count, native tab groups, and window geometry.
+An active tmux presentation retains the worktree generation observed when it
+was established; a later non-nil generation change is a replacement even when
+inventory reuses the same runtime UUID. Scene persistence observes the complete
+captured restoration value so later generation enrichment is written without
+requiring another navigation event.
+Once a restored scene has current inventory, Ghosthub resolves the descriptor
+back to live models and reattaches only to the confirmed exact session.
+Missing or offline targets fail soft and remain pending across later inventory
+refreshes. Explicit user navigation cancels pending restoration so a stale
+scene can never take the window back.
+A scene captured without an active tmux presentation restores its navigation
+without opening or creating the worktree session; the user explicitly selects
+the worktree to attach again.
+
+The host-scoped console panel is not part of workspace scene restoration. Its
+existing global visibility preference is unchanged, and the user reopens the
+surface when needed. Restoring the same session in more than one window may
+reproduce the existing shared-presentation behavior tracked by kata `s75s`;
+restoration does not add a separate collision policy.
+
 Closing a native tab or window closes only that workspace presentation. Closing
 the final workspace window leaves Ghosthub running, matching ordinary macOS
 terminal behavior; Cmd-Q remains the explicit app-termination path. Ghosthub
@@ -63,6 +91,16 @@ Updates…**, and Sparkle performs automatic background checks using its standar
 native UI and installation flow. Development binaries without the packaged
 feed and public key disable the update command instead of contacting a release
 service.
+
+When the user accepts Sparkle's **Install and Relaunch**, Ghosthub refreshes
+the continuously maintained scene descriptors and authorizes exactly one
+updater-driven AppKit termination request. This one-shot authorization is
+separate from ordinary quit confirmation and is cleared when an update cycle
+aborts or finishes with an error. A successful cycle-finish notification that
+arrives after the relaunch was requested does not disarm it, so Sparkle's
+callback ordering cannot resurface the quit confirmation mid-relaunch.
+Command-Q, final-window close, logout, restart, and
+shutdown continue through the ordinary user preference and confirmation path.
 
 The release workflow generates the appcast only after the DMG is Developer ID
 signed, notarized, stapled, and checksummed. The update archive and appcast are

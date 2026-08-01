@@ -56,7 +56,76 @@ struct UpdateConfiguration: Equatable {
 }
 
 @MainActor
+final class UpdateInstallationDelegate: NSObject, SPUUpdaterDelegate {
+    private var refreshRestorationState: () -> Void
+    private var authorizeTermination: () -> Void
+    private var clearTerminationAuthorization: () -> Void
+    private var isRelaunchPending = false
+
+    init(
+        refreshRestorationState: @escaping () -> Void = {},
+        authorizeTermination: @escaping () -> Void = {},
+        clearTerminationAuthorization: @escaping () -> Void = {}
+    ) {
+        self.refreshRestorationState = refreshRestorationState
+        self.authorizeTermination = authorizeTermination
+        self.clearTerminationAuthorization = clearTerminationAuthorization
+        super.init()
+    }
+
+    func configure(
+        refreshRestorationState: @escaping () -> Void,
+        authorizeTermination: @escaping () -> Void,
+        clearTerminationAuthorization: @escaping () -> Void
+    ) {
+        self.refreshRestorationState = refreshRestorationState
+        self.authorizeTermination = authorizeTermination
+        self.clearTerminationAuthorization = clearTerminationAuthorization
+    }
+
+    func prepareForRelaunch() {
+        isRelaunchPending = true
+        refreshRestorationState()
+        authorizeTermination()
+    }
+
+    func updateSessionDidAbort() {
+        isRelaunchPending = false
+        clearTerminationAuthorization()
+    }
+
+    func updateSessionDidFinish(error: Bool) {
+        // A successful cycle-finish callback can race ahead of the updater's
+        // termination request; disarming here would resurface the quit
+        // confirmation mid-relaunch.
+        guard error || !isRelaunchPending else { return }
+        isRelaunchPending = false
+        clearTerminationAuthorization()
+    }
+
+    func updaterWillRelaunchApplication(_ updater: SPUUpdater) {
+        prepareForRelaunch()
+    }
+
+    func updater(
+        _ updater: SPUUpdater,
+        didAbortWithError error: any Error
+    ) {
+        updateSessionDidAbort()
+    }
+
+    func updater(
+        _ updater: SPUUpdater,
+        didFinishUpdateCycleFor updateCheck: SPUUpdateCheck,
+        error: (any Error)?
+    ) {
+        updateSessionDidFinish(error: error != nil)
+    }
+}
+
+@MainActor
 final class UpdateController {
+    private let installationDelegate: UpdateInstallationDelegate?
     private let controller: SPUStandardUpdaterController?
     private var didStart = false
 
@@ -66,19 +135,34 @@ final class UpdateController {
         guard UpdateConfiguration(
             infoDictionary: infoDictionary
         ).isReady else {
+            installationDelegate = nil
             controller = nil
             return
         }
 
+        let installationDelegate = UpdateInstallationDelegate()
+        self.installationDelegate = installationDelegate
         controller = SPUStandardUpdaterController(
             startingUpdater: false,
-            updaterDelegate: nil,
+            updaterDelegate: installationDelegate,
             userDriverDelegate: nil
         )
     }
 
     var isAvailable: Bool {
         controller != nil
+    }
+
+    func configureRelaunch(
+        refreshRestorationState: @escaping () -> Void,
+        authorizeTermination: @escaping () -> Void,
+        clearTerminationAuthorization: @escaping () -> Void
+    ) {
+        installationDelegate?.configure(
+            refreshRestorationState: refreshRestorationState,
+            authorizeTermination: authorizeTermination,
+            clearTerminationAuthorization: clearTerminationAuthorization
+        )
     }
 
     func start() {

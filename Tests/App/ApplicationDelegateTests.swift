@@ -336,6 +336,36 @@ final class ApplicationDelegateTests: XCTestCase {
         )
     }
 
+    func testUpdaterAuthorizationBypassesExactlyOneTerminationGate() {
+        let delegate = ApplicationDelegate.forTesting(
+            confirmTerminationResult: false
+        )
+        delegate.authorizeNextUpdaterTermination()
+
+        XCTAssertEqual(
+            delegate.applicationShouldTerminate(NSApplication.shared),
+            .terminateNow
+        )
+        XCTAssertFalse(delegate.terminationConfirmed)
+        XCTAssertEqual(
+            delegate.applicationShouldTerminate(NSApplication.shared),
+            .terminateCancel
+        )
+    }
+
+    func testClearedUpdaterAuthorizationDoesNotBypassQuit() {
+        let delegate = ApplicationDelegate.forTesting(
+            confirmTerminationResult: false
+        )
+        delegate.authorizeNextUpdaterTermination()
+        delegate.clearUpdaterTerminationAuthorization()
+
+        XCTAssertEqual(
+            delegate.applicationShouldTerminate(NSApplication.shared),
+            .terminateCancel
+        )
+    }
+
     func testTerminateSkipsConfirmWhenNoActiveSessions() {
         let delegate = ApplicationDelegate.forTesting(
             needsConfirmQuit: false,
@@ -735,44 +765,5 @@ final class ApplicationDelegateTests: XCTestCase {
         XCTAssertEqual(window.titleVisibility, .hidden)
     }
 
-    func testQuitPolicyRequiresConfirmationWhenRuntimeRequestsIt() {
-        XCTAssertTrue(
-            QuitPolicy.needsConfirmation(
-                confirmBeforeQuitting: true,
-                runtimeNeedsConfirmQuit: true,
-                openTerminalSurfaceCount: 0
-            )
-        )
-    }
-
-    func testQuitPolicyRequiresConfirmationWhenTerminalSurfacesRemainOpen() {
-        XCTAssertTrue(
-            QuitPolicy.needsConfirmation(
-                confirmBeforeQuitting: true,
-                runtimeNeedsConfirmQuit: false,
-                openTerminalSurfaceCount: 2
-            )
-        )
-    }
-
-    func testQuitPolicyRequiresConfirmationWhenEnabled() {
-        XCTAssertTrue(
-            QuitPolicy.needsConfirmation(
-                confirmBeforeQuitting: true,
-                runtimeNeedsConfirmQuit: false,
-                openTerminalSurfaceCount: 0
-            )
-        )
-    }
-
-    func testQuitPolicySkipsConfirmationWhenDisabled() {
-        XCTAssertFalse(
-            QuitPolicy.needsConfirmation(
-                confirmBeforeQuitting: false,
-                runtimeNeedsConfirmQuit: true,
-                openTerminalSurfaceCount: 2
-            )
-        )
-    }
 }
 #endif

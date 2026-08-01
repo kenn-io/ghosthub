@@ -7,21 +7,44 @@ import SwiftUI
 final class WindowRegistry: ObservableObject {
     static let shared = WindowRegistry()
 
-    private(set) var sceneModels: [ObjectIdentifier: WorkspaceSceneModel] = [:]
+    private struct Entry {
+        let model: WorkspaceSceneModel
+        let refreshRestorationState: () -> Void
 
-    func register(_ model: WorkspaceSceneModel) {
-        sceneModels[ObjectIdentifier(model)] = model
+        init(
+            model: WorkspaceSceneModel,
+            refreshRestorationState: @escaping () -> Void
+        ) {
+            self.model = model
+            self.refreshRestorationState = refreshRestorationState
+        }
+    }
+
+    private var sceneEntries: [ObjectIdentifier: Entry] = [:]
+
+    func register(
+        _ model: WorkspaceSceneModel,
+        refreshRestorationState: @escaping () -> Void
+    ) {
+        sceneEntries[ObjectIdentifier(model)] = Entry(
+            model: model,
+            refreshRestorationState: refreshRestorationState
+        )
     }
 
     func unregister(_ model: WorkspaceSceneModel) {
-        sceneModels.removeValue(forKey: ObjectIdentifier(model))
+        sceneEntries.removeValue(forKey: ObjectIdentifier(model))
+    }
+
+    func refreshRestorationStates() {
+        sceneEntries.values.forEach { $0.refreshRestorationState() }
     }
 
     var totalOpenTerminalSurfaceCount: Int {
-        sceneModels.values.reduce(0) { $0 + $1.openTerminalSurfaceCount }
+        sceneEntries.values.reduce(0) { $0 + $1.model.openTerminalSurfaceCount }
     }
 
     var workspaceWindowCount: Int {
-        sceneModels.count
+        sceneEntries.count
     }
 }
