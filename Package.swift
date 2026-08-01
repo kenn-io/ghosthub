@@ -121,6 +121,9 @@ var targets: [Target] = [
         path: "Sources/UI",
         resources: [
             .process("Resources"),
+        ],
+        linkerSettings: [
+            .linkedFramework("WebKit"),
         ]
     ),
     .target(
