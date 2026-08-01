@@ -827,15 +827,16 @@ struct TmuxAttachmentInfoTests {
         }
     }
 
-    @Test("account login handoff runs under the configured shell")
-    func accountLoginHandoffRunsUnderConfiguredShell() throws {
+    @Test("account login handoff survives libghostty's macOS exec wrapper")
+    func accountLoginHandoffSurvivesLibghosttyExecWrapper() throws {
         let password = try #require(getpwuid(getuid()))
         let shell = String(cString: password.pointee.pw_shell)
         let process = Process()
         let output = Pipe()
-        process.executableURL = URL(fileURLWithPath: shell)
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
         process.arguments = [
-            "-c", accountLoginShellCommand(
+            "--noprofile", "--norc", "-c",
+            "exec -l " + surfaceAccountLoginShellCommand(
                 "printf 'GHOSTHUB_ACCOUNT_SHELL_READY\\n'"
             ),
         ]

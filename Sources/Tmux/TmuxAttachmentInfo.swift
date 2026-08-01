@@ -95,12 +95,22 @@ public func powerShellKwtAvailabilityPrelude(
 /// Initializes an account's login environment, then delegates
 /// Ghosthub-owned POSIX command text to `/bin/sh`. The outer command argument
 /// is accepted by POSIX shells and non-POSIX account shells such as fish.
-public func accountLoginShellCommand(_ command: String) -> String {
+private func accountLoginCommand(_ command: String) -> String {
     let posixCommand = "exec /bin/sh -c "
         + shellQuotedCommandArgument(command)
-    let loginCommand = "exec \"${SHELL:-/bin/sh}\" -lc "
+    return "exec \"${SHELL:-/bin/sh}\" -lc "
         + shellQuotedCommandArgument(posixCommand)
-    return accountShellCommand(loginCommand)
+}
+
+public func accountLoginShellCommand(_ command: String) -> String {
+    accountShellCommand(accountLoginCommand(command))
+}
+
+/// Libghostty's macOS surface startup prepends `exec -l` to custom commands,
+/// so its command must begin with the executable rather than the `exec`
+/// shell builtin. The nested account login and POSIX handoffs remain the same.
+public func surfaceAccountLoginShellCommand(_ command: String) -> String {
+    "/bin/sh -c " + accountShellCommandArgument(accountLoginCommand(command))
 }
 
 public enum ConnectionState: Codable, Equatable, Sendable {
@@ -275,7 +285,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                     sshConnectionArguments: sshConnectionArguments
                 )
             }
-            return accountLoginShellCommand(command)
+            return surfaceAccountLoginShellCommand(command)
         }
     }
 

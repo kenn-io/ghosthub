@@ -2547,14 +2547,8 @@ final class WorkspaceSceneModel: ObservableObject {
                     handleID: handle.id,
                     immediately: true
                 )
-            } else if let pending = pendingCreatedTmuxSessions[handle.id] {
-                createdSessionDiscoveryTasks.removeValue(
-                    forKey: handle.id
-                )?.cancel()
-                pendingCreatedTmuxSessions.removeValue(forKey: handle.id)
-                exhaustedCreatedTmuxSessionHandles.remove(handle.id)
-                endedCreatedTmuxSessionHandles.remove(handle.id)
-                removeOptimisticTmuxSession(pending)
+            } else if pendingCreatedTmuxSessions[handle.id] != nil {
+                discardPendingTmuxSession(handleID: handle.id)
             }
         }
         activeBorrowedTmuxSelection = nil
@@ -2699,17 +2693,21 @@ final class WorkspaceSceneModel: ObservableObject {
         case .connected:
             reconcileCreatedTmuxSession(handleID: handle.id)
         case .disconnected:
-            guard nativeTmuxSessionCoordinator.hasLaunched(handle) else {
-                return
-            }
-            endedCreatedTmuxSessionHandles.insert(handle.id)
-            reconcileCreatedTmuxSession(
-                handleID: handle.id,
-                immediately: true
-            )
+            discardPendingTmuxSession(handleID: handle.id)
         case .connecting, .reconnecting:
             break
         }
+    }
+
+    private func discardPendingTmuxSession(handleID: UUID) {
+        guard let selection = pendingCreatedTmuxSessions[handleID] else {
+            return
+        }
+        createdSessionDiscoveryTasks.removeValue(forKey: handleID)?.cancel()
+        pendingCreatedTmuxSessions.removeValue(forKey: handleID)
+        exhaustedCreatedTmuxSessionHandles.remove(handleID)
+        endedCreatedTmuxSessionHandles.remove(handleID)
+        removeOptimisticTmuxSession(selection)
     }
 
     private func reconcileCreatedTmuxSession(
@@ -2878,6 +2876,13 @@ final class WorkspaceSceneModel: ObservableObject {
     ) {
         tmuxSessionsByHost[selection.hostID]?.removeAll {
             $0.name == selection.name
+        }
+        if let hostIndex = snapshot.hosts.firstIndex(where: {
+            $0.id == selection.hostID
+        }) {
+            snapshot.hosts[hostIndex].tmuxSessions.removeAll {
+                $0.name == selection.name
+            }
         }
         applyInventoryOverlayIfNeeded()
     }
