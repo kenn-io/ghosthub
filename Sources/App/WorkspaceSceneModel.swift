@@ -152,6 +152,7 @@ final class WorkspaceSceneModel: ObservableObject {
     @Published var snapshot: WorkspaceSnapshot {
         didSet {
             reconcileInventoryHosts()
+            reconcileWebPreviewSessions()
         }
     }
     private var tmuxDiscoveryEnabled = false
@@ -213,6 +214,19 @@ final class WorkspaceSceneModel: ObservableObject {
 
     var isSidePanelVisible: Bool {
         panelRoutingService.isSidePanelVisible
+    }
+    let webPreviewStore = WebPreviewStore()
+    var isWebPreviewRequested = false {
+        didSet {
+            guard oldValue != isWebPreviewRequested else { return }
+            objectWillChange.send()
+        }
+    }
+    var webPreviewContext: WebPreviewContext? {
+        WebPreviewEligibility.context(
+            in: snapshot,
+            selection: selection
+        )
     }
     @Published var preferredActiveSurfaceTarget: WorkspaceTerminalSurfaceTarget?
     @Published private var borrowedTmuxConnectionStates:
@@ -790,6 +804,7 @@ final class WorkspaceSceneModel: ObservableObject {
         endedCreatedTmuxSessionHandles.removeAll()
         confirmedEndedTmuxSessionHandles.removeAll()
         nativeTmuxSessionCoordinatorBacking?.shutdown()
+        webPreviewStore.tearDown()
     }
 
     /// Refreshes the sidebar directly from each host's kwt and tmux inventory.
@@ -2344,6 +2359,23 @@ final class WorkspaceSceneModel: ObservableObject {
 
     func setSidePanelVisible(_ isVisible: Bool) {
         panelRoutingService.setSidePanelVisible(isVisible)
+    }
+
+    func toggleWebPreview() {
+        guard webPreviewContext != nil else { return }
+        isWebPreviewRequested.toggle()
+    }
+
+    private func reconcileWebPreviewSessions() {
+        let contextIDs = Set(
+            snapshot.worktrees.compactMap {
+                WebPreviewEligibility.context(
+                    for: $0,
+                    in: snapshot
+                )?.id
+            }
+        )
+        webPreviewStore.retainSessions(withIDs: contextIDs)
     }
 
     func borrowedTmuxSessionView(

@@ -814,6 +814,8 @@ final class ApplicationDelegateTests: XCTestCase {
         controller.update(
             isSidebarVisible: true,
             canCreateWorktree: true,
+            canToggleWebPreview: true,
+            isWebPreviewRequested: false,
             sessionTitle: SessionTitlebarPresentation(
                 sessionName: "docbank",
                 hostname: "studio-mac",
@@ -822,7 +824,8 @@ final class ApplicationDelegateTests: XCTestCase {
             onToggleSidebar: {},
             onQuickLaunch: {},
             onSettings: {},
-            onNewWorktree: {}
+            onNewWorktree: {},
+            onToggleWebPreview: {}
         )
 
         controller.install(on: window)
@@ -830,6 +833,47 @@ final class ApplicationDelegateTests: XCTestCase {
         XCTAssertNil(window.toolbar)
         XCTAssertEqual(window.title, "docbank · studio-mac")
         XCTAssertEqual(window.titleVisibility, .hidden)
+    }
+
+    func testCompactTitlebarWebPreviewControlFollowsAvailability() {
+        let controller = CompactWorkspaceTitlebarController()
+        var toggleCount = 0
+        controller.update(
+            isSidebarVisible: true,
+            canCreateWorktree: false,
+            canToggleWebPreview: false,
+            isWebPreviewRequested: false,
+            sessionTitle: nil,
+            onToggleSidebar: {},
+            onQuickLaunch: {},
+            onSettings: {},
+            onNewWorktree: {},
+            onToggleWebPreview: { toggleCount += 1 }
+        )
+        XCTAssertEqual(
+            controller.webPreviewControlHelp,
+            "Select a local worktree to use Web Preview"
+        )
+        XCTAssertFalse(controller.webPreviewControlIsEnabled)
+        controller.performWebPreviewAction()
+        XCTAssertEqual(toggleCount, 0)
+
+        controller.update(
+            isSidebarVisible: true,
+            canCreateWorktree: false,
+            canToggleWebPreview: true,
+            isWebPreviewRequested: false,
+            sessionTitle: nil,
+            onToggleSidebar: {},
+            onQuickLaunch: {},
+            onSettings: {},
+            onNewWorktree: {},
+            onToggleWebPreview: { toggleCount += 1 }
+        )
+        XCTAssertEqual(controller.webPreviewControlHelp, "Show Web Preview")
+        XCTAssertTrue(controller.webPreviewControlIsEnabled)
+        controller.performWebPreviewAction()
+        XCTAssertEqual(toggleCount, 1)
     }
 
     func testQuitPolicyRequiresConfirmationWhenRuntimeRequestsIt() {

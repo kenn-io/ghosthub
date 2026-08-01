@@ -32,6 +32,29 @@ Closing a native tab closes only that workspace presentation. Closing the last
 tab of the last workspace follows the same quit-confirmation policy as closing
 the final standalone window.
 
+### Worktree web preview
+
+An eligible local worktree can open a WebKit preview beside its terminal. The
+workspace scene owns one live browser session per exact worktree identity and
+gives every session a distinct `WKWebsiteDataStore.nonPersistent()` data
+store. Switching worktrees therefore restores that worktree's in-memory page
+and navigation state without sharing cookies or cache with another worktree.
+Removing the worktree or closing the workspace scene tears its browser session
+down. Preview visibility and divider width also last only for the scene and are
+not written to Ghosthub persistence.
+
+The preview accepts complete HTTP or HTTPS addresses reachable from the local
+Mac. It does not discover servers, scan ports, add a local HTTP listener, or
+forward remote ports. WebKit and macOS retain their standard ownership of
+navigation, authentication, JavaScript dialogs, downloads, page-requested
+windows, certificates, and website permission prompts. Ghosthub does not add a
+browser account, credential store, history, profile, permission, popup, native
+JavaScript bridge, automation, or agent-control layer.
+
+The terminal remains mounted while the preview is open. Wide windows show the
+two surfaces with an adjustable divider; narrow windows present one at a time
+without detaching, replacing, or reconstructing the tmux client.
+
 ## Process Boundaries
 
 ### Ghosthub.app
@@ -285,6 +308,9 @@ Ghosthub local persistence stores app-owned state:
 - selected worktree/window state
 - settings that are explicitly native-app concerns
 - the anonymous telemetry installation UUID and last attempted activity day
+
+Worktree web-preview sessions, website data, visibility, and divider position
+are deliberately excluded from persistence.
 
 Do not add database migrations before the first production release. Edit the
 current schema, bootstrap paths, fixtures, and tests directly.

@@ -428,13 +428,31 @@ extension WebPreviewSession: WKDownloadDelegate {
         let panel = NSSavePanel()
         panel.canCreateDirectories = true
         panel.nameFieldStringValue = suggestedFilename
+        let parentWindow = download.webView?.window
         let finish: @MainActor @Sendable (
             NSApplication.ModalResponse
         ) -> Void = { response in
-            completionHandler(response == .OK ? panel.url : nil)
+            guard response == .OK, let url = panel.url else {
+                completionHandler(nil)
+                return
+            }
+            do {
+                completionHandler(
+                    try WebPreviewDownloadDestination.prepare(url)
+                )
+            } catch {
+                completionHandler(nil)
+                let alert = NSAlert(error: error)
+                alert.messageText = "Download Could Not Start"
+                if let parentWindow {
+                    alert.beginSheetModal(for: parentWindow)
+                } else {
+                    alert.runModal()
+                }
+            }
         }
 
-        if let window = download.webView?.window {
+        if let window = parentWindow {
             panel.beginSheetModal(for: window, completionHandler: finish)
         } else {
             panel.begin(completionHandler: finish)
@@ -470,6 +488,26 @@ struct WebPreviewNavigationRecovery {
     mutating func fail(fallbackURL: URL?) {
         retryURL = pendingURL ?? fallbackURL
         pendingURL = nil
+    }
+}
+
+enum WebPreviewDownloadDestination {
+    static func prepare(
+        _ url: URL,
+        fileManager: FileManager = .default
+    ) throws -> URL {
+        var isDirectory = ObjCBool(false)
+        guard fileManager.fileExists(
+            atPath: url.path,
+            isDirectory: &isDirectory
+        ) else {
+            return url
+        }
+        guard !isDirectory.boolValue else {
+            throw CocoaError(.fileWriteFileExists)
+        }
+        try fileManager.removeItem(at: url)
+        return url
     }
 }
 

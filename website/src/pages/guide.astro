@@ -229,6 +229,19 @@ const imageAlt = {
             that worktree’s live tmux session if necessary and asks kwt to
             remove the checkout. The Git branch is kept.
           </p>
+          <p>
+            For a local worktree, start your development server in the
+            terminal, then use the globe button in the titlebar to open a web
+            preview. The same Show or Hide Preview action is in the
+            <strong>View</strong> menu and Command Palette. Enter a complete{' '}
+            <code>http://</code> or <code>https://</code> address; Ghosthub
+            does not scan ports or infer one from terminal output. Wide windows
+            keep the preview beside the terminal with a resizable divider,
+            while narrow windows switch between the two without detaching the
+            tmux session. Each worktree gets temporary, separate browser data
+            that is discarded with its preview session. Remote worktrees do
+            not expose the preview.
+          </p>
         </div>
       </div>
       <figure class="container window">

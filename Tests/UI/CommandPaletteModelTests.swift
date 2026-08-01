@@ -107,6 +107,39 @@ struct CommandPaletteModelTests {
         commands.expectCommandNotContains(title: "Open Inbox")
     }
 
+    @Test("web preview command follows local worktree availability and state")
+    func webPreviewCommandIsContextual() {
+        let local = makeCommandPaletteWorkspaceEnvironment()
+        var remoteHost = local.host
+        remoteHost.kind = .remote
+        remoteHost.platform = .linux
+        let remoteSnapshot = WorkspaceSnapshot(
+            hosts: [remoteHost],
+            projects: local.snapshot.projects,
+            worktrees: local.snapshot.worktrees
+        )
+
+        makeCommandPaletteCommands(
+            snapshot: local.snapshot,
+            selection: local.selection
+        ).expectCommandContains(
+            title: "Show Web Preview",
+            expectNilShortcut: true
+        )
+        makeCommandPaletteCommands(
+            snapshot: local.snapshot,
+            selection: local.selection,
+            isWebPreviewRequested: true
+        ).expectCommandContains(
+            title: "Hide Web Preview",
+            expectNilShortcut: true
+        )
+        makeCommandPaletteCommands(
+            snapshot: remoteSnapshot,
+            selection: local.selection
+        ).expectCommandNotContains(title: "Show Web Preview")
+    }
+
     @Test("command filtering matches titles subtitles and keywords")
     func commandFilteringMatchesTitlesSubtitlesAndKeywords() {
         let commands = makeCommandPaletteCommands(
@@ -664,6 +697,7 @@ private func makeCommandPaletteCommands(
     isWorkspacesRoute: Bool = true,
     isSidebarVisible: Bool = true,
     isSidePanelVisible: Bool = false,
+    isWebPreviewRequested: Bool = false,
     interfaceAppearance: AppearancePreference = .system,
     supportsSettings: Bool = true
 ) -> [WorkspaceCommandItem] {
@@ -678,6 +712,7 @@ private func makeCommandPaletteCommands(
         isWorkspacesRoute: isWorkspacesRoute,
         isSidebarVisible: isSidebarVisible,
         isSidePanelVisible: isSidePanelVisible,
+        isWebPreviewRequested: isWebPreviewRequested,
         interfaceAppearance: interfaceAppearance,
         supportsSettings: supportsSettings
     )

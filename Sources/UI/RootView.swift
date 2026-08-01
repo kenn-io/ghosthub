@@ -9,6 +9,7 @@ public struct RootView: View {
     private let handlers: InteractionHandlers
     @Binding private var selection: WorkspaceSelection
     @Binding private var isSidePanelVisible: Bool
+    @Binding private var isWebPreviewRequested: Bool
     @Binding private var columnVisibility: NavigationSplitViewVisibility
     @Binding private var isCommandPalettePresented: Bool
     @Binding private var isLogViewerPresented: Bool
@@ -27,6 +28,9 @@ public struct RootView: View {
     @State private var newTmuxSessionHost: HostSummary?
     @State private var addProjectHost: HostSummary?
     @State private var destructiveAlert: WorkspaceDestructiveAlert?
+    @State private var webPreviewWidth =
+        WebPreviewLayoutPolicy.defaultPreviewWidth
+    private let webPreviewStore: WebPreviewStore?
 
     public init(
         display: WorkspaceDisplayState,
@@ -35,6 +39,8 @@ public struct RootView: View {
         settingsStore: SettingsStore = .shared,
         selection: Binding<WorkspaceSelection>,
         isSidePanelVisible: Binding<Bool> = .constant(false),
+        isWebPreviewRequested: Binding<Bool> = .constant(false),
+        webPreviewStore: WebPreviewStore? = nil,
         columnVisibility: Binding<NavigationSplitViewVisibility> = .constant(.all),
         isCommandPalettePresented: Binding<Bool> = .constant(false),
         isLogViewerPresented: Binding<Bool> = .constant(false),
@@ -46,6 +52,8 @@ public struct RootView: View {
         self.settingsStore = settingsStore
         _selection = selection
         _isSidePanelVisible = isSidePanelVisible
+        _isWebPreviewRequested = isWebPreviewRequested
+        self.webPreviewStore = webPreviewStore
         _columnVisibility = columnVisibility
         _isCommandPalettePresented = isCommandPalettePresented
         _isLogViewerPresented = isLogViewerPresented
@@ -210,6 +218,11 @@ public struct RootView: View {
                     for: .ghosthubToggleSidebar
                 )
             ) { _ in handleToggleSidebar() }
+            .onReceive(
+                NotificationCenter.default.publisher(
+                    for: .ghosthubToggleWebPreview
+                )
+            ) { _ in handleToggleWebPreview() }
     }
 
     private var logViewerSheet: some View {
@@ -278,11 +291,16 @@ public struct RootView: View {
                         .gesture(sidebarDragGesture)
                 }
 
-                terminalWorkspaceContent
-                    .frame(
-                        maxWidth: .infinity,
-                        maxHeight: .infinity
-                    )
+                WebPreviewWorkspaceLayout(
+                    mode: webPreviewLayoutMode,
+                    previewWidth: $webPreviewWidth,
+                    terminal: AnyView(terminalWorkspaceContent),
+                    preview: webPreviewContent
+                )
+                .frame(
+                    maxWidth: .infinity,
+                    maxHeight: .infinity
+                )
 
             }
             .coordinateSpace(name: Self.columnSpace)
@@ -678,6 +696,7 @@ public struct RootView: View {
             isWorkspacesRoute: true,
             isSidebarVisible: isSidebarVisible,
             isSidePanelVisible: isSidePanelVisible,
+            isWebPreviewRequested: isWebPreviewRequested,
             interfaceAppearance: settingsStore.interfaceAppearance,
             worktreeVisibility: worktreeVisibility,
             supportsSettings: content.settingsSheetBuilder != nil
@@ -686,6 +705,34 @@ public struct RootView: View {
 
     private var isSidebarVisible: Bool {
         columnVisibility != .detailOnly
+    }
+
+    private var webPreviewContext: WebPreviewContext? {
+        guard webPreviewStore != nil else { return nil }
+        return WebPreviewEligibility.context(
+            in: snapshot,
+            selection: selection
+        )
+    }
+
+    private var webPreviewLayoutMode: WebPreviewLayoutMode {
+        WebPreviewLayoutPolicy.mode(
+            windowWidth: lastKnownWindowWidth,
+            sidebarWidth: sidebarWidth,
+            isSidebarVisible: isSidebarVisible,
+            isPreviewAvailable: webPreviewContext != nil,
+            isPreviewRequested: isWebPreviewRequested
+        )
+    }
+
+    private var webPreviewContent: AnyView {
+        guard isWebPreviewRequested,
+              let context = webPreviewContext,
+              let session = webPreviewStore?.session(for: context)
+        else {
+            return AnyView(EmptyView())
+        }
+        return AnyView(WebPreviewView(session: session))
     }
 
     private var workspaceActionProjects: [ProjectSummary] {
@@ -708,6 +755,8 @@ public struct RootView: View {
         switch action {
         case .toggleSidebar:
             toggleSidebar()
+        case .toggleWebPreview:
+            toggleWebPreview()
         case .openConfigDirectory:
             openConfigDirectory()
         case .reloadTerminalConfig:
@@ -786,6 +835,11 @@ public struct RootView: View {
         applySidePanelAutoCollapse(
             windowWidth: lastKnownWindowWidth
         )
+    }
+
+    private func toggleWebPreview() {
+        guard webPreviewContext != nil else { return }
+        isWebPreviewRequested.toggle()
     }
 
     private func applySidebarAutoCollapse(windowWidth: CGFloat) {
@@ -878,6 +932,11 @@ public struct RootView: View {
         openNewWorktree(project)
     }
 
+    private func handleToggleWebPreview() {
+        guard controlActiveState == .key else { return }
+        toggleWebPreview()
+    }
+
     private func openNewWorktree(_ project: ProjectSummary) {
         guard handlers.createWorktree != nil,
               snapshot.canCreateWorktree(in: project)
@@ -932,66 +991,4 @@ public struct RootView: View {
         return true
     }
 
-}
-
-/// Keeps a borrowed tmux attachment scoped to the workspace presentation.
-/// Kept as a small modifier so route and removal lifecycle behavior can be
-/// exercised without constructing the entire sidebar hierarchy.
-struct TmuxSessionPresentationLifecycleModifier: ViewModifier {
-    let selection: WorkspaceSelection
-    let selectionBaseline: WorkspaceSelection?
-    let activeSession: WorkspaceTmuxSessionSelection?
-    let isWorkspaceVisible: Bool
-    let deactivate: () -> Void
-
-    func body(content: Content) -> some View {
-        content
-            .onChange(of: selection) { _, newSelection in
-                if activeSession != nil,
-                   let selectionBaseline,
-                   newSelection != selectionBaseline {
-                    deactivate()
-                }
-            }
-            .onChange(of: isWorkspaceVisible) { _, isVisible in
-                if !isVisible {
-                    deactivate()
-                }
-            }
-            .onDisappear {
-                deactivate()
-            }
-    }
-}
-
-enum WorkspaceDestructiveAlert: Identifiable {
-    case sessionKillConfirmation(TmuxSessionKillRequest)
-    case sessionKillFailure(session: String, message: String)
-    case worktreeRemovalConfirmation(WorktreeRemovalRequest)
-    case worktreeRemovalFailure(worktree: String, message: String)
-
-    var id: String {
-        switch self {
-        case let .sessionKillConfirmation(request):
-            return "session:confirm:\(request.session.id)"
-        case let .sessionKillFailure(session, message):
-            return "session:failure:\(session):\(message)"
-        case let .worktreeRemovalConfirmation(request):
-            return "worktree:confirm:\(request.worktree.id.uuidString)"
-        case let .worktreeRemovalFailure(worktree, message):
-            return "worktree:failure:\(worktree):\(message)"
-        }
-    }
-}
-
-private struct SessionKillUnavailableError: LocalizedError {
-    var errorDescription: String? {
-        "Session termination is unavailable."
-    }
-}
-
-private struct WorktreeRemovalUnavailableError: LocalizedError {
-    var errorDescription: String? {
-        "Worktree removal is unavailable."
-    }
 }

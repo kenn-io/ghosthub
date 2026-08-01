@@ -344,6 +344,7 @@ func makeCommands(
     isWorkspacesRoute: Bool = true,
     isSidebarVisible: Bool = true,
     isSidePanelVisible: Bool = false,
+    isWebPreviewRequested: Bool = false,
     interfaceAppearance: AppearancePreference = .system,
     supportsSettings: Bool = true
 ) -> [WorkspaceCommandItem] {
@@ -356,6 +357,7 @@ func makeCommands(
         isWorkspacesRoute: isWorkspacesRoute,
         isSidebarVisible: isSidebarVisible,
         isSidePanelVisible: isSidePanelVisible,
+        isWebPreviewRequested: isWebPreviewRequested,
         interfaceAppearance: interfaceAppearance,
         supportsSettings: supportsSettings
     )

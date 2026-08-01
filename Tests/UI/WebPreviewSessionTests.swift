@@ -95,6 +95,24 @@ struct WebPreviewSessionLifecycleTests {
 
         #expect(recovery.retryURL == failedURL)
     }
+
+    @Test("confirmed download replacement supplies a missing destination")
+    func preparesDownloadReplacement() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let destination = directory.appendingPathComponent("artifact.zip")
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data("old".utf8).write(to: destination)
+
+        let prepared = try WebPreviewDownloadDestination.prepare(destination)
+
+        #expect(prepared == destination)
+        #expect(!FileManager.default.fileExists(atPath: destination.path))
+    }
 }
 
 @MainActor

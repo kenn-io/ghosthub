@@ -39,6 +39,7 @@ public enum WorkspaceCommandShortcut: Equatable, Sendable {
 
 public enum WorkspaceCommandAction: Equatable, Sendable {
     case toggleSidebar
+    case toggleWebPreview
     case openConfigDirectory
     case reloadTerminalConfig
     case previousWorktree
@@ -122,6 +123,7 @@ public enum CommandPaletteModel {
         isWorkspacesRoute: Bool = true,
         isSidebarVisible: Bool,
         isSidePanelVisible: Bool,
+        isWebPreviewRequested: Bool = false,
         interfaceAppearance: AppearancePreference = .system,
         worktreeVisibility: WorktreeVisibility = .default,
         supportsSettings: Bool = true
@@ -176,6 +178,23 @@ public enum CommandPaletteModel {
                 action: .nextWorktree
             ),
         ]
+
+        if WebPreviewEligibility.context(
+            in: snapshot,
+            selection: selection
+        ) != nil {
+            commands.append(
+                WorkspaceCommandItem(
+                    id: "toggle-web-preview",
+                    title: isWebPreviewRequested
+                        ? "Hide Web Preview"
+                        : "Show Web Preview",
+                    subtitle: "Toggle the browser for the selected local worktree.",
+                    keywords: ["browser", "web", "preview", "worktree"],
+                    action: .toggleWebPreview
+                )
+            )
+        }
 
         commands.append(contentsOf: appearanceCommands(current: interfaceAppearance))
         commands.append(contentsOf: settingsCommands(

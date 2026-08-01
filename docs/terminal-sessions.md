@@ -24,6 +24,13 @@ New Tmux Session for a host. This is not a separate managed-session type: the
 result immediately joins the same direct tmux inventory and has the same
 detach-only presentation lifecycle as every other session.
 
+The local-worktree web preview is a sibling presentation surface, not part of
+the terminal or tmux session model. Opening, hiding, resizing, navigating, or
+closing it does not inspect terminal output, send terminal input, start a
+server, detach a client, or kill a session. On narrow windows Ghosthub can hide
+the terminal presentation while the preview is visible, but the mounted
+terminal and ordinary tmux attachment remain intact.
+
 ## Native Tmux Attachment
 
 Ghosthub invokes `tmux attach-session -E -t =<name>` for a local session. A

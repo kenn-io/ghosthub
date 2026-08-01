@@ -24,8 +24,19 @@ public enum WebPreviewEligibility {
     ) -> WebPreviewContext? {
         guard let worktreeID = selection.selectedWorktreeID,
               let worktree = snapshot.worktree(id: worktreeID),
-              worktree.hostID == selection.selectedHostID,
-              !worktree.isStale,
+              worktree.hostID == selection.selectedHostID
+        else {
+            return nil
+        }
+
+        return context(for: worktree, in: snapshot)
+    }
+
+    public static func context(
+        for worktree: WorktreeSummary,
+        in snapshot: WorkspaceSnapshot
+    ) -> WebPreviewContext? {
+        guard !worktree.isStale,
               let host = snapshot.host(id: worktree.hostID),
               host.kind == .selfHost
         else {
@@ -91,7 +102,7 @@ public enum WebPreviewLayoutPolicy {
     public static let minimumPreviewWidth: CGFloat = 360
     public static let maximumPreviewWidth: CGFloat = 760
     public static let minimumTerminalWidth: CGFloat = 420
-    public static let dividerWidth: CGFloat = 1
+    public static let dividerWidth: CGFloat = 8
 
     public static func mode(
         windowWidth: CGFloat,

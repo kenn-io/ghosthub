@@ -58,11 +58,14 @@ private struct WindowFocusTracker: NSViewRepresentable {
     @Binding var isFocused: Bool
     var isSidebarVisible: Bool
     var canCreateWorktree: Bool
+    var canToggleWebPreview: Bool
+    var isWebPreviewRequested: Bool
     var sessionTitle: SessionTitlebarPresentation?
     var onToggleSidebar: () -> Void
     var onQuickLaunch: () -> Void
     var onSettings: () -> Void
     var onNewWorktree: () -> Void
+    var onToggleWebPreview: () -> Void
 
     func makeNSView(context: Context) -> NSView {
         let view = FocusTrackingView(
@@ -85,11 +88,14 @@ private struct WindowFocusTracker: NSViewRepresentable {
         view.titlebarController.update(
             isSidebarVisible: isSidebarVisible,
             canCreateWorktree: canCreateWorktree,
+            canToggleWebPreview: canToggleWebPreview,
+            isWebPreviewRequested: isWebPreviewRequested,
             sessionTitle: sessionTitle,
             onToggleSidebar: onToggleSidebar,
             onQuickLaunch: onQuickLaunch,
             onSettings: onSettings,
-            onNewWorktree: onNewWorktree
+            onNewWorktree: onNewWorktree,
+            onToggleWebPreview: onToggleWebPreview
         )
         if let window = view.window {
             view.titlebarController.install(on: window)
@@ -307,11 +313,14 @@ final class CompactWorkspaceTitlebarController {
     private weak var installedWindow: NSWindow?
     private var isSidebarVisible = true
     private var canCreateWorktree = false
+    private var canToggleWebPreview = false
+    private var isWebPreviewRequested = false
     private var sessionTitle: SessionTitlebarPresentation?
     private var onToggleSidebar: () -> Void = {}
     private var onQuickLaunch: () -> Void = {}
     private var onSettings: () -> Void = {}
     private var onNewWorktree: () -> Void = {}
+    private var onToggleWebPreview: () -> Void = {}
 
     init(applicationDelegate: ApplicationDelegate? = nil) {
         closeDelegate.applicationDelegate = applicationDelegate
@@ -390,7 +399,7 @@ final class CompactWorkspaceTitlebarController {
             actionsHost.centerYAnchor.constraint(
                 equalTo: closeButton.centerYAnchor
             ),
-            actionsHost.widthAnchor.constraint(equalToConstant: 82),
+            actionsHost.widthAnchor.constraint(equalToConstant: 110),
             actionsHost.heightAnchor.constraint(equalToConstant: 22),
         ])
         installedWindow = window
@@ -403,19 +412,25 @@ final class CompactWorkspaceTitlebarController {
     func update(
         isSidebarVisible: Bool,
         canCreateWorktree: Bool,
+        canToggleWebPreview: Bool,
+        isWebPreviewRequested: Bool,
         sessionTitle: SessionTitlebarPresentation?,
         onToggleSidebar: @escaping () -> Void,
         onQuickLaunch: @escaping () -> Void,
         onSettings: @escaping () -> Void,
-        onNewWorktree: @escaping () -> Void
+        onNewWorktree: @escaping () -> Void,
+        onToggleWebPreview: @escaping () -> Void
     ) {
         self.isSidebarVisible = isSidebarVisible
         self.canCreateWorktree = canCreateWorktree
+        self.canToggleWebPreview = canToggleWebPreview
+        self.isWebPreviewRequested = isWebPreviewRequested
         self.sessionTitle = sessionTitle
         self.onToggleSidebar = onToggleSidebar
         self.onQuickLaunch = onQuickLaunch
         self.onSettings = onSettings
         self.onNewWorktree = onNewWorktree
+        self.onToggleWebPreview = onToggleWebPreview
         refreshHosts()
     }
 
@@ -437,6 +452,12 @@ final class CompactWorkspaceTitlebarController {
     private var actionsView: some View {
         HStack(spacing: 10) {
             CompactToolbarButton(
+                systemImage: "globe",
+                help: webPreviewControlHelp,
+                isEnabled: webPreviewControlIsEnabled,
+                action: performWebPreviewAction
+            )
+            CompactToolbarButton(
                 systemImage: "command",
                 help: "Quick Launch (Cmd+Shift+P)",
                 action: onQuickLaunch
@@ -455,6 +476,24 @@ final class CompactWorkspaceTitlebarController {
                 action: onNewWorktree
             )
         }
+    }
+
+    var webPreviewControlHelp: String {
+        guard canToggleWebPreview else {
+            return "Select a local worktree to use Web Preview"
+        }
+        return isWebPreviewRequested
+            ? "Hide Web Preview"
+            : "Show Web Preview"
+    }
+
+    var webPreviewControlIsEnabled: Bool {
+        canToggleWebPreview
+    }
+
+    func performWebPreviewAction() {
+        guard canToggleWebPreview else { return }
+        onToggleWebPreview()
     }
 
     @ViewBuilder
@@ -689,6 +728,11 @@ struct WorkspaceWindow: View {
                 get: { sceneModel.isSidePanelVisible },
                 set: { sceneModel.setSidePanelVisible($0) }
             ),
+            isWebPreviewRequested: Binding(
+                get: { sceneModel.isWebPreviewRequested },
+                set: { sceneModel.isWebPreviewRequested = $0 }
+            ),
+            webPreviewStore: sceneModel.webPreviewStore,
             columnVisibility: Binding(
                 get: { sceneModel.columnVisibility },
                 set: { sceneModel.columnVisibility = $0 }
@@ -739,6 +783,8 @@ struct WorkspaceWindow: View {
                 isSidebarVisible:
                 sceneModel.columnVisibility != .detailOnly,
                 canCreateWorktree: canCreateWorktree,
+                canToggleWebPreview: sceneModel.webPreviewContext != nil,
+                isWebPreviewRequested: sceneModel.isWebPreviewRequested,
                 sessionTitle: SessionTitlebarPresentation.resolve(
                     activeSession: sceneModel.activeBorrowedTmuxSelection,
                     in: sceneModel.snapshot
@@ -763,6 +809,9 @@ struct WorkspaceWindow: View {
                         name: .ghosthubNewWorktree,
                         object: nil
                     )
+                },
+                onToggleWebPreview: {
+                    sceneModel.toggleWebPreview()
                 }
             )
         )

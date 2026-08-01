@@ -354,8 +354,11 @@ their own Developer ID signatures even when staged as non-executable resources;
 the Linux ELF variants do not. Sparkle remains under `Contents/Frameworks`,
 and SwiftPM resource bundles remain under `Contents/Resources`; placing
 compatibility symlinks at the `.app` root creates unsealed content that strict
-code-signing rejects. Ghosthub's AGPL license and every third-party notice in
-`LICENSES` are staged during the same assembly step.
+code-signing rejects. The containing app is signed with
+`Resources/Ghosthub.entitlements`, which grants camera and audio-input access
+only so WebKit can present the system permission flow for websites opened in
+Web Preview. Ghosthub's AGPL license and every third-party notice in `LICENSES`
+are staged during the same assembly step.
 
 Update this document whenever release packaging, signing, notarization, the
 embedded kwt policy, or `.github/workflows/release.yml` changes.

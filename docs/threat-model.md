@@ -41,6 +41,17 @@ or an attacker who can modify Ghosthub's configuration or state. Packaged
 Ghosthub releases invoke their signed, bundled kwt by exact path rather than
 trusting a launcher-controlled local `PATH`.
 
+Local worktree web previews use WebKit with a separate nonpersistent website
+data store for each worktree. This prevents Ghosthub from deliberately sharing
+ordinary cookies and cache between worktrees or retaining them across session
+teardown, but it is not a separate operating-system sandbox. Web content may
+contact any HTTP or HTTPS destination reachable from the Mac, and the user is
+responsible for addresses they enter and sites they authenticate to. WebKit
+and macOS own certificate handling, authentication, downloads, JavaScript
+dialogs, page-requested windows, and camera or microphone permission prompts;
+Ghosthub neither pre-grants those permissions nor stores the resulting
+credentials or decisions.
+
 ### Configured SSH hosts
 
 Every remote host added to Ghosthub is a **trusted peer** administered by the
@@ -86,6 +97,11 @@ identity, host identity, repository path, or tmux session name. The event
 contract excludes repository, worktree, host, session, path, command, and
 terminal data, disables person-profile processing and GeoIP enrichment, and
 can be disabled in Settings or through the documented environment switches.
+
+The local worktree web preview adds no Ghosthub listener, remote-browser path,
+SSH forwarding, or authentication service. Its page traffic follows WebKit's
+ordinary networking behavior from the local Mac and is separate from tmux and
+SSH transport.
 
 ### Local external state tools
 
@@ -224,6 +240,8 @@ compromising a trusted component, including:
   by the user
 - exposing secrets through logs, persistence, or UI surfaces beyond their
   intended scope
+- sharing temporary WebKit website data across worktrees or retaining it after
+  the owning preview session is torn down
 - accepting or presenting an application update whose appcast, archive, or
   Apple signature does not satisfy the packaged release policy
 - unsafe parsing or memory errors reachable from ordinary supported terminal
@@ -243,6 +261,8 @@ not security-boundary violations.
 - compromise of the local Mac, user account, SSH agent, shell startup files,
   configuration, or locally installed command-line tools
 - sandboxing commands the user chooses to run in a terminal pane
+- treating arbitrary web content opened deliberately in a local worktree
+  preview as trusted or sandboxing it beyond WebKit's platform guarantees
 - availability of the network, SSH service, tmux server, or external state
   provider
 

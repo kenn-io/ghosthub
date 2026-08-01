@@ -288,6 +288,19 @@ struct GhosthubApp: App {
                 )
             }
             .keyboardShortcut("b")
+
+            Button(
+                focusedSceneModel?.webPreviewContext != nil
+                    && focusedSceneModel?.isWebPreviewRequested == true
+                    ? "Hide Web Preview"
+                    : "Show Web Preview"
+            ) {
+                NotificationCenter.default.post(
+                    name: .ghosthubToggleWebPreview,
+                    object: nil
+                )
+            }
+            .disabled(focusedSceneModel?.webPreviewContext == nil)
         }
     }
 }

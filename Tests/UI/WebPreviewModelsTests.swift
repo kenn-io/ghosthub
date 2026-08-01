@@ -186,7 +186,7 @@ struct WebPreviewLayoutPolicyTests {
         )
         #expect(
             WebPreviewLayoutPolicy.mode(
-                windowWidth: 1_114,
+                windowWidth: 1_121,
                 sidebarWidth: 320,
                 isSidebarVisible: true,
                 isPreviewAvailable: true,
@@ -195,7 +195,7 @@ struct WebPreviewLayoutPolicyTests {
         )
         #expect(
             WebPreviewLayoutPolicy.mode(
-                windowWidth: 1_115,
+                windowWidth: 1_122,
                 sidebarWidth: 320,
                 isSidebarVisible: true,
                 isPreviewAvailable: true,
@@ -210,7 +210,7 @@ struct WebPreviewLayoutPolicyTests {
             WebPreviewLayoutPolicy.clampedPreviewWidth(
                 900,
                 availableWidth: 1_000
-            ) == 579
+            ) == 572
         )
         #expect(
             WebPreviewLayoutPolicy.clampedPreviewWidth(
