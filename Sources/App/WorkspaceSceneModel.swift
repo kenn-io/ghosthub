@@ -2693,7 +2693,15 @@ final class WorkspaceSceneModel: ObservableObject {
         case .connected:
             reconcileCreatedTmuxSession(handleID: handle.id)
         case .disconnected:
-            discardPendingTmuxSession(handleID: handle.id)
+            guard nativeTmuxSessionCoordinator.hasLaunched(handle) else {
+                discardPendingTmuxSession(handleID: handle.id)
+                return
+            }
+            endedCreatedTmuxSessionHandles.insert(handle.id)
+            reconcileCreatedTmuxSession(
+                handleID: handle.id,
+                immediately: true
+            )
         case .connecting, .reconnecting:
             break
         }

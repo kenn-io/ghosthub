@@ -1010,16 +1010,33 @@ struct WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
-    @Test("failed remote creation command removes the optimistic session")
-    func failedRemoteCreationCommandRemovesOptimisticSession() async throws {
+    @Test("launched remote creation reconciles before removing its session")
+    func launchedRemoteCreationReconcilesBeforeRemoval() async throws {
         let environment = try setupRemoteEnvironment()
+        let attempts = Counter()
         let surfaceStore = SceneTmuxSurfaceStoreStub()
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
             snapshot: environment.snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") }
+            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            tmuxSessionDiscovery: { _ in
+                guard attempts.increment() > 1 else {
+                    return .failure(.sshConnectionFailed(
+                        host: "office-linux"
+                    ))
+                }
+                return .success([
+                    DiscoveredTmuxSession(
+                        name: "release-work",
+                        windowCount: 1,
+                        createdAt: "1721552400",
+                        managed: false
+                    ),
+                ])
+            },
+            createdSessionDiscoveryDelays: [.milliseconds(100)]
         )
         let selection = WorkspaceTmuxSessionSelection(
             hostID: environment.host.id,
@@ -1033,13 +1050,19 @@ struct WorkspaceTmuxDiscoveryTests {
         )
         close(false)
 
-        #expect(model.pendingCreatedTmuxSessionCount == 0)
-        #expect(model.activeBorrowedTmuxSelection == selection)
-        #expect(model.activeBorrowedTmuxLaunchMode == .create)
+        await waitUntilMainActor { attempts.count == 1 }
+        #expect(model.pendingCreatedTmuxSessionCount == 1)
         #expect(
             model.snapshot.host(id: environment.host.id)?
-                .tmuxSessions.map(\.name) == []
+                .tmuxSessions.map(\.name) == ["release-work"]
         )
+
+        await waitUntilMainActor {
+            model.pendingCreatedTmuxSessionCount == 0
+        }
+        #expect(model.activeBorrowedTmuxSelection == selection)
+        #expect(model.activeBorrowedTmuxLaunchMode == .attach)
+        #expect(attempts.count == 2)
         await model.shutdown()
     }
 
