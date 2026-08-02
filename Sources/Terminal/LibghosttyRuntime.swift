@@ -6,8 +6,93 @@ import GhosthubWorkspace
 import GhosttyKit
 import UniformTypeIdentifiers
 
+private struct ResolvedColorCallbackGeneration: Equatable {
+    let configuration: UInt64
+    let surface: UInt64
+}
+
+private final class ResolvedColorGenerationTracker: @unchecked Sendable {
+    private struct SurfaceGeneration {
+        var value: UInt64
+        var isAlive: Bool
+    }
+
+    private let lock = NSLock()
+    private var configuration: UInt64 = 0
+    private var surfaces: [UInt: SurfaceGeneration] = [:]
+
+    func registerSurface(_ identity: UInt) {
+        lock.lock()
+        defer { lock.unlock() }
+        let previous = surfaces[identity]
+        surfaces[identity] = SurfaceGeneration(
+            value: (previous?.value ?? 0) + 1,
+            isAlive: true
+        )
+    }
+
+    func unregisterSurface(_ identity: UInt) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard var generation = surfaces[identity], generation.isAlive else {
+            return
+        }
+        generation.value += 1
+        generation.isAlive = false
+        surfaces[identity] = generation
+    }
+
+    func advanceConfiguration() {
+        lock.lock()
+        configuration += 1
+        lock.unlock()
+    }
+
+    func advanceSurface(_ identity: UInt) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard var generation = surfaces[identity], generation.isAlive else {
+            return
+        }
+        generation.value += 1
+        surfaces[identity] = generation
+    }
+
+    func snapshot(
+        forSurface identity: UInt
+    ) -> ResolvedColorCallbackGeneration? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let generation = surfaces[identity], generation.isAlive else {
+            return nil
+        }
+        return ResolvedColorCallbackGeneration(
+            configuration: configuration,
+            surface: generation.value
+        )
+    }
+
+    func isCurrent(
+        _ candidate: ResolvedColorCallbackGeneration,
+        forSurface identity: UInt
+    ) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let generation = surfaces[identity], generation.isAlive else {
+            return false
+        }
+        return candidate.configuration == configuration
+            && candidate.surface == generation.value
+    }
+}
+
 @MainActor
 public final class LibghosttyRuntime: ObservableObject {
+    private struct ResolvedColorEntry {
+        let colors: TerminalResolvedColors
+        let generation: ResolvedColorCallbackGeneration
+    }
+
     struct ConfigMonitorRequest {
         let files: [URL]
         let errorHandler: LibghosttyConfigFileMonitor.ErrorHandler
@@ -39,6 +124,8 @@ public final class LibghosttyRuntime: ObservableObject {
     @Published public private(set) var diagnostics: [String]
     @Published public private(set) var configReloadNotice:
         LibghosttyConfigReloadNotice?
+    @Published public private(set) var resolvedTerminalColorsBySurface:
+        [UInt: TerminalResolvedColors]
 
     public let runtimeState: LibghosttyRuntimeState
     public let renderTracker = SurfaceRenderTracker()
@@ -47,6 +134,10 @@ public final class LibghosttyRuntime: ObservableObject {
         PassthroughSubject<LibghosttyConfigReloadNotice?, Never>()
     private let pipeline: LibghosttyConfigPipeline
     private let configMonitorFactory: ConfigMonitorFactory
+    private nonisolated let resolvedColorGenerations =
+        ResolvedColorGenerationTracker()
+    private var resolvedColorEntries: [UInt: ResolvedColorEntry] = [:]
+    private var liveResolvedColorSurfaceIdentities: Set<UInt> = []
     private nonisolated(unsafe) var appHandle: ghostty_app_t?
     private nonisolated(unsafe) var configHandle: ghostty_config_t?
     private var activeConfigRoot: URL?
@@ -68,6 +159,24 @@ public final class LibghosttyRuntime: ObservableObject {
     public var needsConfirmQuit: Bool {
         guard let appHandle else { return false }
         return ghostty_app_needs_confirm_quit(appHandle)
+    }
+
+    /// Colors shared by every live surface in the current configuration.
+    /// A disagreement is unavailable rather than selecting an arbitrary
+    /// surface for attachment-time tmux styling.
+    public var resolvedTerminalColors: TerminalResolvedColors? {
+        guard Set(resolvedTerminalColorsBySurface.keys)
+            == liveResolvedColorSurfaceIdentities else { return nil }
+        guard let first = resolvedTerminalColorsBySurface.values.first,
+              resolvedTerminalColorsBySurface.values.allSatisfy({ $0 == first })
+        else { return nil }
+        return first
+    }
+
+    public func resolvedTerminalColors(
+        forSurfaceIdentity identity: UInt
+    ) -> TerminalResolvedColors? {
+        resolvedTerminalColorsBySurface[identity]
     }
 
     var unsafeAppHandle: ghostty_app_t? {
@@ -107,6 +216,7 @@ public final class LibghosttyRuntime: ObservableObject {
         phase = .loadingConfig
         diagnostics = []
         configReloadNotice = nil
+        resolvedTerminalColorsBySurface = [:]
 
         initializeLibghostty()
     }
@@ -202,9 +312,15 @@ public final class LibghosttyRuntime: ObservableObject {
             if let target,
                target.tag == GHOSTTY_TARGET_SURFACE,
                let surfaceHandle = target.target.surface {
+                invalidateResolvedColors(
+                    forSurfaceIdentity: UInt(bitPattern: surfaceHandle)
+                )
                 ghostty_surface_update_config(surfaceHandle, config)
                 ghostty_config_free(config)
             } else {
+                resolvedColorGenerations.advanceConfiguration()
+                resolvedColorEntries.removeAll()
+                publishResolvedColors()
                 ghostty_app_update_config(appHandle, config)
                 replaceConfigHandle(with: config)
             }
@@ -233,6 +349,65 @@ public final class LibghosttyRuntime: ObservableObject {
             diagnostics = [error.localizedDescription]
             publishReloadFailure(diagnostics)
             return .failed(error.localizedDescription)
+        }
+    }
+
+    func registerSurfaceForResolvedColors(_ surface: ghostty_surface_t) {
+        let identity = UInt(bitPattern: surface)
+        resolvedColorGenerations.registerSurface(identity)
+        liveResolvedColorSurfaceIdentities.insert(identity)
+        resolvedColorEntries.removeValue(forKey: identity)
+        // Surfaces are created lazily during SwiftUI body evaluation, so the
+        // @Published mutation must wait until the view update finishes.
+        // publishResolvedColors re-reads current state, so a deferred publish
+        // is never stale.
+        DispatchQueue.main.async { [weak self] in
+            self?.publishResolvedColors(force: true)
+        }
+        // Surface creation can publish its initial config before the
+        // coordinator knows its identity. Republish after registration so
+        // same-scheme surfaces also populate the current generation.
+        if let configHandle {
+            ghostty_surface_update_config(surface, configHandle)
+        }
+    }
+
+    func unregisterSurfaceForResolvedColors(_ identity: UInt) {
+        resolvedColorGenerations.unregisterSurface(identity)
+        liveResolvedColorSurfaceIdentities.remove(identity)
+        resolvedColorEntries.removeValue(forKey: identity)
+        publishResolvedColors(force: true)
+    }
+
+    private func invalidateResolvedColors(forSurfaceIdentity identity: UInt) {
+        resolvedColorGenerations.advanceSurface(identity)
+        resolvedColorEntries.removeValue(forKey: identity)
+        publishResolvedColors()
+    }
+
+    private func recordResolvedColors(
+        _ colors: TerminalResolvedColors,
+        forSurfaceIdentity identity: UInt,
+        generation: ResolvedColorCallbackGeneration
+    ) {
+        guard resolvedColorGenerations.isCurrent(
+            generation,
+            forSurface: identity
+        ) else { return }
+        let previous = resolvedColorEntries[identity]
+        guard previous?.colors != colors
+            || previous?.generation != generation else { return }
+        resolvedColorEntries[identity] = ResolvedColorEntry(
+            colors: colors,
+            generation: generation
+        )
+        publishResolvedColors()
+    }
+
+    private func publishResolvedColors(force: Bool = false) {
+        let colors = resolvedColorEntries.mapValues(\.colors)
+        if force || resolvedTerminalColorsBySurface != colors {
+            resolvedTerminalColorsBySurface = colors
         }
     }
 
@@ -596,6 +771,24 @@ public final class LibghosttyRuntime: ObservableObject {
             return true
 
         case GHOSTTY_ACTION_CONFIG_CHANGE:
+            guard target.tag == GHOSTTY_TARGET_SURFACE,
+                  let sourceSurfaceIdentity,
+                  let config = action.action.config_change.config,
+                  let colors = resolvedTerminalColors(from: config),
+                  let generation = resolvedColorGeneration(
+                      from: userdataValue,
+                      surfaceIdentity: sourceSurfaceIdentity
+                  )
+            else { return true }
+
+            DispatchQueue.main.async {
+                let state = runtime(from: userdataValue)
+                state.recordResolvedColors(
+                    colors,
+                    forSurfaceIdentity: sourceSurfaceIdentity,
+                    generation: generation
+                )
+            }
             return true
 
         case GHOSTTY_ACTION_RING_BELL:
@@ -974,6 +1167,34 @@ public final class LibghosttyRuntime: ObservableObject {
         return UInt(bitPattern: surface)
     }
 
+    private nonisolated static func resolvedTerminalColors(
+        from config: ghostty_config_t
+    ) -> TerminalResolvedColors? {
+        func color(for key: String) -> String? {
+            var value = ghostty_config_color_s()
+            guard ghostty_config_get(
+                config,
+                &value,
+                key,
+                UInt(key.lengthOfBytes(using: .utf8))
+            ) else { return nil }
+            return String(
+                format: "#%02X%02X%02X",
+                value.r,
+                value.g,
+                value.b
+            )
+        }
+
+        guard let foreground = color(for: "foreground"),
+              let background = color(for: "background")
+        else { return nil }
+        return TerminalResolvedColors(
+            foreground: foreground,
+            background: background
+        )
+    }
+
     private nonisolated static func dispatchToMainSync(
         _ operation: @MainActor @escaping () -> Void
     ) {
@@ -985,6 +1206,21 @@ public final class LibghosttyRuntime: ObservableObject {
         DispatchQueue.main.sync {
             MainActor.assumeIsolated(operation)
         }
+    }
+
+    private nonisolated static func resolvedColorGeneration(
+        from userdataValue: UInt,
+        surfaceIdentity: UInt
+    ) -> ResolvedColorCallbackGeneration? {
+        guard let pointer = UnsafeMutableRawPointer(bitPattern: userdataValue) else {
+            return nil
+        }
+        let state = Unmanaged<LibghosttyRuntime>
+            .fromOpaque(pointer)
+            .takeUnretainedValue()
+        return state.resolvedColorGenerations.snapshot(
+            forSurface: surfaceIdentity
+        )
     }
 
     @MainActor

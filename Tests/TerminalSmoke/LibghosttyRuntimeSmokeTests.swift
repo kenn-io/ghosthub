@@ -21,6 +21,10 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
     /// still pending. The process exits after testing, so this is
     /// never explicitly freed.
     private static var retainedRuntime: LibghosttyRuntime?
+    private static var retainedConditionalThemeRuntimes: [LibghosttyRuntime] = []
+    private static var retainedConditionalThemeCoordinators:
+        [TerminalSurfaceCoordinator] = []
+    private static var retainedConditionalThemeWindows: [NSWindow] = []
 
     // MARK: - Helpers
 
@@ -151,6 +155,214 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
             ctx.runtime.bootstrapStatus.isReady,
             "Bootstrap status should be ready"
         )
+    }
+
+    func testResolvedTerminalColorsFollowSurfaceConditionalTheme() throws {
+        try skipUnlessLibghosttyReady()
+        let (pipeline, tempRoot) = makeIsolatedPipeline()
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: tempRoot)
+        }
+        try FileManager.default.createDirectory(
+            at: pipeline.paths.configDirectory,
+            withIntermediateDirectories: true
+        )
+        let lightTheme = tempRoot.appendingPathComponent("light-theme")
+        let darkTheme = tempRoot.appendingPathComponent("dark-theme")
+        try "foreground = 112233\nbackground = EEF0F2\n".write(
+            to: lightTheme,
+            atomically: true,
+            encoding: .utf8
+        )
+        try "foreground = DDEEFF\nbackground = 101820\n".write(
+            to: darkTheme,
+            atomically: true,
+            encoding: .utf8
+        )
+        try "theme = light:\(lightTheme.path),dark:\(darkTheme.path)\n".write(
+            to: pipeline.paths.globalConfigFile,
+            atomically: true,
+            encoding: .utf8
+        )
+        let runtime = LibghosttyRuntime(pipeline: pipeline)
+        Self.retainedConditionalThemeRuntimes.append(runtime)
+        let coordinator = TerminalSurfaceCoordinator(runtime: runtime)
+        Self.retainedConditionalThemeCoordinators.append(coordinator)
+        let view = try XCTUnwrap(coordinator.surface(
+            for: SurfaceKey.fixture(leafID: UUID()),
+            configuration: TerminalSurfaceConfiguration()
+        ))
+        view.appearance = NSAppearance(named: .darkAqua)
+        let window = hostInWindow(view)
+        Self.retainedConditionalThemeWindows.append(window)
+
+        let identity = try XCTUnwrap(view.surfaceIdentity)
+
+        waitUntil {
+            runtime.resolvedTerminalColors(
+                forSurfaceIdentity: identity
+            ) == TerminalResolvedColors(
+                foreground: "#DDEEFF",
+                background: "#101820"
+            )
+        }
+        view.appearance = NSAppearance(named: .aqua)
+        waitUntil {
+            runtime.resolvedTerminalColors(
+                forSurfaceIdentity: identity
+            ) == TerminalResolvedColors(
+                foreground: "#112233",
+                background: "#EEF0F2"
+            )
+        }
+    }
+
+    func testLateSurfaceRegistrationPublishesResolvedColors() throws {
+        try skipUnlessLibghosttyReady()
+        let (pipeline, tempRoot) = makeIsolatedPipeline()
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: tempRoot)
+        }
+        try FileManager.default.createDirectory(
+            at: pipeline.paths.configDirectory,
+            withIntermediateDirectories: true
+        )
+        try "foreground = 112233\nbackground = EEF0F2\n".write(
+            to: pipeline.paths.globalConfigFile,
+            atomically: true,
+            encoding: .utf8
+        )
+        let runtime = LibghosttyRuntime(pipeline: pipeline)
+        Self.retainedConditionalThemeRuntimes.append(runtime)
+        let app = try XCTUnwrap(runtime.unsafeAppHandle)
+        let view = TerminalSurfaceView(
+            app: app,
+            configuration: TerminalSurfaceConfiguration()
+        )
+        view.appearance = NSAppearance(named: .aqua)
+        let window = hostInWindow(view)
+        Self.retainedConditionalThemeWindows.append(window)
+        let identity = try XCTUnwrap(view.surfaceIdentity)
+        let surface = try XCTUnwrap(view.surfaceHandle)
+
+        XCTAssertNil(runtime.resolvedTerminalColors)
+        // Registration happens during SwiftUI body evaluation; publishing
+        // synchronously would be publishing during a view update.
+        var synchronousEmissions = 0
+        let registration = runtime.$resolvedTerminalColorsBySurface
+            .dropFirst()
+            .sink { _ in synchronousEmissions += 1 }
+        runtime.registerSurfaceForResolvedColors(surface)
+        XCTAssertEqual(synchronousEmissions, 0)
+        registration.cancel()
+        waitUntil {
+            runtime.resolvedTerminalColors(
+                forSurfaceIdentity: identity
+            ) == TerminalResolvedColors(
+                foreground: "#112233",
+                background: "#EEF0F2"
+            )
+        }
+    }
+
+    func testResolvedTerminalColorsAreSurfaceScopedAndInvalidated() throws {
+        try skipUnlessLibghosttyReady()
+        let (pipeline, tempRoot) = makeIsolatedPipeline()
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: tempRoot)
+        }
+        try FileManager.default.createDirectory(
+            at: pipeline.paths.configDirectory,
+            withIntermediateDirectories: true
+        )
+        let lightTheme = tempRoot.appendingPathComponent("light-theme")
+        let darkTheme = tempRoot.appendingPathComponent("dark-theme")
+        try "foreground = 112233\nbackground = EEF0F2\n".write(
+            to: lightTheme,
+            atomically: true,
+            encoding: .utf8
+        )
+        try "foreground = DDEEFF\nbackground = 101820\n".write(
+            to: darkTheme,
+            atomically: true,
+            encoding: .utf8
+        )
+        try "theme = light:\(lightTheme.path),dark:\(darkTheme.path)\n".write(
+            to: pipeline.paths.globalConfigFile,
+            atomically: true,
+            encoding: .utf8
+        )
+        let runtime = LibghosttyRuntime(pipeline: pipeline)
+        Self.retainedConditionalThemeRuntimes.append(runtime)
+        let coordinator = TerminalSurfaceCoordinator(runtime: runtime)
+        let firstKey = SurfaceKey.fixture(leafID: UUID())
+        let secondKey = SurfaceKey.fixture(leafID: UUID())
+        let first = try XCTUnwrap(coordinator.surface(
+            for: firstKey,
+            configuration: TerminalSurfaceConfiguration()
+        ))
+        first.appearance = NSAppearance(named: .darkAqua)
+        let firstWindow = hostInWindow(first)
+        Self.retainedConditionalThemeWindows.append(firstWindow)
+        let firstIdentity = try XCTUnwrap(first.surfaceIdentity)
+        let darkColors = TerminalResolvedColors(
+            foreground: "#DDEEFF",
+            background: "#101820"
+        )
+        waitUntil {
+            runtime.resolvedTerminalColors(
+                forSurfaceIdentity: firstIdentity
+            ) == darkColors
+        }
+        XCTAssertEqual(runtime.resolvedTerminalColors, darkColors)
+
+        let second = try XCTUnwrap(coordinator.surface(
+            for: secondKey,
+            configuration: TerminalSurfaceConfiguration()
+        ))
+        let secondIdentity = try XCTUnwrap(second.surfaceIdentity)
+        XCTAssertNil(runtime.resolvedTerminalColors)
+
+        second.appearance = NSAppearance(named: .aqua)
+        let secondWindow = hostInWindow(second)
+        Self.retainedConditionalThemeWindows.append(secondWindow)
+
+        waitUntil {
+            runtime.resolvedTerminalColors(
+                forSurfaceIdentity: firstIdentity
+            ) == darkColors && runtime.resolvedTerminalColors(
+                forSurfaceIdentity: secondIdentity
+            ) == TerminalResolvedColors(
+                foreground: "#112233",
+                background: "#EEF0F2"
+            )
+        }
+        XCTAssertNil(runtime.resolvedTerminalColors)
+
+        coordinator.removeSurface(for: firstKey)
+        XCTAssertNil(runtime.resolvedTerminalColors(
+            forSurfaceIdentity: firstIdentity
+        ))
+        XCTAssertEqual(
+            runtime.resolvedTerminalColors,
+            TerminalResolvedColors(
+                foreground: "#112233",
+                background: "#EEF0F2"
+            )
+        )
+
+        coordinator.removeSurface(for: secondKey)
+        XCTAssertNil(runtime.resolvedTerminalColors)
+        try "foreground = ABCDEF\nbackground = 123456\n".write(
+            to: pipeline.paths.globalConfigFile,
+            atomically: true,
+            encoding: .utf8
+        )
+        _ = runtime.reloadConfig(force: true)
+        XCTAssertNil(runtime.resolvedTerminalColors)
+        XCTAssertNil(runtime.resolvedTerminalColors(
+            forSurfaceIdentity: secondIdentity
+        ))
     }
 
     func testStartupInstallsWatcherBeforeReadingInitialConfig() throws {

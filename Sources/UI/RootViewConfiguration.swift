@@ -23,6 +23,7 @@ public struct WorkspaceDisplayState {
     public let suppressesAutomaticWorktreeSessionOpen: Bool
     public let activeTmuxSession: WorkspaceTmuxSessionSelection?
     public let activeTmuxSessionIsConnected: Bool
+    public let activeTmuxSessionCanApplyTheme: Bool
 
     public init(
         snapshot: WorkspaceSnapshot,
@@ -42,7 +43,8 @@ public struct WorkspaceDisplayState {
         isWorkspaceRestorationPending: Bool = false,
         suppressesAutomaticWorktreeSessionOpen: Bool = false,
         activeTmuxSession: WorkspaceTmuxSessionSelection? = nil,
-        activeTmuxSessionIsConnected: Bool = false
+        activeTmuxSessionIsConnected: Bool = false,
+        activeTmuxSessionCanApplyTheme: Bool = false
     ) {
         self.snapshot = snapshot
         self.workspaceResourceSummary = workspaceResourceSummary
@@ -66,6 +68,8 @@ public struct WorkspaceDisplayState {
         self.activeTmuxSession = activeTmuxSession
         self.activeTmuxSessionIsConnected =
             activeTmuxSessionIsConnected
+        self.activeTmuxSessionCanApplyTheme =
+            activeTmuxSessionCanApplyTheme
     }
 }
 
@@ -142,6 +146,8 @@ public struct InteractionHandlers {
             -> TmuxSessionKillRequest)?
     public let killTmuxSession:
         ((TmuxSessionKillRequest) async throws -> Void)?
+    public let applyTmuxSessionTheme:
+        ((WorkspaceTmuxSessionSelection) async throws -> Void)?
     public let createTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)?
     public let refreshWorkspaceInventory: (() -> Void)?
     public let registerProject:
@@ -171,6 +177,8 @@ public struct InteractionHandlers {
             -> TmuxSessionKillRequest)? = nil,
         killTmuxSession:
         ((TmuxSessionKillRequest) async throws -> Void)? = nil,
+        applyTmuxSessionTheme:
+        ((WorkspaceTmuxSessionSelection) async throws -> Void)? = nil,
         createTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)? = nil,
         refreshWorkspaceInventory: (() -> Void)? = nil,
         registerProject:
@@ -196,6 +204,7 @@ public struct InteractionHandlers {
         self.closeTmuxSession = closeTmuxSession
         self.prepareTmuxSessionKill = prepareTmuxSessionKill
         self.killTmuxSession = killTmuxSession
+        self.applyTmuxSessionTheme = applyTmuxSessionTheme
         self.createTmuxSession = createTmuxSession
         self.refreshWorkspaceInventory = refreshWorkspaceInventory
         self.registerProject = registerProject

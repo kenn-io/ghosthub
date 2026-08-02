@@ -2,12 +2,6 @@ import Foundation
 import GhosthubTmux
 import GhosthubUI
 
-struct TmuxSessionIdentity: Equatable, Sendable {
-    let serverPID: String
-    let sessionID: String
-    let createdAt: String
-}
-
 enum TmuxSessionKillError: Error, Equatable, LocalizedError {
     case commandFailed(host: String, session: String, status: Int32)
     case hostChanged(session: String)
@@ -198,9 +192,7 @@ struct TmuxSessionKiller: Sendable {
             "-F",
             "-t",
             target,
-            "#{&&:#{==:#{pid},\(expectedIdentity.serverPID)},"
-                + "#{&&:#{==:#{session_id},\(expectedIdentity.sessionID)},"
-                + "#{==:#{session_created},\(expectedIdentity.createdAt)}}}",
+            expectedIdentity.formatCondition,
             "kill-session -t \(shellQuotedCommandArgument(target))",
             "display-message -p "
                 + shellQuotedCommandArgument(identityMismatchMarker),

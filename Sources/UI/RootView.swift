@@ -26,7 +26,7 @@ public struct RootView: View {
     @State private var newWorktreeMode: NewWorktreeMode = .branch
     @State private var newTmuxSessionHost: HostSummary?
     @State private var addProjectHost: HostSummary?
-    @State private var destructiveAlert: WorkspaceDestructiveAlert?
+    @State private var workspaceAlert: WorkspaceAlert?
 
     public init(
         display: WorkspaceDisplayState,
@@ -137,8 +137,8 @@ public struct RootView: View {
                     onAdded: { addProjectHost = nil }
                 )
             }
-            .alert(item: $destructiveAlert) { alert in
-                destructiveAlertView(alert)
+            .alert(item: $workspaceAlert) { alert in
+                workspaceAlertView(alert)
             }
     }
 
@@ -219,6 +219,11 @@ public struct RootView: View {
                     for: .ghosthubToggleSidebar
                 )
             ) { _ in handleToggleSidebar() }
+            .onReceive(
+                NotificationCenter.default.publisher(
+                    for: .ghosthubApplyThemeToCurrentSession
+                )
+            ) { _ in handleApplyThemeNotification() }
     }
 
     private var logViewerSheet: some View {
@@ -442,7 +447,7 @@ public struct RootView: View {
         _ tmuxSession: WorkspaceTmuxSessionSelection
     ) {
         guard let prepare = handlers.prepareTmuxSessionKill else {
-            destructiveAlert = .sessionKillFailure(
+            workspaceAlert = .sessionKillFailure(
                 session: tmuxSession.name,
                 message: "Session termination is unavailable."
             )
@@ -450,11 +455,11 @@ public struct RootView: View {
         }
         Task {
             do {
-                destructiveAlert = await .sessionKillConfirmation(
+                workspaceAlert = await .sessionKillConfirmation(
                     try prepare(tmuxSession)
                 )
             } catch {
-                destructiveAlert = .sessionKillFailure(
+                workspaceAlert = .sessionKillFailure(
                     session: tmuxSession.name,
                     message: error.localizedDescription
                 )
@@ -462,8 +467,28 @@ public struct RootView: View {
         }
     }
 
-    private func destructiveAlertView(
-        _ alert: WorkspaceDestructiveAlert
+    private func requestThemeApplication(
+        _ tmuxSession: WorkspaceTmuxSessionSelection
+    ) {
+        Task {
+            do {
+                guard let applyTheme =
+                    handlers.applyTmuxSessionTheme
+                else {
+                    throw SessionThemeUnavailableError()
+                }
+                try await applyTheme(tmuxSession)
+            } catch {
+                workspaceAlert = .sessionThemeFailure(
+                    session: tmuxSession.name,
+                    message: error.localizedDescription
+                )
+            }
+        }
+    }
+
+    private func workspaceAlertView(
+        _ alert: WorkspaceAlert
     ) -> Alert {
         switch alert {
         case let .sessionKillConfirmation(request):
@@ -487,7 +512,7 @@ public struct RootView: View {
                             }
                             try await kill(request)
                         } catch {
-                            destructiveAlert = .sessionKillFailure(
+                            workspaceAlert = .sessionKillFailure(
                                 session: tmuxSession.name,
                                 message: error.localizedDescription
                             )
@@ -499,6 +524,12 @@ public struct RootView: View {
         case let .sessionKillFailure(session, message):
             return Alert(
                 title: Text("Could Not Kill “\(session)”"),
+                message: Text(message),
+                dismissButton: .default(Text("OK"))
+            )
+        case let .sessionThemeFailure(session, message):
+            return Alert(
+                title: Text("Could Not Apply Theme to “\(session)”"),
                 message: Text(message),
                 dismissButton: .default(Text("OK"))
             )
@@ -523,7 +554,7 @@ public struct RootView: View {
                             }
                             try await remove(request)
                         } catch {
-                            destructiveAlert = .worktreeRemovalFailure(
+                            workspaceAlert = .worktreeRemovalFailure(
                                 worktree: request.worktree.name,
                                 message: error.localizedDescription
                             )
@@ -543,7 +574,7 @@ public struct RootView: View {
 
     private func requestWorktreeRemoval(_ worktree: WorktreeSummary) {
         guard let prepare = handlers.prepareWorktreeRemoval else {
-            destructiveAlert = .worktreeRemovalFailure(
+            workspaceAlert = .worktreeRemovalFailure(
                 worktree: worktree.name,
                 message: "Worktree removal is unavailable."
             )
@@ -551,11 +582,11 @@ public struct RootView: View {
         }
         Task {
             do {
-                destructiveAlert = await .worktreeRemovalConfirmation(
+                workspaceAlert = await .worktreeRemovalConfirmation(
                     try prepare(worktree.id)
                 )
             } catch {
-                destructiveAlert = .worktreeRemovalFailure(
+                workspaceAlert = .worktreeRemovalFailure(
                     worktree: worktree.name,
                     message: error.localizedDescription
                 )
@@ -728,6 +759,8 @@ public struct RootView: View {
             activeTmuxSession: activeTmuxSession,
             activeTmuxSessionIsConnected:
             display.activeTmuxSessionIsConnected,
+            activeTmuxSessionCanApplyTheme:
+            display.activeTmuxSessionCanApplyTheme,
             isWorkspacesRoute: true,
             isSidebarVisible: isSidebarVisible,
             isSidePanelVisible: isSidePanelVisible,
@@ -804,6 +837,8 @@ public struct RootView: View {
             activateTmuxSession(tmuxSession)
         case let .killTmuxSession(tmuxSession):
             requestSessionKill(tmuxSession)
+        case let .applyThemeToCurrentTmuxSession(tmuxSession):
+            requestThemeApplication(tmuxSession)
         case let .newWorktree(projectID):
             guard let project = snapshot.project(id: projectID) else { return }
             openNewWorktree(project)
@@ -973,6 +1008,14 @@ public struct RootView: View {
         toggleSidebar()
     }
 
+    private func handleApplyThemeNotification() {
+        guard controlActiveState == .key,
+              display.activeTmuxSessionCanApplyTheme,
+              let activeTmuxSession
+        else { return }
+        requestThemeApplication(activeTmuxSession)
+    }
+
     private func handleCloseTab() {
         if Self.closeBorrowedSessionIfActive(
             activeTmuxSession,
@@ -1028,9 +1071,10 @@ struct TmuxSessionPresentationLifecycleModifier: ViewModifier {
     }
 }
 
-enum WorkspaceDestructiveAlert: Identifiable {
+enum WorkspaceAlert: Identifiable {
     case sessionKillConfirmation(TmuxSessionKillRequest)
     case sessionKillFailure(session: String, message: String)
+    case sessionThemeFailure(session: String, message: String)
     case worktreeRemovalConfirmation(WorktreeRemovalRequest)
     case worktreeRemovalFailure(worktree: String, message: String)
 
@@ -1040,6 +1084,8 @@ enum WorkspaceDestructiveAlert: Identifiable {
             return "session:confirm:\(request.session.id)"
         case let .sessionKillFailure(session, message):
             return "session:failure:\(session):\(message)"
+        case let .sessionThemeFailure(session, message):
+            return "session-theme:failure:\(session):\(message)"
         case let .worktreeRemovalConfirmation(request):
             return "worktree:confirm:\(request.worktree.id.uuidString)"
         case let .worktreeRemovalFailure(worktree, message):
@@ -1051,6 +1097,12 @@ enum WorkspaceDestructiveAlert: Identifiable {
 private struct SessionKillUnavailableError: LocalizedError {
     var errorDescription: String? {
         "Session termination is unavailable."
+    }
+}
+
+private struct SessionThemeUnavailableError: LocalizedError {
+    var errorDescription: String? {
+        "Theme application is unavailable."
     }
 }
 

@@ -115,6 +115,38 @@ final class SettingsViewTests: XCTestCase {
         assertStableSize(fittingSize(for: store))
     }
 
+    func testFollowConfigAllowsSharedTmuxThemeOverride() throws {
+        let store = makeSettingsStore()
+        store.selectedDomain = .appearance
+        store.setTerminalTheme(.followConfig)
+        let hostingView = NSHostingView(
+            rootView: SettingsSheetHost(store: store)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(
+                x: 0,
+                y: 0,
+                width: 1600,
+                height: 1000
+            ),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = hostingView
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        window.displayIfNeeded()
+        addTeardownBlock { window.close() }
+
+        let sheet = try XCTUnwrap(waitForAttachedSheet(on: window))
+        let sheetContent = try XCTUnwrap(sheet.contentView)
+        let toggle = try XCTUnwrap(
+            firstUntitledButton(in: sheetContent)
+        )
+        XCTAssertTrue(toggle.isEnabled)
+    }
+
     func testRestoredDomainsKeepStableMinimumSize() {
         let store = makeSettingsStore()
         for domain in [
@@ -190,6 +222,19 @@ final class SettingsViewTests: XCTestCase {
         XCTAssertEqual(sheet.frame.size, initialSize)
     }
 
+}
+
+@MainActor
+private func firstUntitledButton(in view: NSView) -> NSButton? {
+    if let button = view as? NSButton, button.title.isEmpty {
+        return button
+    }
+    for subview in view.subviews {
+        if let button = firstUntitledButton(in: subview) {
+            return button
+        }
+    }
+    return nil
 }
 
 private struct SettingsSheetHost: View {

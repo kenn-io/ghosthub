@@ -140,6 +140,7 @@ struct GhosthubApp: App {
             CommandGroup(replacing: .toolbar) {}
             editMenuCommands
             fileMenuCommands
+            sessionMenuCommands
             viewMenuCommands
             #endif
         }
@@ -266,6 +267,24 @@ struct GhosthubApp: App {
             .keyboardShortcut(
                 "w",
                 modifiers: [.command, .shift]
+            )
+        }
+    }
+
+    // MARK: - Session menu
+
+    @CommandsBuilder
+    private var sessionMenuCommands: some Commands {
+        CommandMenu("Session") {
+            Button("Apply Theme to Current Session") {
+                NotificationCenter.default.post(
+                    name: .ghosthubApplyThemeToCurrentSession,
+                    object: nil
+                )
+            }
+            .disabled(
+                focusedSceneModel?
+                    .canApplyThemeToActiveTmuxSession != true
             )
         }
     }

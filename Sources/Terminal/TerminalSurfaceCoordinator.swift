@@ -41,6 +41,9 @@ public final class TerminalSurfaceCoordinator: ObservableObject {
             app: appHandle,
             configuration: configuration
         )
+        view.onSurfaceDestroyed = { [weak runtime] identity in
+            runtime?.unregisterSurfaceForResolvedColors(identity)
+        }
         view.fontZoomShortcutHandler = { [weak self] command in
             self?.applyFontZoom(command)
             return true
@@ -54,9 +57,11 @@ public final class TerminalSurfaceCoordinator: ObservableObject {
         }
         surfaces[key] = view
         surfaceKeyMap[ObjectIdentifier(view)] = key
-        if let handle = view.surfaceHandle {
-            let identity = UInt(bitPattern: handle)
+        if let surface = view.surfaceHandle {
+            let identity = UInt(bitPattern: surface)
             surfaceIdentityMap[identity] = key
+            view.synchronizeColorScheme()
+            runtime.registerSurfaceForResolvedColors(surface)
         }
         onSurfaceCreated?(key, view)
         return view
@@ -120,6 +125,9 @@ public final class TerminalSurfaceCoordinator: ObservableObject {
     }
 
     public func removeAll() {
+        for view in surfaces.values {
+            removeMappings(for: view)
+        }
         surfaceKeyMap.removeAll()
         surfaceIdentityMap.removeAll()
         surfaces.removeAll()
@@ -141,9 +149,9 @@ public final class TerminalSurfaceCoordinator: ObservableObject {
 
     private func removeMappings(for view: TerminalSurfaceView) {
         surfaceKeyMap.removeValue(forKey: ObjectIdentifier(view))
-        if let handle = view.surfaceHandle {
-            let identity = UInt(bitPattern: handle)
+        if let identity = view.surfaceIdentity {
             surfaceIdentityMap.removeValue(forKey: identity)
+            runtime.unregisterSurfaceForResolvedColors(identity)
         }
     }
 

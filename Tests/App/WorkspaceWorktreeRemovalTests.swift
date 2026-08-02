@@ -223,15 +223,14 @@ struct WorkspaceWorktreeRemovalTests {
         let request = try await firstModel.prepareWorktreeRemoval(removable.id)
         try await firstModel.removeWorktree(request)
 
+        // Wait on the reconciled snapshot itself: the load and discovery
+        // counters increment when the closures are entered, before their
+        // results are applied, so counter-based waits race the assertion.
         await waitUntilMainActor {
-            secondLoads.load() >= 2
-                && secondDiscoveries.load() >= 2
-        }
-        #expect(secondModel.snapshot.worktree(id: removable.id) == nil)
-        #expect(
-            secondModel.snapshot.host(id: environment.host.id)?
+            secondModel.snapshot.worktree(id: removable.id) == nil
+                && secondModel.snapshot.host(id: environment.host.id)?
                 .tmuxSessions.isEmpty == true
-        )
+        }
         await firstModel.shutdown()
         await secondModel.shutdown()
     }

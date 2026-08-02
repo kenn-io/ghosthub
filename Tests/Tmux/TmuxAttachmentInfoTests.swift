@@ -194,7 +194,8 @@ struct TmuxAttachmentInfoTests {
         if let stylePosition, let kwtPosition {
             #expect(kwtPosition < stylePosition)
         }
-        #expect(command.contains("ghosthub_existing_clients"))
+        #expect(command.contains("#{client_tty}"))
+        #expect(command.contains("ghosthub_kwt_tty"))
         #expect(command.contains(
             "while kill -0 \"$ghosthub_kwt_pid\""
         ))
@@ -258,7 +259,7 @@ struct TmuxAttachmentInfoTests {
         #expect(!tmuxCommands.contains("attach-session"))
     }
 
-    @Test("theming waits for kwt to create and repair every window")
+    @Test("theming waits for kwt while another client attaches")
     func themingFollowsKwtSessionRepair() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -269,7 +270,10 @@ struct TmuxAttachmentInfoTests {
         let kwt = directory.appendingPathComponent("kwt")
         let tmux = directory.appendingPathComponent("tmux")
         let log = directory.appendingPathComponent("tmux.log")
-        let clientPID = directory.appendingPathComponent("client.pid")
+        let clientTTY = directory.appendingPathComponent("client.tty")
+        let unrelatedClient = directory.appendingPathComponent(
+            "unrelated-client"
+        )
         try """
         #!/bin/sh
         "$GHOSTHUB_TMUX" new-session
@@ -280,22 +284,30 @@ struct TmuxAttachmentInfoTests {
         #!/bin/sh
         case " $* " in
           *" new-session "*)
+            : > "$GHOSTHUB_TMUX_UNRELATED_CLIENT"
+            sleep 0.05
             printf 'new-session\n' >> "$GHOSTHUB_TMUX_LOG"
             ;;
           *" new-window "*)
             printf 'new-window\n' >> "$GHOSTHUB_TMUX_LOG"
             ;;
           *" attach-session "*)
-            printf '%s\n' "$$" > "$GHOSTHUB_TMUX_CLIENT_PID"
-            trap 'rm -f "$GHOSTHUB_TMUX_CLIENT_PID"' EXIT
+            tty > "$GHOSTHUB_TMUX_CLIENT_TTY"
+            trap 'rm -f "$GHOSTHUB_TMUX_CLIENT_TTY"' EXIT
+            ghosthub_waits=0
             while ! grep -q '@2 window-active-style' \
                 "$GHOSTHUB_TMUX_LOG"; do
+              ghosthub_waits=$((ghosthub_waits + 1))
+              [ "$ghosthub_waits" -ge 100 ] && break
               sleep 0.01
             done
             ;;
           *" list-clients "*)
-            if [ -f "$GHOSTHUB_TMUX_CLIENT_PID" ]; then
-              cat "$GHOSTHUB_TMUX_CLIENT_PID"
+            if [ -f "$GHOSTHUB_TMUX_UNRELATED_CLIENT" ]; then
+              printf '/dev/unrelated\n'
+            fi
+            if [ -f "$GHOSTHUB_TMUX_CLIENT_TTY" ]; then
+              cat "$GHOSTHUB_TMUX_CLIENT_TTY"
             fi
             ;;
           *" list-windows "*)
@@ -333,12 +345,14 @@ struct TmuxAttachmentInfoTests {
             kwtPath: kwt.path
         )
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = ["-c", command]
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/script")
+        process.arguments = ["-q", "/dev/null", "/bin/sh", "-c", command]
         process.environment = ProcessInfo.processInfo.environment.merging([
             "GHOSTHUB_TMUX": tmux.path,
             "GHOSTHUB_TMUX_LOG": log.path,
-            "GHOSTHUB_TMUX_CLIENT_PID": clientPID.path,
+            "GHOSTHUB_TMUX_CLIENT_TTY": clientTTY.path,
+            "GHOSTHUB_TMUX_UNRELATED_CLIENT": unrelatedClient.path,
+            "TERM": "xterm-256color",
         ]) { _, new in new }
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
@@ -459,11 +473,9 @@ struct TmuxAttachmentInfoTests {
         #expect(command.contains("attach"))
         #expect(command.contains("/worktrees/pr-32"))
         #expect(!command.contains("exec '\\''/opt/homebrew/bin/tmux"))
-        #expect(
-            command.components(
-                separatedBy: "kwt-pr-0123456789abcdef"
-            ).count - 1 == 8
-        )
+        #expect(command.contains(
+            "'\\''-L'\\'' '\\''kwt-pr-0123456789abcdef'\\''"
+        ))
     }
 
     @Test("remote attachment adds keepalives and transport-only retry")
@@ -713,13 +725,17 @@ struct TmuxAttachmentInfoTests {
         )
     }
 
-    @Test("remote named creation becomes attach-only after one create phase")
-    func remoteCreationIsOneShot() {
+    @Test("remote creation presents before its reconnect loop")
+    func remoteCreationPresentsBeforeReconnectLoop() {
         let info = TmuxAttachmentInfo(
             sessionName: "release-work",
             host: .ssh(SSHHostInfo(
                 user: "wesm", hostname: "build-box", port: nil
             )),
+            presentationStyle: TmuxPresentationStyle(
+                foreground: "#3B4851",
+                background: "#FFFFFF"
+            ),
             launchMode: .create
         )
 
@@ -741,6 +757,90 @@ struct TmuxAttachmentInfoTests {
             command.components(
                 separatedBy: "SSH disconnected; reconnecting"
             ).count == 2
+        )
+        let presentationPosition = command.range(
+            of: "while IFS= read -r ghosthub_window"
+        )?.lowerBound
+        let reconnectPosition = command.range(
+            of: "SSH disconnected; reconnecting"
+        )?.lowerBound
+        #expect(presentationPosition != nil)
+        #expect(reconnectPosition != nil)
+        #expect(
+            command.components(
+                separatedBy: "while IFS= read -r ghosthub_window"
+            ).count - 1 == 1
+        )
+        if let presentationPosition, let reconnectPosition {
+            #expect(presentationPosition < reconnectPosition)
+        }
+        // The escape depth of "$?" varies with the surrounding quoting
+        // layers, so match any depth rather than a hardcoded count.
+        let creationGuardPosition = command.range(
+            of: #"\|\| exit \\+\$\?"#,
+            options: .regularExpression
+        )?.lowerBound
+        #expect(creationGuardPosition != nil)
+        if let creationGuardPosition, let presentationPosition {
+            #expect(creationGuardPosition < presentationPosition)
+        }
+        #expect(command.contains("; done; exit 0"))
+        // Creation styles through the account login shell, so attachment must
+        // resolve the same login environment (TMUX_TMPDIR) and tmux server:
+        // one login handoff each for the outer command, the create phase, and
+        // the attach phase.
+        #expect(
+            command.components(
+                separatedBy: "${SHELL:-/bin/sh}"
+            ).count - 1 == 3
+        )
+    }
+
+    @Test("unstyled remote creation still runs through the login shell")
+    func unstyledRemoteCreationUsesLoginShell() {
+        let info = TmuxAttachmentInfo(
+            sessionName: "release-work",
+            host: .ssh(SSHHostInfo(
+                user: "wesm", hostname: "build-box", port: nil
+            )),
+            launchMode: .create
+        )
+
+        let command = info.attachCommand(
+            tmuxPath: "/opt/bin/tmux",
+            workingDirectory: "/code/release"
+        )
+
+        #expect(command.contains("new-session"))
+        #expect(!command.contains("window-style"))
+        // Deferred styling and identity checks later run through the account
+        // login shell, so creation and attachment must resolve the same login
+        // environment (TMUX_TMPDIR) even before any style exists: one login
+        // handoff each for the outer command, the create phase, and the
+        // attach phase.
+        #expect(
+            command.components(
+                separatedBy: "${SHELL:-/bin/sh}"
+            ).count - 1 == 3
+        )
+    }
+
+    @Test("unstyled remote attachment still runs through the login shell")
+    func unstyledRemoteAttachmentUsesLoginShell() {
+        let command = TmuxAttachmentInfo(
+            sessionName: "docbank",
+            host: .ssh(SSHHostInfo(
+                user: "wesm", hostname: "build-box", port: nil
+            ))
+        ).attachCommand(tmuxPath: "/opt/bin/tmux")
+
+        #expect(command.contains("attach-session"))
+        #expect(!command.contains("window-style"))
+        // One login handoff for the outer command, one for the remote attach.
+        #expect(
+            command.components(
+                separatedBy: "${SHELL:-/bin/sh}"
+            ).count - 1 == 2
         )
     }
 

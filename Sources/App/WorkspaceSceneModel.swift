@@ -38,6 +38,18 @@ private func presentGhosthubAlert(
 }
 #endif
 
+enum TmuxSessionThemeError: Error, Equatable, LocalizedError {
+    case unavailable(session: String)
+
+    var errorDescription: String? {
+        switch self {
+        case let .unavailable(session):
+            return "The theme cannot be applied to session “\(session)”"
+                + " because its active tmux attachment is unavailable."
+        }
+    }
+}
+
 @MainActor
 final class WorktreeMutationCoordinator {
     struct Scope: Hashable, Sendable {
@@ -145,6 +157,10 @@ final class WorkspaceSceneModel: ObservableObject {
     typealias TmuxSessionIdentityReading = @Sendable (
         WorkspaceTmuxSessionSelection, TmuxHost
     ) async throws -> TmuxSessionIdentity
+    typealias TmuxSessionStyling = @Sendable (
+        TmuxPresentationStyle, WorkspaceTmuxSessionSelection,
+        TmuxSessionIdentity, TmuxHost
+    ) async throws -> Void
     typealias SSHHostProbeRunner = @Sendable (
         SSHHostInfo, String
     ) -> (status: Int32, stdout: String)
@@ -242,6 +258,21 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         return borrowedTmuxConnectionStates[handle.id] == .connected
     }
+    var canApplyThemeToActiveTmuxSession: Bool {
+        guard let selection = activeBorrowedTmuxSelection,
+              isConnectedActiveTmuxSession(selection),
+              let hostSummary = snapshot.host(id: selection.hostID),
+              let host = TmuxHostResolver.resolve(hostSummary),
+              Self.supportsTmuxSessionStyling(host),
+              let handle = activeBorrowedTmuxHandle,
+              tmuxPresentationStyleProvider(
+                  nativeTmuxSessionCoordinator.surfaceIdentity(handle: handle)
+              ) != nil
+        else {
+            return false
+        }
+        return true
+    }
     var activeBorrowedTmuxSessionIsConfirmedEnded: Bool {
         guard let handle = activeBorrowedTmuxHandle else { return false }
         return confirmedEndedTmuxSessionHandles.contains(handle.id)
@@ -330,9 +361,17 @@ final class WorkspaceSceneModel: ObservableObject {
     private let tmuxSessionDiscovery: TmuxSessionDiscovery
     private let tmuxSessionKiller: TmuxSessionKilling
     private let tmuxSessionIdentityReader: TmuxSessionIdentityReading
+    private let tmuxSessionStyler: TmuxSessionStyling
+    private let tmuxPresentationStyleProvider:
+        (UInt?) -> TmuxPresentationStyle?
     private let sshHostProbeRunner: SSHHostProbeRunner
     private let configuredSSHHostsProvider: () -> [SSHHost]
     private var configuredSSHHostsCancellable: AnyCancellable?
+    private var terminalColorsCancellable: AnyCancellable?
+    private var deferredTmuxPresentationTasks: [UUID: Task<Void, Never>] = [:]
+    private var drainingDeferredTmuxPresentationTasks:
+        [UUID: Task<Void, Never>] = [:]
+    private let deferredTmuxPresentationRetryDelays: [Duration]
     private var worktreeMutationCancellable: AnyCancellable?
     private var activityControllerBacking: ActivityMonitoringController?
     var activityController: ActivityMonitoringController {
@@ -388,14 +427,17 @@ final class WorkspaceSceneModel: ObservableObject {
                 workspaceConfiguration: boot.workspaceConfiguration,
                 terminalRuntime: terminalRuntime,
                 notificationService: boot.notificationService,
-                tmuxPresentationStyleProvider: {
+                tmuxPresentationStyleProvider: { surfaceIdentity in
                     let preferences = SettingsStore.shared
                         .terminalAppearancePreferences
-                    guard let spec = preferences.theme.spec
-                    else { return nil }
-                    return TmuxPresentationStyle(
-                        foreground: spec.foreground.hexRGB,
-                        background: spec.background.hexRGB
+                    let resolvedColors = surfaceIdentity.flatMap {
+                        terminalRuntime.resolvedTerminalColors(
+                            forSurfaceIdentity: $0
+                        )
+                    }
+                    return TmuxPresentationStyleResolver.resolve(
+                        preferences: preferences,
+                        resolvedColors: resolvedColors
                     )
                 },
                 appliesTmuxPresentationStyleToExistingSessionsProvider: {
@@ -425,7 +467,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 TmuxBinaryResolver().resolveTmuxPath(on: $0)
             },
         tmuxPresentationStyleProvider:
-        @escaping () -> TmuxPresentationStyle? = { nil },
+        @escaping (UInt?) -> TmuxPresentationStyle? = { _ in nil },
         appliesTmuxPresentationStyleToExistingSessionsProvider:
         @escaping () -> Bool = { false },
         kwtInventoryLoader: @escaping KwtInventoryLoader = { host in
@@ -502,6 +544,15 @@ final class WorkspaceSceneModel: ObservableObject {
                 on: host
             )
         },
+        tmuxSessionStyler: @escaping TmuxSessionStyling = {
+            style, selection, identity, host in
+            try await TmuxSessionStyler().apply(
+                style,
+                to: selection,
+                expectedIdentity: identity,
+                on: host
+            )
+        },
         sshHostProbeRunner: @escaping SSHHostProbeRunner = { host, command in
             TmuxBinaryResolver.runRemoteLoginShell(
                 host: host,
@@ -513,6 +564,8 @@ final class WorkspaceSceneModel: ObservableObject {
             SettingsStore.shared.sshHosts
         },
         configuredSSHHostsPublisher: AnyPublisher<[SSHHost], Never>? = nil,
+        terminalColorsPublisher:
+        AnyPublisher<[UInt: TerminalResolvedColors], Never>? = nil,
         sceneSettings: WorkspaceSceneSettings = .live(),
         localHostID: UUID? = nil,
         overrideSnapshot: WorkspaceSnapshot? = nil,
@@ -521,6 +574,10 @@ final class WorkspaceSceneModel: ObservableObject {
             .seconds(1),
             .seconds(2),
             .seconds(4),
+        ],
+        deferredTmuxPresentationRetryDelays: [Duration] = [
+            .milliseconds(250), .milliseconds(500), .seconds(1), .seconds(2),
+            .seconds(4), .seconds(8),
         ],
         startServices: Bool = false
     ) throws {
@@ -543,9 +600,14 @@ final class WorkspaceSceneModel: ObservableObject {
         self.tmuxSessionDiscovery = tmuxSessionDiscovery
         self.tmuxSessionKiller = tmuxSessionKiller
         self.tmuxSessionIdentityReader = tmuxSessionIdentityReader
+        self.tmuxSessionStyler = tmuxSessionStyler
+        self.tmuxPresentationStyleProvider =
+            tmuxPresentationStyleProvider
         self.sshHostProbeRunner = sshHostProbeRunner
         self.createdSessionDiscoveryDelays =
             createdSessionDiscoveryDelays
+        self.deferredTmuxPresentationRetryDelays =
+            deferredTmuxPresentationRetryDelays
         self.configuredSSHHostsProvider = configuredSSHHostsProvider
         terminalCoordinator = TerminalSurfaceCoordinator(runtime: terminalRuntime)
         self.notificationService = notificationService
@@ -602,7 +664,9 @@ final class WorkspaceSceneModel: ObservableObject {
             tmuxPathProvider: {
                 tmuxPathCache.resolveTmuxPath()
             },
-            presentationStyleProvider: tmuxPresentationStyleProvider,
+            presentationStyleProvider: {
+                tmuxPresentationStyleProvider(nil)
+            },
             appliesPresentationStyleToExistingSessionsProvider:
             appliesTmuxPresentationStyleToExistingSessionsProvider,
             remoteTmuxPathProvider: remoteTmuxPathProvider
@@ -716,6 +780,15 @@ final class WorkspaceSceneModel: ObservableObject {
         activityCancellable = activityController.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }
+        terminalColorsCancellable = (terminalColorsPublisher
+            ?? terminalRuntime.$resolvedTerminalColorsBySurface
+            .eraseToAnyPublisher())
+            .dropFirst()
+            .sink { [weak self] _ in
+                DispatchQueue.main.async { [weak self] in
+                    self?.terminalPresentationStyleDidChange()
+                }
+            }
         // Forward panel routing changes to WSM's
         // objectWillChange so SwiftUI picks up state.
         panelRoutingCancellable = panelRoutingService
@@ -770,10 +843,12 @@ final class WorkspaceSceneModel: ObservableObject {
         activityCancellable?.cancel()
         panelRoutingCancellable?.cancel()
         configuredSSHHostsCancellable?.cancel()
+        terminalColorsCancellable?.cancel()
         worktreeMutationCancellable?.cancel()
         kwtInventoryTask?.cancel()
         tmuxDiscoveryTask?.cancel()
         createdSessionDiscoveryTasks.values.forEach { $0.cancel() }
+        deferredTmuxPresentationTasks.values.forEach { $0.cancel() }
         childExitCancellable?.cancel()
         appDidBecomeActiveCancellable?.cancel()
         appDidResignActiveCancellable?.cancel()
@@ -978,6 +1053,9 @@ final class WorkspaceSceneModel: ObservableObject {
         tmuxDiscoveryTask?.cancel()
         createdSessionDiscoveryTasks.values.forEach { $0.cancel() }
         createdSessionDiscoveryTasks.removeAll()
+        deferredTmuxPresentationTasks.values.forEach { $0.cancel() }
+        deferredTmuxPresentationTasks.removeAll()
+        drainingDeferredTmuxPresentationTasks.removeAll()
         exhaustedCreatedTmuxSessionHandles.removeAll()
         endedCreatedTmuxSessionHandles.removeAll()
         confirmedEndedTmuxSessionHandles.removeAll()
@@ -2034,6 +2112,7 @@ final class WorkspaceSceneModel: ObservableObject {
                         )
                     self.applyInventoryOverlayIfNeeded()
                     self.updateWorkspaceInventoryState()
+                    self.applyDeferredTmuxPresentationIfReady()
                 }
             }
             guard let self, !Task.isCancelled,
@@ -2235,6 +2314,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 hostID: hostID
             )
             for handle in handles {
+                cancelTmuxPresentationTasks(handleID: handle.id)
                 borrowedTmuxConnectionStates.removeValue(forKey: handle.id)
                 createdSessionDiscoveryTasks.removeValue(
                     forKey: handle.id
@@ -2754,6 +2834,7 @@ final class WorkspaceSceneModel: ObservableObject {
         cancelPendingRestoration()
         guard activeBorrowedTmuxSelection == selection else { return }
         if let handle = activeBorrowedTmuxHandle {
+            cancelTmuxPresentationTasks(handleID: handle.id)
             confirmedEndedTmuxSessionHandles.remove(handle.id)
             borrowedTmuxConnectionStates.removeValue(forKey: handle.id)
             if pendingCreatedTmuxSessions[handle.id] != nil,
@@ -2788,22 +2869,10 @@ final class WorkspaceSceneModel: ObservableObject {
             )
         }
 
-        let discoveredIdentity = selection.socketName == nil
-            ? currentHostSummary.tmuxSessions.first {
-                $0.name == selection.name
-            }.flatMap { summary -> TmuxSessionIdentity? in
-                guard summary.hasStableIdentity,
-                      let serverPID = summary.serverPID,
-                      let sessionID = summary.sessionID,
-                      let createdAt = summary.createdAt
-                else { return nil }
-                return TmuxSessionIdentity(
-                    serverPID: serverPID,
-                    sessionID: sessionID,
-                    createdAt: createdAt
-                )
-            }
-            : nil
+        let discoveredIdentity = Self.discoveredTmuxSessionIdentity(
+            selection,
+            hostSummary: currentHostSummary
+        )
         let identity: TmuxSessionIdentity
         if let discoveredIdentity {
             identity = discoveredIdentity
@@ -2881,6 +2950,105 @@ final class WorkspaceSceneModel: ObservableObject {
         refreshKwtInventory()
     }
 
+    func applyTheme(
+        to selection: WorkspaceTmuxSessionSelection
+    ) async throws {
+        guard let activeSelection = activeBorrowedTmuxSelection,
+              Self.sameTmuxSession(activeSelection, selection),
+              isConnectedActiveTmuxSession(activeSelection),
+              let hostSummary = snapshot.host(id: activeSelection.hostID),
+              let host = TmuxHostResolver.resolve(hostSummary),
+              Self.supportsTmuxSessionStyling(host),
+              let activeHandle = activeBorrowedTmuxHandle,
+              let style = tmuxPresentationStyleProvider(
+                  nativeTmuxSessionCoordinator.surfaceIdentity(
+                      handle: activeHandle
+                  )
+              )
+        else {
+            throw TmuxSessionThemeError.unavailable(
+                session: selection.name
+            )
+        }
+        // A deferred ladder in flight would race this manual choice and could
+        // land last with older colors. Supersede it and wait it out first.
+        // Claim the deferred marker before suspending so no trigger during
+        // this apply can start a concurrent ladder; the user has taken manual
+        // control, and on failure the manual action is its own recovery path.
+        nativeTmuxSessionCoordinator.markDeferredPresentationStyleApplied(
+            activeHandle
+        )
+        cancelTmuxPresentationTasks(handleID: activeHandle.id)
+        // Manual applies join the same drain chain as deferred ladders: any
+        // concurrent manual or deferred successor awaits this operation, so a
+        // slower older command can never land after newer colors.
+        let handleID = activeHandle.id
+        let predecessor = drainingDeferredTmuxPresentationTasks[handleID]
+        let discoveredIdentity = Self.discoveredTmuxSessionIdentity(
+            activeSelection,
+            hostSummary: hostSummary
+        )
+        let identityReader = tmuxSessionIdentityReader
+        let styler = tmuxSessionStyler
+        let styling = Task { [weak self] () -> Error? in
+            await self?.settleSupersededTmuxPresentationTask(
+                predecessor,
+                handleID: handleID
+            )
+            do {
+                let expectedIdentity = if let discoveredIdentity {
+                    discoveredIdentity
+                } else {
+                    try await identityReader(activeSelection, host)
+                }
+                try await styler(style, activeSelection, expectedIdentity, host)
+                return nil
+            } catch {
+                return error
+            }
+        }
+        let chained = Task { _ = await styling.value }
+        drainingDeferredTmuxPresentationTasks[handleID] = chained
+        let stylingError = await styling.value
+        if drainingDeferredTmuxPresentationTasks[handleID] == chained {
+            drainingDeferredTmuxPresentationTasks.removeValue(
+                forKey: handleID
+            )
+        }
+        if let stylingError {
+            throw stylingError
+        }
+    }
+
+    private static func discoveredTmuxSessionIdentity(
+        _ selection: WorkspaceTmuxSessionSelection,
+        hostSummary: HostSummary
+    ) -> TmuxSessionIdentity? {
+        guard selection.socketName == nil,
+              let summary = hostSummary.tmuxSessions.first(where: {
+                  $0.name == selection.name
+              }),
+              summary.hasStableIdentity,
+              let serverPID = summary.serverPID,
+              let sessionID = summary.sessionID,
+              let createdAt = summary.createdAt
+        else { return nil }
+        return TmuxSessionIdentity(
+            serverPID: serverPID,
+            sessionID: sessionID,
+            createdAt: createdAt
+        )
+    }
+
+    private static func supportsTmuxSessionStyling(
+        _ host: TmuxHost
+    ) -> Bool {
+        if case let .ssh(info) = host, info.platform == .windows {
+            return false
+        }
+        return true
+    }
+
     private func isConnectedActiveTmuxSession(
         _ selection: WorkspaceTmuxSessionSelection
     ) -> Bool {
@@ -2898,8 +3066,12 @@ final class WorkspaceSceneModel: ObservableObject {
         state: ConnectionState
     ) {
         borrowedTmuxConnectionStates[handle.id] = state
+        if state == .connected {
+            applyDeferredTmuxPresentationIfReady()
+        }
         if case .disconnected = state,
            nativeTmuxSessionCoordinator.hasLaunched(handle) {
+            cancelTmuxPresentationTasks(handleID: handle.id)
             scheduleTmuxSessionDiscovery()
         }
         guard pendingCreatedTmuxSessions[handle.id] != nil else {
@@ -2932,6 +3104,148 @@ final class WorkspaceSceneModel: ObservableObject {
         exhaustedCreatedTmuxSessionHandles.remove(handleID)
         endedCreatedTmuxSessionHandles.remove(handleID)
         removeOptimisticTmuxSession(selection)
+    }
+
+    /// True once no deferred or draining styling work remains. Tests wait on
+    /// this before re-triggering so they never race pending task cleanup.
+    var tmuxStylingQuiesced: Bool {
+        deferredTmuxPresentationTasks.isEmpty
+            && drainingDeferredTmuxPresentationTasks.isEmpty
+    }
+
+    func terminalPresentationStyleDidChange() {
+        objectWillChange.send()
+        if let handle = activeBorrowedTmuxHandle {
+            cancelTmuxPresentationTasks(handleID: handle.id)
+        }
+        applyDeferredTmuxPresentationIfReady()
+    }
+
+    /// A cancelled ladder keeps draining until its in-flight tmux command
+    /// returns. Successors await that drain so an older styling command can
+    /// never land after a newer one and reapply stale colors.
+    private func cancelTmuxPresentationTasks(handleID: UUID) {
+        guard let task = deferredTmuxPresentationTasks.removeValue(
+            forKey: handleID
+        ) else { return }
+        task.cancel()
+        drainingDeferredTmuxPresentationTasks[handleID] = task
+    }
+
+    /// The predecessor must be captured synchronously at successor creation:
+    /// reading the draining map from inside the successor's closure can find
+    /// the successor itself (cancelled before it first ran) and self-deadlock.
+    private func settleSupersededTmuxPresentationTask(
+        _ superseded: Task<Void, Never>?,
+        handleID: UUID
+    ) async {
+        guard let superseded else { return }
+        await superseded.value
+        if drainingDeferredTmuxPresentationTasks[handleID] == superseded {
+            drainingDeferredTmuxPresentationTasks.removeValue(
+                forKey: handleID
+            )
+        }
+    }
+
+    /// Deferred styling is one-shot and best-effort. It retries briefly while
+    /// kwt finishes creating or repairing the session, revalidates the style
+    /// policy before every attempt, and otherwise leaves the explicit
+    /// Apply Theme action as the recovery path.
+    private func applyDeferredTmuxPresentationIfReady() {
+        guard let handle = activeBorrowedTmuxHandle,
+              nativeTmuxSessionCoordinator.hasDeferredPresentationStyle(
+                  handle
+              ),
+              nativeTmuxSessionCoordinator.shouldApplyPresentationStyle(
+                  handle
+              ),
+              deferredTmuxPresentationTasks[handle.id] == nil,
+              pendingCreatedTmuxSessions[handle.id] == nil,
+              borrowedTmuxConnectionStates[handle.id] == .connected,
+              let selection = activeBorrowedTmuxSelection,
+              let hostSummary = snapshot.host(id: selection.hostID),
+              let host = TmuxHostResolver.resolve(hostSummary),
+              Self.supportsTmuxSessionStyling(host),
+              let surfaceIdentity = nativeTmuxSessionCoordinator
+              .surfaceIdentity(handle: handle),
+              let style = tmuxPresentationStyleProvider(surfaceIdentity)
+        else { return }
+        let capturedIdentity = Self.discoveredTmuxSessionIdentity(
+            selection,
+            hostSummary: hostSummary
+        )
+        let identityReader = tmuxSessionIdentityReader
+        let styler = tmuxSessionStyler
+        let retryDelays = deferredTmuxPresentationRetryDelays
+        let superseded = drainingDeferredTmuxPresentationTasks[handle.id]
+        deferredTmuxPresentationTasks[handle.id] = Task { [weak self] in
+            await self?.settleSupersededTmuxPresentationTask(
+                superseded,
+                handleID: handle.id
+            )
+            // Success and exhaustion both consume the deferred marker so a
+            // persistently failing session cannot re-run the ladder on every
+            // later trigger. An interrupted ladder (cancellation, switch-away,
+            // disconnect) leaves the marker for the next visit.
+            var consumesMarker = false
+            var expectedIdentity = capturedIdentity
+            for attempt in 0 ... retryDelays.count {
+                guard let self,
+                      !Task.isCancelled,
+                      activeBorrowedTmuxHandle == handle,
+                      borrowedTmuxConnectionStates[handle.id] == .connected,
+                      nativeTmuxSessionCoordinator
+                      .hasDeferredPresentationStyle(handle),
+                      nativeTmuxSessionCoordinator
+                      .shouldApplyPresentationStyle(handle),
+                      let currentHostSummary = snapshot.host(
+                          id: selection.hostID
+                      ),
+                      TmuxHostResolver.resolve(currentHostSummary) == host
+                else { break }
+                do {
+                    let identity: TmuxSessionIdentity
+                    if let expectedIdentity {
+                        identity = expectedIdentity
+                    } else {
+                        // Pin the first read for the whole ladder: re-reading
+                        // after a failure could adopt a same-name replacement
+                        // session's identity and defeat the identity check.
+                        identity = try await identityReader(selection, host)
+                        expectedIdentity = identity
+                    }
+                    try Task.checkCancellation()
+                    try await styler(style, selection, identity, host)
+                    consumesMarker = true
+                    break
+                } catch TmuxSessionStyleError.sessionChanged {
+                    // The armed session is gone; retrying could only style a
+                    // replacement. Give up and leave recovery to the manual
+                    // action.
+                    consumesMarker = !Task.isCancelled
+                    break
+                } catch {
+                    guard attempt < retryDelays.count else {
+                        consumesMarker = !Task.isCancelled
+                        break
+                    }
+                    do {
+                        try await Task.sleep(for: retryDelays[attempt])
+                    } catch {
+                        break
+                    }
+                }
+            }
+            // A cancelled task was already unregistered by its canceller and
+            // must not remove a successor task from the map.
+            guard let self, !Task.isCancelled else { return }
+            deferredTmuxPresentationTasks.removeValue(forKey: handle.id)
+            if consumesMarker {
+                nativeTmuxSessionCoordinator
+                    .markDeferredPresentationStyleApplied(handle)
+            }
+        }
     }
 
     private func reconcileCreatedTmuxSession(
@@ -2995,6 +3309,9 @@ final class WorkspaceSceneModel: ObservableObject {
                         )
                     applyInventoryOverlayIfNeeded()
                     updateWorkspaceInventoryState()
+                    if found {
+                        applyDeferredTmuxPresentationIfReady()
+                    }
                     if found || isLastAttempt {
                         createdSessionDiscoveryTasks.removeValue(
                             forKey: handleID

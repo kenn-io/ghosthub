@@ -120,6 +120,7 @@ struct NativeTmuxSessionCoordinatorTests {
     @Test("existing sessions accept the shared presentation opt-in")
     func existingSessionAcceptsPresentationOptIn() async throws {
         let store = RecordingTmuxSurfaceStore()
+        var appliesPresentationStyle = true
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
             tmuxPathProvider: { .success("/opt/homebrew/bin/tmux") },
@@ -129,7 +130,9 @@ struct NativeTmuxSessionCoordinatorTests {
                     background: "#FFFFFF"
                 )
             },
-            appliesPresentationStyleToExistingSessionsProvider: { true }
+            appliesPresentationStyleToExistingSessionsProvider: {
+                appliesPresentationStyle
+            }
         )
         var isReady = false
         coordinator.onSurfaceReady = { _ in isReady = true }
@@ -147,6 +150,10 @@ struct NativeTmuxSessionCoordinatorTests {
         )
         #expect(command.contains("fg=#3B4851,bg=#FFFFFF"))
         #expect(command.contains("status-style"))
+        #expect(coordinator.shouldApplyPresentationStyle(handle))
+
+        appliesPresentationStyle = false
+        #expect(!coordinator.shouldApplyPresentationStyle(handle))
     }
 
     @Test("isolated session socket participates in command routing")
@@ -220,6 +227,8 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(command.contains("Helpers/kwt"))
         #expect(command.contains("open"))
         #expect(command.contains("/worktrees/widget"))
+        #expect(!command.contains("ghosthub_kwt_pid"))
+        #expect(!command.contains("@ghosthub_kwt_presentation_ready"))
         #expect(!command.contains("--start-session"))
         #expect(!command.contains("attach-session"))
     }

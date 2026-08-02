@@ -76,10 +76,12 @@ struct TmuxBinaryResolverTests {
         let shell = String(cString: password.pointee.pw_shell)
         let argument = #"exec /bin/sh -c "marker=$(printf '%s' 'ready'); printf '%s\n' "$marker"""#
 
+        // A hang backstop only: real login shells can take seconds to start
+        // under parallel suite load, so a tight timeout is a flake.
         let result = TmuxBinaryResolver.runProcessInLoginShell(
             executable: "/usr/bin/printf",
             arguments: ["%s", argument],
-            timeout: 2,
+            timeout: 15,
             accountShell: shell
         )
 
@@ -103,10 +105,12 @@ struct TmuxBinaryResolverTests {
                 + "printf 'GHOSTHUB_%s\\n' \"$marker\""
         )
 
+        // A hang backstop only: real login shells can take seconds to start
+        // under parallel suite load, so a tight timeout is a flake.
         let result = TmuxBinaryResolver.runProcess(
             executable: shell,
             arguments: ["-c", command],
-            timeout: 2
+            timeout: 15
         )
 
         #expect(result.status == 0)

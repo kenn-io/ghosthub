@@ -107,6 +107,89 @@ struct CommandPaletteModelTests {
         commands.expectCommandNotContains(title: "Open Inbox")
     }
 
+    @Test("active connected sessions offer one-shot theme application")
+    func activeSessionOffersThemeApplication() throws {
+        let host = HostSummary.fixture(platform: .macOS)
+        let active = WorkspaceTmuxSessionSelection(
+            hostID: host.id,
+            name: "review"
+        )
+        let commands = makeCommandPaletteCommands(
+            snapshot: WorkspaceSnapshot(
+                hosts: [host],
+                projects: [],
+                worktrees: []
+            ),
+            selection: WorkspaceSelection(selectedHostID: host.id),
+            activeTmuxSession: active,
+            activeTmuxSessionIsConnected: true,
+            activeTmuxSessionCanApplyTheme: true
+        )
+
+        let command = try #require(commands.first {
+            $0.title == "Apply Theme to Current Session"
+        })
+        #expect(command.action == .applyThemeToCurrentTmuxSession(active))
+        #expect(command.subtitle.contains("review"))
+        #expect(command.subtitle.contains("every attached client"))
+        #expect(command.shortcut == nil)
+    }
+
+    @Test("unavailable sessions omit one-shot theme application")
+    func unavailableSessionsOmitThemeApplication() {
+        let host = HostSummary.fixture(platform: .macOS)
+        let active = WorkspaceTmuxSessionSelection(
+            hostID: host.id,
+            name: "review"
+        )
+        let snapshot = WorkspaceSnapshot(
+            hosts: [host],
+            projects: [],
+            worktrees: []
+        )
+        let selection = WorkspaceSelection(selectedHostID: host.id)
+        let cases: [(WorkspaceTmuxSessionSelection?, Bool, Bool)] = [
+            (nil, true, true),
+            (active, false, true),
+            (active, true, false),
+        ]
+
+        for (activeSession, connected, eligible) in cases {
+            let commands = makeCommandPaletteCommands(
+                snapshot: snapshot,
+                selection: selection,
+                activeTmuxSession: activeSession,
+                activeTmuxSessionIsConnected: connected,
+                activeTmuxSessionCanApplyTheme: eligible
+            )
+            commands.expectCommandNotContains(
+                title: "Apply Theme to Current Session"
+            )
+        }
+
+        let windowsHost = HostSummary.fixture(platform: .windows)
+        let windowsSession = WorkspaceTmuxSessionSelection(
+            hostID: windowsHost.id,
+            name: "pwsh"
+        )
+        let windowsCommands = makeCommandPaletteCommands(
+            snapshot: WorkspaceSnapshot(
+                hosts: [windowsHost],
+                projects: [],
+                worktrees: []
+            ),
+            selection: WorkspaceSelection(
+                selectedHostID: windowsHost.id
+            ),
+            activeTmuxSession: windowsSession,
+            activeTmuxSessionIsConnected: true,
+            activeTmuxSessionCanApplyTheme: false
+        )
+        windowsCommands.expectCommandNotContains(
+            title: "Apply Theme to Current Session"
+        )
+    }
+
     @Test("command filtering matches titles subtitles and keywords")
     func commandFilteringMatchesTitlesSubtitlesAndKeywords() {
         let commands = makeCommandPaletteCommands(
@@ -697,6 +780,7 @@ private func makeCommandPaletteCommands(
     selection: WorkspaceSelection? = nil,
     activeTmuxSession: WorkspaceTmuxSessionSelection? = nil,
     activeTmuxSessionIsConnected: Bool = false,
+    activeTmuxSessionCanApplyTheme: Bool = false,
     isWorkspacesRoute: Bool = true,
     isSidebarVisible: Bool = true,
     isSidePanelVisible: Bool = false,
@@ -712,6 +796,8 @@ private func makeCommandPaletteCommands(
         selection: sel,
         activeTmuxSession: activeTmuxSession,
         activeTmuxSessionIsConnected: activeTmuxSessionIsConnected,
+        activeTmuxSessionCanApplyTheme:
+        activeTmuxSessionCanApplyTheme,
         isWorkspacesRoute: isWorkspacesRoute,
         isSidebarVisible: isSidebarVisible,
         isSidePanelVisible: isSidePanelVisible,
