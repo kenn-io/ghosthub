@@ -47,6 +47,10 @@ as subject to direct iteration.
 - Commit every turn when you make changes.
 - Commit before responding without asking whether to commit; committing is the
   expected default after every change.
+- Never commit directly to `main` or `master`. When a task starts on the
+  default branch, create a task-specific branch before the first commit. If a
+  local commit lands on the default branch accidentally, move it to a task
+  branch and restore the local default branch to its upstream before pushing.
 - Never amend commits.
 - Do not leave the app build broken at the end of a turn.
 - If a turn touches Swift app code, terminal integration, `Package.swift`, or bootstrap logic, `make build` must pass before the turn is done.
