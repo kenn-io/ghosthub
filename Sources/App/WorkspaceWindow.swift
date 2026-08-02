@@ -790,12 +790,16 @@ struct WorkspaceWindow: View {
             resolvedWindowState.wrappedValue = state
         }
         .onChange(of: windowState) { _, state in
-            windowStateBuffer.absorb(state)
+            if let restoredState = windowStateBuffer.receive(state) {
+                sceneModel.beginRestoration(restoredState)
+            }
         }
         .onAppear {
-            let initialState = resolvedWindowState.wrappedValue
-            resolvedWindowState.wrappedValue = initialState
-            sceneModel.beginRestoration(initialState)
+            if let initialState = windowStateBuffer.beginAppearance(
+                with: windowState
+            ) {
+                sceneModel.beginRestoration(initialState)
+            }
             refreshWindowState()
             registry.register(
                 sceneModel,
@@ -845,7 +849,7 @@ struct WorkspaceWindow: View {
                 windowStateBuffer.resolved(windowState)
             },
             set: { state in
-                windowStateBuffer.absorb(state)
+                windowStateBuffer.prepareToPresent(state)
                 windowState = state
             }
         )

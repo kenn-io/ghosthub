@@ -191,7 +191,11 @@ struct WorkspaceWindowStateTests {
 
         #expect(buffer.resolved(nil) == fallback)
 
-        buffer.absorb(restored)
+        #expect(buffer.beginAppearance(with: nil) == nil)
+        buffer.prepareToPresent(fallback)
+        #expect(buffer.receive(fallback) == nil)
+
+        #expect(buffer.receive(restored) == restored)
 
         #expect(buffer.resolved(nil) == restored)
     }
