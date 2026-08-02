@@ -7,7 +7,7 @@
 <h1 align="center">Ghosthub</h1>
 
 <p align="center">
-  <strong>A native terminal for your tmux fleet.</strong>
+  <strong>A native power terminal for your tmux fleet.</strong>
   <br>
   Create or attach to any session, or manage worktree-bound sessions from Git
   branches and GitHub pull requests—locally or over SSH.
