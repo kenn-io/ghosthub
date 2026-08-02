@@ -175,6 +175,36 @@ private struct RestorationFixture {
 
 @Suite("Workspace window restoration state")
 struct WorkspaceWindowStateTests {
+    @Test("window state survives a temporarily nil scene binding")
+    func windowStateSurvivesNilSceneBinding() {
+        let firstFallback = WorkspaceWindowState.fresh()
+        let secondFallback = WorkspaceWindowState.fresh()
+        let restored = WorkspaceWindowState(
+            windowID: UUID(),
+            navigation: WorkspaceNavigationDescriptor(
+                hostKey: "local",
+                projectKey: nil,
+                worktreeGeneration: nil
+            ),
+            tmux: nil
+        )
+        var buffer = WorkspaceWindowStateBuffer(retained: firstFallback)
+
+        #expect(buffer.resolved(nil) == firstFallback)
+
+        #expect(buffer.beginAppearance(with: nil) == nil)
+        buffer.prepareToPresent(firstFallback)
+        buffer.prepareToPresent(secondFallback)
+
+        #expect(buffer.receive(firstFallback) == nil)
+        #expect(buffer.resolved(nil) == secondFallback)
+        #expect(buffer.receive(secondFallback) == nil)
+
+        #expect(buffer.receive(restored) == restored)
+
+        #expect(buffer.resolved(nil) == restored)
+    }
+
     enum OrdinaryOwnershipDrift: CaseIterable, Sendable {
         case sessionName
         case socket

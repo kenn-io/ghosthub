@@ -127,6 +127,50 @@ struct WorkspaceWindowState: Codable, Hashable, Sendable {
     }
 }
 
+struct WorkspaceWindowStateBuffer {
+    private(set) var retained: WorkspaceWindowState
+    private var pendingPresentations: [WorkspaceWindowState] = []
+    private var awaitsLateRestoration = false
+
+    init(retained: WorkspaceWindowState = .fresh()) {
+        self.retained = retained
+    }
+
+    mutating func beginAppearance(
+        with presented: WorkspaceWindowState?
+    ) -> WorkspaceWindowState? {
+        awaitsLateRestoration = presented == nil
+        guard let presented else { return nil }
+        retained = presented
+        return presented
+    }
+
+    mutating func prepareToPresent(_ state: WorkspaceWindowState) {
+        retained = state
+        pendingPresentations.append(state)
+    }
+
+    mutating func receive(
+        _ presented: WorkspaceWindowState?
+    ) -> WorkspaceWindowState? {
+        guard let presented else { return nil }
+
+        if let index = pendingPresentations.firstIndex(of: presented) {
+            pendingPresentations.remove(at: index)
+            return nil
+        }
+
+        retained = presented
+        guard awaitsLateRestoration else { return nil }
+        awaitsLateRestoration = false
+        return presented
+    }
+
+    func resolved(_ presented: WorkspaceWindowState?) -> WorkspaceWindowState {
+        presented ?? retained
+    }
+}
+
 enum WorkspaceRestorationResolution: Equatable, Sendable {
     case invalid
     case pending(selection: WorkspaceSelection?)
