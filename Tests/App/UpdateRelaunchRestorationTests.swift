@@ -5,8 +5,8 @@ import Testing
 @MainActor
 @Suite("Update relaunch restoration")
 struct UpdateRelaunchRestorationTests {
-    @Test("replays every saved window and consumes the manifest")
-    func replaysSavedWindows() throws {
+    @Test("missing native scenes are assigned before new windows open")
+    func replaysMissingNativeScenes() throws {
         let scratch = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: scratch) }
@@ -27,20 +27,39 @@ struct UpdateRelaunchRestorationTests {
         )
         try store.save([first, second])
 
-        let restorer = UpdateRelaunchRestorer(store: store)
-        let defaultState = WorkspaceWindowState.fresh()
-        #expect(
-            restorer.stateForAppearance(presented: defaultState) == first
+        let restorer = UpdateRelaunchRestorer(
+            store: store,
+            reconciliationDelayNanoseconds: nil
         )
+        let defaultSceneID = UUID()
+        var restored: [WorkspaceWindowState] = []
+        var opened: [WorkspaceWindowState] = []
+        #expect(
+            restorer.registerScene(
+                id: defaultSceneID,
+                presented: nil,
+                restore: { restored.append($0) },
+                openWindow: { opened.append($0) }
+            ) == .waitingForNativeRestoration
+        )
+        restorer.reconcileAfterNativeRestorationSettled()
+
+        #expect(restored == [first])
+        #expect(opened == [second])
         restorer.didBeginRestoring(windowID: first.windowID)
         #expect(FileManager.default.fileExists(atPath: store.fileURL.path))
 
-        #expect(restorer.takeStatesToOpen() == [second])
-        #expect(restorer.stateForAppearance(presented: second) == second)
+        #expect(
+            restorer.registerScene(
+                id: UUID(),
+                presented: second,
+                restore: { restored.append($0) },
+                openWindow: { opened.append($0) }
+            ) == .restore(second)
+        )
         restorer.didBeginRestoring(windowID: second.windowID)
 
         #expect(!FileManager.default.fileExists(atPath: store.fileURL.path))
-        #expect(restorer.takeStatesToOpen().isEmpty)
     }
 
     @Test("an aborted relaunch manifest can be discarded")
@@ -64,8 +83,8 @@ struct UpdateRelaunchRestorationTests {
         #expect(try store.load() == nil)
     }
 
-    @Test("matching native scenes do not open duplicate windows")
-    func matchingNativeScenesAvoidDuplicates() throws {
+    @Test("late native values claim initially nil scenes without duplicates")
+    func lateNativeValuesClaimNilScenes() throws {
         let scratch = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: scratch) }
@@ -83,15 +102,91 @@ struct UpdateRelaunchRestorationTests {
             owner: .unbound
         )
         try store.save([first, second])
-        let restorer = UpdateRelaunchRestorer(store: store)
+        let restorer = UpdateRelaunchRestorer(
+            store: store,
+            reconciliationDelayNanoseconds: nil
+        )
+        let firstSceneID = UUID()
+        let secondSceneID = UUID()
+        var restored: [WorkspaceWindowState] = []
+        var opened: [WorkspaceWindowState] = []
 
-        #expect(restorer.stateForAppearance(presented: first) == first)
+        #expect(
+            restorer.registerScene(
+                id: firstSceneID,
+                presented: nil,
+                restore: { restored.append($0) },
+                openWindow: { opened.append($0) }
+            ) == .waitingForNativeRestoration
+        )
+        #expect(
+            restorer.registerScene(
+                id: secondSceneID,
+                presented: nil,
+                restore: { restored.append($0) },
+                openWindow: { opened.append($0) }
+            ) == .waitingForNativeRestoration
+        )
+
+        #expect(
+            restorer.receivePresentedState(
+                sceneID: firstSceneID,
+                presented: first
+            ) == .restore(first)
+        )
         restorer.didBeginRestoring(windowID: first.windowID)
-        #expect(restorer.takeStatesToOpen().isEmpty)
-
-        #expect(restorer.stateForAppearance(presented: second) == second)
+        #expect(
+            restorer.receivePresentedState(
+                sceneID: secondSceneID,
+                presented: second
+            ) == .restore(second)
+        )
         restorer.didBeginRestoring(windowID: second.windowID)
+        restorer.reconcileAfterNativeRestorationSettled()
+
+        #expect(restored.isEmpty)
+        #expect(opened.isEmpty)
         #expect(!FileManager.default.fileExists(atPath: store.fileURL.path))
+    }
+
+    @Test("partial native restoration opens every unclaimed saved window")
+    func partialNativeRestorationOpensMissingWindows() throws {
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let store = UpdateRelaunchManifestStore(
+            fileURL: scratch.appendingPathComponent("relaunch.json")
+        )
+        let first = state(
+            sessionName: "editor",
+            socketName: nil,
+            owner: .unbound
+        )
+        let second = state(
+            sessionName: "review",
+            socketName: nil,
+            owner: .unbound
+        )
+        try store.save([first, second])
+        let restorer = UpdateRelaunchRestorer(
+            store: store,
+            reconciliationDelayNanoseconds: nil
+        )
+        var opened: [WorkspaceWindowState] = []
+
+        #expect(
+            restorer.registerScene(
+                id: UUID(),
+                presented: first,
+                restore: { _ in },
+                openWindow: { opened.append($0) }
+            ) == .restore(first)
+        )
+        restorer.didBeginRestoring(windowID: first.windowID)
+        restorer.reconcileAfterNativeRestorationSettled()
+
+        #expect(opened == [second])
+        #expect(FileManager.default.fileExists(atPath: store.fileURL.path))
     }
 
     private func state(

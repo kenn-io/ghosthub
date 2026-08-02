@@ -525,6 +525,7 @@ struct WorkspaceWindow: View {
     let openRelaunchWindow: (WorkspaceWindowState) -> Void
     #endif
     @State private var windowStateBuffer = WorkspaceWindowStateBuffer()
+    @State private var updateRelaunchSceneID = UUID()
     @State private var updateRelaunchWindowID: UUID?
     @StateObject private var sceneModel = WorkspaceSceneModel()
     @EnvironmentObject private var terminalRuntime: LibghosttyRuntime
@@ -793,6 +794,23 @@ struct WorkspaceWindow: View {
             resolvedWindowState.wrappedValue = state
         }
         .onChange(of: windowState) { _, state in
+            #if canImport(AppKit)
+            switch updateRelaunchRestorer.receivePresentedState(
+                sceneID: updateRelaunchSceneID,
+                presented: state
+            ) {
+            case .ordinary:
+                break
+            case .waitingForNativeRestoration:
+                if updateRelaunchWindowID != nil {
+                    refreshWindowState()
+                }
+                return
+            case let .restore(savedState):
+                restoreForUpdateRelaunch(savedState)
+                return
+            }
+            #endif
             if let updateRelaunchWindowID,
                let state,
                state.windowID != updateRelaunchWindowID {
@@ -805,42 +823,28 @@ struct WorkspaceWindow: View {
         }
         .onAppear {
             #if canImport(AppKit)
-            let appearanceState = updateRelaunchRestorer.stateForAppearance(
-                presented: windowState
-            )
-            if let appearanceState,
-               updateRelaunchRestorer.containsSavedState(
-                   windowID: appearanceState.windowID
-               ) {
-                updateRelaunchWindowID = appearanceState.windowID
+            switch updateRelaunchRestorer.registerScene(
+                id: updateRelaunchSceneID,
+                presented: windowState,
+                restore: restoreForUpdateRelaunch,
+                openWindow: openRelaunchWindow
+            ) {
+            case .ordinary:
+                beginPresentedRestoration(windowState)
+                refreshWindowState()
+            case .waitingForNativeRestoration:
+                beginPresentedRestoration(nil)
+            case let .restore(savedState):
+                restoreForUpdateRelaunch(savedState)
             }
             #else
-            let appearanceState: WorkspaceWindowState? = nil
-            #endif
-            if let initialState = windowStateBuffer.beginAppearance(
-                with: appearanceState
-            ) {
-                if windowState != appearanceState {
-                    windowStateBuffer.prepareToPresent(initialState)
-                    windowState = initialState
-                }
-                sceneModel.beginRestoration(initialState)
-                #if canImport(AppKit)
-                updateRelaunchRestorer.didBeginRestoring(
-                    windowID: initialState.windowID
-                )
-                #endif
-            }
+            beginPresentedRestoration(nil)
             refreshWindowState()
+            #endif
             registry.register(
                 sceneModel,
                 captureRestorationState: captureWindowState
             )
-            #if canImport(AppKit)
-            updateRelaunchRestorer.takeStatesToOpen().forEach(
-                openRelaunchWindow
-            )
-            #endif
             if terminalRuntime.configReloadNotice?.kind == .error {
                 visibleConfigReloadNotice =
                     terminalRuntime.configReloadNotice
@@ -867,11 +871,42 @@ struct WorkspaceWindow: View {
         .onDisappear {
             sceneModel.cancelPendingRestoration()
             registry.unregister(sceneModel)
+            #if canImport(AppKit)
+            updateRelaunchRestorer.unregisterScene(
+                id: updateRelaunchSceneID
+            )
+            #endif
             Task { [sceneModel] in
                 await sceneModel.shutdown()
             }
         }
     }
+
+    private func beginPresentedRestoration(
+        _ state: WorkspaceWindowState?
+    ) {
+        if let state = windowStateBuffer.beginAppearance(with: state) {
+            sceneModel.beginRestoration(state)
+        }
+    }
+
+    #if canImport(AppKit)
+    private func restoreForUpdateRelaunch(
+        _ state: WorkspaceWindowState
+    ) {
+        updateRelaunchWindowID = state.windowID
+        _ = windowStateBuffer.beginAppearance(with: state)
+        if windowState != state {
+            windowStateBuffer.prepareToPresent(state)
+            windowState = state
+        }
+        sceneModel.beginRestoration(state)
+        updateRelaunchRestorer.didBeginRestoring(
+            windowID: state.windowID
+        )
+        refreshWindowState()
+    }
+    #endif
 
     private func captureWindowState() -> WorkspaceWindowState {
         let state = sceneModel.restorationState(
