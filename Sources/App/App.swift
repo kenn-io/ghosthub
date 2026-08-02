@@ -64,6 +64,10 @@ struct GhosthubApp: App {
                         value: windowState
                     )
                 }
+                appDelegate.setWindowRestorationFinishedHandler {
+                    updateRelaunchRestorer
+                        .nativeWindowRestorationDidFinish()
+                }
                 appDelegate.needsConfirmQuit = {
                     QuitPolicy.needsConfirmation(
                         confirmBeforeQuitting:

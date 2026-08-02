@@ -111,6 +111,8 @@ final class ApplicationDelegate: NSObject,
     var openWorkspaceWindow: (WorkspaceWindowState) -> Void = { _ in }
 
     private let windowRequests = WorkspaceWindowRequests<NSWindow>()
+    private var windowRestorationFinishedHandler: () -> Void = {}
+    private var windowRestorationFinished = false
     private(set) var terminationConfirmed = false
     private(set) var terminationConfirmationPending = false
     private var updaterTerminationAuthorized = false
@@ -118,11 +120,42 @@ final class ApplicationDelegate: NSObject,
     override init() {
         confirmTermination = { false }
         super.init()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(applicationDidFinishRestoringWindows(_:)),
+            name: NSApplication.didFinishRestoringWindowsNotification,
+            object: nil
+        )
         confirmTermination = { [weak self] in
             guard let self else { return false }
             return presentApplicationAlert(makeTerminationAlert())
                 == .alertFirstButtonReturn
         }
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(
+            self,
+            name: NSApplication.didFinishRestoringWindowsNotification,
+            object: nil
+        )
+    }
+
+    func setWindowRestorationFinishedHandler(
+        _ handler: @escaping () -> Void
+    ) {
+        windowRestorationFinishedHandler = handler
+        if windowRestorationFinished {
+            handler()
+        }
+    }
+
+    @objc func applicationDidFinishRestoringWindows(
+        _ notification: Notification
+    ) {
+        guard !windowRestorationFinished else { return }
+        windowRestorationFinished = true
+        windowRestorationFinishedHandler()
     }
 
     func applicationDidFinishLaunching(

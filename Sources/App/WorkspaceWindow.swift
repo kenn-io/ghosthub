@@ -805,11 +805,17 @@ struct WorkspaceWindow: View {
                 if updateRelaunchWindowID != nil {
                     refreshWindowState()
                 }
+                updateRelaunchRestorer
+                    .reconcileIfNativeRestorationFinished()
                 return
             case let .restore(savedState):
                 restoreForUpdateRelaunch(savedState)
+                updateRelaunchRestorer
+                    .reconcileIfNativeRestorationFinished()
                 return
             }
+            updateRelaunchRestorer
+                .reconcileIfNativeRestorationFinished()
             #endif
             if let updateRelaunchWindowID,
                let state,
@@ -837,6 +843,8 @@ struct WorkspaceWindow: View {
             case let .restore(savedState):
                 restoreForUpdateRelaunch(savedState)
             }
+            updateRelaunchRestorer
+                .reconcileIfNativeRestorationFinished()
             #else
             beginPresentedRestoration(nil)
             refreshWindowState()

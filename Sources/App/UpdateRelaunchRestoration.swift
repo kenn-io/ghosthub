@@ -86,7 +86,6 @@ final class UpdateRelaunchRestorer {
     }
 
     private let store: UpdateRelaunchManifestStore
-    private let reconciliationDelayNanoseconds: UInt64?
     private var statesByID: [UUID: WorkspaceWindowState]
     private var orderedWindowIDs: [UUID]
     private var scheduledWindowIDs: Set<UUID> = []
@@ -94,18 +93,12 @@ final class UpdateRelaunchRestorer {
     private var sceneEntries: [UUID: SceneEntry] = [:]
     private var nextRegistrationOrder = 0
     private var openWindow: ((WorkspaceWindowState) -> Void)?
-    private var reconciliationTask: Task<Void, Never>?
+    private var nativeWindowRestorationFinished = false
 
     init(
-        store: UpdateRelaunchManifestStore = .init(),
-        // SwiftUI can publish decoded scene values after onAppear. Restarting
-        // this short quiet period on every scene update lets native claims
-        // arrive before Ghosthub assigns or opens the remaining manifest IDs.
-        reconciliationDelayNanoseconds: UInt64? = 250_000_000
+        store: UpdateRelaunchManifestStore = .init()
     ) {
         self.store = store
-        self.reconciliationDelayNanoseconds =
-            reconciliationDelayNanoseconds
         do {
             let states = try store.load() ?? []
             orderedWindowIDs = states.map(\.windowID)
@@ -145,9 +138,7 @@ final class UpdateRelaunchRestorer {
             restore: restore
         )
         self.openWindow = openWindow
-        let observation = observe(sceneID: sceneID, presented: presented)
-        scheduleReconciliation()
-        return observation
+        return observe(sceneID: sceneID, presented: presented)
     }
 
     func receivePresentedState(
@@ -157,20 +148,25 @@ final class UpdateRelaunchRestorer {
         guard !orderedWindowIDs.isEmpty,
               sceneEntries[sceneID] != nil
         else { return .ordinary }
-        let observation = observe(sceneID: sceneID, presented: presented)
-        scheduleReconciliation()
-        return observation
+        return observe(sceneID: sceneID, presented: presented)
     }
 
     func unregisterScene(id sceneID: UUID) {
         sceneEntries.removeValue(forKey: sceneID)
-        scheduleReconciliation()
+        reconcileIfNativeRestorationFinished()
     }
 
-    func reconcileAfterNativeRestorationSettled() {
-        reconciliationTask?.cancel()
-        reconciliationTask = nil
-        guard !orderedWindowIDs.isEmpty else { return }
+    func nativeWindowRestorationDidFinish() {
+        guard !nativeWindowRestorationFinished else { return }
+        nativeWindowRestorationFinished = true
+        reconcileIfNativeRestorationFinished()
+    }
+
+    func reconcileIfNativeRestorationFinished() {
+        guard nativeWindowRestorationFinished,
+              !orderedWindowIDs.isEmpty,
+              let openWindow
+        else { return }
 
         let claimedWindowIDs = Set(
             sceneEntries.values.compactMap(\.assignedWindowID)
@@ -209,9 +205,7 @@ final class UpdateRelaunchRestorer {
                 return state
             }
         restorations.forEach { restore, state in restore(state) }
-        if let openWindow {
-            statesToOpen.forEach(openWindow)
-        }
+        statesToOpen.forEach(openWindow)
     }
 
     func didBeginRestoring(windowID: UUID) {
@@ -233,8 +227,6 @@ final class UpdateRelaunchRestorer {
         restoringWindowIDs = []
         sceneEntries = [:]
         openWindow = nil
-        reconciliationTask?.cancel()
-        reconciliationTask = nil
     }
 
     private func observe(
@@ -262,21 +254,4 @@ final class UpdateRelaunchRestorer {
         return .restore(saved)
     }
 
-    private func scheduleReconciliation() {
-        guard let reconciliationDelayNanoseconds,
-              !orderedWindowIDs.isEmpty
-        else { return }
-        reconciliationTask?.cancel()
-        reconciliationTask = Task { [weak self] in
-            do {
-                try await Task.sleep(
-                    nanoseconds: reconciliationDelayNanoseconds
-                )
-            } catch {
-                return
-            }
-            guard !Task.isCancelled else { return }
-            self?.reconcileAfterNativeRestorationSettled()
-        }
-    }
 }

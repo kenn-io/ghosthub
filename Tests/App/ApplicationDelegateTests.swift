@@ -127,6 +127,23 @@ final class ApplicationDelegateTests: XCTestCase {
         override var tabbedWindows: [NSWindow]? { nil }
     }
 
+    func testWindowRestorationFinishedHandlerIsLatched() {
+        let delegate = ApplicationDelegate()
+        delegate.applicationDidFinishRestoringWindows(
+            Notification(name: NSApplication.didFinishRestoringWindowsNotification)
+        )
+        var callCount = 0
+
+        delegate.setWindowRestorationFinishedHandler {
+            callCount += 1
+        }
+        delegate.applicationDidFinishRestoringWindows(
+            Notification(name: NSApplication.didFinishRestoringWindowsNotification)
+        )
+
+        XCTAssertEqual(callCount, 1)
+    }
+
     private final class NotificationCenterSpy: UserNotificationCentering {
         private(set) var requestAuthorizationCallCount = 0
         private(set) var addedRequests: [UNNotificationRequest] = []

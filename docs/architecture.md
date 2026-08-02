@@ -41,9 +41,10 @@ not persist its worktree-owned tmux presentation. SwiftUI and macOS normally
 remain responsible for restoring scene count, native tab groups, and window
 geometry. Before a Sparkle relaunch, Ghosthub also atomically records the
 ordered logical descriptors in a one-shot manifest under `~/.ghosthub/`. The
-app first collects initial and late native scene values. After those values
-settle, unresolved scenes adopt unclaimed descriptors in saved order and
-Ghosthub requests a scene for every descriptor still missing. Native
+app collects initial and late native scene values until AppKit reports that
+native window restoration has finished. Unresolved scenes then adopt unclaimed
+descriptors in saved order, and Ghosthub requests a scene for every descriptor
+still missing. Native
 restoration still owns any geometry and tab grouping it provides.
 An active tmux presentation retains the worktree generation observed when it
 was established; a later non-nil generation change is a replacement even when
