@@ -257,6 +257,60 @@ def test_cleanup_stops_every_socket_in_private_run_directory(
         pytest.fail("tmux server on an unexpected test socket survived cleanup")
 
 
+def test_cancellation_reaps_daemonized_server_without_run_directory(
+    tmp_path: Path,
+) -> None:
+    if shutil.which("tmux") is None:
+        pytest.skip("tmux is unavailable")
+
+    server_pid_file = tmp_path / "server.pid"
+    tmux_dir_file = tmp_path / "tmux-dir"
+    command = tmp_path / "start-server-and-wait.sh"
+    command.write_text(
+        "#!/bin/sh\n"
+        'socket="$TMUX_TMPDIR/orphan-socket"\n'
+        'tmux -S "$socket" new-session -d\n'
+        f'tmux -S "$socket" display-message -p "#{{pid}}" > "{server_pid_file}"\n'
+        f'echo "$TMUX_TMPDIR" > "{tmux_dir_file}"\n'
+        "sleep 30\n"
+    )
+    command.chmod(0o755)
+
+    wrapper = subprocess.Popen(
+        ["sh", str(SCRIPT), str(command)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env={**os.environ, "GHOSTHUB_TEST_STOP_GRACE": "1"},
+    )
+    deadline = time.monotonic() + 10
+    while (
+        not (server_pid_file.exists() and tmux_dir_file.exists())
+        and time.monotonic() < deadline
+    ):
+        time.sleep(0.05)
+    if not (server_pid_file.exists() and tmux_dir_file.exists()):
+        wrapper.kill()
+        wrapper.wait(timeout=10)
+        pytest.fail("tmux server did not start")
+    server_pid = int(server_pid_file.read_text().strip())
+
+    # The server daemonized outside the test process group, so once its run
+    # directory is gone only identity-based process cleanup can reach it.
+    shutil.rmtree(tmux_dir_file.read_text().strip())
+    wrapper.terminate()
+    assert wrapper.wait(timeout=10) == 143
+
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            os.kill(server_pid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.05)
+    os.kill(server_pid, signal.SIGKILL)
+    pytest.fail("daemonized tmux server survived run-directory removal")
+
+
 def test_default_purge_skips_active_run_directories() -> None:
     test_root = Path(f"/tmp/ghosthub-{os.getuid()}/tmux-tests")
     test_root.parent.mkdir(mode=0o700, exist_ok=True)

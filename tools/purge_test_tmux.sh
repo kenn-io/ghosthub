@@ -122,18 +122,25 @@ kill_run_tmux_processes() {
 
 purge_run_directory() {
     directory=$1
-    [ -d "$directory" ] || return 0
+    run_id=${directory##*.}
+    # A tmux server daemonizes outside the test process group and can
+    # outlive an externally removed run directory, so process cleanup for
+    # the validated run identity happens even when the directory is gone.
+    if [ ! -d "$directory" ] && [ ! -L "$directory" ]; then
+        kill_run_tmux_processes "$run_id" "$directory"
+        return 0
+    fi
     if ! require_secure_directory "$directory" "tmux test run" 2>/dev/null; then
         # A concurrent sweep may remove the same dead run directory at any
-        # point during validation; gone is a completed purge, while a
-        # directory that remains insecure is still refused.
+        # point during validation, while a directory that remains insecure
+        # is still refused.
         if [ ! -d "$directory" ] && [ ! -L "$directory" ]; then
+            kill_run_tmux_processes "$run_id" "$directory"
             return 0
         fi
         echo "refusing insecure tmux test run directory: $directory" >&2
         return 1
     fi
-    run_id=${directory##*.}
     find "$directory" -type s -print |
         while IFS= read -r socket; do
             kill_socket "$socket"
