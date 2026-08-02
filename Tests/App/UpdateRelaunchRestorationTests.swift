@@ -190,6 +190,73 @@ struct UpdateRelaunchRestorationTests {
         #expect(FileManager.default.fileExists(atPath: store.fileURL.path))
     }
 
+    @Test("late native IDs reclaim scheduled replacement windows")
+    func lateNativeIDReclaimsScheduledWindow() throws {
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let store = UpdateRelaunchManifestStore(
+            fileURL: scratch.appendingPathComponent("relaunch.json")
+        )
+        let first = state(
+            sessionName: "editor",
+            socketName: nil,
+            owner: .unbound
+        )
+        let second = state(
+            sessionName: "review",
+            socketName: nil,
+            owner: .unbound
+        )
+        try store.save([first, second])
+        let restorer = UpdateRelaunchRestorer(store: store)
+        let nativeSceneID = UUID()
+        var nativeRestored: [WorkspaceWindowState] = []
+        var replayRestored: [WorkspaceWindowState] = []
+        var opened: [WorkspaceWindowState] = []
+
+        #expect(
+            restorer.registerScene(
+                id: nativeSceneID,
+                presented: nil,
+                restore: { nativeRestored.append($0) },
+                openWindow: { opened.append($0) }
+            ) == .waitingForNativeRestoration
+        )
+        restorer.nativeWindowRestorationDidFinish(expectedSceneCount: 1)
+        restorer.reconcileAfterSceneBindingsSettled()
+
+        #expect(nativeRestored == [first])
+        #expect(opened == [second])
+        restorer.didBeginRestoring(windowID: first.windowID)
+
+        let replayObservation = restorer.registerScene(
+            id: UUID(),
+            presented: second,
+            restore: { replayRestored.append($0) },
+            openWindow: { opened.append($0) }
+        )
+        #expect(replayObservation == .restore(second))
+        if case let .restore(state) = replayObservation {
+            replayRestored.append(state)
+            restorer.didBeginRestoring(windowID: state.windowID)
+        }
+
+        let nativeObservation = restorer.receivePresentedState(
+            sceneID: nativeSceneID,
+            presented: second
+        )
+        #expect(nativeObservation == .restore(second))
+        if case let .restore(state) = nativeObservation {
+            nativeRestored.append(state)
+        }
+
+        #expect(nativeRestored.last == second)
+        #expect(replayRestored.last == first)
+        #expect(opened == [second])
+        #expect(!FileManager.default.fileExists(atPath: store.fileURL.path))
+    }
+
     @Test("late reversed native values correct provisional fallback assignments")
     func reversedNativeValuesCorrectFallbackAssignments() throws {
         let scratch = FileManager.default.temporaryDirectory

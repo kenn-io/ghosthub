@@ -82,19 +82,23 @@ final class UpdateRelaunchRestorer {
     private enum SceneAssignment {
         case presented(UUID)
         case fallback(UUID)
+        case replay(UUID)
 
         var windowID: UUID {
             switch self {
-            case let .presented(windowID), let .fallback(windowID):
+            case let .presented(windowID), let .fallback(windowID),
+                 let .replay(windowID):
                 windowID
             }
         }
 
-        var isFallback: Bool {
-            if case .fallback = self {
-                return true
+        var isProvisional: Bool {
+            switch self {
+            case .fallback, .replay:
+                true
+            case .presented:
+                false
             }
-            return false
         }
     }
 
@@ -108,6 +112,7 @@ final class UpdateRelaunchRestorer {
     private var statesByID: [UUID: WorkspaceWindowState]
     private var orderedWindowIDs: [UUID]
     private var scheduledWindowIDs: Set<UUID> = []
+    private var displacedFallbackByReplayID: [UUID: UUID] = [:]
     private var restoringWindowIDs: Set<UUID> = []
     private var sceneEntries: [UUID: SceneEntry] = [:]
     private var nextRegistrationOrder = 0
@@ -151,6 +156,7 @@ final class UpdateRelaunchRestorer {
     ) -> UpdateRelaunchSceneObservation {
         guard !orderedWindowIDs.isEmpty,
               !manifestConsumed || sceneEntries[sceneID] != nil
+              || !scheduledWindowIDs.isEmpty
         else { return .ordinary }
         let registrationOrder = sceneEntries[sceneID]?.registrationOrder
             ?? nextRegistrationOrder
@@ -280,7 +286,6 @@ final class UpdateRelaunchRestorer {
             )
         }
         manifestConsumed = true
-        scheduledWindowIDs = []
         sceneBindingSettlementTask?.cancel()
         sceneBindingSettlementTask = nil
     }
@@ -297,38 +302,56 @@ final class UpdateRelaunchRestorer {
             }
             guard let presented,
                   let saved = statesByID[presented.windowID],
-                  assignment.isFallback
+                  assignment.isProvisional
             else {
                 return presented == nil
                     ? .ordinary : .waitingForNativeRestoration
             }
-            guard let otherSceneID = sceneEntries.first(where: {
+            if let otherSceneID = sceneEntries.first(where: {
                 $0.key != sceneID
                     && $0.value.assignment?.windowID == saved.windowID
             })?.key,
                 var otherEntry = sceneEntries[otherSceneID],
-                otherEntry.assignment?.isFallback == true,
-                let previousState = statesByID[assignedWindowID]
-            else { return .waitingForNativeRestoration }
-
+                otherEntry.assignment?.isProvisional == true,
+                let previousState = statesByID[assignedWindowID] {
+                entry.assignment = .presented(saved.windowID)
+                otherEntry.assignment = .fallback(assignedWindowID)
+                sceneEntries[sceneID] = entry
+                sceneEntries[otherSceneID] = otherEntry
+                scheduledWindowIDs.remove(saved.windowID)
+                otherEntry.restore(previousState)
+                return .restore(saved)
+            }
+            guard scheduledWindowIDs.contains(saved.windowID) else {
+                return .waitingForNativeRestoration
+            }
             entry.assignment = .presented(saved.windowID)
-            otherEntry.assignment = .fallback(assignedWindowID)
             sceneEntries[sceneID] = entry
-            sceneEntries[otherSceneID] = otherEntry
-            scheduledWindowIDs.remove(saved.windowID)
-            otherEntry.restore(previousState)
+            displacedFallbackByReplayID[saved.windowID] = assignedWindowID
             return .restore(saved)
         }
         guard let presented,
-              let saved = statesByID[presented.windowID],
-              !sceneEntries.values.contains(where: {
-                  $0.assignment?.windowID == presented.windowID
-              })
+              let saved = statesByID[presented.windowID]
         else { return .waitingForNativeRestoration }
 
-        entry.assignment = .presented(saved.windowID)
+        if let displacedWindowID = displacedFallbackByReplayID
+            .removeValue(forKey: saved.windowID),
+            let displacedState = statesByID[displacedWindowID] {
+            entry.assignment = .fallback(displacedWindowID)
+            sceneEntries[sceneID] = entry
+            scheduledWindowIDs.remove(saved.windowID)
+            return .restore(displacedState)
+        }
+        guard !sceneEntries.values.contains(where: {
+            $0.assignment?.windowID == presented.windowID
+        }) else { return .waitingForNativeRestoration }
+
+        if scheduledWindowIDs.remove(saved.windowID) != nil {
+            entry.assignment = .replay(saved.windowID)
+        } else {
+            entry.assignment = .presented(saved.windowID)
+        }
         sceneEntries[sceneID] = entry
-        scheduledWindowIDs.remove(saved.windowID)
         return .restore(saved)
     }
 

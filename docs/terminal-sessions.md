@@ -108,7 +108,8 @@ reports that native window restoration has finished and every restored workspace
 window has registered its SwiftUI scene. Ghosthub waits for binding quiescence
 before unresolved scenes receive provisional unclaimed descriptors, then opens
 every saved window still missing. Later native descriptors correct provisional
-assignments, covering absent or partial macOS restoration without swapping
+assignments, including by moving a displaced session to a provisionally opened
+replay scene. This covers absent or partial macOS restoration without swapping
 sessions between restored geometry or tab groups.
 The manifest is removed after every saved window has begun attach-only
 restoration; native scene restoration still supplies geometry and tab grouping

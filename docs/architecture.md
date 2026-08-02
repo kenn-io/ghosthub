@@ -47,7 +47,10 @@ registered its SwiftUI scene. Ghosthub requires the scenes' optional bindings to
 be quiescent before unresolved scenes receive provisional unclaimed descriptors
 in saved order, then requests a scene for every descriptor still missing. A
 later native descriptor remains authoritative and corrects provisional
-assignments, so native restoration still owns geometry and tab grouping.
+assignments. Scenes opened to replay missing descriptors also remain provisional:
+if a late native scene reclaims their descriptor, the replay scene receives the
+native scene's displaced descriptor instead. Native restoration therefore still
+owns geometry and tab grouping without dropping or duplicating a session.
 An active tmux presentation retains the worktree generation observed when it
 was established; a later non-nil generation change is a replacement even when
 inventory reuses the same runtime UUID. Scene persistence observes the complete
