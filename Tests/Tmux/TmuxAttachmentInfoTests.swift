@@ -372,7 +372,10 @@ struct TmuxAttachmentInfoTests {
         let kwt = directory.appendingPathComponent("kwt")
         let config = directory.appendingPathComponent("tmux.conf")
         let marker = directory.appendingPathComponent("session-ran")
-        let socketName = "ghosthub-test-\(UUID().uuidString.lowercased())"
+        let socketName = ProcessInfo.processInfo.environment[
+            "GHOSTHUB_TEST_TMUX_RUN_ID"
+        ].map { "ghosthub-test-\($0)" }
+            ?? "ghosthub-test-\(UUID().uuidString.lowercased())"
         defer {
             let cleanup = Process()
             cleanup.executableURL = URL(fileURLWithPath: tmuxPath)

@@ -55,7 +55,7 @@ KWT_SOURCE_REVISION ?= unpinned
 endif
 SWIFT_TEST_FILTER ?=
 
-.PHONY: help bootstrap-kwt bootstrap-kwt-variants ensure-kwt ensure-kwt-variants bootstrap-libghostty bootstrap-libghostty-release check-libghostty check-libghostty-release test-libghostty-bootstrap test-terminal-fallback test-stage-release-app-bundles test-assemble-app-bundle test-essential-workflows build swift-warning-check build-release debug-app release-app release-dmg release-appcast run-release-app run-app swift-test test-tmux-attach python-test test smoke-test docs-build docs-serve site-deploy reset-app-state install-hooks format format-check
+.PHONY: help bootstrap-kwt bootstrap-kwt-variants ensure-kwt ensure-kwt-variants bootstrap-libghostty bootstrap-libghostty-release check-libghostty check-libghostty-release test-libghostty-bootstrap test-terminal-fallback test-stage-release-app-bundles test-assemble-app-bundle test-essential-workflows build swift-warning-check build-release debug-app release-app release-dmg release-appcast run-release-app run-app swift-test test-tmux-attach purge-test-tmux python-test test smoke-test docs-build docs-serve site-deploy reset-app-state install-hooks format format-check
 
 help:
 	@printf '%s\n' \
@@ -96,6 +96,8 @@ help:
 		'      Run SwiftPM tests. Set SWIFT_TEST_FILTER=... for a narrower slice.' \
 		'  make test-tmux-attach' \
 		'      Run the native tmux attachment tests.' \
+		'  make purge-test-tmux' \
+		'      Stop leaked test tmux processes and remove their sockets.' \
 		'  make python-test' \
 		'      Run the full Python test suite via uv-managed pytest.' \
 		'  make test' \
@@ -263,7 +265,8 @@ test-essential-workflows:
 		TmuxAttachmentInfoTests \
 		WorkspaceSidebarModelTests \
 	; do \
-		sh tools/run_with_timeout.sh 600 $(SWIFT) test --filter $$filter; \
+		sh tools/run_with_timeout.sh 600 sh tools/run_swift_tests.sh \
+			$(SWIFT) test --filter $$filter; \
 	done
 
 build: bootstrap-libghostty
@@ -377,7 +380,7 @@ run-app: debug-app
 
 swift-test:
 	@set -euo pipefail; \
-	cmd=($(SWIFT) test); \
+	cmd=(sh tools/run_swift_tests.sh $(SWIFT) test); \
 	if [[ -n "$(SWIFT_TEST_FILTER)" ]]; then \
 		cmd+=(--filter "$(SWIFT_TEST_FILTER)"); \
 	fi; \
@@ -388,8 +391,13 @@ swift-test:
 
 test-tmux-attach: bootstrap-libghostty
 	@set -euo pipefail; \
-	sh tools/run_with_timeout.sh 600 $(SWIFT) test --filter GhosthubTmuxTests; \
-	sh tools/run_with_timeout.sh 600 $(SWIFT) test --filter TmuxInjectionSmokeTests
+	sh tools/run_with_timeout.sh 600 sh tools/run_swift_tests.sh \
+		$(SWIFT) test --filter GhosthubTmuxTests; \
+	sh tools/run_with_timeout.sh 600 sh tools/run_swift_tests.sh \
+		$(SWIFT) test --filter TmuxInjectionSmokeTests
+
+purge-test-tmux:
+	@sh tools/purge_test_tmux.sh
 
 python-test:
 	@$(UV) run --frozen --group dev pytest Tests
@@ -397,7 +405,8 @@ python-test:
 test: swift-test python-test
 
 smoke-test: bootstrap-libghostty
-	@$(SWIFT) test --filter LibghosttyRuntimeSmokeTests
+	@sh tools/run_swift_tests.sh \
+		$(SWIFT) test --filter LibghosttyRuntimeSmokeTests
 
 docs-build:
 	@cd docs && $(UV) run --frozen ./zensical-docs.sh build
