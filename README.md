@@ -7,10 +7,10 @@
 <h1 align="center">Ghosthub</h1>
 
 <p align="center">
-  <strong>A power terminal for your fleet of tmux sessions.</strong>
+  <strong>A native power terminal for your tmux fleet.</strong>
   <br>
-  Find and enter the sessions behind your projects and coding agents,
-  on your Mac or over SSH.
+  Create or attach to any session, or manage worktree-bound sessions from Git
+  branches and GitHub pull requests, locally or over SSH.
 </p>
 
 <p align="center">
@@ -41,10 +41,20 @@
   >
 </p>
 
-Ghosthub discovers the tmux sessions you already have and organizes them by
-host, project, and worktree. Tmux continues to own windows, panes, layout,
-history, and process lifetime; Ghosthub provides the native macOS interface,
-terminal presentation, and SSH reconnect supervision.
+Ghosthub creates and attaches to ordinary tmux sessions across your Mac and SSH
+hosts, including sessions started outside Ghosthub. They need no Git project or
+worktree setup: create a named session, pick up an existing one, and manage the
+whole fleet from one native sidebar.
+
+Ghosthub also manages tmux sessions bound to Git worktrees. Register a
+repository, then continue a local or remote branch, create a branch, or import
+a GitHub pull request without leaving the app. Its bundled [kwt](https://kwt.sh)
+helper manages the linked worktree lifecycle while Ghosthub opens the canonical
+tmux session for that workspace.
+
+In both modes, tmux continues to own windows, panes, layout, history, and
+process lifetime. Ghosthub provides the native, libghostty-powered terminal and
+supervises SSH keepalives and reconnects.
 
 There is no proprietary session format, background daemon, or migration.
 
@@ -55,14 +65,15 @@ we will do our best to fix them.
 
 ## Highlights
 
-- **One fleet sidebar.** Navigate local sessions, remote sessions, projects,
-  and worktrees—even when their tmux sessions were created outside Ghosthub.
-- **Resilient SSH.** Keepalives and automatic reconnect preserve remote
-  presentations through ordinary network interruptions.
-- **Complete worktree workflows.** Register an existing checkout, continue a
+- **Any tmux session.** Create or attach to sessions on local and remote hosts,
+  including sessions created outside Ghosthub. No Git project or worktree is
+  required.
+- **Managed worktree sessions.** Register an existing checkout, continue a
   local or remote branch, create a branch, import a GitHub pull request, and
   remove a linked worktree through the bundled [kwt](https://kwt.sh)
-  helper—no system kwt installation required.
+  helper. No system kwt installation is required.
+- **Resilient SSH.** Keepalives and automatic reconnect preserve remote
+  presentations through ordinary network interruptions.
 - **Deliberate tmux lifecycle.** Closing a presentation detaches. Confirmed
   controls end standalone or worktree-backed sessions, and a bare session that
   exits can be reopened under its exact previous name.
@@ -76,7 +87,7 @@ we will do our best to fix them.
   `ghostty.conf`. Existing sessions keep their appearance unless you apply the
   theme to the active session or opt into shared-session styling.
 - **Fast terminal rendering.** Ghosthub embeds libghostty with an isolated,
-  Ghostty-compatible configuration—no Electron and no Ghostty.app dependency.
+  Ghostty-compatible configuration. No Electron and no Ghostty.app dependency.
 
 ## Install
 
