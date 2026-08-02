@@ -520,8 +520,9 @@ private struct CompactToolbarButton: View {
 struct WorkspaceWindow: View {
     #if canImport(AppKit)
     let applicationDelegate: ApplicationDelegate
-    @Binding var windowState: WorkspaceWindowState
+    @Binding var windowState: WorkspaceWindowState?
     #endif
+    @State private var windowStateBuffer = WorkspaceWindowStateBuffer()
     @StateObject private var sceneModel = WorkspaceSceneModel()
     @EnvironmentObject private var terminalRuntime: LibghosttyRuntime
     @ObservedObject private var settingsStore = SettingsStore.shared
@@ -747,7 +748,7 @@ struct WorkspaceWindow: View {
         .background(
             WindowFocusTracker(
                 applicationDelegate: applicationDelegate,
-                requestID: windowState.windowID,
+                requestID: resolvedWindowState.wrappedValue.windowID,
                 isFocused: Binding(
                     get: { sceneModel.isFocusedWindow },
                     set: { sceneModel.isFocusedWindow = $0 }
@@ -784,12 +785,17 @@ struct WorkspaceWindow: View {
         )
         #endif
         .onChange(of: sceneModel.restorationState(
-            windowID: windowState.windowID
+            windowID: resolvedWindowState.wrappedValue.windowID
         )) { _, state in
-            windowState = state
+            resolvedWindowState.wrappedValue = state
+        }
+        .onChange(of: windowState) { _, state in
+            windowStateBuffer.absorb(state)
         }
         .onAppear {
-            sceneModel.beginRestoration(windowState)
+            let initialState = resolvedWindowState.wrappedValue
+            resolvedWindowState.wrappedValue = initialState
+            sceneModel.beginRestoration(initialState)
             refreshWindowState()
             registry.register(
                 sceneModel,
@@ -828,8 +834,20 @@ struct WorkspaceWindow: View {
     }
 
     private func refreshWindowState() {
-        windowState = sceneModel.restorationState(
-            windowID: windowState.windowID
+        resolvedWindowState.wrappedValue = sceneModel.restorationState(
+            windowID: resolvedWindowState.wrappedValue.windowID
+        )
+    }
+
+    private var resolvedWindowState: Binding<WorkspaceWindowState> {
+        Binding(
+            get: {
+                windowStateBuffer.resolved(windowState)
+            },
+            set: { state in
+                windowStateBuffer.absorb(state)
+                windowState = state
+            }
         )
     }
 

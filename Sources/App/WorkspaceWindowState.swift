@@ -127,6 +127,23 @@ struct WorkspaceWindowState: Codable, Hashable, Sendable {
     }
 }
 
+struct WorkspaceWindowStateBuffer {
+    private(set) var retained: WorkspaceWindowState
+
+    init(retained: WorkspaceWindowState = .fresh()) {
+        self.retained = retained
+    }
+
+    mutating func absorb(_ presented: WorkspaceWindowState?) {
+        guard let presented else { return }
+        retained = presented
+    }
+
+    func resolved(_ presented: WorkspaceWindowState?) -> WorkspaceWindowState {
+        presented ?? retained
+    }
+}
+
 enum WorkspaceRestorationResolution: Equatable, Sendable {
     case invalid
     case pending(selection: WorkspaceSelection?)
