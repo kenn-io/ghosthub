@@ -7,6 +7,7 @@ public struct RootView: View {
     private let display: WorkspaceDisplayState
     private let content: ContentBuilders
     private let handlers: InteractionHandlers
+    private let sidebarToggleTarget: AnyObject
     @Binding private var selection: WorkspaceSelection
     @Binding private var isSidePanelVisible: Bool
     @Binding private var columnVisibility: NavigationSplitViewVisibility
@@ -32,6 +33,7 @@ public struct RootView: View {
         display: WorkspaceDisplayState,
         content: ContentBuilders = ContentBuilders(),
         handlers: InteractionHandlers = InteractionHandlers(),
+        sidebarToggleTarget: AnyObject = NSObject(),
         settingsStore: SettingsStore = .shared,
         selection: Binding<WorkspaceSelection>,
         isSidePanelVisible: Binding<Bool> = .constant(false),
@@ -43,6 +45,7 @@ public struct RootView: View {
         self.display = display
         self.content = content
         self.handlers = handlers
+        self.sidebarToggleTarget = sidebarToggleTarget
         self.settingsStore = settingsStore
         _selection = selection
         _isSidePanelVisible = isSidePanelVisible
@@ -216,7 +219,8 @@ public struct RootView: View {
             ) { _ in handleCommandPalette() }
             .onReceive(
                 NotificationCenter.default.publisher(
-                    for: .ghosthubToggleSidebar
+                    for: .ghosthubToggleSidebar,
+                    object: sidebarToggleTarget
                 )
             ) { _ in handleToggleSidebar() }
             .onReceive(

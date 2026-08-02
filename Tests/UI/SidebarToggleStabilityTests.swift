@@ -60,6 +60,35 @@ struct SidebarToggleStabilityTests {
         )
     }
 
+    @Test("sidebar command toggles only its targeted window")
+    func sidebarCommandTogglesOnlyTargetedWindow() {
+        let firstTarget = SidebarToggleTarget()
+        let secondTarget = SidebarToggleTarget()
+        let first = StabilityTestEnvironment(
+            sidebarToggleTarget: firstTarget
+        )
+        let second = StabilityTestEnvironment(
+            sidebarToggleTarget: secondTarget
+        )
+        defer {
+            first.close()
+            second.close()
+        }
+
+        #expect(first.columnVisibility == .all)
+        #expect(second.columnVisibility == .all)
+
+        NotificationCenter.default.post(
+            name: .ghosthubToggleSidebar,
+            object: firstTarget
+        )
+        first.settle()
+        second.settle()
+
+        #expect(first.columnVisibility == .detailOnly)
+        #expect(second.columnVisibility == .all)
+    }
+
     @Test("right side panel toggle preserves main column view identity")
     func rightSidePanelTogglePreservesMainColumn() {
         let env = SidePanelStabilityTestEnvironment()
@@ -91,6 +120,8 @@ struct SidebarToggleStabilityTests {
 
 // MARK: - Test Helpers
 
+private final class SidebarToggleTarget {}
+
 @MainActor
 private final class StabilityTestEnvironment {
     let firstSession: WorkspaceTmuxSessionSelection
@@ -103,6 +134,7 @@ private final class StabilityTestEnvironment {
     private let tempRoot: URL
     private let defaults: UserDefaults
     private let defaultsSuiteName: String
+    private let sidebarToggleTarget: AnyObject
 
     var isSidebarVisible: Bool {
         get { model.columnVisibility != .detailOnly }
@@ -131,7 +163,8 @@ private final class StabilityTestEnvironment {
         model.columnVisibility
     }
 
-    init() {
+    init(sidebarToggleTarget: AnyObject = SidebarToggleTarget()) {
+        self.sidebarToggleTarget = sidebarToggleTarget
         let hostID = UUID()
         firstSession = WorkspaceTmuxSessionSelection(
             hostID: hostID,
@@ -193,7 +226,8 @@ private final class StabilityTestEnvironment {
             rootView: StabilityTestHarness(
                 model: model,
                 settingsStore: settingsStore,
-                defaults: defaults
+                defaults: defaults,
+                sidebarToggleTarget: sidebarToggleTarget
             )
         )
         window = NSWindow(
@@ -267,6 +301,7 @@ private struct StabilityTestHarness: View {
     @ObservedObject var model: StabilityTestModel
     let settingsStore: SettingsStore
     let defaults: UserDefaults
+    let sidebarToggleTarget: AnyObject
 
     var body: some View {
         RootView(
@@ -281,11 +316,13 @@ private struct StabilityTestHarness: View {
                     )
                 }
             ),
+            sidebarToggleTarget: sidebarToggleTarget,
             settingsStore: settingsStore,
             selection: $model.selection,
             columnVisibility: $model.columnVisibility
         )
         .defaultAppStorage(defaults)
+        .environment(\.controlActiveState, .key)
     }
 }
 

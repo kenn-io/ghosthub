@@ -695,6 +695,7 @@ struct WorkspaceWindow: View {
                     try await sceneModel.removeWorktree(request)
                 }
             ),
+            sidebarToggleTarget: sceneModel,
             settingsStore: settingsStore,
             selection: Binding(
                 get: { sceneModel.selection },
@@ -761,7 +762,7 @@ struct WorkspaceWindow: View {
                 onToggleSidebar: {
                     NotificationCenter.default.post(
                         name: .ghosthubToggleSidebar,
-                        object: nil
+                        object: sceneModel
                     )
                 },
                 onQuickLaunch: {
