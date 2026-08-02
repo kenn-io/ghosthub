@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://ghosthub.io">
+  <a href="https://ghosthub.ai">
     <img src="Resources/AppIcon/Ghosthub.svg" width="112" alt="Ghosthub app icon">
   </a>
 </p>
@@ -22,11 +22,11 @@
 </p>
 
 <p align="center">
-  <a href="https://ghosthub.io"><strong>Website</strong></a>
+  <a href="https://ghosthub.ai"><strong>Website</strong></a>
   ·
   <a href="https://github.com/kenn-io/ghosthub/releases"><strong>Download</strong></a>
   ·
-  <a href="https://ghosthub.io/guide/"><strong>Guide</strong></a>
+  <a href="https://ghosthub.ai/guide/"><strong>Guide</strong></a>
   ·
   <a href="CHANGELOG.md"><strong>Changelog</strong></a>
   ·
@@ -35,7 +35,7 @@
 
 <p align="center">
   <img
-    src="https://raw.githubusercontent.com/kenn-io/ghosthub/website-assets/hero.png"
+    src="https://raw.githubusercontent.com/kenn-io/ghosthub/refs/heads/website-assets/hero.png?release=0.5.0"
     width="960"
     alt="Ghosthub showing local and remote tmux sessions and kwt worktrees in its sidebar"
   >
@@ -47,6 +47,11 @@ history, and process lifetime; Ghosthub provides the native macOS interface,
 terminal presentation, and SSH reconnect supervision.
 
 There is no proprietary session format, background daemon, or migration.
+
+Ghosthub is alpha software. It likely has more bugs than more mature terminal
+applications like Ghostty, but please open
+[GitHub issues](https://github.com/kenn-io/ghosthub/issues) to report bugs and
+we will do our best to fix them.
 
 ## Highlights
 
@@ -67,8 +72,9 @@ There is no proprietary session format, background daemon, or migration.
 - **Native workspaces.** Open independent windows or macOS tabs, and search
   sessions and common actions from the Command Palette.
 - **Predictable tmux theming.** New sessions created by Ghosthub use the
-  selected Tmux Theme. Existing sessions keep their appearance unless you
-  explicitly opt into shared-session styling.
+  selected Tmux Theme, including resolved light and dark colors from
+  `ghostty.conf`. Existing sessions keep their appearance unless you apply the
+  theme to the active session or opt into shared-session styling.
 - **Fast terminal rendering.** Ghosthub embeds libghostty with an isolated,
   Ghostty-compatible configuration—no Electron and no Ghostty.app dependency.
 
@@ -136,7 +142,9 @@ machine.
 Pull-request import requires the
 [GitHub CLI (`gh`)](https://cli.github.com/) on the host containing the project:
 your Mac for a local project or the SSH machine for a remote one. Install it
-there and run `gh auth login` on that same host before importing.
+there and run `gh auth login` on that same host before importing. For an HTTPS
+Git remote, ordinary Git authentication must also work there; `gh auth
+setup-git` configures GitHub CLI as a Git credential helper.
 
 Select a project and press <kbd>⌘</kbd><kbd>⇧</kbd><kbd>N</kbd> to create a Git
 worktree or import a GitHub pull request. The branch picker searches available
@@ -153,6 +161,9 @@ session if needed and asks kwt to remove the checkout. The Git branch is kept.
 
 Press <kbd>⌘</kbd><kbd>⇧</kbd><kbd>P</kbd> to open the **Command Palette** and
 search across hosts, projects, worktrees, sessions, settings, and actions.
+Use **Settings → Worktrees** to hide tool-owned standalone tmux sessions with
+case-sensitive `*` and `?` patterns. Kwt workspaces always remain visible under
+their projects.
 
 | Shortcut | Action |
 | --- | --- |
@@ -179,9 +190,13 @@ reloads the active configuration when the base file, an included file, or a
 project override changes. The **Tmux Theme** setting supplies colors for new
 sessions created by Ghosthub. Existing sessions keep their own appearance by
 default; **Apply theme to shared tmux sessions** explicitly applies the
-selected colors to the session's existing windows and chrome for every
-attached terminal. Use **Ghosthub → Reload Configuration** for an explicit
-reload and diagnostic result.
+selected colors before future attachments. Use **Session → Apply Theme to
+Current Session** to update only the connected active session immediately.
+Both choices update the session's existing windows and chrome for every
+attached terminal. Quit confirmation is on by default and can be disabled in
+Terminal Settings; closing the final workspace leaves Ghosthub running, while
+Command-Q detaches every presentation and quits. Use **Ghosthub → Reload
+Configuration** for an explicit reload and diagnostic result.
 
 ## How the pieces fit
 

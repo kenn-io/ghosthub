@@ -239,7 +239,7 @@ new_session scratch "$scratch/repos/msgvault" \
 new_session docbank-export "$scratch" \
   "clear; echo 'exported 4,812 threads (2.1 GiB) in 96s'; echo done."
 new_session release-watch "$scratch/repos/ghosthub" \
-  "clear; printf 'release v0.4.0\\n\\n  ✓ build\\n  ✓ swift tests\\n  ✓ notarization\\n  ● publish\\n'"
+  "clear; printf 'release v0.5.0\\n\\n  ✓ build\\n  ✓ swift tests\\n  ✓ notarization\\n  ● publish\\n'"
 new_session test-matrix "$scratch/repos/agentsview" \
   "clear; printf 'test matrix\\n\\nmacOS 26 arm64     ✓ 680 passed\\nUbuntu 24.04       ✓ 149 passed\\nSSH integration    ✓  42 passed\\n'"
 

@@ -132,8 +132,8 @@ A full local release-app build:
 
 ```bash
 make release-app \
-  RELEASE_APP_VERSION=0.1.0 \
-  RELEASE_BUILD_VERSION=0.1.0
+  RELEASE_APP_VERSION=0.5.0 \
+  RELEASE_BUILD_VERSION=0.5.0
 ```
 
 Ghosthub bundles kwt CLI helpers but no daemon. A clean `make release-app`
@@ -145,8 +145,8 @@ DMG build:
 
 ```bash
 make release-dmg \
-  RELEASE_APP_VERSION=0.1.0 \
-  RELEASE_BUILD_VERSION=0.1.0
+  RELEASE_APP_VERSION=0.5.0 \
+  RELEASE_BUILD_VERSION=0.5.0
 ```
 
 If Apple signing and notary environment variables are present, this

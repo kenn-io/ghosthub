@@ -8,7 +8,7 @@ cd "$REPO_ROOT"
 
 APP_NAME="${GHOSTHUB_APP:-Ghosthub}"
 RELEASE_ROOT="${RELEASE_ROOT:-dist/release}"
-RELEASE_APP_VERSION="${RELEASE_APP_VERSION:-0.1.0}"
+RELEASE_APP_VERSION="${RELEASE_APP_VERSION:-0.5.0}"
 RELEASE_ARCH="${RELEASE_ARCH:-$(uname -m)}"
 RELEASE_DMG_NAME="${RELEASE_DMG_NAME:-${APP_NAME}_${RELEASE_APP_VERSION}_macos_${RELEASE_ARCH}.dmg}"
 RELEASE_APP_PATH="${RELEASE_APP_PATH:-$RELEASE_ROOT/${APP_NAME}.app}"
@@ -94,7 +94,7 @@ printf '%s' "$SPARKLE_ED_PRIVATE_KEY" \
   | "$SPARKLE_GENERATE_APPCAST" \
       --ed-key-file - \
       --download-url-prefix "$DOWNLOAD_PREFIX" \
-      --link "https://ghosthub.io" \
+      --link "https://ghosthub.ai" \
       --embed-release-notes \
       --maximum-versions 1 \
       --maximum-deltas 0 \

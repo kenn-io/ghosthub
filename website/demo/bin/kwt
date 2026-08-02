@@ -81,8 +81,8 @@ branches_json() {
    "source": "feature/session-search", "is_remote": false},
   {"name": "feature/sidebar-groups",
    "source": "origin/feature/sidebar-groups", "is_remote": true},
-  {"name": "release/0.4.0",
-   "source": "origin/release/0.4.0", "is_remote": true}
+  {"name": "release/0.5.0",
+   "source": "origin/release/0.5.0", "is_remote": true}
 ]
 EOF
       ;;

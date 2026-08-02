@@ -8,7 +8,7 @@ cd "$REPO_ROOT"
 
 APP_NAME="${GHOSTHUB_APP:-Ghosthub}"
 RELEASE_ROOT="${RELEASE_ROOT:-dist/release}"
-RELEASE_APP_VERSION="${RELEASE_APP_VERSION:-0.1.0}"
+RELEASE_APP_VERSION="${RELEASE_APP_VERSION:-0.5.0}"
 RELEASE_BUILD_VERSION="${RELEASE_BUILD_VERSION:-$(git rev-list --count HEAD 2>/dev/null || echo 0)}"
 RELEASE_BUNDLE_ID="${RELEASE_BUNDLE_ID:-com.ghosthub}"
 # `hdiutil create` fails here when the mounted volume name matches the staged
