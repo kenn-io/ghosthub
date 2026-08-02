@@ -53,24 +53,43 @@ if [ "$#" -eq 1 ]; then
     fi
 fi
 
-kill_socket() {
-    socket=$1
+kill_sockets() {
+    socket_list=$1
+    [ -n "$socket_list" ] || return 0
     if [ -n "$tmux_bin" ]; then
+        # Stop every client concurrently under one shared deadline so purge
+        # stays inside the outer watchdog's escalation window no matter how
+        # many stalled sockets a run left behind.
+        client_pids=
         set -m
-        "$tmux_bin" -S "$socket" kill-server >/dev/null 2>&1 &
-        socket_client_pid=$!
+        while IFS= read -r socket; do
+            [ -n "$socket" ] || continue
+            "$tmux_bin" -S "$socket" kill-server >/dev/null 2>&1 &
+            client_pids="$client_pids $!"
+        done <<EOF_SOCKETS
+$socket_list
+EOF_SOCKETS
         (
             sleep 1
-            kill -KILL -- -"$socket_client_pid" 2>/dev/null ||
-                kill -KILL "$socket_client_pid" 2>/dev/null || true
+            # shellcheck disable=SC2086  # deliberate PID list splitting
+            for client in $client_pids; do
+                kill -KILL -- -"$client" 2>/dev/null ||
+                    kill -KILL "$client" 2>/dev/null || true
+            done
         ) &
         socket_deadline_pid=$!
         set +m
-        wait "$socket_client_pid" 2>/dev/null || true
+        # shellcheck disable=SC2086  # deliberate PID list splitting
+        for client in $client_pids; do
+            wait "$client" 2>/dev/null || true
+        done
         kill -TERM -- -"$socket_deadline_pid" 2>/dev/null || true
         wait "$socket_deadline_pid" 2>/dev/null || true
     fi
-    rm -f "$socket"
+    printf '%s\n' "$socket_list" | while IFS= read -r socket; do
+        [ -n "$socket" ] || continue
+        rm -f "$socket"
+    done
 }
 
 run_tmux_pids() {
@@ -141,10 +160,8 @@ purge_run_directory() {
         echo "refusing insecure tmux test run directory: $directory" >&2
         return 1
     fi
-    find "$directory" -type s -print |
-        while IFS= read -r socket; do
-            kill_socket "$socket"
-        done
+    run_sockets=$(find "$directory" -type s -print 2>/dev/null || true)
+    kill_sockets "$run_sockets"
     kill_run_tmux_processes "$run_id" "$directory"
     rm -rf "$directory"
 }
@@ -188,13 +205,14 @@ fi
 
 if [ -e "$legacy_socket_root" ] || [ -L "$legacy_socket_root" ]; then
     require_secure_directory "$legacy_socket_root" "legacy tmux socket"
-    find "$legacy_socket_root" -mindepth 1 -maxdepth 1 -type s -print |
-        awk -F/ '
-            $NF ~ /^ghosthub-(test|kill)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
-        ' |
-        while IFS= read -r socket; do
-            kill_socket "$socket"
-        done
+    legacy_sockets=$(
+        find "$legacy_socket_root" -mindepth 1 -maxdepth 1 -type s -print \
+            2>/dev/null |
+            awk -F/ '
+                $NF ~ /^ghosthub-(test|kill)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+            '
+    )
+    kill_sockets "$legacy_sockets"
 fi
 
 legacy_test_tmux_pids() {

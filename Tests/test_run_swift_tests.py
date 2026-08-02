@@ -101,6 +101,43 @@ def test_terminating_wrapper_stops_group_before_cleanup(
     assert not tmux_dir.exists()
 
 
+def test_forwarded_interrupt_keeps_its_grace(tmp_path: Path) -> None:
+    child_pid_file = tmp_path / "child.pid"
+    term_file = tmp_path / "term-received"
+    done_file = tmp_path / "int-done"
+    command = tmp_path / "graceful-int.sh"
+    command.write_text(
+        "#!/bin/sh\n"
+        f"trap 'echo term > \"{term_file}\"; exit 1' TERM\n"
+        f"trap 'sleep 1; echo done > \"{done_file}\"; exit 0' INT\n"
+        f'echo $$ > "{child_pid_file}"\n'
+        "while :; do sleep 0.1; done\n"
+    )
+    command.chmod(0o755)
+
+    wrapper = subprocess.Popen(
+        ["sh", str(SCRIPT), str(command)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env={**os.environ, "GHOSTHUB_TEST_STOP_GRACE": "5"},
+    )
+    deadline = time.monotonic() + 10
+    while not child_pid_file.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    if not child_pid_file.exists():
+        wrapper.kill()
+        wrapper.wait(timeout=10)
+        pytest.fail("test command did not start")
+
+    # An interrupt handler that needs cleanup time must see only the
+    # forwarded INT; piling TERM on top makes second-signal-quits tools
+    # abort before their grace elapses.
+    wrapper.send_signal(signal.SIGINT)
+    assert wrapper.wait(timeout=10) == 130
+    assert done_file.exists(), "INT handler was cut short"
+    assert not term_file.exists(), "cancelled child received an extra TERM"
+
+
 def test_cancellation_still_kills_group_without_run_directory(
     tmp_path: Path,
 ) -> None:
@@ -349,14 +386,14 @@ def test_default_purge_skips_active_run_directories() -> None:
             shutil.rmtree(directory, ignore_errors=True)
 
 
-def test_cleanup_bounds_a_stalled_tmux_client(tmp_path: Path) -> None:
+def test_cleanup_bounds_stalled_tmux_clients(tmp_path: Path) -> None:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
-    fake_pid_file = tmp_path / "fake-tmux.pid"
+    fake_pid_file = tmp_path / "fake-tmux.pids"
     fake_tmux = fake_bin / "tmux"
     fake_tmux.write_text(
         "#!/bin/sh\n"
-        f'echo $$ > "{fake_pid_file}"\n'
+        f'echo $$ >> "{fake_pid_file}"\n'
         "trap '' TERM\n"
         "sleep 30\n"
     )
@@ -371,12 +408,16 @@ def test_cleanup_bounds_a_stalled_tmux_client(tmp_path: Path) -> None:
         "sock.close()\n"
     )
     tmux_dir_file = tmp_path / "tmux-dir"
-    command = tmp_path / "create-socket.sh"
+    # Six sockets so a serialized one-second-per-socket shutdown would blow
+    # the five-second bound; the shared deadline finishes in about a second.
+    command = tmp_path / "create-sockets.sh"
     command.write_text(
         "#!/bin/sh\n"
         f'echo "$TMUX_TMPDIR" > "{tmux_dir_file}"\n'
-        f'"{sys.executable}" "{socket_writer}" '
-        '"$TMUX_TMPDIR/stalled-socket"\n'
+        "for name in a b c d e f; do\n"
+        f'    "{sys.executable}" "{socket_writer}" '
+        '"$TMUX_TMPDIR/stalled-$name"\n'
+        "done\n"
     )
     command.chmod(0o755)
     environment = os.environ.copy()
@@ -391,12 +432,17 @@ def test_cleanup_bounds_a_stalled_tmux_client(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0, result.stderr
-    fake_pid = int(fake_pid_file.read_text().strip())
-    try:
-        os.kill(fake_pid, 0)
-    except ProcessLookupError:
-        pass
-    else:
+    fake_pids = [
+        int(value) for value in fake_pid_file.read_text().split()
+    ]
+    assert len(fake_pids) == 6
+    survivors = []
+    for fake_pid in fake_pids:
+        try:
+            os.kill(fake_pid, 0)
+        except ProcessLookupError:
+            continue
+        survivors.append(fake_pid)
         os.killpg(fake_pid, signal.SIGKILL)
-        pytest.fail("stalled tmux client survived its cleanup deadline")
+    assert not survivors, "stalled tmux clients survived the shared deadline"
     assert not Path(tmux_dir_file.read_text().strip()).exists()

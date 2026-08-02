@@ -84,14 +84,21 @@ group_has_live_processes() {
 stop_child_group() {
     [ -n "$child_pid" ] || return 0
 
-    if group_has_live_processes; then
-        kill -TERM -- -"$child_pid" 2>/dev/null || true
-    elif kill -0 "$child_pid" 2>/dev/null; then
-        kill -TERM "$child_pid" 2>/dev/null || true
-    else
+    if ! group_has_live_processes && ! kill -0 "$child_pid" 2>/dev/null; then
         cancel_kill_deadline
         wait "$child_pid" 2>/dev/null || true
         return 0
+    fi
+
+    # A forwarded cancellation signal already reached the whole group, and a
+    # second signal would defeat the grace for tools that quit hard when
+    # signalled twice. TERM is only for helpers that outlive a normal exit.
+    if [ -z "$pending_signal" ]; then
+        if group_has_live_processes; then
+            kill -TERM -- -"$child_pid" 2>/dev/null || true
+        else
+            kill -TERM "$child_pid" 2>/dev/null || true
+        fi
     fi
 
     start_kill_deadline
