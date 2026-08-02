@@ -19,8 +19,9 @@ shift
 
 # The watchdog KILLs the command group 5 seconds after its TERM, so a nested
 # run_swift_tests.sh must force-kill its test group and purge its tmux
-# directory sooner than that.
-GHOSTHUB_TEST_STOP_GRACE="${GHOSTHUB_TEST_STOP_GRACE:-2}"
+# directory sooner than that. Force the value: an inherited larger grace
+# would let the watchdog reap the wrapper before it can clean up.
+GHOSTHUB_TEST_STOP_GRACE=2
 export GHOSTHUB_TEST_STOP_GRACE
 
 # Forward INT/TERM/HUP to the child's process group so cancelling the

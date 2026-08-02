@@ -152,8 +152,14 @@ def test_cancellation_still_kills_group_without_run_directory(
     pytest.fail("test command survived cancellation without its run directory")
 
 
+@pytest.mark.parametrize(
+    "inherited_grace",
+    [None, "30"],
+    ids=["default-grace", "inherited-grace"],
+)
 def test_outer_timeout_leaves_inner_wrapper_time_to_cleanup(
     tmp_path: Path,
+    inherited_grace: str | None,
 ) -> None:
     pid_file = tmp_path / "command-pids"
     tmux_dirs_file = tmp_path / "tmux-dirs"
@@ -167,6 +173,12 @@ def test_outer_timeout_leaves_inner_wrapper_time_to_cleanup(
     )
     command.chmod(0o755)
 
+    # An inherited grace above the watchdog's five-second escalation must
+    # not survive into the nested wrapper, or the watchdog reaps the wrapper
+    # before it can purge its run directory.
+    environment = os.environ.copy()
+    if inherited_grace is not None:
+        environment["GHOSTHUB_TEST_STOP_GRACE"] = inherited_grace
     result = subprocess.run(
         [
             "sh",
@@ -179,6 +191,7 @@ def test_outer_timeout_leaves_inner_wrapper_time_to_cleanup(
         capture_output=True,
         text=True,
         timeout=15,
+        env=environment,
     )
 
     assert result.returncode != 0
