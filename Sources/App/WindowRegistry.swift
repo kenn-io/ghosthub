@@ -9,26 +9,37 @@ final class WindowRegistry: ObservableObject {
 
     private struct Entry {
         let model: WorkspaceSceneModel
-        let refreshRestorationState: () -> Void
+        let registrationOrder: Int
+        let captureRestorationState: () -> WorkspaceWindowState
 
         init(
             model: WorkspaceSceneModel,
-            refreshRestorationState: @escaping () -> Void
+            registrationOrder: Int,
+            captureRestorationState: @escaping () -> WorkspaceWindowState
         ) {
             self.model = model
-            self.refreshRestorationState = refreshRestorationState
+            self.registrationOrder = registrationOrder
+            self.captureRestorationState = captureRestorationState
         }
     }
 
     private var sceneEntries: [ObjectIdentifier: Entry] = [:]
+    private var nextRegistrationOrder = 0
 
     func register(
         _ model: WorkspaceSceneModel,
-        refreshRestorationState: @escaping () -> Void
+        captureRestorationState: @escaping () -> WorkspaceWindowState
     ) {
-        sceneEntries[ObjectIdentifier(model)] = Entry(
+        let identifier = ObjectIdentifier(model)
+        let registrationOrder = sceneEntries[identifier]?.registrationOrder
+            ?? nextRegistrationOrder
+        if sceneEntries[identifier] == nil {
+            nextRegistrationOrder += 1
+        }
+        sceneEntries[identifier] = Entry(
             model: model,
-            refreshRestorationState: refreshRestorationState
+            registrationOrder: registrationOrder,
+            captureRestorationState: captureRestorationState
         )
     }
 
@@ -36,8 +47,10 @@ final class WindowRegistry: ObservableObject {
         sceneEntries.removeValue(forKey: ObjectIdentifier(model))
     }
 
-    func refreshRestorationStates() {
-        sceneEntries.values.forEach { $0.refreshRestorationState() }
+    func captureRestorationStates() -> [WorkspaceWindowState] {
+        sceneEntries.values
+            .sorted { $0.registrationOrder < $1.registrationOrder }
+            .map { $0.captureRestorationState() }
     }
 
     var totalOpenTerminalSurfaceCount: Int {

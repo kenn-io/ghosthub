@@ -21,6 +21,8 @@ struct GhosthubApp: App {
     @StateObject private var settingsStore = SettingsStore.shared
     #if canImport(AppKit)
     private let updateController = UpdateController()
+    private let updateRelaunchStore = UpdateRelaunchManifestStore()
+    private let updateRelaunchRestorer = UpdateRelaunchRestorer()
     #endif
     @FocusedValue(\.sceneModel) private var focusedSceneModel
     @Environment(\.openWindow) private var openWindow
@@ -44,7 +46,11 @@ struct GhosthubApp: App {
         ) { windowState in
             WorkspaceWindow(
                 applicationDelegate: appDelegate,
-                windowState: windowState
+                windowState: windowState,
+                updateRelaunchRestorer: updateRelaunchRestorer,
+                openRelaunchWindow: { state in
+                    openWindow(id: "workspace", value: state)
+                }
             )
             .environmentObject(terminalRuntime)
             .onAppear {
@@ -65,8 +71,25 @@ struct GhosthubApp: App {
                     )
                 }
                 updateController.configureRelaunch(
-                    refreshRestorationState: {
-                        WindowRegistry.shared.refreshRestorationStates()
+                    prepareRelaunch: {
+                        let states = WindowRegistry.shared
+                            .captureRestorationStates()
+                        do {
+                            try updateRelaunchStore.save(states)
+                        } catch {
+                            AppLogger.shared.error(
+                                "update relaunch: could not save windows: \(error)"
+                            )
+                        }
+                    },
+                    cancelRelaunch: {
+                        do {
+                            try updateRelaunchStore.clear()
+                        } catch {
+                            AppLogger.shared.error(
+                                "update relaunch: could not discard saved windows: \(error)"
+                            )
+                        }
                     },
                     authorizeTermination: {
                         appDelegate.authorizeNextUpdaterTermination()

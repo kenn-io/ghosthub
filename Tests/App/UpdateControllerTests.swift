@@ -81,22 +81,24 @@ struct UpdateControllerTests {
     func preRelaunchOrdering() {
         var events: [String] = []
         let delegate = UpdateInstallationDelegate(
-            refreshRestorationState: { events.append("refresh") },
+            prepareRelaunch: { events.append("persist") },
             authorizeTermination: { events.append("authorize") },
             clearTerminationAuthorization: { events.append("clear") }
         )
 
         delegate.prepareForRelaunch()
 
-        #expect(events == ["refresh", "authorize"])
+        #expect(events == ["persist", "authorize"])
     }
 
     @MainActor
     @Test("aborted or finished update sessions clear unused authorization")
     func updateSessionCleanup() {
         var clearCount = 0
+        var cancelCount = 0
         let delegate = UpdateInstallationDelegate(
-            refreshRestorationState: {},
+            prepareRelaunch: {},
+            cancelRelaunch: { cancelCount += 1 },
             authorizeTermination: {},
             clearTerminationAuthorization: { clearCount += 1 }
         )
@@ -105,6 +107,7 @@ struct UpdateControllerTests {
         delegate.updateSessionDidFinish(error: false)
 
         #expect(clearCount == 2)
+        #expect(cancelCount == 0)
     }
 
     @MainActor
@@ -112,7 +115,7 @@ struct UpdateControllerTests {
     func pendingRelaunchSurvivesCycleFinish() {
         var clearCount = 0
         let delegate = UpdateInstallationDelegate(
-            refreshRestorationState: {},
+            prepareRelaunch: {},
             authorizeTermination: {},
             clearTerminationAuthorization: { clearCount += 1 }
         )
@@ -130,8 +133,10 @@ struct UpdateControllerTests {
     )
     func failedRelaunchDisarmsTermination(_ aborts: Bool) {
         var clearCount = 0
+        var cancelCount = 0
         let delegate = UpdateInstallationDelegate(
-            refreshRestorationState: {},
+            prepareRelaunch: {},
+            cancelRelaunch: { cancelCount += 1 },
             authorizeTermination: {},
             clearTerminationAuthorization: { clearCount += 1 }
         )
@@ -144,5 +149,6 @@ struct UpdateControllerTests {
         }
 
         #expect(clearCount == 1)
+        #expect(cancelCount == 1)
     }
 }

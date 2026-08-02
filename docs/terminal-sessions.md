@@ -101,6 +101,13 @@ Once a worktree presentation has observed a generation, incomplete inventory
 cannot erase it and a different non-nil generation is treated as a replacement;
 explicitly reselecting the worktree detaches the observed presentation and
 attaches the replacement session.
+For **Install and Relaunch**, Ghosthub also writes a one-shot ordered window
+manifest under `~/.ghosthub/` before Sparkle terminates the app. On the next
+launch, the default window adopts the first saved descriptor and Ghosthub opens
+the remaining saved windows, covering relaunches where macOS supplies no scene
+values. The manifest is removed after every saved window has begun attach-only
+restoration; native scene restoration still supplies geometry and tab grouping
+when available.
 An ordinary local session must be present in direct discovery before Ghosthub
 runs the exact `attach-session` path. Remote sessions use that same rule and the
 existing SSH keepalive and transport-reconnect loop.

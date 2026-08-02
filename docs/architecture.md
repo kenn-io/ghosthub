@@ -37,8 +37,13 @@ kwt worktree generation, and exact tmux session and protected-socket identity.
 Its window UUID exists only for native scene adoption; runtime model UUIDs and
 paths are never persisted as host, project, or worktree identity. A worktree
 without a canonical generation degrades to project-only navigation and does
-not persist its worktree-owned tmux presentation. SwiftUI and macOS remain
-responsible for restoring scene count, native tab groups, and window geometry.
+not persist its worktree-owned tmux presentation. SwiftUI and macOS normally
+remain responsible for restoring scene count, native tab groups, and window
+geometry. Before a Sparkle relaunch, Ghosthub also atomically records the
+ordered logical descriptors in a one-shot manifest under `~/.ghosthub/`. The
+first default scene adopts the first descriptor and Ghosthub requests the
+remaining scenes when macOS does not return them. Native restoration still
+owns any geometry and tab grouping it provides.
 An active tmux presentation retains the worktree generation observed when it
 was established; a later non-nil generation change is a replacement even when
 inventory reuses the same runtime UUID. Scene persistence observes the complete
@@ -92,9 +97,11 @@ native UI and installation flow. Development binaries without the packaged
 feed and public key disable the update command instead of contacting a release
 service.
 
-When the user accepts Sparkle's **Install and Relaunch**, Ghosthub refreshes
-the continuously maintained scene descriptors and authorizes exactly one
-updater-driven AppKit termination request. This one-shot authorization is
+When the user accepts Sparkle's **Install and Relaunch**, Ghosthub captures
+every live scene descriptor into the updater relaunch manifest before it
+authorizes exactly one updater-driven AppKit termination request. The manifest
+is discarded if the update aborts or errors, and consumed only after every
+saved scene has begun restoration in the relaunched app. This authorization is
 separate from ordinary quit confirmation and is cleared when an update cycle
 aborts or finishes with an error. A successful cycle-finish notification that
 arrives after the relaunch was requested does not disarm it, so Sparkle's

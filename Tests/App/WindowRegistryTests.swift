@@ -4,8 +4,8 @@ import Testing
 @MainActor
 @Suite("Workspace window registry")
 struct WindowRegistryTests {
-    @Test("refreshes each live scene and drops unregistered scenes")
-    func refreshesLiveSceneBindings() throws {
+    @Test("captures live scenes in registration order")
+    func capturesLiveScenesInRegistrationOrder() throws {
         let firstEnvironment = try setupHostEnvironment()
         let secondEnvironment = try setupHostEnvironment()
         let first = try makeModel(
@@ -19,18 +19,17 @@ struct WindowRegistryTests {
             snapshot: secondEnvironment.snapshot
         )
         let registry = WindowRegistry()
-        var firstRefreshes = 0
-        var secondRefreshes = 0
-        registry.register(first) { firstRefreshes += 1 }
-        registry.register(second) { secondRefreshes += 1 }
+        let firstState = WorkspaceWindowState.fresh()
+        let secondState = WorkspaceWindowState.fresh()
+        registry.register(first) { firstState }
+        registry.register(second) { secondState }
 
-        registry.refreshRestorationStates()
-        #expect(firstRefreshes == 1)
-        #expect(secondRefreshes == 1)
+        #expect(
+            registry.captureRestorationStates()
+                == [firstState, secondState]
+        )
 
         registry.unregister(first)
-        registry.refreshRestorationStates()
-        #expect(firstRefreshes == 1)
-        #expect(secondRefreshes == 2)
+        #expect(registry.captureRestorationStates() == [secondState])
     }
 }
