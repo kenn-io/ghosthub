@@ -285,15 +285,28 @@ transport status 255. Tmux owns all windows, panes, history, input, rendering,
 and server-side lifetime.
 
 Ghosthub applies the selected Tmux Theme when it creates a new bare session.
+Built-in themes provide fixed colors; Follow ghostty.conf uses the effective
+foreground and background retained from libghostty's surface-scoped config
+callback, including the active conditional light or dark theme. Until a surface
+has delivered that state, no effective Follow ghostty.conf tmux style is
+available.
+
 Existing sessions retain their own appearance by default; Ghosthub neither
 places a client-local palette over them nor changes their tmux options. The
-explicit shared-session override is the only exception: before attachment it
-resets status and message styles to terminal defaults and supplies the selected
-foreground and background to existing windows in the exact session. Tmux
-shares the result with every attached client. The best-effort styling can never
-prevent attachment. Tmux still owns all interaction behavior; Ghosthub does
-not modify its prefix, key tables, mouse mode, window/pane commands, history,
-or layout.
+persistent shared-session override applies the selected effective style on
+future attachments: built-in palettes within the attach command itself, and
+Follow ghostty.conf one-shot and best-effort once the new surface has published
+its resolved colors. The focused **Session -> Apply Theme to Current Session**
+menu item and its command-palette counterpart apply the same style immediately
+to the connected active workspace tmux attachment without reconnecting or
+changing that preference. The target may be a selected unbound session but is
+never a Console Panel terminal. Both paths reset status and message styles to
+terminal defaults and supply the selected foreground and background to existing
+windows in the exact session. Tmux shares the result with every attached client.
+The best-effort styling can never prevent attachment. Native Windows/psmux
+sessions do not offer either shared styling path. Tmux still owns all interaction
+behavior; Ghosthub does not modify its prefix, key tables, mouse mode,
+window/pane commands, history, or layout.
 
 An explicit New Tmux Session action is the sole boundary where Ghosthub
 creates a bare tmux session itself. For a user-supplied exact name, local

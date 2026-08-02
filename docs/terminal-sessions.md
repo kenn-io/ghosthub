@@ -60,19 +60,33 @@ closing that exact current selection and navigating away only if it is the
 killed target.
 
 Ghosthub applies the selected Tmux Theme when it creates a new bare tmux
-session. Existing sessions retain their own appearance by default: Ghosthub
-neither places a client-local palette over them nor changes their tmux options.
-Users may explicitly enable the shared-session override. Before attachment,
-that override resets the exact session's `status-style`, `message-style`, and
-`message-command-style` to terminal-default colors and sets each existing
-window's default foreground and background. For kwt-backed workspaces, styling
-runs only after kwt has created or repaired the complete session and layout.
-Tmux shares those settings with every attached client. These best-effort style
-commands do not change tmux interaction: prefix and key tables, mouse behavior,
-windows, panes, history, and layout remain untouched.
+session. A built-in palette supplies its configured colors. Follow ghostty.conf
+instead uses the effective foreground and background resolved by libghostty for
+the current macOS appearance, including conditional light and dark themes.
+Existing sessions retain their own appearance by default: Ghosthub neither
+places a client-local palette over them nor changes their tmux options.
+
+Users may enable the persistent shared-session override. On each future
+attachment, that override resets the exact session's `status-style`,
+`message-style`, and `message-command-style` to terminal-default colors and
+sets each existing window's default foreground and background. A built-in
+palette is applied within the attach command itself; kwt-backed workspaces
+style after kwt's own client attaches. Follow ghostty.conf colors only exist
+once the new surface publishes its resolved state, so Ghosthub applies them
+one-shot and best-effort shortly after the attachment connects, verifying the
+session's identity first. **Session -> Apply Theme to Current Session** and the
+matching command-palette action apply the selected effective style immediately
+to the connected active workspace tmux attachment without changing the
+persistent preference or reconnecting. Console Panel terminals are not tmux
+session targets. Both paths change shared tmux options, so every attached client
+sees the result. These best-effort style commands do not change tmux interaction:
+prefix and key tables, mouse behavior, windows, panes, history, and layout
+remain untouched.
 Native Windows attachment leaves psmux's status and message styles user-owned;
 psmux does not preserve tmux's session-scoped rendering for these style resets
-and may apply `reverse` across the client rather than only its status line.
+and may apply `reverse` across the client rather than only its status line. The
+persistent override and one-shot action are therefore unavailable for native
+Windows sessions.
 
 ## Relaunch Restoration
 
@@ -134,9 +148,11 @@ remote host, only an SSH transport loss can hand a kwt-opened session to
 Ghosthub's attach-only reconnect loop. Ghosthub first retries SSH to probe the
 exact session: confirmed presence advances to ordinary attachment, while
 confirmed absence reruns `kwt open` because the failed SSH connection may never
-have executed it. On POSIX hosts, the open, probe, and attach-only phases all
-run through the account login shell so settings such as `TMUX_TMPDIR` resolve
-the same tmux server. On Windows, those phases use encoded PowerShell commands
+have executed it. On POSIX hosts, every remote tmux phase (creation,
+attachment, open, and probe, styled or not) runs through the account login
+shell so settings such as `TMUX_TMPDIR` resolve the same tmux server as later
+styling and identity commands. On Windows, those phases use encoded
+PowerShell commands
 within the same OpenSSH account environment. Confirmed absence retries use
 bounded exponential backoff. Unbound discovered sessions remain attach-only.
 Ghosthub does not expose rename, split, resize, window, or pane operations.
@@ -270,8 +286,9 @@ session model and die with the app process.
 - Do not leak launcher-terminal `EDITOR` or `VISUAL` into embedded shells.
 - Keep Ghosthub terminal config at `~/.config/ghosthub/ghostty.conf`.
 - Keep the generated base config independent of tmux themes. Built-in Tmux
-  Theme colors are applied at session creation or through the explicit
-  shared-session override, never as a client-local libghostty overlay.
+  Theme colors or libghostty's effective Follow ghostty.conf colors are applied
+  at session creation, through the explicit shared-session override, or by the
+  active-session command, never as a client-local libghostty overlay.
 - Keep mutable Ghosthub app state under `~/.ghosthub/`.
 - Do not read or depend on Ghostty.app global config.
 - Do not install Ghosthub split, zoom, or tab keybindings. Native tmux owns

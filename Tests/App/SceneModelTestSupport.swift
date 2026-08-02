@@ -9,6 +9,7 @@ import GhosthubSettings
 import GhosthubTmux
 import GhosthubWorkspace
 @testable import GhosthubTerminal
+import GhosthubTerminalSupport
 @testable import GhosthubApp
 
 // MARK: - Environment Setup
@@ -263,6 +264,10 @@ func makeModel(
         -> Result<String, TmuxBinaryError> = { _ in
             .failure(.notFound(shell: "test"))
         },
+    tmuxPresentationStyleProvider:
+    @escaping (UInt?) -> TmuxPresentationStyle? = { _ in nil },
+    appliesTmuxPresentationStyleToExistingSessionsProvider:
+    @escaping () -> Bool = { false },
     kwtInventoryLoader: @escaping WorkspaceSceneModel.KwtInventoryLoader = {
         host in
         try await KwtInventoryClient().load(from: host)
@@ -326,6 +331,15 @@ func makeModel(
     WorkspaceSceneModel.TmuxSessionIdentityReading = { selection, host in
         try await TmuxSessionKiller().sessionIdentity(selection, on: host)
     },
+    tmuxSessionStyler: @escaping
+    WorkspaceSceneModel.TmuxSessionStyling = { style, selection, identity, host in
+        try await TmuxSessionStyler().apply(
+            style,
+            to: selection,
+            expectedIdentity: identity,
+            on: host
+        )
+    },
     sshHostProbeRunner: @escaping
     WorkspaceSceneModel.SSHHostProbeRunner = { _, _ in
         (status: 255, stdout: "")
@@ -333,12 +347,18 @@ func makeModel(
     configuredSSHHostsProvider: @escaping () -> [SSHHost] = { [] },
     configuredSSHHostsPublisher: AnyPublisher<[SSHHost], Never> =
         Empty(completeImmediately: false).eraseToAnyPublisher(),
+    terminalColorsPublisher:
+    AnyPublisher<[UInt: TerminalResolvedColors], Never>? = nil,
     sceneSettings: WorkspaceSceneSettings = .live(),
     createdSessionDiscoveryDelays: [Duration] = [
         .milliseconds(500),
         .seconds(1),
         .seconds(2),
         .seconds(4),
+    ],
+    deferredTmuxPresentationRetryDelays: [Duration] = [
+        .milliseconds(250), .milliseconds(500), .seconds(1), .seconds(2),
+        .seconds(4), .seconds(8),
     ],
     startServices: Bool = false
 ) throws -> WorkspaceSceneModel {
@@ -350,6 +370,9 @@ func makeModel(
         nativeTmuxSurfaceStore: nativeTmuxSurfaceStore,
         nativeTmuxPathProvider: nativeTmuxPathProvider,
         remoteTmuxPathProvider: remoteTmuxPathProvider,
+        tmuxPresentationStyleProvider: tmuxPresentationStyleProvider,
+        appliesTmuxPresentationStyleToExistingSessionsProvider:
+        appliesTmuxPresentationStyleToExistingSessionsProvider,
         kwtInventoryLoader: kwtInventoryLoader,
         kwtWorktreeCreator: kwtWorktreeCreator,
         kwtWorktreeRemover: kwtWorktreeRemover,
@@ -360,13 +383,17 @@ func makeModel(
         tmuxSessionDiscovery: tmuxSessionDiscovery,
         tmuxSessionKiller: tmuxSessionKiller,
         tmuxSessionIdentityReader: tmuxSessionIdentityReader,
+        tmuxSessionStyler: tmuxSessionStyler,
         sshHostProbeRunner: sshHostProbeRunner,
         configuredSSHHostsProvider: configuredSSHHostsProvider,
         configuredSSHHostsPublisher: configuredSSHHostsPublisher,
+        terminalColorsPublisher: terminalColorsPublisher,
         sceneSettings: sceneSettings,
         localHostID: localHostID,
         overrideSnapshot: snapshot,
         createdSessionDiscoveryDelays: createdSessionDiscoveryDelays,
+        deferredTmuxPresentationRetryDelays:
+        deferredTmuxPresentationRetryDelays,
         startServices: startServices
     )
 }

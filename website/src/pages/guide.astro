@@ -268,7 +268,9 @@ const imageAlt = {
           <p>
             Press <kbd>⌘⇧P</kbd> for the Command Palette. Search across hosts,
             projects, worktrees, appearance, settings, and common actions,
-            then press Return to go.
+            then press Return to go. When an attached tmux session is active,
+            <strong>Apply Theme to Current Session</strong> rethemes it without
+            detaching or enabling the persistent shared-session override.
           </p>
           <div class="shortcuts" aria-label="Useful keyboard shortcuts">
             <span><kbd>⌘B</kbd> Hide/show sidebar</span>
@@ -364,9 +366,15 @@ const imageAlt = {
             Ghosthub. Existing sessions keep their own appearance by default;
             Ghosthub does not place a local palette over them. An explicit
             <strong>Apply theme to shared tmux sessions</strong> opt-in applies
-            the selected colors to the session’s existing windows and chrome
-            for every attached terminal. Ghosthub reloads terminal
-            configuration when it changes.
+            the selected colors before future attachments. Follow ghostty.conf
+            uses the effective foreground and background for the current light
+            or dark appearance, just like the built-in themes. To update only
+            the connected active session immediately, choose{' '}
+            <strong>Session → Apply Theme to Current Session</strong> or the
+            matching Command Palette action. Both choices update the session’s
+            existing windows and chrome for every attached terminal; they do
+            not target the Console Panel and are unavailable for native Windows
+            sessions. Ghosthub reloads terminal configuration when it changes.
           </p>
         </div>
       </div>

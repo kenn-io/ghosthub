@@ -174,6 +174,7 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     /// size is already reported to libghostty via `ghostty_surface_size`; this
     /// just relays the cell dimensions to Swift consumers.
     public var onGridSizeChanged: ((Int, Int) -> Void)?
+    package var onSurfaceDestroyed: (@MainActor @Sendable (UInt) -> Void)?
     var fontZoomShortcutHandler: ((TerminalFontZoomCommand) -> Bool)?
     private var focusObservers: [UUID: (Bool) -> Void] = [:]
     private var primaryInteractionObservers: [UUID: () -> Void] = [:]
@@ -284,11 +285,12 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     }
 
     deinit {
-        NotificationCenter.default.removeObserver(self)
         let monitor = eventMonitor
         let surfaceHandle = surface
         let queue = keyInputQueue
         let token = callbackToken
+        let onSurfaceDestroyed = onSurfaceDestroyed
+        NotificationCenter.default.removeObserver(self)
 
         if let monitor {
             NSEvent.removeMonitor(monitor)
@@ -307,6 +309,7 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
                 Self.viewsBySurfaceIdentity.removeValue(
                     forKey: surfaceIdentity
                 )
+                onSurfaceDestroyed?(surfaceIdentity)
                 ghostty_surface_free(surfaceHandle)
                 withExtendedLifetime(token) {}
             }
@@ -316,6 +319,24 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     // MARK: - Public API
 
     package var surfaceHandle: ghostty_surface_t? { surface }
+
+    package var surfaceIdentity: UInt? {
+        surfaceHandle.map { UInt(bitPattern: $0) }
+    }
+
+    package func synchronizeColorScheme() {
+        guard let surface else { return }
+        let scheme: ghostty_color_scheme_e
+        switch effectiveAppearance.name {
+        case .aqua, .vibrantLight:
+            scheme = GHOSTTY_COLOR_SCHEME_LIGHT
+        case .darkAqua, .vibrantDark:
+            scheme = GHOSTTY_COLOR_SCHEME_DARK
+        default:
+            return
+        }
+        ghostty_surface_set_color_scheme(surface, scheme)
+    }
 
     package static func surfaceView(
         forSurfaceIdentity identity: UInt?
@@ -630,20 +651,9 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
         appearanceObserver = observe(
             \.effectiveAppearance,
             options: [.new, .initial]
-        ) { [weak self] _, change in
-            guard let appearance = change.newValue else { return }
-            let scheme: ghostty_color_scheme_e
-            switch appearance.name {
-            case .aqua, .vibrantLight:
-                scheme = GHOSTTY_COLOR_SCHEME_LIGHT
-            case .darkAqua, .vibrantDark:
-                scheme = GHOSTTY_COLOR_SCHEME_DARK
-            default:
-                return
-            }
+        ) { [weak self] _, _ in
             DispatchQueue.main.async {
-                guard let surface = self?.surface else { return }
-                ghostty_surface_set_color_scheme(surface, scheme)
+                self?.synchronizeColorScheme()
             }
         }
     }

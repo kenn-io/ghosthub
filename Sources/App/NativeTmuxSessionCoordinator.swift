@@ -23,7 +23,14 @@ protocol TmuxSurfaceStoring: AnyObject {
         for key: SurfaceKey,
         configuration: TerminalSurfaceConfiguration
     ) -> TmuxPaneSurfacing?
+    func surfaceIdentity(for key: SurfaceKey) -> UInt?
     func removeSurface(for key: SurfaceKey)
+}
+
+extension TmuxSurfaceStoring {
+    func surfaceIdentity(for _: SurfaceKey) -> UInt? {
+        nil
+    }
 }
 
 extension TerminalSurfaceCoordinator: TmuxSurfaceStoring {
@@ -32,6 +39,10 @@ extension TerminalSurfaceCoordinator: TmuxSurfaceStoring {
         configuration: TerminalSurfaceConfiguration
     ) -> TmuxPaneSurfacing? {
         surface(for: key, configuration: configuration)
+    }
+
+    func surfaceIdentity(for key: SurfaceKey) -> UInt? {
+        surfaceIfPresent(for: key)?.surfaceIdentity
     }
 }
 
@@ -100,6 +111,7 @@ final class NativeTmuxSessionCoordinator {
     private var tmuxPathsByHost: [TmuxHost: String] = [:]
     private var provisioningHandles: Set<UUID> = []
     private var provisioningTasks: [UUID: Task<Void, Never>] = [:]
+    private var deferredPresentationStyleHandles: Set<UUID> = []
     private var isShuttingDown = false
 
     var onStateChanged: ((BorrowedTmuxSessionHandle, ConnectionState) -> Void)?
@@ -298,6 +310,7 @@ final class NativeTmuxSessionCoordinator {
         attachments.removeValue(forKey: handle.id)
         closedAttachmentHandles.remove(handle.id)
         launchedHandles.remove(handle.id)
+        deferredPresentationStyleHandles.remove(handle.id)
         terminalCoordinator.removeSurface(for: surfaceKey(handle))
     }
 
@@ -309,6 +322,26 @@ final class NativeTmuxSessionCoordinator {
         closedAttachmentHandles.contains(handle.id)
     }
 
+    func hasDeferredPresentationStyle(
+        _ handle: BorrowedTmuxSessionHandle
+    ) -> Bool {
+        deferredPresentationStyleHandles.contains(handle.id)
+    }
+
+    func shouldApplyPresentationStyle(
+        _ handle: BorrowedTmuxSessionHandle
+    ) -> Bool {
+        guard let attachment = attachments[handle.id] else { return false }
+        return attachment.launchMode == .create
+            || appliesPresentationStyleToExistingSessionsProvider()
+    }
+
+    func markDeferredPresentationStyleApplied(
+        _ handle: BorrowedTmuxSessionHandle
+    ) {
+        deferredPresentationStyleHandles.remove(handle.id)
+    }
+
     func surface(handle: BorrowedTmuxSessionHandle) -> TerminalSurfaceView? {
         guard !closedAttachmentHandles.contains(handle.id),
               let attachment = attachments[handle.id]
@@ -316,6 +349,10 @@ final class NativeTmuxSessionCoordinator {
         let appliesPresentationStyle =
             attachment.launchMode == .create
                 || appliesPresentationStyleToExistingSessionsProvider()
+        let presentationStyle = appliesPresentationStyle
+            ? presentationStyleProvider()
+            : nil
+        let isFirstLaunch = !launchedHandles.contains(handle.id)
         let info = TmuxAttachmentInfo(
             sessionName: handle.name,
             host: attachment.host,
@@ -324,9 +361,7 @@ final class NativeTmuxSessionCoordinator {
                 ? attachment.workingDirectory
                 : nil,
             protectedWorkspacePath: attachment.protectedWorkspacePath,
-            presentationStyle: appliesPresentationStyle
-                ? presentationStyleProvider()
-                : nil,
+            presentationStyle: presentationStyle,
             launchMode: attachment.launchMode
         )
         let surface = terminalCoordinator.paneSurface(
@@ -344,16 +379,24 @@ final class NativeTmuxSessionCoordinator {
                 )
             )
         )
-        guard let surface else { return nil }
+        guard let surface else {
+            deferredPresentationStyleHandles.remove(handle.id)
+            return nil
+        }
         if let error = surface.launchError {
             closedAttachmentHandles.insert(handle.id)
             attachments.removeValue(forKey: handle.id)
+            deferredPresentationStyleHandles.remove(handle.id)
             terminalCoordinator.removeSurface(for: surfaceKey(handle))
             reportSurfaceStateLater(
                 handle,
                 state: .disconnected(reason: error.localizedDescription)
             )
             return nil
+        }
+        if isFirstLaunch, appliesPresentationStyle,
+           presentationStyle == nil {
+            deferredPresentationStyleHandles.insert(handle.id)
         }
         surface.blocksClipboardReads = attachment.host.isRemote
         surface.registerSurfaceCloseObserver(
@@ -370,6 +413,10 @@ final class NativeTmuxSessionCoordinator {
             )
         }
         return surface as? TerminalSurfaceView
+    }
+
+    func surfaceIdentity(handle: BorrowedTmuxSessionHandle) -> UInt? {
+        terminalCoordinator.surfaceIdentity(for: surfaceKey(handle))
     }
 
     private func reportSurfaceStateLater(
@@ -395,6 +442,7 @@ final class NativeTmuxSessionCoordinator {
         guard handlesByKey[key] == handle else { return }
         closedAttachmentHandles.insert(handle.id)
         attachments.removeValue(forKey: handle.id)
+        deferredPresentationStyleHandles.remove(handle.id)
         terminalCoordinator.removeSurface(for: surfaceKey(handle))
         onStateChanged?(
             handle,
@@ -415,6 +463,7 @@ final class NativeTmuxSessionCoordinator {
         attachments.removeAll()
         closedAttachmentHandles.removeAll()
         launchedHandles.removeAll()
+        deferredPresentationStyleHandles.removeAll()
         for handle in handles {
             terminalCoordinator.removeSurface(for: surfaceKey(handle))
         }

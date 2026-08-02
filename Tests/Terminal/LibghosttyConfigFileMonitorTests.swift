@@ -413,7 +413,7 @@ struct LibghosttyConfigFileMonitorTests {
         try TemporaryConfigMonitorFixture.withFixture(
             initialConfig: "font-size = 13\n"
         ) { fixture in
-            try fixture.expectChange(timeout: 3.0) { file in
+            try fixture.expectChange { file in
                 try? FileManager.default.removeItem(at: file)
                 Thread.sleep(forTimeInterval: 0.25)
                 try? "font-size = 14\n".write(

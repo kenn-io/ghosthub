@@ -88,6 +88,7 @@ public final class TerminalSurfaceView: ObservableObject {
     public var onChildWrite: ((Data) -> Void)?
     /// Mirrors `TerminalSurfaceView.onGridSizeChanged`.
     public var onGridSizeChanged: ((Int, Int) -> Void)?
+    package var onSurfaceDestroyed: (@MainActor @Sendable (UInt) -> Void)?
     /// Mirrors clipboard-read isolation for remote surfaces.
     public var blocksClipboardReads: Bool = false
     var fontZoomShortcutHandler: ((TerminalFontZoomCommand) -> Bool)?
@@ -109,6 +110,7 @@ public final class TerminalSurfaceView: ObservableObject {
     public var childProcessID: Int32? { nil }
     public var pwd: String?
     public var window: NSWindow? { nil }
+    package var surfaceIdentity: UInt? { nil }
     var currentFontSizePoints: CGFloat? { nil }
 
     public func sendProgrammaticInput(_ string: String) {

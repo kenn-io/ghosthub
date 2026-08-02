@@ -571,7 +571,9 @@ struct WorkspaceWindow: View {
                 activeTmuxSession:
                 sceneModel.activeBorrowedTmuxSelection,
                 activeTmuxSessionIsConnected:
-                sceneModel.activeBorrowedTmuxSessionIsConnected
+                sceneModel.activeBorrowedTmuxSessionIsConnected,
+                activeTmuxSessionCanApplyTheme:
+                sceneModel.canApplyThemeToActiveTmuxSession
             ),
             content: ContentBuilders(
                 tmuxSessionContentBuilder: {
@@ -661,6 +663,9 @@ struct WorkspaceWindow: View {
                 },
                 killTmuxSession: { [sceneModel] request in
                     try await sceneModel.killTmuxSession(request)
+                },
+                applyTmuxSessionTheme: { [sceneModel] selection in
+                    try await sceneModel.applyTheme(to: selection)
                 },
                 createTmuxSession: { [sceneModel] selection in
                     sceneModel.createTmuxSession(selection)

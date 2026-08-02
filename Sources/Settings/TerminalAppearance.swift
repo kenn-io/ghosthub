@@ -33,7 +33,7 @@ public enum TerminalTheme: String, CaseIterable, Identifiable, Sendable {
     public var summary: String {
         switch self {
         case .followConfig:
-            return "Leave tmux colors as configured."
+            return "Use the effective colors from Ghosthub's ghostty.conf."
         case .pro:
             return "Monaco-inspired black glass with bright monochrome text."
         case .homebrew:

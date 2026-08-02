@@ -487,10 +487,12 @@ public struct SettingsView: View {
                     "Apply theme to shared tmux sessions",
                     isOn: $draft.appliesTerminalThemeToTmuxSessions
                 )
-                .disabled(draft.terminalTheme == .followConfig)
+                .accessibilityIdentifier(
+                    "settings.apply-theme-to-tmux-sessions"
+                )
 
                 Text(
-                    "Ghosthub applies the selected colors when it creates a new tmux session. Existing sessions keep their current appearance unless the shared-session override is enabled. That override changes tmux window, status, and message colors for every attached client. Follow ghostty.conf leaves tmux colors untouched."
+                    "Ghosthub applies the selected colors when it creates a new tmux session. Existing sessions keep their current appearance unless the shared-session override is enabled. Follow ghostty.conf uses the effective foreground and background resolved from Ghosthub's config, including the active light or dark theme. The override changes tmux window, status, and message colors for every attached client. Session > Apply Theme to Current Session, also available in the command palette, applies the current selection immediately without enabling the override."
                 )
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)

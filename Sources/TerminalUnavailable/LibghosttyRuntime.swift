@@ -19,6 +19,8 @@ public final class LibghosttyRuntime: ObservableObject {
     @Published public private(set) var diagnostics: [String]
     @Published public private(set) var configReloadNotice:
         LibghosttyConfigReloadNotice?
+    @Published public private(set) var resolvedTerminalColorsBySurface:
+        [UInt: TerminalResolvedColors]
 
     public let runtimeState: LibghosttyRuntimeState
     public let renderTracker = SurfaceRenderTracker()
@@ -40,6 +42,14 @@ public final class LibghosttyRuntime: ObservableObject {
 
     public var needsConfirmQuit: Bool { false }
 
+    public var resolvedTerminalColors: TerminalResolvedColors? { nil }
+
+    public func resolvedTerminalColors(
+        forSurfaceIdentity _: UInt
+    ) -> TerminalResolvedColors? {
+        nil
+    }
+
     public init(
         pipeline: LibghosttyConfigPipeline = .live,
         runtimeState: LibghosttyRuntimeState? = nil,
@@ -51,6 +61,7 @@ public final class LibghosttyRuntime: ObservableObject {
         phase = .unavailable
         diagnostics = bootstrapStatus.message.map { [$0] } ?? []
         configReloadNotice = nil
+        resolvedTerminalColorsBySurface = [:]
         configPlan = try? pipeline.loadPlan()
         installConfigMonitorIfNeeded(plan: configPlan)
     }

@@ -47,6 +47,9 @@ public enum WorkspaceCommandAction: Equatable, Sendable {
     case addProject(UUID)
     case openTmuxSession(WorkspaceTmuxSessionSelection)
     case killTmuxSession(WorkspaceTmuxSessionSelection)
+    case applyThemeToCurrentTmuxSession(
+        WorkspaceTmuxSessionSelection
+    )
     case newWorktree(UUID)
     case importPullRequest(UUID)
     case openSettings(SettingsDomain)
@@ -119,6 +122,7 @@ public enum CommandPaletteModel {
         selection: WorkspaceSelection,
         activeTmuxSession: WorkspaceTmuxSessionSelection? = nil,
         activeTmuxSessionIsConnected: Bool = false,
+        activeTmuxSessionCanApplyTheme: Bool = false,
         isWorkspacesRoute: Bool = true,
         isSidebarVisible: Bool,
         isSidePanelVisible: Bool,
@@ -184,6 +188,12 @@ public enum CommandPaletteModel {
         ))
         commands.append(contentsOf: hostCommands(in: snapshot))
         commands.append(contentsOf: hostActionCommands(in: snapshot))
+        commands.append(contentsOf: activeTmuxThemeCommands(
+            activeSelection: activeTmuxSession,
+            activeSelectionIsConnected:
+            activeTmuxSessionIsConnected,
+            canApplyTheme: activeTmuxSessionCanApplyTheme
+        ))
         commands.append(contentsOf: tmuxSessionCommands(
             in: snapshot,
             activeSelection: activeTmuxSession,
@@ -476,6 +486,31 @@ public enum CommandPaletteModel {
             }
             return commands
         }
+    }
+
+    private static func activeTmuxThemeCommands(
+        activeSelection: WorkspaceTmuxSessionSelection?,
+        activeSelectionIsConnected: Bool,
+        canApplyTheme: Bool
+    ) -> [WorkspaceCommandItem] {
+        guard let activeSelection,
+              activeSelectionIsConnected,
+              canApplyTheme
+        else { return [] }
+        return [
+            WorkspaceCommandItem(
+                id: "apply-theme-to-current-tmux-session",
+                title: "Apply Theme to Current Session",
+                subtitle: "Apply the selected theme to \(activeSelection.name) and every attached client.",
+                keywords: [
+                    "apply", "retheme", "theme", "tmux", "session",
+                    activeSelection.name,
+                ],
+                action: .applyThemeToCurrentTmuxSession(
+                    activeSelection
+                )
+            ),
+        ]
     }
 
     private static func newWorktreeCommands(

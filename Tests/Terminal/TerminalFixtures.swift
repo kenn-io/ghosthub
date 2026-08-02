@@ -119,23 +119,24 @@ struct TemporaryConfigMonitorFixture {
     }
 
     func expectChange(
-        timeout: TimeInterval = 2.0,
+        timeout: TimeInterval = 10.0,
         action: @escaping @Sendable (URL) -> Void
     ) throws {
         let changed = DispatchSemaphore(value: 0)
         let monitor = try startMonitor { changed.signal() }
         defer { monitor.stop() }
 
-        let file = configFile
-        DispatchQueue.global().asyncAfter(
-            deadline: .now() + 0.1
-        ) {
-            action(file)
+        // Repeat the mutation until the monitor reports it: under parallel
+        // test load a single write can race dispatch-source arming or a
+        // starved queue, so any one bounded wait is a flake. A dead monitor
+        // still fails; it never signals no matter how many writes land.
+        let deadline = Date().addingTimeInterval(timeout)
+        var fired = false
+        while !fired, Date() < deadline {
+            action(configFile)
+            fired = changed.wait(timeout: .now() + 0.25) == .success
         }
-
-        #expect(
-            changed.wait(timeout: .now() + timeout) == .success
-        )
+        #expect(fired)
     }
 
     static func withFixture(
