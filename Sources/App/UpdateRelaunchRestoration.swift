@@ -79,9 +79,28 @@ enum UpdateRelaunchSceneObservation: Equatable {
 
 @MainActor
 final class UpdateRelaunchRestorer {
+    private enum SceneAssignment {
+        case presented(UUID)
+        case fallback(UUID)
+
+        var windowID: UUID {
+            switch self {
+            case let .presented(windowID), let .fallback(windowID):
+                windowID
+            }
+        }
+
+        var isFallback: Bool {
+            if case .fallback = self {
+                return true
+            }
+            return false
+        }
+    }
+
     private struct SceneEntry {
         let registrationOrder: Int
-        var assignedWindowID: UUID?
+        var assignment: SceneAssignment?
         var restore: (WorkspaceWindowState) -> Void
     }
 
@@ -97,6 +116,7 @@ final class UpdateRelaunchRestorer {
     /// SwiftUI view reaches onAppear and registers its scene here.
     private var expectedNativeSceneCount: Int?
     private var sceneBindingSettlementTask: Task<Void, Never>?
+    private var manifestConsumed = false
 
     init(
         store: UpdateRelaunchManifestStore = .init()
@@ -129,7 +149,9 @@ final class UpdateRelaunchRestorer {
         restore: @escaping (WorkspaceWindowState) -> Void,
         openWindow: @escaping (WorkspaceWindowState) -> Void
     ) -> UpdateRelaunchSceneObservation {
-        guard !orderedWindowIDs.isEmpty else { return .ordinary }
+        guard !orderedWindowIDs.isEmpty,
+              !manifestConsumed || sceneEntries[sceneID] != nil
+        else { return .ordinary }
         let registrationOrder = sceneEntries[sceneID]?.registrationOrder
             ?? nextRegistrationOrder
         if sceneEntries[sceneID] == nil {
@@ -137,7 +159,7 @@ final class UpdateRelaunchRestorer {
         }
         sceneEntries[sceneID] = SceneEntry(
             registrationOrder: registrationOrder,
-            assignedWindowID: sceneEntries[sceneID]?.assignedWindowID,
+            assignment: sceneEntries[sceneID]?.assignment,
             restore: restore
         )
         self.openWindow = openWindow
@@ -173,15 +195,20 @@ final class UpdateRelaunchRestorer {
         guard let expectedNativeSceneCount,
               sceneEntries.count >= expectedNativeSceneCount,
               !orderedWindowIDs.isEmpty,
+              !manifestConsumed,
               openWindow != nil
         else { return }
 
         // Registration and an optional binding's decoded value can arrive in
-        // separate SwiftUI updates. Wait through the next main-actor turn and
-        // restart this settlement whenever another value arrives.
+        // separate SwiftUI updates. Require a real quiescence interval and
+        // restart it whenever another value arrives. Fallback assignments stay
+        // provisional so an even later presented ID can still correct them.
         sceneBindingSettlementTask = Task { [weak self] in
-            await Task.yield()
-            guard !Task.isCancelled else { return }
+            do {
+                try await Task.sleep(for: .milliseconds(100))
+            } catch {
+                return
+            }
             self?.sceneBindingSettlementTask = nil
             self?.reconcileAfterSceneBindingsSettled()
         }
@@ -193,11 +220,12 @@ final class UpdateRelaunchRestorer {
         guard let expectedNativeSceneCount,
               sceneEntries.count >= expectedNativeSceneCount,
               !orderedWindowIDs.isEmpty,
+              !manifestConsumed,
               let openWindow
         else { return }
 
         let claimedWindowIDs = Set(
-            sceneEntries.values.compactMap(\.assignedWindowID)
+            sceneEntries.values.compactMap { $0.assignment?.windowID }
         )
         var missingWindowIDs = orderedWindowIDs.filter {
             !claimedWindowIDs.contains($0)
@@ -205,7 +233,7 @@ final class UpdateRelaunchRestorer {
                 && !restoringWindowIDs.contains($0)
         }
         let availableSceneIDs = sceneEntries
-            .filter { $0.value.assignedWindowID == nil }
+            .filter { $0.value.assignment == nil }
             .sorted {
                 $0.value.registrationOrder < $1.value.registrationOrder
             }
@@ -221,7 +249,7 @@ final class UpdateRelaunchRestorer {
                   var entry = sceneEntries[sceneID]
             else { break }
             missingWindowIDs.removeFirst()
-            entry.assignedWindowID = windowID
+            entry.assignment = .fallback(windowID)
             sceneEntries[sceneID] = entry
             restorations.append((entry.restore, state))
         }
@@ -239,7 +267,9 @@ final class UpdateRelaunchRestorer {
     func didBeginRestoring(windowID: UUID) {
         guard statesByID[windowID] != nil else { return }
         restoringWindowIDs.insert(windowID)
-        guard restoringWindowIDs.count == statesByID.count else {
+        guard !manifestConsumed,
+              restoringWindowIDs.count == statesByID.count
+        else {
             return
         }
         do {
@@ -249,12 +279,8 @@ final class UpdateRelaunchRestorer {
                 "update relaunch: could not consume saved windows: \(error)"
             )
         }
-        orderedWindowIDs = []
-        statesByID = [:]
+        manifestConsumed = true
         scheduledWindowIDs = []
-        restoringWindowIDs = []
-        sceneEntries = [:]
-        openWindow = nil
         sceneBindingSettlementTask?.cancel()
         sceneBindingSettlementTask = nil
     }
@@ -264,21 +290,43 @@ final class UpdateRelaunchRestorer {
         presented: WorkspaceWindowState?
     ) -> UpdateRelaunchSceneObservation {
         guard var entry = sceneEntries[sceneID] else { return .ordinary }
-        if let assignedWindowID = entry.assignedWindowID {
+        if let assignment = entry.assignment {
+            let assignedWindowID = assignment.windowID
             guard presented?.windowID != assignedWindowID else {
                 return .ordinary
             }
-            return presented == nil
-                ? .ordinary : .waitingForNativeRestoration
+            guard let presented,
+                  let saved = statesByID[presented.windowID],
+                  assignment.isFallback
+            else {
+                return presented == nil
+                    ? .ordinary : .waitingForNativeRestoration
+            }
+            guard let otherSceneID = sceneEntries.first(where: {
+                $0.key != sceneID
+                    && $0.value.assignment?.windowID == saved.windowID
+            })?.key,
+                var otherEntry = sceneEntries[otherSceneID],
+                otherEntry.assignment?.isFallback == true,
+                let previousState = statesByID[assignedWindowID]
+            else { return .waitingForNativeRestoration }
+
+            entry.assignment = .presented(saved.windowID)
+            otherEntry.assignment = .fallback(assignedWindowID)
+            sceneEntries[sceneID] = entry
+            sceneEntries[otherSceneID] = otherEntry
+            scheduledWindowIDs.remove(saved.windowID)
+            otherEntry.restore(previousState)
+            return .restore(saved)
         }
         guard let presented,
               let saved = statesByID[presented.windowID],
               !sceneEntries.values.contains(where: {
-                  $0.assignedWindowID == presented.windowID
+                  $0.assignment?.windowID == presented.windowID
               })
         else { return .waitingForNativeRestoration }
 
-        entry.assignedWindowID = saved.windowID
+        entry.assignment = .presented(saved.windowID)
         sceneEntries[sceneID] = entry
         scheduledWindowIDs.remove(saved.windowID)
         return .restore(saved)

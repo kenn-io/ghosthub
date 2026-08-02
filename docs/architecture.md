@@ -43,10 +43,11 @@ geometry. Before a Sparkle relaunch, Ghosthub also atomically records the
 ordered logical descriptors in a one-shot manifest under `~/.ghosthub/`. The
 app collects initial and late native scene values until AppKit reports that
 native window restoration has finished and every restored workspace window has
-registered its SwiftUI scene. Ghosthub lets the scenes' optional bindings finish
-publishing decoded values before unresolved scenes adopt unclaimed descriptors
-in saved order, then requests a scene for every descriptor still missing. Native
-restoration still owns any geometry and tab grouping it provides.
+registered its SwiftUI scene. Ghosthub requires the scenes' optional bindings to
+be quiescent before unresolved scenes receive provisional unclaimed descriptors
+in saved order, then requests a scene for every descriptor still missing. A
+later native descriptor remains authoritative and corrects provisional
+assignments, so native restoration still owns geometry and tab grouping.
 An active tmux presentation retains the worktree generation observed when it
 was established; a later non-nil generation change is a replacement even when
 inventory reuses the same runtime UUID. Scene persistence observes the complete

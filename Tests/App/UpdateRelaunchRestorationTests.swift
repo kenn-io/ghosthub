@@ -105,14 +105,15 @@ struct UpdateRelaunchRestorationTests {
         let restorer = UpdateRelaunchRestorer(store: store)
         let firstSceneID = UUID()
         let secondSceneID = UUID()
-        var restored: [WorkspaceWindowState] = []
+        var firstRestored: [WorkspaceWindowState] = []
+        var secondRestored: [WorkspaceWindowState] = []
         var opened: [WorkspaceWindowState] = []
 
         #expect(
             restorer.registerScene(
                 id: firstSceneID,
                 presented: nil,
-                restore: { restored.append($0) },
+                restore: { firstRestored.append($0) },
                 openWindow: { opened.append($0) }
             ) == .waitingForNativeRestoration
         )
@@ -120,7 +121,7 @@ struct UpdateRelaunchRestorationTests {
             restorer.registerScene(
                 id: secondSceneID,
                 presented: nil,
-                restore: { restored.append($0) },
+                restore: { secondRestored.append($0) },
                 openWindow: { opened.append($0) }
             ) == .waitingForNativeRestoration
         )
@@ -143,7 +144,8 @@ struct UpdateRelaunchRestorationTests {
             expectedSceneCount: 2
         )
 
-        #expect(restored.isEmpty)
+        #expect(firstRestored.isEmpty)
+        #expect(secondRestored.isEmpty)
         #expect(opened.isEmpty)
         #expect(!FileManager.default.fileExists(atPath: store.fileURL.path))
     }
@@ -188,8 +190,8 @@ struct UpdateRelaunchRestorationTests {
         #expect(FileManager.default.fileExists(atPath: store.fileURL.path))
     }
 
-    @Test("native values arriving after reconciliation do not duplicate windows")
-    func nativeValuesArriveAfterReconciliationBegins() throws {
+    @Test("late reversed native values correct provisional fallback assignments")
+    func reversedNativeValuesCorrectFallbackAssignments() throws {
         let scratch = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: scratch) }
@@ -210,14 +212,15 @@ struct UpdateRelaunchRestorationTests {
         let restorer = UpdateRelaunchRestorer(store: store)
         let firstSceneID = UUID()
         let secondSceneID = UUID()
-        var restored: [WorkspaceWindowState] = []
+        var firstRestored: [WorkspaceWindowState] = []
+        var secondRestored: [WorkspaceWindowState] = []
         var opened: [WorkspaceWindowState] = []
 
         #expect(
             restorer.registerScene(
                 id: firstSceneID,
                 presented: nil,
-                restore: { restored.append($0) },
+                restore: { firstRestored.append($0) },
                 openWindow: { opened.append($0) }
             ) == .waitingForNativeRestoration
         )
@@ -225,7 +228,7 @@ struct UpdateRelaunchRestorationTests {
             restorer.registerScene(
                 id: secondSceneID,
                 presented: nil,
-                restore: { restored.append($0) },
+                restore: { secondRestored.append($0) },
                 openWindow: { opened.append($0) }
             ) == .waitingForNativeRestoration
         )
@@ -234,25 +237,30 @@ struct UpdateRelaunchRestorationTests {
         )
         restorer.reconcileAfterSceneBindingsSettled()
 
-        #expect(restored == [first, second])
+        #expect(firstRestored == [first])
+        #expect(secondRestored == [second])
         #expect(opened.isEmpty)
+        let secondObservation = restorer.receivePresentedState(
+            sceneID: secondSceneID,
+            presented: first
+        )
+        #expect(secondObservation == .restore(first))
+        if case let .restore(state) = secondObservation {
+            secondRestored.append(state)
+        }
         #expect(
             restorer.receivePresentedState(
                 sceneID: firstSceneID,
-                presented: first
-            ) == .ordinary
-        )
-        #expect(
-            restorer.receivePresentedState(
-                sceneID: secondSceneID,
                 presented: second
             ) == .ordinary
         )
+        #expect(firstRestored.last == second)
+        #expect(secondRestored.last == first)
         #expect(opened.isEmpty)
     }
 
     @Test("late native IDs preserve their restored window association")
-    func completionPrecedesReverseNativeIDs() throws {
+    func completionPrecedesReverseNativeIDs() async throws {
         let scratch = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: scratch) }
@@ -273,7 +281,8 @@ struct UpdateRelaunchRestorationTests {
         let restorer = UpdateRelaunchRestorer(store: store)
         let firstSceneID = UUID()
         let secondSceneID = UUID()
-        var restored: [WorkspaceWindowState] = []
+        var firstRestored: [WorkspaceWindowState] = []
+        var secondRestored: [WorkspaceWindowState] = []
         var opened: [WorkspaceWindowState] = []
 
         restorer.nativeWindowRestorationDidFinish(
@@ -283,7 +292,7 @@ struct UpdateRelaunchRestorationTests {
             restorer.registerScene(
                 id: firstSceneID,
                 presented: nil,
-                restore: { restored.append($0) },
+                restore: { firstRestored.append($0) },
                 openWindow: { opened.append($0) }
             ) == .waitingForNativeRestoration
         )
@@ -294,31 +303,41 @@ struct UpdateRelaunchRestorationTests {
             restorer.registerScene(
                 id: secondSceneID,
                 presented: nil,
-                restore: { restored.append($0) },
+                restore: { secondRestored.append($0) },
                 openWindow: { opened.append($0) }
             ) == .waitingForNativeRestoration
         )
         restorer.reconcileIfNativeRestorationFinished()
-        #expect(restored.isEmpty)
+        #expect(firstRestored.isEmpty)
+        #expect(secondRestored.isEmpty)
         #expect(opened.isEmpty)
 
-        #expect(
-            restorer.receivePresentedState(
-                sceneID: secondSceneID,
-                presented: first
-            ) == .restore(first)
+        for _ in 0 ..< 3 {
+            await Task.yield()
+        }
+
+        let secondObservation = restorer.receivePresentedState(
+            sceneID: secondSceneID,
+            presented: first
         )
+        #expect(secondObservation == .restore(first))
+        if case let .restore(state) = secondObservation {
+            secondRestored.append(state)
+        }
         restorer.didBeginRestoring(windowID: first.windowID)
-        #expect(
-            restorer.receivePresentedState(
-                sceneID: firstSceneID,
-                presented: second
-            ) == .restore(second)
+        let firstObservation = restorer.receivePresentedState(
+            sceneID: firstSceneID,
+            presented: second
         )
+        #expect(firstObservation != .waitingForNativeRestoration)
+        if case let .restore(state) = firstObservation {
+            firstRestored.append(state)
+        }
         restorer.didBeginRestoring(windowID: second.windowID)
         restorer.reconcileAfterSceneBindingsSettled()
 
-        #expect(restored.isEmpty)
+        #expect(firstRestored.last == second)
+        #expect(secondRestored.last == first)
         #expect(opened.isEmpty)
     }
 
