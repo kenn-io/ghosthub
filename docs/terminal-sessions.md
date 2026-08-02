@@ -105,9 +105,10 @@ For **Install and Relaunch**, Ghosthub also writes a one-shot ordered window
 manifest under `~/.ghosthub/` before Sparkle terminates the app. On the next
 launch, Ghosthub collects initial and late native scene values until AppKit
 reports that native window restoration has finished and every restored workspace
-window has registered its SwiftUI scene. Unresolved scenes then adopt unclaimed
-descriptors, and Ghosthub opens every saved window still missing, covering both
-absent and partial macOS restoration.
+window has registered its SwiftUI scene. Ghosthub lets the scenes' optional
+bindings finish publishing decoded values before unresolved scenes adopt
+unclaimed descriptors, then opens every saved window still missing, covering
+both absent and partial macOS restoration.
 The manifest is removed after every saved window has begun attach-only
 restoration; native scene restoration still supplies geometry and tab grouping
 when available.

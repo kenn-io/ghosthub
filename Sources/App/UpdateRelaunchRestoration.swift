@@ -96,6 +96,7 @@ final class UpdateRelaunchRestorer {
     /// AppKit can finish restoring NSWindows before every corresponding
     /// SwiftUI view reaches onAppear and registers its scene here.
     private var expectedNativeSceneCount: Int?
+    private var sceneBindingSettlementTask: Task<Void, Never>?
 
     init(
         store: UpdateRelaunchManifestStore = .init()
@@ -167,6 +168,28 @@ final class UpdateRelaunchRestorer {
     }
 
     func reconcileIfNativeRestorationFinished() {
+        sceneBindingSettlementTask?.cancel()
+        sceneBindingSettlementTask = nil
+        guard let expectedNativeSceneCount,
+              sceneEntries.count >= expectedNativeSceneCount,
+              !orderedWindowIDs.isEmpty,
+              openWindow != nil
+        else { return }
+
+        // Registration and an optional binding's decoded value can arrive in
+        // separate SwiftUI updates. Wait through the next main-actor turn and
+        // restart this settlement whenever another value arrives.
+        sceneBindingSettlementTask = Task { [weak self] in
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            self?.sceneBindingSettlementTask = nil
+            self?.reconcileAfterSceneBindingsSettled()
+        }
+    }
+
+    func reconcileAfterSceneBindingsSettled() {
+        sceneBindingSettlementTask?.cancel()
+        sceneBindingSettlementTask = nil
         guard let expectedNativeSceneCount,
               sceneEntries.count >= expectedNativeSceneCount,
               !orderedWindowIDs.isEmpty,
@@ -232,6 +255,8 @@ final class UpdateRelaunchRestorer {
         restoringWindowIDs = []
         sceneEntries = [:]
         openWindow = nil
+        sceneBindingSettlementTask?.cancel()
+        sceneBindingSettlementTask = nil
     }
 
     private func observe(
