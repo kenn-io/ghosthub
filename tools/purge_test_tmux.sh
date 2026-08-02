@@ -123,7 +123,16 @@ kill_run_tmux_processes() {
 purge_run_directory() {
     directory=$1
     [ -d "$directory" ] || return 0
-    require_secure_directory "$directory" "tmux test run"
+    if ! require_secure_directory "$directory" "tmux test run" 2>/dev/null; then
+        # A concurrent sweep may remove the same dead run directory at any
+        # point during validation; gone is a completed purge, while a
+        # directory that remains insecure is still refused.
+        if [ ! -d "$directory" ] && [ ! -L "$directory" ]; then
+            return 0
+        fi
+        echo "refusing insecure tmux test run directory: $directory" >&2
+        return 1
+    fi
     run_id=${directory##*.}
     find "$directory" -type s -print |
         while IFS= read -r socket; do
