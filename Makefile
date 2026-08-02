@@ -361,10 +361,12 @@ run-release-app: release-app
 
 release-dmg: LIBGHOSTTY_OPTIMIZE = ReleaseFast
 release-dmg:
-	@./tools/build_release_dmg.sh
+	@RELEASE_APP_VERSION="$(RELEASE_APP_VERSION)" \
+		./tools/build_release_dmg.sh
 
 release-appcast:
-	@./tools/generate_update_appcast.sh
+	@RELEASE_APP_VERSION="$(RELEASE_APP_VERSION)" \
+		./tools/generate_update_appcast.sh
 
 run-app: debug-app
 	@set -euo pipefail; \

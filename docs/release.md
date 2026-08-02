@@ -198,6 +198,13 @@ No cross-repository token is required. The workflow uses its short-lived
 
 ## Candidate run
 
+Release preparation updates the default `RELEASE_APP_VERSION` used by the
+Makefile, the standalone DMG and appcast scripts, and the manual workflow
+input. The Makefile passes its resolved version explicitly to both scripts, so
+bare `make release-dmg` and `make release-appcast` invocations cannot fall back
+to an older script default. Keep the direct-script fallbacks and workflow
+dispatch default on the same release while it is current.
+
 After release workflow changes reach the default branch, run the manual
 workflow before creating a tag:
 
