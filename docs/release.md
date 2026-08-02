@@ -212,7 +212,7 @@ workflow before creating a tag:
 gh workflow run release.yml \
   --repo kenn-io/ghosthub \
   --ref main \
-  -f version=0.5.0
+  -f version=0.5.1
 ```
 
 The manual path imports the signing certificate into an ephemeral keychain,
@@ -233,7 +233,7 @@ Download the candidate and verify either checksum from the directory that
 contains the three artifact files:
 
 ```bash
-shasum -a 256 -c Ghosthub_0.5.0_macos_arm64.dmg.sha256
+shasum -a 256 -c Ghosthub_0.5.1_macos_arm64.dmg.sha256
 shasum -a 256 -c SHA256SUMS
 ```
 
@@ -241,7 +241,7 @@ Inspect the run and install the candidate on a Mac where Ghosthub has not been
 locally built. Verify at minimum:
 
 - Gatekeeper opens the app without a quarantine override.
-- About Ghosthub reports version 0.5.0, Kenn Software LLC copyright, and the
+- About Ghosthub reports version 0.5.1, Kenn Software LLC copyright, and the
   GNU AGPL v3.0-or-later license notice.
 - Local kwt projects and worktrees load without a system kwt on `PATH`.
 - Existing local tmux sessions remain discoverable and attach normally.
@@ -255,21 +255,21 @@ locally built. Verify at minimum:
   signature error. A complete end-to-end installation requires a later release
   than the first version that embeds Sparkle.
 
-## Publishing 0.5.0
+## Publishing 0.5.1
 
 Only publish after the candidate succeeds. From a clean `main` checkout:
 
 ```bash
-./scripts/release.sh 0.5.0
+./scripts/release.sh 0.5.1
 ```
 
-The script creates and pushes annotated tag `v0.5.0`. The tag workflow rebuilds
+The script creates and pushes annotated tag `v0.5.1`. The tag workflow rebuilds
 from source, repeats signing and notarization, generates the production-signed
 appcast, and creates
-`https://github.com/kenn-io/ghosthub/releases/tag/v0.5.0` with:
+`https://github.com/kenn-io/ghosthub/releases/tag/v0.5.1` with:
 
-- `Ghosthub_0.5.0_macos_arm64.dmg`
-- `Ghosthub_0.5.0_macos_arm64.dmg.sha256`
+- `Ghosthub_0.5.1_macos_arm64.dmg`
+- `Ghosthub_0.5.1_macos_arm64.dmg.sha256`
 - `SHA256SUMS`
 - `appcast.xml`
 
@@ -307,7 +307,7 @@ executable only when deliberately packaging a separately prepared build:
 
 ```bash
 make release-app \
-  RELEASE_APP_VERSION=0.5.0 \
+  RELEASE_APP_VERSION=0.5.1 \
   KWT_BINARY_PATH=/absolute/path/to/kwt \
   KWT_VERSION=development \
   KWT_SOURCE_REVISION=local
@@ -331,7 +331,7 @@ Unsigned DMG:
 
 ```bash
 make release-dmg \
-  RELEASE_APP_VERSION=0.5.0 \
+  RELEASE_APP_VERSION=0.5.1 \
   KWT_BINARY_PATH=/absolute/path/to/kwt
 ```
 
@@ -343,7 +343,7 @@ APPLE_NOTARY_KEY_FILE=/path/to/AuthKey_XXXXXXXXXX.p8 \
 APPLE_NOTARY_KEY_ID=XXXXXXXXXX \
 APPLE_NOTARY_ISSUER=issuer-uuid \
 KWT_BINARY_PATH=/absolute/path/to/kwt \
-make release-dmg RELEASE_APP_VERSION=0.5.0
+make release-dmg RELEASE_APP_VERSION=0.5.1
 ```
 
 After the DMG is notarized, generate a local signed appcast with an exported
@@ -352,7 +352,7 @@ working copy of the Sparkle key supplied through the environment:
 ```bash
 SPARKLE_PUBLIC_ED_KEY='<reviewed public key>' \
 SPARKLE_ED_PRIVATE_KEY='<temporary private seed>' \
-make release-appcast RELEASE_APP_VERSION=0.5.0
+make release-appcast RELEASE_APP_VERSION=0.5.1
 ```
 
 Do not place the private seed directly in shell history in real operations;

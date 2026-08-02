@@ -5,6 +5,17 @@ test, and documentation-only changes are omitted.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-08-02
+
+### Fixed
+
+- Installing an update and reopening saved windows no longer crashes when
+  macOS temporarily withholds a window's restoration state; Ghosthub waits for
+  the restored workspace and exact tmux attachment instead of replacing it
+  with a fresh window.
+- **Command-B** and the compact titlebar control now toggle the sidebar only in
+  the focused window.
+
 ## [0.5.0] - 2026-08-02
 
 ### Added
@@ -136,7 +147,8 @@ test, and documentation-only changes are omitted.
   and SSH tmux session discovery, automatic reconnect, and kwt-backed project
   and worktree navigation.
 
-[Unreleased]: https://github.com/kenn-io/ghosthub/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/kenn-io/ghosthub/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/kenn-io/ghosthub/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/kenn-io/ghosthub/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/kenn-io/ghosthub/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/kenn-io/ghosthub/compare/v0.2.1...v0.3.0

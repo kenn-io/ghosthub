@@ -20,7 +20,7 @@ DEBUG_APP_PATH ?= $(DEBUG_ROOT)/$(GHOSTHUB_APP).app
 RELEASE_APP_PATH ?= $(RELEASE_ROOT)/$(GHOSTHUB_APP).app
 RELEASE_BUNDLE_ID ?= com.ghosthub
 DEBUG_BUNDLE_ID ?= $(RELEASE_BUNDLE_ID).debug
-RELEASE_APP_VERSION ?= 0.5.0
+RELEASE_APP_VERSION ?= 0.5.1
 ifeq ($(origin DEVELOPMENT_APP_VERSION),undefined)
 DEVELOPMENT_APP_VERSION := $(shell $(PYTHON) tools/development_version.py --component short)
 endif
@@ -127,8 +127,8 @@ help:
 		'  RELEASE_ROOT=dist/release' \
 		'  DEVELOPMENT_APP_VERSION=0.3.0' \
 		'  DEVELOPMENT_VERSION_DESCRIPTION=0.3.0-1-gabcdef0' \
-		'  RELEASE_APP_VERSION=0.5.0' \
-		'  RELEASE_BUILD_VERSION=0.5.0' \
+		'  RELEASE_APP_VERSION=0.5.1' \
+		'  RELEASE_BUILD_VERSION=0.5.1' \
 		'  KWT_BINARY_PATH=/absolute/path/to/kwt' \
 		'  SWIFT_TEST_FILTER=WorkspaceDatabaseTests' \
 		'  HOST_KEY=local' \
