@@ -6,7 +6,7 @@ TAG_BODY="${2:-}"
 
 if [[ -z "$VERSION" ]]; then
   echo "Usage: $0 <version> [tag_body]"
-  echo "Example: $0 0.5.0"
+  echo "Example: $0 0.5.1"
   exit 1
 fi
 
