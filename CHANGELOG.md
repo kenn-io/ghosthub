@@ -5,6 +5,40 @@ test, and documentation-only changes are omitted.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-02
+
+### Added
+
+- Standalone tmux sessions can be hidden from navigation with case-sensitive
+  wildcard patterns managed in **Settings → Worktrees**.
+- **Apply Theme to Current Session** immediately updates the active tmux
+  session without enabling the persistent shared-session theme override.
+- Quit confirmation can be disabled in Terminal Settings.
+
+### Changed
+
+- Closing the final workspace window leaves Ghosthub running so a new window
+  can be opened without relaunching the app.
+- Sparkle-authorized relaunches preserve native window restoration and reopen
+  each exact prior tmux attachment that can be confirmed, including reconnects
+  to temporarily offline SSH hosts.
+- The **Follow ghostty.conf** tmux theme now uses libghostty's effective light
+  or dark foreground and background colors when styling sessions.
+
+### Fixed
+
+- Remote tmux attachment again follows the account login-shell environment,
+  honors OpenSSH authentication and connection sharing, and allows remote
+  copy-mode to write to the Mac clipboard through OSC 52.
+- HTTPS pull-request imports can use the host's configured Git credential
+  helpers, and removing an already-missing worktree still reconciles its exact
+  live tmux session.
+- Tailscale host discovery works in packaged builds.
+- Large sidebars and live terminal resizing no longer trigger SwiftUI layout
+  stalls or excessive resize churn.
+- Terminal configuration notices no longer replay after a successful reload,
+  and cursors stop blinking when their window is in the background.
+
 ## [0.4.0] - 2026-07-30
 
 ### Added
@@ -102,7 +136,8 @@ test, and documentation-only changes are omitted.
   and SSH tmux session discovery, automatic reconnect, and kwt-backed project
   and worktree navigation.
 
-[Unreleased]: https://github.com/kenn-io/ghosthub/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/kenn-io/ghosthub/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/kenn-io/ghosthub/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/kenn-io/ghosthub/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/kenn-io/ghosthub/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/kenn-io/ghosthub/compare/v0.2.0...v0.2.1

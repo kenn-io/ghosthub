@@ -75,7 +75,7 @@ notifications.post(
         "expectKind": environment["GHOSTHUB_DEMO_EXPECT_KIND"] ?? "",
     ]
 )
-let deadline = Date(timeIntervalSinceNow: 15)
+let deadline = Date(timeIntervalSinceNow: 30)
 while acknowledgement.result == nil && Date() < deadline {
     RunLoop.current.run(
         mode: .default,
