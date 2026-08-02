@@ -309,12 +309,14 @@ struct GhosthubApp: App {
             Divider()
 
             Button("Toggle Sidebar") {
+                guard let focusedSceneModel else { return }
                 NotificationCenter.default.post(
                     name: .ghosthubToggleSidebar,
-                    object: nil
+                    object: focusedSceneModel
                 )
             }
             .keyboardShortcut("b")
+            .disabled(focusedSceneModel == nil)
         }
     }
 }
