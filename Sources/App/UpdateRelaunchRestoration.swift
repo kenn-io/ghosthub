@@ -93,7 +93,9 @@ final class UpdateRelaunchRestorer {
     private var sceneEntries: [UUID: SceneEntry] = [:]
     private var nextRegistrationOrder = 0
     private var openWindow: ((WorkspaceWindowState) -> Void)?
-    private var nativeWindowRestorationFinished = false
+    /// AppKit can finish restoring NSWindows before every corresponding
+    /// SwiftUI view reaches onAppear and registers its scene here.
+    private var expectedNativeSceneCount: Int?
 
     init(
         store: UpdateRelaunchManifestStore = .init()
@@ -156,14 +158,17 @@ final class UpdateRelaunchRestorer {
         reconcileIfNativeRestorationFinished()
     }
 
-    func nativeWindowRestorationDidFinish() {
-        guard !nativeWindowRestorationFinished else { return }
-        nativeWindowRestorationFinished = true
+    func nativeWindowRestorationDidFinish(
+        expectedSceneCount: Int
+    ) {
+        guard expectedNativeSceneCount == nil else { return }
+        expectedNativeSceneCount = expectedSceneCount
         reconcileIfNativeRestorationFinished()
     }
 
     func reconcileIfNativeRestorationFinished() {
-        guard nativeWindowRestorationFinished,
+        guard let expectedNativeSceneCount,
+              sceneEntries.count >= expectedNativeSceneCount,
               !orderedWindowIDs.isEmpty,
               let openWindow
         else { return }

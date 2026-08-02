@@ -39,7 +39,9 @@ struct UpdateRelaunchRestorationTests {
                 openWindow: { opened.append($0) }
             ) == .waitingForNativeRestoration
         )
-        restorer.nativeWindowRestorationDidFinish()
+        restorer.nativeWindowRestorationDidFinish(
+            expectedSceneCount: 1
+        )
 
         #expect(restored == [first])
         #expect(opened == [second])
@@ -136,7 +138,9 @@ struct UpdateRelaunchRestorationTests {
             ) == .restore(second)
         )
         restorer.didBeginRestoring(windowID: second.windowID)
-        restorer.nativeWindowRestorationDidFinish()
+        restorer.nativeWindowRestorationDidFinish(
+            expectedSceneCount: 2
+        )
 
         #expect(restored.isEmpty)
         #expect(opened.isEmpty)
@@ -174,7 +178,9 @@ struct UpdateRelaunchRestorationTests {
             ) == .restore(first)
         )
         restorer.didBeginRestoring(windowID: first.windowID)
-        restorer.nativeWindowRestorationDidFinish()
+        restorer.nativeWindowRestorationDidFinish(
+            expectedSceneCount: 1
+        )
 
         #expect(opened == [second])
         #expect(FileManager.default.fileExists(atPath: store.fileURL.path))
@@ -221,7 +227,9 @@ struct UpdateRelaunchRestorationTests {
                 openWindow: { opened.append($0) }
             ) == .waitingForNativeRestoration
         )
-        restorer.nativeWindowRestorationDidFinish()
+        restorer.nativeWindowRestorationDidFinish(
+            expectedSceneCount: 2
+        )
 
         #expect(restored == [first, second])
         #expect(opened.isEmpty)
@@ -237,6 +245,57 @@ struct UpdateRelaunchRestorationTests {
                 presented: second
             ) == .ordinary
         )
+        #expect(opened.isEmpty)
+    }
+
+    @Test("native completion waits for every restored scene to register")
+    func completionPrecedesMatchingSceneRegistration() throws {
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let store = UpdateRelaunchManifestStore(
+            fileURL: scratch.appendingPathComponent("relaunch.json")
+        )
+        let first = state(
+            sessionName: "editor",
+            socketName: nil,
+            owner: .unbound
+        )
+        let second = state(
+            sessionName: "review",
+            socketName: nil,
+            owner: .unbound
+        )
+        try store.save([first, second])
+        let restorer = UpdateRelaunchRestorer(store: store)
+        var opened: [WorkspaceWindowState] = []
+
+        restorer.nativeWindowRestorationDidFinish(
+            expectedSceneCount: 2
+        )
+        #expect(
+            restorer.registerScene(
+                id: UUID(),
+                presented: first,
+                restore: { _ in },
+                openWindow: { opened.append($0) }
+            ) == .restore(first)
+        )
+        restorer.didBeginRestoring(windowID: first.windowID)
+        restorer.reconcileIfNativeRestorationFinished()
+        #expect(opened.isEmpty)
+
+        #expect(
+            restorer.registerScene(
+                id: UUID(),
+                presented: second,
+                restore: { _ in },
+                openWindow: { opened.append($0) }
+            ) == .restore(second)
+        )
+        restorer.didBeginRestoring(windowID: second.windowID)
+        restorer.reconcileIfNativeRestorationFinished()
+
         #expect(opened.isEmpty)
     }
 

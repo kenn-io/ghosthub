@@ -46,6 +46,10 @@ enum WorkspaceWindowIdentity {
         window.tabbingIdentifier == tabbingIdentifier
     }
 
+    static func count(in windows: [NSWindow]) -> Int {
+        windows.count(where: matches)
+    }
+
     static func group(containing window: NSWindow) -> [NSWindow] {
         window.tabGroup?.windows ?? [window]
     }
@@ -111,8 +115,8 @@ final class ApplicationDelegate: NSObject,
     var openWorkspaceWindow: (WorkspaceWindowState) -> Void = { _ in }
 
     private let windowRequests = WorkspaceWindowRequests<NSWindow>()
-    private var windowRestorationFinishedHandler: () -> Void = {}
-    private var windowRestorationFinished = false
+    private var windowRestorationFinishedHandler: (Int) -> Void = { _ in }
+    private var restoredWorkspaceWindowCount: Int?
     private(set) var terminationConfirmed = false
     private(set) var terminationConfirmationPending = false
     private var updaterTerminationAuthorized = false
@@ -142,20 +146,23 @@ final class ApplicationDelegate: NSObject,
     }
 
     func setWindowRestorationFinishedHandler(
-        _ handler: @escaping () -> Void
+        _ handler: @escaping (Int) -> Void
     ) {
         windowRestorationFinishedHandler = handler
-        if windowRestorationFinished {
-            handler()
+        if let restoredWorkspaceWindowCount {
+            handler(restoredWorkspaceWindowCount)
         }
     }
 
     @objc func applicationDidFinishRestoringWindows(
         _ notification: Notification
     ) {
-        guard !windowRestorationFinished else { return }
-        windowRestorationFinished = true
-        windowRestorationFinishedHandler()
+        guard restoredWorkspaceWindowCount == nil else { return }
+        let count = WorkspaceWindowIdentity.count(
+            in: NSApplication.shared.windows
+        )
+        restoredWorkspaceWindowCount = count
+        windowRestorationFinishedHandler(count)
     }
 
     func applicationDidFinishLaunching(
