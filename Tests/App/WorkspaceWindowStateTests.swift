@@ -177,7 +177,8 @@ private struct RestorationFixture {
 struct WorkspaceWindowStateTests {
     @Test("window state survives a temporarily nil scene binding")
     func windowStateSurvivesNilSceneBinding() {
-        let fallback = WorkspaceWindowState.fresh()
+        let firstFallback = WorkspaceWindowState.fresh()
+        let secondFallback = WorkspaceWindowState.fresh()
         let restored = WorkspaceWindowState(
             windowID: UUID(),
             navigation: WorkspaceNavigationDescriptor(
@@ -187,13 +188,17 @@ struct WorkspaceWindowStateTests {
             ),
             tmux: nil
         )
-        var buffer = WorkspaceWindowStateBuffer(retained: fallback)
+        var buffer = WorkspaceWindowStateBuffer(retained: firstFallback)
 
-        #expect(buffer.resolved(nil) == fallback)
+        #expect(buffer.resolved(nil) == firstFallback)
 
         #expect(buffer.beginAppearance(with: nil) == nil)
-        buffer.prepareToPresent(fallback)
-        #expect(buffer.receive(fallback) == nil)
+        buffer.prepareToPresent(firstFallback)
+        buffer.prepareToPresent(secondFallback)
+
+        #expect(buffer.receive(firstFallback) == nil)
+        #expect(buffer.resolved(nil) == secondFallback)
+        #expect(buffer.receive(secondFallback) == nil)
 
         #expect(buffer.receive(restored) == restored)
 
