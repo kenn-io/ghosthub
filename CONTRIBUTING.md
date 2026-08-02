@@ -15,9 +15,9 @@ Deeper dev workflows, layout configuration, and end-to-end harnesses are in
 
 Two files govern day-to-day workflow:
 
-- [`CLAUDE.md`](CLAUDE.md) — quality gates, commit conventions, test
+- [`CLAUDE.md`](CLAUDE.md): quality gates, commit conventions, test
   and build commands, shell safety rules.
-- [`AGENTS.md`](AGENTS.md) — the source-of-truth hierarchy, test
+- [`AGENTS.md`](AGENTS.md): the source-of-truth hierarchy, test
   framework policy (Swift Testing preferred over XCTest for new
   tests), terminal-parity rules, and directory map.
 

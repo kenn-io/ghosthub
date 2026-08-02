@@ -10,7 +10,7 @@
   <strong>A native power terminal for your tmux fleet.</strong>
   <br>
   Create or attach to any session, or manage worktree-bound sessions from Git
-  branches and GitHub pull requests—locally or over SSH.
+  branches and GitHub pull requests, locally or over SSH.
 </p>
 
 <p align="center">
@@ -71,7 +71,7 @@ we will do our best to fix them.
 - **Managed worktree sessions.** Register an existing checkout, continue a
   local or remote branch, create a branch, import a GitHub pull request, and
   remove a linked worktree through the bundled [kwt](https://kwt.sh)
-  helper—no system kwt installation required.
+  helper. No system kwt installation is required.
 - **Resilient SSH.** Keepalives and automatic reconnect preserve remote
   presentations through ordinary network interruptions.
 - **Deliberate tmux lifecycle.** Closing a presentation detaches. Confirmed
@@ -87,7 +87,7 @@ we will do our best to fix them.
   `ghostty.conf`. Existing sessions keep their appearance unless you apply the
   theme to the active session or opt into shared-session styling.
 - **Fast terminal rendering.** Ghosthub embeds libghostty with an isolated,
-  Ghostty-compatible configuration—no Electron and no Ghostty.app dependency.
+  Ghostty-compatible configuration. No Electron and no Ghostty.app dependency.
 
 ## Install
 
