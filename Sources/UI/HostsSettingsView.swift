@@ -648,7 +648,9 @@ public struct HostsSettingsView: View {
     ) {
         applyDraftListState(
             SSHHostDraftListEditor.importingSSHHosts(
-                peers.map(SSHHostDraftImport.init(tailscalePeer:)),
+                peers.map {
+                    SSHHostDraftImport(tailscalePeer: $0)
+                },
                 into: sshHosts
             )
         )

@@ -14,6 +14,10 @@ struct TailscalePeerTests {
         )
 
         #expect(peer.sshAddress == "box.tailnet.ts.net")
+        #expect(
+            peer.sshDestination(username: "operator")
+                == "operator@box.tailnet.ts.net"
+        )
     }
 
     @Test("does not depend on DNS name formatting")

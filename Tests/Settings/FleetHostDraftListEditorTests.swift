@@ -114,12 +114,16 @@ struct SSHHostDraftListEditorTests {
                 dnsName: "mac-mini.tailnet.ts.net.",
                 os: "macOS",
                 isOnline: true
-            )
+            ),
+            username: "operator"
         )
 
         #expect(imported.name == "Mac Mini")
         #expect(imported.platform == .macOS)
-        #expect(imported.sshDestination == "mac-mini.tailnet.ts.net")
+        #expect(
+            imported.sshDestination
+                == "operator@mac-mini.tailnet.ts.net"
+        )
     }
 
     private func draft(

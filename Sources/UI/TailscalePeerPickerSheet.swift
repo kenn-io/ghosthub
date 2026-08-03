@@ -101,14 +101,18 @@ struct TailscalePeerPickerSheet: View {
                         }
                     }
                     HStack(spacing: 8) {
-                        Text(peer.sshAddress)
-                            .font(.system(
-                                size: 11,
-                                design: .monospaced
-                            ))
-                            .foregroundStyle(
-                                .secondary
+                        Text(
+                            peer.sshDestination(
+                                username: NSUserName()
                             )
+                        )
+                        .font(.system(
+                            size: 11,
+                            design: .monospaced
+                        ))
+                        .foregroundStyle(
+                            .secondary
+                        )
                         Text(peer.os)
                             .font(.system(size: 11))
                             .foregroundStyle(

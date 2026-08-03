@@ -25,6 +25,15 @@ public struct TailscalePeer: Identifiable, Equatable, Sendable {
         normalizedDNSName
     }
 
+    public func sshDestination(username: String) -> String {
+        let username = username.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        return username.isEmpty
+            ? sshAddress
+            : "\(username)@\(sshAddress)"
+    }
+
     private var normalizedDNSName: String {
         dnsName.hasSuffix(".")
             ? String(dnsName.dropLast())

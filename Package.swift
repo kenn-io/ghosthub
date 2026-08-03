@@ -112,7 +112,7 @@ var targets: [Target] = [
 if hasBootstrappedLibghostty {
     targets.append(
         .binaryTarget(
-            name: "CGhostty",
+            name: "GhosttyKit",
             path: ".build/libghostty/GhosttyKit.xcframework"
         )
     )
@@ -122,7 +122,7 @@ if hasBootstrappedLibghostty {
             dependencies: [
                 "GhosthubTerminalSupport",
                 "GhosthubWorkspace",
-                "CGhostty",
+                "GhosttyKit",
             ],
             path: "Sources/Terminal",
             linkerSettings: [
@@ -258,7 +258,7 @@ var terminalTestDependencies: [Target.Dependency] = [
 ]
 if hasBootstrappedLibghostty {
     // AttachedTmuxInputTests imports the XCFramework's Clang module directly.
-    terminalTestDependencies.append("CGhostty")
+    terminalTestDependencies.append("GhosttyKit")
 }
 targets.append(
     .testTarget(
