@@ -311,28 +311,45 @@ public struct RootView: View {
 
     private var workspaceColumns: some View {
         GeometryReader { _ in
-            HStack(spacing: 0) {
-                if isSidebarVisible {
+            ZStack(alignment: .leading) {
+                HStack(spacing: 0) {
+                    Color.clear
+                        .frame(
+                            width: isSidebarVisible
+                                ? sidebarWidth + Self.dividerHit
+                                : 0
+                        )
+
+                    terminalWorkspaceContent
+                        .frame(
+                            maxWidth: .infinity,
+                            maxHeight: .infinity
+                        )
+                }
+                .transaction { transaction in
+                    transaction.animation = nil
+                }
+
+                HStack(spacing: 0) {
                     workspaceSidebarColumn
                         .frame(width: sidebarWidth)
-                        .transition(
-                            .move(edge: .leading).combined(with: .opacity)
-                        )
 
                     columnDivider
                         .gesture(sidebarDragGesture)
-                        .transition(.opacity)
                 }
-
-                terminalWorkspaceContent
-                    .frame(
-                        maxWidth: .infinity,
-                        maxHeight: .infinity
-                    )
-
+                .offset(
+                    x: isSidebarVisible
+                        ? 0 : -(sidebarWidth + Self.dividerHit)
+                )
+                .opacity(isSidebarVisible ? 1 : 0)
+                .allowsHitTesting(isSidebarVisible)
+                .accessibilityHidden(!isSidebarVisible)
+                .animation(
+                    .easeInOut(duration: 0.2),
+                    value: isSidebarVisible
+                )
             }
             .coordinateSpace(name: Self.columnSpace)
-            .animation(.easeInOut(duration: 0.2), value: isSidebarVisible)
         }
     }
 

@@ -6,6 +6,8 @@ enum SSHHostTrustError: Error, Equatable, LocalizedError {
     case invalidPrompt
     case hostKeyChanged
     case hostKeyWasNotSaved
+    case strictHostKeyPolicyUnavailable
+    case strictHostKeyPolicyUnsupported(String)
     case temporaryStateUnavailable
 
     var errorDescription: String? {
@@ -19,6 +21,13 @@ enum SSHHostTrustError: Error, Equatable, LocalizedError {
         case .hostKeyWasNotSaved:
             return "OpenSSH did not save the approved host key. Check the"
                 + " configured UserKnownHostsFile and try again."
+        case .strictHostKeyPolicyUnavailable:
+            return "Ghosthub could not read OpenSSH's effective"
+                + " StrictHostKeyChecking policy for this destination."
+        case let .strictHostKeyPolicyUnsupported(policy):
+            return "OpenSSH has StrictHostKeyChecking set to \(policy) for"
+                + " this destination. Ghosthub will not override that policy;"
+                + " use ask or accept-new to review unseen keys in Ghosthub."
         case .temporaryStateUnavailable:
             return "Ghosthub could not prepare secure temporary state for SSH"
                 + " host-key confirmation."
@@ -34,20 +43,29 @@ struct SSHHostTrustManager: Sendable {
         URL,
         URL?
     ) -> Void
+    typealias StrictHostKeyPolicyProvider = @Sendable (SSHHostInfo) -> String?
 
     private let askPassRunner: AskPassRunner
+    private let strictHostKeyPolicyProvider: StrictHostKeyPolicyProvider
 
     init(
-        askPassRunner: @escaping AskPassRunner = Self.runAskPass
+        askPassRunner: @escaping AskPassRunner = Self.runAskPass,
+        strictHostKeyPolicyProvider:
+        @escaping StrictHostKeyPolicyProvider = {
+            SSHConfigurationResolver.configuration(for: $0)?
+                .strictHostKeyChecking
+        }
     ) {
         self.askPassRunner = askPassRunner
+        self.strictHostKeyPolicyProvider = strictHostKeyPolicyProvider
     }
 
     func pendingConfirmation(
         for host: SSHHostInfo,
         destination: String
     ) throws -> SSHHostKeyConfirmation? {
-        try withTemporaryState { state in
+        try validateStrictHostKeyPolicy(for: host)
+        return try withTemporaryState { state -> SSHHostKeyConfirmation? in
             askPassRunner(
                 host,
                 state.helper,
@@ -73,9 +91,10 @@ struct SSHHostTrustManager: Sendable {
         guard confirmation.connectionDestination == destination else {
             throw SSHHostTrustError.hostKeyChanged
         }
+        try validateStrictHostKeyPolicy(for: host)
         try withTemporaryState { state in
-            try Data(confirmation.openSSHPrompt.utf8).write(
-                to: state.expectedPrompt,
+            try Data(Self.keyIdentity(for: confirmation).utf8).write(
+                to: state.expectedKeyIdentity,
                 options: .atomic
             )
             askPassRunner(
@@ -83,7 +102,7 @@ struct SSHHostTrustManager: Sendable {
                 state.helper,
                 state.observedPrompt,
                 state.approvedPrompt,
-                state.expectedPrompt
+                state.expectedKeyIdentity
             )
             guard FileManager.default.fileExists(
                 atPath: state.approvedPrompt.path
@@ -96,12 +115,38 @@ struct SSHHostTrustManager: Sendable {
             for: host,
             destination: destination
         ) {
-            if pending.openSSHPrompt == confirmation.openSSHPrompt {
+            if pending.algorithm == confirmation.algorithm,
+               pending.fingerprint == confirmation.fingerprint,
+               Self.logicalHost(pending.destination)
+               == Self.logicalHost(confirmation.destination) {
                 throw SSHHostTrustError.hostKeyWasNotSaved
             }
             return pending
         }
         return nil
+    }
+
+    private func validateStrictHostKeyPolicy(
+        for host: SSHHostInfo
+    ) throws {
+        guard let policy = strictHostKeyPolicyProvider(host)?
+            .lowercased() else {
+            throw SSHHostTrustError.strictHostKeyPolicyUnavailable
+        }
+        guard policy == "ask" || policy == "accept-new" else {
+            throw SSHHostTrustError.strictHostKeyPolicyUnsupported(policy)
+        }
+    }
+
+    private static func keyIdentity(
+        for confirmation: SSHHostKeyConfirmation
+    ) -> String {
+        "\(confirmation.algorithm)\n\(confirmation.fingerprint)\n"
+    }
+
+    private static func logicalHost(_ promptDestination: String) -> String {
+        promptDestination.components(separatedBy: " (").first
+            ?? promptDestination
     }
 
     static func confirmation(
@@ -162,7 +207,7 @@ struct SSHHostTrustManager: Sendable {
         let helper: URL
         let observedPrompt: URL
         let approvedPrompt: URL
-        let expectedPrompt: URL
+        let expectedKeyIdentity: URL
     }
 
     private func withTemporaryState<T>(
@@ -185,7 +230,8 @@ struct SSHHostTrustManager: Sendable {
                 helper: directory.appendingPathComponent("askpass"),
                 observedPrompt: directory.appendingPathComponent("observed"),
                 approvedPrompt: directory.appendingPathComponent("approved"),
-                expectedPrompt: directory.appendingPathComponent("expected")
+                expectedKeyIdentity:
+                directory.appendingPathComponent("expected-key")
             )
             try Data(Self.askPassScript.utf8).write(
                 to: state.helper,
@@ -210,18 +256,39 @@ struct SSHHostTrustManager: Sendable {
         return try String(contentsOf: url, encoding: .utf8)
     }
 
-    private static let askPassScript = """
+    static let askPassScript = """
     #!/bin/sh
     set -eu
     umask 077
     /usr/bin/printf '%s' "$1" > "$GHOSTHUB_SSH_PROMPT_PATH"
-    if [ -n "${GHOSTHUB_SSH_EXPECTED_PROMPT_PATH:-}" ] && \
-       /usr/bin/cmp -s "$GHOSTHUB_SSH_PROMPT_PATH" \
-       "$GHOSTHUB_SSH_EXPECTED_PROMPT_PATH"; then
+    identity_path="$GHOSTHUB_SSH_PROMPT_PATH.identity"
+    /usr/bin/awk '
+    {
+        colon_marker = " key fingerprint is: "
+        plain_marker = " key fingerprint is "
+        marker = index($0, colon_marker) ? colon_marker : plain_marker
+        position = index($0, marker)
+        if (position > 0) {
+            algorithm = substr($0, 1, position - 1)
+            fingerprint = substr($0, position + length(marker))
+            sub(/^[[:space:]]+/, "", algorithm)
+            sub(/[[:space:]]+$/, "", algorithm)
+            sub(/^[[:space:]]+/, "", fingerprint)
+            sub(/[[:space:].]+$/, "", fingerprint)
+            print algorithm
+            print fingerprint
+            exit
+        }
+    }
+    ' "$GHOSTHUB_SSH_PROMPT_PATH" > "$identity_path"
+    if [ -n "${GHOSTHUB_SSH_EXPECTED_KEY_PATH:-}" ] && \
+       /usr/bin/cmp -s "$identity_path" \
+       "$GHOSTHUB_SSH_EXPECTED_KEY_PATH"; then
         : > "$GHOSTHUB_SSH_APPROVED_PROMPT_PATH"
-        /bin/rm -f "$GHOSTHUB_SSH_PROMPT_PATH"
+        /bin/rm -f "$GHOSTHUB_SSH_PROMPT_PATH" "$identity_path"
         /usr/bin/printf 'yes\\n'
     else
+        /bin/rm -f "$identity_path"
         /usr/bin/printf 'no\\n'
     fi
     """
@@ -231,7 +298,7 @@ struct SSHHostTrustManager: Sendable {
         helper: URL,
         observedPrompt: URL,
         approvedPrompt: URL,
-        expectedPrompt: URL?
+        expectedKeyIdentity: URL?
     ) {
         var arguments = [
             "-T",
@@ -262,11 +329,11 @@ struct SSHHostTrustManager: Sendable {
             "DISPLAY": "ghosthub",
             "GHOSTHUB_SSH_PROMPT_PATH": observedPrompt.path,
             "GHOSTHUB_SSH_APPROVED_PROMPT_PATH": approvedPrompt.path,
-            "GHOSTHUB_SSH_EXPECTED_PROMPT_PATH": "",
+            "GHOSTHUB_SSH_EXPECTED_KEY_PATH": "",
         ]
-        if let expectedPrompt {
-            environment["GHOSTHUB_SSH_EXPECTED_PROMPT_PATH"] =
-                expectedPrompt.path
+        if let expectedKeyIdentity {
+            environment["GHOSTHUB_SSH_EXPECTED_KEY_PATH"] =
+                expectedKeyIdentity.path
         }
         _ = TmuxBinaryResolver.runProcessInLoginShell(
             executable: "/usr/bin/ssh",

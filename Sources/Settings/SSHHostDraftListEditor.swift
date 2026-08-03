@@ -23,7 +23,9 @@ public struct SSHHostDraftImport: Equatable, Sendable {
         self.init(
             name: peer.hostName,
             platform: peer.platform,
-            sshDestination: peer.sshDestination(username: username)
+            sshDestination: peer.sshDestination(
+                username: peer.sshUsername ?? username
+            )
         )
     }
 }

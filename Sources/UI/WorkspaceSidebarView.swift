@@ -249,16 +249,23 @@ struct WorkspaceSidebarView: View {
                 }
             }
         }
-        .onAppear(perform: migrateDisclosureStateIfNeeded)
+        .onAppear {
+            migrateDisclosureStateIfNeeded()
+        }
+        .onChange(of: snapshot) { _, _ in
+            pruneSidebarOrders()
+        }
         .alert(
             "Workspace Inventory Issue",
             isPresented: inventoryWarningIsPresented,
             presenting: presentedInventoryWarning
         ) { warning in
-            if let hostID = warning.hostID {
+            if let hostID = warning.reviewHostID {
                 Button("Review Host Key") {
                     onReviewSSHHostKey(hostID)
                 }
+            }
+            if warning.isHostScoped {
                 Button("Host Settings") {
                     onOpenHostSettings()
                 }
@@ -439,7 +446,7 @@ struct WorkspaceSidebarView: View {
                 Button {
                     presentInventoryWarning(
                         inventoryWarning,
-                        hostID: nil
+                        host: nil
                     )
                 } label: {
                     Image(systemName: "exclamationmark.triangle.fill")
@@ -1151,9 +1158,7 @@ struct WorkspaceSidebarView: View {
             if let inventoryWarning {
                 inventoryWarningButton(
                     inventoryWarning,
-                    hostID: actionHost.flatMap {
-                        $0.kind == .remote ? $0.id : nil
-                    },
+                    host: actionHost,
                     accessibilityLabel:
                     "Show connection issue for \(row.title)"
                 )
@@ -1301,11 +1306,11 @@ struct WorkspaceSidebarView: View {
 
     private func inventoryWarningButton(
         _ warning: String,
-        hostID: UUID?,
+        host: HostSummary?,
         accessibilityLabel: String
     ) -> some View {
         Button {
-            presentInventoryWarning(warning, hostID: hostID)
+            presentInventoryWarning(warning, host: host)
         } label: {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 11, weight: .semibold))
@@ -1333,11 +1338,12 @@ struct WorkspaceSidebarView: View {
 
     private func presentInventoryWarning(
         _ message: String,
-        hostID: UUID?
+        host: HostSummary?
     ) {
         presentedInventoryWarning = PresentedInventoryWarning(
             message: message,
-            hostID: hostID
+            isHostScoped: host != nil,
+            reviewHostID: host?.kind == .remote ? host?.id : nil
         )
     }
 
@@ -1407,6 +1413,43 @@ struct WorkspaceSidebarView: View {
         guard migrated != disclosureState else { return }
         disclosureState = migrated
         legacyCollapsedItems = ""
+    }
+
+    private func pruneSidebarOrders() {
+        // Missing inventory is not proof of deletion. Preserve order while
+        // any host is unreachable or reporting an inventory failure, and
+        // prune only from a complete authoritative fleet snapshot.
+        guard inventoryWarning == nil,
+              inventoryWarningsByHost.isEmpty,
+              !snapshot.hosts.isEmpty,
+              snapshot.hosts.allSatisfy(\.lastKnownReachable)
+        else { return }
+        var worktreeOrder = WorkspaceSidebarOrder(
+            rawValue: worktreeOrderRawValue
+        )
+        let worktreeIDs = Set(
+            snapshot.worktrees
+                .filter { !$0.isStale }
+                .map { $0.id.uuidString }
+        )
+        if worktreeOrder.prune(keeping: worktreeIDs) {
+            worktreeOrderRawValue = worktreeOrder.rawValue
+        }
+
+        var tmuxSessionOrder = WorkspaceSidebarOrder(
+            rawValue: tmuxSessionOrderRawValue
+        )
+        let tmuxSessionIDs = Set(snapshot.hosts.flatMap { host in
+            host.tmuxSessions.map {
+                WorkspaceSidebarModel.tmuxSessionOrderID(
+                    hostID: host.id,
+                    name: $0.name
+                )
+            }
+        })
+        if tmuxSessionOrder.prune(keeping: tmuxSessionIDs) {
+            tmuxSessionOrderRawValue = tmuxSessionOrder.rawValue
+        }
     }
 
     /// Two-line status row for worktrees: title + trailing status cluster on
@@ -1553,7 +1596,8 @@ struct WorkspaceSidebarView: View {
     }
 }
 
-private struct PresentedInventoryWarning {
+struct PresentedInventoryWarning {
     let message: String
-    let hostID: UUID?
+    let isHostScoped: Bool
+    let reviewHostID: UUID?
 }

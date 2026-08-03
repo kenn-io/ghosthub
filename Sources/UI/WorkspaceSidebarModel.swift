@@ -73,6 +73,13 @@ struct WorkspaceSidebarOrder: Equatable {
         return true
     }
 
+    mutating func prune(keeping knownItemIDs: Set<String>) -> Bool {
+        let pruned = itemIDs.filter(knownItemIDs.contains)
+        guard pruned != itemIDs else { return false }
+        itemIDs = pruned
+        return true
+    }
+
     private func orderedIDs(_ ids: [String]) -> [String] {
         let positions = Dictionary(
             uniqueKeysWithValues: itemIDs.enumerated().map {

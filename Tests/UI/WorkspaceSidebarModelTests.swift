@@ -52,6 +52,19 @@ struct WorkspaceSidebarModelTests {
         #expect(order.rawValue == "third\nsecond\nfirst")
     }
 
+    @Test("removed inventory identities are pruned from persisted order")
+    func prunesRemovedInventoryIdentities() {
+        var order = WorkspaceSidebarOrder(
+            rawValue: "present\nremoved\nhidden"
+        )
+
+        let didPrune = order.prune(keeping: ["present", "hidden"])
+        #expect(didPrune)
+        #expect(order.rawValue == "present\nhidden")
+        let didPruneAgain = order.prune(keeping: ["present", "hidden"])
+        #expect(!didPruneAgain)
+    }
+
     @Test("drop placement matches the final directional insertion")
     func dropPlacement() {
         let orderedIDs = ["first", "second", "third"]

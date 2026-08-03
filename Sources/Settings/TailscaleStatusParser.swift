@@ -53,7 +53,8 @@ public enum TailscaleStatusParser {
                 hostName: hostName,
                 dnsName: dnsName,
                 os: os,
-                isOnline: node.Online ?? false
+                isOnline: node.Online ?? false,
+                sshUsername: nil
             )
         }
         .filter(\.isSSHCapable)

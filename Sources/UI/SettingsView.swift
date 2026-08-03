@@ -1,3 +1,4 @@
+import AppKit
 import GhosthubSettings
 import SwiftUI
 import GhosthubWorkspace
@@ -249,11 +250,25 @@ public struct SettingsView: View {
         let installedFixedPitchFamilies = manager.availableFontFamilies.filter { family in
             manager.availableMembers(ofFontFamily: family)?.contains {
                 member in
-                guard member.count > 3,
-                      let traits = member[3] as? NSNumber
+                guard member.count > 3 else { return false }
+                if let traits = member[3] as? NSNumber,
+                   NSFontTraitMask(rawValue: traits.uintValue)
+                   .contains(.fixedPitchFontMask) {
+                    return true
+                }
+                guard let fontName = member[0] as? String,
+                      let font = NSFont(name: fontName, size: 14)
                 else { return false }
-                return NSFontTraitMask(rawValue: traits.uintValue)
-                    .contains(.fixedPitchFontMask)
+                if font.fontDescriptor.symbolicTraits.contains(.monoSpace) {
+                    return true
+                }
+                let advances = ["i", "W", "0", "m", " "].map {
+                    ($0 as NSString).size(withAttributes: [.font: font]).width
+                }
+                guard let minimum = advances.min(),
+                      let maximum = advances.max()
+                else { return false }
+                return maximum - minimum < 0.01
             } == true
         }
         return TerminalFontFamilyOptions.families(

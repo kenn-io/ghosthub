@@ -69,5 +69,8 @@ display.
 destination has an unseen key, Ghosthub presents OpenSSH's fingerprint for
 explicit approval, asks OpenSSH to save that same key using its configured
 `UserKnownHostsFile`, and retries the probe. A trusted short hostname or alias
-is a separate OpenSSH identity. A reachable host without tmux is reported
+is a separate OpenSSH identity. Ghosthub reviews effective `ask` and
+`accept-new` policies but does not override `yes`, `no`, or `off`; change that
+destination's SSH configuration deliberately if you want an in-app review.
+A reachable host without tmux is reported
 separately as **tmux is not installed** rather than as an SSH failure.

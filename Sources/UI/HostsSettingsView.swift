@@ -46,11 +46,18 @@ struct HostOperationTarget: Equatable, Sendable {
     }
 }
 
-private struct PendingSSHHostTrust: Identifiable {
+struct PendingSSHHostTrust: Identifiable {
     let target: HostOperationTarget
     let confirmation: SSHHostKeyConfirmation
 
-    var id: UUID { target.draftID }
+    var id: String {
+        [
+            target.draftID.uuidString,
+            confirmation.destination,
+            confirmation.algorithm,
+            confirmation.fingerprint,
+        ].joined(separator: ":")
+    }
 }
 
 public struct HostsSettingsView: View {
@@ -718,10 +725,10 @@ public struct HostsSettingsView: View {
         }
         switch result {
         case let .success(summary):
+            hostProbeResult = summary
             guard summary.diagnostics.contains(where: {
                 $0.code == .sshConnectionFailed
             }) else {
-                hostProbeResult = summary
                 return
             }
             let trustResult = await pendingSSHHostKeyConfirmation(
@@ -736,7 +743,6 @@ public struct HostsSettingsView: View {
             switch trustResult {
             case let .success(confirmation):
                 guard let confirmation else {
-                    hostProbeResult = summary
                     return
                 }
                 pendingSSHHostTrust = PendingSSHHostTrust(
@@ -744,7 +750,6 @@ public struct HostsSettingsView: View {
                     confirmation: confirmation
                 )
             case let .failure(error):
-                hostProbeResult = summary
                 hostProbeErrorMessage = error.displayMessage
             }
         case let .failure(error):

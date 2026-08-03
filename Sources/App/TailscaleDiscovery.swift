@@ -1,5 +1,6 @@
 import Foundation
 import GhosthubSettings
+import GhosthubTmux
 import GhosthubWorkspace
 
 enum TailscaleDiscovery {
@@ -20,7 +21,14 @@ enum TailscaleDiscovery {
 
     static func discoverPeers(
         tailscalePaths: [String],
-        environment: [String: String]
+        environment: [String: String],
+        sshUsernameProvider: @escaping @Sendable (String) -> String? = {
+            SSHConfigurationResolver.configuration(for: SSHHostInfo(
+                user: nil,
+                hostname: $0,
+                port: nil
+            ))?.user
+        }
     ) async -> Result<[TailscalePeer], TailscaleError> {
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
@@ -77,6 +85,13 @@ enum TailscaleDiscovery {
                 }
                 let result = TailscaleStatusParser
                     .peers(from: data)
+                    .map { peers in
+                        peers.map { peer in
+                            peer.resolvingSSHUsername(
+                                sshUsernameProvider(peer.sshAddress)
+                            )
+                        }
+                    }
                     .mapError { error in
                         TailscaleError.parseFailed(error.message)
                     }

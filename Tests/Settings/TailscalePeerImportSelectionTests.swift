@@ -78,7 +78,8 @@ struct TailscalePeerImportSelectionTests {
             hostName: hostName,
             dnsName: dnsName ?? "\(hostName).tailnet.ts.net.",
             os: "linux",
-            isOnline: isOnline
+            isOnline: isOnline,
+            sshUsername: nil
         )
     }
 }

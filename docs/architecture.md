@@ -171,6 +171,10 @@ a short alias nor writes a key obtained from a separate scanner. The approved
 key therefore lands in the `UserKnownHostsFile` selected by the user's OpenSSH
 configuration before the ordinary noninteractive probe or inventory refresh
 retries.
+Before opening that channel, Ghosthub reads the effective destination policy
+with `ssh -G`. It tightens `accept-new` to an explicit review but does not
+override `yes`, `no`, or `off`; approval matches the parsed algorithm and
+fingerprint rather than address-bearing prompt prose.
 Trust invocations use the same local account login-shell boundary as ordinary
 SSH operations. For ProxyJump and SSH-based ProxyCommand routes, Ghosthub names
 the host from OpenSSH's prompt and reviews each unseen route key sequentially

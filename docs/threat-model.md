@@ -118,12 +118,14 @@ deterministic workspace-specific socket identity without creating the server.
 Testing a newly configured SSH connection and reviewing a host-scoped
 inventory warning delegate host-key verification and storage to the user's
 OpenSSH configuration, just like inventory, attachment, and helper
-installation. For an unseen key, Ghosthub runs OpenSSH with its interactive
-`ask` policy through a private askpass channel, presents the exact destination
-and fingerprint, and returns `yes` only after explicit approval.
-The approval is bound to the complete OpenSSH prompt; if the key changes before
-approval, Ghosthub rejects it and presents the new fingerprint on the next
-test. OpenSSH writes the approved key to its configured `UserKnownHostsFile`,
+installation. Ghosthub first reads the destination's effective configuration
+with `ssh -G` and opens its private askpass review only when
+`StrictHostKeyChecking` resolves to `ask` or `accept-new`; it never weakens a
+configured `yes`, `no`, or `off` policy. For an unseen key, Ghosthub presents
+the exact destination and fingerprint and returns `yes` only after explicit
+approval. The approval is bound to the parsed algorithm and fingerprint, so a
+benign address change cannot be mislabeled as a key change. OpenSSH writes the
+approved key to its configured `UserKnownHostsFile`,
 after which Ghosthub retries the connection or inventory operation that led to
 the review.
 Ghosthub never forces `accept-new`, writes a scanned key itself, or treats a

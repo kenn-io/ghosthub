@@ -134,7 +134,8 @@ const imageAlt = {
             Open <strong>Settings → Hosts</strong> and add any destination
             accepted by your SSH configuration, such as{' '}
             <code>devbox</code> or <code>alice@build-server</code>.
-            Importing from Tailscale uses your local username and preserves
+            Importing from Tailscale uses the user resolved by your OpenSSH
+            configuration (falling back to your local username) and preserves
             each host’s full MagicDNS name.
           </p>
           <p>
@@ -163,6 +164,9 @@ const imageAlt = {
             destination and OpenSSH fingerprint for explicit approval, asks
             OpenSSH to save that same key, and retries the connection. A trusted
             short hostname or alias is a separate OpenSSH identity. Ghosthub
+            reviews effective <code>ask</code> and <code>accept-new</code>{' '}
+            policies without overriding <code>yes</code>, <code>no</code>, or{' '}
+            <code>off</code>. Ghosthub
             then copies its pinned build for the host’s OS and CPU, verifies it,
             and keeps it under <code>~/.ghosthub/</code>.
             On a fresh macOS or Linux host, open the <strong>+</strong> menu

@@ -427,6 +427,8 @@ final class CompactWorkspaceTitlebarController {
         onSettings: @escaping () -> Void,
         onNewWorktree: @escaping () -> Void
     ) {
+        let sidebarVisibilityChanged = self.isSidebarVisible
+            != isSidebarVisible
         self.isSidebarVisible = isSidebarVisible
         self.sidebarWidth = WorkspaceSidebarWidthPolicy.clampedWidth(
             sidebarWidth
@@ -438,10 +440,25 @@ final class CompactWorkspaceTitlebarController {
         self.onSettings = onSettings
         self.onNewWorktree = onNewWorktree
         refreshHosts()
-        titleLeadingConstraint?.constant = Self.titleLeadingOffset(
+        let titleLeadingOffset = Self.titleLeadingOffset(
             isSidebarVisible: isSidebarVisible,
             sidebarWidth: self.sidebarWidth
         )
+        if sidebarVisibilityChanged,
+           let titleLeadingConstraint {
+            let container = titleHost.superview
+            container?.layoutSubtreeIfNeeded()
+            titleLeadingConstraint.constant = titleLeadingOffset
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.2
+                context.timingFunction = CAMediaTimingFunction(
+                    name: .easeInEaseOut
+                )
+                container?.animator().layoutSubtreeIfNeeded()
+            }
+        } else {
+            titleLeadingConstraint?.constant = titleLeadingOffset
+        }
     }
 
     private func refreshHosts() {

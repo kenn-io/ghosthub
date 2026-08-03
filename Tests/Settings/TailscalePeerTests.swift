@@ -10,7 +10,8 @@ struct TailscalePeerTests {
             hostName: "box",
             dnsName: "box.tailnet.ts.net.",
             os: "linux",
-            isOnline: true
+            isOnline: true,
+            sshUsername: nil
         )
 
         #expect(peer.sshAddress == "box.tailnet.ts.net")
@@ -27,7 +28,8 @@ struct TailscalePeerTests {
             hostName: "box",
             dnsName: "box.tailnet.ts.net",
             os: "linux",
-            isOnline: true
+            isOnline: true,
+            sshUsername: nil
         )
 
         #expect(peer.sshAddress == "box.tailnet.ts.net")
@@ -55,7 +57,8 @@ struct TailscalePeerTests {
             hostName: os,
             dnsName: "\(os).tailnet.ts.net.",
             os: os,
-            isOnline: true
+            isOnline: true,
+            sshUsername: nil
         )
     }
 }
