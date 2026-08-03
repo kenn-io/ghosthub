@@ -52,17 +52,17 @@ Ghostty revision.
 
 ## Remote tmux attach fails on an SSH host
 
-Confirm the remote host has `git` and `tmux` on its login-shell `PATH`, then
-verify the same SSH destination works with the system `ssh` command. Kwt does
-not need a system installation: use **Test Connection** followed by **Install
-kwt Worktree Helper** in Host Settings when project inventory is missing. If the host
-has never used kwt, enter an existing checkout's absolute path under **Add
-Project** from the **+** menu beside that host; repeat for each repository
-Ghosthub should display.
+Open Host Settings and use **Test Connection** to verify host trust,
+authentication, and that `tmux` is on the remote login-shell `PATH`. Kwt does
+not need a system installation: follow a successful test with **Install kwt
+Worktree Helper** when project inventory is missing. If the host has never used
+kwt, enter an existing checkout's absolute path under **Add Project** from the
+**+** menu beside that host; repeat for each repository Ghosthub should
+display.
 
-**Test Connection** follows your OpenSSH host-key policy. If a new destination
-requires interactive verification, connect once with the system `ssh` command
-to the exact full destination shown in Host Settings, verify its fingerprint,
-and retry. A trusted short hostname or alias is a separate OpenSSH identity. A
-reachable host without tmux is reported separately as **tmux is not installed**
-rather than as an SSH failure.
+**Test Connection** follows your OpenSSH host-key policy. If the exact full
+destination has an unseen key, Ghosthub presents OpenSSH's fingerprint for
+explicit approval, asks OpenSSH to save that same key using its configured
+`UserKnownHostsFile`, and retries the probe. A trusted short hostname or alias
+is a separate OpenSSH identity. A reachable host without tmux is reported
+separately as **tmux is not installed** rather than as an SSH failure.

@@ -162,6 +162,15 @@ twice.
 
 ### External State
 
+SSH transport, configuration resolution, and host-key storage remain owned by
+the system OpenSSH client. When **Test Connection** encounters an unseen key,
+Ghosthub presents the exact destination and fingerprint through an explicit
+trust sheet. Approval is returned to that same OpenSSH prompt through a private
+askpass channel; Ghosthub neither substitutes a short alias nor writes a key
+obtained from a separate scanner. The approved key therefore lands in the
+`UserKnownHostsFile` selected by the user's OpenSSH configuration before the
+ordinary noninteractive probe retries.
+
 Ghosthub bundles revision-pinned kwt CLI builds for local project and worktree
 operations and for `darwin/{amd64,arm64}`, `linux/{amd64,arm64}`, and
 `windows/{amd64,arm64}` remote hosts. The local helper is signed as app code and invoked by its exact bundle
@@ -216,13 +225,13 @@ then executes an ordinary client with environment updates disabled. The user
 may explicitly run project commands after attachment. Other workspaces and
 unbound sessions continue to attach directly to the host's normal tmux server.
 
-Remote kwt installation is never implicit. Ordinary inventory, connection
-testing, and tmux attachment remain non-mutating, and a remote host without the
+Remote kwt installation is never implicit. Ordinary inventory and tmux
+attachment remain non-mutating. Connection testing mutates host-key state only
+after the explicit fingerprint approval above, and a remote host without the
 managed helper remains tmux-only. Install and Update are explicit Settings
 actions and never replace a host's system kwt. Versioned directories retain
 older pinned helpers, so installing an older Ghosthub build can select and
-restore its own revision; reinstalling one revision also retains
-`kwt.previous`.
+restore its own revision; reinstalling one revision also retains `kwt.previous`.
 
 Native Windows installation uses a separate PowerShell boundary. The explicit
 **Install Bundled kwt** action probes the remote process architecture, uploads

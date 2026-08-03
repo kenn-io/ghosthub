@@ -632,6 +632,21 @@ struct WorkspaceWindow: View {
                                             host
                                         )
                                 },
+                                pendingSSHHostKeyConfirmation: {
+                                    host in
+                                    await sceneModel
+                                        .pendingSSHHostKeyConfirmation(
+                                            for: host
+                                        )
+                                },
+                                trustSSHHostKey: {
+                                    confirmation, host in
+                                    await sceneModel
+                                        .trustSSHHostKey(
+                                            confirmation,
+                                            for: host
+                                        )
+                                },
                                 loadTailscalePeers: {
                                     await TailscaleDiscovery
                                         .discoverPeers()

@@ -2330,23 +2330,82 @@ final class WorkspaceSceneModel: ObservableObject {
         activeBorrowedTmuxLaunchMode = nil
     }
 
+    func pendingSSHHostKeyConfirmation(
+        for host: SSHHost
+    ) async -> Result<SSHHostKeyConfirmation?, HostProbeError> {
+        guard let resolved = resolvedSSHHost(host) else {
+            return .failure(.message("Enter a valid SSH destination."))
+        }
+        return await Task.detached {
+            do {
+                return .success(try SSHHostTrustManager()
+                    .pendingConfirmation(
+                        for: resolved.info,
+                        destination: resolved.destination
+                    ))
+            } catch {
+                return .failure(.message(
+                    error.localizedDescription
+                ))
+            }
+        }.value
+    }
+
+    func trustSSHHostKey(
+        _ confirmation: SSHHostKeyConfirmation,
+        for host: SSHHost
+    ) async -> Result<Void, HostProbeError> {
+        guard let resolved = resolvedSSHHost(host) else {
+            return .failure(.message("Enter a valid SSH destination."))
+        }
+        return await Task.detached {
+            do {
+                try SSHHostTrustManager().accept(
+                    confirmation,
+                    for: resolved.info,
+                    destination: resolved.destination
+                )
+                return .success(())
+            } catch {
+                return .failure(.message(
+                    error.localizedDescription
+                ))
+            }
+        }.value
+    }
+
+    private func resolvedSSHHost(
+        _ host: SSHHost
+    ) -> (info: SSHHostInfo, destination: String)? {
+        let destination = host.sshDestination.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard let parsed = TmuxHostResolver.parseSSHDestination(
+            destination
+        ) else {
+            return nil
+        }
+        return (
+            SSHHostInfo(
+                user: parsed.user,
+                hostname: parsed.hostname,
+                port: parsed.port,
+                platform: host.platform == .windows ? .windows : .posix
+            ),
+            destination
+        )
+    }
+
     func probeSSHHost(
         _ host: SSHHost
     ) async -> Result<
         HostProbeSummary,
         HostProbeError
     > {
-        guard let parsedSSHHost = TmuxHostResolver.parseSSHDestination(
-            host.sshDestination
-        ) else {
+        guard let resolved = resolvedSSHHost(host) else {
             return .failure(.message("Enter a valid SSH destination."))
         }
-        let sshHost = SSHHostInfo(
-            user: parsedSSHHost.user,
-            hostname: parsedSSHHost.hostname,
-            port: parsedSSHHost.port,
-            platform: host.platform == .windows ? .windows : .posix
-        )
+        let sshHost = resolved.info
         let sshHostProbeRunner = sshHostProbeRunner
         let kwtPrelude = KwtBinaryLocator.remoteCommandPrelude(
             revision: KwtBinaryLocator.bundledRemoteRevision()
@@ -2414,9 +2473,8 @@ final class WorkspaceSceneModel: ObservableObject {
                     severity: .error,
                     summary: "SSH could not be reached.",
                     recoverySuggestion:
-                    "Connect to this exact full destination once with system "
-                        + "ssh, verify its host key, and confirm key-based "
-                        + "authentication is available from your login shell."
+                    "Open Host Settings and run Test Connection to review an "
+                        + "unseen host key or confirm key-based authentication."
                 )]
             } else if !tmuxAvailable {
                 diagnostics = [RemoteHostDiagnostic(
@@ -2673,6 +2731,10 @@ final class WorkspaceSceneModel: ObservableObject {
                 },
                 onRetryRequest: { [weak self] in
                     self?.retryBorrowedTmuxSession(selection)
+                },
+                onHostSettingsRequest: { [weak self] in
+                    SettingsStore.shared.selectedDomain = .hosts
+                    self?.isSettingsPresented = true
                 }
             )
         )

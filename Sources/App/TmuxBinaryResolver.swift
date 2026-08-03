@@ -56,10 +56,9 @@ enum TmuxBinaryError: Error, Equatable, LocalizedError, Sendable {
             return "The login shell exited with status \(status) while"
                 + " locating tmux. Check your shell startup files."
         case let .sshConnectionFailed(host):
-            return "SSH could not connect to \(host). Verify this exact"
-                + " destination once with system ssh, not a short hostname"
-                + " or alias, then retry or run Test Connection in Host"
-                + " Settings."
+            return "SSH could not connect to \(host). Open Host Settings and"
+                + " run Test Connection to review an unseen host key or"
+                + " diagnose authentication and network access."
         case let .probeTimedOut(shell):
             return "Timed out while locating tmux through \(shell). Check"
                 + " for commands that block in your shell startup files."
@@ -434,7 +433,8 @@ struct TmuxBinaryResolver: Sendable {
         executable: String,
         arguments: [String],
         timeout: TimeInterval,
-        captureStandardError: Bool = false
+        captureStandardError: Bool = false,
+        environmentOverrides: [String: String] = [:]
     ) -> (status: Int32, stdout: String) {
         var outputDescriptors = [Int32](repeating: -1, count: 2)
         guard outputDescriptors.withUnsafeMutableBufferPointer({ descriptors in
@@ -480,9 +480,10 @@ struct TmuxBinaryResolver: Sendable {
         var cArguments = argumentStrings.map { strdup($0) }
         defer { cArguments.forEach { free($0) } }
         cArguments.append(nil)
-        let environment = sanitizedProcessEnvironment(
+        var environment = sanitizedProcessEnvironment(
             ProcessInfo.processInfo.environment
         )
+        environment.merge(environmentOverrides) { _, override in override }
         var cEnvironment = environment.map {
             strdup("\($0.key)=\($0.value)")
         }

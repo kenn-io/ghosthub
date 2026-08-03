@@ -46,11 +46,21 @@ struct HostOperationTarget: Equatable, Sendable {
     }
 }
 
+private struct PendingSSHHostTrust: Identifiable {
+    let target: HostOperationTarget
+    let confirmation: SSHHostKeyConfirmation
+
+    var id: UUID { target.draftID }
+}
+
 public struct HostsSettingsView: View {
     @FocusState private var focusedConnectionField: HostConnectionField?
     @State private var remoteProjectPath = ""
     @State private var isRegisteringRemoteProject = false
     @State private var remoteProjectMessage: String?
+    @State private var pendingSSHHostTrust: PendingSSHHostTrust?
+    @State private var isTrustingSSHHost = false
+    @State private var hostTrustErrorMessage: String?
     @Binding var sshHosts: [SSHHostDraft]
     @Binding var selectedSSHHostDraftID: UUID?
     @Binding var hostProbeResult: HostProbeSummary?
@@ -66,6 +76,16 @@ public struct HostsSettingsView: View {
     let probeSSHHost:
         (SSHHost) async -> Result<
             HostProbeSummary,
+            HostProbeError
+        >
+    let pendingSSHHostKeyConfirmation:
+        (SSHHost) async -> Result<
+            SSHHostKeyConfirmation?,
+            HostProbeError
+        >
+    let trustSSHHostKey:
+        (SSHHostKeyConfirmation, SSHHost) async -> Result<
+            Void,
             HostProbeError
         >
     let installRemoteKwt:
@@ -93,6 +113,13 @@ public struct HostsSettingsView: View {
             HostProbeSummary,
             HostProbeError
         >,
+        pendingSSHHostKeyConfirmation: @escaping (
+            SSHHost
+        ) async -> Result<SSHHostKeyConfirmation?, HostProbeError>,
+        trustSSHHostKey: @escaping (
+            SSHHostKeyConfirmation,
+            SSHHost
+        ) async -> Result<Void, HostProbeError>,
         installRemoteKwt: @escaping (
             SSHHost
         ) async -> Result<Void, HostProbeError>,
@@ -119,6 +146,9 @@ public struct HostsSettingsView: View {
         _isTailscaleSheetPresented = isTailscaleSheetPresented
         _isInstallingWindowsKwt = isInstallingWindowsKwt
         self.probeSSHHost = probeSSHHost
+        self.pendingSSHHostKeyConfirmation =
+            pendingSSHHostKeyConfirmation
+        self.trustSSHHostKey = trustSSHHostKey
         self.installRemoteKwt = installRemoteKwt
         self.registerRemoteProject = registerRemoteProject
         self.loadTailscalePeers = loadTailscalePeers
@@ -266,10 +296,10 @@ public struct HostsSettingsView: View {
                     settingsSection("Verification") {
                         Text(
                             "Test Connection follows your OpenSSH host-key"
-                                + " policy. Verify the exact full destination"
-                                + " shown above with system ssh first if your"
-                                + " policy prompts for trust; a short hostname"
-                                + " or alias is a separate SSH identity."
+                                + " policy. For an unseen key, Ghosthub shows"
+                                + " the exact destination and fingerprint for"
+                                + " approval before OpenSSH saves it. A short"
+                                + " hostname or alias is a separate identity."
                         )
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
@@ -520,6 +550,9 @@ public struct HostsSettingsView: View {
                 }
             )
         }
+        .sheet(item: $pendingSSHHostTrust) { pending in
+            sshHostTrustSheet(pending)
+        }
         .alert(
             "Tailscale Import",
             isPresented: Binding(
@@ -685,9 +718,63 @@ public struct HostsSettingsView: View {
         }
         switch result {
         case let .success(summary):
-            hostProbeResult = summary
+            guard summary.diagnostics.contains(where: {
+                $0.code == .sshConnectionFailed
+            }) else {
+                hostProbeResult = summary
+                return
+            }
+            let trustResult = await pendingSSHHostKeyConfirmation(
+                draft.sshHost
+            )
+            guard target.isCurrent(
+                selectedDraftID: selectedSSHHostDraftID,
+                drafts: sshHosts
+            ) else {
+                return
+            }
+            switch trustResult {
+            case let .success(confirmation):
+                guard let confirmation else {
+                    hostProbeResult = summary
+                    return
+                }
+                pendingSSHHostTrust = PendingSSHHostTrust(
+                    target: target,
+                    confirmation: confirmation
+                )
+            case let .failure(error):
+                hostProbeResult = summary
+                hostProbeErrorMessage = error.displayMessage
+            }
         case let .failure(error):
             hostProbeErrorMessage = error.displayMessage
+        }
+    }
+
+    private func trustHostKey(
+        _ pending: PendingSSHHostTrust
+    ) async {
+        guard pending.target.isCurrent(
+            selectedDraftID: selectedSSHHostDraftID,
+            drafts: sshHosts
+        ), let draft = selectedSSHHostDraft else {
+            pendingSSHHostTrust = nil
+            return
+        }
+        isTrustingSSHHost = true
+        hostTrustErrorMessage = nil
+        defer { isTrustingSSHHost = false }
+
+        switch await trustSSHHostKey(
+            pending.confirmation,
+            draft.sshHost
+        ) {
+        case .success:
+            pendingSSHHostTrust = nil
+            await probeHost(draft)
+        case let .failure(error):
+            hostTrustErrorMessage = error.displayMessage
         }
     }
 
@@ -708,6 +795,7 @@ public struct HostsSettingsView: View {
 
     private var isHostActionInProgress: Bool {
         isProbingSSHHost
+            || isTrustingSSHHost
             || isInstallingRemoteKwt
             || isInstallingWindowsKwt
             || isRegisteringRemoteProject
@@ -809,11 +897,89 @@ public struct HostsSettingsView: View {
     private func clearSSHHostProbeFeedback() {
         hostProbeResult = nil
         hostProbeErrorMessage = nil
+        pendingSSHHostTrust = nil
+        hostTrustErrorMessage = nil
         remoteKwtInstallMessage = nil
         remoteProjectMessage = nil
     }
 
     // MARK: - View Helpers
+
+    private func sshHostTrustSheet(
+        _ pending: PendingSSHHostTrust
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Label("Trust SSH Host?", systemImage: "lock.shield")
+                .font(.system(size: 20, weight: .semibold))
+
+            Text(
+                "OpenSSH reported a previously unseen host key for this exact"
+                    + " destination:"
+            )
+            Text(pending.confirmation.destination)
+                .font(.system(.body, design: .monospaced))
+                .textSelection(.enabled)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(pending.confirmation.algorithm)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Text(pending.confirmation.fingerprint)
+                    .font(.system(.body, design: .monospaced))
+                    .textSelection(.enabled)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("OpenSSH details")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Text(pending.confirmation.openSSHPrompt)
+                    .font(.system(size: 11, design: .monospaced))
+                    .textSelection(.enabled)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        RoundedRectangle(
+                            cornerRadius: 8,
+                            style: .continuous
+                        )
+                        .fill(.secondary.opacity(0.08))
+                    )
+            }
+
+            Text(
+                "Verify this fingerprint through a trusted channel. Trusting"
+                    + " it authorizes OpenSSH to save only the key shown above"
+                    + " for this destination."
+            )
+            .font(.system(size: 12))
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+
+            if let hostTrustErrorMessage {
+                Text(hostTrustErrorMessage)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) {
+                    pendingSSHHostTrust = nil
+                }
+                .disabled(isTrustingSSHHost)
+                Button(isTrustingSSHHost ? "Trusting\u{2026}" : "Trust and Continue") {
+                    Task { await trustHostKey(pending) }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(isTrustingSSHHost)
+            }
+        }
+        .padding(24)
+        .frame(width: 520)
+        .interactiveDismissDisabled(isTrustingSSHHost)
+    }
 
     private func hostSettingField<Control: View>(
         _ title: String,

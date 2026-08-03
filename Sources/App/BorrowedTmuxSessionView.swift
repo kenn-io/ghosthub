@@ -12,6 +12,7 @@ struct BorrowedTmuxSessionView: View {
     var surface: () -> TerminalSurfaceView?
     var onCloseRequest: () -> Void
     var onRetryRequest: () -> Void
+    var onHostSettingsRequest: () -> Void
 
     init(
         handle: BorrowedTmuxSessionHandle,
@@ -22,7 +23,8 @@ struct BorrowedTmuxSessionView: View {
         sessionClosed: Bool = false,
         surface: @escaping () -> TerminalSurfaceView?,
         onCloseRequest: @escaping () -> Void,
-        onRetryRequest: @escaping () -> Void
+        onRetryRequest: @escaping () -> Void,
+        onHostSettingsRequest: @escaping () -> Void
     ) {
         self.handle = handle
         self.hostName = hostName
@@ -33,6 +35,7 @@ struct BorrowedTmuxSessionView: View {
         self.surface = surface
         self.onCloseRequest = onCloseRequest
         self.onRetryRequest = onRetryRequest
+        self.onHostSettingsRequest = onHostSettingsRequest
     }
 
     var body: some View {
@@ -55,6 +58,9 @@ struct BorrowedTmuxSessionView: View {
                 Text(disconnectionReason)
             } actions: {
                 Button(recoveryActionTitle, action: onRetryRequest)
+                if !sessionClosed {
+                    Button("Host Settings", action: onHostSettingsRequest)
+                }
             }
         } else {
             ProgressView("Opening \(displayTitle ?? handle.name)…")

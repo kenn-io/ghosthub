@@ -11,6 +11,18 @@ public struct SettingsActions {
         > = { _ in
             .failure(.message("SSH host probing is unavailable."))
         }
+    var pendingSSHHostKeyConfirmation:
+        (SSHHost) async -> Result<
+            SSHHostKeyConfirmation?,
+            HostProbeError
+        > = { _ in .success(nil) }
+    var trustSSHHostKey:
+        (SSHHostKeyConfirmation, SSHHost) async -> Result<
+            Void,
+            HostProbeError
+        > = { _, _ in
+            .failure(.message("SSH host-key approval is unavailable."))
+        }
     var loadTailscalePeers: () async -> TailscalePeerLoadResult = {
         .failure("Tailscale import is unavailable.")
     }
@@ -37,6 +49,17 @@ public struct SettingsActions {
         > = { _ in
             .failure(.message("SSH host probing is unavailable."))
         },
+        pendingSSHHostKeyConfirmation: @escaping (
+            SSHHost
+        ) async -> Result<SSHHostKeyConfirmation?, HostProbeError> = {
+            _ in .success(nil)
+        },
+        trustSSHHostKey: @escaping (
+            SSHHostKeyConfirmation,
+            SSHHost
+        ) async -> Result<Void, HostProbeError> = { _, _ in
+            .failure(.message("SSH host-key approval is unavailable."))
+        },
         loadTailscalePeers: @escaping () async -> TailscalePeerLoadResult = {
             .failure("Tailscale import is unavailable.")
         },
@@ -61,6 +84,9 @@ public struct SettingsActions {
     ) {
         self.refreshHosts = refreshHosts
         self.probeSSHHost = probeSSHHost
+        self.pendingSSHHostKeyConfirmation =
+            pendingSSHHostKeyConfirmation
+        self.trustSSHHostKey = trustSSHHostKey
         self.loadTailscalePeers = loadTailscalePeers
         self.installRemoteKwt = installRemoteKwt
         self.registerRemoteProject = registerRemoteProject
@@ -257,6 +283,9 @@ public struct SettingsView: View {
             isTailscaleSheetPresented: $isTailscaleSheetPresented,
             isInstallingWindowsKwt: $isInstallingWindowsKwt,
             probeSSHHost: actions.probeSSHHost,
+            pendingSSHHostKeyConfirmation:
+            actions.pendingSSHHostKeyConfirmation,
+            trustSSHHostKey: actions.trustSSHHostKey,
             installRemoteKwt: actions.installRemoteKwt,
             registerRemoteProject: actions.registerRemoteProject,
             loadTailscalePeers: actions.loadTailscalePeers,
