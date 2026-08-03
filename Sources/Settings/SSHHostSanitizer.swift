@@ -14,11 +14,8 @@ public enum SSHHostSanitizer {
             let name = host.name.trimmingCharacters(
                 in: .whitespacesAndNewlines
             )
-            let sshDestination = normalizedSSHDestination(
-                host.sshDestination.trimmingCharacters(
-                    in: .whitespacesAndNewlines
-                )
-            )
+            let sshDestination = host.sshDestination
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             guard !configKey.isEmpty,
                   !name.isEmpty,
                   !sshDestination.isEmpty,
@@ -35,35 +32,5 @@ public enum SSHHostSanitizer {
                 sshDestination: sshDestination
             )
         }
-    }
-
-    private static func normalizedSSHDestination(
-        _ destination: String
-    ) -> String {
-        let hostStart: String.Index
-        if let separator = destination.firstIndex(of: "@") {
-            hostStart = destination.index(after: separator)
-        } else {
-            hostStart = destination.startIndex
-        }
-
-        let hostAndPort = destination[hostStart...]
-        let hostEnd = hostAndPort.firstIndex(of: ":")
-            ?? destination.endIndex
-        let hostname = hostAndPort[..<hostEnd]
-        let hostnameWithoutRootDot = hostname.last == "."
-            ? hostname.dropLast()
-            : hostname[...]
-        guard hostnameWithoutRootDot.lowercased().hasSuffix(".ts.net"),
-              let shortHostname = hostnameWithoutRootDot.split(
-                  separator: "."
-              ).first
-        else { return destination }
-
-        return String(
-            destination[..<hostStart]
-                + shortHostname
-                + destination[hostEnd...]
-        )
     }
 }

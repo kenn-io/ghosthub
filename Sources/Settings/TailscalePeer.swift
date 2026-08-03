@@ -22,8 +22,7 @@ public struct TailscalePeer: Identifiable, Equatable, Sendable {
     }
 
     public var sshAddress: String {
-        normalizedDNSName.split(separator: ".").first.map(String.init)
-            ?? hostName
+        normalizedDNSName
     }
 
     private var normalizedDNSName: String {

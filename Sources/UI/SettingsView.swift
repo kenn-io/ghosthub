@@ -220,7 +220,7 @@ public struct SettingsView: View {
 
     private var availableTerminalFontFamilies: [String] {
         let manager = NSFontManager.shared
-        return manager.availableFontFamilies.filter { family in
+        let installedFixedPitchFamilies = manager.availableFontFamilies.filter { family in
             manager.availableMembers(ofFontFamily: family)?.contains {
                 member in
                 guard member.count > 3,
@@ -230,7 +230,10 @@ public struct SettingsView: View {
                     .contains(.fixedPitchFontMask)
             } == true
         }
-        .sorted()
+        return TerminalFontFamilyOptions.families(
+            installedFixedPitch: installedFixedPitchFamilies,
+            configured: draft.terminalFontFamily
+        )
     }
 
     private var availableTerminalFontSizes: [Double] {

@@ -51,8 +51,8 @@ struct SSHHostSanitizerTests {
         #expect(sanitized.map(\.name) == ["First", "Third"])
     }
 
-    @Test("saved Tailscale destinations use the MagicDNS short hostname")
-    func normalizesSavedTailscaleDestination() throws {
+    @Test("saved Tailscale destinations preserve canonical MagicDNS identity")
+    func preservesSavedTailscaleDestination() throws {
         let sanitized = SSHHostSanitizer.sshHosts([
             SSHHost(
                 configKey: "remote-builder",
@@ -63,7 +63,10 @@ struct SSHHostSanitizerTests {
         ])
 
         let host = try #require(sanitized.first)
-        #expect(host.sshDestination == "operator@builder")
+        #expect(
+            host.sshDestination
+                == "operator@builder.example-tailnet.ts.net"
+        )
     }
 
     private func host(configKey: String, name: String) -> SSHHost {

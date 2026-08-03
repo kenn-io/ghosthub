@@ -38,6 +38,20 @@ struct WorkspaceSidebarModelTests {
             == [otherProject.id])
     }
 
+    @Test("drag ordering preserves omitted siblings in their stored slots")
+    func dragOrderingPreservesOmittedSiblings() {
+        var order = WorkspaceSidebarOrder(rawValue: "first\nsecond\nthird")
+
+        let didMove = order.move(
+            "first",
+            to: "third",
+            within: ["first", "third"]
+        )
+
+        #expect(didMove)
+        #expect(order.rawValue == "third\nsecond\nfirst")
+    }
+
     @Test("drop placement matches the final directional insertion")
     func dropPlacement() {
         let orderedIDs = ["first", "second", "third"]

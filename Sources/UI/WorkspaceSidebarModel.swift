@@ -62,8 +62,14 @@ struct WorkspaceSidebarOrder: Equatable {
             : orderedTargetIndex
         orderedGroupIDs.insert(sourceID, at: insertionIndex)
 
-        itemIDs.removeAll { groupIDSet.contains($0) }
-        itemIDs.append(contentsOf: orderedGroupIDs)
+        var replacements = orderedGroupIDs.makeIterator()
+        itemIDs = itemIDs.map { itemID in
+            guard groupIDSet.contains(itemID) else { return itemID }
+            return replacements.next() ?? itemID
+        }
+        while let replacement = replacements.next() {
+            itemIDs.append(replacement)
+        }
         return true
     }
 

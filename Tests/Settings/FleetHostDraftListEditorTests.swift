@@ -119,7 +119,7 @@ struct SSHHostDraftListEditorTests {
 
         #expect(imported.name == "Mac Mini")
         #expect(imported.platform == .macOS)
-        #expect(imported.sshDestination == "mac-mini")
+        #expect(imported.sshDestination == "mac-mini.tailnet.ts.net")
     }
 
     private func draft(

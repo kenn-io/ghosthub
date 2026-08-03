@@ -3,8 +3,8 @@ import Testing
 @testable import GhosthubSettings
 
 struct TailscalePeerTests {
-    @Test("uses the MagicDNS short hostname for SSH")
-    func usesShortHostnameForSSH() {
+    @Test("uses the canonical MagicDNS hostname for SSH")
+    func usesCanonicalHostnameForSSH() {
         let peer = TailscalePeer(
             id: "x",
             hostName: "box",
@@ -13,7 +13,7 @@ struct TailscalePeerTests {
             isOnline: true
         )
 
-        #expect(peer.sshAddress == "box")
+        #expect(peer.sshAddress == "box.tailnet.ts.net")
     }
 
     @Test("does not depend on DNS name formatting")
@@ -26,7 +26,7 @@ struct TailscalePeerTests {
             isOnline: true
         )
 
-        #expect(peer.sshAddress == "box")
+        #expect(peer.sshAddress == "box.tailnet.ts.net")
     }
 
     @Test("maps supported operating systems to host platforms")
