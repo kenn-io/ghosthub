@@ -4,6 +4,7 @@ import SwiftUI
 enum SSHConnectionRecoveryPresentation: Equatable {
     case checking
     case hostKey
+    case inventoryIssue
     case connectionIssue
 }
 
@@ -15,6 +16,7 @@ final class WorkspaceSSHHostKeyReviewModel: ObservableObject {
     @Published private(set) var errorMessage: String?
     @Published private(set) var isLoading = false
     @Published private(set) var isTrusting = false
+    private var resolvedPresentation: SSHConnectionRecoveryPresentation?
     private var generation = UUID()
 
     var isPresented: Bool { hostID != nil }
@@ -25,16 +27,13 @@ final class WorkspaceSSHHostKeyReviewModel: ObservableObject {
         if confirmation != nil {
             return .hostKey
         }
-        return .connectionIssue
+        return resolvedPresentation ?? .connectionIssue
     }
 
     func review(
         hostID: UUID,
         hostName: String,
-        using load: (UUID) async -> Result<
-            SSHHostKeyConfirmation?,
-            HostProbeError
-        >
+        using load: () async -> SSHConnectionRecoveryResult
     ) async {
         let generation = UUID()
         self.generation = generation
@@ -42,25 +41,23 @@ final class WorkspaceSSHHostKeyReviewModel: ObservableObject {
         self.hostName = hostName
         confirmation = nil
         errorMessage = nil
+        resolvedPresentation = nil
         isLoading = true
         isTrusting = false
 
-        let result = await load(hostID)
+        let result = await load()
         guard self.generation == generation,
               self.hostID == hostID else { return }
         isLoading = false
         switch result {
-        case let .success(confirmation):
-            if let confirmation {
-                self.confirmation = confirmation
-            } else {
-                errorMessage =
-                    "Ghosthub did not find an unseen host key. Open Host "
-                        + "Settings to check authentication, SSH configuration, "
-                        + "and network access."
-            }
-        case let .failure(error):
-            errorMessage = error.displayMessage
+        case let .hostKey(confirmation):
+            self.confirmation = confirmation
+        case let .inventoryIssue(message):
+            resolvedPresentation = .inventoryIssue
+            errorMessage = message
+        case let .connectionIssue(message):
+            resolvedPresentation = .connectionIssue
+            errorMessage = message
         }
     }
 
@@ -101,6 +98,7 @@ final class WorkspaceSSHHostKeyReviewModel: ObservableObject {
         hostName = ""
         confirmation = nil
         errorMessage = nil
+        resolvedPresentation = nil
         isLoading = false
     }
 }
@@ -108,6 +106,7 @@ final class WorkspaceSSHHostKeyReviewModel: ObservableObject {
 struct SSHHostKeyReviewView: View {
     @ObservedObject var model: WorkspaceSSHHostKeyReviewModel
     let onTrust: () -> Void
+    let onRetry: () -> Void
     let onOpenHostSettings: () -> Void
     let onCancel: () -> Void
 
@@ -127,10 +126,7 @@ struct SSHHostKeyReviewView: View {
             }
 
             if let errorMessage = model.errorMessage {
-                Text(errorMessage)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.red)
-                    .fixedSize(horizontal: false, vertical: true)
+                recoveryMessage(errorMessage)
             }
 
             HStack {
@@ -145,6 +141,10 @@ struct SSHHostKeyReviewView: View {
                     )
                     .keyboardShortcut(.defaultAction)
                     .disabled(model.isTrusting)
+                } else if model.presentation == .inventoryIssue {
+                    Button("Host Settings", action: onOpenHostSettings)
+                    Button("Retry", action: onRetry)
+                        .keyboardShortcut(.defaultAction)
                 } else if !model.isLoading {
                     Button("Host Settings", action: onOpenHostSettings)
                         .keyboardShortcut(.defaultAction)
@@ -165,12 +165,32 @@ struct SSHHostKeyReviewView: View {
         case .hostKey:
             Label("Verify SSH Host", systemImage: "lock.shield")
                 .font(.system(size: 20, weight: .semibold))
+        case .inventoryIssue:
+            Label(
+                "Connected, but Inventory Failed",
+                systemImage: "exclamationmark.triangle"
+            )
+            .font(.system(size: 20, weight: .semibold))
         case .connectionIssue:
             Label(
                 "Can’t Connect to \(model.hostName)",
                 systemImage: "exclamationmark.triangle"
             )
             .font(.system(size: 20, weight: .semibold))
+        }
+    }
+
+    @ViewBuilder
+    private func recoveryMessage(_ message: String) -> some View {
+        if model.presentation == .inventoryIssue {
+            Text(message)
+                .font(.system(size: 12))
+                .fixedSize(horizontal: false, vertical: true)
+        } else {
+            Text(message)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.red)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }

@@ -740,9 +740,10 @@ struct WorkspaceWindow: View {
                 refreshWorkspaceInventory: { [sceneModel] in
                     sceneModel.refreshKwtInventory()
                 },
-                reviewSSHHostKey: { [sceneModel] hostID in
-                    await sceneModel.pendingSSHHostKeyConfirmation(
-                        forHostID: hostID
+                reviewSSHHostKey: { [sceneModel] hostID, inventoryWarning in
+                    await sceneModel.sshConnectionRecovery(
+                        forHostID: hostID,
+                        inventoryWarning: inventoryWarning
                     )
                 },
                 trustSSHHostKey: { [sceneModel] hostID, confirmation in

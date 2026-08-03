@@ -4,6 +4,21 @@ import GhosthubTmux
 import GhosthubWorkspace
 
 enum TailscaleDiscovery {
+    private actor UsernameResolutionQueue {
+        private let count: Int
+        private var nextIndex = 0
+
+        init(count: Int) {
+            self.count = count
+        }
+
+        func claim() -> Int? {
+            guard nextIndex < count else { return nil }
+            defer { nextIndex += 1 }
+            return nextIndex
+        }
+    }
+
     private enum UsernameResolution: Sendable {
         case peer(index: Int, username: String?)
         case workerFinished
@@ -123,13 +138,10 @@ enum TailscaleDiscovery {
 
         let (resolutions, continuation) = AsyncStream<UsernameResolution>
             .makeStream()
-        let workers = (0 ..< concurrentCount).map { workerIndex in
+        let queue = UsernameResolutionQueue(count: peers.count)
+        let workers = (0 ..< concurrentCount).map { _ in
             Task.detached(priority: .userInitiated) {
-                for index in stride(
-                    from: workerIndex,
-                    to: peers.count,
-                    by: concurrentCount
-                ) {
+                while let index = await queue.claim() {
                     guard !Task.isCancelled else { break }
                     let username = await provider(
                         peers[index].sshAddress

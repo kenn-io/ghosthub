@@ -99,6 +99,7 @@ public struct RootView: View {
                 SSHHostKeyReviewView(
                     model: sshHostKeyReview,
                     onTrust: trustReviewedSSHHostKey,
+                    onRetry: retrySSHRecovery,
                     onOpenHostSettings: openHostSettings,
                     onCancel: sshHostKeyReview.dismiss
                 )
@@ -448,8 +449,11 @@ public struct RootView: View {
             onOpenHostSettings: {
                 openHostSettings()
             },
-            onReviewSSHHostKey: { hostID in
-                reviewSSHHostKey(hostID)
+            onReviewSSHHostKey: { hostID, inventoryWarning in
+                reviewSSHHostKey(
+                    hostID,
+                    inventoryWarning: inventoryWarning
+                )
             },
             inventoryWarning: display.workspaceInventoryWarning,
             inventoryWarningsByHost:
@@ -466,7 +470,10 @@ public struct RootView: View {
         .background(WorkspaceSurfaceColor.color)
     }
 
-    private func reviewSSHHostKey(_ hostID: UUID) {
+    private func reviewSSHHostKey(
+        _ hostID: UUID,
+        inventoryWarning: String
+    ) {
         guard let review = handlers.reviewSSHHostKey,
               let host = snapshot.host(id: hostID) else {
             openHostSettings()
@@ -476,9 +483,16 @@ public struct RootView: View {
             await sshHostKeyReview.review(
                 hostID: hostID,
                 hostName: host.name,
-                using: review
+                using: {
+                    await review(hostID, inventoryWarning)
+                }
             )
         }
+    }
+
+    private func retrySSHRecovery() {
+        sshHostKeyReview.dismiss()
+        handlers.refreshWorkspaceInventory?()
     }
 
     private func trustReviewedSSHHostKey() {

@@ -183,15 +183,15 @@ const imageAlt = {
             with no inventory says so in the sidebar. If a host shows a caution
             icon, click it once. Ghosthub checks the exact SSH destination and
             opens fingerprint review only when OpenSSH reports an unseen key.
-            Other failures lead directly to concise connection recovery and
+            Otherwise it tests the connection: reachable hosts keep their
+            inventory diagnostic and offer Retry, while SSH failures lead to
             Host Settings.
             ProxyJump routes with unseen intermediate hosts show each OpenSSH
             prompt in sequence. Opaque ProxyCommand routes and jump hosts with
             another proxy route fail closed because their intermediate policies
             cannot be reviewed safely. After every required approval, Ghosthub
-            retries inventory automatically. If OpenSSH does not report an
-            unseen key, continue to Host Settings to diagnose authentication or
-            network access.
+            retries inventory automatically. If no key requires review, use the
+            resulting Retry or Host Settings action to continue recovery.
           </p>
           <aside class="reconnect">
             <span aria-hidden="true">↻</span>

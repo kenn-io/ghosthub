@@ -128,7 +128,7 @@ struct WorkspaceSidebarView: View {
     let onAddProject: (HostSummary) -> Void
     let onRefreshInventory: () -> Void
     let onOpenHostSettings: () -> Void
-    let onReviewSSHHostKey: (UUID) -> Void
+    let onReviewSSHHostKey: (UUID, String) -> Void
     let inventoryWarning: String?
     let inventoryWarningsByHost: [UUID: String]
     let inventoryRefreshComplete: Bool
@@ -173,7 +173,7 @@ struct WorkspaceSidebarView: View {
         onAddProject: @escaping (HostSummary) -> Void = { _ in },
         onRefreshInventory: @escaping () -> Void = {},
         onOpenHostSettings: @escaping () -> Void = {},
-        onReviewSSHHostKey: @escaping (UUID) -> Void = { _ in },
+        onReviewSSHHostKey: @escaping (UUID, String) -> Void = { _, _ in },
         inventoryWarning: String? = nil,
         inventoryWarningsByHost: [UUID: String] = [:],
         inventoryRefreshComplete: Bool = false,
@@ -1350,8 +1350,8 @@ struct WorkspaceSidebarView: View {
         host: HostSummary?
     ) {
         switch InventoryWarningDestination(message: message, host: host) {
-        case let .connectionRecovery(hostID):
-            onReviewSSHHostKey(hostID)
+        case let .connectionRecovery(hostID, inventoryWarning):
+            onReviewSSHHostKey(hostID, inventoryWarning)
         case let .details(warning):
             presentedInventoryWarning = warning
         }
@@ -1608,12 +1608,12 @@ struct WorkspaceSidebarView: View {
 }
 
 enum InventoryWarningDestination: Equatable {
-    case connectionRecovery(UUID)
+    case connectionRecovery(UUID, String)
     case details(PresentedInventoryWarning)
 
     init(message: String, host: HostSummary?) {
         if let host, host.kind == .remote {
-            self = .connectionRecovery(host.id)
+            self = .connectionRecovery(host.id, message)
         } else {
             self = .details(PresentedInventoryWarning(
                 message: message,

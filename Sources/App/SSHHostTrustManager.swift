@@ -422,7 +422,7 @@ struct SSHHostTrustManager: Sendable {
                 }.joined(separator: ","),
             ])
         }
-        if let port = host.port, port != 22 {
+        if let port = host.port {
             arguments.append(contentsOf: ["-p", String(port)])
         }
         let target = host.user.map { "\($0)@\(host.hostname)" }

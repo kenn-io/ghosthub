@@ -138,6 +138,12 @@ public struct WorktreeRemovalRequest: Equatable, Sendable {
     }
 }
 
+public enum SSHConnectionRecoveryResult: Equatable, Sendable {
+    case hostKey(SSHHostKeyConfirmation)
+    case inventoryIssue(String)
+    case connectionIssue(String)
+}
+
 public struct InteractionHandlers {
     public let closeWindow: (() -> Void)?
     public let dismissLogViewer: (() -> Void)?
@@ -155,7 +161,7 @@ public struct InteractionHandlers {
     public let createTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)?
     public let refreshWorkspaceInventory: (() -> Void)?
     public let reviewSSHHostKey:
-        ((UUID) async -> Result<SSHHostKeyConfirmation?, HostProbeError>)?
+        ((UUID, String) async -> SSHConnectionRecoveryResult)?
     public let trustSSHHostKey:
         ((UUID, SSHHostKeyConfirmation) async -> Result<
             SSHHostKeyConfirmation?, HostProbeError
@@ -192,7 +198,7 @@ public struct InteractionHandlers {
         createTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)? = nil,
         refreshWorkspaceInventory: (() -> Void)? = nil,
         reviewSSHHostKey:
-        ((UUID) async -> Result<SSHHostKeyConfirmation?, HostProbeError>)? = nil,
+        ((UUID, String) async -> SSHConnectionRecoveryResult)? = nil,
         trustSSHHostKey:
         ((UUID, SSHHostKeyConfirmation) async -> Result<
             SSHHostKeyConfirmation?, HostProbeError

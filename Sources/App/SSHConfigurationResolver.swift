@@ -106,7 +106,7 @@ enum SSHConfigurationResolver {
             ? "[\(host.hostname)]"
             : host.hostname
         let destination = host.user.map { "\($0)@\(hostname)" } ?? hostname
-        guard let port = host.port, port != 22 else { return destination }
+        guard let port = host.port else { return destination }
         return "\(destination):\(port)"
     }
 
@@ -145,7 +145,7 @@ enum SSHConfigurationResolver {
 
     static func proxyCommandHopArguments(for host: SSHHostInfo) -> [String] {
         var arguments: [String] = []
-        if let port = host.port, port != 22 {
+        if let port = host.port {
             arguments.append(contentsOf: ["-p", String(port)])
         }
         arguments.append(contentsOf: [
@@ -182,7 +182,7 @@ enum SSHConfigurationResolver {
     ) -> EffectiveSSHConfiguration? {
         var arguments = ["-G"]
         arguments.append(contentsOf: tmuxSSHConnectionArguments())
-        if let port = host.port, port != 22 {
+        if let port = host.port {
             arguments.append(contentsOf: ["-p", String(port)])
         }
         let target = host.user.map { "\($0)@\(host.hostname)" }

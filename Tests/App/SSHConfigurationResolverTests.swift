@@ -160,6 +160,25 @@ struct SSHConfigurationResolverTests {
         #expect(arguments == ["-o", "ProxyCommand=/usr/bin/false"])
     }
 
+    @Test("explicit default ProxyJump ports remain explicit")
+    func preservesExplicitDefaultProxyPort() {
+        let host = SSHHostInfo(
+            user: "relay",
+            hostname: "relay.example.test",
+            port: 22
+        )
+
+        #expect(
+            SSHConfigurationResolver.proxyJumpDestination(for: host)
+                == "relay@relay.example.test:22"
+        )
+        #expect(SSHConfigurationResolver.proxyCommandHopArguments(
+            for: host
+        ) == [
+            "-p", "22", "-W", "[%h]:%p", "relay@relay.example.test",
+        ])
+    }
+
     @Test("opaque proxy commands fail routine SSH operations closed")
     func blocksOpaqueProxyCommands() {
         let destination = SSHHostInfo(

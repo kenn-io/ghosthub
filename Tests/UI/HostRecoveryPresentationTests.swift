@@ -47,7 +47,10 @@ struct HostRecoveryPresentationTests {
         #expect(InventoryWarningDestination(
             message: "Remote inventory unavailable",
             host: host
-        ) == .connectionRecovery(hostID))
+        ) == .connectionRecovery(
+            hostID,
+            "Remote inventory unavailable"
+        ))
     }
 
     @Test("local warnings retain inventory details")

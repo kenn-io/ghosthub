@@ -42,17 +42,15 @@ struct SSHHostKeyReviewModelTests {
             openSSHPrompt: "synthetic OpenSSH prompt"
         )
         let model = WorkspaceSSHHostKeyReviewModel()
-        var reviewedHostID: UUID?
 
         await model.review(
             hostID: hostID,
             hostName: "Build Node"
-        ) { requestedHostID in
-            reviewedHostID = requestedHostID
-            return .success(proxyConfirmation)
+        ) {
+            .hostKey(proxyConfirmation)
         }
 
-        #expect(reviewedHostID == hostID)
+        #expect(model.hostID == hostID)
         #expect(model.confirmation == proxyConfirmation)
         #expect(model.presentation == .hostKey)
 
@@ -103,9 +101,9 @@ struct SSHHostKeyReviewModelTests {
         let gate = ReviewGate()
         let model = WorkspaceSSHHostKeyReviewModel()
         let staleRequest = Task { @MainActor in
-            await model.review(hostID: hostID, hostName: "Old") { _ in
+            await model.review(hostID: hostID, hostName: "Old") {
                 await gate.wait()
-                return .success(staleConfirmation)
+                return .hostKey(staleConfirmation)
             }
         }
 
@@ -114,8 +112,8 @@ struct SSHHostKeyReviewModelTests {
         }
         #expect(model.presentation == .checking)
         model.dismiss()
-        await model.review(hostID: hostID, hostName: "Current") { _ in
-            .success(currentConfirmation)
+        await model.review(hostID: hostID, hostName: "Current") {
+            .hostKey(currentConfirmation)
         }
         await gate.release()
         await staleRequest.value
@@ -125,15 +123,29 @@ struct SSHHostKeyReviewModelTests {
         #expect(model.errorMessage == nil)
     }
 
-    @Test("a failure without an unseen key becomes connection recovery")
-    func noUnseenKeyBecomesConnectionRecovery() async {
+    @Test("a failed probe becomes connection recovery")
+    func failedProbeBecomesConnectionRecovery() async {
         let model = WorkspaceSSHHostKeyReviewModel()
 
-        await model.review(hostID: UUID(), hostName: "Build Node") { _ in
-            .success(nil)
+        await model.review(hostID: UUID(), hostName: "Build Node") {
+            .connectionIssue("Authentication failed.")
         }
 
         #expect(model.presentation == .connectionIssue)
+        #expect(model.errorMessage == "Authentication failed.")
+        #expect(model.confirmation == nil)
+    }
+
+    @Test("a reachable host preserves its inventory diagnostic")
+    func reachableHostPreservesInventoryDiagnostic() async {
+        let model = WorkspaceSSHHostKeyReviewModel()
+
+        await model.review(hostID: UUID(), hostName: "Build Node") {
+            .inventoryIssue("tmux is not available on this host.")
+        }
+
+        #expect(model.presentation == .inventoryIssue)
+        #expect(model.errorMessage == "tmux is not available on this host.")
         #expect(model.confirmation == nil)
     }
 }

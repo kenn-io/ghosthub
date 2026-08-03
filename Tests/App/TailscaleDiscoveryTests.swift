@@ -112,4 +112,33 @@ struct TailscaleDiscoveryTests {
         #expect(peer.sshUsername == nil)
         #expect(completions.load() == 0)
     }
+
+    @Test("available workers claim peers after a stalled lookup")
+    func workersClaimNextAvailablePeer() async throws {
+        let fixture = try TempDirectoryFixture()
+        let tailscale = try fixture.createExecutable(
+            name: "tailscale",
+            content: """
+            #!/bin/sh
+            printf '%s\n' '{"Peer":{"a":{"ID":"a","HostName":"a","DNSName":"a.tailnet.ts.net.","OS":"linux","Online":true},"b":{"ID":"b","HostName":"b","DNSName":"b.tailnet.ts.net.","OS":"linux","Online":true},"c":{"ID":"c","HostName":"c","DNSName":"c.tailnet.ts.net.","OS":"linux","Online":true},"d":{"ID":"d","HostName":"d","DNSName":"d.tailnet.ts.net.","OS":"linux","Online":true}}}'
+            """
+        )
+
+        let result = await TailscaleDiscovery.discoverPeers(
+            tailscalePaths: [tailscale.path],
+            environment: [:],
+            sshUsernameProvider: { hostname in
+                if hostname == "a.tailnet.ts.net" {
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                }
+                return "deployer"
+            },
+            maximumConcurrentUsernameResolutions: 2,
+            usernameResolutionTimeoutNanoseconds: 250_000_000
+        )
+
+        let peers = try result.get()
+        #expect(peers.first { $0.hostName == "a" }?.sshUsername == nil)
+        #expect(peers.filter { $0.sshUsername == "deployer" }.count == 3)
+    }
 }

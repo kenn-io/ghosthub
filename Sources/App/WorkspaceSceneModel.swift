@@ -2387,6 +2387,42 @@ final class WorkspaceSceneModel: ObservableObject {
         return await pendingSSHHostKeyConfirmation(for: host)
     }
 
+    func sshConnectionRecovery(
+        forHostID hostID: UUID,
+        inventoryWarning: String
+    ) async -> SSHConnectionRecoveryResult {
+        guard let host = configuredSSHHost(for: hostID) else {
+            return .connectionIssue(
+                "The selected remote host is no longer configured."
+            )
+        }
+
+        switch await pendingSSHHostKeyConfirmation(for: host) {
+        case let .success(confirmation):
+            if let confirmation {
+                return .hostKey(confirmation)
+            }
+        case let .failure(error):
+            return .connectionIssue(error.displayMessage)
+        }
+
+        switch await probeSSHHost(host) {
+        case let .success(summary):
+            let diagnostic = summary.diagnostics.first.map {
+                "\($0.summary) \($0.recoverySuggestion)"
+            }
+            if summary.host.lastKnownReachable {
+                return .inventoryIssue(diagnostic ?? inventoryWarning)
+            }
+            return .connectionIssue(
+                diagnostic
+                    ?? "Ghosthub could not reach this host over SSH."
+            )
+        case let .failure(error):
+            return .connectionIssue(error.displayMessage)
+        }
+    }
+
     func trustSSHHostKey(
         _ confirmation: SSHHostKeyConfirmation,
         for host: SSHHost
