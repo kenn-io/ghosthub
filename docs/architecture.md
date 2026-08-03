@@ -37,8 +37,27 @@ kwt worktree generation, and exact tmux session and protected-socket identity.
 Its window UUID exists only for native scene adoption; runtime model UUIDs and
 paths are never persisted as host, project, or worktree identity. A worktree
 without a canonical generation degrades to project-only navigation and does
-not persist its worktree-owned tmux presentation. SwiftUI and macOS remain
-responsible for restoring scene count, native tab groups, and window geometry.
+not persist its worktree-owned tmux presentation. SwiftUI and macOS normally
+remain responsible for restoring scene count, native tab groups, and window
+geometry. Before a Sparkle relaunch, Ghosthub also atomically records the
+ordered logical descriptors in a one-shot manifest under `~/.ghosthub/`. The
+app collects initial and late native scene values until AppKit reports that
+native window restoration has finished and every restored workspace window has
+registered its SwiftUI scene. Ghosthub requires the scenes' optional bindings to
+be quiescent before unresolved scenes receive provisional unclaimed descriptors
+in saved order, then requests a scene for every descriptor still missing. A
+later native descriptor remains authoritative and corrects provisional
+assignments. Scenes opened to replay missing descriptors also remain provisional:
+if a late native scene reclaims their descriptor, the replay scene receives the
+native scene's displaced descriptor instead. Replay requests use fresh scene
+tokens rather than saved window IDs, preventing SwiftUI from coalescing them with
+a late native scene; a displaced request is retargeted and issued again with the
+same token. The manifest remains until every saved descriptor has begun
+restoration in exactly one live assigned scene. Native restoration therefore
+still owns geometry and tab grouping without dropping or duplicating a session.
+After assignment, the scene model owns the complete logical descriptor; delayed
+native payloads that share its window UUID but contain stale navigation or tmux
+data are rewritten before they can become persisted scene state.
 An active tmux presentation retains the worktree generation observed when it
 was established; a later non-nil generation change is a replacement even when
 inventory reuses the same runtime UUID. Scene persistence observes the complete
@@ -92,9 +111,11 @@ native UI and installation flow. Development binaries without the packaged
 feed and public key disable the update command instead of contacting a release
 service.
 
-When the user accepts Sparkle's **Install and Relaunch**, Ghosthub refreshes
-the continuously maintained scene descriptors and authorizes exactly one
-updater-driven AppKit termination request. This one-shot authorization is
+When the user accepts Sparkle's **Install and Relaunch**, Ghosthub captures
+every live scene descriptor into the updater relaunch manifest before it
+authorizes exactly one updater-driven AppKit termination request. The manifest
+is discarded if the update aborts or errors, and consumed only after every
+saved scene has begun restoration in the relaunched app. This authorization is
 separate from ordinary quit confirmation and is cleared when an update cycle
 aborts or finishes with an error. A successful cycle-finish notification that
 arrives after the relaunch was requested does not disarm it, so Sparkle's

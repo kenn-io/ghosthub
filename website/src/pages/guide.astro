@@ -414,11 +414,12 @@ const imageAlt = {
       <p>
         Ghosthub never replaces tmux windows, panes, history, or plugins.
         Quit the app or install an update and the sessions remain where you
-        left them. When macOS restores your windows, Ghosthub reopens each
-        exact session it can confirm and keeps retrying offline SSH hosts as
-        inventory refreshes. A window that had no terminal attached restores
-        its navigation without creating a worktree session; select the
-        worktree when you want to attach again.
+        left them. Ghosthub restores each exact session it can confirm and
+        keeps retrying offline SSH hosts as inventory refreshes. During an
+        update relaunch, it also recreates your saved windows if macOS does not
+        return them. A window that had no terminal attached restores its
+        navigation without creating a worktree session; select the worktree
+        when you want to attach again.
       </p>
       <a data-download href={RELEASES_URL}>Download Ghosthub <span aria-hidden="true">&rarr;</span></a>
     </div>

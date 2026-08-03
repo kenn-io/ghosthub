@@ -175,6 +175,46 @@ private struct RestorationFixture {
 
 @Suite("Workspace window restoration state")
 struct WorkspaceWindowStateTests {
+    @Test("same-ID stale update payloads are rewritten")
+    func staleUpdatePayloadRequiresRewrite() {
+        let windowID = UUID()
+        let provisional = WorkspaceWindowState(
+            windowID: windowID,
+            navigation: WorkspaceNavigationDescriptor(
+                hostKey: "local",
+                projectKey: "github.com/kenn-io/ghosthub",
+                worktreeGeneration: nil
+            ),
+            tmux: WorkspaceTmuxDescriptor(
+                hostKey: "local",
+                sessionName: "editor",
+                socketName: nil,
+                owner: .unbound
+            )
+        )
+        let stale = WorkspaceWindowState(
+            windowID: windowID,
+            navigation: WorkspaceNavigationDescriptor(
+                hostKey: "remote",
+                projectKey: nil,
+                worktreeGeneration: nil
+            ),
+            tmux: WorkspaceTmuxDescriptor(
+                hostKey: "remote",
+                sessionName: "review",
+                socketName: nil,
+                owner: .unbound
+            )
+        )
+
+        #expect(
+            UpdateRelaunchStatePolicy.replacement(
+                presented: stale,
+                current: provisional
+            ) == provisional
+        )
+    }
+
     @Test("window state survives a temporarily nil scene binding")
     func windowStateSurvivesNilSceneBinding() {
         let firstFallback = WorkspaceWindowState.fresh()

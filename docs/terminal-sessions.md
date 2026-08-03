@@ -101,6 +101,22 @@ Once a worktree presentation has observed a generation, incomplete inventory
 cannot erase it and a different non-nil generation is treated as a replacement;
 explicitly reselecting the worktree detaches the observed presentation and
 attaches the replacement session.
+For **Install and Relaunch**, Ghosthub also writes a one-shot ordered window
+manifest under `~/.ghosthub/` before Sparkle terminates the app. On the next
+launch, Ghosthub collects initial and late native scene values until AppKit
+reports that native window restoration has finished and every restored workspace
+window has registered its SwiftUI scene. Ghosthub waits for binding quiescence
+before unresolved scenes receive provisional unclaimed descriptors, then opens
+every saved window still missing. Later native descriptors correct provisional
+assignments, including by moving a displaced session to a provisionally opened
+replay scene. Replay requests use distinct scene tokens so SwiftUI cannot satisfy
+them with a late native saved window, and displaced requests are explicitly
+reissued. This covers absent or partial macOS restoration without swapping
+sessions between restored geometry or tab groups. The manifest is removed only
+after every saved window has begun attach-only restoration in one live assigned
+scene; native scene restoration still supplies geometry and tab grouping when
+available. Once assigned, the scene model's complete logical descriptor replaces
+any delayed same-ID native payload with stale navigation or tmux data.
 An ordinary local session must be present in direct discovery before Ghosthub
 runs the exact `attach-session` path. Remote sessions use that same rule and the
 existing SSH keepalive and transport-reconnect loop.

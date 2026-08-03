@@ -57,40 +57,49 @@ struct UpdateConfiguration: Equatable {
 
 @MainActor
 final class UpdateInstallationDelegate: NSObject, SPUUpdaterDelegate {
-    private var refreshRestorationState: () -> Void
+    private var prepareRelaunch: () -> Void
+    private var cancelRelaunch: () -> Void
     private var authorizeTermination: () -> Void
     private var clearTerminationAuthorization: () -> Void
     private var isRelaunchPending = false
 
     init(
-        refreshRestorationState: @escaping () -> Void = {},
+        prepareRelaunch: @escaping () -> Void = {},
+        cancelRelaunch: @escaping () -> Void = {},
         authorizeTermination: @escaping () -> Void = {},
         clearTerminationAuthorization: @escaping () -> Void = {}
     ) {
-        self.refreshRestorationState = refreshRestorationState
+        self.prepareRelaunch = prepareRelaunch
+        self.cancelRelaunch = cancelRelaunch
         self.authorizeTermination = authorizeTermination
         self.clearTerminationAuthorization = clearTerminationAuthorization
         super.init()
     }
 
     func configure(
-        refreshRestorationState: @escaping () -> Void,
+        prepareRelaunch: @escaping () -> Void,
+        cancelRelaunch: @escaping () -> Void,
         authorizeTermination: @escaping () -> Void,
         clearTerminationAuthorization: @escaping () -> Void
     ) {
-        self.refreshRestorationState = refreshRestorationState
+        self.prepareRelaunch = prepareRelaunch
+        self.cancelRelaunch = cancelRelaunch
         self.authorizeTermination = authorizeTermination
         self.clearTerminationAuthorization = clearTerminationAuthorization
     }
 
     func prepareForRelaunch() {
         isRelaunchPending = true
-        refreshRestorationState()
+        prepareRelaunch()
         authorizeTermination()
     }
 
     func updateSessionDidAbort() {
+        let shouldCancelRelaunch = isRelaunchPending
         isRelaunchPending = false
+        if shouldCancelRelaunch {
+            cancelRelaunch()
+        }
         clearTerminationAuthorization()
     }
 
@@ -99,7 +108,11 @@ final class UpdateInstallationDelegate: NSObject, SPUUpdaterDelegate {
         // termination request; disarming here would resurface the quit
         // confirmation mid-relaunch.
         guard error || !isRelaunchPending else { return }
+        let shouldCancelRelaunch = isRelaunchPending
         isRelaunchPending = false
+        if shouldCancelRelaunch {
+            cancelRelaunch()
+        }
         clearTerminationAuthorization()
     }
 
@@ -154,12 +167,14 @@ final class UpdateController {
     }
 
     func configureRelaunch(
-        refreshRestorationState: @escaping () -> Void,
+        prepareRelaunch: @escaping () -> Void,
+        cancelRelaunch: @escaping () -> Void,
         authorizeTermination: @escaping () -> Void,
         clearTerminationAuthorization: @escaping () -> Void
     ) {
         installationDelegate?.configure(
-            refreshRestorationState: refreshRestorationState,
+            prepareRelaunch: prepareRelaunch,
+            cancelRelaunch: cancelRelaunch,
             authorizeTermination: authorizeTermination,
             clearTerminationAuthorization: clearTerminationAuthorization
         )
