@@ -1,3 +1,4 @@
+import GhosthubTmux
 import Testing
 @testable import GhosthubApp
 
@@ -20,6 +21,23 @@ struct SSHConfigurationResolverTests {
     }
 
     @Test(
+        "effective SSH configuration normalizes canonical Boolean policies",
+        arguments: [("true", "yes"), ("false", "no")]
+    )
+    func normalizesCanonicalPolicies(
+        canonical: String,
+        normalized: String
+    ) {
+        let configuration = SSHConfigurationResolver.parse("""
+        user deploy
+        stricthostkeychecking \(canonical)
+        hostname build.example.test
+        """)
+
+        #expect(configuration.strictHostKeyChecking == normalized)
+    }
+
+    @Test(
         "noninteractive SSH cannot enroll keys for interactive policies",
         arguments: [nil, "ask", "accept-new", "unexpected"]
     )
@@ -33,7 +51,7 @@ struct SSHConfigurationResolverTests {
 
     @Test(
         "explicit noninteractive SSH policies remain user-owned",
-        arguments: ["yes", "no", "off"]
+        arguments: ["yes", "no", "off", "true", "false"]
     )
     func preservesExplicitPolicies(policy: String) {
         #expect(
@@ -41,5 +59,87 @@ struct SSHConfigurationResolverTests {
                 effectivePolicy: policy
             ).isEmpty
         )
+    }
+
+    @Test("noninteractive ProxyJump hardens each interactive hop")
+    func hardensInteractiveProxyJumpHosts() {
+        let destination = SSHHostInfo(
+            user: "deploy",
+            hostname: "build.example.test",
+            port: nil
+        )
+        let arguments = SSHConfigurationResolver
+            .noninteractiveHostKeyArguments(
+                for: destination,
+                configurationProvider: { host in
+                    switch host.hostname {
+                    case "build.example.test":
+                        EffectiveSSHConfiguration(
+                            user: "deploy",
+                            strictHostKeyChecking: "true",
+                            proxyJump:
+                            "relay@[2001:db8::42]:2200,core.example.test",
+                            proxyCommand: nil
+                        )
+                    case "2001:db8::42":
+                        EffectiveSSHConfiguration(
+                            user: "relay",
+                            strictHostKeyChecking: "ask",
+                            proxyJump: nil,
+                            proxyCommand: nil
+                        )
+                    case "core.example.test":
+                        EffectiveSSHConfiguration(
+                            user: nil,
+                            strictHostKeyChecking: "accept-new",
+                            proxyJump: nil,
+                            proxyCommand: nil
+                        )
+                    default:
+                        nil
+                    }
+                }
+            )
+
+        #expect(arguments.count == 2)
+        #expect(arguments[0] == "-o")
+        #expect(arguments[1].hasPrefix("ProxyCommand="))
+        let proxyCommand = String(
+            arguments[1].dropFirst("ProxyCommand=".count)
+        )
+        #expect(proxyCommand.contains("relay@[2001:db8::42]:2200"))
+        #expect(proxyCommand.contains("core.example.test"))
+        #expect(proxyCommand.contains("StrictHostKeyChecking=yes"))
+        #expect(
+            proxyCommand.components(
+                separatedBy: "StrictHostKeyChecking=yes"
+            ).count == 3
+        )
+        #expect(proxyCommand.contains("[%%h]:%%p"))
+        #expect(proxyCommand.contains("[%h]:%p"))
+    }
+
+    @Test("malformed ProxyJump routes fail closed")
+    func blocksMalformedProxyJumpRoutes() {
+        let destination = SSHHostInfo(
+            user: "deploy",
+            hostname: "build.example.test",
+            port: nil
+        )
+
+        let arguments = SSHConfigurationResolver
+            .noninteractiveHostKeyArguments(
+                for: destination,
+                configurationProvider: { _ in
+                    EffectiveSSHConfiguration(
+                        user: "deploy",
+                        strictHostKeyChecking: "true",
+                        proxyJump: "relay.example.test,,core.example.test",
+                        proxyCommand: nil
+                    )
+                }
+            )
+
+        #expect(arguments == ["-o", "ProxyCommand=/usr/bin/false"])
     }
 }

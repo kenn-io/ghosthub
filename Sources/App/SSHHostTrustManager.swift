@@ -94,16 +94,9 @@ struct SSHHostTrustManager: Sendable {
         }
         guard let proxyJump = configuration.proxyJump else { return [host] }
 
-        let destinations = proxyJump.split(
-            separator: ",",
-            omittingEmptySubsequences: false
-        )
-        let proxyHops = destinations.compactMap { value in
-            TmuxHostResolver.parseSSHDestination(
-                String(value).trimmingCharacters(in: .whitespaces)
-            )
-        }
-        guard proxyHops.count == destinations.count else {
+        guard let proxyHops = SSHConfigurationResolver.proxyJumpHosts(
+            proxyJump
+        ) else {
             throw SSHHostTrustError.unsupportedProxyRoute
         }
         return proxyHops + [host]
@@ -199,8 +192,10 @@ struct SSHHostTrustManager: Sendable {
             throw SSHHostTrustError.unsupportedProxyRoute
         }
         return try route.enumerated().map { index, target in
-            guard let policy = strictHostKeyPolicyProvider(target)?
-                .lowercased() else {
+            guard let policy = SSHConfigurationResolver
+                .normalizedHostKeyPolicy(
+                    strictHostKeyPolicyProvider(target)
+                ) else {
                 throw SSHHostTrustError.strictHostKeyPolicyUnavailable
             }
             let requiresReview: Bool
@@ -418,7 +413,9 @@ struct SSHHostTrustManager: Sendable {
         if !precedingProxyHops.isEmpty {
             arguments.append(contentsOf: [
                 "-J",
-                precedingProxyHops.map(\.displayName).joined(separator: ","),
+                precedingProxyHops.map {
+                    SSHConfigurationResolver.proxyJumpDestination(for: $0)
+                }.joined(separator: ","),
             ])
         }
         if let port = host.port, port != 22 {

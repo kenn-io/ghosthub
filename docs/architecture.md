@@ -176,9 +176,10 @@ with `ssh -G`. It tightens `accept-new` to an explicit review but does not
 override `yes`, `no`, or `off`; approval matches the parsed algorithm and
 fingerprint rather than address-bearing prompt prose.
 Trust invocations use the same local account login-shell boundary as ordinary
-SSH operations. For ProxyJump and SSH-based ProxyCommand routes, Ghosthub names
-the host from OpenSSH's prompt and reviews each unseen route key sequentially
-before retrying the destination operation.
+SSH operations. For ProxyJump routes, Ghosthub names the host from OpenSSH's
+prompt and reviews each unseen route key sequentially before retrying the
+destination operation. Opaque ProxyCommand routes fail closed because Ghosthub
+cannot independently resolve and enforce every intermediate host-key policy.
 
 Ghosthub bundles revision-pinned kwt CLI builds for local project and worktree
 operations and for `darwin/{amd64,arm64}`, `linux/{amd64,arm64}`, and

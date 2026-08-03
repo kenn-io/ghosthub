@@ -208,13 +208,16 @@ struct SSHHostTrustManagerTests {
         #expect(next.fingerprint == "SHA256:synthetic-fingerprint")
     }
 
-    @Test("explicit strict host-key policies are never overridden")
-    func respectsStrictHostKeyPolicy() {
+    @Test(
+        "explicit strict host-key policies are never overridden",
+        arguments: ["yes", "no", "off", "true", "false"]
+    )
+    func respectsStrictHostKeyPolicy(policy: String) {
         let manager = SSHHostTrustManager(
             askPassRunner: { _, _, _, _, _, _ in
                 Issue.record("askpass must not run for a strict policy")
             },
-            strictHostKeyPolicyProvider: { _ in "yes" },
+            strictHostKeyPolicyProvider: { _ in policy },
             routeProvider: { [$0] }
         )
 
@@ -264,15 +267,19 @@ struct SSHHostTrustManagerTests {
             configuration: EffectiveSSHConfiguration(
                 user: "dev",
                 strictHostKeyChecking: "ask",
-                proxyJump: "relay@edge.example.test:2200,core.example.test",
+                proxyJump: "relay@[2001:db8::42]:2200,core.example.test",
                 proxyCommand: nil
             )
         )
 
-        #expect(route.map(\.displayName) == [
-            "relay@edge.example.test:2200",
-            "core.example.test",
-            "dev@build.example.test",
+        #expect(route[0].hostname == "2001:db8::42")
+        #expect(route[0].port == 2200)
+        #expect(
+            SSHConfigurationResolver.proxyJumpDestination(for: route[0])
+                == "relay@[2001:db8::42]:2200"
+        )
+        #expect(route.dropFirst().map(\.displayName) == [
+            "core.example.test", "dev@build.example.test",
         ])
     }
 

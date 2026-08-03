@@ -183,11 +183,12 @@ const imageAlt = {
             need either step. An expanded host with no inventory says so in the
             sidebar. If a host shows a caution icon, click it and choose{' '}
             <strong>Review Host Key</strong> to review an unseen key directly.
-            SSH routes with unseen intermediate hosts show each OpenSSH prompt
-            in sequence. After every required approval, Ghosthub retries
-            inventory automatically. If OpenSSH does not report an unseen key,
-            continue to Host Settings to diagnose authentication or network
-            access.
+            ProxyJump routes with unseen intermediate hosts show each OpenSSH
+            prompt in sequence. Opaque ProxyCommand routes fail closed because
+            their intermediate policies cannot be reviewed safely. After every
+            required approval, Ghosthub retries inventory automatically. If
+            OpenSSH does not report an unseen key, continue to Host Settings to
+            diagnose authentication or network access.
           </p>
           <aside class="reconnect">
             <span aria-hidden="true">↻</span>
