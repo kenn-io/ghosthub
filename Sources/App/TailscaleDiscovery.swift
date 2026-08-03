@@ -4,6 +4,12 @@ import GhosthubTmux
 import GhosthubWorkspace
 
 enum TailscaleDiscovery {
+    private enum UsernameResolution: Sendable {
+        case peer(index: Int, username: String?)
+        case deadline
+        case cancelled
+    }
+
     static let tailscalePaths: [String] = [
         "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
         "/usr/local/bin/tailscale",
@@ -22,81 +28,152 @@ enum TailscaleDiscovery {
     static func discoverPeers(
         tailscalePaths: [String],
         environment: [String: String],
-        sshUsernameProvider: @escaping @Sendable (String) -> String? = {
-            SSHConfigurationResolver.configuration(for: SSHHostInfo(
-                user: nil,
-                hostname: $0,
-                port: nil
-            ))?.user
-        }
+        sshUsernameProvider: @escaping @Sendable (String) async -> String? = {
+            hostname in
+            await Task.detached(priority: .userInitiated) {
+                SSHConfigurationResolver.configuration(for: SSHHostInfo(
+                    user: nil,
+                    hostname: hostname,
+                    port: nil
+                ))?.user
+            }.value
+        },
+        maximumConcurrentUsernameResolutions: Int = 6,
+        usernameResolutionTimeoutNanoseconds: UInt64 = 10_000_000_000
     ) async -> Result<[TailscalePeer], TailscaleError> {
-        await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                guard let binary = findTailscaleBinary(
-                    in: tailscalePaths
-                )
-                else {
-                    continuation.resume(
-                        returning: .failure(.notInstalled)
+        let result: Result<[TailscalePeer], TailscaleError> =
+            await withCheckedContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    guard let binary = findTailscaleBinary(
+                        in: tailscalePaths
                     )
-                    return
+                    else {
+                        continuation.resume(
+                            returning: .failure(.notInstalled)
+                        )
+                        return
+                    }
+
+                    let process = Process()
+                    process.executableURL = URL(
+                        fileURLWithPath: binary
+                    )
+                    process.arguments = ["status", "--json"]
+                    var processEnvironment = environment
+                    processEnvironment["TAILSCALE_BE_CLI"] = "1"
+                    process.environment = processEnvironment
+
+                    let pipe = Pipe()
+                    process.standardOutput = pipe
+                    process.standardError = FileHandle.nullDevice
+
+                    do {
+                        try process.run()
+                    } catch {
+                        continuation.resume(
+                            returning: .failure(
+                                .executionFailed(
+                                    error.localizedDescription
+                                )
+                            )
+                        )
+                        return
+                    }
+
+                    let data = pipe.fileHandleForReading
+                        .readDataToEndOfFile()
+                    process.waitUntilExit()
+
+                    guard process.terminationStatus == 0 else {
+                        continuation.resume(
+                            returning: .failure(
+                                .executionFailed(
+                                    "tailscale exited with code"
+                                        + " \(process.terminationStatus)"
+                                )
+                            )
+                        )
+                        return
+                    }
+                    let result = TailscaleStatusParser
+                        .peers(from: data)
+                        .mapError { error in
+                            TailscaleError.parseFailed(error.message)
+                        }
+                    continuation.resume(returning: result)
                 }
+            }
+        guard case let .success(peers) = result else { return result }
+        let resolvedPeers = await resolvingSSHUsernames(
+            peers,
+            maximumConcurrent: maximumConcurrentUsernameResolutions,
+            timeoutNanoseconds: usernameResolutionTimeoutNanoseconds,
+            provider: sshUsernameProvider
+        )
+        return .success(resolvedPeers)
+    }
 
-                let process = Process()
-                process.executableURL = URL(
-                    fileURLWithPath: binary
-                )
-                process.arguments = ["status", "--json"]
-                var processEnvironment = environment
-                processEnvironment["TAILSCALE_BE_CLI"] = "1"
-                process.environment = processEnvironment
+    private static func resolvingSSHUsernames(
+        _ peers: [TailscalePeer],
+        maximumConcurrent: Int,
+        timeoutNanoseconds: UInt64,
+        provider: @escaping @Sendable (String) async -> String?
+    ) async -> [TailscalePeer] {
+        guard !peers.isEmpty else { return peers }
+        let concurrentCount = min(max(1, maximumConcurrent), peers.count)
+        var resolved = peers
 
-                let pipe = Pipe()
-                process.standardOutput = pipe
-                process.standardError = FileHandle.nullDevice
-
+        return await withTaskGroup(of: UsernameResolution.self) { group in
+            for index in 0 ..< concurrentCount {
+                group.addTask {
+                    let username = await provider(
+                        peers[index].sshAddress
+                    )
+                    return .peer(
+                        index: index,
+                        username: username
+                    )
+                }
+            }
+            group.addTask {
                 do {
-                    try process.run()
+                    try await Task.sleep(nanoseconds: timeoutNanoseconds)
+                    return .deadline
                 } catch {
-                    continuation.resume(
-                        returning: .failure(
-                            .executionFailed(
-                                error.localizedDescription
-                            )
-                        )
-                    )
-                    return
+                    return .cancelled
                 }
+            }
 
-                let data = pipe.fileHandleForReading
-                    .readDataToEndOfFile()
-                process.waitUntilExit()
-
-                guard process.terminationStatus == 0 else {
-                    continuation.resume(
-                        returning: .failure(
-                            .executionFailed(
-                                "tailscale exited with code"
-                                    + " \(process.terminationStatus)"
+            var nextIndex = concurrentCount
+            var completedCount = 0
+            resolutionLoop: while let resolution = await group.next() {
+                switch resolution {
+                case let .peer(index, username):
+                    resolved[index] = peers[index]
+                        .resolvingSSHUsername(username)
+                    completedCount += 1
+                    if nextIndex < peers.count {
+                        let index = nextIndex
+                        nextIndex += 1
+                        group.addTask {
+                            let username = await provider(
+                                peers[index].sshAddress
                             )
-                        )
-                    )
-                    return
-                }
-                let result = TailscaleStatusParser
-                    .peers(from: data)
-                    .map { peers in
-                        peers.map { peer in
-                            peer.resolvingSSHUsername(
-                                sshUsernameProvider(peer.sshAddress)
+                            return .peer(
+                                index: index,
+                                username: username
                             )
                         }
+                    } else if completedCount == peers.count {
+                        group.cancelAll()
+                        break resolutionLoop
                     }
-                    .mapError { error in
-                        TailscaleError.parseFailed(error.message)
-                    }
-                continuation.resume(returning: result)
+                case .deadline, .cancelled:
+                    group.cancelAll()
+                    break resolutionLoop
+                }
             }
+            return resolved
         }
     }
 

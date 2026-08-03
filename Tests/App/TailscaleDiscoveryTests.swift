@@ -50,4 +50,68 @@ struct TailscaleDiscoveryTests {
         let peer = try #require(try result.get().first)
         #expect(peer.sshUsername == "deployer")
     }
+
+    @Test("SSH usernames resolve with bounded concurrency")
+    func resolvesSSHUsersConcurrently() async throws {
+        let fixture = try TempDirectoryFixture()
+        let tailscale = try fixture.createExecutable(
+            name: "tailscale",
+            content: """
+            #!/bin/sh
+            printf '%s\n' '{"Peer":{"a":{"ID":"a","HostName":"a","DNSName":"a.tailnet.ts.net.","OS":"linux","Online":true},"b":{"ID":"b","HostName":"b","DNSName":"b.tailnet.ts.net.","OS":"linux","Online":true},"c":{"ID":"c","HostName":"c","DNSName":"c.tailnet.ts.net.","OS":"linux","Online":true},"d":{"ID":"d","HostName":"d","DNSName":"d.tailnet.ts.net.","OS":"linux","Online":true}}}'
+            """
+        )
+        let activity = LockedValue((active: 0, peak: 0))
+
+        let result = await TailscaleDiscovery.discoverPeers(
+            tailscalePaths: [tailscale.path],
+            environment: [:],
+            sshUsernameProvider: { _ in
+                activity.withLock {
+                    $0.active += 1
+                    $0.peak = max($0.peak, $0.active)
+                }
+                try? await Task.sleep(nanoseconds: 50_000_000)
+                activity.withLock { $0.active -= 1 }
+                return "deployer"
+            },
+            maximumConcurrentUsernameResolutions: 2
+        )
+
+        let peers = try result.get()
+        #expect(activity.load().peak == 2)
+        #expect(peers.allSatisfy { $0.sshUsername == "deployer" })
+    }
+
+    @Test("SSH username discovery has an overall deadline")
+    func boundsSSHUsernameResolutionTime() async throws {
+        let fixture = try TempDirectoryFixture()
+        let tailscale = try fixture.createExecutable(
+            name: "tailscale",
+            content: """
+            #!/bin/sh
+            printf '%s\n' '{"Peer":{"node":{"ID":"node","HostName":"build-node","DNSName":"build-node.tailnet.ts.net.","OS":"linux","Online":true}}}'
+            """
+        )
+        let cancellations = LockedValue(0)
+
+        let result = await TailscaleDiscovery.discoverPeers(
+            tailscalePaths: [tailscale.path],
+            environment: [:],
+            sshUsernameProvider: { _ in
+                do {
+                    try await Task.sleep(nanoseconds: 60_000_000_000)
+                    return "too-late"
+                } catch {
+                    cancellations.withLock { $0 += 1 }
+                    return nil
+                }
+            },
+            usernameResolutionTimeoutNanoseconds: 10_000_000
+        )
+
+        let peer = try #require(try result.get().first)
+        #expect(peer.sshUsername == nil)
+        #expect(cancellations.load() == 1)
+    }
 }
