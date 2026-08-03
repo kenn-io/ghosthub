@@ -1,6 +1,12 @@
 import GhosthubSettings
 import SwiftUI
 
+enum SSHConnectionRecoveryPresentation: Equatable {
+    case checking
+    case hostKey
+    case connectionIssue
+}
+
 @MainActor
 final class WorkspaceSSHHostKeyReviewModel: ObservableObject {
     @Published private(set) var hostID: UUID?
@@ -12,6 +18,15 @@ final class WorkspaceSSHHostKeyReviewModel: ObservableObject {
     private var generation = UUID()
 
     var isPresented: Bool { hostID != nil }
+    var presentation: SSHConnectionRecoveryPresentation {
+        if isLoading {
+            return .checking
+        }
+        if confirmation != nil {
+            return .hostKey
+        }
+        return .connectionIssue
+    }
 
     func review(
         hostID: UUID,
@@ -40,8 +55,9 @@ final class WorkspaceSSHHostKeyReviewModel: ObservableObject {
                 self.confirmation = confirmation
             } else {
                 errorMessage =
-                    "OpenSSH did not report an unseen host key. Use Host "
-                        + "Settings to verify authentication and network access."
+                    "Ghosthub did not find an unseen host key. Open Host "
+                        + "Settings to check authentication, SSH configuration, "
+                        + "and network access."
             }
         case let .failure(error):
             errorMessage = error.displayMessage
@@ -97,14 +113,13 @@ struct SSHHostKeyReviewView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Label("Trust SSH Host?", systemImage: "lock.shield")
-                .font(.system(size: 20, weight: .semibold))
+            recoveryHeader
 
             if model.isLoading {
                 HStack(spacing: 10) {
                     ProgressView()
                         .controlSize(.small)
-                    Text("Asking OpenSSH for \(model.hostName)’s host key…")
+                    Text("Checking \(model.hostName) with OpenSSH…")
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             } else if let confirmation = model.confirmation {
@@ -141,6 +156,23 @@ struct SSHHostKeyReviewView: View {
         .interactiveDismissDisabled(model.isTrusting)
     }
 
+    @ViewBuilder
+    private var recoveryHeader: some View {
+        switch model.presentation {
+        case .checking:
+            Label("Checking SSH Connection", systemImage: "network")
+                .font(.system(size: 20, weight: .semibold))
+        case .hostKey:
+            Label("Verify SSH Host", systemImage: "lock.shield")
+                .font(.system(size: 20, weight: .semibold))
+        case .connectionIssue:
+            Label(
+                "Can’t Connect to \(model.hostName)",
+                systemImage: "exclamationmark.triangle"
+            )
+            .font(.system(size: 20, weight: .semibold))
+        }
+    }
 }
 
 struct SSHHostKeyConfirmationDetails: View {

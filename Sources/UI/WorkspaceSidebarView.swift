@@ -267,11 +267,6 @@ struct WorkspaceSidebarView: View {
             isPresented: inventoryWarningIsPresented,
             presenting: presentedInventoryWarning
         ) { warning in
-            if let hostID = warning.reviewHostID {
-                Button("Review Host Key") {
-                    onReviewSSHHostKey(hostID)
-                }
-            }
             if warning.isHostScoped {
                 Button("Host Settings") {
                     onOpenHostSettings()
@@ -451,7 +446,7 @@ struct WorkspaceSidebarView: View {
             Spacer()
             if let inventoryWarning {
                 Button {
-                    presentInventoryWarning(
+                    resolveInventoryWarning(
                         inventoryWarning,
                         host: nil
                     )
@@ -1317,7 +1312,7 @@ struct WorkspaceSidebarView: View {
         accessibilityLabel: String
     ) -> some View {
         Button {
-            presentInventoryWarning(warning, host: host)
+            resolveInventoryWarning(warning, host: host)
         } label: {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 11, weight: .semibold))
@@ -1326,9 +1321,16 @@ struct WorkspaceSidebarView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help("Show connection issue details")
+        .help(
+            host?.kind == .remote
+                ? "Resolve connection issue"
+                : "Show inventory issue details"
+        )
         .accessibilityLabel(accessibilityLabel)
-        .accessibilityValue(warning)
+        .accessibilityValue(
+            host?.kind == .remote
+                ? "Connection needs attention." : warning
+        )
         .accessibilityIdentifier("host-inventory-warning")
     }
 
@@ -1343,15 +1345,16 @@ struct WorkspaceSidebarView: View {
         )
     }
 
-    private func presentInventoryWarning(
+    private func resolveInventoryWarning(
         _ message: String,
         host: HostSummary?
     ) {
-        presentedInventoryWarning = PresentedInventoryWarning(
-            message: message,
-            isHostScoped: host != nil,
-            reviewHostID: host?.kind == .remote ? host?.id : nil
-        )
+        switch InventoryWarningDestination(message: message, host: host) {
+        case let .connectionRecovery(hostID):
+            onReviewSSHHostKey(hostID)
+        case let .details(warning):
+            presentedInventoryWarning = warning
+        }
     }
 
     // MARK: - Row content
@@ -1604,8 +1607,23 @@ struct WorkspaceSidebarView: View {
     }
 }
 
-struct PresentedInventoryWarning {
+enum InventoryWarningDestination: Equatable {
+    case connectionRecovery(UUID)
+    case details(PresentedInventoryWarning)
+
+    init(message: String, host: HostSummary?) {
+        if let host, host.kind == .remote {
+            self = .connectionRecovery(host.id)
+        } else {
+            self = .details(PresentedInventoryWarning(
+                message: message,
+                isHostScoped: host != nil
+            ))
+        }
+    }
+}
+
+struct PresentedInventoryWarning: Equatable {
     let message: String
     let isHostScoped: Bool
-    let reviewHostID: UUID?
 }

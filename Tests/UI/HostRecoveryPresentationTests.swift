@@ -32,16 +32,42 @@ struct HostRecoveryPresentationTests {
         #expect(first.id != second.id)
     }
 
-    @Test("local warnings retain settings without offering SSH trust")
-    func localWarningActions() {
-        let warning = PresentedInventoryWarning(
-            message: "Local inventory unavailable",
-            isHostScoped: true,
-            reviewHostID: nil
+    @Test("remote warnings open connection recovery directly")
+    func remoteWarningsOpenConnectionRecovery() {
+        let hostID = UUID()
+        let host = HostSummary(
+            id: hostID,
+            configKey: "build-node",
+            name: "Build Node",
+            kind: .remote,
+            platform: .linux,
+            sshDestination: "operator@build.example.test"
         )
 
-        #expect(warning.isHostScoped)
-        #expect(warning.reviewHostID == nil)
+        #expect(InventoryWarningDestination(
+            message: "Remote inventory unavailable",
+            host: host
+        ) == .connectionRecovery(hostID))
+    }
+
+    @Test("local warnings retain inventory details")
+    func localWarningsRetainDetails() {
+        let host = HostSummary(
+            id: UUID(),
+            name: "This Mac",
+            kind: .selfHost,
+            platform: .macOS,
+            preferredTransport: .local
+        )
+        let warning = PresentedInventoryWarning(
+            message: "Local inventory unavailable",
+            isHostScoped: true
+        )
+
+        #expect(InventoryWarningDestination(
+            message: warning.message,
+            host: host
+        ) == .details(warning))
     }
 
     private func confirmation(

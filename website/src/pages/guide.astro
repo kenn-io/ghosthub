@@ -176,13 +176,15 @@ const imageAlt = {
             Project registration is not yet available for Windows hosts. If the
             host’s SSH address changes while Add Project is open, close the
             sheet and try again against the updated host. Ghosthub marks the
-            machine reachable only
-            when the remote verification command actually begins; SSH failures
-            and unconfirmed local timeouts remain offline, while a confirmed
-            remote command failure is shown as degraded. Tmux-only hosts do not
-            need either step. An expanded host with no inventory says so in the
-            sidebar. If a host shows a caution icon, click it and choose{' '}
-            <strong>Review Host Key</strong> to review an unseen key directly.
+            machine reachable only when the remote verification command
+            actually begins; SSH failures and unconfirmed local timeouts remain
+            offline, while a confirmed remote command failure is shown as
+            degraded. Tmux-only hosts do not need either step. An expanded host
+            with no inventory says so in the sidebar. If a host shows a caution
+            icon, click it once. Ghosthub checks the exact SSH destination and
+            opens fingerprint review only when OpenSSH reports an unseen key.
+            Other failures lead directly to concise connection recovery and
+            Host Settings.
             ProxyJump routes with unseen intermediate hosts show each OpenSSH
             prompt in sequence. Opaque ProxyCommand routes and jump hosts with
             another proxy route fail closed because their intermediate policies

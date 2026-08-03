@@ -54,6 +54,7 @@ struct SSHHostKeyReviewModelTests {
 
         #expect(reviewedHostID == hostID)
         #expect(model.confirmation == proxyConfirmation)
+        #expect(model.presentation == .hostKey)
 
         var trustedHostID: UUID?
         var trustedConfirmation: SSHHostKeyConfirmation?
@@ -111,6 +112,7 @@ struct SSHHostKeyReviewModelTests {
         while !model.isLoading {
             await Task.yield()
         }
+        #expect(model.presentation == .checking)
         model.dismiss()
         await model.review(hostID: hostID, hostName: "Current") { _ in
             .success(currentConfirmation)
@@ -121,5 +123,17 @@ struct SSHHostKeyReviewModelTests {
         #expect(model.hostName == "Current")
         #expect(model.confirmation == currentConfirmation)
         #expect(model.errorMessage == nil)
+    }
+
+    @Test("a failure without an unseen key becomes connection recovery")
+    func noUnseenKeyBecomesConnectionRecovery() async {
+        let model = WorkspaceSSHHostKeyReviewModel()
+
+        await model.review(hostID: UUID(), hostName: "Build Node") { _ in
+            .success(nil)
+        }
+
+        #expect(model.presentation == .connectionIssue)
+        #expect(model.confirmation == nil)
     }
 }
