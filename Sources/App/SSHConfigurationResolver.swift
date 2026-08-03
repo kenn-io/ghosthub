@@ -115,7 +115,12 @@ enum SSHConfigurationResolver {
     ) -> String {
         var previousCommand: String?
         for hop in hops {
-            var arguments = ["/usr/bin/ssh"]
+            var arguments = [
+                "/usr/bin/ssh",
+                "-o", "BatchMode=yes",
+                "-o", "ConnectTimeout=10",
+                "-o", "ConnectionAttempts=1",
+            ]
             arguments.append(contentsOf: noninteractiveHostKeyArguments(
                 effectivePolicy: hop.configuration.strictHostKeyChecking
             ))

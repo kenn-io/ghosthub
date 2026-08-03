@@ -93,25 +93,23 @@ struct TailscaleDiscoveryTests {
             printf '%s\n' '{"Peer":{"node":{"ID":"node","HostName":"build-node","DNSName":"build-node.tailnet.ts.net.","OS":"linux","Online":true}}}'
             """
         )
-        let cancellations = LockedValue(0)
+        let completions = LockedValue(0)
 
         let result = await TailscaleDiscovery.discoverPeers(
             tailscalePaths: [tailscale.path],
             environment: [:],
             sshUsernameProvider: { _ in
-                do {
-                    try await Task.sleep(nanoseconds: 60_000_000_000)
-                    return "too-late"
-                } catch {
-                    cancellations.withLock { $0 += 1 }
-                    return nil
-                }
+                await Task.detached {
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                }.value
+                completions.withLock { $0 += 1 }
+                return "too-late"
             },
             usernameResolutionTimeoutNanoseconds: 10_000_000
         )
 
         let peer = try #require(try result.get().first)
         #expect(peer.sshUsername == nil)
-        #expect(cancellations.load() == 1)
+        #expect(completions.load() == 0)
     }
 }

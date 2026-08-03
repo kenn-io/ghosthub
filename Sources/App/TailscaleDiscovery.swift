@@ -6,8 +6,8 @@ import GhosthubWorkspace
 enum TailscaleDiscovery {
     private enum UsernameResolution: Sendable {
         case peer(index: Int, username: String?)
+        case workerFinished
         case deadline
-        case cancelled
     }
 
     static let tailscalePaths: [String] = [
@@ -30,13 +30,11 @@ enum TailscaleDiscovery {
         environment: [String: String],
         sshUsernameProvider: @escaping @Sendable (String) async -> String? = {
             hostname in
-            await Task.detached(priority: .userInitiated) {
-                SSHConfigurationResolver.configuration(for: SSHHostInfo(
-                    user: nil,
-                    hostname: hostname,
-                    port: nil
-                ))?.user
-            }.value
+            SSHConfigurationResolver.configuration(for: SSHHostInfo(
+                user: nil,
+                hostname: hostname,
+                port: nil
+            ))?.user
         },
         maximumConcurrentUsernameResolutions: Int = 6,
         usernameResolutionTimeoutNanoseconds: UInt64 = 10_000_000_000
@@ -123,58 +121,58 @@ enum TailscaleDiscovery {
         let concurrentCount = min(max(1, maximumConcurrent), peers.count)
         var resolved = peers
 
-        return await withTaskGroup(of: UsernameResolution.self) { group in
-            for index in 0 ..< concurrentCount {
-                group.addTask {
+        let (resolutions, continuation) = AsyncStream<UsernameResolution>
+            .makeStream()
+        let workers = (0 ..< concurrentCount).map { workerIndex in
+            Task.detached(priority: .userInitiated) {
+                for index in stride(
+                    from: workerIndex,
+                    to: peers.count,
+                    by: concurrentCount
+                ) {
+                    guard !Task.isCancelled else { break }
                     let username = await provider(
                         peers[index].sshAddress
                     )
-                    return .peer(
+                    guard !Task.isCancelled else { break }
+                    continuation.yield(.peer(
                         index: index,
                         username: username
-                    )
+                    ))
                 }
+                continuation.yield(.workerFinished)
             }
-            group.addTask {
-                do {
-                    try await Task.sleep(nanoseconds: timeoutNanoseconds)
-                    return .deadline
-                } catch {
-                    return .cancelled
-                }
-            }
-
-            var nextIndex = concurrentCount
-            var completedCount = 0
-            resolutionLoop: while let resolution = await group.next() {
-                switch resolution {
-                case let .peer(index, username):
-                    resolved[index] = peers[index]
-                        .resolvingSSHUsername(username)
-                    completedCount += 1
-                    if nextIndex < peers.count {
-                        let index = nextIndex
-                        nextIndex += 1
-                        group.addTask {
-                            let username = await provider(
-                                peers[index].sshAddress
-                            )
-                            return .peer(
-                                index: index,
-                                username: username
-                            )
-                        }
-                    } else if completedCount == peers.count {
-                        group.cancelAll()
-                        break resolutionLoop
-                    }
-                case .deadline, .cancelled:
-                    group.cancelAll()
-                    break resolutionLoop
-                }
-            }
-            return resolved
         }
+        let deadline = Task.detached {
+            do {
+                try await Task.sleep(nanoseconds: timeoutNanoseconds)
+                continuation.yield(.deadline)
+            } catch {
+                // Completion cancels the deadline task.
+            }
+        }
+        defer {
+            workers.forEach { $0.cancel() }
+            deadline.cancel()
+            continuation.finish()
+        }
+
+        var finishedWorkerCount = 0
+        for await resolution in resolutions {
+            switch resolution {
+            case let .peer(index, username):
+                resolved[index] = peers[index]
+                    .resolvingSSHUsername(username)
+            case .workerFinished:
+                finishedWorkerCount += 1
+                if finishedWorkerCount == workers.count {
+                    return resolved
+                }
+            case .deadline:
+                return resolved
+            }
+        }
+        return resolved
     }
 
     private static func findTailscaleBinary(

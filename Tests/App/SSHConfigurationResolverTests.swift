@@ -123,6 +123,15 @@ struct SSHConfigurationResolverTests {
                 separatedBy: "StrictHostKeyChecking=yes"
             ).count == 3
         )
+        for option in [
+            "BatchMode=yes",
+            "ConnectTimeout=10",
+            "ConnectionAttempts=1",
+        ] {
+            #expect(
+                proxyCommand.components(separatedBy: option).count == 3
+            )
+        }
         #expect(proxyCommand.contains("[%%h]:%%p"))
         #expect(proxyCommand.contains("[%h]:%p"))
     }
