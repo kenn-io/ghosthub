@@ -31,8 +31,8 @@ enum SSHHostTrustError: Error, Equatable, LocalizedError {
                 + " use ask or accept-new to review unseen keys in Ghosthub."
         case .unsupportedProxyRoute:
             return "This SSH destination uses a proxy route Ghosthub cannot"
-                + " safely review. Use ProxyJump with valid SSH destinations"
-                + " instead of ProxyCommand."
+                + " safely review. Use one direct ProxyJump list whose hosts"
+                + " do not introduce another proxy route."
         case .temporaryStateUnavailable:
             return "Ghosthub could not prepare secure temporary state for SSH"
                 + " host-key confirmation."
@@ -77,29 +77,33 @@ struct SSHHostTrustManager: Sendable {
     }
 
     private static func route(for host: SSHHostInfo) throws -> [SSHHostInfo] {
-        guard let configuration = SSHConfigurationResolver.configuration(
-            for: host
-        ) else {
-            throw SSHHostTrustError.strictHostKeyPolicyUnavailable
-        }
-        return try route(for: host, configuration: configuration)
+        try route(
+            for: host,
+            configurationProvider: SSHConfigurationResolver.configuration
+        )
     }
 
     static func route(
         for host: SSHHostInfo,
-        configuration: EffectiveSSHConfiguration
+        configurationProvider: SSHConfigurationResolver.ConfigurationProvider
     ) throws -> [SSHHostInfo] {
+        guard let configuration = configurationProvider(host) else {
+            throw SSHHostTrustError.strictHostKeyPolicyUnavailable
+        }
         guard configuration.proxyCommand == nil else {
             throw SSHHostTrustError.unsupportedProxyRoute
         }
         guard let proxyJump = configuration.proxyJump else { return [host] }
 
-        guard let proxyHops = SSHConfigurationResolver.proxyJumpHosts(
-            proxyJump
-        ) else {
+        guard let proxyHops = SSHConfigurationResolver
+            .effectiveProxyJumpHops(
+                proxyJump,
+                configurationProvider: configurationProvider
+            )
+        else {
             throw SSHHostTrustError.unsupportedProxyRoute
         }
-        return proxyHops + [host]
+        return proxyHops.map(\.host) + [host]
     }
 
     func pendingConfirmation(

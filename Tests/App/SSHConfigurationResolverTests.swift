@@ -107,7 +107,15 @@ struct SSHConfigurationResolverTests {
         let proxyCommand = String(
             arguments[1].dropFirst("ProxyCommand=".count)
         )
-        #expect(proxyCommand.contains("relay@[2001:db8::42]:2200"))
+        #expect(SSHConfigurationResolver.proxyCommandHopArguments(
+            for: SSHHostInfo(
+                user: "relay",
+                hostname: "2001:db8::42",
+                port: 2200
+            )
+        ) == [
+            "-p", "2200", "-W", "[%h]:%p", "relay@2001:db8::42",
+        ])
         #expect(proxyCommand.contains("core.example.test"))
         #expect(proxyCommand.contains("StrictHostKeyChecking=yes"))
         #expect(
@@ -141,5 +149,79 @@ struct SSHConfigurationResolverTests {
             )
 
         #expect(arguments == ["-o", "ProxyCommand=/usr/bin/false"])
+    }
+
+    @Test("opaque proxy commands fail routine SSH operations closed")
+    func blocksOpaqueProxyCommands() {
+        let destination = SSHHostInfo(
+            user: "deploy",
+            hostname: "build.example.test",
+            port: nil
+        )
+
+        let arguments = SSHConfigurationResolver
+            .noninteractiveHostKeyArguments(
+                for: destination,
+                configurationProvider: { _ in
+                    EffectiveSSHConfiguration(
+                        user: "deploy",
+                        strictHostKeyChecking: "ask",
+                        proxyJump: nil,
+                        proxyCommand: "ssh relay.example.test -W %h:%p"
+                    )
+                }
+            )
+
+        #expect(arguments == [
+            "-o", "StrictHostKeyChecking=yes",
+            "-o", "ProxyCommand=/usr/bin/false",
+        ])
+    }
+
+    @Test("nested proxy routes fail routine SSH operations closed")
+    func blocksNestedProxyRoutes() {
+        let destination = SSHHostInfo(
+            user: "deploy",
+            hostname: "build.example.test",
+            port: nil
+        )
+
+        let arguments = SSHConfigurationResolver
+            .noninteractiveHostKeyArguments(
+                for: destination,
+                configurationProvider: { host in
+                    EffectiveSSHConfiguration(
+                        user: host.user,
+                        strictHostKeyChecking: "ask",
+                        proxyJump: host == destination
+                            ? "relay.example.test"
+                            : "edge.example.test",
+                        proxyCommand: nil
+                    )
+                }
+            )
+
+        #expect(arguments == [
+            "-o", "StrictHostKeyChecking=yes",
+            "-o", "ProxyCommand=/usr/bin/false",
+        ])
+    }
+
+    @Test("unresolved SSH configuration fails routine operations closed")
+    func blocksUnresolvedConfiguration() {
+        let arguments = SSHConfigurationResolver
+            .noninteractiveHostKeyArguments(
+                for: SSHHostInfo(
+                    user: "deploy",
+                    hostname: "build.example.test",
+                    port: nil
+                ),
+                configurationProvider: { _ in nil }
+            )
+
+        #expect(arguments == [
+            "-o", "StrictHostKeyChecking=yes",
+            "-o", "ProxyCommand=/usr/bin/false",
+        ])
     }
 }

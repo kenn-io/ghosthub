@@ -124,7 +124,8 @@ with `ssh -G` and opens its private askpass review only when
 configured `yes`, `no`, or `off` policy. For an unseen key, Ghosthub presents
 the exact destination and fingerprint and returns `yes` only after explicit
 approval. The approval is bound to the parsed algorithm and fingerprint, so a
-benign address change cannot be mislabeled as a key change. OpenSSH writes the
+benign address change cannot be mislabeled as a key change, and to the logical
+host so the same key cannot authorize another route target. OpenSSH writes the
 approved key to its configured `UserKnownHostsFile`,
 after which Ghosthub retries the connection or inventory operation that led to
 the review.
@@ -133,7 +134,10 @@ trusted short alias as authorization for a canonical MagicDNS FQDN.
 When an SSH route contains unseen intermediate hosts, each trust sheet labels
 the host exactly as OpenSSH names it and approval advances only to the next
 prompt. A later prompt is never treated as proof that the reviewed host changed
-its key.
+its key. Routine inventory, transfer, and attachment operations prevent silent
+enrollment at every host in a direct ProxyJump list. Opaque ProxyCommand routes
+and jump hosts that introduce another proxy route fail closed because Ghosthub
+cannot resolve every intermediate trust policy independently.
 
 When the user opens the imported workspace, Ghosthub invokes kwt's protected
 attach command through the remote account's login shell when applicable. Kwt

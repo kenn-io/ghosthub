@@ -244,12 +244,39 @@ struct SSHHostTrustManagerTests {
         #expect(throws: SSHHostTrustError.unsupportedProxyRoute) {
             try SSHHostTrustManager.route(
                 for: host,
-                configuration: EffectiveSSHConfiguration(
-                    user: "dev",
-                    strictHostKeyChecking: "ask",
-                    proxyJump: nil,
-                    proxyCommand: "ssh relay.example.test -W %h:%p"
-                )
+                configurationProvider: { _ in
+                    EffectiveSSHConfiguration(
+                        user: "dev",
+                        strictHostKeyChecking: "ask",
+                        proxyJump: nil,
+                        proxyCommand: "ssh relay.example.test -W %h:%p"
+                    )
+                }
+            )
+        }
+    }
+
+    @Test("nested proxy routes fail closed")
+    func rejectsNestedProxyRoutes() {
+        let host = SSHHostInfo(
+            user: "dev",
+            hostname: "build.example.test",
+            port: nil
+        )
+
+        #expect(throws: SSHHostTrustError.unsupportedProxyRoute) {
+            try SSHHostTrustManager.route(
+                for: host,
+                configurationProvider: { target in
+                    EffectiveSSHConfiguration(
+                        user: target.user,
+                        strictHostKeyChecking: "ask",
+                        proxyJump: target == host
+                            ? "relay.example.test"
+                            : "edge.example.test",
+                        proxyCommand: nil
+                    )
+                }
             )
         }
     }
@@ -264,12 +291,16 @@ struct SSHHostTrustManagerTests {
 
         let route = try SSHHostTrustManager.route(
             for: host,
-            configuration: EffectiveSSHConfiguration(
-                user: "dev",
-                strictHostKeyChecking: "ask",
-                proxyJump: "relay@[2001:db8::42]:2200,core.example.test",
-                proxyCommand: nil
-            )
+            configurationProvider: { target in
+                EffectiveSSHConfiguration(
+                    user: target.user,
+                    strictHostKeyChecking: "ask",
+                    proxyJump: target == host
+                        ? "relay@[2001:db8::42]:2200,core.example.test"
+                        : nil,
+                    proxyCommand: nil
+                )
+            }
         )
 
         #expect(route[0].hostname == "2001:db8::42")

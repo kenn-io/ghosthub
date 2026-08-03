@@ -55,9 +55,10 @@ Ghostty revision.
 Click the host's caution icon and choose **Review Host Key**. If OpenSSH reports
 an unseen key, Ghosthub presents its exact destination and fingerprint for
 approval, saves it through OpenSSH, and retries inventory. ProxyJump routes may
-show one review for each unseen host in the route. Opaque
-ProxyCommand routes cannot be reviewed safely and fail closed. If no unseen key
-is reported, open Host Settings and use **Test Connection** to verify
+show one review for each unseen host in the route. Opaque ProxyCommand routes
+and jump hosts with another proxy route cannot be reviewed safely and fail
+closed. If no unseen key is reported, open Host Settings and use **Test
+Connection** to verify
 authentication and that `tmux` is on the remote login-shell `PATH`. Kwt does
 not need a system installation: follow a successful test with **Install kwt
 Worktree Helper** when project inventory is missing. If the host has never used

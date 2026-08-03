@@ -8,8 +8,13 @@ struct EffectiveSSHConfiguration: Equatable {
     let proxyCommand: String?
 }
 
+struct EffectiveProxyJumpHop {
+    let host: SSHHostInfo
+    let configuration: EffectiveSSHConfiguration
+}
+
 enum SSHConfigurationResolver {
-    typealias ConfigurationProvider = (SSHHostInfo)
+    typealias ConfigurationProvider = @Sendable (SSHHostInfo)
         -> EffectiveSSHConfiguration?
 
     static func noninteractiveHostKeyArguments(
@@ -26,22 +31,28 @@ enum SSHConfigurationResolver {
         configurationProvider: ConfigurationProvider
     ) -> [String] {
         guard let configuration = configurationProvider(host) else {
-            return noninteractiveHostKeyArguments(effectivePolicy: nil)
+            return [
+                "-o", "StrictHostKeyChecking=yes",
+                "-o", "ProxyCommand=/usr/bin/false",
+            ]
         }
         var arguments = noninteractiveHostKeyArguments(
             effectivePolicy: configuration.strictHostKeyChecking
         )
-        guard configuration.proxyCommand == nil,
-              let proxyJump = configuration.proxyJump
-        else { return arguments }
-        guard let proxyHops = proxyJumpHosts(proxyJump) else {
+        guard configuration.proxyCommand == nil else {
+            return arguments + ["-o", "ProxyCommand=/usr/bin/false"]
+        }
+        guard let proxyJump = configuration.proxyJump else { return arguments }
+        guard let proxyHops = effectiveProxyJumpHops(
+            proxyJump,
+            configurationProvider: configurationProvider
+        ) else {
             return arguments + ["-o", "ProxyCommand=/usr/bin/false"]
         }
         arguments.append(contentsOf: [
             "-o",
             "ProxyCommand=" + hardenedProxyCommand(
-                hops: proxyHops,
-                configurationProvider: configurationProvider
+                hops: proxyHops
             ),
         ])
         return arguments
@@ -71,6 +82,25 @@ enum SSHConfigurationResolver {
         return hosts.count == destinations.count ? hosts : nil
     }
 
+    static func effectiveProxyJumpHops(
+        _ proxyJump: String,
+        configurationProvider: ConfigurationProvider
+    ) -> [EffectiveProxyJumpHop]? {
+        guard let hosts = proxyJumpHosts(proxyJump) else { return nil }
+        var hops: [EffectiveProxyJumpHop] = []
+        for host in hosts {
+            guard let configuration = configurationProvider(host),
+                  configuration.proxyJump == nil,
+                  configuration.proxyCommand == nil
+            else { return nil }
+            hops.append(EffectiveProxyJumpHop(
+                host: host,
+                configuration: configuration
+            ))
+        }
+        return hops
+    }
+
     static func proxyJumpDestination(for host: SSHHostInfo) -> String {
         let hostname = host.hostname.contains(":")
             ? "[\(host.hostname)]"
@@ -81,15 +111,13 @@ enum SSHConfigurationResolver {
     }
 
     private static func hardenedProxyCommand(
-        hops: [SSHHostInfo],
-        configurationProvider: ConfigurationProvider
+        hops: [EffectiveProxyJumpHop]
     ) -> String {
         var previousCommand: String?
         for hop in hops {
             var arguments = ["/usr/bin/ssh"]
             arguments.append(contentsOf: noninteractiveHostKeyArguments(
-                effectivePolicy: configurationProvider(hop)?
-                    .strictHostKeyChecking
+                effectivePolicy: hop.configuration.strictHostKeyChecking
             ))
             if let previousCommand {
                 arguments.append(contentsOf: [
@@ -100,14 +128,29 @@ enum SSHConfigurationResolver {
                     ),
                 ])
             }
-            arguments.append(contentsOf: [
-                "-W", "[%h]:%p", proxyJumpDestination(for: hop),
-            ])
+            arguments.append(contentsOf: proxyCommandHopArguments(
+                for: hop.host
+            ))
             previousCommand = arguments
                 .map(shellQuotedCommandArgument)
                 .joined(separator: " ")
         }
         return previousCommand ?? "/usr/bin/false"
+    }
+
+    static func proxyCommandHopArguments(for host: SSHHostInfo) -> [String] {
+        var arguments: [String] = []
+        if let port = host.port, port != 22 {
+            arguments.append(contentsOf: ["-p", String(port)])
+        }
+        arguments.append(contentsOf: [
+            "-W", "[%h]:%p", sshDestination(for: host),
+        ])
+        return arguments
+    }
+
+    private static func sshDestination(for host: SSHHostInfo) -> String {
+        host.user.map { "\($0)@\(host.hostname)" } ?? host.hostname
     }
 
     static func noninteractiveHostKeyArguments(
