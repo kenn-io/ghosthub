@@ -1121,6 +1121,16 @@ pub fn init() void {
             with self.assertRaisesRegex(bootstrap.BootstrapError, "downloadComponent MetalToolchain"):
                 bootstrap.ensure_metal_toolchain("/usr/bin/xcrun")
 
+    def test_zig_executable_architecture_reads_zig_env_target(self) -> None:
+        with mock.patch.object(
+            bootstrap,
+            "read_tool_output",
+            return_value='.target = "x86_64-macos.26.5...26.5-none",',
+        ):
+            architecture = bootstrap.zig_executable_architecture("/usr/bin/zig")
+
+        self.assertEqual(architecture, "x86_64")
+
     def test_find_compatible_macos_sdk_selects_newest_target_match(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             sdk_root = Path(tmpdir)
@@ -1138,7 +1148,7 @@ pub fn init() void {
             )
 
             selected = bootstrap.find_compatible_macos_sdk(
-                "arm64-macos",
+                frozenset(("arm64-macos",)),
                 [sdk_root],
             )
 
@@ -1161,7 +1171,6 @@ pub fn init() void {
 
             with (
                 mock.patch.object(bootstrap.platform, "system", return_value="Darwin"),
-                mock.patch.object(bootstrap.platform, "machine", return_value="arm64"),
                 mock.patch.object(
                     bootstrap,
                     "read_tool_output",
@@ -1176,6 +1185,8 @@ pub fn init() void {
                 environment = bootstrap.prepare_zig_build_environment(
                     repo_root,
                     "/usr/bin/xcrun",
+                    "aarch64",
+                    "aarch64",
                 )
 
             shim = repo_root / ".build" / "libghostty-tools" / "xcrun"
@@ -1189,6 +1200,80 @@ pub fn init() void {
             ).stdout.strip()
             self.assertEqual(selected, str(fallback.resolve()))
 
+    def test_intel_zig_aarch64_build_requires_both_sdk_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir) / "repo"
+            repo_root.mkdir()
+            sdk_root = Path(tmpdir) / "SDKs"
+            active = self._write_sdk_stub(
+                sdk_root / "MacOSX26.5.sdk",
+                "arm64e-macos, x86_64-macos",
+            )
+            fallback = self._write_sdk_stub(
+                sdk_root / "MacOSX15.4.sdk",
+                "arm64-macos, x86_64-macos",
+            )
+
+            with (
+                mock.patch.object(bootstrap.platform, "system", return_value="Darwin"),
+                mock.patch.object(
+                    bootstrap,
+                    "read_tool_output",
+                    return_value=str(active),
+                ),
+                mock.patch.object(
+                    bootstrap,
+                    "macos_sdk_roots",
+                    return_value=[sdk_root],
+                ),
+            ):
+                environment = bootstrap.prepare_zig_build_environment(
+                    repo_root,
+                    "/usr/bin/xcrun",
+                    "aarch64",
+                    "x86_64",
+                )
+
+            shim = Path(environment["PATH"].split(":")[0]) / "xcrun"
+            self.assertIn(str(fallback.resolve()), shim.read_text())
+
+    def test_universal_build_requires_both_sdk_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir) / "repo"
+            repo_root.mkdir()
+            sdk_root = Path(tmpdir) / "SDKs"
+            active = self._write_sdk_stub(
+                sdk_root / "MacOSX26.5.sdk",
+                "arm64-macos",
+            )
+            fallback = self._write_sdk_stub(
+                sdk_root / "MacOSX15.4.sdk",
+                "arm64-macos, x86_64-macos",
+            )
+
+            with (
+                mock.patch.object(bootstrap.platform, "system", return_value="Darwin"),
+                mock.patch.object(
+                    bootstrap,
+                    "read_tool_output",
+                    return_value=str(active),
+                ),
+                mock.patch.object(
+                    bootstrap,
+                    "macos_sdk_roots",
+                    return_value=[sdk_root],
+                ),
+            ):
+                environment = bootstrap.prepare_zig_build_environment(
+                    repo_root,
+                    "/usr/bin/xcrun",
+                    "universal",
+                    "aarch64",
+                )
+
+            shim = Path(environment["PATH"].split(":")[0]) / "xcrun"
+            self.assertIn(str(fallback.resolve()), shim.read_text())
+
     def test_bootstrap_wraps_build_failures_with_setup_guidance(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             repo_root = Path(tmpdir)
@@ -1201,6 +1286,7 @@ pub fn init() void {
                 mock.patch.object(bootstrap, "resolve_tool", side_effect=lambda tool: f"/usr/bin/{tool}"),
                 mock.patch.object(bootstrap, "read_tool_output", return_value="0.15.2"),
                 mock.patch.object(bootstrap, "ensure_metal_toolchain"),
+                mock.patch.object(bootstrap, "zig_executable_architecture", return_value="aarch64"),
                 mock.patch.object(bootstrap, "prepare_zig_build_environment", return_value={}),
                 mock.patch.object(
                     bootstrap.subprocess,

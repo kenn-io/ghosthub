@@ -47,11 +47,13 @@ make bootstrap-libghostty
 
 ## Bootstrap reports that the active macOS SDK is incompatible
 
-The pinned Zig build runner needs the native architecture target in the SDK's
-`libSystem.B.tbd`. Some newer SDKs advertise only the corresponding `arm64e`
-target. Ghosthub detects this before building and automatically uses the
-newest compatible macOS SDK already installed with Xcode or Command Line
-Tools. The selected fallback is printed during bootstrap.
+The pinned Zig build runner needs every architecture used by the Zig
+executable and selected XCFramework target in the SDK's `libSystem.B.tbd`.
+Some newer SDKs advertise only `arm64e` instead of plain `arm64`; cross and
+universal builds may require both `arm64` and `x86_64`. Ghosthub detects this
+before building and automatically uses the newest compatible macOS SDK already
+installed with Xcode or Command Line Tools. The selected fallback is printed
+during bootstrap.
 
 If bootstrap reports that it could not find a compatible SDK, install or
 select the supported Xcode baseline named in the error and rerun:

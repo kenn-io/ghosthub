@@ -1065,6 +1065,47 @@ def ensure_metal_toolchain(xcrun: str) -> None:
         ) from error
 
 
+def zig_executable_architecture(zig_path: str) -> str:
+    output = read_tool_output([zig_path, "env"])
+    match = re.search(r'^\s*\.target\s*=\s*"([^"]+)"', output, re.MULTILINE)
+    if match is None:
+        try:
+            target = json.loads(output)["target"]
+        except (json.JSONDecodeError, KeyError, TypeError) as error:
+            raise BootstrapError(
+                "Could not determine the Zig executable architecture from `zig env`."
+            ) from error
+    else:
+        target = match.group(1)
+    return target.split("-", 1)[0].lower()
+
+
+def required_macos_sdk_targets(
+    xcframework_target: str,
+    zig_architecture: str,
+) -> frozenset[str]:
+    normalized_zig_architecture = {
+        "aarch64": "arm64-macos",
+        "arm64": "arm64-macos",
+        "x86_64": "x86_64-macos",
+    }.get(zig_architecture.lower())
+    if normalized_zig_architecture is None:
+        raise BootstrapError(
+            f"Unsupported Zig executable architecture: {zig_architecture}."
+        )
+
+    required = {normalized_zig_architecture}
+    if xcframework_target == "aarch64":
+        required.add("arm64-macos")
+    elif xcframework_target == "universal":
+        required.update(("arm64-macos", "x86_64-macos"))
+    elif xcframework_target != "native":
+        raise BootstrapError(
+            f"Unsupported libghostty XCFramework target: {xcframework_target}."
+        )
+    return frozenset(required)
+
+
 def macos_sdk_targets(sdk_path: Path) -> frozenset[str]:
     stub_path = sdk_path / "usr" / "lib" / "libSystem.B.tbd"
     try:
@@ -1094,7 +1135,7 @@ def macos_sdk_version(sdk_path: Path) -> tuple[int, ...]:
 
 
 def find_compatible_macos_sdk(
-    required_target: str,
+    required_targets: frozenset[str],
     sdk_roots: list[Path],
 ) -> Path | None:
     compatible: list[Path] = []
@@ -1111,7 +1152,7 @@ def find_compatible_macos_sdk(
                 targets = macos_sdk_targets(resolved)
             except BootstrapError:
                 continue
-            if required_target in targets:
+            if required_targets.issubset(targets):
                 compatible.append(resolved)
 
     if not compatible:
@@ -1164,19 +1205,17 @@ def write_xcrun_sdk_shim(
 def prepare_zig_build_environment(
     repo_root: Path,
     xcrun_path: str,
+    xcframework_target: str,
+    zig_architecture: str,
 ) -> dict[str, str]:
     environment = os.environ.copy()
     if platform.system() != "Darwin":
         return environment
 
-    machine = platform.machine().lower()
-    required_target = {
-        "aarch64": "arm64-macos",
-        "arm64": "arm64-macos",
-        "x86_64": "x86_64-macos",
-    }.get(machine)
-    if required_target is None:
-        return environment
+    required_targets = required_macos_sdk_targets(
+        xcframework_target,
+        zig_architecture,
+    )
 
     try:
         active_sdk = Path(
@@ -1189,17 +1228,18 @@ def prepare_zig_build_environment(
             "selected full Xcode installation with `xcode-select -p`."
         ) from error
 
-    if required_target in active_targets:
+    if required_targets.issubset(active_targets):
         return environment
 
     roots = macos_sdk_roots(active_sdk)
-    fallback_sdk = find_compatible_macos_sdk(required_target, roots)
+    fallback_sdk = find_compatible_macos_sdk(required_targets, roots)
     if fallback_sdk is None:
         searched = ", ".join(str(root) for root in roots)
         targets = ", ".join(sorted(active_targets)) or "none"
+        required = ", ".join(sorted(required_targets))
         raise BootstrapError(
             f"The active macOS SDK {active_sdk} advertises [{targets}], but the "
-            f"pinned Zig build runner requires {required_target}. No compatible "
+            f"selected Zig and XCFramework targets require [{required}]. No compatible "
             f"SDK was found under: {searched}. Install or select Xcode 26.0.1, "
             "then rerun `make bootstrap-libghostty`."
         )
@@ -1211,7 +1251,8 @@ def prepare_zig_build_environment(
         environment["PATH"] += os.pathsep + existing_path
     print(
         f"Using macOS SDK {fallback_sdk} for the pinned Zig build runner; "
-        f"the active SDK {active_sdk} does not advertise {required_target}."
+        f"the active SDK {active_sdk} does not advertise every required target: "
+        f"{', '.join(sorted(required_targets))}."
     )
     return environment
 
@@ -1538,7 +1579,13 @@ def bootstrap(
         zig_version = read_tool_output([zig_path, "version"])
         ensure_supported_zig_version(zig_version, metadata.required_zig_version)
         ensure_metal_toolchain(xcrun_path)
-        build_environment = prepare_zig_build_environment(paths.repo_root, xcrun_path)
+        zig_architecture = zig_executable_architecture(zig_path)
+        build_environment = prepare_zig_build_environment(
+            paths.repo_root,
+            xcrun_path,
+            xcframework_target,
+            zig_architecture,
+        )
 
         command = render_build_command(zig_path, xcframework_target, optimize)
         try:

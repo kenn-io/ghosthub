@@ -29,12 +29,12 @@ xcrun --kill-cache
 xcrun --sdk macosx --find metal
 ```
 
-The pinned Zig build runner cannot link against an SDK that omits the native
-Mac target from `libSystem.B.tbd`. Bootstrap checks the active SDK and, when
-necessary, automatically exposes the newest compatible SDK already installed
-with Xcode or Command Line Tools. It does not change the system-wide Xcode
-selection. See [Troubleshooting](troubleshooting.md) if no compatible SDK is
-installed.
+The pinned Zig build runner cannot link against an SDK that omits an
+architecture required by the Zig executable or selected XCFramework target
+from `libSystem.B.tbd`. Bootstrap checks the active SDK and, when necessary,
+automatically exposes the newest compatible SDK already installed with Xcode
+or Command Line Tools. It does not change the system-wide Xcode selection. See
+[Troubleshooting](troubleshooting.md) if no compatible SDK is installed.
 
 ## Build and Launch
 
