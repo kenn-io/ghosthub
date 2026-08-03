@@ -47,7 +47,7 @@ struct TailscaleStatusParserTests {
 
         let devBox = peers.first { $0.hostName == "dev-box" }
         #expect(devBox != nil)
-        #expect(devBox?.sshAddress == "dev-box.example.ts.net")
+        #expect(devBox?.sshAddress == "dev-box")
         #expect(devBox?.platform == .linux)
         #expect(devBox?.isOnline == true)
         #expect(devBox?.isSSHCapable == true)

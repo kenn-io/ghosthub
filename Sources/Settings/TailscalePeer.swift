@@ -22,9 +22,18 @@ public struct TailscalePeer: Identifiable, Equatable, Sendable {
     }
 
     public var sshAddress: String {
+        normalizedDNSName.split(separator: ".").first.map(String.init)
+            ?? hostName
+    }
+
+    private var normalizedDNSName: String {
         dnsName.hasSuffix(".")
             ? String(dnsName.dropLast())
             : dnsName
+    }
+
+    fileprivate var importAddressAliases: Set<String> {
+        [sshAddress, hostName, normalizedDNSName]
     }
 
     public var platform: HostPlatform {
@@ -83,8 +92,9 @@ public enum TailscalePeerImportSelection {
         _ peer: TailscalePeer,
         normalizedExistingAddresses: Set<String>
     ) -> Bool {
-        normalizedExistingAddresses
-            .contains(normalizedHost(peer.sshAddress))
+        !normalizedExistingAddresses.isDisjoint(
+            with: peer.importAddressAliases.map(normalizedHost)
+        )
     }
 
     public static func defaultSelectedPeerIDs(
@@ -98,8 +108,8 @@ public enum TailscalePeerImportSelection {
             peers
                 .filter {
                     $0.isOnline
-                        && !normalizedExisting.contains(
-                            normalizedHost($0.sshAddress)
+                        && normalizedExisting.isDisjoint(
+                            with: $0.importAddressAliases.map(normalizedHost)
                         )
                 }
                 .map(\.id)

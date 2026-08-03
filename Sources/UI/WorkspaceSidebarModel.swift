@@ -1,6 +1,95 @@
 import Foundation
 import GhosthubWorkspace
 
+struct WorkspaceSidebarOrder: Equatable {
+    private var worktreeIDs: [UUID]
+
+    init(rawValue: String = "") {
+        var seen = Set<UUID>()
+        worktreeIDs = rawValue
+            .split(whereSeparator: \Character.isNewline)
+            .compactMap { UUID(uuidString: String($0)) }
+            .filter { seen.insert($0).inserted }
+    }
+
+    var rawValue: String {
+        worktreeIDs.map(\.uuidString).joined(separator: "\n")
+    }
+
+    func ordered(
+        _ worktrees: [WorktreeSummary]
+    ) -> [WorktreeSummary] {
+        let positions = Dictionary(
+            uniqueKeysWithValues: worktreeIDs.enumerated().map {
+                ($0.element, $0.offset)
+            }
+        )
+        return worktrees.enumerated().sorted { lhs, rhs in
+            let lhsPosition = positions[lhs.element.id]
+            let rhsPosition = positions[rhs.element.id]
+            switch (lhsPosition, rhsPosition) {
+            case let (lhsPosition?, rhsPosition?):
+                return lhsPosition < rhsPosition
+            case (_?, nil):
+                return true
+            case (nil, _?):
+                return false
+            case (nil, nil):
+                return lhs.offset < rhs.offset
+            }
+        }
+        .map(\.element)
+    }
+
+    mutating func move(
+        _ sourceID: UUID,
+        to targetID: UUID,
+        within projectWorktreeIDs: [UUID]
+    ) -> Bool {
+        guard sourceID != targetID else { return false }
+
+        let projectIDSet = Set(projectWorktreeIDs)
+        var orderedProjectIDs = orderedIDs(projectWorktreeIDs)
+        guard let sourceIndex = orderedProjectIDs.firstIndex(of: sourceID),
+              let targetIndex = orderedProjectIDs.firstIndex(of: targetID)
+        else { return false }
+        orderedProjectIDs.remove(at: sourceIndex)
+        guard let orderedTargetIndex = orderedProjectIDs.firstIndex(of: targetID)
+        else { return false }
+        let insertionIndex = sourceIndex < targetIndex
+            ? orderedTargetIndex + 1
+            : orderedTargetIndex
+        orderedProjectIDs.insert(sourceID, at: insertionIndex)
+
+        worktreeIDs.removeAll { projectIDSet.contains($0) }
+        worktreeIDs.append(contentsOf: orderedProjectIDs)
+        return true
+    }
+
+    private func orderedIDs(_ ids: [UUID]) -> [UUID] {
+        let positions = Dictionary(
+            uniqueKeysWithValues: worktreeIDs.enumerated().map {
+                ($0.element, $0.offset)
+            }
+        )
+        return ids.enumerated().sorted { lhs, rhs in
+            let lhsPosition = positions[lhs.element]
+            let rhsPosition = positions[rhs.element]
+            switch (lhsPosition, rhsPosition) {
+            case let (lhsPosition?, rhsPosition?):
+                return lhsPosition < rhsPosition
+            case (_?, nil):
+                return true
+            case (nil, _?):
+                return false
+            case (nil, nil):
+                return lhs.offset < rhs.offset
+            }
+        }
+        .map(\.element)
+    }
+}
+
 public struct WorkspaceTmuxSessionSelection:
     Equatable, Hashable, Identifiable, Sendable {
     public var hostID: UUID
@@ -194,9 +283,13 @@ public enum WorkspaceSidebarModel {
     public static func sections(
         in snapshot: WorkspaceSnapshot,
         visibility: WorktreeVisibility = .default,
-        tmuxSessionVisibility: TmuxSessionVisibility = TmuxSessionVisibility()
+        tmuxSessionVisibility: TmuxSessionVisibility = TmuxSessionVisibility(),
+        worktreeOrderRawValue: String = ""
     ) -> [WorkspaceSidebarSection] {
-        snapshot.hosts.map { host in
+        let worktreeOrder = WorkspaceSidebarOrder(
+            rawValue: worktreeOrderRawValue
+        )
+        return snapshot.hosts.map { host in
             // Discovery only lists the host's default tmux server. A
             // protected PR workspace lives on its own socket, so its session
             // name never identifies a discovered session and must not
@@ -214,12 +307,14 @@ public enum WorkspaceSidebarModel {
                         && $0.kind == .repository
                 }
                 .map { project in
-                    let worktrees = snapshot.worktrees.filter {
-                        $0.hostID == host.id
-                            && $0.projectID == project.id
-                            && !$0.isStale
-                            && visibility.includes($0)
-                    }
+                    let worktrees = worktreeOrder.ordered(
+                        snapshot.worktrees.filter {
+                            $0.hostID == host.id
+                                && $0.projectID == project.id
+                                && !$0.isStale
+                                && visibility.includes($0)
+                        }
+                    )
                     let rows = worktrees.map { worktree in
                         worktreeRow(for: worktree, snapshot: snapshot)
                     }

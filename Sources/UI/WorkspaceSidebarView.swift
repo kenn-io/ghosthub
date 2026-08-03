@@ -84,6 +84,8 @@ struct WorkspaceSidebarView: View {
     private var disclosureState = ""
     @AppStorage("workspaceSidebarCollapsedItems")
     private var legacyCollapsedItems = ""
+    @AppStorage("workspaceSidebarWorktreeOrderV1")
+    private var worktreeOrderRawValue = ""
 
     init(
         snapshot: WorkspaceSnapshot,
@@ -139,7 +141,8 @@ struct WorkspaceSidebarView: View {
         WorkspaceSidebarModel.sections(
             in: snapshot,
             visibility: visibility,
-            tmuxSessionVisibility: tmuxSessionVisibility
+            tmuxSessionVisibility: tmuxSessionVisibility,
+            worktreeOrderRawValue: worktreeOrderRawValue
         )
     }
 
@@ -298,7 +301,11 @@ struct WorkspaceSidebarView: View {
                                 }
                                 if isExpanded(projectKey) {
                                     ForEach(project.worktreeRows) { row in
-                                        worktreeButton(row)
+                                        worktreeButton(
+                                            row,
+                                            projectWorktreeIDs:
+                                            project.worktrees.map(\.id)
+                                        )
                                     }
                                 }
                             }
@@ -764,7 +771,10 @@ struct WorkspaceSidebarView: View {
         }
     }
 
-    private func worktreeButton(_ row: WorkspaceSidebarRow) -> some View {
+    private func worktreeButton(
+        _ row: WorkspaceSidebarRow,
+        projectWorktreeIDs: [UUID]
+    ) -> some View {
         guard case let .worktree(worktreeID) = row.target,
               let worktree = snapshot.worktree(id: worktreeID)
         else {
@@ -871,6 +881,24 @@ struct WorkspaceSidebarView: View {
                 if let runningTmuxSession {
                     onRequestKillTmuxSession(runningTmuxSession)
                 }
+            }
+            .draggable(worktreeID.uuidString)
+            .dropDestination(for: String.self) { values, _ in
+                guard let rawSourceID = values.first,
+                      let sourceID = UUID(uuidString: rawSourceID)
+                else { return false }
+                var order = WorkspaceSidebarOrder(
+                    rawValue: worktreeOrderRawValue
+                )
+                guard order.move(
+                    sourceID,
+                    to: worktreeID,
+                    within: projectWorktreeIDs
+                ) else { return false }
+                withAnimation(.easeInOut(duration: 0.16)) {
+                    worktreeOrderRawValue = order.rawValue
+                }
+                return true
             }
         )
     }

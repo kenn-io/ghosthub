@@ -5,6 +5,30 @@ import Testing
 @testable import GhosthubUI
 
 struct WorkspaceSidebarModelTests {
+    @Test("drag ordering is durable and scoped to one project")
+    func worktreeDragOrdering() {
+        let first = WorktreeSummary.fixture(name: "first")
+        let second = WorktreeSummary.fixture(name: "second")
+        let third = WorktreeSummary.fixture(name: "third")
+        let otherProject = WorktreeSummary.fixture(name: "other")
+        var order = WorkspaceSidebarOrder()
+
+        let didMove = order.move(
+            first.id,
+            to: third.id,
+            within: [first.id, second.id, third.id]
+        )
+        #expect(didMove)
+        #expect(order.ordered([first, second, third]).map(\.id)
+            == [second.id, third.id, first.id])
+
+        let restored = WorkspaceSidebarOrder(rawValue: order.rawValue)
+        #expect(restored.ordered([first, second, third]).map(\.id)
+            == [second.id, third.id, first.id])
+        #expect(restored.ordered([otherProject]).map(\.id)
+            == [otherProject.id])
+    }
+
     @Test("sidebar hierarchy advances one compact indent per level")
     func hierarchyIndentAdvancesByLevel() {
         let host = WorkspaceSidebarHierarchy.indent(level: 0)

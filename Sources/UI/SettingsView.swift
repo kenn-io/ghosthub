@@ -219,16 +219,18 @@ public struct SettingsView: View {
     }
 
     private var availableTerminalFontFamilies: [String] {
-        let installed = NSFontManager.shared.availableFontFamilies.sorted()
-        let trimmedCurrent = draft.terminalFontFamily.trimmingCharacters(
-            in: .whitespacesAndNewlines
-        )
-        guard !trimmedCurrent.isEmpty,
-              !installed.contains(trimmedCurrent)
-        else {
-            return installed
+        let manager = NSFontManager.shared
+        return manager.availableFontFamilies.filter { family in
+            manager.availableMembers(ofFontFamily: family)?.contains {
+                member in
+                guard member.count > 3,
+                      let traits = member[3] as? NSNumber
+                else { return false }
+                return NSFontTraitMask(rawValue: traits.uintValue)
+                    .contains(.fixedPitchFontMask)
+            } == true
         }
-        return [trimmedCurrent] + installed
+        .sorted()
     }
 
     private var availableTerminalFontSizes: [Double] {

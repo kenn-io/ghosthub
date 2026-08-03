@@ -3,8 +3,8 @@ import Testing
 @testable import GhosthubSettings
 
 struct TailscalePeerTests {
-    @Test("strips trailing dot from DNS name")
-    func stripsDotFromDNS() {
+    @Test("uses the MagicDNS short hostname for SSH")
+    func usesShortHostnameForSSH() {
         let peer = TailscalePeer(
             id: "x",
             hostName: "box",
@@ -13,11 +13,11 @@ struct TailscalePeerTests {
             isOnline: true
         )
 
-        #expect(peer.sshAddress == "box.tailnet.ts.net")
+        #expect(peer.sshAddress == "box")
     }
 
-    @Test("preserves DNS name without trailing dot")
-    func preservesDNSWithoutDot() {
+    @Test("does not depend on DNS name formatting")
+    func ignoresDNSNameFormatting() {
         let peer = TailscalePeer(
             id: "x",
             hostName: "box",
@@ -26,7 +26,7 @@ struct TailscalePeerTests {
             isOnline: true
         )
 
-        #expect(peer.sshAddress == "box.tailnet.ts.net")
+        #expect(peer.sshAddress == "box")
     }
 
     @Test("maps supported operating systems to host platforms")

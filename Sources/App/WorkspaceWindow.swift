@@ -57,6 +57,7 @@ private struct WindowFocusTracker: NSViewRepresentable {
     let requestID: UUID?
     @Binding var isFocused: Bool
     var isSidebarVisible: Bool
+    var sidebarWidth: CGFloat
     var canCreateWorktree: Bool
     var sessionTitle: SessionTitlebarPresentation?
     var onToggleSidebar: () -> Void
@@ -84,6 +85,7 @@ private struct WindowFocusTracker: NSViewRepresentable {
     private func configureTitlebar(_ view: FocusTrackingView) {
         view.titlebarController.update(
             isSidebarVisible: isSidebarVisible,
+            sidebarWidth: sidebarWidth,
             canCreateWorktree: canCreateWorktree,
             sessionTitle: sessionTitle,
             onToggleSidebar: onToggleSidebar,
@@ -305,7 +307,9 @@ final class CompactWorkspaceTitlebarController {
     private let actionsHost = NSHostingView(rootView: AnyView(EmptyView()))
     private let closeDelegate = WorkspaceWindowCloseDelegate()
     private weak var installedWindow: NSWindow?
+    private var titleLeadingConstraint: NSLayoutConstraint?
     private var isSidebarVisible = true
+    private var sidebarWidth = WorkspaceSidebarWidthPolicy.defaultWidth
     private var canCreateWorktree = false
     private var sessionTitle: SessionTitlebarPresentation?
     private var onToggleSidebar: () -> Void = {}
@@ -361,6 +365,14 @@ final class CompactWorkspaceTitlebarController {
         titlebar.addSubview(sidebarHost)
         titlebar.addSubview(titleHost)
         titlebar.addSubview(actionsHost)
+        let titleLeadingConstraint = titleHost.leadingAnchor.constraint(
+            equalTo: titlebar.leadingAnchor,
+            constant: Self.titleLeadingOffset(
+                isSidebarVisible: isSidebarVisible,
+                sidebarWidth: sidebarWidth
+            )
+        )
+        self.titleLeadingConstraint = titleLeadingConstraint
         NSLayoutConstraint.activate([
             sidebarHost.leadingAnchor.constraint(
                 equalTo: zoomButton.trailingAnchor,
@@ -371,10 +383,7 @@ final class CompactWorkspaceTitlebarController {
             ),
             sidebarHost.widthAnchor.constraint(equalToConstant: 22),
             sidebarHost.heightAnchor.constraint(equalToConstant: 22),
-            titleHost.leadingAnchor.constraint(
-                equalTo: sidebarHost.trailingAnchor,
-                constant: 8
-            ),
+            titleLeadingConstraint,
             titleHost.trailingAnchor.constraint(
                 lessThanOrEqualTo: actionsHost.leadingAnchor,
                 constant: -12
@@ -400,8 +409,17 @@ final class CompactWorkspaceTitlebarController {
         tabCount <= 1
     }
 
+    static func titleLeadingOffset(
+        isSidebarVisible: Bool,
+        sidebarWidth: CGFloat
+    ) -> CGFloat {
+        guard isSidebarVisible else { return 120 }
+        return max(120, sidebarWidth + 12)
+    }
+
     func update(
         isSidebarVisible: Bool,
+        sidebarWidth: CGFloat = WorkspaceSidebarWidthPolicy.defaultWidth,
         canCreateWorktree: Bool,
         sessionTitle: SessionTitlebarPresentation?,
         onToggleSidebar: @escaping () -> Void,
@@ -410,6 +428,9 @@ final class CompactWorkspaceTitlebarController {
         onNewWorktree: @escaping () -> Void
     ) {
         self.isSidebarVisible = isSidebarVisible
+        self.sidebarWidth = WorkspaceSidebarWidthPolicy.clampedWidth(
+            sidebarWidth
+        )
         self.canCreateWorktree = canCreateWorktree
         self.sessionTitle = sessionTitle
         self.onToggleSidebar = onToggleSidebar
@@ -417,6 +438,10 @@ final class CompactWorkspaceTitlebarController {
         self.onSettings = onSettings
         self.onNewWorktree = onNewWorktree
         refreshHosts()
+        titleLeadingConstraint?.constant = Self.titleLeadingOffset(
+            isSidebarVisible: isSidebarVisible,
+            sidebarWidth: self.sidebarWidth
+        )
     }
 
     private func refreshHosts() {
@@ -488,6 +513,7 @@ final class CompactWorkspaceTitlebarController {
     }
 
     private func removeControlsFromInstalledWindow() {
+        titleLeadingConstraint = nil
         sidebarHost.removeFromSuperview()
         titleHost.removeFromSuperview()
         actionsHost.removeFromSuperview()
@@ -532,6 +558,8 @@ struct WorkspaceWindow: View {
     @ObservedObject private var settingsStore = SettingsStore.shared
     @State private var visibleConfigReloadNotice:
         LibghosttyConfigReloadNotice?
+    @State private var titlebarSidebarWidth =
+        WorkspaceSidebarWidthPolicy.defaultWidth
     private let registry = WindowRegistry.shared
 
     var body: some View {
@@ -701,6 +729,9 @@ struct WorkspaceWindow: View {
                 }
             ),
             sidebarToggleTarget: sceneModel,
+            sidebarWidthChanged: { width in
+                titlebarSidebarWidth = width
+            },
             settingsStore: settingsStore,
             selection: Binding(
                 get: { sceneModel.selection },
@@ -759,6 +790,7 @@ struct WorkspaceWindow: View {
                 ),
                 isSidebarVisible:
                 sceneModel.columnVisibility != .detailOnly,
+                sidebarWidth: titlebarSidebarWidth,
                 canCreateWorktree: canCreateWorktree,
                 sessionTitle: SessionTitlebarPresentation.resolve(
                     activeSession: sceneModel.activeBorrowedTmuxSelection,

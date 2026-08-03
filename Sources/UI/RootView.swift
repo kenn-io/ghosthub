@@ -8,6 +8,7 @@ public struct RootView: View {
     private let content: ContentBuilders
     private let handlers: InteractionHandlers
     private let sidebarToggleTarget: AnyObject
+    private let sidebarWidthChanged: (CGFloat) -> Void
     @Binding private var selection: WorkspaceSelection
     @Binding private var isSidePanelVisible: Bool
     @Binding private var columnVisibility: NavigationSplitViewVisibility
@@ -34,6 +35,7 @@ public struct RootView: View {
         content: ContentBuilders = ContentBuilders(),
         handlers: InteractionHandlers = InteractionHandlers(),
         sidebarToggleTarget: AnyObject = NSObject(),
+        sidebarWidthChanged: @escaping (CGFloat) -> Void = { _ in },
         settingsStore: SettingsStore = .shared,
         selection: Binding<WorkspaceSelection>,
         isSidePanelVisible: Binding<Bool> = .constant(false),
@@ -46,6 +48,7 @@ public struct RootView: View {
         self.content = content
         self.handlers = handlers
         self.sidebarToggleTarget = sidebarToggleTarget
+        self.sidebarWidthChanged = sidebarWidthChanged
         self.settingsStore = settingsStore
         _selection = selection
         _isSidePanelVisible = isSidePanelVisible
@@ -155,7 +158,8 @@ public struct RootView: View {
                 applySidebarAutoCollapse(windowWidth: width)
                 applySidePanelAutoCollapse(windowWidth: width)
             }
-            .onChange(of: sidebarWidth) { _, _ in
+            .onChange(of: sidebarWidth) { _, width in
+                sidebarWidthChanged(width)
                 guard lastKnownWindowWidth > 0 else { return }
                 applySidePanelAutoCollapse(
                     windowWidth: lastKnownWindowWidth
@@ -178,6 +182,7 @@ public struct RootView: View {
                 )
             )
             .onAppear {
+                sidebarWidthChanged(sidebarWidth)
                 normalizeSelectionForWorktreeVisibilityChanges()
                 synchronizeSelectedWorktreeSession()
                 initializeTmuxSelectionBaselineIfNeeded()
@@ -291,9 +296,13 @@ public struct RootView: View {
                 if isSidebarVisible {
                     workspaceSidebarColumn
                         .frame(width: sidebarWidth)
+                        .transition(
+                            .move(edge: .leading).combined(with: .opacity)
+                        )
 
                     columnDivider
                         .gesture(sidebarDragGesture)
+                        .transition(.opacity)
                 }
 
                 terminalWorkspaceContent
@@ -304,6 +313,7 @@ public struct RootView: View {
 
             }
             .coordinateSpace(name: Self.columnSpace)
+            .animation(.easeInOut(duration: 0.2), value: isSidebarVisible)
         }
     }
 
