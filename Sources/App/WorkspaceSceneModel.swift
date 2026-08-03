@@ -2414,7 +2414,8 @@ final class WorkspaceSceneModel: ObservableObject {
                     severity: .error,
                     summary: "SSH could not be reached.",
                     recoverySuggestion:
-                    "Confirm the host key is trusted and key-based "
+                    "Connect to this exact full destination once with system "
+                        + "ssh, verify its host key, and confirm key-based "
                         + "authentication is available from your login shell."
                 )]
             } else if !tmuxAvailable {

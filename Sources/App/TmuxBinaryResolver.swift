@@ -56,9 +56,10 @@ enum TmuxBinaryError: Error, Equatable, LocalizedError, Sendable {
             return "The login shell exited with status \(status) while"
                 + " locating tmux. Check your shell startup files."
         case let .sshConnectionFailed(host):
-            return "SSH could not connect to \(host). Open Host Settings and"
-                + " run Test Connection to verify the host key,"
-                + " authentication, and network access."
+            return "SSH could not connect to \(host). Verify this exact"
+                + " destination once with system ssh, not a short hostname"
+                + " or alias, then retry or run Test Connection in Host"
+                + " Settings."
         case let .probeTimedOut(shell):
             return "Timed out while locating tmux through \(shell). Check"
                 + " for commands that block in your shell startup files."

@@ -6,15 +6,16 @@ import GhosthubWorkspace
 
 @Suite("kwt inventory")
 struct KwtInventoryClientTests {
-    @Test("SSH transport failure is identified while loading projects")
-    func identifiesSSHFailure() {
+    @Test("remote status 255 does not assume an SSH transport failure")
+    func describesAmbiguousRemoteFailure() {
         let error = KwtInventoryError.commandFailed(
-            host: "Wes MBP",
+            host: "Build Host",
             status: 255
         )
 
-        #expect(error.localizedDescription.contains("SSH could not connect"))
-        #expect(error.localizedDescription.contains("Wes MBP"))
+        #expect(error.localizedDescription.contains("Remote kwt inventory"))
+        #expect(error.localizedDescription.contains("Build Host"))
+        #expect(error.localizedDescription.contains("exact SSH destination"))
     }
 
     @Test("projects and exact session names survive shell startup noise")

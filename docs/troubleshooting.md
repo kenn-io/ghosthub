@@ -61,6 +61,8 @@ Project** from the **+** menu beside that host; repeat for each repository
 Ghosthub should display.
 
 **Test Connection** follows your OpenSSH host-key policy. If a new destination
-requires interactive verification, connect to it once with the system `ssh`
-command, verify its fingerprint, and retry. A reachable host without tmux is
-reported separately as **tmux is not installed** rather than as an SSH failure.
+requires interactive verification, connect once with the system `ssh` command
+to the exact full destination shown in Host Settings, verify its fingerprint,
+and retry. A trusted short hostname or alias is a separate OpenSSH identity. A
+reachable host without tmux is reported separately as **tmux is not installed**
+rather than as an SSH failure.

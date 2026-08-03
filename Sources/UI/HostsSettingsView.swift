@@ -266,8 +266,10 @@ public struct HostsSettingsView: View {
                     settingsSection("Verification") {
                         Text(
                             "Test Connection follows your OpenSSH host-key"
-                                + " policy. Verify a new host with system ssh"
-                                + " first if your policy prompts for trust."
+                                + " policy. Verify the exact full destination"
+                                + " shown above with system ssh first if your"
+                                + " policy prompts for trust; a short hostname"
+                                + " or alias is a separate SSH identity."
                         )
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)

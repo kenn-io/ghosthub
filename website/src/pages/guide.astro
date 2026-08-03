@@ -159,10 +159,11 @@ const imageAlt = {
             system-wide, test the connection and choose{' '}
             <strong>Install kwt Worktree Helper</strong>. Ghosthub asks through that
             explicit action. Testing a connection follows your OpenSSH
-            host-key policy; verify a new host with system <code>ssh</code>{' '}
-            first when your policy prompts for trust. Ghosthub then copies its
-            pinned build for the host’s OS and CPU, verifies it, and keeps it
-            under <code>~/.ghosthub/</code>.
+            host-key policy; verify the exact full destination shown in Host
+            Settings with system <code>ssh</code> first when your policy prompts
+            for trust. A trusted short hostname or alias is a separate OpenSSH
+            identity. Ghosthub then copies its pinned build for the host’s OS
+            and CPU, verifies it, and keeps it under <code>~/.ghosthub/</code>.
             On a fresh macOS or Linux host, open the <strong>+</strong> menu
             beside it, choose <strong>Add Project</strong>, and enter each
             existing checkout’s absolute path. Ghosthub delegates registration
