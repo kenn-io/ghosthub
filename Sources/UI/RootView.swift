@@ -31,6 +31,10 @@ public struct RootView: View {
     @State private var workspaceAlert: WorkspaceAlert?
     @StateObject private var sshHostKeyReview =
         WorkspaceSSHHostKeyReviewModel()
+    @AppStorage(WorkspaceSidebarOrderStorage.worktreeKey)
+    private var worktreeOrderRawValue = ""
+    @AppStorage(WorkspaceSidebarOrderStorage.tmuxSessionKey)
+    private var tmuxSessionOrderRawValue = ""
 
     public init(
         display: WorkspaceDisplayState,
@@ -452,6 +456,8 @@ public struct RootView: View {
             display.workspaceInventoryWarningsByHost,
             inventoryRefreshComplete:
             display.isWorkspaceInventoryRefreshComplete,
+            worktreeOrderRawValue: $worktreeOrderRawValue,
+            tmuxSessionOrderRawValue: $tmuxSessionOrderRawValue,
             onOpen: { worktree in
                 selectWorkspace(.worktree(worktree.id))
             }
@@ -860,7 +866,9 @@ public struct RootView: View {
             interfaceAppearance: settingsStore.interfaceAppearance,
             worktreeVisibility: worktreeVisibility,
             tmuxSessionVisibility: tmuxSessionVisibility,
-            supportsSettings: content.settingsSheetBuilder != nil
+            supportsSettings: content.settingsSheetBuilder != nil,
+            worktreeOrderRawValue: worktreeOrderRawValue,
+            tmuxSessionOrderRawValue: tmuxSessionOrderRawValue
         )
     }
 
@@ -897,7 +905,8 @@ public struct RootView: View {
                 from: selection,
                 in: snapshot,
                 step: -1,
-                visibility: worktreeVisibility
+                visibility: worktreeVisibility,
+                worktreeOrderRawValue: worktreeOrderRawValue
             ) {
                 selectWorkspace(updatedSelection)
             }
@@ -906,7 +915,8 @@ public struct RootView: View {
                 from: selection,
                 in: snapshot,
                 step: 1,
-                visibility: worktreeVisibility
+                visibility: worktreeVisibility,
+                worktreeOrderRawValue: worktreeOrderRawValue
             ) {
                 selectWorkspace(updatedSelection)
             }
@@ -1029,7 +1039,8 @@ public struct RootView: View {
             index,
             from: selection,
             in: snapshot,
-            visibility: worktreeVisibility
+            visibility: worktreeVisibility,
+            worktreeOrderRawValue: worktreeOrderRawValue
         ) {
             selectWorkspace(updatedSelection)
         }

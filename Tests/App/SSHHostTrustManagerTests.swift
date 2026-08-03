@@ -29,7 +29,7 @@ struct SSHHostTrustManagerTests {
     func acceptsOnlyThePresentedPrompt() throws {
         let calls = LockedValue(0)
         let manager = SSHHostTrustManager(
-            askPassRunner: { _, _, _, approved, expected in
+            askPassRunner: { _, _, _, _, approved, expected in
                 calls.withLock { $0 += 1 }
                 guard expected != nil else { return }
                 FileManager.default.createFile(
@@ -37,7 +37,8 @@ struct SSHHostTrustManagerTests {
                     contents: Data()
                 )
             },
-            strictHostKeyPolicyProvider: { _ in "ask" }
+            strictHostKeyPolicyProvider: { _ in "ask" },
+            routeProvider: { [$0] }
         )
         let confirmation = try SSHHostTrustManager.confirmation(
             destination: "dev@build.example.test",
@@ -65,11 +66,12 @@ struct SSHHostTrustManagerTests {
             with: "different-synthetic-fingerprint"
         )
         let manager = SSHHostTrustManager(
-            askPassRunner: { _, _, observed, _, expected in
+            askPassRunner: { _, _, _, observed, _, expected in
                 guard expected != nil else { return }
                 try? Data(changedPrompt.utf8).write(to: observed)
             },
-            strictHostKeyPolicyProvider: { _ in "ask" }
+            strictHostKeyPolicyProvider: { _ in "ask" },
+            routeProvider: { [$0] }
         )
         let confirmation = try SSHHostTrustManager.confirmation(
             destination: "dev@build.example.test",
@@ -89,8 +91,8 @@ struct SSHHostTrustManagerTests {
         }
     }
 
-    @Test("sequential proxy host prompts are reviewed one at a time")
-    func returnsNextProxyPrompt() throws {
+    @Test("a proxy using ask is reviewed even when the destination uses yes")
+    func reviewsAskProxyBeforeStrictDestination() throws {
         let proxyPrompt = prompt.replacingOccurrences(
             of: "build.example.test",
             with: "jump.example.test"
@@ -98,19 +100,97 @@ struct SSHHostTrustManagerTests {
             of: "synthetic-fingerprint",
             with: "proxy-synthetic-fingerprint"
         )
+        let destinationHost = SSHHostInfo(
+            user: "dev",
+            hostname: "build.example.test",
+            port: nil
+        )
+        let proxyHost = SSHHostInfo(
+            user: "relay",
+            hostname: "jump.example.test",
+            port: nil
+        )
+        let reviewedHosts = LockedValue(Set<String>())
+        let calls = LockedValue([(host: String, proxies: [String])]())
         let manager = SSHHostTrustManager(
-            askPassRunner: {
-                _, _, observed, approved, expected in
+            askPassRunner: { host, proxies, _, observed, approved, expected in
+                calls.withLock {
+                    $0.append((host.hostname, proxies.map(\.hostname)))
+                }
+                if expected != nil, host == proxyHost {
+                    FileManager.default.createFile(
+                        atPath: approved.path,
+                        contents: Data()
+                    )
+                    reviewedHosts.withLock { $0.insert(host.hostname) }
+                } else if !reviewedHosts.load().contains(host.hostname) {
+                    try? Data(proxyPrompt.utf8).write(to: observed)
+                }
+            },
+            strictHostKeyPolicyProvider: {
+                $0 == proxyHost ? "ask" : "yes"
+            },
+            routeProvider: { _ in [proxyHost, destinationHost] }
+        )
+        let proxyConfirmation = try #require(
+            try manager.pendingConfirmation(
+                for: destinationHost,
+                destination: "dev@build.example.test"
+            )
+        )
+
+        let next = try manager.accept(
+            proxyConfirmation,
+            for: destinationHost,
+            destination: "dev@build.example.test"
+        )
+
+        #expect(proxyConfirmation.destination == "jump.example.test")
+        #expect(next == nil)
+        #expect(calls.load().allSatisfy { $0.host == "jump.example.test" })
+        #expect(calls.load().allSatisfy { $0.proxies.isEmpty })
+    }
+
+    @Test("a proxy using accept-new is reviewed before an ask destination")
+    func reviewsAcceptNewProxyBeforeAskDestination() throws {
+        let proxyPrompt = prompt.replacingOccurrences(
+            of: "build.example.test",
+            with: "jump.example.test"
+        )
+        let destinationHost = SSHHostInfo(
+            user: "dev",
+            hostname: "build.example.test",
+            port: nil
+        )
+        let proxyHost = SSHHostInfo(
+            user: "relay",
+            hostname: "jump.example.test",
+            port: 2200
+        )
+        let reviewedHosts = LockedValue(Set<String>())
+        let manager = SSHHostTrustManager(
+            askPassRunner: { host, proxies, _, observed, approved, expected in
                 if expected != nil {
                     FileManager.default.createFile(
                         atPath: approved.path,
                         contents: Data()
                     )
-                } else {
-                    try? Data(prompt.utf8).write(to: observed)
+                    reviewedHosts.withLock { $0.insert(host.hostname) }
+                    return
+                }
+                guard !reviewedHosts.load().contains(host.hostname) else {
+                    return
+                }
+                let currentPrompt = host == proxyHost ? proxyPrompt : prompt
+                try? Data(currentPrompt.utf8).write(to: observed)
+                if host == destinationHost {
+                    #expect(proxies == [proxyHost])
                 }
             },
-            strictHostKeyPolicyProvider: { _ in "accept-new" }
+            strictHostKeyPolicyProvider: {
+                $0 == proxyHost ? "accept-new" : "ask"
+            },
+            routeProvider: { _ in [proxyHost, destinationHost] }
         )
         let proxyConfirmation = try SSHHostTrustManager.confirmation(
             destination: "dev@build.example.test",
@@ -119,11 +199,7 @@ struct SSHHostTrustManagerTests {
 
         let next = try #require(try manager.accept(
             proxyConfirmation,
-            for: SSHHostInfo(
-                user: "dev",
-                hostname: "build.example.test",
-                port: nil
-            ),
+            for: destinationHost,
             destination: "dev@build.example.test"
         ))
 
@@ -135,23 +211,69 @@ struct SSHHostTrustManagerTests {
     @Test("explicit strict host-key policies are never overridden")
     func respectsStrictHostKeyPolicy() {
         let manager = SSHHostTrustManager(
-            askPassRunner: { _, _, _, _, _ in
+            askPassRunner: { _, _, _, _, _, _ in
                 Issue.record("askpass must not run for a strict policy")
             },
-            strictHostKeyPolicyProvider: { _ in "yes" }
+            strictHostKeyPolicyProvider: { _ in "yes" },
+            routeProvider: { [$0] }
         )
 
-        #expect(throws: SSHHostTrustError
-            .strictHostKeyPolicyUnsupported("yes")) {
-            try manager.pendingConfirmation(
-                for: SSHHostInfo(
+        let confirmation = try? manager.pendingConfirmation(
+            for: SSHHostInfo(
+                user: "dev",
+                hostname: "build.example.test",
+                port: nil
+            ),
+            destination: "dev@build.example.test"
+        )
+
+        #expect(confirmation == nil)
+    }
+
+    @Test("opaque proxy commands fail closed")
+    func rejectsProxyCommandRoutes() {
+        let host = SSHHostInfo(
+            user: "dev",
+            hostname: "build.example.test",
+            port: nil
+        )
+
+        #expect(throws: SSHHostTrustError.unsupportedProxyRoute) {
+            try SSHHostTrustManager.route(
+                for: host,
+                configuration: EffectiveSSHConfiguration(
                     user: "dev",
-                    hostname: "build.example.test",
-                    port: nil
-                ),
-                destination: "dev@build.example.test"
+                    strictHostKeyChecking: "ask",
+                    proxyJump: nil,
+                    proxyCommand: "ssh relay.example.test -W %h:%p"
+                )
             )
         }
+    }
+
+    @Test("ProxyJump hosts are resolved in connection order")
+    func resolvesProxyJumpRoute() throws {
+        let host = SSHHostInfo(
+            user: "dev",
+            hostname: "build.example.test",
+            port: nil
+        )
+
+        let route = try SSHHostTrustManager.route(
+            for: host,
+            configuration: EffectiveSSHConfiguration(
+                user: "dev",
+                strictHostKeyChecking: "ask",
+                proxyJump: "relay@edge.example.test:2200,core.example.test",
+                proxyCommand: nil
+            )
+        )
+
+        #expect(route.map(\.displayName) == [
+            "relay@edge.example.test:2200",
+            "core.example.test",
+            "dev@build.example.test",
+        ])
     }
 
     @Test("the shipped askpass helper approves only the expected key")

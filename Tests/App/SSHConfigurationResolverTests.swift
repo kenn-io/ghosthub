@@ -8,11 +8,15 @@ struct SSHConfigurationResolverTests {
         host build.example.test
         user deploy
         stricthostkeychecking accept-new
+        proxyjump relay.example.test
+        proxycommand none
         hostname build.example.test
         """)
 
         #expect(configuration.user == "deploy")
         #expect(configuration.strictHostKeyChecking == "accept-new")
+        #expect(configuration.proxyJump == "relay.example.test")
+        #expect(configuration.proxyCommand == nil)
     }
 
     @Test(

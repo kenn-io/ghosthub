@@ -147,10 +147,8 @@ struct WorkspaceSidebarView: View {
     private var disclosureState = ""
     @AppStorage("workspaceSidebarCollapsedItems")
     private var legacyCollapsedItems = ""
-    @AppStorage("workspaceSidebarWorktreeOrderV1")
-    private var worktreeOrderRawValue = ""
-    @AppStorage("workspaceSidebarTmuxSessionOrderV1")
-    private var tmuxSessionOrderRawValue = ""
+    @Binding private var worktreeOrderRawValue: String
+    @Binding private var tmuxSessionOrderRawValue: String
 
     init(
         snapshot: WorkspaceSnapshot,
@@ -179,6 +177,8 @@ struct WorkspaceSidebarView: View {
         inventoryWarning: String? = nil,
         inventoryWarningsByHost: [UUID: String] = [:],
         inventoryRefreshComplete: Bool = false,
+        worktreeOrderRawValue: Binding<String> = .constant(""),
+        tmuxSessionOrderRawValue: Binding<String> = .constant(""),
         onOpen: @escaping (WorktreeSummary) -> Void = { _ in }
     ) {
         self.snapshot = snapshot
@@ -201,6 +201,8 @@ struct WorkspaceSidebarView: View {
         self.inventoryWarning = inventoryWarning
         self.inventoryWarningsByHost = inventoryWarningsByHost
         self.inventoryRefreshComplete = inventoryRefreshComplete
+        _worktreeOrderRawValue = worktreeOrderRawValue
+        _tmuxSessionOrderRawValue = tmuxSessionOrderRawValue
         self.onOpen = onOpen
     }
 

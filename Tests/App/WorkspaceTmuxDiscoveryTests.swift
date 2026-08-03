@@ -11,19 +11,41 @@ import Testing
 @Suite("Workspace tmux discovery", .serialized)
 struct WorkspaceTmuxDiscoveryTests {
     @Test("inventory refresh completion waits for kwt and tmux")
-    func inventoryRefreshCompletionWaitsForBothSources() {
-        var progress = WorkspaceInventoryRefreshProgress()
-        #expect(!progress.isComplete)
+    @MainActor
+    func inventoryRefreshCompletionWaitsForBothSources() async throws {
+        let environment = try setupStandardEnvironment()
+        let kwtGate = KillGate()
+        let kwtCompletions = Counter()
+        let tmuxGate = BlockingGate()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            kwtInventoryLoader: { _ in
+                await kwtGate.suspend()
+                _ = kwtCompletions.increment()
+                return KwtHostInventory(projects: [])
+            },
+            tmuxSessionDiscovery: { _ in
+                tmuxGate.wait()
+                return .success([])
+            },
+            startServices: true
+        )
 
-        progress.kwtCompleted = true
-        #expect(!progress.isComplete)
+        await kwtGate.waitUntilStarted()
+        await waitUntilMainActor { tmuxGate.didStart }
+        #expect(!model.isWorkspaceInventoryRefreshComplete)
 
-        progress.kwtCompleted = false
-        progress.tmuxCompleted = true
-        #expect(!progress.isComplete)
+        await kwtGate.release()
+        await waitUntilMainActor { kwtCompletions.count == 1 }
+        #expect(!model.isWorkspaceInventoryRefreshComplete)
 
-        progress.kwtCompleted = true
-        #expect(progress.isComplete)
+        tmuxGate.release()
+        await waitUntilMainActor {
+            model.isWorkspaceInventoryRefreshComplete
+        }
+        #expect(model.isWorkspaceInventoryRefreshComplete)
+        await model.shutdown()
     }
 
     private enum CreationKwtFailurePhase: CaseIterable, Sendable {
@@ -46,6 +68,29 @@ struct WorkspaceTmuxDiscoveryTests {
             lock.lock()
             defer { lock.unlock() }
             return value
+        }
+    }
+
+    private final class BlockingGate: @unchecked Sendable {
+        private let lock = NSLock()
+        private let semaphore = DispatchSemaphore(value: 0)
+        private var started = false
+
+        func wait() {
+            lock.lock()
+            started = true
+            lock.unlock()
+            semaphore.wait()
+        }
+
+        var didStart: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return started
+        }
+
+        func release() {
+            semaphore.signal()
         }
     }
 

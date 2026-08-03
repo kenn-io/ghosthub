@@ -4,6 +4,8 @@ import GhosthubTmux
 struct EffectiveSSHConfiguration: Equatable {
     let user: String?
     let strictHostKeyChecking: String?
+    let proxyJump: String?
+    let proxyCommand: String?
 }
 
 enum SSHConfigurationResolver {
@@ -61,7 +63,14 @@ enum SSHConfigurationResolver {
         return EffectiveSSHConfiguration(
             user: values["user"],
             strictHostKeyChecking: values["stricthostkeychecking"]?
-                .lowercased()
+                .lowercased(),
+            proxyJump: meaningfulProxyValue(values["proxyjump"]),
+            proxyCommand: meaningfulProxyValue(values["proxycommand"])
         )
+    }
+
+    private static func meaningfulProxyValue(_ value: String?) -> String? {
+        guard let value, value.lowercased() != "none" else { return nil }
+        return value
     }
 }

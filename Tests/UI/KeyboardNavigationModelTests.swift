@@ -78,6 +78,32 @@ struct KeyboardNavigationModelTests {
         #expect(keyboardWorktreeIDs == sidebarWorktreeIDs)
     }
 
+    @Test("keyboard navigation follows persisted worktree reordering")
+    func keyboardNavigationFollowsPersistedOrder() throws {
+        let bootstrap = WorkspaceBootstrap.preview()
+        let project = try #require(
+            WorkspaceSidebarModel.sections(in: bootstrap.snapshot)
+                .flatMap(\.projects)
+                .first(where: { $0.worktrees.count >= 2 })
+        )
+        let first = project.worktrees[0]
+        let second = project.worktrees[1]
+        let rawOrder = [second.id, first.id]
+            .map(\.uuidString)
+            .joined(separator: "\n")
+        var selection = bootstrap.selection
+        selection.select(.worktree(second.id), in: bootstrap.snapshot)
+
+        let next = KeyboardNavigationModel.steppedSelection(
+            from: selection,
+            in: bootstrap.snapshot,
+            step: 1,
+            worktreeOrderRawValue: rawOrder
+        )
+
+        #expect(next?.selectedWorktreeID == first.id)
+    }
+
     @Test("keyboard navigation excludes stale rows")
     func keyboardNavigationExcludesStaleRows() {
         let host = HostSummary.fixture(

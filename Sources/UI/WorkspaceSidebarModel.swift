@@ -1,6 +1,17 @@
 import Foundation
 import GhosthubWorkspace
 
+public enum WorkspaceSidebarOrderStorage {
+    public static let worktreeKey = "workspaceSidebarWorktreeOrderV1"
+    public static let tmuxSessionKey = "workspaceSidebarTmuxSessionOrderV1"
+
+    public static func worktreeRawValue(
+        in defaults: UserDefaults = .standard
+    ) -> String {
+        defaults.string(forKey: worktreeKey) ?? ""
+    }
+}
+
 struct WorkspaceSidebarOrder: Equatable {
     private var itemIDs: [String]
 

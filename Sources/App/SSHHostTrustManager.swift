@@ -8,6 +8,7 @@ enum SSHHostTrustError: Error, Equatable, LocalizedError {
     case hostKeyWasNotSaved
     case strictHostKeyPolicyUnavailable
     case strictHostKeyPolicyUnsupported(String)
+    case unsupportedProxyRoute
     case temporaryStateUnavailable
 
     var errorDescription: String? {
@@ -28,6 +29,10 @@ enum SSHHostTrustError: Error, Equatable, LocalizedError {
             return "OpenSSH has StrictHostKeyChecking set to \(policy) for"
                 + " this destination. Ghosthub will not override that policy;"
                 + " use ask or accept-new to review unseen keys in Ghosthub."
+        case .unsupportedProxyRoute:
+            return "This SSH destination uses a proxy route Ghosthub cannot"
+                + " safely review. Use ProxyJump with valid SSH destinations"
+                + " instead of ProxyCommand."
         case .temporaryStateUnavailable:
             return "Ghosthub could not prepare secure temporary state for SSH"
                 + " host-key confirmation."
@@ -38,15 +43,18 @@ enum SSHHostTrustError: Error, Equatable, LocalizedError {
 struct SSHHostTrustManager: Sendable {
     typealias AskPassRunner = @Sendable (
         SSHHostInfo,
+        [SSHHostInfo],
         URL,
         URL,
         URL,
         URL?
     ) -> Void
     typealias StrictHostKeyPolicyProvider = @Sendable (SSHHostInfo) -> String?
+    typealias RouteProvider = @Sendable (SSHHostInfo) throws -> [SSHHostInfo]
 
     private let askPassRunner: AskPassRunner
     private let strictHostKeyPolicyProvider: StrictHostKeyPolicyProvider
+    private let routeProvider: RouteProvider
 
     init(
         askPassRunner: @escaping AskPassRunner = Self.runAskPass,
@@ -54,33 +62,84 @@ struct SSHHostTrustManager: Sendable {
         @escaping StrictHostKeyPolicyProvider = {
             SSHConfigurationResolver.configuration(for: $0)?
                 .strictHostKeyChecking
-        }
+        },
+        routeProvider: @escaping RouteProvider = { try Self.route(for: $0) }
     ) {
         self.askPassRunner = askPassRunner
         self.strictHostKeyPolicyProvider = strictHostKeyPolicyProvider
+        self.routeProvider = routeProvider
+    }
+
+    private struct ReviewTarget {
+        let host: SSHHostInfo
+        let precedingProxyHops: [SSHHostInfo]
+        let requiresReview: Bool
+    }
+
+    private static func route(for host: SSHHostInfo) throws -> [SSHHostInfo] {
+        guard let configuration = SSHConfigurationResolver.configuration(
+            for: host
+        ) else {
+            throw SSHHostTrustError.strictHostKeyPolicyUnavailable
+        }
+        return try route(for: host, configuration: configuration)
+    }
+
+    static func route(
+        for host: SSHHostInfo,
+        configuration: EffectiveSSHConfiguration
+    ) throws -> [SSHHostInfo] {
+        guard configuration.proxyCommand == nil else {
+            throw SSHHostTrustError.unsupportedProxyRoute
+        }
+        guard let proxyJump = configuration.proxyJump else { return [host] }
+
+        let destinations = proxyJump.split(
+            separator: ",",
+            omittingEmptySubsequences: false
+        )
+        let proxyHops = destinations.compactMap { value in
+            TmuxHostResolver.parseSSHDestination(
+                String(value).trimmingCharacters(in: .whitespaces)
+            )
+        }
+        guard proxyHops.count == destinations.count else {
+            throw SSHHostTrustError.unsupportedProxyRoute
+        }
+        return proxyHops + [host]
     }
 
     func pendingConfirmation(
         for host: SSHHostInfo,
         destination: String
     ) throws -> SSHHostKeyConfirmation? {
-        try validateStrictHostKeyPolicy(for: host)
-        return try withTemporaryState { state -> SSHHostKeyConfirmation? in
-            askPassRunner(
-                host,
-                state.helper,
-                state.observedPrompt,
-                state.approvedPrompt,
-                nil
-            )
-            guard let prompt = try readPrompt(at: state.observedPrompt) else {
-                return nil
+        for target in try reviewTargets(for: host)
+            where target.requiresReview {
+            let confirmation = try withTemporaryState {
+                state -> SSHHostKeyConfirmation? in
+                askPassRunner(
+                    target.host,
+                    target.precedingProxyHops,
+                    state.helper,
+                    state.observedPrompt,
+                    state.approvedPrompt,
+                    nil
+                )
+                guard let prompt = try readPrompt(
+                    at: state.observedPrompt
+                ) else {
+                    return nil
+                }
+                return try Self.confirmation(
+                    destination: destination,
+                    openSSHPrompt: prompt
+                )
             }
-            return try Self.confirmation(
-                destination: destination,
-                openSSHPrompt: prompt
-            )
+            if let confirmation {
+                return confirmation
+            }
         }
+        return nil
     }
 
     func accept(
@@ -91,25 +150,31 @@ struct SSHHostTrustManager: Sendable {
         guard confirmation.connectionDestination == destination else {
             throw SSHHostTrustError.hostKeyChanged
         }
-        try validateStrictHostKeyPolicy(for: host)
-        try withTemporaryState { state in
-            try Data(Self.keyIdentity(for: confirmation).utf8).write(
-                to: state.expectedKeyIdentity,
-                options: .atomic
-            )
-            askPassRunner(
-                host,
-                state.helper,
-                state.observedPrompt,
-                state.approvedPrompt,
-                state.expectedKeyIdentity
-            )
-            guard FileManager.default.fileExists(
-                atPath: state.approvedPrompt.path
-            ) else {
-                throw SSHHostTrustError.hostKeyChanged
+        var approved = false
+        for target in try reviewTargets(for: host)
+            where target.requiresReview {
+            approved = try withTemporaryState { state in
+                try Data(Self.keyIdentity(for: confirmation).utf8).write(
+                    to: state.expectedKeyIdentity,
+                    options: .atomic
+                )
+                askPassRunner(
+                    target.host,
+                    target.precedingProxyHops,
+                    state.helper,
+                    state.observedPrompt,
+                    state.approvedPrompt,
+                    state.expectedKeyIdentity
+                )
+                return FileManager.default.fileExists(
+                    atPath: state.approvedPrompt.path
+                )
+            }
+            if approved {
+                break
             }
         }
+        guard approved else { throw SSHHostTrustError.hostKeyChanged }
 
         if let pending = try pendingConfirmation(
             for: host,
@@ -126,15 +191,33 @@ struct SSHHostTrustManager: Sendable {
         return nil
     }
 
-    private func validateStrictHostKeyPolicy(
+    private func reviewTargets(
         for host: SSHHostInfo
-    ) throws {
-        guard let policy = strictHostKeyPolicyProvider(host)?
-            .lowercased() else {
-            throw SSHHostTrustError.strictHostKeyPolicyUnavailable
+    ) throws -> [ReviewTarget] {
+        let route = try routeProvider(host)
+        guard route.last == host else {
+            throw SSHHostTrustError.unsupportedProxyRoute
         }
-        guard policy == "ask" || policy == "accept-new" else {
-            throw SSHHostTrustError.strictHostKeyPolicyUnsupported(policy)
+        return try route.enumerated().map { index, target in
+            guard let policy = strictHostKeyPolicyProvider(target)?
+                .lowercased() else {
+                throw SSHHostTrustError.strictHostKeyPolicyUnavailable
+            }
+            let requiresReview: Bool
+            switch policy {
+            case "ask", "accept-new":
+                requiresReview = true
+            case "yes", "no", "off":
+                requiresReview = false
+            default:
+                throw SSHHostTrustError
+                    .strictHostKeyPolicyUnsupported(policy)
+            }
+            return ReviewTarget(
+                host: target,
+                precedingProxyHops: Array(route.prefix(index)),
+                requiresReview: requiresReview
+            )
         }
     }
 
@@ -310,6 +393,7 @@ struct SSHHostTrustManager: Sendable {
 
     private static func runAskPass(
         host: SSHHostInfo,
+        precedingProxyHops: [SSHHostInfo],
         helper: URL,
         observedPrompt: URL,
         approvedPrompt: URL,
@@ -331,6 +415,12 @@ struct SSHHostTrustManager: Sendable {
             "-o", "GSSAPIAuthentication=no",
         ]
         arguments.append(contentsOf: tmuxSSHConnectionArguments())
+        if !precedingProxyHops.isEmpty {
+            arguments.append(contentsOf: [
+                "-J",
+                precedingProxyHops.map(\.displayName).joined(separator: ","),
+            ])
+        }
         if let port = host.port, port != 22 {
             arguments.append(contentsOf: ["-p", String(port)])
         }

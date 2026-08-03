@@ -83,6 +83,30 @@ struct CommandPaletteModelTests {
         #expect(worktreeCommands[4].shortcut == .commandDigit(5))
     }
 
+    @Test("worktree commands follow persisted sidebar order")
+    func worktreeCommandsFollowPersistedSidebarOrder() {
+        let bootstrap = WorkspaceBootstrap.preview()
+        let baseline = KeyboardNavigationModel.orderedWorktrees(
+            in: bootstrap.snapshot
+        )
+        let rawOrder = [baseline[1].id, baseline[0].id]
+            .map(\.uuidString)
+            .joined(separator: "\n")
+        let commands = makeCommandPaletteCommands(
+            worktreeOrderRawValue: rawOrder
+        ).filter {
+            if case .select(.worktree(_)) = $0.action {
+                return true
+            }
+            return false
+        }
+
+        #expect(commands[0].action == .select(.worktree(baseline[1].id)))
+        #expect(commands[0].shortcut == .commandDigit(1))
+        #expect(commands[1].action == .select(.worktree(baseline[0].id)))
+        #expect(commands[1].shortcut == .commandDigit(2))
+    }
+
     @Test("command palette omits settings commands when settings are unavailable")
     func commandPaletteOmitsSettingsCommandsWhenSettingsAreUnavailable() {
         let commands = makeCommandPaletteCommands(supportsSettings: false)
@@ -786,7 +810,9 @@ private func makeCommandPaletteCommands(
     isSidePanelVisible: Bool = false,
     interfaceAppearance: AppearancePreference = .system,
     tmuxSessionVisibility: TmuxSessionVisibility = TmuxSessionVisibility(),
-    supportsSettings: Bool = true
+    supportsSettings: Bool = true,
+    worktreeOrderRawValue: String = "",
+    tmuxSessionOrderRawValue: String = ""
 ) -> [WorkspaceCommandItem] {
     let bootstrap = WorkspaceBootstrap.preview()
     let snap = snapshot ?? bootstrap.snapshot
@@ -803,7 +829,9 @@ private func makeCommandPaletteCommands(
         isSidePanelVisible: isSidePanelVisible,
         interfaceAppearance: interfaceAppearance,
         tmuxSessionVisibility: tmuxSessionVisibility,
-        supportsSettings: supportsSettings
+        supportsSettings: supportsSettings,
+        worktreeOrderRawValue: worktreeOrderRawValue,
+        tmuxSessionOrderRawValue: tmuxSessionOrderRawValue
     )
 }
 
