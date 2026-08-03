@@ -35,7 +35,7 @@
 
 <p align="center">
   <img
-    src="https://raw.githubusercontent.com/kenn-io/ghosthub/refs/heads/website-assets/hero.png?release=0.5.0"
+    src="https://raw.githubusercontent.com/kenn-io/ghosthub/refs/heads/website-assets/hero.png?asset=hero"
     width="960"
     alt="Ghosthub showing local and remote tmux sessions and kwt worktrees in its sidebar"
   >
@@ -231,14 +231,17 @@ contract is documented in the
 [architecture](docs/architecture.md#anonymous-usage-telemetry) and
 [threat model](docs/threat-model.md).
 
-## Build from source
+## Development and contributions
 
-Contributors need macOS 26, Xcode 26, Zig, uv, Go, and the Metal Toolchain.
-Start with the [development quick start](docs/quickstart.md), then read
-[CONTRIBUTING.md](CONTRIBUTING.md).
+Ghosthub does not accept unsolicited pull requests. Bug reports and feature
+requests are welcome through
+[GitHub issues](https://github.com/kenn-io/ghosthub/issues). Prospective code
+contributors should [read the contribution policy](CONTRIBUTING.md) and
+contact Kenn Software privately before starting work; accepted contributors
+must sign a CLA.
 
-Architecture, security boundaries, terminal behavior, and release operations
-are documented in [`docs/`](docs/README.md).
+Internal build instructions, architecture, security boundaries, terminal
+behavior, and release operations are documented in [`docs/`](docs/README.md).
 
 ## License
 

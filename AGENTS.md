@@ -4,7 +4,14 @@ This document is the foundational mandate for AI agents (Gemini, Codex, etc.) wo
 
 ## Core Mental Model
 
-Ghosthub is a **worktree-centric terminal multiplexer** for macOS.
+Ghosthub is a **native terminal for local and remote tmux fleets** on macOS.
+It gives equal status to two ways of working:
+
+- Create or attach to any tmux session on a configured host.
+- Create tmux sessions bound to git worktrees and manage the worktree lifecycle,
+  including imports from branches and GitHub pull requests.
+
+Worktrees are optional; Ghosthub remains fully useful without them.
 
 - **Hosts:** Every machine is a Host. The local Mac is the default host. Remote machines (macOS/Linux) are added via SSH.
 - **Projects:** A Project is a git repository reported by kwt on a specific Host.
@@ -14,8 +21,8 @@ Ghosthub is a **worktree-centric terminal multiplexer** for macOS.
 - **Middleman:** Sessions created by Middleman remain discoverable because they are ordinary sessions on a host tmux server. Ghosthub does not use Middleman as session authority.
 - **Console Panel:** A host-scoped persistent terminal area (e.g., for `roborev`) that is independent of the active worktree.
 
-Ghosthub is pre-release. Treat the entire app, including its persistence layer,
-as subject to direct iteration.
+Ghosthub is alpha software. Treat the entire app, including its persistence
+layer, as subject to direct iteration.
 
 - Kwt's machine-readable CLI is authoritative for project/worktree identity
   and exact tmux session names. Direct `tmux list-sessions` discovery supplies
@@ -77,6 +84,10 @@ as subject to direct iteration.
 - Pull request descriptions should be concise, rationale-first prose. Do not add boilerplate or navel-gazing sections like "Changes", "Tests", or "Verification"; mention validation only when it is genuinely useful reviewer context.
 - The canonical repository is `https://github.com/kenn-io/ghosthub`. Only push
   or open pull requests when the user explicitly asks.
+- The public repository does not accept unsolicited pull requests. Direct bug
+  reports and feature requests to GitHub issues. Prospective code contributors
+  must coordinate privately with Kenn Software and sign the CLA before their
+  work can be accepted.
 - Never include superpowers planning documents (`docs/superpowers/specs/`,
   `docs/superpowers/plans/`) in a pull request. They are local working
   artifacts; remove them from the branch before pushing or opening a pull

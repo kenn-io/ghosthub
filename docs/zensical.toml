@@ -1,6 +1,6 @@
 [project]
 site_name = "Ghosthub"
-site_description = "Worktree-centric terminal multiplexing for AI development"
+site_description = "Internal engineering documentation for Ghosthub"
 site_author = "Kenn Software LLC"
 copyright = "Copyright &copy; 2026 Kenn Software LLC. AGPL-3.0."
 docs_dir = "docs"

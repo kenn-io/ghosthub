@@ -1,10 +1,13 @@
-# Ghosthub Documentation
+# Ghosthub Internal Engineering Documentation
 
-The maintained docs are a Zensical site rooted in this directory.
+The maintained docs are a Zensical site rooted in this directory. They are for
+Kenn engineers and approved contributors who build, operate, and release
+Ghosthub. Public product guidance lives on
+[ghosthub.ai](https://ghosthub.ai/guide/).
 
 ## Site Pages
 
-- [`index.md`](index.md) - internal-user overview
+- [`index.md`](index.md) - internal engineering overview
 - [`quickstart.md`](quickstart.md) - prerequisites and first build
 - [`architecture.md`](architecture.md) - product and architecture source of truth
 - [`threat-model.md`](threat-model.md) - security boundaries and trusted-peer assumptions
@@ -21,9 +24,9 @@ make docs-serve
 ```
 
 The build wrapper creates a temporary docs input tree and excludes generated
-`site/`, virtual environments, caches, and support files. Durable technical or
-user-facing decisions belong in the maintained pages above rather than in
-checked-in implementation plans.
+`site/`, virtual environments, caches, and support files. Durable engineering
+decisions belong in the maintained pages above rather than in checked-in
+implementation plans. User-facing guidance belongs on the website.
 
 ## Agent-Facing Files
 
