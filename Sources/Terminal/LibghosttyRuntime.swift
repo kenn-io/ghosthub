@@ -908,6 +908,13 @@ public final class LibghosttyRuntime: ObservableObject {
 
         case GHOSTTY_ACTION_SHOW_CHILD_EXITED:
             let exitInfo = action.action.child_exited
+            dispatchToMainSync {
+                if let surfaceView = surfaceView(
+                    fromSurfaceIdentity: sourceSurfaceIdentity
+                ) {
+                    surfaceView.childExitCode = exitInfo.exit_code
+                }
+            }
             DispatchQueue.main.async {
                 let state = runtime(from: userdataValue)
                 state.runtimeState.recordAction(

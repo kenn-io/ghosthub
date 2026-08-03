@@ -431,7 +431,8 @@ final class RecordingTmuxSurfaceStore: TmuxSurfaceStoring {
 final class RecordingTmuxPaneSurface: TmuxPaneSurfacing {
     var blocksClipboardReads = false
     let launchError: Error?
-    private(set) var closeObservers: [UUID: (Bool) -> Void] = [:]
+    var childExitCode: UInt32?
+    private(set) var closeObservers: [UUID: (Bool, UInt32?) -> Void] = [:]
 
     init(launchError: Error? = nil) {
         self.launchError = launchError
@@ -439,7 +440,7 @@ final class RecordingTmuxPaneSurface: TmuxPaneSurfacing {
 
     func registerSurfaceCloseObserver(
         id: UUID,
-        onSurfaceClosed: @escaping (Bool) -> Void
+        onSurfaceClosed: @escaping (Bool, UInt32?) -> Void
     ) {
         closeObservers[id] = onSurfaceClosed
     }

@@ -35,6 +35,23 @@ struct TailscalePeerTests {
         #expect(peer.sshAddress == "box.tailnet.ts.net")
     }
 
+    @Test("resolved SSH user overrides the local fallback")
+    func resolvedSSHUserOverridesFallback() {
+        let peer = TailscalePeer(
+            id: "x",
+            hostName: "box",
+            dnsName: "box.tailnet.ts.net",
+            os: "linux",
+            isOnline: true,
+            sshUsername: "operator"
+        )
+
+        #expect(
+            peer.sshDestination(defaultUsername: "local-user")
+                == "operator@box.tailnet.ts.net"
+        )
+    }
+
     @Test("maps supported operating systems to host platforms")
     func mapsSupportedPlatforms() {
         #expect(peer(os: "macOS").platform == .macOS)

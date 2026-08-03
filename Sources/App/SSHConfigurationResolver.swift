@@ -7,6 +7,26 @@ struct EffectiveSSHConfiguration: Equatable {
 }
 
 enum SSHConfigurationResolver {
+    static func noninteractiveHostKeyArguments(
+        for host: SSHHostInfo
+    ) -> [String] {
+        noninteractiveHostKeyArguments(
+            effectivePolicy: configuration(for: host)?
+                .strictHostKeyChecking
+        )
+    }
+
+    static func noninteractiveHostKeyArguments(
+        effectivePolicy: String?
+    ) -> [String] {
+        switch effectivePolicy?.lowercased() {
+        case "yes", "no", "off":
+            return []
+        default:
+            return ["-o", "StrictHostKeyChecking=yes"]
+        }
+    }
+
     static func configuration(
         for host: SSHHostInfo
     ) -> EffectiveSSHConfiguration? {

@@ -848,7 +848,7 @@ struct WorkspaceTmuxDiscoveryTests {
         let close = try #require(
             surfaceStore.surface.closeObservers.values.first
         )
-        close(true)
+        close(true, nil)
         #expect(!model.activeBorrowedTmuxSessionIsConfirmedEnded)
 
         await waitUntilMainActor {
@@ -900,7 +900,7 @@ struct WorkspaceTmuxDiscoveryTests {
         let close = try #require(
             surfaceStore.surface.closeObservers.values.first
         )
-        close(true)
+        close(true, nil)
         await waitUntilMainActor { discoveryCalls.count >= 2 }
 
         #expect(!model.activeBorrowedTmuxSessionIsConfirmedEnded)
@@ -1195,7 +1195,7 @@ struct WorkspaceTmuxDiscoveryTests {
         let close = try #require(
             surfaceStore.surface.closeObservers.values.first
         )
-        close(false)
+        close(false, 1)
 
         await waitUntilMainActor { attempts.count == 1 }
         #expect(model.pendingCreatedTmuxSessionCount == 1)
@@ -2473,11 +2473,12 @@ struct WorkspaceTmuxDiscoveryTests {
 private final class SceneTmuxPaneSurfaceStub: TmuxPaneSurfacing {
     var blocksClipboardReads = false
     var launchError: Error? { nil }
-    private(set) var closeObservers: [UUID: (Bool) -> Void] = [:]
+    var childExitCode: UInt32?
+    private(set) var closeObservers: [UUID: (Bool, UInt32?) -> Void] = [:]
 
     func registerSurfaceCloseObserver(
         id: UUID,
-        onSurfaceClosed: @escaping (Bool) -> Void
+        onSurfaceClosed: @escaping (Bool, UInt32?) -> Void
     ) {
         closeObservers[id] = onSurfaceClosed
     }

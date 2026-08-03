@@ -103,7 +103,7 @@ struct TailscalePeerPickerSheet: View {
                     HStack(spacing: 8) {
                         Text(
                             peer.sshDestination(
-                                username: NSUserName()
+                                defaultUsername: NSUserName()
                             )
                         )
                         .font(.system(

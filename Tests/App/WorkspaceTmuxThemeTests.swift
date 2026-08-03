@@ -836,10 +836,11 @@ private func connectActiveTmuxSession(
 private final class ThemeTmuxPaneSurfaceStub: TmuxPaneSurfacing {
     var blocksClipboardReads = false
     var launchError: Error? { nil }
+    var childExitCode: UInt32?
 
     func registerSurfaceCloseObserver(
         id _: UUID,
-        onSurfaceClosed _: @escaping (Bool) -> Void
+        onSurfaceClosed _: @escaping (Bool, UInt32?) -> Void
     ) {}
 }
 

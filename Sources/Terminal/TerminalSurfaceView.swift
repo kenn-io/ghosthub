@@ -82,6 +82,7 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
 
     @Published public internal(set) var title: String = ""
     @Published public var pwd: String?
+    public internal(set) var childExitCode: UInt32?
     @Published public var cellSize: NSSize = .zero
     @Published public var surfaceSize: ghostty_surface_size_s?
     @Published public private(set) var healthy: Bool = true

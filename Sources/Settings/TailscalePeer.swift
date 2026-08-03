@@ -37,6 +37,10 @@ public struct TailscalePeer: Identifiable, Equatable, Sendable {
             : "\(username)@\(sshAddress)"
     }
 
+    public func sshDestination(defaultUsername: String) -> String {
+        sshDestination(username: sshUsername ?? defaultUsername)
+    }
+
     public func resolvingSSHUsername(_ username: String?) -> Self {
         Self(
             id: id,

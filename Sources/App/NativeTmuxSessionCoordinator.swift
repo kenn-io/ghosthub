@@ -7,14 +7,24 @@ import GhosthubWorkspace
 protocol TmuxPaneSurfacing: AnyObject {
     var blocksClipboardReads: Bool { get set }
     var launchError: Error? { get }
+    var childExitCode: UInt32? { get }
     func registerSurfaceCloseObserver(
         id: UUID,
-        onSurfaceClosed: @escaping (Bool) -> Void
+        onSurfaceClosed: @escaping (Bool, UInt32?) -> Void
     )
 }
 
 extension TerminalSurfaceView: TmuxPaneSurfacing {
     var launchError: Error? { error }
+
+    func registerSurfaceCloseObserver(
+        id: UUID,
+        onSurfaceClosed: @escaping (Bool, UInt32?) -> Void
+    ) {
+        registerSurfaceCloseObserver(id: id) { [weak self] processAlive in
+            onSurfaceClosed(processAlive, self?.childExitCode)
+        }
+    }
 }
 
 @MainActor
@@ -91,6 +101,7 @@ private struct NativeTmuxAttachment {
     var launchMode: TmuxAttachmentLaunchMode
     var workingDirectory: String?
     var openWorkspace: Bool
+    var sshConnectionArguments: [String]
 }
 
 /// Hosts ordinary tmux clients for kwt workspaces and unbound sessions.
@@ -103,6 +114,8 @@ final class NativeTmuxSessionCoordinator {
         @Sendable () -> Result<String, TmuxBinaryError>
     private let remoteTmuxPathProvider:
         @Sendable (SSHHostInfo) -> Result<String, TmuxBinaryError>
+    private let sshConnectionArgumentsProvider:
+        @Sendable (SSHHostInfo) -> [String]
     private let localKwtPathProvider: @Sendable () -> String?
     private let remoteKwtCommandPreludeProvider: @Sendable () -> String?
     private let windowsKwtRelativePathProvider: @Sendable () -> String?
@@ -148,7 +161,11 @@ final class NativeTmuxSessionCoordinator {
         remoteTmuxPathProvider: @escaping @Sendable (SSHHostInfo)
             -> Result<String, TmuxBinaryError> = {
                 TmuxBinaryResolver().resolveTmuxPath(on: $0)
-            }
+            },
+        sshConnectionArgumentsProvider:
+        @escaping @Sendable (SSHHostInfo) -> [String] = {
+            SSHConfigurationResolver.noninteractiveHostKeyArguments(for: $0)
+        }
     ) {
         self.terminalCoordinator = terminalCoordinator
         self.tmuxPathProvider = tmuxPathProvider
@@ -161,6 +178,8 @@ final class NativeTmuxSessionCoordinator {
         self.appliesPresentationStyleToExistingSessionsProvider =
             appliesPresentationStyleToExistingSessionsProvider
         self.remoteTmuxPathProvider = remoteTmuxPathProvider
+        self.sshConnectionArgumentsProvider =
+            sshConnectionArgumentsProvider
     }
 
     func attach(
@@ -203,25 +222,36 @@ final class NativeTmuxSessionCoordinator {
         let cachedPath = tmuxPathsByHost[host]
         let tmuxPathProvider = tmuxPathProvider
         let remoteTmuxPathProvider = remoteTmuxPathProvider
+        let sshConnectionArgumentsProvider =
+            sshConnectionArgumentsProvider
         provisioningTasks[handle.id] = Task { [weak self] in
-            let resolution: Result<String, TmuxBinaryError>
-            if let cachedPath {
-                resolution = .success(cachedPath)
-            } else {
-                let probe = Task.detached(priority: .userInitiated) {
+            let probe = Task.detached(priority: .userInitiated) {
+                let resolution: Result<String, TmuxBinaryError>
+                if let cachedPath {
+                    resolution = .success(cachedPath)
+                } else {
                     switch host {
                     case .local:
-                        return tmuxPathProvider()
+                        resolution = tmuxPathProvider()
                     case let .ssh(info):
-                        return remoteTmuxPathProvider(info)
+                        resolution = remoteTmuxPathProvider(info)
                     }
                 }
-                resolution = await withTaskCancellationHandler {
+                let sshConnectionArguments: [String]
+                if case let .ssh(info) = host {
+                    sshConnectionArguments =
+                        sshConnectionArgumentsProvider(info)
+                } else {
+                    sshConnectionArguments = []
+                }
+                return (resolution, sshConnectionArguments)
+            }
+            let (resolution, sshConnectionArguments) =
+                await withTaskCancellationHandler {
                     await probe.value
                 } onCancel: {
                     probe.cancel()
                 }
-            }
             self?.finishAttach(
                 handle: handle,
                 host: host,
@@ -229,6 +259,7 @@ final class NativeTmuxSessionCoordinator {
                 launchMode: launchMode,
                 workingDirectory: workingDirectory,
                 openWorkspace: openWorkspace,
+                sshConnectionArguments: sshConnectionArguments,
                 resolution: resolution
             )
         }
@@ -242,6 +273,7 @@ final class NativeTmuxSessionCoordinator {
         launchMode: TmuxAttachmentLaunchMode,
         workingDirectory: String?,
         openWorkspace: Bool,
+        sshConnectionArguments: [String],
         resolution: Result<String, TmuxBinaryError>
     ) {
         provisioningTasks.removeValue(forKey: handle.id)
@@ -270,7 +302,8 @@ final class NativeTmuxSessionCoordinator {
                 protectedWorkspacePath: protectedWorkspacePath,
                 launchMode: launchMode,
                 workingDirectory: workingDirectory,
-                openWorkspace: openWorkspace
+                openWorkspace: openWorkspace,
+                sshConnectionArguments: sshConnectionArguments
             )
             onSurfaceReady?(handle)
         case let .failure(error):
@@ -387,7 +420,9 @@ final class NativeTmuxSessionCoordinator {
                     attachment.remoteKwtCommandPrelude,
                     windowsKwtRelativePath:
                     attachment.windowsKwtRelativePath,
-                    workingDirectory: attachment.workingDirectory
+                    workingDirectory: attachment.workingDirectory,
+                    sshConnectionArguments: tmuxSSHConnectionArguments()
+                        + attachment.sshConnectionArguments
                 )
             )
         )
@@ -413,8 +448,12 @@ final class NativeTmuxSessionCoordinator {
         surface.blocksClipboardReads = attachment.host.isRemote
         surface.registerSurfaceCloseObserver(
             id: handle.id,
-            onSurfaceClosed: { [weak self] processAlive in
-                self?.surfaceDidClose(handle, processAlive: processAlive)
+            onSurfaceClosed: { [weak self] processAlive, childExitCode in
+                self?.surfaceDidClose(
+                    handle,
+                    processAlive: processAlive,
+                    childExitCode: childExitCode
+                )
             }
         )
         if launchedHandles.insert(handle.id).inserted {
@@ -451,11 +490,12 @@ final class NativeTmuxSessionCoordinator {
 
     private func surfaceDidClose(
         _ handle: BorrowedTmuxSessionHandle,
-        processAlive: Bool
+        processAlive: Bool,
+        childExitCode: UInt32?
     ) {
         let key = sessionKey(handle)
         guard handlesByKey[key] == handle else { return }
-        attachmentClosures[handle.id] = processAlive
+        attachmentClosures[handle.id] = processAlive || childExitCode == 0
             ? .detached
             : .processExited
         attachments.removeValue(forKey: handle.id)

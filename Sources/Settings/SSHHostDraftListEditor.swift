@@ -24,7 +24,7 @@ public struct SSHHostDraftImport: Equatable, Sendable {
             name: peer.hostName,
             platform: peer.platform,
             sshDestination: peer.sshDestination(
-                username: peer.sshUsername ?? username
+                defaultUsername: username
             )
         )
     }

@@ -344,6 +344,10 @@ struct KwtRemoteInstaller: Sendable {
             "-o", "ConnectTimeout=10",
         ]
         arguments.append(contentsOf: tmuxSSHConnectionArguments())
+        arguments.append(contentsOf:
+            SSHConfigurationResolver.noninteractiveHostKeyArguments(
+                for: host
+            ))
         if let port = host.port, port != 22 {
             arguments.append(contentsOf: ["-P", String(port)])
         }

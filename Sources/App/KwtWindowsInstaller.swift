@@ -288,6 +288,10 @@ struct KwtWindowsInstaller: Sendable {
             "-o", "ConnectTimeout=15",
         ]
         arguments.append(contentsOf: tmuxSSHConnectionArguments())
+        arguments.append(contentsOf:
+            SSHConfigurationResolver.noninteractiveHostKeyArguments(
+                for: host
+            ))
         if let port = host.port, port != 22 {
             arguments += ["-P", String(port)]
         }
