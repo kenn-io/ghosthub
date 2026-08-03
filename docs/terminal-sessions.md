@@ -115,7 +115,8 @@ reissued. This covers absent or partial macOS restoration without swapping
 sessions between restored geometry or tab groups. The manifest is removed only
 after every saved window has begun attach-only restoration in one live assigned
 scene; native scene restoration still supplies geometry and tab grouping when
-available.
+available. Once assigned, the scene model's complete logical descriptor replaces
+any delayed same-ID native payload with stale navigation or tmux data.
 An ordinary local session must be present in direct discovery before Ghosthub
 runs the exact `attach-session` path. Remote sessions use that same rule and the
 existing SSH keepalive and transport-reconnect loop.

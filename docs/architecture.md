@@ -55,6 +55,9 @@ a late native scene; a displaced request is retargeted and issued again with the
 same token. The manifest remains until every saved descriptor has begun
 restoration in exactly one live assigned scene. Native restoration therefore
 still owns geometry and tab grouping without dropping or duplicating a session.
+After assignment, the scene model owns the complete logical descriptor; delayed
+native payloads that share its window UUID but contain stale navigation or tmux
+data are rewritten before they can become persisted scene state.
 An active tmux presentation retains the worktree generation observed when it
 was established; a later non-nil generation change is a replacement even when
 inventory reuses the same runtime UUID. Scene persistence observes the complete

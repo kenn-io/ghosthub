@@ -818,9 +818,13 @@ struct WorkspaceWindow: View {
                 .reconcileIfNativeRestorationFinished()
             #endif
             if let updateRelaunchWindowID,
-               let state,
-               state.windowID != updateRelaunchWindowID {
-                refreshWindowState()
+               let replacement = UpdateRelaunchStatePolicy.replacement(
+                   presented: state,
+                   current: sceneModel.restorationState(
+                       windowID: updateRelaunchWindowID
+                   )
+               ) {
+                resolvedWindowState.wrappedValue = replacement
                 return
             }
             if let restoredState = windowStateBuffer.receive(state) {

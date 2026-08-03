@@ -127,6 +127,16 @@ struct WorkspaceWindowState: Codable, Hashable, Sendable {
     }
 }
 
+enum UpdateRelaunchStatePolicy {
+    static func replacement(
+        presented: WorkspaceWindowState?,
+        current: WorkspaceWindowState
+    ) -> WorkspaceWindowState? {
+        guard let presented, presented != current else { return nil }
+        return current
+    }
+}
+
 struct WorkspaceWindowStateBuffer {
     private(set) var retained: WorkspaceWindowState
     private var pendingPresentations: [WorkspaceWindowState] = []
