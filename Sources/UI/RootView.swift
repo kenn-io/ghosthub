@@ -450,6 +450,8 @@ public struct RootView: View {
             inventoryWarning: display.workspaceInventoryWarning,
             inventoryWarningsByHost:
             display.workspaceInventoryWarningsByHost,
+            inventoryRefreshComplete:
+            display.isWorkspaceInventoryRefreshComplete,
             onOpen: { worktree in
                 selectWorkspace(.worktree(worktree.id))
             }

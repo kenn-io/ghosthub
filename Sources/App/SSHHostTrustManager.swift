@@ -141,7 +141,9 @@ struct SSHHostTrustManager: Sendable {
     private static func keyIdentity(
         for confirmation: SSHHostKeyConfirmation
     ) -> String {
-        "\(confirmation.algorithm)\n\(confirmation.fingerprint)\n"
+        "\(logicalHost(confirmation.destination))\n"
+            + "\(confirmation.algorithm)\n"
+            + "\(confirmation.fingerprint)\n"
     }
 
     private static func logicalHost(_ promptDestination: String) -> String {
@@ -264,6 +266,18 @@ struct SSHHostTrustManager: Sendable {
     identity_path="$GHOSTHUB_SSH_PROMPT_PATH.identity"
     /usr/bin/awk '
     {
+        quote = sprintf("%c", 39)
+        host_prefix = "The authenticity of host " quote
+        host_suffix = quote " can" quote "t be established."
+        host_position = index($0, host_prefix)
+        if (host_position > 0) {
+            logical_host = substr($0, host_position + length(host_prefix))
+            suffix_position = index(logical_host, host_suffix)
+            if (suffix_position > 0) {
+                logical_host = substr(logical_host, 1, suffix_position - 1)
+                sub(/ \\([^)]*\\)$/, "", logical_host)
+            }
+        }
         colon_marker = " key fingerprint is: "
         plain_marker = " key fingerprint is "
         marker = index($0, colon_marker) ? colon_marker : plain_marker
@@ -275,6 +289,7 @@ struct SSHHostTrustManager: Sendable {
             sub(/[[:space:]]+$/, "", algorithm)
             sub(/^[[:space:]]+/, "", fingerprint)
             sub(/[[:space:].]+$/, "", fingerprint)
+            print logical_host
             print algorithm
             print fingerprint
             exit

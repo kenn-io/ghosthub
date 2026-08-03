@@ -131,6 +131,7 @@ struct WorkspaceSidebarView: View {
     let onReviewSSHHostKey: (UUID) -> Void
     let inventoryWarning: String?
     let inventoryWarningsByHost: [UUID: String]
+    let inventoryRefreshComplete: Bool
     @State private var presentedInventoryWarning:
         PresentedInventoryWarning?
     @State private var hoveredTmuxSessionID: String?
@@ -177,6 +178,7 @@ struct WorkspaceSidebarView: View {
         onReviewSSHHostKey: @escaping (UUID) -> Void = { _ in },
         inventoryWarning: String? = nil,
         inventoryWarningsByHost: [UUID: String] = [:],
+        inventoryRefreshComplete: Bool = false,
         onOpen: @escaping (WorktreeSummary) -> Void = { _ in }
     ) {
         self.snapshot = snapshot
@@ -198,6 +200,7 @@ struct WorkspaceSidebarView: View {
         self.onReviewSSHHostKey = onReviewSSHHostKey
         self.inventoryWarning = inventoryWarning
         self.inventoryWarningsByHost = inventoryWarningsByHost
+        self.inventoryRefreshComplete = inventoryRefreshComplete
         self.onOpen = onOpen
     }
 
@@ -252,8 +255,10 @@ struct WorkspaceSidebarView: View {
         .onAppear {
             migrateDisclosureStateIfNeeded()
         }
-        .onChange(of: snapshot) { _, _ in
-            pruneSidebarOrders()
+        .onChange(of: inventoryRefreshComplete) { _, isComplete in
+            if isComplete {
+                pruneSidebarOrders()
+            }
         }
         .alert(
             "Workspace Inventory Issue",
@@ -1419,10 +1424,11 @@ struct WorkspaceSidebarView: View {
         // Missing inventory is not proof of deletion. Preserve order while
         // any host is unreachable or reporting an inventory failure, and
         // prune only from a complete authoritative fleet snapshot.
-        guard inventoryWarning == nil,
-              inventoryWarningsByHost.isEmpty,
-              !snapshot.hosts.isEmpty,
-              snapshot.hosts.allSatisfy(\.lastKnownReachable)
+        guard WorkspaceSidebarPruningPolicy.shouldPrune(
+            refreshComplete: inventoryRefreshComplete,
+            inventoryWarning: inventoryWarning,
+            inventoryWarningsByHost: inventoryWarningsByHost
+        )
         else { return }
         var worktreeOrder = WorkspaceSidebarOrder(
             rawValue: worktreeOrderRawValue

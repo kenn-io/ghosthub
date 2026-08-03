@@ -603,6 +603,8 @@ struct WorkspaceWindow: View {
                 sceneModel.defaultIdleThresholdSeconds,
                 isWorkspaceInventoryLoading:
                 sceneModel.workspaceInventoryState == .loading,
+                isWorkspaceInventoryRefreshComplete:
+                sceneModel.isWorkspaceInventoryRefreshComplete,
                 workspaceInventoryError: {
                     if case let .failed(message) =
                         sceneModel.workspaceInventoryState {

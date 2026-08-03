@@ -16,6 +16,7 @@ public struct WorkspaceDisplayState {
     public let idleThresholdsBySessionID: [UUID: Int]
     public let defaultIdleThresholdSeconds: Int
     public let isWorkspaceInventoryLoading: Bool
+    public let isWorkspaceInventoryRefreshComplete: Bool
     public let workspaceInventoryError: String?
     public let workspaceInventoryWarning: String?
     public let workspaceInventoryWarningsByHost: [UUID: String]
@@ -37,6 +38,7 @@ public struct WorkspaceDisplayState {
         idleThresholdsBySessionID: [UUID: Int] = [:],
         defaultIdleThresholdSeconds: Int = 300,
         isWorkspaceInventoryLoading: Bool = false,
+        isWorkspaceInventoryRefreshComplete: Bool = false,
         workspaceInventoryError: String? = nil,
         workspaceInventoryWarning: String? = nil,
         workspaceInventoryWarningsByHost: [UUID: String] = [:],
@@ -57,6 +59,8 @@ public struct WorkspaceDisplayState {
         self.idleThresholdsBySessionID = idleThresholdsBySessionID
         self.defaultIdleThresholdSeconds = defaultIdleThresholdSeconds
         self.isWorkspaceInventoryLoading = isWorkspaceInventoryLoading
+        self.isWorkspaceInventoryRefreshComplete =
+            isWorkspaceInventoryRefreshComplete
         self.workspaceInventoryError = workspaceInventoryError
         self.workspaceInventoryWarning = workspaceInventoryWarning
         self.workspaceInventoryWarningsByHost =

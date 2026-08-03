@@ -156,7 +156,8 @@ struct SSHHostTrustManagerTests {
 
     @Test("the shipped askpass helper approves only the expected key")
     func askPassScriptApprovesExpectedKey() throws {
-        let expectedIdentity = "ED25519\nSHA256:synthetic-fingerprint\n"
+        let expectedIdentity = "build.example.test\n"
+            + "ED25519\nSHA256:synthetic-fingerprint\n"
         let changedAddressPrompt = prompt.replacingOccurrences(
             of: "build.example.test",
             with: "build.example.test (192.0.2.2)"
@@ -180,6 +181,16 @@ struct SSHHostTrustManagerTests {
         #expect(changedKey.output == "no\n")
         #expect(!changedKey.markerCreated)
         #expect(changedKey.observedPrompt != nil)
+
+        let changedHost = try runAskPass(
+            prompt: prompt.replacingOccurrences(
+                of: "build.example.test",
+                with: "other.example.test"
+            ),
+            expectedIdentity: expectedIdentity
+        )
+        #expect(changedHost.output == "no\n")
+        #expect(!changedHost.markerCreated)
 
         let noExpectation = try runAskPass(
             prompt: prompt,

@@ -50,6 +50,15 @@ enum TmuxSessionThemeError: Error, Equatable, LocalizedError {
     }
 }
 
+struct WorkspaceInventoryRefreshProgress: Equatable {
+    var kwtCompleted = false
+    var tmuxCompleted = false
+
+    var isComplete: Bool {
+        kwtCompleted && tmuxCompleted
+    }
+}
+
 @MainActor
 final class WorktreeMutationCoordinator {
     struct Scope: Hashable, Sendable {
@@ -178,6 +187,7 @@ final class WorkspaceSceneModel: ObservableObject {
     private var tmuxLastSeenByHost: [UUID: Date] = [:]
     private var tmuxDiscoveryFailuresByHost: [UUID: String] = [:]
     private var isTmuxDiscoveryLoading = false
+    private var inventoryRefreshProgress = WorkspaceInventoryRefreshProgress()
     private var tmuxDiscoveryGeneration = 0
     private var tmuxDiscoveryTask: Task<Void, Never>?
     private var createdSessionDiscoveryTasks: [UUID: Task<Void, Never>] = [:]
@@ -206,6 +216,14 @@ final class WorkspaceSceneModel: ObservableObject {
             WorktreeMutationCoordinator.Scope:
                 Set<WorktreeMutationCoordinator.RemovalTombstone>
         ] = [:]
+
+    var isWorkspaceInventoryRefreshComplete: Bool {
+        inventoryRefreshProgress.isComplete
+            && !isKwtInventoryLoading
+            && !isTmuxDiscoveryLoading
+            && kwtInventoryFailuresByHost.isEmpty
+            && tmuxDiscoveryFailuresByHost.isEmpty
+    }
 
     var workspaceResourceSummary: WorkspaceResourceSummary {
         activityController.workspaceResourceSummary
@@ -1823,9 +1841,11 @@ final class WorkspaceSceneModel: ObservableObject {
         guard !targets.isEmpty else {
             kwtInventoryTask = nil
             isKwtInventoryLoading = false
+            inventoryRefreshProgress.kwtCompleted = true
             updateWorkspaceInventoryState()
             return
         }
+        inventoryRefreshProgress.kwtCompleted = false
         isKwtInventoryLoading = true
         updateWorkspaceInventoryState()
         let kwtInventoryLoader = kwtInventoryLoader
@@ -1898,6 +1918,7 @@ final class WorkspaceSceneModel: ObservableObject {
             guard let self, !Task.isCancelled,
                   generation == kwtInventoryGeneration else { return }
             isKwtInventoryLoading = false
+            inventoryRefreshProgress.kwtCompleted = true
             updateWorkspaceInventoryState()
         }
     }
@@ -1907,6 +1928,7 @@ final class WorkspaceSceneModel: ObservableObject {
         kwtInventoryTask?.cancel()
         kwtInventoryTask = nil
         isKwtInventoryLoading = false
+        inventoryRefreshProgress.kwtCompleted = false
         updateWorkspaceInventoryState()
     }
 
@@ -2068,6 +2090,7 @@ final class WorkspaceSceneModel: ObservableObject {
         tmuxDiscoveryGeneration += 1
         let generation = tmuxDiscoveryGeneration
         tmuxDiscoveryTask?.cancel()
+        inventoryRefreshProgress.tmuxCompleted = false
         isTmuxDiscoveryLoading = true
         updateWorkspaceInventoryState()
         let tmuxSessionDiscovery = tmuxSessionDiscovery
@@ -2118,6 +2141,7 @@ final class WorkspaceSceneModel: ObservableObject {
             guard let self, !Task.isCancelled,
                   generation == tmuxDiscoveryGeneration else { return }
             isTmuxDiscoveryLoading = false
+            inventoryRefreshProgress.tmuxCompleted = true
             updateWorkspaceInventoryState()
         }
     }
@@ -2146,6 +2170,7 @@ final class WorkspaceSceneModel: ObservableObject {
         tmuxDiscoveryTask?.cancel()
         tmuxDiscoveryTask = nil
         isTmuxDiscoveryLoading = false
+        inventoryRefreshProgress.tmuxCompleted = false
         if tmuxDiscoveryEnabled {
             scheduleTmuxSessionDiscovery()
         } else {

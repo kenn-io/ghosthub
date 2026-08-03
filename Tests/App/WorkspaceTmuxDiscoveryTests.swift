@@ -10,6 +10,22 @@ import Testing
 
 @Suite("Workspace tmux discovery", .serialized)
 struct WorkspaceTmuxDiscoveryTests {
+    @Test("inventory refresh completion waits for kwt and tmux")
+    func inventoryRefreshCompletionWaitsForBothSources() {
+        var progress = WorkspaceInventoryRefreshProgress()
+        #expect(!progress.isComplete)
+
+        progress.kwtCompleted = true
+        #expect(!progress.isComplete)
+
+        progress.kwtCompleted = false
+        progress.tmuxCompleted = true
+        #expect(!progress.isComplete)
+
+        progress.kwtCompleted = true
+        #expect(progress.isComplete)
+    }
+
     private enum CreationKwtFailurePhase: CaseIterable, Sendable {
         case command
         case inventoryRefresh

@@ -65,6 +65,20 @@ struct WorkspaceSidebarModelTests {
         #expect(!didPruneAgain)
     }
 
+    @Test("staggered inventory results cannot trigger order pruning")
+    func incompleteInventoryDoesNotPrune() {
+        #expect(!WorkspaceSidebarPruningPolicy.shouldPrune(
+            refreshComplete: false,
+            inventoryWarning: nil,
+            inventoryWarningsByHost: [:]
+        ))
+        #expect(WorkspaceSidebarPruningPolicy.shouldPrune(
+            refreshComplete: true,
+            inventoryWarning: nil,
+            inventoryWarningsByHost: [:]
+        ))
+    }
+
     @Test("drop placement matches the final directional insertion")
     func dropPlacement() {
         let orderedIDs = ["first", "second", "third"]

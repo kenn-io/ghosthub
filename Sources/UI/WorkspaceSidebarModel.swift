@@ -104,6 +104,18 @@ struct WorkspaceSidebarOrder: Equatable {
     }
 }
 
+enum WorkspaceSidebarPruningPolicy {
+    static func shouldPrune(
+        refreshComplete: Bool,
+        inventoryWarning: String?,
+        inventoryWarningsByHost: [UUID: String]
+    ) -> Bool {
+        refreshComplete
+            && inventoryWarning == nil
+            && inventoryWarningsByHost.isEmpty
+    }
+}
+
 enum WorkspaceSidebarDropPlacement: Equatable {
     case before
     case after
