@@ -1,5 +1,6 @@
-import SwiftUI
+import Foundation
 import GhosthubWorkspace
+import SwiftUI
 
 struct WorkspaceTmuxSessionActionPresentation: Equatable {
     static let controlWidth: CGFloat = 30
@@ -47,6 +48,63 @@ enum WorkspaceSidebarHierarchy {
     }
 }
 
+private enum WorkspaceSidebarDragItem: Equatable {
+    case worktree(UUID)
+    case tmuxSession(hostID: UUID, name: String)
+
+    init?(rawValue: String) {
+        let parts = rawValue.split(
+            separator: ":",
+            maxSplits: 2,
+            omittingEmptySubsequences: false
+        )
+        guard let kind = parts.first else { return nil }
+        switch kind {
+        case "worktree":
+            guard parts.count == 2,
+                  let id = UUID(uuidString: String(parts[1]))
+            else { return nil }
+            self = .worktree(id)
+        case "tmux":
+            guard parts.count == 3,
+                  let hostID = UUID(uuidString: String(parts[1]))
+            else { return nil }
+            self = .tmuxSession(
+                hostID: hostID,
+                name: String(parts[2])
+            )
+        default:
+            return nil
+        }
+    }
+
+    var rawValue: String {
+        switch self {
+        case let .worktree(id):
+            return "worktree:\(id.uuidString)"
+        case let .tmuxSession(hostID, name):
+            return "tmux:\(hostID.uuidString):\(name)"
+        }
+    }
+
+    var orderID: String {
+        switch self {
+        case let .worktree(id):
+            return id.uuidString
+        case let .tmuxSession(hostID, name):
+            return WorkspaceSidebarModel.tmuxSessionOrderID(
+                hostID: hostID,
+                name: name
+            )
+        }
+    }
+}
+
+private struct WorkspaceSidebarReorderIndicator: Equatable {
+    let item: WorkspaceSidebarDragItem
+    let placement: WorkspaceSidebarDropPlacement
+}
+
 // MARK: - WorkspaceSidebarView
 
 struct WorkspaceSidebarView: View {
@@ -80,12 +138,17 @@ struct WorkspaceSidebarView: View {
     @State private var hoveredWorktreeID: UUID?
     @State private var hoveredWorktreeActionID: UUID?
     @State private var worktreeHoverDismissTask: Task<Void, Never>?
+    @State private var draggedSidebarItem: WorkspaceSidebarDragItem?
+    @State private var reorderIndicator:
+        WorkspaceSidebarReorderIndicator?
     @AppStorage("workspaceSidebarDisclosureStateV2")
     private var disclosureState = ""
     @AppStorage("workspaceSidebarCollapsedItems")
     private var legacyCollapsedItems = ""
     @AppStorage("workspaceSidebarWorktreeOrderV1")
     private var worktreeOrderRawValue = ""
+    @AppStorage("workspaceSidebarTmuxSessionOrderV1")
+    private var tmuxSessionOrderRawValue = ""
 
     init(
         snapshot: WorkspaceSnapshot,
@@ -142,7 +205,8 @@ struct WorkspaceSidebarView: View {
             in: snapshot,
             visibility: visibility,
             tmuxSessionVisibility: tmuxSessionVisibility,
-            worktreeOrderRawValue: worktreeOrderRawValue
+            worktreeOrderRawValue: worktreeOrderRawValue,
+            tmuxSessionOrderRawValue: tmuxSessionOrderRawValue
         )
     }
 
@@ -261,7 +325,10 @@ struct WorkspaceSidebarView: View {
                     )
                     if isExpanded(sessionsKey) {
                         ForEach(section.tmuxSessionRows) { row in
-                            sidebarButton(row)
+                            tmuxSessionButton(
+                                row,
+                                orderedRows: section.tmuxSessionRows
+                            )
                         }
                     }
                 }
@@ -480,6 +547,39 @@ struct WorkspaceSidebarView: View {
     }
 
     // MARK: - Row builders
+
+    private func tmuxSessionButton(
+        _ row: WorkspaceSidebarRow,
+        orderedRows: [WorkspaceSidebarRow]
+    ) -> some View {
+        guard case let .tmuxSession(hostID, name) = row.target else {
+            return AnyView(sidebarButton(row))
+        }
+        let item = WorkspaceSidebarDragItem.tmuxSession(
+            hostID: hostID,
+            name: name
+        )
+        let groupItems: [WorkspaceSidebarDragItem] = orderedRows.compactMap {
+            orderedRow in
+            guard case let .tmuxSession(orderedHostID, orderedName) =
+                orderedRow.target
+            else { return nil }
+            return WorkspaceSidebarDragItem.tmuxSession(
+                hostID: orderedHostID,
+                name: orderedName
+            )
+        }
+        return AnyView(
+            reorderableRow(
+                sidebarButton(row),
+                item: item,
+                groupItems: groupItems,
+                orderRawValue: tmuxSessionOrderRawValue
+            ) { updatedRawValue in
+                tmuxSessionOrderRawValue = updatedRawValue
+            }
+        )
+    }
 
     private func sidebarButton(
         _ row: WorkspaceSidebarRow,
@@ -882,25 +982,138 @@ struct WorkspaceSidebarView: View {
                     onRequestKillTmuxSession(runningTmuxSession)
                 }
             }
-            .draggable(worktreeID.uuidString)
-            .dropDestination(for: String.self) { values, _ in
-                guard let rawSourceID = values.first,
-                      let sourceID = UUID(uuidString: rawSourceID)
-                else { return false }
-                var order = WorkspaceSidebarOrder(
-                    rawValue: worktreeOrderRawValue
+            .modifier(
+                WorkspaceSidebarReorderModifier(
+                    item: .worktree(worktreeID),
+                    groupItems: projectWorktreeIDs.map {
+                        .worktree($0)
+                    },
+                    orderRawValue: worktreeOrderRawValue,
+                    draggedItem: $draggedSidebarItem,
+                    indicator: $reorderIndicator,
+                    updateOrder: { updatedRawValue in
+                        worktreeOrderRawValue = updatedRawValue
+                    }
                 )
-                guard order.move(
-                    sourceID,
-                    to: worktreeID,
-                    within: projectWorktreeIDs
-                ) else { return false }
-                withAnimation(.easeInOut(duration: 0.16)) {
-                    worktreeOrderRawValue = order.rawValue
-                }
-                return true
-            }
+            )
         )
+    }
+
+    private func reorderableRow<Content: View>(
+        _ content: Content,
+        item: WorkspaceSidebarDragItem,
+        groupItems: [WorkspaceSidebarDragItem],
+        orderRawValue: String,
+        updateOrder: @escaping (String) -> Void
+    ) -> some View {
+        content.modifier(
+            WorkspaceSidebarReorderModifier(
+                item: item,
+                groupItems: groupItems,
+                orderRawValue: orderRawValue,
+                draggedItem: $draggedSidebarItem,
+                indicator: $reorderIndicator,
+                updateOrder: updateOrder
+            )
+        )
+    }
+
+    private struct WorkspaceSidebarReorderModifier: ViewModifier {
+        let item: WorkspaceSidebarDragItem
+        let groupItems: [WorkspaceSidebarDragItem]
+        let orderRawValue: String
+        @Binding var draggedItem: WorkspaceSidebarDragItem?
+        @Binding var indicator: WorkspaceSidebarReorderIndicator?
+        let updateOrder: (String) -> Void
+
+        func body(content: Content) -> some View {
+            content
+                .onDrag {
+                    draggedItem = item
+                    return NSItemProvider(
+                        object: item.rawValue as NSString
+                    )
+                }
+                .dropDestination(for: String.self) { values, _ in
+                    guard let rawValue = values.first,
+                          let source = WorkspaceSidebarDragItem(
+                              rawValue: rawValue
+                          )
+                    else {
+                        clearDragState()
+                        return false
+                    }
+                    var order = WorkspaceSidebarOrder(
+                        rawValue: orderRawValue
+                    )
+                    let moved = order.move(
+                        source.orderID,
+                        to: item.orderID,
+                        within: groupItems.map(\.orderID)
+                    )
+                    if moved {
+                        withAnimation(.easeInOut(duration: 0.16)) {
+                            updateOrder(order.rawValue)
+                        }
+                    }
+                    clearDragState()
+                    return moved
+                } isTargeted: { isTargeted in
+                    updateIndicator(isTargeted: isTargeted)
+                }
+                .overlay {
+                    insertionIndicator
+                }
+        }
+
+        @ViewBuilder
+        private var insertionIndicator: some View {
+            if let indicator, indicator.item == item {
+                VStack(spacing: 0) {
+                    if indicator.placement == .after {
+                        Spacer(minLength: 0)
+                    }
+                    Capsule()
+                        .fill(Color.accentColor)
+                        .frame(height: 3)
+                        .padding(.horizontal, 6)
+                    if indicator.placement == .before {
+                        Spacer(minLength: 0)
+                    }
+                }
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+                .transition(.opacity)
+            }
+        }
+
+        private func updateIndicator(isTargeted: Bool) {
+            guard isTargeted else {
+                if indicator?.item == item {
+                    indicator = nil
+                }
+                return
+            }
+            guard let draggedItem,
+                  let placement = WorkspaceSidebarDropPlacement.resolve(
+                      sourceID: draggedItem.orderID,
+                      targetID: item.orderID,
+                      orderedIDs: groupItems.map(\.orderID)
+                  )
+            else {
+                indicator = nil
+                return
+            }
+            indicator = WorkspaceSidebarReorderIndicator(
+                item: item,
+                placement: placement
+            )
+        }
+
+        private func clearDragState() {
+            draggedItem = nil
+            indicator = nil
+        }
     }
 
     private func scheduleWorktreeHoverDismiss(_ worktreeID: UUID) {

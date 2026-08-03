@@ -2,31 +2,32 @@ import Foundation
 import GhosthubWorkspace
 
 struct WorkspaceSidebarOrder: Equatable {
-    private var worktreeIDs: [UUID]
+    private var itemIDs: [String]
 
     init(rawValue: String = "") {
-        var seen = Set<UUID>()
-        worktreeIDs = rawValue
+        var seen = Set<String>()
+        itemIDs = rawValue
             .split(whereSeparator: \Character.isNewline)
-            .compactMap { UUID(uuidString: String($0)) }
+            .map(String.init)
             .filter { seen.insert($0).inserted }
     }
 
     var rawValue: String {
-        worktreeIDs.map(\.uuidString).joined(separator: "\n")
+        itemIDs.joined(separator: "\n")
     }
 
-    func ordered(
-        _ worktrees: [WorktreeSummary]
-    ) -> [WorktreeSummary] {
+    func ordered<Item>(
+        _ items: [Item],
+        identifiedBy identifier: (Item) -> String
+    ) -> [Item] {
         let positions = Dictionary(
-            uniqueKeysWithValues: worktreeIDs.enumerated().map {
+            uniqueKeysWithValues: itemIDs.enumerated().map {
                 ($0.element, $0.offset)
             }
         )
-        return worktrees.enumerated().sorted { lhs, rhs in
-            let lhsPosition = positions[lhs.element.id]
-            let rhsPosition = positions[rhs.element.id]
+        return items.enumerated().sorted { lhs, rhs in
+            let lhsPosition = positions[identifier(lhs.element)]
+            let rhsPosition = positions[identifier(rhs.element)]
             switch (lhsPosition, rhsPosition) {
             case let (lhsPosition?, rhsPosition?):
                 return lhsPosition < rhsPosition
@@ -42,33 +43,33 @@ struct WorkspaceSidebarOrder: Equatable {
     }
 
     mutating func move(
-        _ sourceID: UUID,
-        to targetID: UUID,
-        within projectWorktreeIDs: [UUID]
+        _ sourceID: String,
+        to targetID: String,
+        within groupItemIDs: [String]
     ) -> Bool {
         guard sourceID != targetID else { return false }
 
-        let projectIDSet = Set(projectWorktreeIDs)
-        var orderedProjectIDs = orderedIDs(projectWorktreeIDs)
-        guard let sourceIndex = orderedProjectIDs.firstIndex(of: sourceID),
-              let targetIndex = orderedProjectIDs.firstIndex(of: targetID)
+        let groupIDSet = Set(groupItemIDs)
+        var orderedGroupIDs = orderedIDs(groupItemIDs)
+        guard let sourceIndex = orderedGroupIDs.firstIndex(of: sourceID),
+              let targetIndex = orderedGroupIDs.firstIndex(of: targetID)
         else { return false }
-        orderedProjectIDs.remove(at: sourceIndex)
-        guard let orderedTargetIndex = orderedProjectIDs.firstIndex(of: targetID)
+        orderedGroupIDs.remove(at: sourceIndex)
+        guard let orderedTargetIndex = orderedGroupIDs.firstIndex(of: targetID)
         else { return false }
         let insertionIndex = sourceIndex < targetIndex
             ? orderedTargetIndex + 1
             : orderedTargetIndex
-        orderedProjectIDs.insert(sourceID, at: insertionIndex)
+        orderedGroupIDs.insert(sourceID, at: insertionIndex)
 
-        worktreeIDs.removeAll { projectIDSet.contains($0) }
-        worktreeIDs.append(contentsOf: orderedProjectIDs)
+        itemIDs.removeAll { groupIDSet.contains($0) }
+        itemIDs.append(contentsOf: orderedGroupIDs)
         return true
     }
 
-    private func orderedIDs(_ ids: [UUID]) -> [UUID] {
+    private func orderedIDs(_ ids: [String]) -> [String] {
         let positions = Dictionary(
-            uniqueKeysWithValues: worktreeIDs.enumerated().map {
+            uniqueKeysWithValues: itemIDs.enumerated().map {
                 ($0.element, $0.offset)
             }
         )
@@ -87,6 +88,23 @@ struct WorkspaceSidebarOrder: Equatable {
             }
         }
         .map(\.element)
+    }
+}
+
+enum WorkspaceSidebarDropPlacement: Equatable {
+    case before
+    case after
+
+    static func resolve(
+        sourceID: String,
+        targetID: String,
+        orderedIDs: [String]
+    ) -> Self? {
+        guard sourceID != targetID,
+              let sourceIndex = orderedIDs.firstIndex(of: sourceID),
+              let targetIndex = orderedIDs.firstIndex(of: targetID)
+        else { return nil }
+        return sourceIndex < targetIndex ? .after : .before
     }
 }
 
@@ -284,10 +302,14 @@ public enum WorkspaceSidebarModel {
         in snapshot: WorkspaceSnapshot,
         visibility: WorktreeVisibility = .default,
         tmuxSessionVisibility: TmuxSessionVisibility = TmuxSessionVisibility(),
-        worktreeOrderRawValue: String = ""
+        worktreeOrderRawValue: String = "",
+        tmuxSessionOrderRawValue: String = ""
     ) -> [WorkspaceSidebarSection] {
         let worktreeOrder = WorkspaceSidebarOrder(
             rawValue: worktreeOrderRawValue
+        )
+        let tmuxSessionOrder = WorkspaceSidebarOrder(
+            rawValue: tmuxSessionOrderRawValue
         )
         return snapshot.hosts.map { host in
             // Discovery only lists the host's default tmux server. A
@@ -313,7 +335,8 @@ public enum WorkspaceSidebarModel {
                                 && $0.projectID == project.id
                                 && !$0.isStale
                                 && visibility.includes($0)
-                        }
+                        },
+                        identifiedBy: { $0.id.uuidString }
                     )
                     let rows = worktrees.map { worktree in
                         worktreeRow(for: worktree, snapshot: snapshot)
@@ -327,15 +350,33 @@ public enum WorkspaceSidebarModel {
             return WorkspaceSidebarSection(
                 host: host,
                 projects: projects,
-                tmuxSessionRows: host.tmuxSessions
-                    .filter {
-                        !defaultServerSessionNames.contains($0.name)
-                            && !tmuxSessionVisibility.isHidden($0.name)
+                tmuxSessionRows: tmuxSessionOrder.ordered(
+                    host.tmuxSessions
+                        .filter {
+                            !defaultServerSessionNames.contains($0.name)
+                                && !tmuxSessionVisibility.isHidden($0.name)
+                        }
+                        .sorted {
+                            $0.name.localizedStandardCompare($1.name)
+                                == .orderedAscending
+                        },
+                    identifiedBy: {
+                        tmuxSessionOrderID(
+                            hostID: host.id,
+                            name: $0.name
+                        )
                     }
-                    .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-                    .map { tmuxSessionRow($0, hostID: host.id) }
+                )
+                .map { tmuxSessionRow($0, hostID: host.id) }
             )
         }
+    }
+
+    static func tmuxSessionOrderID(
+        hostID: UUID,
+        name: String
+    ) -> String {
+        "\(hostID.uuidString):\(name)"
     }
 
     private static func tmuxSessionRow(
