@@ -2752,8 +2752,8 @@ final class WorkspaceSceneModel: ObservableObject {
                         && $0.tmuxSessionName == sessionName
                 }?.name,
                 connectionState: borrowedTmuxConnectionStates[handle.id],
-                attachmentClosed:
-                nativeTmuxSessionCoordinator.hasClosedAttachment(handle),
+                attachmentClosure:
+                nativeTmuxSessionCoordinator.attachmentClosure(handle),
                 sessionClosed:
                 confirmedEndedTmuxSessionHandles.contains(handle.id),
                 surface: { [weak self] in

@@ -65,7 +65,7 @@ struct BorrowedTmuxSessionViewTests {
             connectionState: .disconnected(
                 reason: "The tmux attachment closed."
             ),
-            attachmentClosed: true,
+            attachmentClosure: .detached,
             surface: { nil },
             onCloseRequest: {},
             onRetryRequest: {},
@@ -75,6 +75,27 @@ struct BorrowedTmuxSessionViewTests {
         #expect(view.disconnectionTitle == "Attachment closed")
         #expect(view.recoveryActionTitle == "Reconnect")
         #expect(!view.showsHostSettingsAction)
+    }
+
+    @Test("a failed remote attachment offers host settings")
+    func remoteAttachmentFailureShowsHostSettings() {
+        let view = BorrowedTmuxSessionView(
+            handle: BorrowedTmuxSessionHandle(
+                id: UUID(), hostID: UUID(), name: "editor", surfaceID: UUID()
+            ),
+            hostName: "build-box",
+            isRemoteHost: true,
+            connectionState: .disconnected(reason: "SSH connection failed"),
+            attachmentClosure: .processExited,
+            surface: { nil },
+            onCloseRequest: {},
+            onRetryRequest: {},
+            onHostSettingsRequest: {}
+        )
+
+        #expect(view.disconnectionTitle == "Unable to attach")
+        #expect(view.recoveryActionTitle == "Retry")
+        #expect(view.showsHostSettingsAction)
     }
 
     @Test("local attachment failures do not offer remote host settings")

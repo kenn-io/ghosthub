@@ -68,6 +68,12 @@ struct BorrowedTmuxSessionHandle: Equatable, Sendable {
     }
 }
 
+enum BorrowedTmuxAttachmentClosure: Equatable {
+    case detached
+    case processExited
+    case launchFailed
+}
+
 private struct NativeTmuxSessionKey: Hashable {
     var hostID: UUID
     var name: String
@@ -106,7 +112,7 @@ final class NativeTmuxSessionCoordinator {
     private var handlesByKey: [NativeTmuxSessionKey: BorrowedTmuxSessionHandle] = [:]
     private var targetHostsByHandle: [UUID: TmuxHost] = [:]
     private var attachments: [UUID: NativeTmuxAttachment] = [:]
-    private var closedAttachmentHandles: Set<UUID> = []
+    private var attachmentClosures: [UUID: BorrowedTmuxAttachmentClosure] = [:]
     private var launchedHandles: Set<UUID> = []
     private var tmuxPathsByHost: [TmuxHost: String] = [:]
     private var provisioningHandles: Set<UUID> = []
@@ -185,7 +191,7 @@ final class NativeTmuxSessionCoordinator {
             )
         handlesByKey[key] = handle
         targetHostsByHandle[handle.id] = host
-        closedAttachmentHandles.remove(handle.id)
+        attachmentClosures.removeValue(forKey: handle.id)
 
         guard !isShuttingDown,
               attachments[handle.id] == nil,
@@ -308,7 +314,7 @@ final class NativeTmuxSessionCoordinator {
         provisioningHandles.remove(handle.id)
         targetHostsByHandle.removeValue(forKey: handle.id)
         attachments.removeValue(forKey: handle.id)
-        closedAttachmentHandles.remove(handle.id)
+        attachmentClosures.removeValue(forKey: handle.id)
         launchedHandles.remove(handle.id)
         deferredPresentationStyleHandles.remove(handle.id)
         terminalCoordinator.removeSurface(for: surfaceKey(handle))
@@ -319,7 +325,13 @@ final class NativeTmuxSessionCoordinator {
     }
 
     func hasClosedAttachment(_ handle: BorrowedTmuxSessionHandle) -> Bool {
-        closedAttachmentHandles.contains(handle.id)
+        attachmentClosures[handle.id] != nil
+    }
+
+    func attachmentClosure(
+        _ handle: BorrowedTmuxSessionHandle
+    ) -> BorrowedTmuxAttachmentClosure? {
+        attachmentClosures[handle.id]
     }
 
     func hasDeferredPresentationStyle(
@@ -343,7 +355,7 @@ final class NativeTmuxSessionCoordinator {
     }
 
     func surface(handle: BorrowedTmuxSessionHandle) -> TerminalSurfaceView? {
-        guard !closedAttachmentHandles.contains(handle.id),
+        guard attachmentClosures[handle.id] == nil,
               let attachment = attachments[handle.id]
         else { return nil }
         let appliesPresentationStyle =
@@ -384,7 +396,7 @@ final class NativeTmuxSessionCoordinator {
             return nil
         }
         if let error = surface.launchError {
-            closedAttachmentHandles.insert(handle.id)
+            attachmentClosures[handle.id] = .launchFailed
             attachments.removeValue(forKey: handle.id)
             deferredPresentationStyleHandles.remove(handle.id)
             terminalCoordinator.removeSurface(for: surfaceKey(handle))
@@ -401,8 +413,8 @@ final class NativeTmuxSessionCoordinator {
         surface.blocksClipboardReads = attachment.host.isRemote
         surface.registerSurfaceCloseObserver(
             id: handle.id,
-            onSurfaceClosed: { [weak self] _ in
-                self?.surfaceDidClose(handle)
+            onSurfaceClosed: { [weak self] processAlive in
+                self?.surfaceDidClose(handle, processAlive: processAlive)
             }
         )
         if launchedHandles.insert(handle.id).inserted {
@@ -430,17 +442,22 @@ final class NativeTmuxSessionCoordinator {
             guard handlesByKey[key] == handle else { return }
             if requiresLiveSurface {
                 guard launchedHandles.contains(handle.id),
-                      !closedAttachmentHandles.contains(handle.id)
+                      attachmentClosures[handle.id] == nil
                 else { return }
             }
             onStateChanged?(handle, state)
         }
     }
 
-    private func surfaceDidClose(_ handle: BorrowedTmuxSessionHandle) {
+    private func surfaceDidClose(
+        _ handle: BorrowedTmuxSessionHandle,
+        processAlive: Bool
+    ) {
         let key = sessionKey(handle)
         guard handlesByKey[key] == handle else { return }
-        closedAttachmentHandles.insert(handle.id)
+        attachmentClosures[handle.id] = processAlive
+            ? .detached
+            : .processExited
         attachments.removeValue(forKey: handle.id)
         deferredPresentationStyleHandles.remove(handle.id)
         terminalCoordinator.removeSurface(for: surfaceKey(handle))
@@ -461,7 +478,7 @@ final class NativeTmuxSessionCoordinator {
         handlesByKey.removeAll()
         targetHostsByHandle.removeAll()
         attachments.removeAll()
-        closedAttachmentHandles.removeAll()
+        attachmentClosures.removeAll()
         launchedHandles.removeAll()
         deferredPresentationStyleHandles.removeAll()
         for handle in handles {

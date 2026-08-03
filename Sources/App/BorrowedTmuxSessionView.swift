@@ -8,7 +8,7 @@ struct BorrowedTmuxSessionView: View {
     var isRemoteHost: Bool
     var displayTitle: String?
     var connectionState: ConnectionState?
-    var attachmentClosed: Bool
+    var attachmentClosure: BorrowedTmuxAttachmentClosure?
     var sessionClosed: Bool
     var surface: () -> TerminalSurfaceView?
     var onCloseRequest: () -> Void
@@ -21,7 +21,7 @@ struct BorrowedTmuxSessionView: View {
         isRemoteHost: Bool,
         displayTitle: String? = nil,
         connectionState: ConnectionState?,
-        attachmentClosed: Bool = false,
+        attachmentClosure: BorrowedTmuxAttachmentClosure? = nil,
         sessionClosed: Bool = false,
         surface: @escaping () -> TerminalSurfaceView?,
         onCloseRequest: @escaping () -> Void,
@@ -33,7 +33,7 @@ struct BorrowedTmuxSessionView: View {
         self.isRemoteHost = isRemoteHost
         self.displayTitle = displayTitle
         self.connectionState = connectionState
-        self.attachmentClosed = attachmentClosed
+        self.attachmentClosure = attachmentClosure
         self.sessionClosed = sessionClosed
         self.surface = surface
         self.onCloseRequest = onCloseRequest
@@ -53,7 +53,7 @@ struct BorrowedTmuxSessionView: View {
                     disconnectionTitle,
                     systemImage: sessionClosed
                         ? "rectangle.portrait.and.arrow.right"
-                        : attachmentClosed
+                        : attachmentClosure == .detached
                         ? "rectangle.portrait.and.arrow.right"
                         : "network.slash"
                 )
@@ -86,18 +86,20 @@ struct BorrowedTmuxSessionView: View {
         if sessionClosed {
             return "Session ended"
         }
-        return attachmentClosed ? "Attachment closed" : "Unable to attach"
+        return attachmentClosure == .detached
+            ? "Attachment closed"
+            : "Unable to attach"
     }
 
     var recoveryActionTitle: String {
         if sessionClosed {
             return "Reopen"
         }
-        return attachmentClosed ? "Reconnect" : "Retry"
+        return attachmentClosure == .detached ? "Reconnect" : "Retry"
     }
 
     var showsHostSettingsAction: Bool {
-        isRemoteHost && !attachmentClosed && !sessionClosed
+        isRemoteHost && attachmentClosure != .detached && !sessionClosed
     }
 }
 
