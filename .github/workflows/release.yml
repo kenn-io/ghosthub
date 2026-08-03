@@ -9,7 +9,7 @@ on:
       version:
         description: Version for the notarized candidate artifact
         required: true
-        default: 0.5.1
+        default: 0.5.2
 
 permissions:
   # The build job only checks out source and uploads an Actions artifact.
