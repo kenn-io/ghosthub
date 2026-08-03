@@ -5,11 +5,6 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
-    inputs:
-      version:
-        description: Version for the notarized candidate artifact
-        required: true
-        default: 0.5.2
 
 permissions:
   # The build job only checks out source and uploads an Actions artifact.
@@ -124,17 +119,20 @@ jobs:
       - name: Derive release metadata
         id: release
         shell: bash
-        env:
-          REQUESTED_VERSION: ${{ inputs.version }}
         run: |
+          FILE_VERSION="$(tr -d '[:space:]' < RELEASE_VERSION)"
+          if [[ ! "$FILE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "RELEASE_VERSION must use X.Y.Z format; got $FILE_VERSION." >&2
+            exit 1
+          fi
           if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
             VERSION="${GITHUB_REF_NAME#v}"
+            if [[ "$VERSION" != "$FILE_VERSION" ]]; then
+              echo "Tag version $VERSION does not match RELEASE_VERSION $FILE_VERSION." >&2
+              exit 1
+            fi
           else
-            VERSION="$REQUESTED_VERSION"
-          fi
-          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Release version must use X.Y.Z format; got $VERSION." >&2
-            exit 1
+            VERSION="$FILE_VERSION"
           fi
           {
             echo "version=$VERSION"
