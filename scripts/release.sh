@@ -1,17 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 
-VERSION="${1:-}"
-TAG_BODY="${2:-}"
-
-if [[ -z "$VERSION" ]]; then
-  echo "Usage: $0 <version> [tag_body]"
-  echo "Example: $0 0.5.2"
-  exit 1
-fi
+RELEASE_VERSION_FILE="${RELEASE_VERSION_FILE:-RELEASE_VERSION}"
+VERSION="$(tr -d '[:space:]' < "$RELEASE_VERSION_FILE")"
+TAG_BODY="${1:-}"
 
 if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "Error: Version must be in format X.Y.Z"
+  echo "Error: $RELEASE_VERSION_FILE must contain a version in X.Y.Z format."
   exit 1
 fi
 
