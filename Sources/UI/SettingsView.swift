@@ -18,7 +18,7 @@ public struct SettingsActions {
         > = { _ in .success(nil) }
     var trustSSHHostKey:
         (SSHHostKeyConfirmation, SSHHost) async -> Result<
-            Void,
+            SSHHostKeyConfirmation?,
             HostProbeError
         > = { _, _ in
             .failure(.message("SSH host-key approval is unavailable."))
@@ -57,7 +57,7 @@ public struct SettingsActions {
         trustSSHHostKey: @escaping (
             SSHHostKeyConfirmation,
             SSHHost
-        ) async -> Result<Void, HostProbeError> = { _, _ in
+        ) async -> Result<SSHHostKeyConfirmation?, HostProbeError> = { _, _ in
             .failure(.message("SSH host-key approval is unavailable."))
         },
         loadTailscalePeers: @escaping () async -> TailscalePeerLoadResult = {

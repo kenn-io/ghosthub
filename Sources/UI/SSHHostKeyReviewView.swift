@@ -47,7 +47,7 @@ final class WorkspaceSSHHostKeyReviewModel: ObservableObject {
         using accept: (
             UUID,
             SSHHostKeyConfirmation
-        ) async -> Result<Void, HostProbeError>,
+        ) async -> Result<SSHHostKeyConfirmation?, HostProbeError>,
         onTrusted: () -> Void
     ) async {
         guard let hostID, let confirmation else { return }
@@ -59,9 +59,13 @@ final class WorkspaceSSHHostKeyReviewModel: ObservableObject {
               self.confirmation == confirmation else { return }
         isTrusting = false
         switch result {
-        case .success:
-            dismiss()
-            onTrusted()
+        case let .success(nextConfirmation):
+            if let nextConfirmation {
+                self.confirmation = nextConfirmation
+            } else {
+                dismiss()
+                onTrusted()
+            }
         case let .failure(error):
             errorMessage = error.displayMessage
         }
@@ -136,14 +140,20 @@ struct SSHHostKeyConfirmationDetails: View {
 
     var body: some View {
         Text(
-            "OpenSSH reported a previously unseen host key for this exact "
-                + "destination:"
+            "OpenSSH reported a previously unseen host key while "
+                + "connecting to this exact destination:"
         )
-        Text(confirmation.destination)
+        Text(confirmation.connectionDestination)
             .font(.system(.body, design: .monospaced))
             .textSelection(.enabled)
 
         VStack(alignment: .leading, spacing: 6) {
+            Text("Host named by OpenSSH")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.secondary)
+            Text(confirmation.destination)
+                .font(.system(.body, design: .monospaced))
+                .textSelection(.enabled)
             Text(confirmation.algorithm)
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.secondary)

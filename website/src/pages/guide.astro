@@ -179,9 +179,11 @@ const imageAlt = {
             need either step. An expanded host with no inventory says so in the
             sidebar. If a host shows a caution icon, click it and choose{' '}
             <strong>Review Host Key</strong> to review an unseen key directly.
-            After approval, Ghosthub retries inventory automatically. If
-            OpenSSH does not report an unseen key, continue to Host Settings to
-            diagnose authentication or network access.
+            SSH routes with unseen intermediate hosts show each OpenSSH prompt
+            in sequence. After every required approval, Ghosthub retries
+            inventory automatically. If OpenSSH does not report an unseen key,
+            continue to Host Settings to diagnose authentication or network
+            access.
           </p>
           <aside class="reconnect">
             <span aria-hidden="true">↻</span>

@@ -128,6 +128,10 @@ after which Ghosthub retries the connection or inventory operation that led to
 the review.
 Ghosthub never forces `accept-new`, writes a scanned key itself, or treats a
 trusted short alias as authorization for a canonical MagicDNS FQDN.
+When an SSH route contains unseen intermediate hosts, each trust sheet labels
+the host exactly as OpenSSH names it and approval advances only to the next
+prompt. A later prompt is never treated as proof that the reviewed host changed
+its key.
 
 When the user opens the imported workspace, Ghosthub invokes kwt's protected
 attach command through the remote account's login shell when applicable. Kwt

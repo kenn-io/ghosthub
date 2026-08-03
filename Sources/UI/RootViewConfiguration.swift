@@ -153,7 +153,9 @@ public struct InteractionHandlers {
     public let reviewSSHHostKey:
         ((UUID) async -> Result<SSHHostKeyConfirmation?, HostProbeError>)?
     public let trustSSHHostKey:
-        ((UUID, SSHHostKeyConfirmation) async -> Result<Void, HostProbeError>)?
+        ((UUID, SSHHostKeyConfirmation) async -> Result<
+            SSHHostKeyConfirmation?, HostProbeError
+        >)?
     public let registerProject:
         ((HostSummary, String) async -> Result<String, HostProbeError>)?
     public let createWorktree:
@@ -188,7 +190,9 @@ public struct InteractionHandlers {
         reviewSSHHostKey:
         ((UUID) async -> Result<SSHHostKeyConfirmation?, HostProbeError>)? = nil,
         trustSSHHostKey:
-        ((UUID, SSHHostKeyConfirmation) async -> Result<Void, HostProbeError>)? = nil,
+        ((UUID, SSHHostKeyConfirmation) async -> Result<
+            SSHHostKeyConfirmation?, HostProbeError
+        >)? = nil,
         registerProject:
         ((HostSummary, String) async -> Result<String, HostProbeError>)? = nil,
         createWorktree:

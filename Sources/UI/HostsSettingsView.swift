@@ -85,7 +85,7 @@ public struct HostsSettingsView: View {
         >
     let trustSSHHostKey:
         (SSHHostKeyConfirmation, SSHHost) async -> Result<
-            Void,
+            SSHHostKeyConfirmation?,
             HostProbeError
         >
     let installRemoteKwt:
@@ -119,7 +119,7 @@ public struct HostsSettingsView: View {
         trustSSHHostKey: @escaping (
             SSHHostKeyConfirmation,
             SSHHost
-        ) async -> Result<Void, HostProbeError>,
+        ) async -> Result<SSHHostKeyConfirmation?, HostProbeError>,
         installRemoteKwt: @escaping (
             SSHHost
         ) async -> Result<Void, HostProbeError>,
@@ -770,9 +770,16 @@ public struct HostsSettingsView: View {
             pending.confirmation,
             draft.sshHost
         ) {
-        case .success:
-            pendingSSHHostTrust = nil
-            await probeHost(draft)
+        case let .success(nextConfirmation):
+            if let nextConfirmation {
+                pendingSSHHostTrust = PendingSSHHostTrust(
+                    target: pending.target,
+                    confirmation: nextConfirmation
+                )
+            } else {
+                pendingSSHHostTrust = nil
+                await probeHost(draft)
+            }
         case let .failure(error):
             hostTrustErrorMessage = error.displayMessage
         }

@@ -6,11 +6,19 @@ import Testing
 @Suite("Workspace SSH host-key review")
 @MainActor
 struct SSHHostKeyReviewModelTests {
-    @Test("approval retries inventory for the same host")
-    func approvalRetriesInventoryForSameHost() async {
+    @Test("sequential approvals retry inventory only after the final host")
+    func sequentialApprovalsRetryInventoryAfterFinalHost() async {
         let hostID = UUID()
-        let confirmation = SSHHostKeyConfirmation(
-            destination: "operator@build-node.example.test",
+        let proxyConfirmation = SSHHostKeyConfirmation(
+            destination: "jump.example.test",
+            connectionDestination: "operator@build-node.example.test",
+            algorithm: "ED25519",
+            fingerprint: "SHA256:proxy-synthetic-fingerprint",
+            openSSHPrompt: "synthetic proxy OpenSSH prompt"
+        )
+        let targetConfirmation = SSHHostKeyConfirmation(
+            destination: "build-node.example.test",
+            connectionDestination: "operator@build-node.example.test",
             algorithm: "ED25519",
             fingerprint: "SHA256:synthetic-fingerprint",
             openSSHPrompt: "synthetic OpenSSH prompt"
@@ -23,11 +31,11 @@ struct SSHHostKeyReviewModelTests {
             hostName: "Build Node"
         ) { requestedHostID in
             reviewedHostID = requestedHostID
-            return .success(confirmation)
+            return .success(proxyConfirmation)
         }
 
         #expect(reviewedHostID == hostID)
-        #expect(model.confirmation == confirmation)
+        #expect(model.confirmation == proxyConfirmation)
 
         var trustedHostID: UUID?
         var trustedConfirmation: SSHHostKeyConfirmation?
@@ -36,13 +44,22 @@ struct SSHHostKeyReviewModelTests {
             using: { requestedHostID, requestedConfirmation in
                 trustedHostID = requestedHostID
                 trustedConfirmation = requestedConfirmation
-                return .success(())
+                return .success(targetConfirmation)
             },
             onTrusted: { didRetryInventory = true }
         )
 
         #expect(trustedHostID == hostID)
-        #expect(trustedConfirmation == confirmation)
+        #expect(trustedConfirmation == proxyConfirmation)
+        #expect(model.confirmation == targetConfirmation)
+        #expect(!didRetryInventory)
+        #expect(model.isPresented)
+
+        await model.trust(
+            using: { _, _ in .success(nil) },
+            onTrusted: { didRetryInventory = true }
+        )
+
         #expect(didRetryInventory)
         #expect(!model.isPresented)
     }

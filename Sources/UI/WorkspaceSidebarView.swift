@@ -1151,7 +1151,9 @@ struct WorkspaceSidebarView: View {
             if let inventoryWarning {
                 inventoryWarningButton(
                     inventoryWarning,
-                    hostID: actionHost?.id,
+                    hostID: actionHost.flatMap {
+                        $0.kind == .remote ? $0.id : nil
+                    },
                     accessibilityLabel:
                     "Show connection issue for \(row.title)"
                 )

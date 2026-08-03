@@ -2365,18 +2365,17 @@ final class WorkspaceSceneModel: ObservableObject {
     func trustSSHHostKey(
         _ confirmation: SSHHostKeyConfirmation,
         for host: SSHHost
-    ) async -> Result<Void, HostProbeError> {
+    ) async -> Result<SSHHostKeyConfirmation?, HostProbeError> {
         guard let resolved = resolvedSSHHost(host) else {
             return .failure(.message("Enter a valid SSH destination."))
         }
         return await Task.detached {
             do {
-                try SSHHostTrustManager().accept(
+                return .success(try SSHHostTrustManager().accept(
                     confirmation,
                     for: resolved.info,
                     destination: resolved.destination
-                )
-                return .success(())
+                ))
             } catch {
                 return .failure(.message(
                     error.localizedDescription
@@ -2388,7 +2387,7 @@ final class WorkspaceSceneModel: ObservableObject {
     func trustSSHHostKey(
         _ confirmation: SSHHostKeyConfirmation,
         forHostID hostID: UUID
-    ) async -> Result<Void, HostProbeError> {
+    ) async -> Result<SSHHostKeyConfirmation?, HostProbeError> {
         guard let host = configuredSSHHost(for: hostID) else {
             return .failure(.message(
                 "The selected remote host is no longer configured."

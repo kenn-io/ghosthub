@@ -118,6 +118,7 @@ public enum HostProbeError: Error, Equatable, Sendable {
 }
 
 public struct SSHHostKeyConfirmation: Equatable, Sendable {
+    public let connectionDestination: String
     public let destination: String
     public let algorithm: String
     public let fingerprint: String
@@ -125,10 +126,12 @@ public struct SSHHostKeyConfirmation: Equatable, Sendable {
 
     public init(
         destination: String,
+        connectionDestination: String? = nil,
         algorithm: String,
         fingerprint: String,
         openSSHPrompt: String
     ) {
+        self.connectionDestination = connectionDestination ?? destination
         self.destination = destination
         self.algorithm = algorithm
         self.fingerprint = fingerprint

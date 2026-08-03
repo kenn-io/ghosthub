@@ -171,6 +171,10 @@ a short alias nor writes a key obtained from a separate scanner. The approved
 key therefore lands in the `UserKnownHostsFile` selected by the user's OpenSSH
 configuration before the ordinary noninteractive probe or inventory refresh
 retries.
+Trust invocations use the same local account login-shell boundary as ordinary
+SSH operations. For ProxyJump and SSH-based ProxyCommand routes, Ghosthub names
+the host from OpenSSH's prompt and reviews each unseen route key sequentially
+before retrying the destination operation.
 
 Ghosthub bundles revision-pinned kwt CLI builds for local project and worktree
 operations and for `darwin/{amd64,arm64}`, `linux/{amd64,arm64}`, and

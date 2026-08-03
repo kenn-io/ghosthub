@@ -18,7 +18,8 @@ struct SSHHostTrustManagerTests {
             openSSHPrompt: prompt
         )
 
-        #expect(confirmation.destination == "dev@build.example.test")
+        #expect(confirmation.connectionDestination == "dev@build.example.test")
+        #expect(confirmation.destination == "build.example.test")
         #expect(confirmation.algorithm == "ED25519")
         #expect(confirmation.fingerprint == "SHA256:synthetic-fingerprint")
         #expect(confirmation.openSSHPrompt == prompt)
@@ -27,17 +28,20 @@ struct SSHHostTrustManagerTests {
     @Test("approval is bound to the prompt and rechecks persistence")
     func acceptsOnlyThePresentedPrompt() throws {
         let calls = LockedValue(0)
-        let manager = SSHHostTrustManager { _, _, observed, expected in
+        let manager = SSHHostTrustManager { _, _, _, approved, expected in
             calls.withLock { $0 += 1 }
             guard expected != nil else { return }
-            try? Data(prompt.utf8).write(to: observed)
+            FileManager.default.createFile(
+                atPath: approved.path,
+                contents: Data()
+            )
         }
         let confirmation = try SSHHostTrustManager.confirmation(
             destination: "dev@build.example.test",
             openSSHPrompt: prompt
         )
 
-        try manager.accept(
+        let next = try manager.accept(
             confirmation,
             for: SSHHostInfo(
                 user: "dev",
@@ -48,6 +52,7 @@ struct SSHHostTrustManagerTests {
         )
 
         #expect(calls.load() == 2)
+        #expect(next == nil)
     }
 
     @Test("a key changed before approval is rejected")
@@ -56,7 +61,7 @@ struct SSHHostTrustManagerTests {
             of: "synthetic-fingerprint",
             with: "different-synthetic-fingerprint"
         )
-        let manager = SSHHostTrustManager { _, _, observed, expected in
+        let manager = SSHHostTrustManager { _, _, observed, _, expected in
             guard expected != nil else { return }
             try? Data(changedPrompt.utf8).write(to: observed)
         }
@@ -76,5 +81,45 @@ struct SSHHostTrustManagerTests {
                 destination: "dev@build.example.test"
             )
         }
+    }
+
+    @Test("sequential proxy host prompts are reviewed one at a time")
+    func returnsNextProxyPrompt() throws {
+        let proxyPrompt = prompt.replacingOccurrences(
+            of: "build.example.test",
+            with: "jump.example.test"
+        ).replacingOccurrences(
+            of: "synthetic-fingerprint",
+            with: "proxy-synthetic-fingerprint"
+        )
+        let manager = SSHHostTrustManager {
+            _, _, observed, approved, expected in
+            if expected != nil {
+                FileManager.default.createFile(
+                    atPath: approved.path,
+                    contents: Data()
+                )
+            } else {
+                try? Data(prompt.utf8).write(to: observed)
+            }
+        }
+        let proxyConfirmation = try SSHHostTrustManager.confirmation(
+            destination: "dev@build.example.test",
+            openSSHPrompt: proxyPrompt
+        )
+
+        let next = try #require(try manager.accept(
+            proxyConfirmation,
+            for: SSHHostInfo(
+                user: "dev",
+                hostname: "build.example.test",
+                port: nil
+            ),
+            destination: "dev@build.example.test"
+        ))
+
+        #expect(next.connectionDestination == "dev@build.example.test")
+        #expect(next.destination == "build.example.test")
+        #expect(next.fingerprint == "SHA256:synthetic-fingerprint")
     }
 }

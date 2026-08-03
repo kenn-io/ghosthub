@@ -361,13 +361,15 @@ struct TmuxBinaryResolver: Sendable {
         shell: String,
         command: String,
         timeout: TimeInterval,
-        captureStandardError: Bool = false
+        captureStandardError: Bool = false,
+        environmentOverrides: [String: String] = [:]
     ) -> (status: Int32, stdout: String) {
         runProcess(
             executable: shell,
             arguments: ["-lc", accountShellCommand(command)],
             timeout: timeout,
-            captureStandardError: captureStandardError
+            captureStandardError: captureStandardError,
+            environmentOverrides: environmentOverrides
         )
     }
 
@@ -376,7 +378,8 @@ struct TmuxBinaryResolver: Sendable {
         arguments: [String],
         timeout: TimeInterval,
         captureStandardError: Bool = false,
-        accountShell: String = loginShell()
+        accountShell: String = loginShell(),
+        environmentOverrides: [String: String] = [:]
     ) -> (status: Int32, stdout: String) {
         let command = ([executable] + arguments)
             .map(shellQuotedCommandArgument)
@@ -385,7 +388,8 @@ struct TmuxBinaryResolver: Sendable {
             shell: accountShell,
             command: command,
             timeout: timeout,
-            captureStandardError: captureStandardError
+            captureStandardError: captureStandardError,
+            environmentOverrides: environmentOverrides
         )
     }
 

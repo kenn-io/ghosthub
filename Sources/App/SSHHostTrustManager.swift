@@ -31,6 +31,7 @@ struct SSHHostTrustManager: Sendable {
         SSHHostInfo,
         URL,
         URL,
+        URL,
         URL?
     ) -> Void
 
@@ -51,6 +52,7 @@ struct SSHHostTrustManager: Sendable {
                 host,
                 state.helper,
                 state.observedPrompt,
+                state.approvedPrompt,
                 nil
             )
             guard let prompt = try readPrompt(at: state.observedPrompt) else {
@@ -67,8 +69,8 @@ struct SSHHostTrustManager: Sendable {
         _ confirmation: SSHHostKeyConfirmation,
         for host: SSHHostInfo,
         destination: String
-    ) throws {
-        guard confirmation.destination == destination else {
+    ) throws -> SSHHostKeyConfirmation? {
+        guard confirmation.connectionDestination == destination else {
             throw SSHHostTrustError.hostKeyChanged
         }
         try withTemporaryState { state in
@@ -80,11 +82,12 @@ struct SSHHostTrustManager: Sendable {
                 host,
                 state.helper,
                 state.observedPrompt,
+                state.approvedPrompt,
                 state.expectedPrompt
             )
-            guard let observed = try readPrompt(at: state.observedPrompt),
-                  observed == confirmation.openSSHPrompt
-            else {
+            guard FileManager.default.fileExists(
+                atPath: state.approvedPrompt.path
+            ) else {
                 throw SSHHostTrustError.hostKeyChanged
             }
         }
@@ -93,17 +96,34 @@ struct SSHHostTrustManager: Sendable {
             for: host,
             destination: destination
         ) {
-            if pending.openSSHPrompt != confirmation.openSSHPrompt {
-                throw SSHHostTrustError.hostKeyChanged
+            if pending.openSSHPrompt == confirmation.openSSHPrompt {
+                throw SSHHostTrustError.hostKeyWasNotSaved
             }
-            throw SSHHostTrustError.hostKeyWasNotSaved
+            return pending
         }
+        return nil
     }
 
     static func confirmation(
         destination: String,
         openSSHPrompt: String
     ) throws -> SSHHostKeyConfirmation {
+        let hostPrefix = "The authenticity of host '"
+        let hostSuffix = "' can't be established."
+        guard let hostLine = openSSHPrompt.components(separatedBy: .newlines)
+            .first(where: {
+                $0.contains(hostPrefix) && $0.contains(hostSuffix)
+            }),
+            let hostStart = hostLine.range(of: hostPrefix)?.upperBound,
+            let hostEnd = hostLine.range(
+                of: hostSuffix,
+                range: hostStart ..< hostLine.endIndex
+            )?.lowerBound,
+            hostStart < hostEnd
+        else {
+            throw SSHHostTrustError.invalidPrompt
+        }
+        let promptDestination = String(hostLine[hostStart ..< hostEnd])
         let fingerprintMarkers = [
             " key fingerprint is: ",
             " key fingerprint is ",
@@ -129,7 +149,8 @@ struct SSHHostTrustManager: Sendable {
             throw SSHHostTrustError.invalidPrompt
         }
         return SSHHostKeyConfirmation(
-            destination: destination,
+            destination: promptDestination,
+            connectionDestination: destination,
             algorithm: algorithm,
             fingerprint: fingerprint,
             openSSHPrompt: openSSHPrompt
@@ -140,6 +161,7 @@ struct SSHHostTrustManager: Sendable {
         let directory: URL
         let helper: URL
         let observedPrompt: URL
+        let approvedPrompt: URL
         let expectedPrompt: URL
     }
 
@@ -162,6 +184,7 @@ struct SSHHostTrustManager: Sendable {
                 directory: directory,
                 helper: directory.appendingPathComponent("askpass"),
                 observedPrompt: directory.appendingPathComponent("observed"),
+                approvedPrompt: directory.appendingPathComponent("approved"),
                 expectedPrompt: directory.appendingPathComponent("expected")
             )
             try Data(Self.askPassScript.utf8).write(
@@ -195,6 +218,8 @@ struct SSHHostTrustManager: Sendable {
     if [ -n "${GHOSTHUB_SSH_EXPECTED_PROMPT_PATH:-}" ] && \
        /usr/bin/cmp -s "$GHOSTHUB_SSH_PROMPT_PATH" \
        "$GHOSTHUB_SSH_EXPECTED_PROMPT_PATH"; then
+        : > "$GHOSTHUB_SSH_APPROVED_PROMPT_PATH"
+        /bin/rm -f "$GHOSTHUB_SSH_PROMPT_PATH"
         /usr/bin/printf 'yes\\n'
     else
         /usr/bin/printf 'no\\n'
@@ -205,6 +230,7 @@ struct SSHHostTrustManager: Sendable {
         host: SSHHostInfo,
         helper: URL,
         observedPrompt: URL,
+        approvedPrompt: URL,
         expectedPrompt: URL?
     ) {
         var arguments = [
@@ -235,16 +261,18 @@ struct SSHHostTrustManager: Sendable {
             "SSH_ASKPASS_REQUIRE": "force",
             "DISPLAY": "ghosthub",
             "GHOSTHUB_SSH_PROMPT_PATH": observedPrompt.path,
+            "GHOSTHUB_SSH_APPROVED_PROMPT_PATH": approvedPrompt.path,
             "GHOSTHUB_SSH_EXPECTED_PROMPT_PATH": "",
         ]
         if let expectedPrompt {
             environment["GHOSTHUB_SSH_EXPECTED_PROMPT_PATH"] =
                 expectedPrompt.path
         }
-        _ = TmuxBinaryResolver.runProcess(
+        _ = TmuxBinaryResolver.runProcessInLoginShell(
             executable: "/usr/bin/ssh",
             arguments: arguments,
             timeout: 12,
+            accountShell: TmuxBinaryResolver.loginShell(),
             environmentOverrides: environment
         )
     }
