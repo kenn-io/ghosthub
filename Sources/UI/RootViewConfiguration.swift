@@ -150,6 +150,10 @@ public struct InteractionHandlers {
         ((WorkspaceTmuxSessionSelection) async throws -> Void)?
     public let createTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)?
     public let refreshWorkspaceInventory: (() -> Void)?
+    public let reviewSSHHostKey:
+        ((UUID) async -> Result<SSHHostKeyConfirmation?, HostProbeError>)?
+    public let trustSSHHostKey:
+        ((UUID, SSHHostKeyConfirmation) async -> Result<Void, HostProbeError>)?
     public let registerProject:
         ((HostSummary, String) async -> Result<String, HostProbeError>)?
     public let createWorktree:
@@ -181,6 +185,10 @@ public struct InteractionHandlers {
         ((WorkspaceTmuxSessionSelection) async throws -> Void)? = nil,
         createTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)? = nil,
         refreshWorkspaceInventory: (() -> Void)? = nil,
+        reviewSSHHostKey:
+        ((UUID) async -> Result<SSHHostKeyConfirmation?, HostProbeError>)? = nil,
+        trustSSHHostKey:
+        ((UUID, SSHHostKeyConfirmation) async -> Result<Void, HostProbeError>)? = nil,
         registerProject:
         ((HostSummary, String) async -> Result<String, HostProbeError>)? = nil,
         createWorktree:
@@ -207,6 +215,8 @@ public struct InteractionHandlers {
         self.applyTmuxSessionTheme = applyTmuxSessionTheme
         self.createTmuxSession = createTmuxSession
         self.refreshWorkspaceInventory = refreshWorkspaceInventory
+        self.reviewSSHHostKey = reviewSSHHostKey
+        self.trustSSHHostKey = trustSSHHostKey
         self.registerProject = registerProject
         self.createWorktree = createWorktree
         self.listBranches = listBranches

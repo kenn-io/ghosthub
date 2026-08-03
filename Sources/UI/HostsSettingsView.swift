@@ -912,49 +912,9 @@ public struct HostsSettingsView: View {
             Label("Trust SSH Host?", systemImage: "lock.shield")
                 .font(.system(size: 20, weight: .semibold))
 
-            Text(
-                "OpenSSH reported a previously unseen host key for this exact"
-                    + " destination:"
+            SSHHostKeyConfirmationDetails(
+                confirmation: pending.confirmation
             )
-            Text(pending.confirmation.destination)
-                .font(.system(.body, design: .monospaced))
-                .textSelection(.enabled)
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text(pending.confirmation.algorithm)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                Text(pending.confirmation.fingerprint)
-                    .font(.system(.body, design: .monospaced))
-                    .textSelection(.enabled)
-            }
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text("OpenSSH details")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                Text(pending.confirmation.openSSHPrompt)
-                    .font(.system(size: 11, design: .monospaced))
-                    .textSelection(.enabled)
-                    .padding(10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(
-                        RoundedRectangle(
-                            cornerRadius: 8,
-                            style: .continuous
-                        )
-                        .fill(.secondary.opacity(0.08))
-                    )
-            }
-
-            Text(
-                "Verify this fingerprint through a trusted channel. Trusting"
-                    + " it authorizes OpenSSH to save only the key shown above"
-                    + " for this destination."
-            )
-            .font(.system(size: 12))
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
 
             if let hostTrustErrorMessage {
                 Text(hostTrustErrorMessage)

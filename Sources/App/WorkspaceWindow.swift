@@ -721,6 +721,17 @@ struct WorkspaceWindow: View {
                 refreshWorkspaceInventory: { [sceneModel] in
                     sceneModel.refreshKwtInventory()
                 },
+                reviewSSHHostKey: { [sceneModel] hostID in
+                    await sceneModel.pendingSSHHostKeyConfirmation(
+                        forHostID: hostID
+                    )
+                },
+                trustSSHHostKey: { [sceneModel] hostID, confirmation in
+                    await sceneModel.trustSSHHostKey(
+                        confirmation,
+                        forHostID: hostID
+                    )
+                },
                 registerProject: { [sceneModel] host, path in
                     await sceneModel.registerProject(path, on: host)
                 },

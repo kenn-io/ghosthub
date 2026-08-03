@@ -2351,6 +2351,17 @@ final class WorkspaceSceneModel: ObservableObject {
         }.value
     }
 
+    func pendingSSHHostKeyConfirmation(
+        forHostID hostID: UUID
+    ) async -> Result<SSHHostKeyConfirmation?, HostProbeError> {
+        guard let host = configuredSSHHost(for: hostID) else {
+            return .failure(.message(
+                "The selected remote host is no longer configured."
+            ))
+        }
+        return await pendingSSHHostKeyConfirmation(for: host)
+    }
+
     func trustSSHHostKey(
         _ confirmation: SSHHostKeyConfirmation,
         for host: SSHHost
@@ -2372,6 +2383,30 @@ final class WorkspaceSceneModel: ObservableObject {
                 ))
             }
         }.value
+    }
+
+    func trustSSHHostKey(
+        _ confirmation: SSHHostKeyConfirmation,
+        forHostID hostID: UUID
+    ) async -> Result<Void, HostProbeError> {
+        guard let host = configuredSSHHost(for: hostID) else {
+            return .failure(.message(
+                "The selected remote host is no longer configured."
+            ))
+        }
+        return await trustSSHHostKey(confirmation, for: host)
+    }
+
+    private func configuredSSHHost(for hostID: UUID) -> SSHHost? {
+        guard let host = snapshot.host(id: hostID),
+              host.kind == .remote,
+              let destination = host.sshDestination else { return nil }
+        return SSHHost(
+            configKey: host.configKey,
+            name: host.name,
+            platform: host.platform,
+            sshDestination: destination
+        )
     }
 
     private func resolvedSSHHost(

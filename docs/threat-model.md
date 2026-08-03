@@ -115,14 +115,17 @@ its tmux session. Import itself does not start tmux or execute a configured
 project layout, bootstrap, agent, or checkout command. It returns the
 deterministic workspace-specific socket identity without creating the server.
 
-Testing a newly configured SSH connection delegates host-key verification and
-storage to the user's OpenSSH configuration, just like inventory, attachment,
-and helper installation. For an unseen key, Ghosthub runs OpenSSH with its
-interactive `ask` policy through a private askpass channel, presents the exact
-destination and fingerprint, and returns `yes` only after explicit approval.
+Testing a newly configured SSH connection and reviewing a host-scoped
+inventory warning delegate host-key verification and storage to the user's
+OpenSSH configuration, just like inventory, attachment, and helper
+installation. For an unseen key, Ghosthub runs OpenSSH with its interactive
+`ask` policy through a private askpass channel, presents the exact destination
+and fingerprint, and returns `yes` only after explicit approval.
 The approval is bound to the complete OpenSSH prompt; if the key changes before
 approval, Ghosthub rejects it and presents the new fingerprint on the next
-test. OpenSSH writes the approved key to its configured `UserKnownHostsFile`.
+test. OpenSSH writes the approved key to its configured `UserKnownHostsFile`,
+after which Ghosthub retries the connection or inventory operation that led to
+the review.
 Ghosthub never forces `accept-new`, writes a scanned key itself, or treats a
 trusted short alias as authorization for a canonical MagicDNS FQDN.
 

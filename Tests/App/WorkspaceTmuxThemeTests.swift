@@ -23,7 +23,7 @@ private let newerStyle = TmuxPresentationStyle(
     background: "#F0F1F2"
 )
 
-@Suite("workspace tmux themes")
+@Suite("workspace tmux themes", .serialized)
 struct WorkspaceTmuxThemeTests {
     @Test("follow-config uses effective libghostty colors")
     func followConfigStyle() {

@@ -5,7 +5,7 @@ import GhosthubWorkspace
 import Testing
 @testable import GhosthubApp
 
-@Suite("Native tmux connection identity")
+@Suite("Native tmux connection identity", .serialized)
 @MainActor
 struct NativeTmuxSessionCoordinatorTests {
     @Test("new named sessions use tmux create-or-attach mode")

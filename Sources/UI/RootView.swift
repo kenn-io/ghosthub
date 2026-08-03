@@ -29,6 +29,8 @@ public struct RootView: View {
     @State private var newTmuxSessionHost: HostSummary?
     @State private var addProjectHost: HostSummary?
     @State private var workspaceAlert: WorkspaceAlert?
+    @StateObject private var sshHostKeyReview =
+        WorkspaceSSHHostKeyReviewModel()
 
     public init(
         display: WorkspaceDisplayState,
@@ -79,6 +81,23 @@ public struct RootView: View {
             }
             .sheet(isPresented: $isLogViewerPresented) {
                 logViewerSheet
+            }
+            .sheet(
+                isPresented: Binding(
+                    get: { sshHostKeyReview.isPresented },
+                    set: {
+                        if !$0 {
+                            sshHostKeyReview.dismiss()
+                        }
+                    }
+                )
+            ) {
+                SSHHostKeyReviewView(
+                    model: sshHostKeyReview,
+                    onTrust: trustReviewedSSHHostKey,
+                    onOpenHostSettings: openHostSettings,
+                    onCancel: sshHostKeyReview.dismiss
+                )
             }
             .sheet(item: $newWorktreeProject) { project in
                 NewWorktreeSheet(
@@ -406,8 +425,10 @@ public struct RootView: View {
                 handlers.refreshWorkspaceInventory?()
             },
             onOpenHostSettings: {
-                settingsStore.selectedDomain = .hosts
-                isSettingsPresented = true
+                openHostSettings()
+            },
+            onReviewSSHHostKey: { hostID in
+                reviewSSHHostKey(hostID)
             },
             inventoryWarning: display.workspaceInventoryWarning,
             inventoryWarningsByHost:
@@ -418,6 +439,45 @@ public struct RootView: View {
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(WorkspaceSurfaceColor.color)
+    }
+
+    private func reviewSSHHostKey(_ hostID: UUID) {
+        guard let review = handlers.reviewSSHHostKey,
+              let host = snapshot.host(id: hostID) else {
+            openHostSettings()
+            return
+        }
+        Task {
+            await sshHostKeyReview.review(
+                hostID: hostID,
+                hostName: host.name,
+                using: review
+            )
+        }
+    }
+
+    private func trustReviewedSSHHostKey() {
+        guard let trust = handlers.trustSSHHostKey else {
+            openHostSettings()
+            return
+        }
+        Task {
+            await sshHostKeyReview.trust(
+                using: trust,
+                onTrusted: {
+                    handlers.refreshWorkspaceInventory?()
+                }
+            )
+        }
+    }
+
+    private func openHostSettings() {
+        sshHostKeyReview.dismiss()
+        settingsStore.selectedDomain = .hosts
+        Task { @MainActor in
+            await Task.yield()
+            isSettingsPresented = true
+        }
     }
 
     private func activateTmuxSession(_ session: WorkspaceTmuxSessionSelection) {

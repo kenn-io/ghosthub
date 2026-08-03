@@ -163,13 +163,14 @@ twice.
 ### External State
 
 SSH transport, configuration resolution, and host-key storage remain owned by
-the system OpenSSH client. When **Test Connection** encounters an unseen key,
-Ghosthub presents the exact destination and fingerprint through an explicit
-trust sheet. Approval is returned to that same OpenSSH prompt through a private
-askpass channel; Ghosthub neither substitutes a short alias nor writes a key
-obtained from a separate scanner. The approved key therefore lands in the
-`UserKnownHostsFile` selected by the user's OpenSSH configuration before the
-ordinary noninteractive probe retries.
+the system OpenSSH client. When **Test Connection** or a host-scoped inventory
+warning encounters an unseen key, Ghosthub presents the exact destination and
+fingerprint through an explicit trust sheet. Approval is returned to that same
+OpenSSH prompt through a private askpass channel; Ghosthub neither substitutes
+a short alias nor writes a key obtained from a separate scanner. The approved
+key therefore lands in the `UserKnownHostsFile` selected by the user's OpenSSH
+configuration before the ordinary noninteractive probe or inventory refresh
+retries.
 
 Ghosthub bundles revision-pinned kwt CLI builds for local project and worktree
 operations and for `darwin/{amd64,arm64}`, `linux/{amd64,arm64}`, and

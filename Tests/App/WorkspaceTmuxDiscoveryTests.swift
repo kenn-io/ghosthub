@@ -8,7 +8,7 @@ import GhosthubWorkspace
 import Testing
 @testable import GhosthubApp
 
-@Suite("Workspace tmux discovery")
+@Suite("Workspace tmux discovery", .serialized)
 struct WorkspaceTmuxDiscoveryTests {
     private enum CreationKwtFailurePhase: CaseIterable, Sendable {
         case command

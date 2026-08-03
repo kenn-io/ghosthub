@@ -7,7 +7,7 @@ import Testing
 @testable import GhosthubApp
 @testable import GhosthubTerminal
 
-@Suite("Workspace terminal configuration")
+@Suite("Workspace terminal configuration", .serialized)
 @MainActor
 struct WorkspaceTerminalConfigTests {
     @Test("only the focused window selects the app-wide project config")

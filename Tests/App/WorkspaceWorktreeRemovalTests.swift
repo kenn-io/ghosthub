@@ -124,7 +124,7 @@ private func inventory(
     ])
 }
 
-@Suite("Workspace worktree removal")
+@Suite("Workspace worktree removal", .serialized)
 struct WorkspaceWorktreeRemovalTests {
     @MainActor
     @Test(

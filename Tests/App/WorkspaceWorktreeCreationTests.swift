@@ -55,7 +55,7 @@ private enum WorktreeMutationProbeError: Error, Equatable {
     case invoked(projectPath: String)
 }
 
-@Suite("Workspace worktree creation")
+@Suite("Workspace worktree creation", .serialized)
 struct WorkspaceWorktreeCreationTests {
     @Test("separate scene models serialize mutations by host and project")
     @MainActor

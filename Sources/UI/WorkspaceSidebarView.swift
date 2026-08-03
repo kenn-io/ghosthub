@@ -128,6 +128,7 @@ struct WorkspaceSidebarView: View {
     let onAddProject: (HostSummary) -> Void
     let onRefreshInventory: () -> Void
     let onOpenHostSettings: () -> Void
+    let onReviewSSHHostKey: (UUID) -> Void
     let inventoryWarning: String?
     let inventoryWarningsByHost: [UUID: String]
     @State private var presentedInventoryWarning:
@@ -173,6 +174,7 @@ struct WorkspaceSidebarView: View {
         onAddProject: @escaping (HostSummary) -> Void = { _ in },
         onRefreshInventory: @escaping () -> Void = {},
         onOpenHostSettings: @escaping () -> Void = {},
+        onReviewSSHHostKey: @escaping (UUID) -> Void = { _ in },
         inventoryWarning: String? = nil,
         inventoryWarningsByHost: [UUID: String] = [:],
         onOpen: @escaping (WorktreeSummary) -> Void = { _ in }
@@ -193,6 +195,7 @@ struct WorkspaceSidebarView: View {
         self.onAddProject = onAddProject
         self.onRefreshInventory = onRefreshInventory
         self.onOpenHostSettings = onOpenHostSettings
+        self.onReviewSSHHostKey = onReviewSSHHostKey
         self.inventoryWarning = inventoryWarning
         self.inventoryWarningsByHost = inventoryWarningsByHost
         self.onOpen = onOpen
@@ -252,7 +255,10 @@ struct WorkspaceSidebarView: View {
             isPresented: inventoryWarningIsPresented,
             presenting: presentedInventoryWarning
         ) { warning in
-            if warning.isHostScoped {
+            if let hostID = warning.hostID {
+                Button("Review Host Key") {
+                    onReviewSSHHostKey(hostID)
+                }
                 Button("Host Settings") {
                     onOpenHostSettings()
                 }
@@ -433,7 +439,7 @@ struct WorkspaceSidebarView: View {
                 Button {
                     presentInventoryWarning(
                         inventoryWarning,
-                        isHostScoped: false
+                        hostID: nil
                     )
                 } label: {
                     Image(systemName: "exclamationmark.triangle.fill")
@@ -1145,6 +1151,7 @@ struct WorkspaceSidebarView: View {
             if let inventoryWarning {
                 inventoryWarningButton(
                     inventoryWarning,
+                    hostID: actionHost?.id,
                     accessibilityLabel:
                     "Show connection issue for \(row.title)"
                 )
@@ -1292,10 +1299,11 @@ struct WorkspaceSidebarView: View {
 
     private func inventoryWarningButton(
         _ warning: String,
+        hostID: UUID?,
         accessibilityLabel: String
     ) -> some View {
         Button {
-            presentInventoryWarning(warning, isHostScoped: true)
+            presentInventoryWarning(warning, hostID: hostID)
         } label: {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 11, weight: .semibold))
@@ -1323,11 +1331,11 @@ struct WorkspaceSidebarView: View {
 
     private func presentInventoryWarning(
         _ message: String,
-        isHostScoped: Bool
+        hostID: UUID?
     ) {
         presentedInventoryWarning = PresentedInventoryWarning(
             message: message,
-            isHostScoped: isHostScoped
+            hostID: hostID
         )
     }
 
@@ -1545,5 +1553,5 @@ struct WorkspaceSidebarView: View {
 
 private struct PresentedInventoryWarning {
     let message: String
-    let isHostScoped: Bool
+    let hostID: UUID?
 }
