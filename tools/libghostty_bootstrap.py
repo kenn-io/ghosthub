@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
 import re
 import shlex
 import shutil
@@ -12,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-GHOSTHUB_BOOTSTRAP_VERSION = 20
+GHOSTHUB_BOOTSTRAP_VERSION = 21
 GHOSTHUB_GHOSTTY_BUNDLE_ID = "com.ghosthub"
 GHOSTHUB_TERM_PROGRAM = "ghosthub"
 
@@ -120,10 +121,10 @@ def render_build_command(
         f"-Doptimize={optimize}",
         f"-Dxcframework-target={xcframework_target}",
     ]
-    # LIBGHOSTTY_ZIG_BUILD_ARGS appends machine-specific flags to the
-    # `zig build` invocation (e.g. `--sysroot <patched SDK>` where the
-    # active Xcode SDK's tbd stubs are incompatible with the pinned
-    # Zig's linker).
+    # LIBGHOSTTY_ZIG_BUILD_ARGS appends machine-specific target flags to the
+    # `zig build` invocation. A `--sysroot` value here does not affect Zig's
+    # own build-runner compile; prepare_zig_build_environment handles that SDK
+    # selection before this command runs.
     extra = os.environ.get("LIBGHOSTTY_ZIG_BUILD_ARGS", "").strip()
     if extra:
         command.extend(shlex.split(extra))
@@ -1064,6 +1065,157 @@ def ensure_metal_toolchain(xcrun: str) -> None:
         ) from error
 
 
+def macos_sdk_targets(sdk_path: Path) -> frozenset[str]:
+    stub_path = sdk_path / "usr" / "lib" / "libSystem.B.tbd"
+    try:
+        contents = stub_path.read_text()
+    except OSError as error:
+        raise BootstrapError(
+            f"macOS SDK is missing its libSystem target stub: {stub_path}"
+        ) from error
+
+    match = re.search(r"^targets:\s*\[([^\]]+)\]", contents, re.MULTILINE)
+    if match is None:
+        raise BootstrapError(
+            f"Could not read target architectures from {stub_path}."
+        )
+    return frozenset(
+        target.strip()
+        for target in match.group(1).split(",")
+        if target.strip()
+    )
+
+
+def macos_sdk_version(sdk_path: Path) -> tuple[int, ...]:
+    match = re.fullmatch(r"MacOSX(\d+(?:\.\d+)*)\.sdk", sdk_path.name)
+    if match is None:
+        return ()
+    return tuple(int(part) for part in match.group(1).split("."))
+
+
+def find_compatible_macos_sdk(
+    required_target: str,
+    sdk_roots: list[Path],
+) -> Path | None:
+    compatible: list[Path] = []
+    seen: set[Path] = set()
+    for root in sdk_roots:
+        if not root.is_dir():
+            continue
+        for candidate in root.glob("MacOSX*.sdk"):
+            resolved = candidate.resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            try:
+                targets = macos_sdk_targets(resolved)
+            except BootstrapError:
+                continue
+            if required_target in targets:
+                compatible.append(resolved)
+
+    if not compatible:
+        return None
+    return max(compatible, key=lambda path: (macos_sdk_version(path), str(path)))
+
+
+def macos_sdk_roots(active_sdk: Path) -> list[Path]:
+    roots = [
+        active_sdk.parent,
+        Path("/Library/Developer/CommandLineTools/SDKs"),
+    ]
+    applications = Path("/Applications")
+    if applications.is_dir():
+        roots.extend(
+            xcode
+            / "Contents"
+            / "Developer"
+            / "Platforms"
+            / "MacOSX.platform"
+            / "Developer"
+            / "SDKs"
+            for xcode in applications.glob("Xcode*.app")
+        )
+    return roots
+
+
+def write_xcrun_sdk_shim(
+    repo_root: Path,
+    xcrun_path: str,
+    sdk_path: Path,
+) -> Path:
+    shim_dir = repo_root / ".build" / "libghostty-tools"
+    shim_dir.mkdir(parents=True, exist_ok=True)
+    shim_path = shim_dir / "xcrun"
+    shim_path.write_text(
+        "#!/bin/bash\n"
+        "set -euo pipefail\n"
+        'if [[ "$*" == "--sdk macosx --show-sdk-path" || '
+        '"$*" == "--show-sdk-path --sdk macosx" ]]; then\n'
+        f"  printf '%s\\n' {shlex.quote(str(sdk_path))}\n"
+        "  exit 0\n"
+        "fi\n"
+        f"exec {shlex.quote(xcrun_path)} \"$@\"\n"
+    )
+    shim_path.chmod(0o755)
+    return shim_path
+
+
+def prepare_zig_build_environment(
+    repo_root: Path,
+    xcrun_path: str,
+) -> dict[str, str]:
+    environment = os.environ.copy()
+    if platform.system() != "Darwin":
+        return environment
+
+    machine = platform.machine().lower()
+    required_target = {
+        "aarch64": "arm64-macos",
+        "arm64": "arm64-macos",
+        "x86_64": "x86_64-macos",
+    }.get(machine)
+    if required_target is None:
+        return environment
+
+    try:
+        active_sdk = Path(
+            read_tool_output([xcrun_path, "--sdk", "macosx", "--show-sdk-path"])
+        ).resolve()
+        active_targets = macos_sdk_targets(active_sdk)
+    except (BootstrapError, subprocess.CalledProcessError) as error:
+        raise BootstrapError(
+            "Could not inspect the active macOS SDK used by Zig. Verify the "
+            "selected full Xcode installation with `xcode-select -p`."
+        ) from error
+
+    if required_target in active_targets:
+        return environment
+
+    roots = macos_sdk_roots(active_sdk)
+    fallback_sdk = find_compatible_macos_sdk(required_target, roots)
+    if fallback_sdk is None:
+        searched = ", ".join(str(root) for root in roots)
+        targets = ", ".join(sorted(active_targets)) or "none"
+        raise BootstrapError(
+            f"The active macOS SDK {active_sdk} advertises [{targets}], but the "
+            f"pinned Zig build runner requires {required_target}. No compatible "
+            f"SDK was found under: {searched}. Install or select Xcode 26.0.1, "
+            "then rerun `make bootstrap-libghostty`."
+        )
+
+    shim_path = write_xcrun_sdk_shim(repo_root, xcrun_path, fallback_sdk)
+    existing_path = environment.get("PATH", "")
+    environment["PATH"] = str(shim_path.parent)
+    if existing_path:
+        environment["PATH"] += os.pathsep + existing_path
+    print(
+        f"Using macOS SDK {fallback_sdk} for the pinned Zig build runner; "
+        f"the active SDK {active_sdk} does not advertise {required_target}."
+    )
+    return environment
+
+
 def artifact_state_message(
     artifacts: ArtifactPaths,
     metadata: VendorMetadata,
@@ -1386,10 +1538,16 @@ def bootstrap(
         zig_version = read_tool_output([zig_path, "version"])
         ensure_supported_zig_version(zig_version, metadata.required_zig_version)
         ensure_metal_toolchain(xcrun_path)
+        build_environment = prepare_zig_build_environment(paths.repo_root, xcrun_path)
 
         command = render_build_command(zig_path, xcframework_target, optimize)
         try:
-            subprocess.run(command, cwd=str(paths.source_checkout_root), check=True)
+            subprocess.run(
+                command,
+                cwd=str(paths.source_checkout_root),
+                check=True,
+                env=build_environment,
+            )
         except subprocess.CalledProcessError as error:
             raise BootstrapError(
                 "Ghostty build failed. Common macOS setup requirements are a compatible Zig "

@@ -1,7 +1,8 @@
-# Quick Start
+# Internal Quick Start
 
-Ghosthub currently targets macOS and requires a full Xcode install because it
-builds Swift code and bootstraps libghostty locally.
+These instructions are for Kenn engineers and approved contributors. Ghosthub
+currently targets macOS and requires a full Xcode install because it builds
+Swift code and bootstraps libghostty locally.
 
 ## Prerequisites
 
@@ -15,8 +16,25 @@ builds Swift code and bootstraps libghostty locally.
 - Metal Toolchain installed for the selected Xcode.
 - `uv` for Python tooling.
 - Go for building Ghosthub's pinned kwt helper.
-- `zig` 0.15.2 or newer for libghostty bootstrap.
+- A Zig version at least as new as `required_zig_version` in
+  `Vendor/ghostty.version.json` for libghostty bootstrap.
 - `git`, `xcodebuild`, and `xcrun`.
+
+Complete Xcode's first-launch setup before bootstrapping:
+
+```bash
+sudo xcodebuild -runFirstLaunch
+xcodebuild -downloadComponent MetalToolchain
+xcrun --kill-cache
+xcrun --sdk macosx --find metal
+```
+
+The pinned Zig build runner cannot link against an SDK that omits the native
+Mac target from `libSystem.B.tbd`. Bootstrap checks the active SDK and, when
+necessary, automatically exposes the newest compatible SDK already installed
+with Xcode or Command Line Tools. It does not change the system-wide Xcode
+selection. See [Troubleshooting](troubleshooting.md) if no compatible SDK is
+installed.
 
 ## Build and Launch
 

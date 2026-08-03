@@ -88,13 +88,20 @@ make test-essential-workflows
 This runs the focused kwt inventory, host resolution, sidebar, and ordinary
 tmux attachment contracts.
 
-## Apple Silicon macOS CI
+## Apple Silicon macOS toolchain
 
 Pull requests and pushes to `main` run `.github/workflows/ci.yml` on GitHub's
 hosted `macos-26` Apple Silicon image. The workflow pins Xcode 26.0.1 and the
-exact Zig 0.15.2 toolchain required by the pinned Ghostty source, then runs the
-complete build and test gates in a fresh environment. Newer Xcode 26 SDK stubs
-are not link-compatible with that Ghostty/Zig build-tool combination.
+exact Zig toolchain required by the pinned Ghostty source, then runs the
+complete build and test gates in a fresh environment.
+
+Some newer Xcode SDK stubs do not advertise the plain `arm64-macos` target
+required by the pinned Zig build runner. Local bootstrap detects that mismatch
+and places a repository-local `xcrun` shim ahead of `PATH` for the Zig process,
+pointing SDK discovery at the newest compatible installed SDK. The selected
+developer directory and the caller's environment remain unchanged. If no
+compatible SDK is installed, bootstrap stops with the searched locations and
+the supported Xcode baseline instead of failing later with linker errors.
 
 CI builds libghostty with `LIBGHOSTTY_XCFRAMEWORK_TARGET=native`, producing the
 arm64 slice for the hosted runner. The project default remains `aarch64` for
@@ -131,10 +138,12 @@ history, and session lifetime.
 A full local release-app build:
 
 ```bash
-make release-app \
-  RELEASE_APP_VERSION=0.5.0 \
-  RELEASE_BUILD_VERSION=0.5.0
+make release-app
 ```
+
+The app version comes from `RELEASE_VERSION`; the build number defaults to the
+current commit count. Override them only when deliberately testing alternate
+packaging inputs.
 
 Ghosthub bundles kwt CLI helpers but no daemon. A clean `make release-app`
 builds the pinned local helper and the Darwin/Linux amd64/arm64 remote matrix
@@ -144,9 +153,7 @@ Outputs land in `dist/release/`.
 DMG build:
 
 ```bash
-make release-dmg \
-  RELEASE_APP_VERSION=0.5.0 \
-  RELEASE_BUILD_VERSION=0.5.0
+make release-dmg
 ```
 
 If Apple signing and notary environment variables are present, this

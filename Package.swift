@@ -8,7 +8,7 @@ let packageRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
 let libghosttyBuildRoot = packageRoot.appendingPathComponent(".build/libghostty", isDirectory: true)
 let vendorMetadataPath = packageRoot.appendingPathComponent("Vendor/ghostty.version.json")
 let libghosttyManifestPath = libghosttyBuildRoot.appendingPathComponent("manifest.json")
-let requiredLibghosttyBootstrapVersion = 20
+let requiredLibghosttyBootstrapVersion = 21
 
 func loadJSONDictionary(at url: URL) -> [String: Any]? {
     guard let data = try? Data(contentsOf: url),

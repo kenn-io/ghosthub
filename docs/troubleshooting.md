@@ -26,10 +26,14 @@ make bootstrap-libghostty LIBGHOSTTY_ZIG=/opt/homebrew/bin/zig
 
 ## Bootstrap fails with `missing Metal Toolchain`
 
-Install the toolchain component for the active Xcode selection:
+Complete first-launch setup and install the toolchain component for the active
+Xcode selection:
 
 ```bash
+sudo xcodebuild -runFirstLaunch
 xcodebuild -downloadComponent MetalToolchain
+xcrun --kill-cache
+xcrun --sdk macosx --find metal
 make bootstrap-libghostty
 ```
 
@@ -40,6 +44,25 @@ at a full Xcode install rather than Command Line Tools only:
 sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
 make bootstrap-libghostty
 ```
+
+## Bootstrap reports that the active macOS SDK is incompatible
+
+The pinned Zig build runner needs the native architecture target in the SDK's
+`libSystem.B.tbd`. Some newer SDKs advertise only the corresponding `arm64e`
+target. Ghosthub detects this before building and automatically uses the
+newest compatible macOS SDK already installed with Xcode or Command Line
+Tools. The selected fallback is printed during bootstrap.
+
+If bootstrap reports that it could not find a compatible SDK, install or
+select the supported Xcode baseline named in the error and rerun:
+
+```bash
+make bootstrap-libghostty
+```
+
+Do not add `--sysroot` to `LIBGHOSTTY_ZIG_BUILD_ARGS` for this failure. That
+flag reaches the Ghostty build command but not the Zig build-runner compile
+that fails first.
 
 ## Verify bootstrap state without rebuilding
 

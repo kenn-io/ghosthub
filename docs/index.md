@@ -1,31 +1,30 @@
 ---
 title: Ghosthub
-description: Worktree-centric terminal multiplexing for AI development
+description: Internal engineering guide for Ghosthub
 ---
 
 # Ghosthub
 
-Ghosthub is a native macOS terminal workspace for developers who run many AI
-agent sessions across many git worktrees. It combines libghostty terminal
-surfaces, worktree-aware navigation, and ordinary tmux clients across local
-and SSH hosts.
+Ghosthub is a native macOS terminal for local and remote tmux fleets. It gives
+equal status to ordinary tmux sessions and sessions bound to managed git
+worktrees, all presented through libghostty terminal surfaces.
 
-The current product is pre-release. These docs are for people building,
-operating, and contributing to Ghosthub today.
+Ghosthub is alpha software. These are internal engineering docs for Kenn
+engineers and approved contributors building, operating, and releasing it.
 
 ## What Ghosthub Is
 
-- A worktree-centric terminal multiplexer for macOS.
+- A native terminal and control plane for local and remote tmux sessions.
 - A native Swift app built around embedded libghostty terminal surfaces.
-- A control plane for local and remote tmux-backed sessions.
-- A native shell over kwt worktree state and local or remote tmux sessions.
+- A manager for optional worktree-bound sessions and their lifecycle through
+  kwt, including branch and GitHub pull-request imports.
 
 ## What Ghosthub Is Not
 
 - It is not Ghostty.app and does not read Ghostty.app configuration.
 - It does not vendor a Go backend or require a git submodule checkout.
-- It is not production-stable yet. Schema and API contracts are still allowed
-  to change directly.
+- It is alpha software. Schema and API contracts are still allowed to change
+  directly.
 
 ## Runtime Shape
 
