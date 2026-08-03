@@ -111,8 +111,7 @@ final class UpdateRelaunchRestorer {
     private let store: UpdateRelaunchManifestStore
     private var statesByID: [UUID: WorkspaceWindowState]
     private var orderedWindowIDs: [UUID]
-    private var scheduledWindowIDs: Set<UUID> = []
-    private var displacedFallbackByReplayID: [UUID: UUID] = [:]
+    private var replayTargetByRequestID: [UUID: UUID] = [:]
     private var restoringWindowIDs: Set<UUID> = []
     private var sceneEntries: [UUID: SceneEntry] = [:]
     private var nextRegistrationOrder = 0
@@ -156,7 +155,7 @@ final class UpdateRelaunchRestorer {
     ) -> UpdateRelaunchSceneObservation {
         guard !orderedWindowIDs.isEmpty,
               !manifestConsumed || sceneEntries[sceneID] != nil
-              || !scheduledWindowIDs.isEmpty
+              || !replayTargetByRequestID.isEmpty
         else { return .ordinary }
         let registrationOrder = sceneEntries[sceneID]?.registrationOrder
             ?? nextRegistrationOrder
@@ -233,10 +232,10 @@ final class UpdateRelaunchRestorer {
         let claimedWindowIDs = Set(
             sceneEntries.values.compactMap { $0.assignment?.windowID }
         )
+        let scheduledWindowIDs = Set(replayTargetByRequestID.values)
         var missingWindowIDs = orderedWindowIDs.filter {
             !claimedWindowIDs.contains($0)
                 && !scheduledWindowIDs.contains($0)
-                && !restoringWindowIDs.contains($0)
         }
         let availableSceneIDs = sceneEntries
             .filter { $0.value.assignment == nil }
@@ -261,10 +260,10 @@ final class UpdateRelaunchRestorer {
         }
 
         let statesToOpen: [WorkspaceWindowState] = missingWindowIDs
-            .compactMap { windowID in
-                guard let state = statesByID[windowID] else { return nil }
-                scheduledWindowIDs.insert(windowID)
-                return state
+            .map { windowID in
+                let request = WorkspaceWindowState.fresh()
+                replayTargetByRequestID[request.windowID] = windowID
+                return request
             }
         restorations.forEach { restore, state in restore(state) }
         statesToOpen.forEach(openWindow)
@@ -273,8 +272,18 @@ final class UpdateRelaunchRestorer {
     func didBeginRestoring(windowID: UUID) {
         guard statesByID[windowID] != nil else { return }
         restoringWindowIDs.insert(windowID)
+        consumeManifestIfComplete()
+    }
+
+    private func consumeManifestIfComplete() {
+        let assignedWindowIDs = sceneEntries.values.compactMap {
+            $0.assignment?.windowID
+        }
         guard !manifestConsumed,
-              restoringWindowIDs.count == statesByID.count
+              replayTargetByRequestID.isEmpty,
+              restoringWindowIDs == Set(statesByID.keys),
+              assignedWindowIDs.count == statesByID.count,
+              Set(assignedWindowIDs) == Set(statesByID.keys)
         else {
             return
         }
@@ -318,39 +327,38 @@ final class UpdateRelaunchRestorer {
                 otherEntry.assignment = .fallback(assignedWindowID)
                 sceneEntries[sceneID] = entry
                 sceneEntries[otherSceneID] = otherEntry
-                scheduledWindowIDs.remove(saved.windowID)
                 otherEntry.restore(previousState)
                 return .restore(saved)
             }
-            guard scheduledWindowIDs.contains(saved.windowID) else {
+            guard let requestID = replayTargetByRequestID.first(where: {
+                $0.value == saved.windowID
+            })?.key,
+                let openWindow
+            else {
                 return .waitingForNativeRestoration
             }
             entry.assignment = .presented(saved.windowID)
             sceneEntries[sceneID] = entry
-            displacedFallbackByReplayID[saved.windowID] = assignedWindowID
+            replayTargetByRequestID[requestID] = assignedWindowID
+            openWindow(.fresh(windowID: requestID))
             return .restore(saved)
         }
-        guard let presented,
-              let saved = statesByID[presented.windowID]
-        else { return .waitingForNativeRestoration }
+        guard let presented else { return .waitingForNativeRestoration }
 
-        if let displacedWindowID = displacedFallbackByReplayID
-            .removeValue(forKey: saved.windowID),
-            let displacedState = statesByID[displacedWindowID] {
-            entry.assignment = .fallback(displacedWindowID)
+        if let replayTargetID = replayTargetByRequestID.removeValue(
+            forKey: presented.windowID
+        ), let replayState = statesByID[replayTargetID] {
+            entry.assignment = .replay(replayTargetID)
             sceneEntries[sceneID] = entry
-            scheduledWindowIDs.remove(saved.windowID)
-            return .restore(displacedState)
+            return .restore(replayState)
         }
+        guard let saved = statesByID[presented.windowID]
+        else { return .waitingForNativeRestoration }
         guard !sceneEntries.values.contains(where: {
             $0.assignment?.windowID == presented.windowID
         }) else { return .waitingForNativeRestoration }
 
-        if scheduledWindowIDs.remove(saved.windowID) != nil {
-            entry.assignment = .replay(saved.windowID)
-        } else {
-            entry.assignment = .presented(saved.windowID)
-        }
+        entry.assignment = .presented(saved.windowID)
         sceneEntries[sceneID] = entry
         return .restore(saved)
     }

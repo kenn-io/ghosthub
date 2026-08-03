@@ -109,11 +109,13 @@ window has registered its SwiftUI scene. Ghosthub waits for binding quiescence
 before unresolved scenes receive provisional unclaimed descriptors, then opens
 every saved window still missing. Later native descriptors correct provisional
 assignments, including by moving a displaced session to a provisionally opened
-replay scene. This covers absent or partial macOS restoration without swapping
-sessions between restored geometry or tab groups.
-The manifest is removed after every saved window has begun attach-only
-restoration; native scene restoration still supplies geometry and tab grouping
-when available.
+replay scene. Replay requests use distinct scene tokens so SwiftUI cannot satisfy
+them with a late native saved window, and displaced requests are explicitly
+reissued. This covers absent or partial macOS restoration without swapping
+sessions between restored geometry or tab groups. The manifest is removed only
+after every saved window has begun attach-only restoration in one live assigned
+scene; native scene restoration still supplies geometry and tab grouping when
+available.
 An ordinary local session must be present in direct discovery before Ghosthub
 runs the exact `attach-session` path. Remote sessions use that same rule and the
 existing SSH keepalive and transport-reconnect loop.

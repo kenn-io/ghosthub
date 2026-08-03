@@ -45,14 +45,18 @@ struct UpdateRelaunchRestorationTests {
         restorer.reconcileAfterSceneBindingsSettled()
 
         #expect(restored == [first])
-        #expect(opened == [second])
+        #expect(opened.count == 1)
+        let replayRequest = try #require(opened.first)
+        #expect(replayRequest.navigation == nil)
+        #expect(replayRequest.tmux == nil)
+        #expect(replayRequest.windowID != second.windowID)
         restorer.didBeginRestoring(windowID: first.windowID)
         #expect(FileManager.default.fileExists(atPath: store.fileURL.path))
 
         #expect(
             restorer.registerScene(
                 id: UUID(),
-                presented: second,
+                presented: replayRequest,
                 restore: { restored.append($0) },
                 openWindow: { opened.append($0) }
             ) == .restore(second)
@@ -186,7 +190,10 @@ struct UpdateRelaunchRestorationTests {
         )
         restorer.reconcileAfterSceneBindingsSettled()
 
-        #expect(opened == [second])
+        #expect(opened.count == 1)
+        #expect(opened.first?.navigation == nil)
+        #expect(opened.first?.tmux == nil)
+        #expect(opened.first?.windowID != second.windowID)
         #expect(FileManager.default.fileExists(atPath: store.fileURL.path))
     }
 
@@ -227,12 +234,12 @@ struct UpdateRelaunchRestorationTests {
         restorer.reconcileAfterSceneBindingsSettled()
 
         #expect(nativeRestored == [first])
-        #expect(opened == [second])
+        let replayRequest = try #require(opened.first)
         restorer.didBeginRestoring(windowID: first.windowID)
 
         let replayObservation = restorer.registerScene(
             id: UUID(),
-            presented: second,
+            presented: replayRequest,
             restore: { replayRestored.append($0) },
             openWindow: { opened.append($0) }
         )
@@ -253,7 +260,70 @@ struct UpdateRelaunchRestorationTests {
 
         #expect(nativeRestored.last == second)
         #expect(replayRestored.last == first)
-        #expect(opened == [second])
+        #expect(opened == [replayRequest])
+        #expect(!FileManager.default.fileExists(atPath: store.fileURL.path))
+    }
+
+    @Test("a displaced window stays pending until its replay scene is live")
+    func displacedWindowWaitsForReplayScene() throws {
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let store = UpdateRelaunchManifestStore(
+            fileURL: scratch.appendingPathComponent("relaunch.json")
+        )
+        let first = state(
+            sessionName: "editor",
+            socketName: nil,
+            owner: .unbound
+        )
+        let second = state(
+            sessionName: "review",
+            socketName: nil,
+            owner: .unbound
+        )
+        try store.save([first, second])
+        let restorer = UpdateRelaunchRestorer(store: store)
+        let nativeSceneID = UUID()
+        var nativeRestored: [WorkspaceWindowState] = []
+        var opened: [WorkspaceWindowState] = []
+
+        #expect(
+            restorer.registerScene(
+                id: nativeSceneID,
+                presented: nil,
+                restore: { nativeRestored.append($0) },
+                openWindow: { opened.append($0) }
+            ) == .waitingForNativeRestoration
+        )
+        restorer.nativeWindowRestorationDidFinish(expectedSceneCount: 1)
+        restorer.reconcileAfterSceneBindingsSettled()
+        let replayRequest = try #require(opened.first)
+        restorer.didBeginRestoring(windowID: first.windowID)
+
+        let nativeObservation = restorer.receivePresentedState(
+            sceneID: nativeSceneID,
+            presented: second
+        )
+        #expect(nativeObservation == .restore(second))
+        if case let .restore(state) = nativeObservation {
+            nativeRestored.append(state)
+            restorer.didBeginRestoring(windowID: state.windowID)
+        }
+
+        #expect(opened == [replayRequest, replayRequest])
+        #expect(FileManager.default.fileExists(atPath: store.fileURL.path))
+
+        let replayObservation = restorer.registerScene(
+            id: UUID(),
+            presented: replayRequest,
+            restore: { _ in },
+            openWindow: { opened.append($0) }
+        )
+        #expect(replayObservation == .restore(first))
+        restorer.didBeginRestoring(windowID: first.windowID)
+
+        #expect(nativeRestored.last == second)
         #expect(!FileManager.default.fileExists(atPath: store.fileURL.path))
     }
 

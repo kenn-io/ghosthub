@@ -49,8 +49,12 @@ in saved order, then requests a scene for every descriptor still missing. A
 later native descriptor remains authoritative and corrects provisional
 assignments. Scenes opened to replay missing descriptors also remain provisional:
 if a late native scene reclaims their descriptor, the replay scene receives the
-native scene's displaced descriptor instead. Native restoration therefore still
-owns geometry and tab grouping without dropping or duplicating a session.
+native scene's displaced descriptor instead. Replay requests use fresh scene
+tokens rather than saved window IDs, preventing SwiftUI from coalescing them with
+a late native scene; a displaced request is retargeted and issued again with the
+same token. The manifest remains until every saved descriptor has begun
+restoration in exactly one live assigned scene. Native restoration therefore
+still owns geometry and tab grouping without dropping or duplicating a session.
 An active tmux presentation retains the worktree generation observed when it
 was established; a later non-nil generation change is a replacement even when
 inventory reuses the same runtime UUID. Scene persistence observes the complete
