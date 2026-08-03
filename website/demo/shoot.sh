@@ -281,7 +281,7 @@ prepare_command_window() {
     palette "$query"
   fi
   sleep 3
-  demo_input sidebar
+  demo_input hide-sidebar
   sleep 1
 }
 
@@ -312,7 +312,7 @@ prepare_command_tab() {
     palette "$query"
   fi
   sleep 3
-  demo_input sidebar
+  demo_input hide-sidebar
   sleep 1
 }
 
