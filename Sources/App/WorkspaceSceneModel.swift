@@ -2746,6 +2746,7 @@ final class WorkspaceSceneModel: ObservableObject {
             BorrowedTmuxSessionView(
                 handle: handle,
                 hostName: host.name,
+                isRemoteHost: host.kind == .remote,
                 displayTitle: snapshot.worktrees.first {
                     $0.hostID == host.id
                         && $0.tmuxSessionName == sessionName

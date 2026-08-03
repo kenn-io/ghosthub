@@ -16,6 +16,7 @@ struct BorrowedTmuxSessionViewTests {
                 id: UUID(), hostID: UUID(), name: "editor", surfaceID: UUID()
             ),
             hostName: "build-box",
+            isRemoteHost: true,
             connectionState: .disconnected(reason: "SSH handshake failed"),
             surface: { nil },
             onCloseRequest: {},
@@ -23,6 +24,7 @@ struct BorrowedTmuxSessionViewTests {
             onHostSettingsRequest: { settingsCount += 1 }
         )
         #expect(view.disconnectionReason == "SSH handshake failed")
+        #expect(view.showsHostSettingsAction)
         view.onRetryRequest()
         view.onHostSettingsRequest()
         #expect(retryCount == 1)
@@ -36,6 +38,7 @@ struct BorrowedTmuxSessionViewTests {
                 id: UUID(), hostID: UUID(), name: "editor", surfaceID: UUID()
             ),
             hostName: "build-box",
+            isRemoteHost: true,
             connectionState: .disconnected(
                 reason: "The tmux client exited."
             ),
@@ -48,6 +51,7 @@ struct BorrowedTmuxSessionViewTests {
 
         #expect(view.disconnectionTitle == "Session ended")
         #expect(view.recoveryActionTitle == "Reopen")
+        #expect(!view.showsHostSettingsAction)
     }
 
     @Test("a closed attachment does not claim the session ended")
@@ -57,6 +61,7 @@ struct BorrowedTmuxSessionViewTests {
                 id: UUID(), hostID: UUID(), name: "editor", surfaceID: UUID()
             ),
             hostName: "build-box",
+            isRemoteHost: true,
             connectionState: .disconnected(
                 reason: "The tmux attachment closed."
             ),
@@ -69,5 +74,24 @@ struct BorrowedTmuxSessionViewTests {
 
         #expect(view.disconnectionTitle == "Attachment closed")
         #expect(view.recoveryActionTitle == "Reconnect")
+        #expect(!view.showsHostSettingsAction)
+    }
+
+    @Test("local attachment failures do not offer remote host settings")
+    func localFailureDoesNotShowHostSettings() {
+        let view = BorrowedTmuxSessionView(
+            handle: BorrowedTmuxSessionHandle(
+                id: UUID(), hostID: UUID(), name: "editor", surfaceID: UUID()
+            ),
+            hostName: "This Mac",
+            isRemoteHost: false,
+            connectionState: .disconnected(reason: "tmux unavailable"),
+            surface: { nil },
+            onCloseRequest: {},
+            onRetryRequest: {},
+            onHostSettingsRequest: {}
+        )
+
+        #expect(!view.showsHostSettingsAction)
     }
 }

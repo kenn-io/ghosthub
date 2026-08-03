@@ -9,6 +9,7 @@ final class WorkspaceSSHHostKeyReviewModel: ObservableObject {
     @Published private(set) var errorMessage: String?
     @Published private(set) var isLoading = false
     @Published private(set) var isTrusting = false
+    private var generation = UUID()
 
     var isPresented: Bool { hostID != nil }
 
@@ -20,14 +21,18 @@ final class WorkspaceSSHHostKeyReviewModel: ObservableObject {
             HostProbeError
         >
     ) async {
+        let generation = UUID()
+        self.generation = generation
         self.hostID = hostID
         self.hostName = hostName
         confirmation = nil
         errorMessage = nil
         isLoading = true
+        isTrusting = false
 
         let result = await load(hostID)
-        guard self.hostID == hostID else { return }
+        guard self.generation == generation,
+              self.hostID == hostID else { return }
         isLoading = false
         switch result {
         case let .success(confirmation):
@@ -51,11 +56,13 @@ final class WorkspaceSSHHostKeyReviewModel: ObservableObject {
         onTrusted: () -> Void
     ) async {
         guard let hostID, let confirmation else { return }
+        let generation = generation
         isTrusting = true
         errorMessage = nil
 
         let result = await accept(hostID, confirmation)
-        guard self.hostID == hostID,
+        guard self.generation == generation,
+              self.hostID == hostID,
               self.confirmation == confirmation else { return }
         isTrusting = false
         switch result {
@@ -73,6 +80,7 @@ final class WorkspaceSSHHostKeyReviewModel: ObservableObject {
 
     func dismiss() {
         guard !isTrusting else { return }
+        generation = UUID()
         hostID = nil
         hostName = ""
         confirmation = nil

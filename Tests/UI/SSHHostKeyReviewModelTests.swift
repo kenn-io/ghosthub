@@ -6,6 +6,24 @@ import Testing
 @Suite("Workspace SSH host-key review")
 @MainActor
 struct SSHHostKeyReviewModelTests {
+    private actor ReviewGate {
+        private var released = false
+        private var continuation: CheckedContinuation<Void, Never>?
+
+        func wait() async {
+            guard !released else { return }
+            await withCheckedContinuation { continuation in
+                self.continuation = continuation
+            }
+        }
+
+        func release() {
+            released = true
+            continuation?.resume()
+            continuation = nil
+        }
+    }
+
     @Test("sequential approvals retry inventory only after the final host")
     func sequentialApprovalsRetryInventoryAfterFinalHost() async {
         let hostID = UUID()
@@ -62,5 +80,46 @@ struct SSHHostKeyReviewModelTests {
 
         #expect(didRetryInventory)
         #expect(!model.isPresented)
+    }
+
+    @Test("an older request cannot overwrite a reopened review")
+    func staleRequestCannotOverwriteReopenedReview() async {
+        let hostID = UUID()
+        let staleConfirmation = SSHHostKeyConfirmation(
+            destination: "old.example.test",
+            connectionDestination: "operator@old.example.test",
+            algorithm: "ED25519",
+            fingerprint: "SHA256:old-synthetic-fingerprint",
+            openSSHPrompt: "old synthetic OpenSSH prompt"
+        )
+        let currentConfirmation = SSHHostKeyConfirmation(
+            destination: "current.example.test",
+            connectionDestination: "operator@current.example.test",
+            algorithm: "ED25519",
+            fingerprint: "SHA256:current-synthetic-fingerprint",
+            openSSHPrompt: "current synthetic OpenSSH prompt"
+        )
+        let gate = ReviewGate()
+        let model = WorkspaceSSHHostKeyReviewModel()
+        let staleRequest = Task { @MainActor in
+            await model.review(hostID: hostID, hostName: "Old") { _ in
+                await gate.wait()
+                return .success(staleConfirmation)
+            }
+        }
+
+        while !model.isLoading {
+            await Task.yield()
+        }
+        model.dismiss()
+        await model.review(hostID: hostID, hostName: "Current") { _ in
+            .success(currentConfirmation)
+        }
+        await gate.release()
+        await staleRequest.value
+
+        #expect(model.hostName == "Current")
+        #expect(model.confirmation == currentConfirmation)
+        #expect(model.errorMessage == nil)
     }
 }

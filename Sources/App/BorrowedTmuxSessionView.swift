@@ -5,6 +5,7 @@ import SwiftUI
 struct BorrowedTmuxSessionView: View {
     var handle: BorrowedTmuxSessionHandle
     var hostName: String
+    var isRemoteHost: Bool
     var displayTitle: String?
     var connectionState: ConnectionState?
     var attachmentClosed: Bool
@@ -17,6 +18,7 @@ struct BorrowedTmuxSessionView: View {
     init(
         handle: BorrowedTmuxSessionHandle,
         hostName: String,
+        isRemoteHost: Bool,
         displayTitle: String? = nil,
         connectionState: ConnectionState?,
         attachmentClosed: Bool = false,
@@ -28,6 +30,7 @@ struct BorrowedTmuxSessionView: View {
     ) {
         self.handle = handle
         self.hostName = hostName
+        self.isRemoteHost = isRemoteHost
         self.displayTitle = displayTitle
         self.connectionState = connectionState
         self.attachmentClosed = attachmentClosed
@@ -58,7 +61,7 @@ struct BorrowedTmuxSessionView: View {
                 Text(disconnectionReason)
             } actions: {
                 Button(recoveryActionTitle, action: onRetryRequest)
-                if !sessionClosed {
+                if showsHostSettingsAction {
                     Button("Host Settings", action: onHostSettingsRequest)
                 }
             }
@@ -91,6 +94,10 @@ struct BorrowedTmuxSessionView: View {
             return "Reopen"
         }
         return attachmentClosed ? "Reconnect" : "Retry"
+    }
+
+    var showsHostSettingsAction: Bool {
+        isRemoteHost && !attachmentClosed && !sessionClosed
     }
 }
 
