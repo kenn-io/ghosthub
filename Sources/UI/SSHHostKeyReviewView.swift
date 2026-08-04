@@ -100,11 +100,6 @@ final class WorkspaceSSHHostKeyReviewModel: ObservableObject {
         guard !isTrusting else { return }
         generation = UUID()
         hostID = nil
-        hostName = ""
-        confirmation = nil
-        errorMessage = nil
-        resolvedPresentation = nil
-        isLoading = false
     }
 
     func authenticationSucceeded() {

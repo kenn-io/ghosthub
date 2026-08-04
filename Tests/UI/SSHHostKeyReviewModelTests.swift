@@ -108,6 +108,21 @@ struct SSHHostKeyReviewModelTests {
         #expect(model.presentation == .authenticationSucceeded)
     }
 
+    @Test("dismissal retains success throughout the sheet closing animation")
+    func dismissalRetainsSuccessfulPresentation() async {
+        let model = WorkspaceSSHHostKeyReviewModel()
+
+        await model.review(hostID: UUID(), hostName: "Build Node") {
+            .authenticationRequired
+        }
+        model.authenticationSucceeded()
+        model.dismiss()
+
+        #expect(!model.isPresented)
+        #expect(model.presentation == .authenticationSucceeded)
+        #expect(model.hostName == "Build Node")
+    }
+
     @Test("an older request cannot overwrite a reopened review")
     func staleRequestCannotOverwriteReopenedReview() async {
         let hostID = UUID()
