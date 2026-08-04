@@ -7,7 +7,7 @@ enum SSHConnectionFailure {
         output: String
     ) -> RemoteHostDiagnostic {
         let normalized = output.lowercased()
-        if requiresAuthentication(normalized) {
+        if status == 255, requiresAuthentication(normalized) {
             return RemoteHostDiagnostic(
                 code: .sshAuthenticationFailed,
                 severity: .error,

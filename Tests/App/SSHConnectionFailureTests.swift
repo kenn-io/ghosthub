@@ -44,4 +44,14 @@ struct SSHConnectionFailureTests {
         #expect(diagnostic.code == .sshConnectionFailed)
         #expect(diagnostic.summary == "The SSH connection timed out.")
     }
+
+    @Test("remote command permission failures do not request credentials")
+    func rejectsNonTransportPermissionFailure() {
+        let diagnostic = SSHConnectionFailure.diagnostic(
+            status: 1,
+            output: "remote command: permission denied"
+        )
+
+        #expect(diagnostic.code == .sshConnectionFailed)
+    }
 }
