@@ -328,17 +328,6 @@ def test_release_info_plist_contains_update_configuration(tmp_path):
     assert plist["SUSignedFeedFailureExpirationInterval"] == 0
 
 
-def test_makefile_enables_updates_only_for_release_bundles():
-    repo_root = Path(__file__).resolve().parents[1]
-    makefile = (repo_root / "Makefile").read_text()
-    debug_recipe, release_recipe = makefile.split(
-        "release-app: LIBGHOSTTY_OPTIMIZE", maxsplit=1
-    )
-
-    assert "--include-updates" not in debug_recipe
-    assert "--include-updates" in release_recipe
-
-
 def test_assemble_app_bundle_replaces_existing_bundle_contents(tmp_path):
     assemble = load_module()
     source_bin_dir = tmp_path / "bin"

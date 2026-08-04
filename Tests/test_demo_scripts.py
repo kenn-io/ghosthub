@@ -123,44 +123,6 @@ def test_private_directory_prepare_rejects_unsafe_output(
     assert result.returncode != 0
 
 
-def test_stage_uses_a_curated_account_free_agent_session() -> None:
-    stage = (DEMO / "stage.sh").read_text()
-
-    assert 'cat > "$scratch/agent-transcript.txt"' in stage
-    assert "Ghosthub opens the same tmux client locally and remotely." in stage
-    assert '"clear; cat $(printf \'%q\' "$scratch/agent-transcript.txt")"' in stage
-
-
-def test_stage_stops_live_consumers_before_replacing_scratch_state() -> None:
-    stage = (DEMO / "stage.sh").read_text()
-    first_replacement = stage.index('rm -rf "$scratch/repos"')
-
-    assert stage.index("demo_stop_recorded_process") < first_replacement
-    assert stage.index("demo_stop_tmux_server") < first_replacement
-    assert stage.index("demo_stop_recorded_process") < stage.index(
-        'rm -rf "$scratch/app"'
-    )
-
-
-def test_stage_uses_immutable_docker_image_id_without_a_shared_tag() -> None:
-    stage = (DEMO / "stage.sh").read_text()
-
-    assert 'image_id="$(docker build -q "$demo_root/remote")"' in stage
-    assert "docker build -q -t" not in stage
-    assert '-p 127.0.0.1:2201:22 "$image_id"' in stage
-
-
-def test_stage_builds_ghosthub_from_synthetic_history() -> None:
-    stage = (DEMO / "stage.sh").read_text()
-
-    ghosthub_fixture = stage[
-        stage.index("make_repo ghosthub") : stage.index("make_repo agentsview")
-    ]
-    assert "Initial native workspace" in ghosthub_fixture
-    assert "Attach ordinary tmux clients" in ghosthub_fixture
-    assert "Reconnect remote sessions" in ghosthub_fixture
-
-
 def test_demo_git_ignores_url_rewrites_and_hooks(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -256,14 +218,6 @@ def test_demo_ssh_uses_only_scratch_configuration(tmp_path: Path) -> None:
     assert settings["stricthostkeychecking"] == "true"
     assert settings.get("proxycommand", "none") == "none"
     assert settings.get("proxyjump", "none") == "none"
-
-    stage = (DEMO / "stage.sh").read_text()
-    teardown = (DEMO / "teardown.sh").read_text()
-    run = (DEMO / "run.sh").read_text()
-    assert 'GHOSTHUB_DEMO_SSH_DIR="$scratch/ssh"' in run
-    assert "known_hosts.saved" not in stage
-    assert "known_hosts.saved" not in teardown
-
 
 @pytest.mark.parametrize(
     ("launcher_shell", "launcher_zdotdir"),

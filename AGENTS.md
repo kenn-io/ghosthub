@@ -127,6 +127,9 @@ parent's checklist.
 
 ## Test Suite Policy
 
+- Tests must exercise observable behavior or a meaningful security or
+  operational contract. Do not test that committed source contains particular
+  strings, ordering, or exact text merely to restate the implementation.
 - Default to Swift Testing (`import Testing`, `@Suite`, `@Test`, `#expect`) for new tests. Do not add new XCTest suites unless the harness genuinely requires XCTest.
 - Prefer `pytest` for Python tests, run through `uv` and the Makefile targets.
 - Migrate existing XCTest coverage to Swift Testing whenever you touch a test and the harness allows it, especially for pure-logic and host coverage. Do not churn large stable suites that still need XCTest just to change frameworks.

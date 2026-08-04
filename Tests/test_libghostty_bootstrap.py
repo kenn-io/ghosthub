@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 import shutil
 import subprocess
 import sys
@@ -136,19 +135,6 @@ class LibghosttyBootstrapTests(unittest.TestCase):
                 "-Dxcframework-target=aarch64",
                 print_mock.call_args.args[0],
             )
-
-    def test_package_manifest_requires_current_bootstrap_schema(self) -> None:
-        package_manifest = Path(__file__).resolve().parents[1] / "Package.swift"
-        match = re.search(
-            r"let requiredLibghosttyBootstrapVersion = (\d+)",
-            package_manifest.read_text(),
-        )
-        self.assertIsNotNone(match)
-        assert match is not None
-        self.assertEqual(
-            int(match.group(1)),
-            bootstrap.GHOSTHUB_BOOTSTRAP_VERSION,
-        )
 
     def test_public_header_patch_upgrades_old_config_load_signature(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
