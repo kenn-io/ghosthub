@@ -160,6 +160,7 @@ enum SSHConnectionPool {
             "-o", "BatchMode=no",
             "-o", "ControlMaster=yes",
             "-o", "ControlPersist=no",
+            "-o", "ForkAfterAuthentication=no",
             "-o", "ControlPath=\(controlPath)",
             "-o", "NumberOfPasswordPrompts=1",
             "-o", "ConnectTimeout=15",

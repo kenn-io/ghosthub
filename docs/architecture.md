@@ -191,7 +191,9 @@ an identity change restarts recovery instead of using the old socket path. The
 route and socket identity are initially derived from one effective-config
 snapshot, so a concurrent ProxyJump edit cannot combine old hops with a new
 control path. Master stderr is continuously drained into a bounded diagnostic
-buffer so verbose OpenSSH logging cannot block the connection.
+buffer so verbose OpenSSH logging cannot block the connection. Ghosthub keeps
+the master in the foreground even if the user's SSH configuration requests
+forking, so the app watchdog retains ownership of its lifetime.
 Window presentations hold leases on shared authentication attempts. Closing a
 window cancels an unfinished attempt only after its final presenting window
 releases it; an authenticated master remains available until the app exits.
@@ -206,6 +208,8 @@ SSH operations. For ProxyJump routes, Ghosthub names the host from OpenSSH's
 prompt and reviews each unseen route key sequentially. When a preceding jump
 host needs a password or other challenge, Ghosthub authenticates that reviewed
 hop first and uses its app-session control connection to reach the next host.
+The secure-entry sheet names the exact route host controlling the challenge
+and warns the user to enter only that host's credentials.
 Opaque ProxyCommand routes and jump hosts that introduce another proxy route
 fail closed because Ghosthub cannot independently enforce every intermediate
 host-key policy.

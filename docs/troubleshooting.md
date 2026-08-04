@@ -57,7 +57,8 @@ if OpenSSH reports an unseen key, immediately presents its destination and
 fingerprint for approval, saves it through OpenSSH, and retries inventory.
 ProxyJump routes may show one review for each unseen host in the route. When a
 jump host needs a password or another interactive response, Ghosthub asks for
-it after that host's key is approved, then continues to the next route key.
+it after that host's key is approved, names the exact hop controlling the
+prompt, then continues to the next route key. Enter only that hop's credentials.
 Opaque ProxyCommand routes and jump hosts with another proxy route cannot be
 reviewed safely and fail closed. If no unseen key is reported, the same
 recovery sheet checks the connection. A reachable host keeps its inventory

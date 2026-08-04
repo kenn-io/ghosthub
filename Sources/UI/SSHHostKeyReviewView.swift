@@ -216,7 +216,7 @@ struct SSHHostKeyReviewView: View {
                 .font(.system(size: 20, weight: .semibold))
         case .authentication:
             Label(
-                "Authenticate with \(model.hostName)",
+                "SSH Authentication",
                 systemImage: "key"
             )
             .font(.system(size: 20, weight: .semibold))

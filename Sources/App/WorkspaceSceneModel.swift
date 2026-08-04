@@ -2514,7 +2514,8 @@ final class WorkspaceSceneModel: ObservableObject {
                 presentationID: surfaceID,
                 target: target,
                 controlPath: controlPath
-            )
+            ),
+            finalDestination: resolved.info
         ))
     }
 

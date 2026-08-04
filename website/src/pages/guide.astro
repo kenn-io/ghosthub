@@ -193,7 +193,9 @@ const imageAlt = {
             connection before continuing and then retries inventory.
             ProxyJump routes handle each host in sequence. Ghosthub reviews a
             hop's unseen key, asks for that hop's password or verification code
-            when needed, then continues to the next route host. Opaque
+            when needed, and names the exact hop controlling the prompt before
+            continuing to the next route host. Enter only that hop's
+            credentials. Opaque
             ProxyCommand routes and jump hosts with another proxy route fail
             closed because their intermediate policies cannot be reviewed
             safely. After every required approval, Ghosthub retries inventory

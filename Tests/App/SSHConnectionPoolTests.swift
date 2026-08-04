@@ -22,11 +22,43 @@ struct SSHConnectionPoolTests {
         #expect(arguments.contains("BatchMode=no"))
         #expect(arguments.contains("ControlMaster=yes"))
         #expect(arguments.contains("ControlPersist=no"))
+        #expect(arguments.contains("ForkAfterAuthentication=no"))
         #expect(arguments.contains("NumberOfPasswordPrompts=1"))
         #expect(arguments.contains("StrictHostKeyChecking=yes"))
         #expect(arguments.suffix(4) == [
             "-p", "22", "--", "operator@build.example.test",
         ])
+    }
+
+    @Test("route authentication names the host controlling the prompt")
+    func routeAuthenticationPresentationNamesControllingHost() {
+        let presentation = SSHAuthenticationPresentation(
+            target: SSHAuthenticationTarget(
+                host: SSHHostInfo(
+                    user: "relay",
+                    hostname: "jump.example.test",
+                    port: 2200
+                ),
+                precedingProxyHops: []
+            ),
+            finalDestination: SSHHostInfo(
+                user: "operator",
+                hostname: "build.example.test",
+                port: nil
+            )
+        )
+
+        #expect(
+            presentation.heading
+                == "Authenticate to relay@jump.example.test:2200 to continue"
+                + " to operator@build.example.test"
+        )
+        #expect(
+            presentation.credentialWarning
+                == "The prompt below is controlled by"
+                + " relay@jump.example.test:2200. Enter only credentials"
+                + " for that host."
+        )
     }
 
     @Test("connection checks preserve the explicit destination")

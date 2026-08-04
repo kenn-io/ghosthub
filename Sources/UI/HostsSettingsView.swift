@@ -989,7 +989,7 @@ public struct HostsSettingsView: View {
         let draft = sshHosts.first { $0.id == target.draftID }
         return VStack(alignment: .leading, spacing: 16) {
             Label(
-                "Authenticate with \(draft?.name ?? "SSH Host")",
+                "SSH Authentication",
                 systemImage: "key"
             )
             .font(.system(size: 20, weight: .semibold))
