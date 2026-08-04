@@ -83,6 +83,33 @@ struct SSHHostTrustManager: Sendable {
         self.authenticationProvider = authenticationProvider
     }
 
+    init(configurationSnapshot: SSHConnectionConfigurationSnapshot) {
+        let configurationProvider =
+            configurationSnapshot.configurationProvider
+        self.init(
+            strictHostKeyPolicyProvider: {
+                configurationProvider($0)?.strictHostKeyChecking
+            },
+            routeProvider: {
+                try Self.route(
+                    for: $0,
+                    configurationProvider: configurationProvider
+                )
+            },
+            authenticationProvider: { target in
+                guard let identity = SSHConnectionPool
+                    .authenticationIdentity(
+                        for: target,
+                        configurationSnapshot: configurationSnapshot
+                    ) else { return false }
+                return SSHConnectionPool.isAuthenticated(
+                    target.host,
+                    controlPath: identity.controlPath
+                )
+            }
+        )
+    }
+
     private struct ReviewTarget {
         let host: SSHHostInfo
         let precedingProxyHops: [SSHHostInfo]

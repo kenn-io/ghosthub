@@ -296,4 +296,37 @@ struct SSHAuthenticationCoordinatorTests {
         #expect(first !== second)
         coordinator.shutdown()
     }
+
+    @Test("invalidating a stale identity cancels its shared session")
+    func invalidatesStaleIdentity() {
+        let coordinator = SSHAuthenticationCoordinator()
+        let scopeID = UUID()
+        let presentationID = UUID()
+        let target = SSHAuthenticationTarget(
+            host: SSHHostInfo(
+                user: "operator",
+                hostname: "unreachable.example.test",
+                port: nil
+            ),
+            precedingProxyHops: []
+        )
+        let controlPath = "/tmp/ghosthub-test/control-stale"
+        let stale = coordinator.session(
+            scopeID: scopeID,
+            presentationID: presentationID,
+            target: target,
+            controlPath: controlPath
+        )
+
+        coordinator.invalidate(target: target, controlPath: controlPath)
+
+        let replacement = coordinator.session(
+            scopeID: scopeID,
+            presentationID: presentationID,
+            target: target,
+            controlPath: controlPath
+        )
+        #expect(replacement !== stale)
+        coordinator.shutdown()
+    }
 }

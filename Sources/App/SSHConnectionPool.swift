@@ -26,6 +26,18 @@ struct SSHAuthenticationIdentity: Equatable, Sendable {
     let displayHost: SSHHostInfo
 }
 
+struct SSHConnectionConfigurationSnapshot: Sendable {
+    let target: SSHAuthenticationTarget
+    fileprivate let configurations:
+        [SSHHostInfo: EffectiveSSHConfiguration]
+
+    var configurationProvider:
+        SSHConfigurationResolver.ConfigurationProvider {
+        let configurations = configurations
+        return { configurations[$0] }
+    }
+}
+
 enum SSHConnectionPool {
     private struct ResolvedTarget: Sendable {
         let target: SSHAuthenticationTarget
@@ -94,20 +106,55 @@ enum SSHConnectionPool {
         configurationProvider: SSHConfigurationResolver.ConfigurationProvider =
             SSHConfigurationResolver.configuration
     ) -> SSHAuthenticationIdentity? {
+        authenticationIdentity(for: configurationSnapshot(
+            for: host,
+            configurationProvider: configurationProvider
+        ))
+    }
+
+    static func configurationSnapshot(
+        for host: SSHHostInfo,
+        configurationProvider: SSHConfigurationResolver.ConfigurationProvider =
+            SSHConfigurationResolver.configuration
+    ) -> SSHConnectionConfigurationSnapshot {
         let resolved = resolvedTarget(
             for: host,
             configurationProvider: configurationProvider
         )
+        return SSHConnectionConfigurationSnapshot(
+            target: resolved.target,
+            configurations: resolved.configurations
+        )
+    }
+
+    static func authenticationIdentity(
+        for snapshot: SSHConnectionConfigurationSnapshot
+    ) -> SSHAuthenticationIdentity? {
+        authenticationIdentity(
+            for: snapshot.target,
+            configurationSnapshot: snapshot
+        )
+    }
+
+    static func authenticationIdentity(
+        for target: SSHAuthenticationTarget,
+        configurationSnapshot: SSHConnectionConfigurationSnapshot
+    ) -> SSHAuthenticationIdentity? {
+        guard configurationSnapshot.target.route.starts(
+            with: target.route
+        ) else { return nil }
+        let configurationProvider =
+            configurationSnapshot.configurationProvider
         guard let controlPath = preparedControlPath(
-            for: resolved.target,
-            configurationProvider: resolved.configurationProvider
+            for: target,
+            configurationProvider: configurationProvider
         ) else { return nil }
         return SSHAuthenticationIdentity(
-            target: resolved.target,
+            target: target,
             controlPath: controlPath,
             displayHost: SSHConfigurationResolver.effectiveHost(
-                for: resolved.target.host,
-                configurationProvider: resolved.configurationProvider
+                for: target.host,
+                configurationProvider: configurationProvider
             )
         )
     }
@@ -123,20 +170,11 @@ enum SSHConnectionPool {
                 configurations[host] = configuration
             }
         }
-        let snapshotConfigurations = configurations
-        let snapshot: SSHConfigurationResolver.ConfigurationProvider = {
-            snapshotConfigurations[$0]
-        }
-        guard let controlPath = preparedControlPath(
+        return authenticationIdentity(
             for: target,
-            configurationProvider: snapshot
-        ) else { return nil }
-        return SSHAuthenticationIdentity(
-            target: target,
-            controlPath: controlPath,
-            displayHost: SSHConfigurationResolver.effectiveHost(
-                for: target.host,
-                configurationProvider: snapshot
+            configurationSnapshot: SSHConnectionConfigurationSnapshot(
+                target: target,
+                configurations: configurations
             )
         )
     }

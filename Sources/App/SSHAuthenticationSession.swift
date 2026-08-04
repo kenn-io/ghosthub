@@ -667,6 +667,29 @@ final class SSHAuthenticationCoordinator {
         }
     }
 
+    func invalidate(
+        target: SSHAuthenticationTarget,
+        controlPath: String
+    ) {
+        let invalidSessionIDs: Set<ObjectIdentifier> = Set(
+            entries.compactMap { entry in
+                let session = entry.session
+                guard session.target == target,
+                      session.requestedControlPath == controlPath
+                else { return nil }
+                session.cancel()
+                return ObjectIdentifier(session)
+            }
+        )
+        guard !invalidSessionIDs.isEmpty else { return }
+        entries.removeAll {
+            invalidSessionIDs.contains(ObjectIdentifier($0.session))
+        }
+        sessionIDsByOwner = sessionIDsByOwner.filter {
+            !invalidSessionIDs.contains($0.value)
+        }
+    }
+
     func requiresRecoveryRestart(
         target: SSHAuthenticationTarget,
         controlPath: String

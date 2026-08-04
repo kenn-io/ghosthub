@@ -191,9 +191,12 @@ Ghosthub revalidates its cached control identity after resolving launch options;
 an identity change restarts recovery instead of using the old socket path. The
 route and socket identity are initially derived from one effective-config
 snapshot, so a concurrent ProxyJump edit cannot combine old hops with a new
-control path. Master stderr is continuously drained into a bounded diagnostic
-buffer through a nonblocking dispatch source, so verbose OpenSSH logging cannot
-block the connection or occupy Swift concurrency workers. Ghosthub keeps
+control path. Readiness resolves that identity again before reporting a
+connection, invalidating the stale session and returning to recovery if the
+route or control path changed. Master stderr is continuously drained into a
+bounded diagnostic buffer through a nonblocking dispatch source, so verbose
+OpenSSH logging cannot block the connection or occupy Swift concurrency
+workers. Ghosthub keeps
 the master in the foreground even if the user's SSH configuration requests
 forking, so the app watchdog retains ownership of its lifetime. It starts the
 master through the account login shell, preserving the same environment used

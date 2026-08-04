@@ -150,6 +150,9 @@ cached control identity immediately before launching a master and restarts
 recovery if effective SSH identity changed while the prompt was being prepared.
 The cached route and path come from one effective-config snapshot rather than
 separate reads that could straddle a ProxyJump edit.
+Before Ghosthub reports authentication complete, it resolves the current route
+and control path again; a mismatch terminates the stale shared session and
+returns to explicit recovery.
 Authentication uses the same account-login-shell boundary and guarded demo SSH
 configuration as resolution and host-key review, so those phases cannot consult
 different agent, configuration, or known-hosts state.
