@@ -2547,7 +2547,10 @@ final class WorkspaceSceneModel: ObservableObject {
         guard !Task.isCancelled else { return .pending }
         if isReady {
             let currentIdentity = await Task.detached(priority: .userInitiated) {
-                SSHConnectionPool.authenticationIdentity(for: resolved.info)
+                Self.currentSSHAuthenticationIdentity(
+                    for: target,
+                    finalHost: resolved.info
+                )
             }.value
             guard !Task.isCancelled else { return .pending }
             guard currentIdentity?.target == target,
@@ -2581,6 +2584,22 @@ final class WorkspaceSceneModel: ObservableObject {
             return .connected
         }
         return .pending
+    }
+
+    nonisolated static func currentSSHAuthenticationIdentity(
+        for target: SSHAuthenticationTarget,
+        finalHost: SSHHostInfo,
+        configurationProvider: SSHConfigurationResolver.ConfigurationProvider =
+            SSHConfigurationResolver.configuration
+    ) -> SSHAuthenticationIdentity? {
+        let snapshot = SSHConnectionPool.configurationSnapshot(
+            for: finalHost,
+            configurationProvider: configurationProvider
+        )
+        return SSHConnectionPool.authenticationIdentity(
+            for: target,
+            configurationSnapshot: snapshot
+        )
     }
 
     func isSSHAuthenticationReady(

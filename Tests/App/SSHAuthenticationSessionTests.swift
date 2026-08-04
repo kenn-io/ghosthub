@@ -330,3 +330,57 @@ struct SSHAuthenticationCoordinatorTests {
         coordinator.shutdown()
     }
 }
+
+@Suite("Workspace SSH authentication readiness")
+struct WorkspaceSSHAuthenticationReadinessTests {
+    @Test("an authenticated proxy hop revalidates within the final route")
+    func revalidatesIntermediateProxyHop() throws {
+        let relay = SSHHostInfo(
+            user: nil,
+            hostname: "relay.example.test",
+            port: nil
+        )
+        let finalHost = SSHHostInfo(
+            user: "operator",
+            hostname: "build.example.test",
+            port: nil
+        )
+        let relayTarget = SSHAuthenticationTarget(
+            host: relay,
+            precedingProxyHops: []
+        )
+        let identity = WorkspaceSceneModel.currentSSHAuthenticationIdentity(
+            for: relayTarget,
+            finalHost: finalHost,
+            configurationProvider: { host in
+                if host == finalHost {
+                    return EffectiveSSHConfiguration(
+                        user: finalHost.user,
+                        strictHostKeyChecking: "yes",
+                        proxyJump: relay.hostname,
+                        proxyCommand: nil
+                    )
+                }
+                if host == relay {
+                    return EffectiveSSHConfiguration(
+                        user: "relay-user",
+                        strictHostKeyChecking: "yes",
+                        proxyJump: nil,
+                        proxyCommand: nil,
+                        hostname: "relay.internal.example.test",
+                        port: 2200
+                    )
+                }
+                return nil
+            }
+        )
+
+        let resolved = try #require(identity)
+        #expect(resolved.target == relayTarget)
+        #expect(resolved.displayHost == SSHHostInfo(
+            user: "relay-user",
+            hostname: "relay.internal.example.test",
+            port: 2200
+        ))
+    }
+}
