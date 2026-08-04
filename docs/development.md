@@ -90,10 +90,12 @@ tmux attachment contracts.
 
 ## Apple Silicon macOS toolchain
 
-Pull requests and pushes to `main` run `.github/workflows/ci.yml` on GitHub's
-hosted `macos-26` Apple Silicon image. The workflow pins Xcode 26.0.1 and the
-exact Zig toolchain required by the pinned Ghostty source, then runs the
-complete build and test gates in a fresh environment.
+Pull requests invoke the `main`-pinned `.github/workflows/ci.yml`. Canonical
+`main` pushes and same-repository pull requests run on the managed public macOS
+runner; fork pull requests and noncanonical repository copies fall back to
+GitHub's hosted `macos-26` Apple Silicon image. The workflow selects a supported
+Xcode installation and the exact Zig toolchain required by the pinned Ghostty
+source, then runs the complete build and test gates.
 
 Some newer Xcode SDK stubs do not advertise the plain `arm64-macos` target.
 Local bootstrap checks every architecture required by the running Zig
@@ -105,9 +107,8 @@ If no compatible SDK is installed, bootstrap stops with the searched locations
 and the supported Xcode baseline instead of failing later with linker errors.
 
 CI builds libghostty with `LIBGHOSTTY_XCFRAMEWORK_TARGET=native`, producing the
-arm64 slice for the hosted runner. The project default remains `aarch64` for
-developer Macs. The hosted runner is temporary coverage while the Intel
-`mac-pro-intel` runner is prepared for an eventual architecture matrix.
+arm64 slice required by both runner paths. The project default remains
+`aarch64` for developer Macs.
 
 ## Remote SSH Host Prerequisites
 

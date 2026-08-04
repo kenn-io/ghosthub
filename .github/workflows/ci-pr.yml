@@ -1,6 +1,8 @@
 name: CI
 
-# Keep pull requests on the canonical workflow definition.
+# The PR dispatcher always calls the main-pinned workflow. That workflow
+# independently routes same-repository macOS jobs to the managed public runner
+# and fork jobs to GitHub-hosted runners.
 on:
   pull_request:
 
