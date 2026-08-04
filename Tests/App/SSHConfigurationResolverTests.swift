@@ -54,6 +54,37 @@ struct SSHConfigurationResolverTests {
         #expect(configuration.strictHostKeyChecking == normalized)
     }
 
+    @Test("SSH configuration excludes login-shell output")
+    func extractsFramedConfiguration() throws {
+        let output = """
+        startup banner with spaces
+        GHOSTHUB_SSH_CONFIG_START_nonce
+        user deploy
+        hostname build.example.test
+
+        GHOSTHUB_SSH_CONFIG_END_nonce
+        trailing shell output
+        """
+
+        let framed = try #require(
+            SSHConfigurationResolver.framedConfigurationOutput(
+                output,
+                startMarker: "GHOSTHUB_SSH_CONFIG_START_nonce",
+                endMarker: "GHOSTHUB_SSH_CONFIG_END_nonce"
+            )
+        )
+        let configuration = SSHConfigurationResolver.parse(framed)
+
+        #expect(configuration.user == "deploy")
+        #expect(configuration.hostname == "build.example.test")
+        #expect(!configuration.resolvedOptions.contains(
+            "startup=banner with spaces"
+        ))
+        #expect(!configuration.resolvedOptions.contains(
+            "trailing=shell output"
+        ))
+    }
+
     @Test(
         "noninteractive SSH cannot enroll keys for interactive policies",
         arguments: [nil, "ask", "accept-new", "unexpected"]

@@ -264,14 +264,49 @@ enum SSHConfigurationResolver {
         let target = host.user.map { "\($0)@\(host.hostname)" }
             ?? host.hostname
         arguments.append(contentsOf: ["--", target])
-        let result = TmuxBinaryResolver.runProcessInLoginShell(
-            executable: "/usr/bin/ssh",
-            arguments: arguments,
-            timeout: 5,
-            accountShell: TmuxBinaryResolver.loginShell()
+        let nonce = UUID().uuidString
+        let startMarker = "GHOSTHUB_SSH_CONFIG_START_\(nonce)"
+        let endMarker = "GHOSTHUB_SSH_CONFIG_END_\(nonce)"
+        let sshCommand = (["/usr/bin/ssh"] + arguments)
+            .map(shellQuotedCommandArgument)
+            .joined(separator: " ")
+        let command = """
+        printf '\\n%s\\n' \(shellQuotedCommandArgument(startMarker))
+        \(sshCommand)
+        ghosthub_ssh_status=$?
+        printf '\\n%s\\n' \(shellQuotedCommandArgument(endMarker))
+        exit "$ghosthub_ssh_status"
+        """
+        let result = TmuxBinaryResolver.runLoginShell(
+            shell: TmuxBinaryResolver.loginShell(),
+            command: command,
+            timeout: 5
         )
-        guard result.status == 0 else { return nil }
-        return parse(result.stdout)
+        guard result.status == 0,
+              let output = framedConfigurationOutput(
+                  result.stdout,
+                  startMarker: startMarker,
+                  endMarker: endMarker
+              )
+        else { return nil }
+        return parse(output)
+    }
+
+    static func framedConfigurationOutput(
+        _ output: String,
+        startMarker: String,
+        endMarker: String
+    ) -> String? {
+        let lines = output.split(
+            separator: "\n",
+            omittingEmptySubsequences: false
+        ).map(String.init)
+        guard let start = lines.firstIndex(of: startMarker),
+              let end = lines[start...].firstIndex(of: endMarker),
+              start < end
+        else { return nil }
+        return lines[lines.index(after: start) ..< end]
+            .joined(separator: "\n")
     }
 
     static func effectiveHost(

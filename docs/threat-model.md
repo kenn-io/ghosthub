@@ -170,7 +170,9 @@ Authentication uses the same account-login-shell boundary and guarded demo SSH
 configuration as resolution and host-key review, so those phases cannot consult
 different agent, configuration, or known-hosts state. Authentication removes
 inherited `TMUX` and `TMUX_PANE` values before login-shell startup. Host-key
-review launches with snapshot-derived endpoint, route, and known-hosts options
+configuration resolution nonce-frames `ssh -G` output so login-shell banners
+cannot enter the replayed option set. Host-key review launches with
+snapshot-derived endpoint, route, and known-hosts options
 under an empty base SSH configuration, so live config changes cannot redirect
 the reviewed operation.
 Remote connection probes emit a leading delimiter before accepting exact

@@ -163,7 +163,9 @@ twice.
 ### External State
 
 SSH transport, configuration resolution, and host-key storage remain owned by
-the system OpenSSH client. When **Test Connection** or a host-scoped inventory
+the system OpenSSH client. Effective `ssh -G` output is nonce-framed inside the
+account login shell so startup banners cannot become replayed SSH options. When
+**Test Connection** or a host-scoped inventory
 warning encounters an unseen key, Ghosthub presents the exact destination and
 fingerprint through an explicit trust sheet. Approval is returned to that same
 OpenSSH prompt through a private askpass channel; Ghosthub neither substitutes
