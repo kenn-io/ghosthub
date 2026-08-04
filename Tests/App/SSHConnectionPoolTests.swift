@@ -177,4 +177,50 @@ struct SSHConnectionPoolTests {
         #expect(originalName != changedName)
         #expect(originalProxyName != changedProxyName)
     }
+
+    @Test("control sockets are scoped to every effective host-key policy")
+    func controlSocketUsesHostKeyPolicies() {
+        let host = SSHHostInfo(
+            user: "operator",
+            hostname: "build.example.test",
+            port: nil
+        )
+        func name(
+            destinationPolicy: String,
+            proxyPolicy: String
+        ) -> String {
+            SSHConnectionPool.controlName(
+                for: host,
+                configurationProvider: { requestedHost in
+                    if requestedHost.hostname == "relay.example.test" {
+                        return EffectiveSSHConfiguration(
+                            user: "relay-user",
+                            strictHostKeyChecking: proxyPolicy,
+                            proxyJump: nil,
+                            proxyCommand: nil
+                        )
+                    }
+                    return EffectiveSSHConfiguration(
+                        user: "operator",
+                        strictHostKeyChecking: destinationPolicy,
+                        proxyJump: "relay.example.test",
+                        proxyCommand: nil
+                    )
+                }
+            )
+        }
+
+        #expect(
+            name(destinationPolicy: "no", proxyPolicy: "yes")
+                != name(destinationPolicy: "yes", proxyPolicy: "yes")
+        )
+        #expect(
+            name(destinationPolicy: "yes", proxyPolicy: "no")
+                != name(destinationPolicy: "yes", proxyPolicy: "yes")
+        )
+        #expect(
+            name(destinationPolicy: "true", proxyPolicy: "yes")
+                == name(destinationPolicy: "yes", proxyPolicy: "yes")
+        )
+    }
 }

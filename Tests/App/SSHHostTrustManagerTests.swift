@@ -360,10 +360,26 @@ struct SSHHostTrustManagerTests {
         #expect(!noExpectation.markerCreated)
     }
 
+    @Test("the shipped askpass helper rejects authentication prompts")
+    func askPassScriptRejectsAuthenticationPrompt() throws {
+        let result = try runAskPass(
+            prompt: "Password for relay@jump.example.test:",
+            expectedIdentity: nil,
+            expectedStatus: 1
+        )
+
+        #expect(result.status != 0)
+        #expect(result.output.isEmpty)
+        #expect(!result.markerCreated)
+        #expect(result.observedPrompt == nil)
+    }
+
     private func runAskPass(
         prompt: String,
-        expectedIdentity: String?
+        expectedIdentity: String?,
+        expectedStatus: Int32 = 0
     ) throws -> (
+        status: Int32,
         output: String,
         markerCreated: Bool,
         observedPrompt: String?
@@ -410,8 +426,9 @@ struct SSHHostTrustManagerTests {
         try process.run()
         let data = output.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
-        #expect(process.terminationStatus == 0)
+        #expect(process.terminationStatus == expectedStatus)
         return (
+            status: process.terminationStatus,
             output: String(decoding: data, as: UTF8.self),
             markerCreated: fileManager.fileExists(atPath: approved.path),
             observedPrompt: try? String(contentsOf: observed, encoding: .utf8)

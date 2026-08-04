@@ -100,6 +100,8 @@ final class WorkspaceWindowRequests<Window: AnyObject> {
 @MainActor
 final class ApplicationDelegate: NSObject,
     NSApplicationDelegate {
+    let sshAuthenticationCoordinator = SSHAuthenticationCoordinator()
+
     var confirmTermination: () -> Bool
 
     var requestTerminationConfirmation: (
@@ -183,6 +185,12 @@ final class ApplicationDelegate: NSObject,
         _ notification: Notification
     ) {
         TelemetryController.shared.applicationWillResignActive()
+    }
+
+    func applicationWillTerminate(
+        _ notification: Notification
+    ) {
+        sshAuthenticationCoordinator.shutdown()
     }
 
     @objc func newWindowForTab(_ sender: Any?) {

@@ -570,7 +570,7 @@ struct WorkspaceWindow: View {
     @State private var windowStateBuffer = WorkspaceWindowStateBuffer()
     @State private var updateRelaunchSceneID = UUID()
     @State private var updateRelaunchWindowID: UUID?
-    @StateObject private var sceneModel = WorkspaceSceneModel()
+    @StateObject private var sceneModel: WorkspaceSceneModel
     @EnvironmentObject private var terminalRuntime: LibghosttyRuntime
     @ObservedObject private var settingsStore = SettingsStore.shared
     @State private var visibleConfigReloadNotice:
@@ -578,6 +578,24 @@ struct WorkspaceWindow: View {
     @State private var titlebarSidebarWidth =
         WorkspaceSidebarWidthPolicy.defaultWidth
     private let registry = WindowRegistry.shared
+
+    #if canImport(AppKit)
+    init(
+        applicationDelegate: ApplicationDelegate,
+        windowState: Binding<WorkspaceWindowState?>,
+        updateRelaunchRestorer: UpdateRelaunchRestorer,
+        openRelaunchWindow: @escaping (WorkspaceWindowState) -> Void
+    ) {
+        self.applicationDelegate = applicationDelegate
+        _windowState = windowState
+        self.updateRelaunchRestorer = updateRelaunchRestorer
+        self.openRelaunchWindow = openRelaunchWindow
+        _sceneModel = StateObject(wrappedValue: WorkspaceSceneModel(
+            sshAuthenticationCoordinator:
+            applicationDelegate.sshAuthenticationCoordinator
+        ))
+    }
+    #endif
 
     var body: some View {
         return RootView(

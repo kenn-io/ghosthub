@@ -108,6 +108,9 @@ enum SSHConnectionPool {
     ) -> String {
         let hostPort = host.port.map { String($0) } ?? ""
         let configurationPort = configuration?.port.map { String($0) } ?? ""
+        let hostKeyPolicy = SSHConfigurationResolver.normalizedHostKeyPolicy(
+            configuration?.strictHostKeyChecking
+        ) ?? ""
         let components: [String] = [
             destination(for: host),
             hostPort,
@@ -115,6 +118,7 @@ enum SSHConnectionPool {
             configuration?.user ?? "",
             configurationPort,
             configuration?.hostKeyAlias ?? "",
+            hostKeyPolicy,
             configuration?.proxyJump ?? "",
             configuration?.proxyCommand ?? "",
         ]

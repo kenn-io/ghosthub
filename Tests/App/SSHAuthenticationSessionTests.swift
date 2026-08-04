@@ -7,9 +7,14 @@ struct SSHAuthenticationSessionTests {
     @Test("askpass exchanges a native response for the exact prompt")
     func exchangesPromptAndResponse() async throws {
         let state = try SSHAuthenticationTemporaryState.create()
-        defer { state.remove() }
         let output = Pipe()
         let process = Process()
+        defer {
+            if process.isRunning {
+                process.terminate()
+            }
+            state.remove()
+        }
         process.executableURL = state.helper
         process.arguments = ["Password for operator@build.example.test:"]
         process.environment = ProcessInfo.processInfo.environment.merging([
@@ -33,8 +38,12 @@ struct SSHAuthenticationSessionTests {
             "synthetic-secret",
             toFIFO: state.responseFIFO
         ))
-        process.waitUntilExit()
+        let exitDeadline = ContinuousClock.now + .seconds(2)
+        while process.isRunning, ContinuousClock.now < exitDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
 
+        try #require(!process.isRunning)
         #expect(process.terminationStatus == 0)
         #expect(
             output.fileHandleForReading.readDataToEndOfFile()

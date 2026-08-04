@@ -175,12 +175,12 @@ When that retry needs interactive authentication, Ghosthub presents OpenSSH's
 exact challenge in a native secure-entry sheet. The app brokers the session-only
 response to the system client through a private FIFO; it does not put the
 response in process arguments, environment variables, logs, or persistent
-storage. A successful prompt leaves a non-persistent OpenSSH master alive for
-the app session, and inventory, transfers, and tmux clients reuse its control
-socket under `~/.ghosthub/ssh/`. Its bounded socket name includes a digest of
-the logical destination, effective host-key aliases, and proxy route, so two
-trust identities or routes to the same endpoint cannot reuse one another's
-authenticated master.
+storage. A successful prompt leaves a non-persistent OpenSSH master owned by
+the application session, and every window's inventory, transfer, and tmux
+clients reuse its control socket under `~/.ghosthub/ssh/`. Its bounded socket
+name includes a digest of the logical destination, effective host-key policy,
+effective host-key aliases, and proxy route, so two trust identities or routes
+to the same endpoint cannot reuse one another's authenticated master.
 Before opening that channel, Ghosthub reads the effective destination policy
 with `ssh -G`. It tightens `accept-new` to an explicit review but does not
 override `yes`, `no`, or `off`; approval matches the parsed algorithm and

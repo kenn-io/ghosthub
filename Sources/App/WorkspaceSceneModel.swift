@@ -383,7 +383,7 @@ final class WorkspaceSceneModel: ObservableObject {
     private let tmuxPresentationStyleProvider:
         (UInt?) -> TmuxPresentationStyle?
     private let sshHostProbeRunner: SSHHostProbeRunner
-    private let sshAuthenticationCoordinator = SSHAuthenticationCoordinator()
+    private let sshAuthenticationCoordinator: SSHAuthenticationCoordinator
     private let configuredSSHHostsProvider: () -> [SSHHost]
     private var configuredSSHHostsCancellable: AnyCancellable?
     private var terminalColorsCancellable: AnyCancellable?
@@ -438,7 +438,10 @@ final class WorkspaceSceneModel: ObservableObject {
     var defaultIdleThresholdSeconds: Int {
         workspaceConfiguration.notifications.idleThresholdSeconds
     }
-    convenience init(terminalRuntime: LibghosttyRuntime = .shared) {
+    convenience init(
+        terminalRuntime: LibghosttyRuntime = .shared,
+        sshAuthenticationCoordinator: SSHAuthenticationCoordinator
+    ) {
         do {
             let boot = try WorkspaceSceneBootstrap.resources()
             try self.init(
@@ -463,6 +466,7 @@ final class WorkspaceSceneModel: ObservableObject {
                     SettingsStore.shared.terminalAppearancePreferences
                         .appliesThemeToTmuxSessions
                 },
+                sshAuthenticationCoordinator: sshAuthenticationCoordinator,
                 localHostID: boot.localHostID,
                 startServices: true
             )
@@ -580,6 +584,8 @@ final class WorkspaceSceneModel: ObservableObject {
                 captureStandardError: true
             )
         },
+        sshAuthenticationCoordinator: SSHAuthenticationCoordinator =
+            SSHAuthenticationCoordinator(),
         configuredSSHHostsProvider: @escaping () -> [SSHHost] = {
             SettingsStore.shared.sshHosts
         },
@@ -624,6 +630,7 @@ final class WorkspaceSceneModel: ObservableObject {
         self.tmuxPresentationStyleProvider =
             tmuxPresentationStyleProvider
         self.sshHostProbeRunner = sshHostProbeRunner
+        self.sshAuthenticationCoordinator = sshAuthenticationCoordinator
         self.createdSessionDiscoveryDelays =
             createdSessionDiscoveryDelays
         self.deferredTmuxPresentationRetryDelays =
@@ -1080,7 +1087,6 @@ final class WorkspaceSceneModel: ObservableObject {
         endedCreatedTmuxSessionHandles.removeAll()
         confirmedEndedTmuxSessionHandles.removeAll()
         nativeTmuxSessionCoordinatorBacking?.shutdown()
-        sshAuthenticationCoordinator.shutdown()
     }
 
     /// Refreshes the sidebar directly from each host's kwt and tmux inventory.

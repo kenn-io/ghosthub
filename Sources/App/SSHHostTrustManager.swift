@@ -344,8 +344,9 @@ struct SSHHostTrustManager: Sendable {
     #!/bin/sh
     set -eu
     umask 077
-    /usr/bin/printf '%s' "$1" > "$GHOSTHUB_SSH_PROMPT_PATH"
+    candidate_path="$GHOSTHUB_SSH_PROMPT_PATH.candidate.$$"
     identity_path="$GHOSTHUB_SSH_PROMPT_PATH.identity"
+    /usr/bin/printf '%s' "$1" > "$candidate_path"
     /usr/bin/awk '
     {
         quote = sprintf("%c", 39)
@@ -377,7 +378,12 @@ struct SSHHostTrustManager: Sendable {
             exit
         }
     }
-    ' "$GHOSTHUB_SSH_PROMPT_PATH" > "$identity_path"
+    ' "$candidate_path" > "$identity_path"
+    if [ ! -s "$identity_path" ]; then
+        /bin/rm -f "$candidate_path" "$identity_path"
+        exit 1
+    fi
+    /bin/mv -f "$candidate_path" "$GHOSTHUB_SSH_PROMPT_PATH"
     if [ -n "${GHOSTHUB_SSH_EXPECTED_KEY_PATH:-}" ] && \
        /usr/bin/cmp -s "$identity_path" \
        "$GHOSTHUB_SSH_EXPECTED_KEY_PATH"; then
