@@ -325,6 +325,13 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
         surfaceHandle.map { UInt(bitPattern: $0) }
     }
 
+    package func captureChildExitCode() {
+        guard childExitCode == nil, let surface else { return }
+        let exitCode = ghostty_surface_child_exit_code(surface)
+        guard exitCode >= 0 else { return }
+        childExitCode = UInt32(exitCode)
+    }
+
     package func synchronizeColorScheme() {
         guard let surface else { return }
         let scheme: ghostty_color_scheme_e

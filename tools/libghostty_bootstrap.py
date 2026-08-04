@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-GHOSTHUB_BOOTSTRAP_VERSION = 20
+GHOSTHUB_BOOTSTRAP_VERSION = 21
 GHOSTHUB_GHOSTTY_BUNDLE_ID = "com.ghosthub"
 GHOSTHUB_TERM_PROGRAM = "ghosthub"
 
@@ -267,6 +267,10 @@ def apply_ghosthub_source_patches(paths: BootstrapPaths) -> None:
     patch_public_header(paths.source_checkout_root / "include" / "ghostty.h")
     patch_embedded_runtime_env(paths.source_checkout_root / "src" / "apprt" / "embedded.zig")
     patch_surface_child_pid_export(paths.source_checkout_root / "src" / "apprt" / "embedded.zig")
+    patch_surface_child_exit_code_state(paths.source_checkout_root / "src" / "Surface.zig")
+    patch_surface_child_exit_code_export(
+        paths.source_checkout_root / "src" / "apprt" / "embedded.zig"
+    )
     patch_surface_inject_output_export(
         paths.source_checkout_root / "src" / "apprt" / "embedded.zig"
     )
@@ -385,6 +389,21 @@ void ghostty_surface_refresh(ghostty_surface_t);
 """,
         already_applied="int ghostty_surface_child_pid(ghostty_surface_t);",
         description="Ghostty public surface child-pid declaration",
+    )
+
+    patch_source_file(
+        path,
+        original="""bool ghostty_surface_process_exited(ghostty_surface_t);
+int ghostty_surface_child_pid(ghostty_surface_t);
+void ghostty_surface_refresh(ghostty_surface_t);
+""",
+        replacement="""bool ghostty_surface_process_exited(ghostty_surface_t);
+int ghostty_surface_child_pid(ghostty_surface_t);
+int ghostty_surface_child_exit_code(ghostty_surface_t);
+void ghostty_surface_refresh(ghostty_surface_t);
+""",
+        already_applied="int ghostty_surface_child_exit_code(ghostty_surface_t);",
+        description="Ghostty public surface child-exit-code declaration",
     )
 
     patch_source_file(
@@ -574,6 +593,58 @@ def patch_surface_child_pid_export(path: Path) -> None:
 """,
         already_applied="export fn ghostty_surface_child_pid(surface: *Surface) c_int {",
         description="Ghostty surface child-pid export",
+    )
+
+
+def patch_surface_child_exit_code_state(path: Path) -> None:
+    patch_source_file(
+        path,
+        original="""/// This is set to true if our IO thread notifies us our child exited.
+/// This is used to determine if we need to confirm, hold open, etc.
+child_exited: bool = false,
+""",
+        replacement="""/// This is set to true if our IO thread notifies us our child exited.
+/// This is used to determine if we need to confirm, hold open, etc.
+child_exited: bool = false,
+
+/// The child exit status reported by the IO thread.
+child_exit_code: ?u32 = null,
+""",
+        already_applied="child_exit_code: ?u32 = null,",
+        description="Ghostty surface child-exit-code state",
+    )
+    patch_source_file(
+        path,
+        original="""    // Mark our flag that we exited immediately
+    self.child_exited = true;
+""",
+        replacement="""    // Mark our exit state immediately so close callbacks can inspect it.
+    self.child_exited = true;
+    self.child_exit_code = info.exit_code;
+""",
+        already_applied="self.child_exit_code = info.exit_code;",
+        description="Ghostty surface child-exit-code capture",
+    )
+
+
+def patch_surface_child_exit_code_export(path: Path) -> None:
+    patch_source_file(
+        path,
+        original="""    export fn ghostty_surface_process_exited(surface: *Surface) bool {
+        return surface.core_surface.child_exited;
+    }
+""",
+        replacement="""    export fn ghostty_surface_process_exited(surface: *Surface) bool {
+        return surface.core_surface.child_exited;
+    }
+
+    export fn ghostty_surface_child_exit_code(surface: *Surface) c_int {
+        const exit_code = surface.core_surface.child_exit_code orelse return -1;
+        return @intCast(exit_code);
+    }
+""",
+        already_applied="export fn ghostty_surface_child_exit_code(surface: *Surface) c_int {",
+        description="Ghostty surface child-exit-code export",
     )
 
 

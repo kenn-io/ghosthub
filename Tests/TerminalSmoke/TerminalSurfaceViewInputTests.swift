@@ -1148,6 +1148,53 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         )
     }
 
+    func testClosingSurfaceCapturesSuccessfulChildExitCode() throws {
+        let runtime = try runtimeWithTerminalConfig(
+            "abnormal-command-exit-runtime = 0\n"
+        )
+        let appHandle = try requireAppHandle(from: runtime)
+        let home = makeShellHome()
+        let view = TerminalSurfaceView(
+            app: appHandle,
+            configuration: TerminalSurfaceConfiguration(
+                environmentVariables: [
+                    "HOME": home.path,
+                    "SHELL": "/bin/zsh",
+                    "ZDOTDIR": home.path,
+                ],
+                initialInput: "exec /bin/sh -c 'sleep 1; exit 0'\n"
+            )
+        )
+        let window = hostInWindow(view)
+        var reportedProcessAlive: Bool?
+        view.registerSurfaceCloseObserver(id: UUID()) {
+            reportedProcessAlive = $0
+        }
+
+        waitUntil(timeout: 10.0) {
+            view.surfaceHandle.map(ghostty_surface_process_exited) == true
+        }
+        let surface = try XCTUnwrap(view.surfaceHandle)
+        XCTAssertTrue(ghostty_surface_process_exited(surface))
+
+        // The action callback also reports this status. Clear it so the
+        // assertion below proves the close callback obtains the code from
+        // libghostty's durable process-exit state instead.
+        view.childExitCode = nil
+        ghostty_surface_request_close(surface)
+
+        waitUntil(timeout: 2.0) { reportedProcessAlive != nil }
+        withExtendedLifetime(window) {}
+
+        XCTAssertNotNil(reportedProcessAlive)
+        XCTAssertEqual(reportedProcessAlive, false)
+        XCTAssertEqual(
+            view.childExitCode,
+            0,
+            "A normal status-zero close should carry its exit code through libghostty's close callback."
+        )
+    }
+
     func testControlASendsSOHToPTY() throws {
         try assertPTYReceives(
             readBytes: 1,

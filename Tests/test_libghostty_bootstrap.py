@@ -549,9 +549,17 @@ typedef struct {
                 "    ring_bell,\n"
             )
             core_surface.write_text(
+                "/// This is set to true if our IO thread notifies us our child exited.\n"
+                "/// This is used to determine if we need to confirm, hold open, etc.\n"
+                "child_exited: bool = false,\n"
+                "\n"
                 "        .close => self.close(),\n"
                 "\n"
                 "        .child_exited => |v| self.childExited(v),\n"
+                "\n"
+                "fn childExited(self: *Surface, info: apprt.surface.Message.ChildExited) void {\n"
+                "    // Mark our flag that we exited immediately\n"
+                "    self.child_exited = true;\n"
                 "\n"
                 "    self.rt_surface.setClipboard(loc, &.{.{\n"
                 "        .mime = \"text/plain\",\n"
@@ -676,6 +684,10 @@ pub fn init() void {
                 header.read_text(),
             )
             self.assertIn(
+                "int ghostty_surface_child_exit_code(ghostty_surface_t);",
+                header.read_text(),
+            )
+            self.assertIn(
                 "void ghostty_surface_inject_output(ghostty_surface_t, const char*, uintptr_t);",
                 header.read_text(),
             )
@@ -693,6 +705,10 @@ pub fn init() void {
             )
             self.assertIn(
                 "export fn ghostty_surface_child_pid(surface: *Surface) c_int {",
+                embedded.read_text(),
+            )
+            self.assertIn(
+                "export fn ghostty_surface_child_exit_code(surface: *Surface) c_int {",
                 embedded.read_text(),
             )
             self.assertIn(
@@ -729,6 +745,14 @@ pub fn init() void {
             )
             self.assertIn(
                 "self.rt_surface.childWrite(w.slice());",
+                core_surface.read_text(),
+            )
+            self.assertIn(
+                "child_exit_code: ?u32 = null,",
+                core_surface.read_text(),
+            )
+            self.assertIn(
+                "self.child_exit_code = info.exit_code;",
                 core_surface.read_text(),
             )
             self.assertIn(

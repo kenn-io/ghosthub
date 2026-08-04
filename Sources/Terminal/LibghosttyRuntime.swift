@@ -1112,6 +1112,9 @@ public final class LibghosttyRuntime: ObservableObject {
             guard let surfaceView = surfaceView(from: userdataValue) else {
                 return
             }
+            if !processAlive {
+                surfaceView.captureChildExitCode()
+            }
             surfaceView.error = TerminalSurfaceError.surfaceClosed(
                 processAlive: processAlive
             )
