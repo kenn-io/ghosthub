@@ -90,12 +90,14 @@ jobs:
       - name: Configure isolated macOS test state
         shell: bash
         run: |
-          test -n "${HOME:-}"
           test -n "${RUNNER_TEMP:-}"
-          mkdir -p "$HOME/Library/Caches" "$RUNNER_TEMP/ghosthub-tmp"
-          chmod 700 "$HOME/Library" "$HOME/Library/Caches" "$RUNNER_TEMP/ghosthub-tmp"
-          echo "CFFIXED_USER_HOME=$HOME" >> "$GITHUB_ENV"
-          echo "TMPDIR=$RUNNER_TEMP/ghosthub-tmp" >> "$GITHUB_ENV"
+          foundation_home="$RUNNER_TEMP/ghosthub-home"
+          foundation_tmp="$RUNNER_TEMP/ghosthub-tmp"
+          mkdir -p "$foundation_home/Library/Caches" "$foundation_tmp"
+          chmod 700 "$foundation_home" "$foundation_home/Library" \
+            "$foundation_home/Library/Caches" "$foundation_tmp"
+          echo "CFFIXED_USER_HOME=$foundation_home" >> "$GITHUB_ENV"
+          echo "TMPDIR=$foundation_tmp" >> "$GITHUB_ENV"
 
       - name: Install Zig 0.15.2
         shell: bash
