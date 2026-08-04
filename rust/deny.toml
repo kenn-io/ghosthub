@@ -36,6 +36,9 @@ exceptions = [
     { allow = ["MPL-2.0"], crate = "option-ext@0.2.0" },
 ]
 
+[licenses.private]
+ignore = true
+
 [bans]
 multiple-versions = "allow"
 wildcards = "deny"
