@@ -9,8 +9,8 @@ publish = false
 rust-version = "1.96"
 
 [workspace.dependencies]
-ghosthub-model = { path = "model" }
-ghosthub-ui = { path = "ui" }
+ghosthub-model = { path = "model", version = "=0.0.0" }
+ghosthub-ui = { path = "ui", version = "=0.0.0" }
 gpui = { version = "=0.2.2", default-features = false }
 
 [workspace.lints.rust]
