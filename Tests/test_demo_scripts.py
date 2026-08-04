@@ -30,11 +30,10 @@ WEBSITE_ASSET_NAMES = (
 
 @pytest.fixture
 def tmp_path() -> Iterator[Path]:
-    """Keep path-security fixtures below the account's trusted home."""
-    account_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+    """Keep path-security fixtures below macOS's trusted sticky temp root."""
     with tempfile.TemporaryDirectory(
         prefix="ghosthub-demo-test-",
-        dir=account_home,
+        dir="/tmp",
     ) as directory:
         yield Path(directory)
 
