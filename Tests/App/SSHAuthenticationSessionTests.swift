@@ -87,12 +87,20 @@ struct SSHAuthenticationCoordinatorTests {
         ) === first)
 
         coordinator.cancelAll(scopeID: secondScope)
+        let connectedScope = UUID()
         let replacement = coordinator.session(
-            scopeID: UUID(),
+            scopeID: connectedScope,
             presentationID: presentationID,
             host: host
         )
         #expect(replacement !== first)
+        replacement.markConnected()
+        coordinator.cancelAll(scopeID: connectedScope)
+        #expect(coordinator.session(
+            scopeID: UUID(),
+            presentationID: presentationID,
+            host: host
+        ) === replacement)
         coordinator.shutdown()
     }
 }

@@ -1065,6 +1065,7 @@ public struct HostsSettingsView: View {
                   drafts: sshHosts
               ) {
             if await isSSHAuthenticationReady(draft.sshHost) {
+                cancelSSHAuthentication(target.draftID)
                 sshAuthenticationSucceeded = true
                 return
             }
