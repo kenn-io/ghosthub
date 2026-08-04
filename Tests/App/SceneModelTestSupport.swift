@@ -342,7 +342,7 @@ func makeModel(
     },
     sshHostProbeRunner: @escaping
     WorkspaceSceneModel.SSHHostProbeRunner = { _, _ in
-        (status: 255, stdout: "")
+        (status: 255, stdout: "", stderr: "")
     },
     configuredSSHHostsProvider: @escaping () -> [SSHHost] = { [] },
     configuredSSHHostsPublisher: AnyPublisher<[SSHHost], Never> =

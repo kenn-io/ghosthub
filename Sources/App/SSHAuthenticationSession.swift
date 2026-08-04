@@ -176,6 +176,43 @@ struct SSHAuthenticationPreparation: Sendable {
     let controlPath: String
     let hostKeyArguments: [String]
     let proxyArguments: [String]
+    let configurationArguments: [String]
+
+    static func prepare(
+        for target: SSHAuthenticationTarget,
+        controlPath: String?,
+        configurationSnapshot: SSHConnectionConfigurationSnapshot
+    ) -> SSHAuthenticationPreparationResult {
+        let configurationProvider = configurationSnapshot.configurationProvider
+        return prepare(
+            for: target,
+            controlPath: controlPath,
+            identityProvider: {
+                SSHConnectionPool.authenticationIdentity(
+                    for: $0,
+                    configurationSnapshot: configurationSnapshot
+                )
+            },
+            hostKeyArgumentsProvider: {
+                SSHConfigurationResolver.authenticationHostKeyArguments(
+                    for: $0,
+                    configurationProvider: configurationProvider
+                )
+            },
+            proxyArgumentsProvider: {
+                SSHConnectionPool.proxyArguments(
+                    for: $0,
+                    configurationProvider: configurationProvider
+                )
+            },
+            configurationArgumentsProvider: {
+                SSHConfigurationResolver.snapshotAuthenticationArguments(
+                    for: $0,
+                    configurationProvider: configurationProvider
+                )
+            }
+        )
+    }
 
     static func prepare(
         for target: SSHAuthenticationTarget,
@@ -189,6 +226,9 @@ struct SSHAuthenticationPreparation: Sendable {
         },
         proxyArgumentsProvider: @Sendable (SSHAuthenticationTarget) -> [String] = {
             SSHConnectionPool.proxyArguments(for: $0)
+        },
+        configurationArgumentsProvider: @Sendable (SSHHostInfo) -> [String] = {
+            _ in tmuxSSHConnectionArguments()
         }
     ) -> SSHAuthenticationPreparationResult {
         do {
@@ -204,6 +244,9 @@ struct SSHAuthenticationPreparation: Sendable {
                 try Task.checkCancellation()
                 let proxyArguments = proxyArgumentsProvider(target)
                 try Task.checkCancellation()
+                let configurationArguments =
+                    configurationArgumentsProvider(target.host)
+                try Task.checkCancellation()
                 guard let launchIdentity = identityProvider(target),
                       launchIdentity.controlPath == controlPath else {
                     temporaryState.remove()
@@ -215,7 +258,8 @@ struct SSHAuthenticationPreparation: Sendable {
                     temporaryState: temporaryState,
                     controlPath: controlPath,
                     hostKeyArguments: hostKeyArguments,
-                    proxyArguments: proxyArguments
+                    proxyArguments: proxyArguments,
+                    configurationArguments: configurationArguments
                 ))
             } catch {
                 temporaryState.remove()
@@ -329,9 +373,12 @@ final class SSHAuthenticationSession: ObservableObject {
         let target = target
         let controlPath = requestedControlPath
         let resolver = Task.detached(priority: .userInitiated) {
-            SSHAuthenticationPreparation.prepare(
+            let configurationSnapshot =
+                SSHConnectionPool.configurationSnapshot(for: target)
+            return SSHAuthenticationPreparation.prepare(
                 for: target,
-                controlPath: controlPath
+                controlPath: controlPath,
+                configurationSnapshot: configurationSnapshot
             )
         }
         preparationTask = Task { [weak self] in
@@ -372,7 +419,8 @@ final class SSHAuthenticationSession: ObservableObject {
                 for: preparation.target,
                 controlPath: preparation.controlPath,
                 hostKeyArguments: preparation.hostKeyArguments,
-                proxyArguments: preparation.proxyArguments
+                proxyArguments: preparation.proxyArguments,
+                configurationArguments: preparation.configurationArguments
             )
             let invocation = Self.processInvocation(
                 sshArguments: sshArguments,

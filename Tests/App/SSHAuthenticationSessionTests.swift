@@ -161,6 +161,76 @@ struct SSHAuthenticationSessionTests {
         #expect(presentation.target == "admin@jump.example.test:2222")
     }
 
+    @Test("authentication launches from its effective configuration snapshot")
+    func launchesFromEffectiveConfigurationSnapshot() throws {
+        let alias = SSHHostInfo(
+            user: nil,
+            hostname: "build-alias",
+            port: nil
+        )
+        let target = SSHAuthenticationTarget(
+            host: alias,
+            precedingProxyHops: []
+        )
+        let configuration = SSHConfigurationResolver.parse("""
+        user snapshot-user
+        hostname snapshot.example.test
+        port 2200
+        stricthostkeychecking ask
+        identityfile /snapshot/id_ed25519
+        identityagent /snapshot/agent.sock
+        userknownhostsfile /snapshot/known_hosts
+        preferredauthentications publickey,password
+        """)
+        let snapshot = SSHConnectionPool.configurationSnapshot(
+            for: target,
+            configurationProvider: { _ in configuration }
+        )
+        let identity = try #require(SSHConnectionPool.authenticationIdentity(
+            for: target,
+            configurationSnapshot: snapshot
+        ))
+
+        let result = SSHAuthenticationPreparation.prepare(
+            for: target,
+            controlPath: identity.controlPath,
+            configurationSnapshot: snapshot
+        )
+
+        guard case let .success(preparation) = result else {
+            Issue.record("Expected authentication preparation to succeed")
+            return
+        }
+        defer { preparation.temporaryState.remove() }
+        #expect(preparation.displayHost.user == "snapshot-user")
+        #expect(preparation.displayHost.hostname == "snapshot.example.test")
+        #expect(preparation.displayHost.port == 2200)
+        for option in [
+            "HostName=snapshot.example.test",
+            "User=snapshot-user",
+            "identityfile=/snapshot/id_ed25519",
+            "identityagent=/snapshot/agent.sock",
+            "userknownhostsfile=/snapshot/known_hosts",
+            "preferredauthentications=publickey,password",
+        ] {
+            #expect(preparation.configurationArguments.contains(option))
+        }
+        #expect(preparation.configurationArguments.contains("/dev/null"))
+        #expect(!preparation.configurationArguments.contains {
+            $0.hasPrefix("ProxyJump=")
+        })
+
+        let arguments = SSHConnectionPool.authenticationArguments(
+            for: target,
+            controlPath: preparation.controlPath,
+            hostKeyArguments: preparation.hostKeyArguments,
+            proxyArguments: preparation.proxyArguments,
+            configurationArguments: preparation.configurationArguments
+        )
+        #expect(arguments.contains("StrictHostKeyChecking=yes"))
+        #expect(arguments.suffix(2) == ["--", "build-alias"])
+    }
+
     @Test("askpass exchanges a native response for the exact prompt")
     func exchangesPromptAndResponse() async throws {
         let state = try SSHAuthenticationTemporaryState.create()

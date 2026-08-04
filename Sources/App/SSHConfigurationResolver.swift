@@ -288,6 +288,73 @@ enum SSHConfigurationResolver {
         for host: SSHHostInfo,
         configurationProvider: ConfigurationProvider
     ) -> [String] {
+        snapshotArguments(
+            for: host,
+            configurationProvider: configurationProvider,
+            preserving: [
+                "userknownhostsfile",
+                "globalknownhostsfile",
+                "knownhostscommand",
+                "revokedhostkeys",
+                "hostkeyalgorithms",
+                "casignaturealgorithms",
+                "checkhostip",
+                "hashknownhosts",
+                "verifyhostkeydns",
+                "visualhostkey",
+                "fingerprinthash",
+                "addressfamily",
+                "bindaddress",
+                "bindinterface",
+            ]
+        )
+    }
+
+    static func snapshotAuthenticationArguments(
+        for host: SSHHostInfo,
+        configurationProvider: ConfigurationProvider
+    ) -> [String] {
+        snapshotArguments(
+            for: host,
+            configurationProvider: configurationProvider,
+            excluding: [
+                "host",
+                "hostname",
+                "user",
+                "port",
+                "hostkeyalias",
+                "proxyjump",
+                "proxycommand",
+                "canonicalizehostname",
+                "canonicalizemaxdots",
+                "canonicalizefallbacklocal",
+                "canonicaldomains",
+                "canonicalizepermittedcnames",
+                "batchmode",
+                "controlmaster",
+                "controlpersist",
+                "controlpath",
+                "forkafterauthentication",
+                "numberofpasswordprompts",
+                "connecttimeout",
+                "connectionattempts",
+                "serveraliveinterval",
+                "serveralivecountmax",
+                "requesttty",
+                "sessiontype",
+                "remotecommand",
+                "localcommand",
+                "permitlocalcommand",
+            ]
+        )
+    }
+
+    private static func snapshotArguments(
+        for host: SSHHostInfo,
+        configurationProvider: ConfigurationProvider,
+        preserving preservedOptions: Set<String>? = nil,
+        excluding excludedOptions: Set<String> = []
+    ) -> [String] {
         guard let configuration = configurationProvider(host) else {
             return [
                 "-F", "/dev/null",
@@ -312,26 +379,12 @@ enum SSHConfigurationResolver {
                 "-o", "HostKeyAlias=\(hostKeyAlias)",
             ])
         }
-        let preservedOptions = [
-            "userknownhostsfile",
-            "globalknownhostsfile",
-            "knownhostscommand",
-            "revokedhostkeys",
-            "hostkeyalgorithms",
-            "casignaturealgorithms",
-            "checkhostip",
-            "hashknownhosts",
-            "verifyhostkeydns",
-            "visualhostkey",
-            "fingerprinthash",
-            "addressfamily",
-            "bindaddress",
-            "bindinterface",
-        ]
         for option in configuration.resolvedOptions {
             guard let separator = option.firstIndex(of: "=") else { continue }
             let name = String(option[..<separator])
-            guard preservedOptions.contains(name) else { continue }
+            guard !excludedOptions.contains(name),
+                  preservedOptions?.contains(name) ?? true
+            else { continue }
             let value = option[option.index(after: separator)...]
             arguments.append(contentsOf: ["-o", "\(name)=\(value)"])
         }

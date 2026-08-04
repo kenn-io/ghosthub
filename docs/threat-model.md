@@ -150,11 +150,12 @@ process-owned `/tmp` namespace with the same dead-owner cleanup rule and rejects
 any path that remains too long.
 Routine clients explicitly disable `ControlMaster` and `ControlPersist`, so
 user configuration cannot turn them into unsupervised persistent masters even
-when Ghosthub cannot prepare its control socket. Authentication revalidates the
-cached control identity immediately before launching a master and restarts
-recovery if effective SSH identity changed while the prompt was being prepared.
-The cached route and path come from one effective-config snapshot rather than
-separate reads that could straddle a ProxyJump edit.
+when Ghosthub cannot prepare its control socket. Authentication preparation
+resolves one effective-config snapshot, verifies its cached control identity,
+and launches the endpoint, route, authentication, and known-hosts options from
+that same snapshot under an empty base SSH configuration. It restarts recovery
+if the identity changed instead of mixing a cached socket path with live SSH
+configuration.
 Before Ghosthub reports authentication complete, it resolves the current route
 and control path again; a mismatch terminates the stale shared session and
 returns to explicit recovery.
@@ -165,6 +166,9 @@ inherited `TMUX` and `TMUX_PANE` values before login-shell startup. Host-key
 review launches with snapshot-derived endpoint, route, and known-hosts options
 under an empty base SSH configuration, so live config changes cannot redirect
 the reviewed operation.
+Remote connection probes accept reachability and capability markers only from
+stdout. Stderr is retained solely as diagnostics, so SSH or shell messages
+cannot spoof a successful probe.
 Ghosthub never forces `accept-new`, writes a scanned key itself, or treats a
 trusted short alias as authorization for a canonical MagicDNS FQDN.
 When an SSH route contains unseen intermediate hosts, each trust sheet labels

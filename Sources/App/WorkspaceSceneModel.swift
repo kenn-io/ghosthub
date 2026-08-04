@@ -172,7 +172,7 @@ final class WorkspaceSceneModel: ObservableObject {
     ) async throws -> Void
     typealias SSHHostProbeRunner = @Sendable (
         SSHHostInfo, String
-    ) -> (status: Int32, stdout: String)
+    ) -> (status: Int32, stdout: String, stderr: String)
 
     @Published var snapshot: WorkspaceSnapshot {
         didSet {
@@ -584,11 +584,10 @@ final class WorkspaceSceneModel: ObservableObject {
             )
         },
         sshHostProbeRunner: @escaping SSHHostProbeRunner = { host, command in
-            TmuxBinaryResolver.runRemoteLoginShell(
+            TmuxBinaryResolver.runRemoteLoginShellSeparatingStandardError(
                 host: host,
                 command: command,
-                timeout: 10,
-                captureStandardError: true
+                timeout: 10
             )
         },
         sshAuthenticationCoordinator: SSHAuthenticationCoordinator =
@@ -2849,7 +2848,7 @@ final class WorkspaceSceneModel: ObservableObject {
             if !sshReached {
                 diagnostics = [SSHConnectionFailure.diagnostic(
                     status: result.status,
-                    output: result.stdout
+                    output: result.stderr
                 )]
             } else if !tmuxAvailable {
                 diagnostics = [RemoteHostDiagnostic(

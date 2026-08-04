@@ -135,6 +135,23 @@ struct TmuxBinaryResolverTests {
         #expect(result.stdout == "GHOSTHUB_REMOTE_SHELL_READY\n")
     }
 
+    @Test("process output keeps diagnostics separate from protocol output")
+    func separatesStandardError() {
+        let result = TmuxBinaryResolver.runProcess(
+            executable: "/bin/sh",
+            arguments: [
+                "-c",
+                "printf 'GHOSTHUB_SSH_REACHED\\n'; "
+                    + "printf 'diagnostic\\n' >&2",
+            ],
+            timeout: 5
+        )
+
+        #expect(result.status == 0)
+        #expect(result.stdout == "GHOSTHUB_SSH_REACHED\n")
+        #expect(result.stderr == "diagnostic\n")
+    }
+
     @Test("rejects unsupported tmux versions")
     func rejectsOldVersion() {
         let resolver = TmuxBinaryResolver(processRunner: { _, _ in

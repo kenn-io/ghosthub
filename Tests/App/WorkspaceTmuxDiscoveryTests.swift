@@ -2107,7 +2107,8 @@ struct WorkspaceTmuxDiscoveryTests {
                     GHOSTHUB_TMUX_AVAILABLE
                     GHOSTHUB_KWT_UNAVAILABLE
 
-                    """
+                    """,
+                    stderr: ""
                 )
             }
         )
@@ -2145,7 +2146,8 @@ struct WorkspaceTmuxDiscoveryTests {
                     stdout:
                     "GHOSTHUB_SSH_REACHED\n"
                         + "GHOSTHUB_TMUX_UNAVAILABLE\n"
-                        + "GHOSTHUB_KWT_UNAVAILABLE\n"
+                        + "GHOSTHUB_KWT_UNAVAILABLE\n",
+                    stderr: ""
                 )
             }
         )
@@ -2176,7 +2178,13 @@ struct WorkspaceTmuxDiscoveryTests {
             database: environment.database,
             localHostID: environment.host.id,
             sshHostProbeRunner: { _, _ in
-                (status: 255, stdout: "")
+                (
+                    status: 255,
+                    stdout: "",
+                    stderr:
+                    "debug: GHOSTHUB_SSH_REACHED "
+                        + "GHOSTHUB_TMUX_AVAILABLE\n"
+                )
             }
         )
 
@@ -2215,7 +2223,8 @@ struct WorkspaceTmuxDiscoveryTests {
                     status: status,
                     stdout:
                     "GHOSTHUB_SSH_REACHED\n"
-                        + "GHOSTHUB_TMUX_AVAILABLE\n"
+                        + "GHOSTHUB_TMUX_AVAILABLE\n",
+                    stderr: ""
                 )
             }
         )
@@ -2247,7 +2256,11 @@ struct WorkspaceTmuxDiscoveryTests {
             database: environment.database,
             localHostID: environment.host.id,
             sshHostProbeRunner: { _, _ in
-                (status: -124, stdout: "SSH wrapper output\n")
+                (
+                    status: -124,
+                    stdout: "",
+                    stderr: "SSH wrapper output\n"
+                )
             }
         )
 
@@ -2361,7 +2374,8 @@ struct WorkspaceTmuxDiscoveryTests {
                     GHOSTHUB_TMUX_AVAILABLE
                     GHOSTHUB_KWT_AVAILABLE
 
-                    """
+                    """,
+                    stderr: ""
                 )
             }
         )
@@ -2394,7 +2408,8 @@ struct WorkspaceTmuxDiscoveryTests {
                     GHOSTHUB_SSH_REACHED
                     GHOSTHUB_TMUX_UNAVAILABLE
 
-                    """
+                    """,
+                    stderr: ""
                 )
             }
         )

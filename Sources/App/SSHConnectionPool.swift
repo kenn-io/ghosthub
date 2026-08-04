@@ -141,6 +141,23 @@ enum SSHConnectionPool {
         )
     }
 
+    static func configurationSnapshot(
+        for target: SSHAuthenticationTarget,
+        configurationProvider: SSHConfigurationResolver.ConfigurationProvider =
+            SSHConfigurationResolver.configuration
+    ) -> SSHConnectionConfigurationSnapshot {
+        var configurations: [SSHHostInfo: EffectiveSSHConfiguration] = [:]
+        for host in target.route {
+            if let configuration = configurationProvider(host) {
+                configurations[host] = configuration
+            }
+        }
+        return SSHConnectionConfigurationSnapshot(
+            target: target,
+            configurations: configurations
+        )
+    }
+
     static func authenticationIdentity(
         for snapshot: SSHConnectionConfigurationSnapshot
     ) -> SSHAuthenticationIdentity? {
@@ -178,17 +195,11 @@ enum SSHConnectionPool {
         configurationProvider: SSHConfigurationResolver.ConfigurationProvider =
             SSHConfigurationResolver.configuration
     ) -> SSHAuthenticationIdentity? {
-        var configurations: [SSHHostInfo: EffectiveSSHConfiguration] = [:]
-        for host in target.route {
-            if let configuration = configurationProvider(host) {
-                configurations[host] = configuration
-            }
-        }
         return authenticationIdentity(
             for: target,
-            configurationSnapshot: SSHConnectionConfigurationSnapshot(
-                target: target,
-                configurations: configurations
+            configurationSnapshot: configurationSnapshot(
+                for: target,
+                configurationProvider: configurationProvider
             )
         )
     }
@@ -217,6 +228,7 @@ enum SSHConnectionPool {
         controlPath: String,
         hostKeyArguments: [String],
         proxyArguments: [String],
+        configurationArguments: [String]? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> [String] {
         var arguments = [
@@ -234,9 +246,13 @@ enum SSHConnectionPool {
         ]
         arguments.append(contentsOf: hostKeyArguments)
         arguments.append(contentsOf: proxyArguments)
-        arguments.append(contentsOf: tmuxSSHConnectionArguments(
-            environment: environment
-        ))
+        if let configurationArguments {
+            arguments.append(contentsOf: configurationArguments)
+        } else {
+            arguments.append(contentsOf: tmuxSSHConnectionArguments(
+                environment: environment
+            ))
+        }
         if let port = target.host.port {
             arguments.append(contentsOf: ["-p", String(port)])
         }
