@@ -91,7 +91,7 @@ public struct HostsSettingsView: View {
         >
     let pendingSSHHostKeyConfirmation:
         (SSHHost) async -> Result<
-            SSHHostKeyConfirmation?,
+            SSHHostKeyReviewRequirement,
             HostProbeError
         >
     let trustSSHHostKey:
@@ -100,7 +100,8 @@ public struct HostsSettingsView: View {
             HostProbeError
         >
     let sshAuthenticationView: (UUID, SSHHost) -> AnyView?
-    let isSSHAuthenticationReady: (SSHHost) async -> Bool
+    let isSSHAuthenticationReady:
+        (SSHHost) async -> SSHAuthenticationReadiness
     let cancelSSHAuthentication: (UUID) -> Void
     let installRemoteKwt:
         (SSHHost) async -> Result<Void, HostProbeError>
@@ -129,13 +130,15 @@ public struct HostsSettingsView: View {
         >,
         pendingSSHHostKeyConfirmation: @escaping (
             SSHHost
-        ) async -> Result<SSHHostKeyConfirmation?, HostProbeError>,
+        ) async -> Result<SSHHostKeyReviewRequirement, HostProbeError>,
         trustSSHHostKey: @escaping (
             SSHHostKeyConfirmation,
             SSHHost
         ) async -> Result<SSHHostKeyConfirmation?, HostProbeError>,
         sshAuthenticationView: @escaping (UUID, SSHHost) -> AnyView?,
-        isSSHAuthenticationReady: @escaping (SSHHost) async -> Bool,
+        isSSHAuthenticationReady: @escaping (
+            SSHHost
+        ) async -> SSHAuthenticationReadiness,
         cancelSSHAuthentication: @escaping (UUID) -> Void,
         installRemoteKwt: @escaping (
             SSHHost
@@ -760,17 +763,17 @@ public struct HostsSettingsView: View {
                 return
             }
             switch trustResult {
-            case let .success(confirmation):
-                guard let confirmation else {
-                    if connectionDiagnostic.code == .sshAuthenticationFailed {
-                        beginSSHAuthentication(target)
-                    }
-                    return
-                }
+            case let .success(.confirmation(confirmation)):
                 pendingSSHHostTrust = PendingSSHHostTrust(
                     target: target,
                     confirmation: confirmation
                 )
+            case .success(.authenticationRequired):
+                beginSSHAuthentication(target)
+            case .success(.none):
+                if connectionDiagnostic.code == .sshAuthenticationFailed {
+                    beginSSHAuthentication(target)
+                }
             case let .failure(error):
                 hostProbeErrorMessage = error.displayMessage
             }
@@ -1064,7 +1067,7 @@ public struct HostsSettingsView: View {
                   selectedDraftID: selectedSSHHostDraftID,
                   drafts: sshHosts
               ) {
-            let isAuthenticationReady = await isSSHAuthenticationReady(
+            let readiness = await isSSHAuthenticationReady(
                 draft.sshHost
             )
             guard !Task.isCancelled,
@@ -1074,7 +1077,15 @@ public struct HostsSettingsView: View {
                       drafts: sshHosts
                   )
             else { return }
-            if isAuthenticationReady {
+            switch readiness {
+            case .pending:
+                break
+            case .reviewRequired:
+                cancelSSHAuthentication(target.draftID)
+                pendingSSHAuthentication = nil
+                await probeHost(draft)
+                return
+            case .connected:
                 cancelSSHAuthentication(target.draftID)
                 sshAuthenticationSucceeded = true
                 return

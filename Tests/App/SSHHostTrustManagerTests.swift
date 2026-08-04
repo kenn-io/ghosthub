@@ -130,7 +130,8 @@ struct SSHHostTrustManagerTests {
             strictHostKeyPolicyProvider: {
                 $0 == proxyHost ? "ask" : "yes"
             },
-            routeProvider: { _ in [proxyHost, destinationHost] }
+            routeProvider: { _ in [proxyHost, destinationHost] },
+            authenticationProvider: { _ in true }
         )
         let proxyConfirmation = try #require(
             try manager.pendingConfirmation(
@@ -190,7 +191,8 @@ struct SSHHostTrustManagerTests {
             strictHostKeyPolicyProvider: {
                 $0 == proxyHost ? "accept-new" : "ask"
             },
-            routeProvider: { _ in [proxyHost, destinationHost] }
+            routeProvider: { _ in [proxyHost, destinationHost] },
+            authenticationProvider: { _ in true }
         )
         let proxyConfirmation = try SSHHostTrustManager.confirmation(
             destination: "dev@build.example.test",
@@ -206,6 +208,59 @@ struct SSHHostTrustManagerTests {
         #expect(next.connectionDestination == "dev@build.example.test")
         #expect(next.destination == "build.example.test")
         #expect(next.fingerprint == "SHA256:synthetic-fingerprint")
+    }
+
+    @Test("a proxy authenticates before the next host key is reviewed")
+    func requiresProxyAuthenticationBeforeDownstreamReview() throws {
+        let destinationHost = SSHHostInfo(
+            user: "dev",
+            hostname: "build.example.test",
+            port: nil
+        )
+        let proxyHost = SSHHostInfo(
+            user: "relay",
+            hostname: "jump.example.test",
+            port: 2200
+        )
+        let proxyIsAuthenticated = LockedValue(false)
+        let askPassCalls = LockedValue(0)
+        let downstreamPrompt = prompt
+        let manager = SSHHostTrustManager(
+            askPassRunner: { host, proxies, _, observed, _, _ in
+                askPassCalls.withLock { $0 += 1 }
+                #expect(host == destinationHost)
+                #expect(proxies == [proxyHost])
+                try? Data(downstreamPrompt.utf8).write(to: observed)
+            },
+            strictHostKeyPolicyProvider: {
+                $0 == proxyHost ? "yes" : "ask"
+            },
+            routeProvider: { _ in [proxyHost, destinationHost] },
+            authenticationProvider: { _ in proxyIsAuthenticated.load() }
+        )
+
+        let first = try manager.pendingRequirement(
+            for: destinationHost,
+            destination: "dev@build.example.test"
+        )
+        #expect(first == .authentication(SSHAuthenticationTarget(
+            host: proxyHost,
+            precedingProxyHops: []
+        )))
+        #expect(askPassCalls.load() == 0)
+
+        proxyIsAuthenticated.withLock { $0 = true }
+        guard case let .confirmation(confirmation) =
+            try manager.pendingRequirement(
+                for: destinationHost,
+                destination: "dev@build.example.test"
+            )
+        else {
+            Issue.record("expected the downstream host-key confirmation")
+            return
+        }
+        #expect(confirmation.destination == "build.example.test")
+        #expect(askPassCalls.load() == 1)
     }
 
     @Test(

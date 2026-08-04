@@ -14,9 +14,9 @@ public struct SettingsActions {
         }
     var pendingSSHHostKeyConfirmation:
         (SSHHost) async -> Result<
-            SSHHostKeyConfirmation?,
+            SSHHostKeyReviewRequirement,
             HostProbeError
-        > = { _ in .success(nil) }
+        > = { _ in .success(.none) }
     var trustSSHHostKey:
         (SSHHostKeyConfirmation, SSHHost) async -> Result<
             SSHHostKeyConfirmation?,
@@ -25,7 +25,8 @@ public struct SettingsActions {
             .failure(.message("SSH host-key approval is unavailable."))
         }
     var sshAuthenticationView: (UUID, SSHHost) -> AnyView? = { _, _ in nil }
-    var isSSHAuthenticationReady: (SSHHost) async -> Bool = { _ in false }
+    var isSSHAuthenticationReady:
+        (SSHHost) async -> SSHAuthenticationReadiness = { _ in .pending }
     var cancelSSHAuthentication: (UUID) -> Void = { _ in }
     var loadTailscalePeers: () async -> TailscalePeerLoadResult = {
         .failure("Tailscale import is unavailable.")
@@ -55,8 +56,8 @@ public struct SettingsActions {
         },
         pendingSSHHostKeyConfirmation: @escaping (
             SSHHost
-        ) async -> Result<SSHHostKeyConfirmation?, HostProbeError> = {
-            _ in .success(nil)
+        ) async -> Result<SSHHostKeyReviewRequirement, HostProbeError> = {
+            _ in .success(.none)
         },
         trustSSHHostKey: @escaping (
             SSHHostKeyConfirmation,
@@ -67,8 +68,10 @@ public struct SettingsActions {
         sshAuthenticationView: @escaping (UUID, SSHHost) -> AnyView? = {
             _, _ in nil
         },
-        isSSHAuthenticationReady: @escaping (SSHHost) async -> Bool = {
-            _ in false
+        isSSHAuthenticationReady: @escaping (
+            SSHHost
+        ) async -> SSHAuthenticationReadiness = {
+            _ in .pending
         },
         cancelSSHAuthentication: @escaping (UUID) -> Void = { _ in },
         loadTailscalePeers: @escaping () async -> TailscalePeerLoadResult = {

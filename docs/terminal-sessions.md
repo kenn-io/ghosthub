@@ -207,7 +207,9 @@ Remote clients use the user's OpenSSH configuration and add server keepalives.
 If OpenSSH requires interactive authentication, Ghosthub shows its challenge
 in a native secure-entry sheet and passes the session-only response through a
 private FIFO. Later inventory and tmux clients reuse that app-session control
-connection and remain noninteractive.
+connection and remain noninteractive. Every control connection is named for
+one app launch and supervised by a parent-held pipe, so an app crash terminates
+the SSH master and a later launch cannot reuse its socket.
 Exit status 255, OpenSSH's transport/setup failure status, reconnects with
 bounded exponential backoff. A connection that remains healthy for at least
 30 seconds resets the backoff. Persistent quick failures exit after two retries

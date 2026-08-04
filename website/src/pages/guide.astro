@@ -191,11 +191,13 @@ const imageAlt = {
             inventory diagnostic and offer Retry, while SSH authentication
             opens a native secure-entry sheet. Ghosthub confirms a successful
             connection before continuing and then retries inventory.
-            ProxyJump routes with unseen intermediate hosts show each OpenSSH
-            prompt in sequence. Opaque ProxyCommand routes and jump hosts with
-            another proxy route fail closed because their intermediate policies
-            cannot be reviewed safely. After every required approval, Ghosthub
-            retries inventory automatically.
+            ProxyJump routes handle each host in sequence. Ghosthub reviews a
+            hop's unseen key, asks for that hop's password or verification code
+            when needed, then continues to the next route host. Opaque
+            ProxyCommand routes and jump hosts with another proxy route fail
+            closed because their intermediate policies cannot be reviewed
+            safely. After every required approval, Ghosthub retries inventory
+            automatically.
           </p>
           <aside class="reconnect">
             <span aria-hidden="true">↻</span>

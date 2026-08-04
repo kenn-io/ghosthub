@@ -26,27 +26,31 @@ enum SSHAuthenticationSessionState: Equatable, Sendable {
 }
 
 private struct SSHAuthenticationPreparation: Sendable {
+    let target: SSHAuthenticationTarget
     let temporaryState: SSHAuthenticationTemporaryState
     let controlPath: String
     let hostKeyArguments: [String]
 
-    static func prepare(for host: SSHHostInfo) -> SSHAuthenticationPreparationResult {
+    static func prepare(
+        for target: SSHAuthenticationTarget
+    ) -> SSHAuthenticationPreparationResult {
         do {
             let temporaryState = try SSHAuthenticationTemporaryState.create()
             do {
                 try Task.checkCancellation()
                 guard let controlPath = SSHConnectionPool.controlPath(
-                    for: host
+                    for: target
                 ) else {
                     throw SSHAuthenticationError.stateUnavailable
                 }
                 try Task.checkCancellation()
                 let hostKeyArguments =
-                    SSHConfigurationResolver.interactiveHostKeyArguments(
-                        for: host
+                    SSHConfigurationResolver.authenticationHostKeyArguments(
+                        for: target.host
                     )
                 try Task.checkCancellation()
                 return .success(SSHAuthenticationPreparation(
+                    target: target,
                     temporaryState: temporaryState,
                     controlPath: controlPath,
                     hostKeyArguments: hostKeyArguments
@@ -73,9 +77,11 @@ private enum SSHAuthenticationPreparationResult: Sendable {
 final class SSHAuthenticationSession: ObservableObject {
     @Published private(set) var state: SSHAuthenticationSessionState = .starting
 
-    let host: SSHHostInfo
+    let target: SSHAuthenticationTarget
+    var host: SSHHostInfo { target.host }
     private var process: Process?
     private var standardError: Pipe?
+    private var watchdogPipe: Pipe?
     private var preparationTask: Task<Void, Never>?
     private var preparationGeneration = UUID()
     private var monitorTask: Task<Void, Never>?
@@ -84,7 +90,15 @@ final class SSHAuthenticationSession: ObservableObject {
     private(set) var controlPath: String?
 
     init(host: SSHHostInfo) {
-        self.host = host
+        target = SSHAuthenticationTarget(
+            host: host,
+            precedingProxyHops: []
+        )
+        start()
+    }
+
+    init(target: SSHAuthenticationTarget) {
+        self.target = target
         start()
     }
 
@@ -134,9 +148,9 @@ final class SSHAuthenticationSession: ObservableObject {
     private func start() {
         let generation = UUID()
         preparationGeneration = generation
-        let host = host
+        let target = target
         let resolver = Task.detached(priority: .userInitiated) {
-            SSHAuthenticationPreparation.prepare(for: host)
+            SSHAuthenticationPreparation.prepare(for: target)
         }
         preparationTask = Task { [weak self] in
             let result = await withTaskCancellationHandler {
@@ -169,12 +183,17 @@ final class SSHAuthenticationSession: ObservableObject {
         do {
             let process = Process()
             let standardError = Pipe()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-            process.arguments = SSHConnectionPool.authenticationArguments(
-                for: host,
+            let watchdogPipe = Pipe()
+            process.executableURL = URL(fileURLWithPath: "/bin/sh")
+            let sshArguments = SSHConnectionPool.authenticationArguments(
+                for: preparation.target,
                 controlPath: preparation.controlPath,
                 hostKeyArguments: preparation.hostKeyArguments
             )
+            process.arguments = [
+                "-c", Self.watchdogScript,
+                "ghosthub-ssh-watchdog", "/usr/bin/ssh",
+            ] + sshArguments
             process.environment = ProcessInfo.processInfo.environment.merging([
                 "SSH_ASKPASS": preparation.temporaryState.helper.path,
                 "SSH_ASKPASS_REQUIRE": "force",
@@ -183,15 +202,17 @@ final class SSHAuthenticationSession: ObservableObject {
                 "GHOSTHUB_SSH_RESPONSE_FIFO":
                     preparation.temporaryState.responseFIFO.path,
             ]) { _, new in new }
-            process.standardInput = FileHandle.nullDevice
+            process.standardInput = watchdogPipe.fileHandleForReading
             process.standardOutput = FileHandle.nullDevice
             process.standardError = standardError
             try process.run()
+            try? watchdogPipe.fileHandleForReading.close()
 
             temporaryState = preparation.temporaryState
             controlPath = preparation.controlPath
             self.process = process
             self.standardError = standardError
+            self.watchdogPipe = watchdogPipe
             lastPromptID = nil
             monitorTask = Task { [weak self] in
                 await self?.monitor()
@@ -255,8 +276,10 @@ final class SSHAuthenticationSession: ObservableObject {
         if process?.isRunning == true {
             process?.terminate()
         }
+        try? watchdogPipe?.fileHandleForWriting.close()
         process = nil
         standardError = nil
+        watchdogPipe = nil
         temporaryState?.remove()
         temporaryState = nil
         lastPromptID = nil
@@ -269,6 +292,7 @@ final class SSHAuthenticationSession: ObservableObject {
         if process?.isRunning == true {
             process?.terminate()
         }
+        try? watchdogPipe?.fileHandleForWriting.close()
         temporaryState?.remove()
     }
 
@@ -299,6 +323,27 @@ final class SSHAuthenticationSession: ObservableObject {
         }
         return false
     }
+
+    nonisolated static let watchdogScript = """
+    set -u
+    "$@" &
+    ssh_pid=$!
+    cleanup() {
+        /bin/kill -TERM "$ssh_pid" 2>/dev/null || true
+    }
+    trap cleanup HUP INT TERM EXIT
+    (
+        /bin/cat >/dev/null
+        /bin/kill -TERM "$ssh_pid" 2>/dev/null || true
+    ) &
+    watchdog_pid=$!
+    wait "$ssh_pid"
+    status=$?
+    /bin/kill -TERM "$watchdog_pid" 2>/dev/null || true
+    wait "$watchdog_pid" 2>/dev/null || true
+    trap - HUP INT TERM EXIT
+    exit "$status"
+    """
 }
 
 @MainActor
@@ -321,6 +366,21 @@ final class SSHAuthenticationCoordinator {
         presentationID: UUID,
         host: SSHHostInfo
     ) -> SSHAuthenticationSession {
+        session(
+            scopeID: scopeID,
+            presentationID: presentationID,
+            target: SSHAuthenticationTarget(
+                host: host,
+                precedingProxyHops: []
+            )
+        )
+    }
+
+    func session(
+        scopeID: UUID,
+        presentationID: UUID,
+        target: SSHAuthenticationTarget
+    ) -> SSHAuthenticationSession {
         let owner = Owner(
             scopeID: scopeID,
             presentationID: presentationID
@@ -329,19 +389,21 @@ final class SSHAuthenticationCoordinator {
            let entry = entries.first(where: {
                ObjectIdentifier($0.session) == sessionID
            }),
-           entry.session.host == host {
+           entry.session.target == target {
             return entry.session
         }
         release(owner)
 
-        if let index = entries.firstIndex(where: { $0.session.host == host }) {
+        if let index = entries.firstIndex(where: {
+            $0.session.target == target
+        }) {
             entries[index].owners.insert(owner)
             let session = entries[index].session
             sessionIDsByOwner[owner] = ObjectIdentifier(session)
             return session
         }
 
-        let session = SSHAuthenticationSession(host: host)
+        let session = SSHAuthenticationSession(target: target)
         entries.append(Entry(session: session, owners: [owner]))
         sessionIDsByOwner[owner] = ObjectIdentifier(session)
         return session
@@ -362,19 +424,19 @@ final class SSHAuthenticationCoordinator {
     }
 
     func reconcileIdentity(
-        host: SSHHostInfo,
+        target: SSHAuthenticationTarget,
         controlPath: String
     ) {
-        for entry in entries where entry.session.host == host {
+        for entry in entries where entry.session.target == target {
             entry.session.restartIfIdentityChanged(to: controlPath)
         }
     }
 
     func markConnected(
-        host: SSHHostInfo,
+        target: SSHAuthenticationTarget,
         controlPath: String
     ) {
-        for entry in entries where entry.session.host == host {
+        for entry in entries where entry.session.target == target {
             let session = entry.session
             if session.controlPath == controlPath {
                 session.markConnected()

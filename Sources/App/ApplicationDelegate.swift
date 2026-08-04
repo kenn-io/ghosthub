@@ -170,6 +170,9 @@ final class ApplicationDelegate: NSObject,
     func applicationDidFinishLaunching(
         _ notification: Notification
     ) {
+        if Bundle.main.bundleURL.pathExtension == "app" {
+            SSHConnectionPool.removeStaleControlSockets()
+        }
         // Cmd-N must stay an independent window even when the user's system
         // preference normally groups newly opened windows into tabs.
         NSWindow.allowsAutomaticWindowTabbing = false

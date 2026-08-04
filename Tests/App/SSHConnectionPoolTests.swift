@@ -1,3 +1,4 @@
+import Foundation
 import GhosthubTmux
 import Testing
 @testable import GhosthubApp
@@ -96,6 +97,129 @@ struct SSHConnectionPoolTests {
         #expect(directName != proxiedName)
         #expect(proxiedName.hasPrefix("control-"))
         #expect(proxiedName.count <= 40)
+    }
+
+    @Test("control sockets are scoped to one app launch")
+    func controlSocketUsesAppSession() {
+        let host = SSHHostInfo(
+            user: "operator",
+            hostname: "build.example.test",
+            port: nil
+        )
+        let configuration: SSHConfigurationResolver.ConfigurationProvider = {
+            _ in
+            EffectiveSSHConfiguration(
+                user: "operator",
+                strictHostKeyChecking: "yes",
+                proxyJump: nil,
+                proxyCommand: nil
+            )
+        }
+
+        #expect(SSHConnectionPool.controlName(
+            for: host,
+            configurationProvider: configuration,
+            sessionID: "first-launch"
+        ) != SSHConnectionPool.controlName(
+            for: host,
+            configurationProvider: configuration,
+            sessionID: "second-launch"
+        ))
+    }
+
+    @Test("stale Ghosthub control sockets are removed at app launch")
+    func removesStaleControlSockets() throws {
+        let stateHome = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: stateHome) }
+        let directory = stateHome.appendingPathComponent(
+            "ssh",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        let stale = directory.appendingPathComponent("control-stale")
+        let unrelated = directory.appendingPathComponent("notes")
+        _ = FileManager.default.createFile(
+            atPath: stale.path,
+            contents: Data()
+        )
+        _ = FileManager.default.createFile(
+            atPath: unrelated.path,
+            contents: Data()
+        )
+
+        SSHConnectionPool.removeStaleControlSockets(
+            environment: ["GHOSTHUB_STATE_HOME": stateHome.path]
+        )
+
+        #expect(!FileManager.default.fileExists(atPath: stale.path))
+        #expect(FileManager.default.fileExists(atPath: unrelated.path))
+    }
+
+    @Test("route authentication reuses the preceding control master")
+    func routeAuthenticationUsesPrecedingMaster() {
+        let proxy = SSHHostInfo(
+            user: "relay",
+            hostname: "jump.example.test",
+            port: 2200
+        )
+        let target = SSHAuthenticationTarget(
+            host: SSHHostInfo(
+                user: "operator",
+                hostname: "build.example.test",
+                port: nil
+            ),
+            precedingProxyHops: [proxy]
+        )
+        let arguments = SSHConnectionPool.proxyArguments(
+            for: target,
+            configurationProvider: { _ in
+                EffectiveSSHConfiguration(
+                    user: "operator",
+                    strictHostKeyChecking: "yes",
+                    proxyJump: nil,
+                    proxyCommand: nil
+                )
+            }
+        )
+
+        #expect(arguments.contains("ProxyJump=none"))
+        #expect(arguments.contains(where: {
+            $0.hasPrefix("ProxyCommand=")
+                && $0.contains("ControlPath=")
+                && $0.contains("relay@jump.example.test")
+        }))
+    }
+
+    @Test("authentication never strips an unresolved proxy route")
+    func invalidProxyRouteFailsClosed() {
+        let target = SSHAuthenticationTarget(
+            host: SSHHostInfo(
+                user: "operator",
+                hostname: "build.example.test",
+                port: nil
+            ),
+            precedingProxyHops: []
+        )
+
+        let arguments = SSHConnectionPool.proxyArguments(
+            for: target,
+            configurationProvider: { _ in
+                EffectiveSSHConfiguration(
+                    user: "operator",
+                    strictHostKeyChecking: "yes",
+                    proxyJump: "unresolved-route",
+                    proxyCommand: nil
+                )
+            }
+        )
+
+        #expect(arguments.contains("ProxyJump=none"))
+        #expect(arguments.contains("ProxyCommand=/usr/bin/false"))
+        #expect(!arguments.contains("ProxyCommand=none"))
     }
 
     @Test("control sockets are scoped to every effective host-key alias")

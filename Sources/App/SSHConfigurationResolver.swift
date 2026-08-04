@@ -69,6 +69,23 @@ enum SSHConfigurationResolver {
         )
     }
 
+    static func authenticationHostKeyArguments(
+        for host: SSHHostInfo,
+        configurationProvider: ConfigurationProvider = configuration
+    ) -> [String] {
+        guard let configuration = configurationProvider(host),
+              configuration.proxyCommand == nil
+        else {
+            return [
+                "-o", "StrictHostKeyChecking=yes",
+                "-o", "ProxyCommand=/usr/bin/false",
+            ]
+        }
+        return noninteractiveHostKeyArguments(
+            effectivePolicy: configuration.strictHostKeyChecking
+        )
+    }
+
     private static func hostKeyArguments(
         for host: SSHHostInfo,
         proxyBatchMode: String,

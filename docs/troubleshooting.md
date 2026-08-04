@@ -55,14 +55,16 @@ Ghostty revision.
 Click the host's caution icon. Ghosthub checks the exact SSH destination and,
 if OpenSSH reports an unseen key, immediately presents its destination and
 fingerprint for approval, saves it through OpenSSH, and retries inventory.
-ProxyJump routes may show one review for each unseen host in the route. Opaque
-ProxyCommand routes and jump hosts with another proxy route cannot be reviewed
-safely and fail closed. If no unseen key is reported, the same recovery sheet
-checks the connection. A reachable host keeps its inventory diagnostic and
-offers **Retry**. If OpenSSH needs a password or another interactive response,
-Ghosthub shows its exact challenge in a native secure-entry sheet. Complete the
-prompt there; Ghosthub confirms the connection before you continue and keeps
-that OpenSSH control connection for the app session. The response is not saved.
+ProxyJump routes may show one review for each unseen host in the route. When a
+jump host needs a password or another interactive response, Ghosthub asks for
+it after that host's key is approved, then continues to the next route key.
+Opaque ProxyCommand routes and jump hosts with another proxy route cannot be
+reviewed safely and fail closed. If no unseen key is reported, the same
+recovery sheet checks the connection. A reachable host keeps its inventory
+diagnostic and offers **Retry**. Ghosthub shows interactive challenges in a
+native secure-entry sheet, confirms the connection before you continue, and
+keeps that OpenSSH control connection for the app session. The response is not
+saved.
 Use **Test Connection** to verify authentication and that `tmux` is on the
 remote login-shell `PATH`.
 Kwt does not need a system installation: follow a successful test with

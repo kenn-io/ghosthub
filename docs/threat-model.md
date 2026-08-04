@@ -135,16 +135,20 @@ the system client through a user-only FIFO. The response exists in app memory
 for that attempt but is never placed in process arguments, environment
 variables, logs, or persistent storage. Later app operations share only the
 authenticated control socket. The master has no persistence after the app
-session ends, and its socket lives in the user-only Ghosthub state directory.
-The socket name is scoped to the logical destination, every effective
+session ends: a parent-held watchdog pipe terminates it if the app process
+disappears, the socket name contains an app-launch nonce, and the next launch
+removes stale control sockets. Its socket lives in the user-only Ghosthub state
+directory and is also scoped to the logical destination, every effective
 `HostKeyAlias`, and the proxy route, preventing a master authenticated under one
-host-key identity or route from satisfying another.
+host-key identity, route, or app launch from satisfying another.
 Ghosthub never forces `accept-new`, writes a scanned key itself, or treats a
 trusted short alias as authorization for a canonical MagicDNS FQDN.
 When an SSH route contains unseen intermediate hosts, each trust sheet labels
 the host exactly as OpenSSH names it and approval advances only to the next
-prompt. A later prompt is never treated as proof that the reviewed host changed
-its key. Routine inventory, transfer, and attachment operations prevent silent
+prompt. If that hop requires interactive authentication, Ghosthub establishes
+its app-session master before asking OpenSSH for the next host's key. A later
+prompt is never treated as proof that the reviewed host changed its key.
+Routine inventory, transfer, and attachment operations prevent silent
 enrollment at every host in a direct ProxyJump list. Opaque ProxyCommand routes
 and jump hosts that introduce another proxy route fail closed because Ghosthub
 cannot resolve every intermediate trust policy independently.

@@ -148,6 +148,18 @@ public enum SSHConnectionRecoveryResult: Equatable, Sendable {
     case connectionIssue(String)
 }
 
+public enum SSHAuthenticationReadiness: Equatable, Sendable {
+    case pending
+    case reviewRequired
+    case connected
+}
+
+public enum SSHHostKeyReviewRequirement: Equatable, Sendable {
+    case none
+    case confirmation(SSHHostKeyConfirmation)
+    case authenticationRequired
+}
+
 public struct InteractionHandlers {
     public let closeWindow: (() -> Void)?
     public let dismissLogViewer: (() -> Void)?
@@ -170,7 +182,8 @@ public struct InteractionHandlers {
         ((UUID, SSHHostKeyConfirmation) async -> Result<
             SSHHostKeyConfirmation?, HostProbeError
         >)?
-    public let isSSHAuthenticationReady: ((UUID) async -> Bool)?
+    public let isSSHAuthenticationReady:
+        ((UUID) async -> SSHAuthenticationReadiness)?
     public let cancelSSHAuthentication: ((UUID) -> Void)?
     public let registerProject:
         ((HostSummary, String) async -> Result<String, HostProbeError>)?
@@ -209,7 +222,8 @@ public struct InteractionHandlers {
         ((UUID, SSHHostKeyConfirmation) async -> Result<
             SSHHostKeyConfirmation?, HostProbeError
         >)? = nil,
-        isSSHAuthenticationReady: ((UUID) async -> Bool)? = nil,
+        isSSHAuthenticationReady:
+        ((UUID) async -> SSHAuthenticationReadiness)? = nil,
         cancelSSHAuthentication: ((UUID) -> Void)? = nil,
         registerProject:
         ((HostSummary, String) async -> Result<String, HostProbeError>)? = nil,

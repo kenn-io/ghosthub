@@ -40,6 +40,12 @@ enum SSHHostTrustError: Error, Equatable, LocalizedError {
     }
 }
 
+enum SSHHostTrustRequirement: Equatable, Sendable {
+    case none
+    case confirmation(SSHHostKeyConfirmation)
+    case authentication(SSHAuthenticationTarget)
+}
+
 struct SSHHostTrustManager: Sendable {
     typealias AskPassRunner = @Sendable (
         SSHHostInfo,
@@ -51,10 +57,13 @@ struct SSHHostTrustManager: Sendable {
     ) -> Void
     typealias StrictHostKeyPolicyProvider = @Sendable (SSHHostInfo) -> String?
     typealias RouteProvider = @Sendable (SSHHostInfo) throws -> [SSHHostInfo]
+    typealias AuthenticationProvider = @Sendable (SSHAuthenticationTarget)
+        -> Bool
 
     private let askPassRunner: AskPassRunner
     private let strictHostKeyPolicyProvider: StrictHostKeyPolicyProvider
     private let routeProvider: RouteProvider
+    private let authenticationProvider: AuthenticationProvider
 
     init(
         askPassRunner: @escaping AskPassRunner = Self.runAskPass,
@@ -63,17 +72,28 @@ struct SSHHostTrustManager: Sendable {
             SSHConfigurationResolver.configuration(for: $0)?
                 .strictHostKeyChecking
         },
-        routeProvider: @escaping RouteProvider = { try Self.route(for: $0) }
+        routeProvider: @escaping RouteProvider = { try Self.route(for: $0) },
+        authenticationProvider: @escaping AuthenticationProvider = {
+            SSHConnectionPool.isAuthenticated($0)
+        }
     ) {
         self.askPassRunner = askPassRunner
         self.strictHostKeyPolicyProvider = strictHostKeyPolicyProvider
         self.routeProvider = routeProvider
+        self.authenticationProvider = authenticationProvider
     }
 
     private struct ReviewTarget {
         let host: SSHHostInfo
         let precedingProxyHops: [SSHHostInfo]
         let requiresReview: Bool
+
+        var authenticationTarget: SSHAuthenticationTarget {
+            SSHAuthenticationTarget(
+                host: host,
+                precedingProxyHops: precedingProxyHops
+            )
+        }
     }
 
     private static func route(for host: SSHHostInfo) throws -> [SSHHostInfo] {
@@ -110,8 +130,23 @@ struct SSHHostTrustManager: Sendable {
         for host: SSHHostInfo,
         destination: String
     ) throws -> SSHHostKeyConfirmation? {
-        for target in try reviewTargets(for: host)
-            where target.requiresReview {
+        guard case let .confirmation(confirmation) = try pendingRequirement(
+            for: host,
+            destination: destination
+        ) else { return nil }
+        return confirmation
+    }
+
+    func pendingRequirement(
+        for host: SSHHostInfo,
+        destination: String
+    ) throws -> SSHHostTrustRequirement {
+        for target in try reviewTargets(for: host) where target.requiresReview {
+            if let precedingTarget = target.authenticationTarget
+                .precedingTarget,
+                !authenticationProvider(precedingTarget) {
+                return .authentication(precedingTarget)
+            }
             let confirmation = try withTemporaryState {
                 state -> SSHHostKeyConfirmation? in
                 askPassRunner(
@@ -133,10 +168,10 @@ struct SSHHostTrustManager: Sendable {
                 )
             }
             if let confirmation {
-                return confirmation
+                return .confirmation(confirmation)
             }
         }
-        return nil
+        return .none
     }
 
     func accept(
@@ -144,6 +179,19 @@ struct SSHHostTrustManager: Sendable {
         for host: SSHHostInfo,
         destination: String
     ) throws -> SSHHostKeyConfirmation? {
+        guard case let .confirmation(next) = try acceptRequirement(
+            confirmation,
+            for: host,
+            destination: destination
+        ) else { return nil }
+        return next
+    }
+
+    func acceptRequirement(
+        _ confirmation: SSHHostKeyConfirmation,
+        for host: SSHHostInfo,
+        destination: String
+    ) throws -> SSHHostTrustRequirement {
         guard confirmation.connectionDestination == destination else {
             throw SSHHostTrustError.hostKeyChanged
         }
@@ -173,19 +221,20 @@ struct SSHHostTrustManager: Sendable {
         }
         guard approved else { throw SSHHostTrustError.hostKeyChanged }
 
-        if let pending = try pendingConfirmation(
+        let requirement = try pendingRequirement(
             for: host,
             destination: destination
-        ) {
+        )
+        if case let .confirmation(pending) = requirement {
             if pending.algorithm == confirmation.algorithm,
                pending.fingerprint == confirmation.fingerprint,
                Self.logicalHost(pending.destination)
                == Self.logicalHost(confirmation.destination) {
                 throw SSHHostTrustError.hostKeyWasNotSaved
             }
-            return pending
+            return requirement
         }
-        return nil
+        return requirement
     }
 
     private func reviewTargets(
@@ -420,14 +469,12 @@ struct SSHHostTrustManager: Sendable {
             "-o", "GSSAPIAuthentication=no",
         ]
         arguments.append(contentsOf: tmuxSSHConnectionArguments())
-        if !precedingProxyHops.isEmpty {
-            arguments.append(contentsOf: [
-                "-J",
-                precedingProxyHops.map {
-                    SSHConfigurationResolver.proxyJumpDestination(for: $0)
-                }.joined(separator: ","),
-            ])
-        }
+        arguments.append(contentsOf: SSHConnectionPool.proxyArguments(
+            for: SSHAuthenticationTarget(
+                host: host,
+                precedingProxyHops: precedingProxyHops
+            )
+        ))
         if let port = host.port {
             arguments.append(contentsOf: ["-p", String(port)])
         }

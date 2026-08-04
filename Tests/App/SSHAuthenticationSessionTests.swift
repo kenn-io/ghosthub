@@ -51,6 +51,36 @@ struct SSHAuthenticationSessionTests {
                 == Data("synthetic-secret\n".utf8)
         )
     }
+
+    @Test("the app-held watchdog pipe owns the child lifetime")
+    func watchdogStopsChildAtEndOfAppSession() async throws {
+        let watchdog = Pipe()
+        let process = Process()
+        defer {
+            if process.isRunning {
+                process.terminate()
+            }
+            try? watchdog.fileHandleForWriting.close()
+        }
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = [
+            "-c", SSHAuthenticationSession.watchdogScript,
+            "ghosthub-ssh-watchdog-test", "/bin/sleep", "30",
+        ]
+        process.standardInput = watchdog.fileHandleForReading
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        try watchdog.fileHandleForReading.close()
+
+        try watchdog.fileHandleForWriting.close()
+        let deadline = ContinuousClock.now + .seconds(2)
+        while process.isRunning, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+
+        #expect(!process.isRunning)
+    }
 }
 
 @Suite("SSH authentication coordinator")

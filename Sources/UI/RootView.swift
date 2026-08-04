@@ -536,11 +536,23 @@ public struct RootView: View {
               let isReady = handlers.isSSHAuthenticationReady else { return }
         while !Task.isCancelled,
               activeSSHAuthenticationHostID == hostID {
-            let isAuthenticationReady = await isReady(hostID)
+            let readiness = await isReady(hostID)
             guard !Task.isCancelled,
                   activeSSHAuthenticationHostID == hostID
             else { return }
-            if isAuthenticationReady {
+            switch readiness {
+            case .pending:
+                break
+            case .reviewRequired:
+                handlers.cancelSSHAuthentication?(hostID)
+                reviewSSHHostKey(
+                    hostID,
+                    inventoryWarning:
+                    display.workspaceInventoryWarningsByHost[hostID]
+                        ?? "Remote inventory is unavailable."
+                )
+                return
+            case .connected:
                 handlers.cancelSSHAuthentication?(hostID)
                 sshHostKeyReview.authenticationSucceeded()
                 handlers.refreshWorkspaceInventory?()

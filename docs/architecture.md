@@ -178,9 +178,11 @@ response in process arguments, environment variables, logs, or persistent
 storage. A successful prompt leaves a non-persistent OpenSSH master owned by
 the application session, and every window's inventory, transfer, and tmux
 clients reuse its control socket under `~/.ghosthub/ssh/`. Its bounded socket
-name includes a digest of the logical destination, effective host-key policy,
-effective host-key aliases, and proxy route, so two trust identities or routes
-to the same endpoint cannot reuse one another's authenticated master.
+name includes an app-launch nonce plus a digest of the logical destination,
+effective host-key policy, effective host-key aliases, and proxy route, so two
+trust identities, routes, or app launches cannot reuse one another's
+authenticated master. A parent-held watchdog pipe terminates each master if
+the app process disappears, and the next launch removes stale control sockets.
 Window presentations hold leases on shared authentication attempts. Closing a
 window cancels an unfinished attempt only after its final presenting window
 releases it; an authenticated master remains available until the app exits.
@@ -190,10 +192,12 @@ override `yes`, `no`, or `off`; approval matches the parsed algorithm and
 fingerprint rather than address-bearing prompt prose.
 Trust invocations use the same local account login-shell boundary as ordinary
 SSH operations. For ProxyJump routes, Ghosthub names the host from OpenSSH's
-prompt and reviews each unseen route key sequentially before retrying the
-destination operation. Opaque ProxyCommand routes and jump hosts that introduce
-another proxy route fail closed because Ghosthub cannot independently enforce
-every intermediate host-key policy.
+prompt and reviews each unseen route key sequentially. When a preceding jump
+host needs a password or other challenge, Ghosthub authenticates that reviewed
+hop first and uses its app-session control connection to reach the next host.
+Opaque ProxyCommand routes and jump hosts that introduce another proxy route
+fail closed because Ghosthub cannot independently enforce every intermediate
+host-key policy.
 
 Ghosthub bundles revision-pinned kwt CLI builds for local project and worktree
 operations and for `darwin/{amd64,arm64}`, `linux/{amd64,arm64}`, and
