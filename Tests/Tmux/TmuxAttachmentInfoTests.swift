@@ -497,6 +497,8 @@ struct TmuxAttachmentInfoTests {
         #expect(command.contains("'ServerAliveInterval=15'"))
         #expect(command.contains("'ServerAliveCountMax=3'"))
         #expect(command.contains("'TCPKeepAlive=yes'"))
+        #expect(command.contains("'PermitLocalCommand=yes'"))
+        #expect(command.contains("GHOSTHUB_SSH_CONNECTION_MARKER"))
         #expect(command.contains("'wesm@build-box'"))
         #expect(command.contains("'attach-session'"))
         #expect(command.contains("'-E'"))
@@ -1397,6 +1399,56 @@ struct TmuxAttachmentInfoTests {
 
         #expect(process.terminationStatus == 255)
         #expect(try String(contentsOf: counter, encoding: .utf8) == "xxx")
+    }
+
+    @Test("established SSH attempts reset the reconnect budget")
+    func establishedSSHAttemptResetsReconnectBudget() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let counter = directory.appendingPathComponent("count")
+        let fakeSSH = directory.appendingPathComponent("fake-ssh")
+        let fakeSleep = directory.appendingPathComponent("sleep")
+        try """
+        #!/bin/sh
+        printf x >> "$GHOSTHUB_TEST_COUNTER"
+        count=$(wc -c < "$GHOSTHUB_TEST_COUNTER")
+        if [ "$count" -eq 3 ]; then
+            : > "$GHOSTHUB_SSH_CONNECTION_MARKER"
+        fi
+        [ "$count" -gt 5 ] && exit 0
+        exit 255
+        """.write(to: fakeSSH, atomically: true, encoding: .utf8)
+        try "#!/bin/sh\nexit 0\n".write(
+            to: fakeSleep, atomically: true, encoding: .utf8
+        )
+        for executable in [fakeSSH, fakeSleep] {
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o755], ofItemAtPath: executable.path
+            )
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = [
+            "-c", TmuxAttachmentInfo.sshReconnectScript,
+            "ghosthub-test", fakeSSH.path,
+        ]
+        process.environment = ProcessInfo.processInfo.environment.merging([
+            "GHOSTHUB_TEST_COUNTER": counter.path,
+            "PATH": directory.path + ":"
+                + ProcessInfo.processInfo.environment["PATH", default: ""],
+        ]) { _, new in new }
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+
+        #expect(process.terminationStatus == 255)
+        #expect(try String(contentsOf: counter, encoding: .utf8) == "xxxxx")
     }
 
     @Test("ordinary remote-command failure does not reconnect")
