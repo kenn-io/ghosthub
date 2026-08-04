@@ -97,6 +97,7 @@ struct SSHAuthenticationSessionTests {
         writer.standardError = pipe
         try writer.run()
         try pipe.fileHandleForWriting.close()
+        await waitUntil { !drain.bufferedText.isEmpty }
 
         let diagnostic = await drain.finish(after: .milliseconds(50))
 

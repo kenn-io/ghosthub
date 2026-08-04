@@ -157,6 +157,10 @@ final class SSHDiagnosticDrain: @unchecked Sendable {
         return buffer.text()
     }
 
+    var bufferedText: String {
+        buffer.text()
+    }
+
     func finish(after timeout: Duration) async -> String {
         let source = source
         let timeoutTask = Task.detached {
