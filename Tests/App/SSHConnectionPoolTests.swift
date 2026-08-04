@@ -48,4 +48,53 @@ struct SSHConnectionPoolTests {
             "--", "operator@build.example.test",
         ])
     }
+
+    @Test("control sockets are scoped to the resolved SSH route")
+    func controlSocketUsesResolvedRoute() {
+        let host = SSHHostInfo(
+            user: "operator",
+            hostname: "build.example.test",
+            port: 22
+        )
+        let directName = SSHConnectionPool.controlName(
+            for: host,
+            configurationProvider: { _ in
+                EffectiveSSHConfiguration(
+                    user: "operator",
+                    strictHostKeyChecking: "yes",
+                    proxyJump: nil,
+                    proxyCommand: nil,
+                    hostname: "build.internal",
+                    port: 22
+                )
+            }
+        )
+        let proxiedName = SSHConnectionPool.controlName(
+            for: host,
+            configurationProvider: { requestedHost in
+                if requestedHost.hostname == "relay.example.test" {
+                    return EffectiveSSHConfiguration(
+                        user: "relay-user",
+                        strictHostKeyChecking: "yes",
+                        proxyJump: nil,
+                        proxyCommand: nil,
+                        hostname: "relay.internal",
+                        port: 2200
+                    )
+                }
+                return EffectiveSSHConfiguration(
+                    user: "operator",
+                    strictHostKeyChecking: "yes",
+                    proxyJump: "relay.example.test",
+                    proxyCommand: nil,
+                    hostname: "build.internal",
+                    port: 22
+                )
+            }
+        )
+
+        #expect(directName != proxiedName)
+        #expect(proxiedName.hasPrefix("control-"))
+        #expect(proxiedName.count <= 40)
+    }
 }

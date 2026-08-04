@@ -109,7 +109,7 @@ struct DiscoveredTmuxSession: Equatable, Sendable {
 /// launchd-launched GUI app does not inherit Homebrew or user-bin PATH
 /// entries. Reads the passwd shell (not $SHELL, which may be absent).
 struct TmuxBinaryResolver: Sendable {
-    private static let timedOutStatus: Int32 = -124
+    static let timedOutStatus: Int32 = -124
     private static let outputExceededStatus: Int32 = -125
     private static let cancelledStatus: Int32 = -130
     private static let maximumProbeOutputBytes = 1 * 1_024 * 1_024
@@ -397,11 +397,14 @@ struct TmuxBinaryResolver: Sendable {
         host: SSHHostInfo,
         command: String,
         timeout: TimeInterval,
-        accountShell: String = loginShell()
+        accountShell: String = loginShell(),
+        captureStandardError: Bool = false
     ) -> (status: Int32, stdout: String) {
         var arguments = ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
         arguments.append(contentsOf: tmuxSSHConnectionArguments())
-        arguments.append(contentsOf: SSHConnectionPool.connectionArguments())
+        arguments.append(contentsOf:
+            SSHConnectionPool.connectionArguments(for: host)
+        )
         arguments.append(contentsOf:
             SSHConfigurationResolver.noninteractiveHostKeyArguments(
                 for: host
@@ -417,6 +420,7 @@ struct TmuxBinaryResolver: Sendable {
             executable: "/usr/bin/ssh",
             arguments: arguments,
             timeout: timeout,
+            captureStandardError: captureStandardError,
             accountShell: accountShell
         )
     }

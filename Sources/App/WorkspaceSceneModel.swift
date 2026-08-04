@@ -576,7 +576,8 @@ final class WorkspaceSceneModel: ObservableObject {
             TmuxBinaryResolver.runRemoteLoginShell(
                 host: host,
                 command: command,
-                timeout: 10
+                timeout: 10,
+                captureStandardError: true
             )
         },
         configuredSSHHostsProvider: @escaping () -> [SSHHost] = {
@@ -2416,7 +2417,12 @@ final class WorkspaceSceneModel: ObservableObject {
             if summary.host.lastKnownReachable {
                 return .inventoryIssue(diagnostic ?? inventoryWarning)
             }
-            return .authenticationRequired
+            if summary.diagnostics.first?.code == .sshAuthenticationFailed {
+                return .authenticationRequired
+            }
+            return .connectionIssue(
+                diagnostic ?? "Ghosthub could not reach this host over SSH."
+            )
         case let .failure(error):
             return .connectionIssue(error.displayMessage)
         }
@@ -2600,13 +2606,9 @@ final class WorkspaceSceneModel: ObservableObject {
             )
             let diagnostics: [RemoteHostDiagnostic]
             if !sshReached {
-                diagnostics = [RemoteHostDiagnostic(
-                    code: .sshConnectionFailed,
-                    severity: .error,
-                    summary: "SSH could not be reached.",
-                    recoverySuggestion:
-                    "Open Host Settings and run Test Connection to review an "
-                        + "unseen host key or confirm key-based authentication."
+                diagnostics = [SSHConnectionFailure.diagnostic(
+                    status: result.status,
+                    output: result.stdout
                 )]
             } else if !tmuxAvailable {
                 diagnostics = [RemoteHostDiagnostic(

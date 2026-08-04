@@ -1,18 +1,18 @@
+import CryptoKit
 import Foundation
 import GhosthubTmux
 import GhosthubWorkspace
 
 enum SSHConnectionPool {
     private static let directoryName = "ssh"
-    private static let controlName = "control-%C"
 
-    static func connectionArguments() -> [String] {
-        guard let path = preparedControlPath() else { return [] }
+    static func connectionArguments(for host: SSHHostInfo) -> [String] {
+        guard let path = preparedControlPath(for: host) else { return [] }
         return connectionArguments(controlPath: path)
     }
 
     static func isAuthenticated(_ host: SSHHostInfo) -> Bool {
-        guard let path = preparedControlPath() else { return false }
+        guard let path = preparedControlPath(for: host) else { return false }
         let result = TmuxBinaryResolver.runProcessInLoginShell(
             executable: "/usr/bin/ssh",
             arguments: checkArguments(for: host, controlPath: path),
@@ -26,8 +26,8 @@ enum SSHConnectionPool {
         ["-o", "ControlPath=\(controlPath)"]
     }
 
-    static func controlPath() -> String? {
-        preparedControlPath()
+    static func controlPath(for host: SSHHostInfo) -> String? {
+        preparedControlPath(for: host)
     }
 
     static func authenticationArguments(
@@ -76,7 +76,42 @@ enum SSHConnectionPool {
         host.user.map { "\($0)@\(host.hostname)" } ?? host.hostname
     }
 
+    static func controlName(
+        for host: SSHHostInfo,
+        configurationProvider: SSHConfigurationResolver.ConfigurationProvider
+    ) -> String {
+        let configuration = configurationProvider(host)
+        var route = [routeComponent(host, configuration)]
+        if let proxyJump = configuration?.proxyJump,
+           let hops = SSHConfigurationResolver.proxyJumpHosts(proxyJump) {
+            route.append(contentsOf: hops.map {
+                routeComponent($0, configurationProvider($0))
+            })
+        }
+        let digest = SHA256.hash(data: Data(route.joined(separator: "\n").utf8))
+            .prefix(16)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return "control-\(digest)"
+    }
+
+    private static func routeComponent(
+        _ host: SSHHostInfo,
+        _ configuration: EffectiveSSHConfiguration?
+    ) -> String {
+        [
+            destination(for: host),
+            host.port.map(String.init) ?? "",
+            configuration?.hostname ?? "",
+            configuration?.user ?? "",
+            configuration?.port.map(String.init) ?? "",
+            configuration?.proxyJump ?? "",
+            configuration?.proxyCommand ?? "",
+        ].joined(separator: "\u{1f}")
+    }
+
     private static func preparedControlPath(
+        for host: SSHHostInfo,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         fileManager: FileManager = .default
     ) -> String? {
@@ -94,7 +129,11 @@ enum SSHConnectionPool {
                 [.posixPermissions: 0o700],
                 ofItemAtPath: directory.path
             )
-            return directory.appendingPathComponent(controlName).path
+            let name = controlName(
+                for: host,
+                configurationProvider: SSHConfigurationResolver.configuration
+            )
+            return directory.appendingPathComponent(name).path
         } catch {
             return nil
         }

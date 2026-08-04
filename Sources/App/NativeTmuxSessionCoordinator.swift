@@ -164,7 +164,7 @@ final class NativeTmuxSessionCoordinator {
             },
         sshConnectionArgumentsProvider:
         @escaping @Sendable (SSHHostInfo) -> [String] = {
-            SSHConnectionPool.connectionArguments()
+            SSHConnectionPool.connectionArguments(for: $0)
                 + SSHConfigurationResolver.noninteractiveHostKeyArguments(
                     for: $0
                 )

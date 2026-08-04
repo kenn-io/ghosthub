@@ -12,12 +12,15 @@ struct SSHConfigurationResolverTests {
         proxyjump relay.example.test
         proxycommand none
         hostname build.example.test
+        port 2200
         """)
 
         #expect(configuration.user == "deploy")
         #expect(configuration.strictHostKeyChecking == "accept-new")
         #expect(configuration.proxyJump == "relay.example.test")
         #expect(configuration.proxyCommand == nil)
+        #expect(configuration.hostname == "build.example.test")
+        #expect(configuration.port == 2200)
     }
 
     @Test(

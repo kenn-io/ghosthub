@@ -305,7 +305,9 @@ struct KwtWindowsInstaller: Sendable {
             "-o", "ConnectTimeout=15",
         ]
         arguments.append(contentsOf: tmuxSSHConnectionArguments())
-        arguments.append(contentsOf: SSHConnectionPool.connectionArguments())
+        arguments.append(contentsOf:
+            SSHConnectionPool.connectionArguments(for: host)
+        )
         arguments.append(contentsOf:
             SSHConfigurationResolver.noninteractiveHostKeyArguments(
                 for: host

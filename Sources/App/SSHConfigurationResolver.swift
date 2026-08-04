@@ -6,6 +6,24 @@ struct EffectiveSSHConfiguration: Equatable {
     let strictHostKeyChecking: String?
     let proxyJump: String?
     let proxyCommand: String?
+    let hostname: String?
+    let port: Int?
+
+    init(
+        user: String?,
+        strictHostKeyChecking: String?,
+        proxyJump: String?,
+        proxyCommand: String?,
+        hostname: String? = nil,
+        port: Int? = nil
+    ) {
+        self.user = user
+        self.strictHostKeyChecking = strictHostKeyChecking
+        self.proxyJump = proxyJump
+        self.proxyCommand = proxyCommand
+        self.hostname = hostname
+        self.port = port
+    }
 }
 
 struct EffectiveProxyJumpHop {
@@ -239,7 +257,9 @@ enum SSHConfigurationResolver {
                 values["stricthostkeychecking"]
             ),
             proxyJump: meaningfulProxyValue(values["proxyjump"]),
-            proxyCommand: meaningfulProxyValue(values["proxycommand"])
+            proxyCommand: meaningfulProxyValue(values["proxycommand"]),
+            hostname: values["hostname"],
+            port: values["port"].flatMap(Int.init)
         )
     }
 

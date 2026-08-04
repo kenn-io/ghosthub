@@ -2195,7 +2195,7 @@ struct WorkspaceTmuxDiscoveryTests {
         ])
         #expect(
             summary.diagnostics.first?.summary
-                == "SSH could not be reached."
+                == "SSH could not connect to the host."
         )
         await model.shutdown()
     }
@@ -2265,7 +2265,7 @@ struct WorkspaceTmuxDiscoveryTests {
         #expect(summary.diagnostics.map(\.code) == [.sshConnectionFailed])
         #expect(
             summary.diagnostics.first?.summary
-                == "SSH could not be reached."
+                == "The SSH connection timed out."
         )
         await model.shutdown()
     }

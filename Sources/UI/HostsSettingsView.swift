@@ -742,9 +742,12 @@ public struct HostsSettingsView: View {
         switch result {
         case let .success(summary):
             hostProbeResult = summary
-            guard summary.diagnostics.contains(where: {
-                $0.code == .sshConnectionFailed
-            }) else {
+            guard let connectionDiagnostic = summary.diagnostics.first(
+                where: {
+                    $0.code == .sshConnectionFailed
+                        || $0.code == .sshAuthenticationFailed
+                }
+            ) else {
                 return
             }
             let trustResult = await pendingSSHHostKeyConfirmation(
@@ -759,7 +762,9 @@ public struct HostsSettingsView: View {
             switch trustResult {
             case let .success(confirmation):
                 guard let confirmation else {
-                    beginSSHAuthentication(target)
+                    if connectionDiagnostic.code == .sshAuthenticationFailed {
+                        beginSSHAuthentication(target)
+                    }
                     return
                 }
                 pendingSSHHostTrust = PendingSSHHostTrust(

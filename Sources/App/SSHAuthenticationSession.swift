@@ -69,8 +69,6 @@ final class SSHAuthenticationSession: ObservableObject {
 
     func markConnected() {
         state = .connected
-        monitorTask?.cancel()
-        monitorTask = nil
         temporaryState?.remove()
         temporaryState = nil
     }
@@ -78,7 +76,9 @@ final class SSHAuthenticationSession: ObservableObject {
     private func start() {
         do {
             let temporaryState = try SSHAuthenticationTemporaryState.create()
-            guard let controlPath = SSHConnectionPool.controlPath() else {
+            guard let controlPath = SSHConnectionPool.controlPath(
+                for: host
+            ) else {
                 throw SSHAuthenticationError.stateUnavailable
             }
             let process = Process()
@@ -124,7 +124,10 @@ final class SSHAuthenticationSession: ObservableObject {
             }
 
             if process?.isRunning != true {
-                state = .failed(connectionFailureMessage())
+                let message = state == .connected
+                    ? "The SSH connection ended. Try again."
+                    : connectionFailureMessage()
+                state = .failed(message)
                 temporaryState?.remove()
                 temporaryState = nil
                 process = nil
