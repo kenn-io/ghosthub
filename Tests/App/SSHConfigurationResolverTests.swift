@@ -136,6 +136,35 @@ struct SSHConfigurationResolverTests {
         #expect(proxyCommand.contains("[%h]:%p"))
     }
 
+    @Test("interactive authentication permits prompts on trusted proxy hops")
+    func interactiveAuthenticationPermitsProxyPrompts() {
+        let destination = SSHHostInfo(
+            user: "operator",
+            hostname: "build.example.test",
+            port: nil
+        )
+        let arguments = SSHConfigurationResolver.interactiveHostKeyArguments(
+            for: destination,
+            configurationProvider: { host in
+                EffectiveSSHConfiguration(
+                    user: host.user,
+                    strictHostKeyChecking: "ask",
+                    proxyJump: host == destination
+                        ? "relay.example.test"
+                        : nil,
+                    proxyCommand: nil
+                )
+            }
+        )
+
+        #expect(arguments[0 ... 1] == [
+            "-o", "StrictHostKeyChecking=yes",
+        ])
+        #expect(arguments[2] == "-o")
+        #expect(arguments[3].contains("BatchMode=no"))
+        #expect(arguments[3].contains("StrictHostKeyChecking=yes"))
+    }
+
     @Test("malformed ProxyJump routes fail closed")
     func blocksMalformedProxyJumpRoutes() {
         let destination = SSHHostInfo(

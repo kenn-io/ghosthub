@@ -91,6 +91,7 @@ public struct RootView: View {
                     get: { sshHostKeyReview.isPresented },
                     set: {
                         if !$0 {
+                            cancelSSHAuthenticationIfNeeded()
                             sshHostKeyReview.dismiss()
                         }
                     }
@@ -101,7 +102,16 @@ public struct RootView: View {
                     onTrust: trustReviewedSSHHostKey,
                     onRetry: retrySSHRecovery,
                     onOpenHostSettings: openHostSettings,
-                    onCancel: sshHostKeyReview.dismiss
+                    onCancel: cancelSSHRecovery,
+                    authenticationContent:
+                    sshAuthenticationContent
+                )
+                .task(id: activeSSHAuthenticationHostID) {
+                    await monitorSSHAuthentication()
+                }
+                .interactiveDismissDisabled(
+                    sshHostKeyReview.isTrusting
+                        || sshHostKeyReview.presentation == .authentication
                 )
             }
             .sheet(item: $newWorktreeProject) { project in
@@ -491,6 +501,7 @@ public struct RootView: View {
     }
 
     private func retrySSHRecovery() {
+        cancelSSHAuthenticationIfNeeded()
         sshHostKeyReview.dismiss()
         handlers.refreshWorkspaceInventory?()
     }
@@ -503,14 +514,49 @@ public struct RootView: View {
         Task {
             await sshHostKeyReview.trust(
                 using: trust,
-                onTrusted: {
-                    handlers.refreshWorkspaceInventory?()
-                }
+                onTrusted: {}
             )
         }
     }
 
+    private var activeSSHAuthenticationHostID: UUID? {
+        guard sshHostKeyReview.presentation == .authentication else {
+            return nil
+        }
+        return sshHostKeyReview.hostID
+    }
+
+    private var sshAuthenticationContent: AnyView? {
+        guard let hostID = activeSSHAuthenticationHostID else { return nil }
+        return content.sshAuthenticationBuilder?(hostID)
+    }
+
+    private func monitorSSHAuthentication() async {
+        guard let hostID = activeSSHAuthenticationHostID,
+              let isReady = handlers.isSSHAuthenticationReady else { return }
+        while !Task.isCancelled,
+              activeSSHAuthenticationHostID == hostID {
+            if await isReady(hostID) {
+                sshHostKeyReview.dismiss()
+                handlers.refreshWorkspaceInventory?()
+                return
+            }
+            try? await Task.sleep(for: .seconds(1))
+        }
+    }
+
+    private func cancelSSHAuthenticationIfNeeded() {
+        guard let hostID = activeSSHAuthenticationHostID else { return }
+        handlers.cancelSSHAuthentication?(hostID)
+    }
+
+    private func cancelSSHRecovery() {
+        cancelSSHAuthenticationIfNeeded()
+        sshHostKeyReview.dismiss()
+    }
+
     private func openHostSettings() {
+        cancelSSHAuthenticationIfNeeded()
         sshHostKeyReview.dismiss()
         settingsStore.selectedDomain = .hosts
         Task { @MainActor in

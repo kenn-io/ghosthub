@@ -509,6 +509,22 @@ struct TmuxAttachmentInfoTests {
         #expect(!command.contains("unbind-key"))
     }
 
+    @Test("remote attachment preserves an explicit default SSH port")
+    func remoteAttachPreservesExplicitDefaultPort() {
+        let command = TmuxAttachmentInfo(
+            sessionName: "build",
+            host: .ssh(SSHHostInfo(
+                user: "operator",
+                hostname: "build.example.test",
+                port: 22
+            ))
+        ).attachCommand(tmuxPath: "/opt/bin/tmux")
+
+        #expect(command.contains("-p"))
+        #expect(command.contains("22"))
+        #expect(command.contains("'operator@build.example.test'"))
+    }
+
     @Test("Windows attachment leaves psmux presentation user-owned")
     func windowsRemoteAttachCommand() throws {
         let command = TmuxAttachmentInfo(

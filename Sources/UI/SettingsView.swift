@@ -24,6 +24,9 @@ public struct SettingsActions {
         > = { _, _ in
             .failure(.message("SSH host-key approval is unavailable."))
         }
+    var sshAuthenticationView: (UUID, SSHHost) -> AnyView? = { _, _ in nil }
+    var isSSHAuthenticationReady: (SSHHost) async -> Bool = { _ in false }
+    var cancelSSHAuthentication: (UUID) -> Void = { _ in }
     var loadTailscalePeers: () async -> TailscalePeerLoadResult = {
         .failure("Tailscale import is unavailable.")
     }
@@ -61,6 +64,13 @@ public struct SettingsActions {
         ) async -> Result<SSHHostKeyConfirmation?, HostProbeError> = { _, _ in
             .failure(.message("SSH host-key approval is unavailable."))
         },
+        sshAuthenticationView: @escaping (UUID, SSHHost) -> AnyView? = {
+            _, _ in nil
+        },
+        isSSHAuthenticationReady: @escaping (SSHHost) async -> Bool = {
+            _ in false
+        },
+        cancelSSHAuthentication: @escaping (UUID) -> Void = { _ in },
         loadTailscalePeers: @escaping () async -> TailscalePeerLoadResult = {
             .failure("Tailscale import is unavailable.")
         },
@@ -88,6 +98,9 @@ public struct SettingsActions {
         self.pendingSSHHostKeyConfirmation =
             pendingSSHHostKeyConfirmation
         self.trustSSHHostKey = trustSSHHostKey
+        self.sshAuthenticationView = sshAuthenticationView
+        self.isSSHAuthenticationReady = isSSHAuthenticationReady
+        self.cancelSSHAuthentication = cancelSSHAuthentication
         self.loadTailscalePeers = loadTailscalePeers
         self.installRemoteKwt = installRemoteKwt
         self.registerRemoteProject = registerRemoteProject
@@ -301,6 +314,11 @@ public struct SettingsView: View {
             pendingSSHHostKeyConfirmation:
             actions.pendingSSHHostKeyConfirmation,
             trustSSHHostKey: actions.trustSSHHostKey,
+            sshAuthenticationView: actions.sshAuthenticationView,
+            isSSHAuthenticationReady:
+            actions.isSSHAuthenticationReady,
+            cancelSSHAuthentication:
+            actions.cancelSSHAuthentication,
             installRemoteKwt: actions.installRemoteKwt,
             registerRemoteProject: actions.registerRemoteProject,
             loadTailscalePeers: actions.loadTailscalePeers,

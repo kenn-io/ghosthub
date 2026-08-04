@@ -666,6 +666,22 @@ struct WorkspaceWindow: View {
                                             for: host
                                         )
                                 },
+                                sshAuthenticationView: {
+                                    surfaceID, host in
+                                    sceneModel.sshAuthenticationTerminal(
+                                        surfaceID: surfaceID,
+                                        for: host
+                                    )
+                                },
+                                isSSHAuthenticationReady: { host in
+                                    await sceneModel
+                                        .isSSHAuthenticationReady(for: host)
+                                },
+                                cancelSSHAuthentication: { surfaceID in
+                                    sceneModel.cancelSSHAuthentication(
+                                        surfaceID: surfaceID
+                                    )
+                                },
                                 loadTailscalePeers: {
                                     await TailscaleDiscovery
                                         .discoverPeers()
@@ -702,6 +718,11 @@ struct WorkspaceWindow: View {
                 },
                 logViewerBuilder: { [sceneModel] in
                     sceneModel.logViewerTerminalView()
+                },
+                sshAuthenticationBuilder: { [sceneModel] hostID in
+                    sceneModel.sshAuthenticationTerminal(
+                        forHostID: hostID
+                    )
                 }
             ),
             handlers: InteractionHandlers(
@@ -750,6 +771,16 @@ struct WorkspaceWindow: View {
                     await sceneModel.trustSSHHostKey(
                         confirmation,
                         forHostID: hostID
+                    )
+                },
+                isSSHAuthenticationReady: { [sceneModel] hostID in
+                    await sceneModel.isSSHAuthenticationReady(
+                        forHostID: hostID
+                    )
+                },
+                cancelSSHAuthentication: { [sceneModel] hostID in
+                    sceneModel.cancelSSHAuthentication(
+                        surfaceID: hostID
                     )
                 },
                 registerProject: { [sceneModel] host, path in

@@ -282,17 +282,35 @@ struct KwtWindowsInstaller: Sendable {
         localPath: String,
         remoteName: String
     ) -> Int32 {
+        let arguments = transferArguments(
+            host: host,
+            localPath: localPath,
+            remoteName: remoteName
+        )
+        return TmuxBinaryResolver.runProcessInLoginShell(
+            executable: "/usr/bin/scp",
+            arguments: arguments,
+            timeout: 120
+        ).status
+    }
+
+    static func transferArguments(
+        host: SSHHostInfo,
+        localPath: String,
+        remoteName: String
+    ) -> [String] {
         var arguments = [
             "-q",
             "-o", "BatchMode=yes",
             "-o", "ConnectTimeout=15",
         ]
         arguments.append(contentsOf: tmuxSSHConnectionArguments())
+        arguments.append(contentsOf: SSHConnectionPool.connectionArguments())
         arguments.append(contentsOf:
             SSHConfigurationResolver.noninteractiveHostKeyArguments(
                 for: host
             ))
-        if let port = host.port, port != 22 {
+        if let port = host.port {
             arguments += ["-P", String(port)]
         }
         let hostname = host.hostname.contains(":")
@@ -304,10 +322,6 @@ struct KwtWindowsInstaller: Sendable {
             localPath,
             "\(destination):\(remoteName)",
         ]
-        return TmuxBinaryResolver.runProcessInLoginShell(
-            executable: "/usr/bin/scp",
-            arguments: arguments,
-            timeout: 120
-        ).status
+        return arguments
     }
 }

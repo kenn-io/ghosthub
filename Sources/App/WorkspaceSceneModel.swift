@@ -2414,10 +2414,7 @@ final class WorkspaceSceneModel: ObservableObject {
             if summary.host.lastKnownReachable {
                 return .inventoryIssue(diagnostic ?? inventoryWarning)
             }
-            return .connectionIssue(
-                diagnostic
-                    ?? "Ghosthub could not reach this host over SSH."
-            )
+            return .authenticationRequired
         case let .failure(error):
             return .connectionIssue(error.displayMessage)
         }
@@ -2455,6 +2452,57 @@ final class WorkspaceSceneModel: ObservableObject {
             ))
         }
         return await trustSSHHostKey(confirmation, for: host)
+    }
+
+    func sshAuthenticationTerminal(
+        surfaceID: UUID,
+        for host: SSHHost
+    ) -> AnyView? {
+        guard let resolved = resolvedSSHHost(host),
+              let command = SSHConnectionPool.authenticationCommand(
+                  for: resolved.info
+              )
+        else { return nil }
+        let key = SurfaceKey(
+            worktreeID: nil,
+            hostID: surfaceID,
+            target: .sshAuthentication
+        )
+        guard let surface = terminalCoordinator.surface(
+            for: key,
+            configuration: TerminalSurfaceConfiguration(
+                workingDirectory: NSHomeDirectory(),
+                command: command,
+                waitAfterCommand: true
+            )
+        ) else { return nil }
+        surface.blocksClipboardReads = true
+        return AnyView(TerminalSurfaceSwiftUIView(surfaceView: surface))
+    }
+
+    func sshAuthenticationTerminal(forHostID hostID: UUID) -> AnyView? {
+        guard let host = configuredSSHHost(for: hostID) else { return nil }
+        return sshAuthenticationTerminal(surfaceID: hostID, for: host)
+    }
+
+    func isSSHAuthenticationReady(for host: SSHHost) async -> Bool {
+        guard let resolved = resolvedSSHHost(host) else { return false }
+        return await Task.detached {
+            SSHConnectionPool.isAuthenticated(resolved.info)
+        }.value
+    }
+
+    func isSSHAuthenticationReady(forHostID hostID: UUID) async -> Bool {
+        guard let host = configuredSSHHost(for: hostID) else { return false }
+        return await isSSHAuthenticationReady(for: host)
+    }
+
+    func cancelSSHAuthentication(surfaceID: UUID) {
+        terminalCoordinator.removeSurface(for: SurfaceKey(
+            worktreeID: nil,
+            hostID: surfaceID,
+            target: .sshAuthentication
+        ))
     }
 
     private func configuredSSHHost(for hostID: UUID) -> SSHHost? {

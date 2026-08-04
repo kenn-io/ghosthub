@@ -204,6 +204,10 @@ retryable and are presented to the user.
 ## SSH Keepalive and Reconnect
 
 Remote clients use the user's OpenSSH configuration and add server keepalives.
+If OpenSSH requires interactive authentication, Ghosthub first hosts an
+OpenSSH master in an in-app terminal. Later inventory and tmux clients reuse
+that app-session control connection; they remain noninteractive and Ghosthub
+never handles the credential itself.
 Exit status 255, OpenSSH's transport/setup failure status, reconnects with
 bounded exponential backoff. A connection that remains healthy for at least
 30 seconds resets the backoff. Other statuses pass through unchanged, so a

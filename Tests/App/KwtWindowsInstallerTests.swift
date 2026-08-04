@@ -6,6 +6,24 @@ import Testing
 
 @Suite("Windows kwt installation")
 struct KwtWindowsInstallerTests {
+    @Test("SCP reuses authentication and preserves an explicit port")
+    func reusesAuthenticationForTransfer() throws {
+        let arguments = KwtWindowsInstaller.transferArguments(
+            host: SSHHostInfo(
+                user: "developer",
+                hostname: "windows-node.example.test",
+                port: 22,
+                platform: .windows
+            ),
+            localPath: "/tmp/kwt.exe",
+            remoteName: "ghosthub-upload.exe"
+        )
+
+        #expect(arguments.contains(where: { $0.hasPrefix("ControlPath=") }))
+        let portIndex = try #require(arguments.firstIndex(of: "-P"))
+        #expect(arguments[portIndex + 1] == "22")
+    }
+
     @Test("installs the matching bundled helper at the managed path")
     func installsArm64Helper() async throws {
         let revision = String(repeating: "a", count: 40)

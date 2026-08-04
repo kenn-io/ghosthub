@@ -129,6 +129,12 @@ host so the same key cannot authorize another route target. OpenSSH writes the
 approved key to its configured `UserKnownHostsFile`,
 after which Ghosthub retries the connection or inventory operation that led to
 the review.
+If OpenSSH then requires a password or another interactive response, Ghosthub
+hosts the system client in a terminal surface and shares only its authenticated
+control socket with later app operations. The credential stays between the
+user and OpenSSH: Ghosthub does not read, store, log, or forward it. The master
+has no persistence after its owning terminal process and app session end, and
+its socket lives in the user-only Ghosthub state directory.
 Ghosthub never forces `accept-new`, writes a scanned key itself, or treats a
 trusted short alias as authorization for a canonical MagicDNS FQDN.
 When an SSH route contains unseen intermediate hosts, each trust sheet labels

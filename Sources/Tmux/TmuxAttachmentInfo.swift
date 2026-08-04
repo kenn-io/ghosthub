@@ -822,7 +822,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
             "-o", "ConnectTimeout=15",
         ]
         arguments.append(contentsOf: sshConnectionArguments)
-        if let port = info.port, port != 22 {
+        if let port = info.port {
             arguments.append(contentsOf: ["-p", "\(port)"])
         }
         let destination = info.user.map { "\($0)@\(info.hostname)" }

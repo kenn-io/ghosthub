@@ -30,6 +30,29 @@ enum SSHConfigurationResolver {
         for host: SSHHostInfo,
         configurationProvider: ConfigurationProvider
     ) -> [String] {
+        hostKeyArguments(
+            for: host,
+            proxyBatchMode: "yes",
+            configurationProvider: configurationProvider
+        )
+    }
+
+    static func interactiveHostKeyArguments(
+        for host: SSHHostInfo,
+        configurationProvider: ConfigurationProvider = configuration
+    ) -> [String] {
+        hostKeyArguments(
+            for: host,
+            proxyBatchMode: "no",
+            configurationProvider: configurationProvider
+        )
+    }
+
+    private static func hostKeyArguments(
+        for host: SSHHostInfo,
+        proxyBatchMode: String,
+        configurationProvider: ConfigurationProvider
+    ) -> [String] {
         guard let configuration = configurationProvider(host) else {
             return [
                 "-o", "StrictHostKeyChecking=yes",
@@ -52,7 +75,8 @@ enum SSHConfigurationResolver {
         arguments.append(contentsOf: [
             "-o",
             "ProxyCommand=" + hardenedProxyCommand(
-                hops: proxyHops
+                hops: proxyHops,
+                batchMode: proxyBatchMode
             ),
         ])
         return arguments
@@ -111,13 +135,14 @@ enum SSHConfigurationResolver {
     }
 
     private static func hardenedProxyCommand(
-        hops: [EffectiveProxyJumpHop]
+        hops: [EffectiveProxyJumpHop],
+        batchMode: String
     ) -> String {
         var previousCommand: String?
         for hop in hops {
             var arguments = [
                 "/usr/bin/ssh",
-                "-o", "BatchMode=yes",
+                "-o", "BatchMode=\(batchMode)",
                 "-o", "ConnectTimeout=10",
                 "-o", "ConnectionAttempts=1",
             ]

@@ -21,10 +21,12 @@ enum HostConnectionField: Hashable {
     }
 }
 
-struct HostOperationTarget: Equatable, Sendable {
+struct HostOperationTarget: Equatable, Identifiable, Sendable {
     let draftID: UUID
     let sshDestination: String
     let platform: HostPlatform
+
+    var id: UUID { draftID }
 
     init(_ draft: SSHHostDraft) {
         draftID = draft.id
@@ -66,6 +68,7 @@ public struct HostsSettingsView: View {
     @State private var isRegisteringRemoteProject = false
     @State private var remoteProjectMessage: String?
     @State private var pendingSSHHostTrust: PendingSSHHostTrust?
+    @State private var pendingSSHAuthentication: HostOperationTarget?
     @State private var isTrustingSSHHost = false
     @State private var hostTrustErrorMessage: String?
     @Binding var sshHosts: [SSHHostDraft]
@@ -95,6 +98,9 @@ public struct HostsSettingsView: View {
             SSHHostKeyConfirmation?,
             HostProbeError
         >
+    let sshAuthenticationView: (UUID, SSHHost) -> AnyView?
+    let isSSHAuthenticationReady: (SSHHost) async -> Bool
+    let cancelSSHAuthentication: (UUID) -> Void
     let installRemoteKwt:
         (SSHHost) async -> Result<Void, HostProbeError>
     let registerRemoteProject:
@@ -127,6 +133,9 @@ public struct HostsSettingsView: View {
             SSHHostKeyConfirmation,
             SSHHost
         ) async -> Result<SSHHostKeyConfirmation?, HostProbeError>,
+        sshAuthenticationView: @escaping (UUID, SSHHost) -> AnyView?,
+        isSSHAuthenticationReady: @escaping (SSHHost) async -> Bool,
+        cancelSSHAuthentication: @escaping (UUID) -> Void,
         installRemoteKwt: @escaping (
             SSHHost
         ) async -> Result<Void, HostProbeError>,
@@ -156,6 +165,9 @@ public struct HostsSettingsView: View {
         self.pendingSSHHostKeyConfirmation =
             pendingSSHHostKeyConfirmation
         self.trustSSHHostKey = trustSSHHostKey
+        self.sshAuthenticationView = sshAuthenticationView
+        self.isSSHAuthenticationReady = isSSHAuthenticationReady
+        self.cancelSSHAuthentication = cancelSSHAuthentication
         self.installRemoteKwt = installRemoteKwt
         self.registerRemoteProject = registerRemoteProject
         self.loadTailscalePeers = loadTailscalePeers
@@ -560,6 +572,9 @@ public struct HostsSettingsView: View {
         .sheet(item: $pendingSSHHostTrust) { pending in
             sshHostTrustSheet(pending)
         }
+        .sheet(item: $pendingSSHAuthentication) { target in
+            sshAuthenticationSheet(target)
+        }
         .alert(
             "Tailscale Import",
             isPresented: Binding(
@@ -743,6 +758,7 @@ public struct HostsSettingsView: View {
             switch trustResult {
             case let .success(confirmation):
                 guard let confirmation else {
+                    pendingSSHAuthentication = target
                     return
                 }
                 pendingSSHHostTrust = PendingSSHHostTrust(
@@ -783,7 +799,7 @@ public struct HostsSettingsView: View {
                 )
             } else {
                 pendingSSHHostTrust = nil
-                await probeHost(draft)
+                pendingSSHAuthentication = pending.target
             }
         case let .failure(error):
             hostTrustErrorMessage = error.displayMessage
@@ -907,9 +923,13 @@ public struct HostsSettingsView: View {
     }
 
     private func clearSSHHostProbeFeedback() {
+        if let pendingSSHAuthentication {
+            cancelSSHAuthentication(pendingSSHAuthentication.draftID)
+        }
         hostProbeResult = nil
         hostProbeErrorMessage = nil
         pendingSSHHostTrust = nil
+        pendingSSHAuthentication = nil
         hostTrustErrorMessage = nil
         remoteKwtInstallMessage = nil
         remoteProjectMessage = nil
@@ -951,6 +971,86 @@ public struct HostsSettingsView: View {
         .padding(24)
         .frame(width: 520)
         .interactiveDismissDisabled(isTrustingSSHHost)
+    }
+
+    private func sshAuthenticationSheet(
+        _ target: HostOperationTarget
+    ) -> some View {
+        let draft = sshHosts.first { $0.id == target.draftID }
+        return VStack(alignment: .leading, spacing: 16) {
+            Label(
+                "Authenticate with \(draft?.name ?? "SSH Host")",
+                systemImage: "key"
+            )
+            .font(.system(size: 20, weight: .semibold))
+
+            Text(
+                "Complete the SSH authentication prompt below. Ghosthub"
+                    + " will test the connection automatically once OpenSSH"
+                    + " connects."
+            )
+            .font(.system(size: 12))
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+
+            if let draft,
+               let terminal = sshAuthenticationView(
+                   target.draftID,
+                   draft.sshHost
+               ) {
+                terminal
+                    .frame(height: 320)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(.separator, lineWidth: 1)
+                    }
+            } else {
+                ContentUnavailableView(
+                    "SSH Terminal Unavailable",
+                    systemImage: "terminal",
+                    description: Text(
+                        "Ghosthub could not open the authentication terminal."
+                    )
+                )
+                .frame(height: 240)
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) {
+                    cancelSSHAuthentication(target.draftID)
+                    pendingSSHAuthentication = nil
+                }
+            }
+        }
+        .padding(24)
+        .frame(width: 720)
+        .task(id: target.id) {
+            await monitorSSHAuthentication(target)
+        }
+        .interactiveDismissDisabled()
+    }
+
+    private func monitorSSHAuthentication(
+        _ target: HostOperationTarget
+    ) async {
+        guard let draft = sshHosts.first(where: {
+            $0.id == target.draftID
+        }) else { return }
+        while !Task.isCancelled,
+              pendingSSHAuthentication == target,
+              target.isCurrent(
+                  selectedDraftID: selectedSSHHostDraftID,
+                  drafts: sshHosts
+              ) {
+            if await isSSHAuthenticationReady(draft.sshHost) {
+                pendingSSHAuthentication = nil
+                await probeHost(draft)
+                return
+            }
+            try? await Task.sleep(for: .seconds(1))
+        }
     }
 
     private func hostSettingField<Control: View>(

@@ -24,8 +24,8 @@ struct SSHHostKeyReviewModelTests {
         }
     }
 
-    @Test("sequential approvals retry inventory only after the final host")
-    func sequentialApprovalsRetryInventoryAfterFinalHost() async {
+    @Test("sequential approvals authenticate only after the final host")
+    func sequentialApprovalsAuthenticateAfterFinalHost() async {
         let hostID = UUID()
         let proxyConfirmation = SSHHostKeyConfirmation(
             destination: "jump.example.test",
@@ -56,29 +56,43 @@ struct SSHHostKeyReviewModelTests {
 
         var trustedHostID: UUID?
         var trustedConfirmation: SSHHostKeyConfirmation?
-        var didRetryInventory = false
+        var didBeginAuthentication = false
         await model.trust(
             using: { requestedHostID, requestedConfirmation in
                 trustedHostID = requestedHostID
                 trustedConfirmation = requestedConfirmation
                 return .success(targetConfirmation)
             },
-            onTrusted: { didRetryInventory = true }
+            onTrusted: { didBeginAuthentication = true }
         )
 
         #expect(trustedHostID == hostID)
         #expect(trustedConfirmation == proxyConfirmation)
         #expect(model.confirmation == targetConfirmation)
-        #expect(!didRetryInventory)
+        #expect(!didBeginAuthentication)
         #expect(model.isPresented)
 
         await model.trust(
             using: { _, _ in .success(nil) },
-            onTrusted: { didRetryInventory = true }
+            onTrusted: { didBeginAuthentication = true }
         )
 
-        #expect(didRetryInventory)
-        #expect(!model.isPresented)
+        #expect(didBeginAuthentication)
+        #expect(model.isPresented)
+        #expect(model.presentation == .authentication)
+    }
+
+    @Test("an SSH authentication failure opens the in-app terminal")
+    func authenticationFailureOpensTerminal() async {
+        let model = WorkspaceSSHHostKeyReviewModel()
+
+        await model.review(hostID: UUID(), hostName: "Build Node") {
+            .authenticationRequired
+        }
+
+        #expect(model.presentation == .authentication)
+        #expect(model.errorMessage == nil)
+        #expect(model.confirmation == nil)
     }
 
     @Test("an older request cannot overwrite a reopened review")

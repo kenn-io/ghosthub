@@ -59,9 +59,12 @@ ProxyJump routes may show one review for each unseen host in the route. Opaque
 ProxyCommand routes and jump hosts with another proxy route cannot be reviewed
 safely and fail closed. If no unseen key is reported, the same recovery sheet
 checks the connection. A reachable host keeps its inventory diagnostic and
-offers **Retry**; an SSH failure leads to Host Settings. Use **Test Connection**
-there to verify authentication and that `tmux` is on the remote login-shell
-`PATH`. Kwt does not need a system installation: follow a successful test with
+offers **Retry**. If OpenSSH needs a password or another interactive response,
+Ghosthub opens an authentication terminal. Complete the prompt there; Ghosthub
+keeps that OpenSSH control connection for the app session and retries inventory
+automatically without receiving or storing the password. Use **Test Connection**
+to verify authentication and that `tmux` is on the remote login-shell `PATH`.
+Kwt does not need a system installation: follow a successful test with
 **Install kwt Worktree Helper** when project inventory is missing. If the host
 has never used kwt, enter an existing checkout's absolute path under **Add
 Project** from the **+** menu beside that host; repeat for each repository
@@ -74,5 +77,7 @@ explicit approval, asks OpenSSH to save that same key using its configured
 is a separate OpenSSH identity. Ghosthub reviews effective `ask` and
 `accept-new` policies but does not override `yes`, `no`, or `off`; change that
 destination's SSH configuration deliberately if you want an in-app review.
+After host-key review, an interactive authentication prompt remains entirely
+inside Ghosthub and is still rendered and handled by the system OpenSSH client.
 A reachable host without tmux is reported
 separately as **tmux is not installed** rather than as an SSH failure.

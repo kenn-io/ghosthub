@@ -4,6 +4,7 @@ import SwiftUI
 enum SSHConnectionRecoveryPresentation: Equatable {
     case checking
     case hostKey
+    case authentication
     case inventoryIssue
     case connectionIssue
 }
@@ -52,6 +53,8 @@ final class WorkspaceSSHHostKeyReviewModel: ObservableObject {
         switch result {
         case let .hostKey(confirmation):
             self.confirmation = confirmation
+        case .authenticationRequired:
+            resolvedPresentation = .authentication
         case let .inventoryIssue(message):
             resolvedPresentation = .inventoryIssue
             errorMessage = message
@@ -83,7 +86,8 @@ final class WorkspaceSSHHostKeyReviewModel: ObservableObject {
             if let nextConfirmation {
                 self.confirmation = nextConfirmation
             } else {
-                dismiss()
+                self.confirmation = nil
+                resolvedPresentation = .authentication
                 onTrusted()
             }
         case let .failure(error):
@@ -109,6 +113,7 @@ struct SSHHostKeyReviewView: View {
     let onRetry: () -> Void
     let onOpenHostSettings: () -> Void
     let onCancel: () -> Void
+    let authenticationContent: AnyView?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -123,6 +128,33 @@ struct SSHHostKeyReviewView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             } else if let confirmation = model.confirmation {
                 SSHHostKeyConfirmationDetails(confirmation: confirmation)
+            } else if model.presentation == .authentication {
+                Text(
+                    "Complete the SSH authentication prompt below. Ghosthub"
+                        + " will continue automatically once OpenSSH connects."
+                )
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+                if let authenticationContent {
+                    authenticationContent
+                        .frame(height: 320)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(.separator, lineWidth: 1)
+                        }
+                } else {
+                    ContentUnavailableView(
+                        "SSH Terminal Unavailable",
+                        systemImage: "terminal",
+                        description: Text(
+                            "Ghosthub could not open the authentication terminal."
+                        )
+                    )
+                    .frame(height: 240)
+                }
             }
 
             if let errorMessage = model.errorMessage {
@@ -141,6 +173,8 @@ struct SSHHostKeyReviewView: View {
                     )
                     .keyboardShortcut(.defaultAction)
                     .disabled(model.isTrusting)
+                } else if model.presentation == .authentication {
+                    Button("Host Settings", action: onOpenHostSettings)
                 } else if model.presentation == .inventoryIssue {
                     Button("Host Settings", action: onOpenHostSettings)
                     Button("Retry", action: onRetry)
@@ -152,7 +186,9 @@ struct SSHHostKeyReviewView: View {
             }
         }
         .padding(24)
-        .frame(width: 520)
+        .frame(
+            width: model.presentation == .authentication ? 720 : 520
+        )
         .interactiveDismissDisabled(model.isTrusting)
     }
 
@@ -165,6 +201,12 @@ struct SSHHostKeyReviewView: View {
         case .hostKey:
             Label("Verify SSH Host", systemImage: "lock.shield")
                 .font(.system(size: 20, weight: .semibold))
+        case .authentication:
+            Label(
+                "Authenticate with \(model.hostName)",
+                systemImage: "key"
+            )
+            .font(.system(size: 20, weight: .semibold))
         case .inventoryIssue:
             Label(
                 "Connected, but Inventory Failed",

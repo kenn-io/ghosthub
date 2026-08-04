@@ -164,7 +164,10 @@ final class NativeTmuxSessionCoordinator {
             },
         sshConnectionArgumentsProvider:
         @escaping @Sendable (SSHHostInfo) -> [String] = {
-            SSHConfigurationResolver.noninteractiveHostKeyArguments(for: $0)
+            SSHConnectionPool.connectionArguments()
+                + SSHConfigurationResolver.noninteractiveHostKeyArguments(
+                    for: $0
+                )
         }
     ) {
         self.terminalCoordinator = terminalCoordinator

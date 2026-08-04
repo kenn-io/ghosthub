@@ -83,16 +83,19 @@ public struct ContentBuilders {
         ((HostSummary, String) -> AnyView?)?
     public let settingsSheetBuilder: ((SettingsStore) -> AnyView)?
     public let logViewerBuilder: (() -> AnyView?)?
+    public let sshAuthenticationBuilder: ((UUID) -> AnyView?)?
 
     public init(
         tmuxSessionContentBuilder:
         ((HostSummary, String) -> AnyView?)? = nil,
         settingsSheetBuilder: ((SettingsStore) -> AnyView)? = nil,
-        logViewerBuilder: (() -> AnyView?)? = nil
+        logViewerBuilder: (() -> AnyView?)? = nil,
+        sshAuthenticationBuilder: ((UUID) -> AnyView?)? = nil
     ) {
         self.tmuxSessionContentBuilder = tmuxSessionContentBuilder
         self.settingsSheetBuilder = settingsSheetBuilder
         self.logViewerBuilder = logViewerBuilder
+        self.sshAuthenticationBuilder = sshAuthenticationBuilder
     }
 }
 
@@ -140,6 +143,7 @@ public struct WorktreeRemovalRequest: Equatable, Sendable {
 
 public enum SSHConnectionRecoveryResult: Equatable, Sendable {
     case hostKey(SSHHostKeyConfirmation)
+    case authenticationRequired
     case inventoryIssue(String)
     case connectionIssue(String)
 }
@@ -166,6 +170,8 @@ public struct InteractionHandlers {
         ((UUID, SSHHostKeyConfirmation) async -> Result<
             SSHHostKeyConfirmation?, HostProbeError
         >)?
+    public let isSSHAuthenticationReady: ((UUID) async -> Bool)?
+    public let cancelSSHAuthentication: ((UUID) -> Void)?
     public let registerProject:
         ((HostSummary, String) async -> Result<String, HostProbeError>)?
     public let createWorktree:
@@ -203,6 +209,8 @@ public struct InteractionHandlers {
         ((UUID, SSHHostKeyConfirmation) async -> Result<
             SSHHostKeyConfirmation?, HostProbeError
         >)? = nil,
+        isSSHAuthenticationReady: ((UUID) async -> Bool)? = nil,
+        cancelSSHAuthentication: ((UUID) -> Void)? = nil,
         registerProject:
         ((HostSummary, String) async -> Result<String, HostProbeError>)? = nil,
         createWorktree:
@@ -231,6 +239,8 @@ public struct InteractionHandlers {
         self.refreshWorkspaceInventory = refreshWorkspaceInventory
         self.reviewSSHHostKey = reviewSSHHostKey
         self.trustSSHHostKey = trustSSHHostKey
+        self.isSSHAuthenticationReady = isSSHAuthenticationReady
+        self.cancelSSHAuthentication = cancelSSHAuthentication
         self.registerProject = registerProject
         self.createWorktree = createWorktree
         self.listBranches = listBranches
