@@ -1,0 +1,20 @@
+[workspace]
+members = ["model"]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+rust-version = "1.96"
+
+[workspace.dependencies]
+ghosthub-model = { path = "model" }
+gpui = { version = "=0.2.2", default-features = false }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
