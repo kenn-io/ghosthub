@@ -1,4 +1,5 @@
 import Foundation
+import GhosthubTmux
 import Testing
 @testable import GhosthubApp
 
@@ -49,5 +50,49 @@ struct SSHAuthenticationSessionTests {
             output.fileHandleForReading.readDataToEndOfFile()
                 == Data("synthetic-secret\n".utf8)
         )
+    }
+}
+
+@Suite("SSH authentication coordinator")
+@MainActor
+struct SSHAuthenticationCoordinatorTests {
+    @Test("a session stops only after its final window releases it")
+    func sharesSessionsAcrossWindowScopes() {
+        let coordinator = SSHAuthenticationCoordinator()
+        let host = SSHHostInfo(
+            user: "operator",
+            hostname: "unreachable.example.test",
+            port: nil
+        )
+        let presentationID = UUID()
+        let firstScope = UUID()
+        let secondScope = UUID()
+        let first = coordinator.session(
+            scopeID: firstScope,
+            presentationID: presentationID,
+            host: host
+        )
+        let second = coordinator.session(
+            scopeID: secondScope,
+            presentationID: presentationID,
+            host: host
+        )
+
+        #expect(first === second)
+        coordinator.cancelAll(scopeID: firstScope)
+        #expect(coordinator.session(
+            scopeID: secondScope,
+            presentationID: presentationID,
+            host: host
+        ) === first)
+
+        coordinator.cancelAll(scopeID: secondScope)
+        let replacement = coordinator.session(
+            scopeID: UUID(),
+            presentationID: presentationID,
+            host: host
+        )
+        #expect(replacement !== first)
+        coordinator.shutdown()
     }
 }

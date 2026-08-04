@@ -384,6 +384,7 @@ final class WorkspaceSceneModel: ObservableObject {
         (UInt?) -> TmuxPresentationStyle?
     private let sshHostProbeRunner: SSHHostProbeRunner
     private let sshAuthenticationCoordinator: SSHAuthenticationCoordinator
+    private let sshAuthenticationScopeID = UUID()
     private let configuredSSHHostsProvider: () -> [SSHHost]
     private var configuredSSHHostsCancellable: AnyCancellable?
     private var terminalColorsCancellable: AnyCancellable?
@@ -1087,6 +1088,9 @@ final class WorkspaceSceneModel: ObservableObject {
         endedCreatedTmuxSessionHandles.removeAll()
         confirmedEndedTmuxSessionHandles.removeAll()
         nativeTmuxSessionCoordinatorBacking?.shutdown()
+        sshAuthenticationCoordinator.cancelAll(
+            scopeID: sshAuthenticationScopeID
+        )
     }
 
     /// Refreshes the sidebar directly from each host's kwt and tmux inventory.
@@ -2475,7 +2479,8 @@ final class WorkspaceSceneModel: ObservableObject {
         guard let resolved = resolvedSSHHost(host) else { return nil }
         return AnyView(SSHAuthenticationView(
             session: sshAuthenticationCoordinator.session(
-                id: surfaceID,
+                scopeID: sshAuthenticationScopeID,
+                presentationID: surfaceID,
                 host: resolved.info
             )
         ))
@@ -2522,7 +2527,10 @@ final class WorkspaceSceneModel: ObservableObject {
     }
 
     func cancelSSHAuthentication(surfaceID: UUID) {
-        sshAuthenticationCoordinator.cancel(id: surfaceID)
+        sshAuthenticationCoordinator.cancel(
+            scopeID: sshAuthenticationScopeID,
+            presentationID: surfaceID
+        )
     }
 
     private func configuredSSHHost(for hostID: UUID) -> SSHHost? {

@@ -303,31 +303,70 @@ final class SSHAuthenticationSession: ObservableObject {
 
 @MainActor
 final class SSHAuthenticationCoordinator {
-    private var sessions: [UUID: SSHAuthenticationSession] = [:]
+    private struct Owner: Hashable {
+        let scopeID: UUID
+        let presentationID: UUID
+    }
+
+    private struct Entry {
+        let session: SSHAuthenticationSession
+        var owners: Set<Owner>
+    }
+
+    private var entries: [Entry] = []
+    private var sessionIDsByOwner: [Owner: ObjectIdentifier] = [:]
 
     func session(
-        id: UUID,
+        scopeID: UUID,
+        presentationID: UUID,
         host: SSHHostInfo
     ) -> SSHAuthenticationSession {
-        if let existing = sessions[id], existing.host == host {
-            return existing
+        let owner = Owner(
+            scopeID: scopeID,
+            presentationID: presentationID
+        )
+        if let sessionID = sessionIDsByOwner[owner],
+           let entry = entries.first(where: {
+               ObjectIdentifier($0.session) == sessionID
+           }),
+           entry.session.host == host {
+            return entry.session
         }
-        sessions.removeValue(forKey: id)?.cancel()
+        release(owner)
+
+        if let index = entries.firstIndex(where: { $0.session.host == host }) {
+            entries[index].owners.insert(owner)
+            let session = entries[index].session
+            sessionIDsByOwner[owner] = ObjectIdentifier(session)
+            return session
+        }
+
         let session = SSHAuthenticationSession(host: host)
-        sessions[id] = session
+        entries.append(Entry(session: session, owners: [owner]))
+        sessionIDsByOwner[owner] = ObjectIdentifier(session)
         return session
     }
 
-    func cancel(id: UUID) {
-        sessions.removeValue(forKey: id)?.cancel()
+    func cancel(scopeID: UUID, presentationID: UUID) {
+        release(Owner(
+            scopeID: scopeID,
+            presentationID: presentationID
+        ))
+    }
+
+    func cancelAll(scopeID: UUID) {
+        let owners = sessionIDsByOwner.keys.filter {
+            $0.scopeID == scopeID
+        }
+        owners.forEach(release)
     }
 
     func reconcileIdentity(
         host: SSHHostInfo,
         controlPath: String
     ) {
-        for session in sessions.values where session.host == host {
-            session.restartIfIdentityChanged(to: controlPath)
+        for entry in entries where entry.session.host == host {
+            entry.session.restartIfIdentityChanged(to: controlPath)
         }
     }
 
@@ -335,7 +374,8 @@ final class SSHAuthenticationCoordinator {
         host: SSHHostInfo,
         controlPath: String
     ) {
-        for session in sessions.values where session.host == host {
+        for entry in entries where entry.session.host == host {
+            let session = entry.session
             if session.controlPath == controlPath {
                 session.markConnected()
             }
@@ -343,8 +383,23 @@ final class SSHAuthenticationCoordinator {
     }
 
     func shutdown() {
-        sessions.values.forEach { $0.cancel() }
-        sessions.removeAll()
+        entries.forEach { $0.session.cancel() }
+        entries.removeAll()
+        sessionIDsByOwner.removeAll()
+    }
+
+    private func release(_ owner: Owner) {
+        guard let sessionID = sessionIDsByOwner.removeValue(forKey: owner),
+              let index = entries.firstIndex(where: {
+                  ObjectIdentifier($0.session) == sessionID
+              })
+        else { return }
+        entries[index].owners.remove(owner)
+        guard entries[index].owners.isEmpty,
+              entries[index].session.state != .connected
+        else { return }
+        entries[index].session.cancel()
+        entries.remove(at: index)
     }
 }
 

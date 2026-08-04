@@ -181,6 +181,9 @@ clients reuse its control socket under `~/.ghosthub/ssh/`. Its bounded socket
 name includes a digest of the logical destination, effective host-key policy,
 effective host-key aliases, and proxy route, so two trust identities or routes
 to the same endpoint cannot reuse one another's authenticated master.
+Window presentations hold leases on shared authentication attempts. Closing a
+window cancels an unfinished attempt only after its final presenting window
+releases it; an authenticated master remains available until the app exits.
 Before opening that channel, Ghosthub reads the effective destination policy
 with `ssh -G`. It tightens `accept-new` to an explicit review but does not
 override `yes`, `no`, or `off`; approval matches the parsed algorithm and
