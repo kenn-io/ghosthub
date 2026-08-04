@@ -2533,6 +2533,19 @@ final class WorkspaceSceneModel: ObservableObject {
         guard let controlPath = sshAuthenticationControlPaths[target] else {
             return .pending
         }
+        if sshAuthenticationCoordinator.requiresRecoveryRestart(
+            target: target,
+            controlPath: controlPath
+        ) {
+            pendingSSHAuthenticationTargets.removeValue(
+                forKey: resolved.destination
+            )
+            configuredSSHAuthenticationTargets.removeValue(
+                forKey: resolved.destination
+            )
+            sshAuthenticationControlPaths.removeValue(forKey: target)
+            return .reviewRequired
+        }
         let isReady = await Task.detached {
             SSHConnectionPool.isAuthenticated(
                 target.host,

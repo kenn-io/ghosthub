@@ -184,7 +184,10 @@ trust identities, routes, or app launches cannot reuse one another's
 authenticated master. A parent-held watchdog pipe terminates each master if
 the app process disappears, and the next launch removes stale control sockets.
 Routine clients explicitly disable `ControlMaster` and `ControlPersist`; they
-may reuse Ghosthub's supervised socket but cannot create another master.
+may reuse Ghosthub's supervised socket but cannot create another master, even
+when Ghosthub cannot prepare that socket. Immediately before launching a master,
+Ghosthub revalidates its cached control identity after resolving launch options;
+an identity change restarts recovery instead of using the old socket path.
 Window presentations hold leases on shared authentication attempts. Closing a
 window cancels an unfinished attempt only after its final presenting window
 releases it; an authenticated master remains available until the app exits.

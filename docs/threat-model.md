@@ -142,7 +142,10 @@ directory and is also scoped to the logical destination, every effective
 `HostKeyAlias`, and the proxy route, preventing a master authenticated under one
 host-key identity, route, or app launch from satisfying another.
 Routine clients explicitly disable `ControlMaster` and `ControlPersist`, so
-user configuration cannot turn them into unsupervised persistent masters.
+user configuration cannot turn them into unsupervised persistent masters even
+when Ghosthub cannot prepare its control socket. Authentication revalidates the
+cached control identity immediately before launching a master and restarts
+recovery if effective SSH identity changed while the prompt was being prepared.
 Ghosthub never forces `accept-new`, writes a scanned key itself, or treats a
 trusted short alias as authorization for a canonical MagicDNS FQDN.
 When an SSH route contains unseen intermediate hosts, each trust sheet labels

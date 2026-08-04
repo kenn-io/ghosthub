@@ -5,6 +5,33 @@ import Testing
 
 @Suite("SSH authentication prompt broker")
 struct SSHAuthenticationSessionTests {
+    @Test("authentication rejects a changed cached SSH identity")
+    func rejectsChangedCachedIdentity() {
+        let target = SSHAuthenticationTarget(
+            host: SSHHostInfo(
+                user: "operator",
+                hostname: "build.example.test",
+                port: nil
+            ),
+            precedingProxyHops: []
+        )
+
+        let result = SSHAuthenticationPreparation.prepare(
+            for: target,
+            controlPath: "/tmp/ghosthub-test/control-reviewed",
+            controlPathProvider: { _ in
+                "/tmp/ghosthub-test/control-changed"
+            },
+            hostKeyArgumentsProvider: { _ in [] },
+            proxyArgumentsProvider: { _ in [] }
+        )
+
+        guard case .configurationChanged = result else {
+            Issue.record("Expected the stale identity to be rejected")
+            return
+        }
+    }
+
     @Test("askpass exchanges a native response for the exact prompt")
     func exchangesPromptAndResponse() async throws {
         let state = try SSHAuthenticationTemporaryState.create()

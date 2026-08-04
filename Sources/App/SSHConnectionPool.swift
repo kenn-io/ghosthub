@@ -25,8 +25,7 @@ enum SSHConnectionPool {
     private static let appSessionID = UUID().uuidString
 
     static func connectionArguments(for host: SSHHostInfo) -> [String] {
-        guard let path = preparedControlPath(for: host) else { return [] }
-        return connectionArguments(controlPath: path)
+        connectionArguments(controlPath: preparedControlPath(for: host))
     }
 
     static func isAuthenticated(_ host: SSHHostInfo) -> Bool {
@@ -52,12 +51,17 @@ enum SSHConnectionPool {
         return result.status == 0
     }
 
-    static func connectionArguments(controlPath: String) -> [String] {
-        [
+    static func connectionArguments(controlPath: String?) -> [String] {
+        var arguments = [
             "-o", "ControlMaster=no",
             "-o", "ControlPersist=no",
-            "-o", "ControlPath=\(controlPath)",
         ]
+        if let controlPath {
+            arguments.append(contentsOf: [
+                "-o", "ControlPath=\(controlPath)",
+            ])
+        }
+        return arguments
     }
 
     static func controlPath(for host: SSHHostInfo) -> String? {

@@ -22,10 +22,11 @@ enum SSHAuthenticationSessionState: Equatable, Sendable {
     case prompt(SSHAuthenticationPrompt)
     case verifying
     case connected
+    case configurationChanged
     case failed(String)
 }
 
-private struct SSHAuthenticationPreparation: Sendable {
+struct SSHAuthenticationPreparation: Sendable {
     let target: SSHAuthenticationTarget
     let temporaryState: SSHAuthenticationTemporaryState
     let controlPath: String
@@ -34,26 +35,34 @@ private struct SSHAuthenticationPreparation: Sendable {
 
     static func prepare(
         for target: SSHAuthenticationTarget,
-        controlPath: String?
+        controlPath: String?,
+        controlPathProvider: @Sendable (SSHAuthenticationTarget) -> String? = {
+            SSHConnectionPool.controlPath(for: $0)
+        },
+        hostKeyArgumentsProvider: @Sendable (SSHHostInfo) -> [String] = {
+            SSHConfigurationResolver.authenticationHostKeyArguments(for: $0)
+        },
+        proxyArgumentsProvider: @Sendable (SSHAuthenticationTarget) -> [String] = {
+            SSHConnectionPool.proxyArguments(for: $0)
+        }
     ) -> SSHAuthenticationPreparationResult {
         do {
             let temporaryState = try SSHAuthenticationTemporaryState.create()
             do {
                 try Task.checkCancellation()
                 guard let controlPath = controlPath
-                    ?? SSHConnectionPool.controlPath(for: target) else {
+                    ?? controlPathProvider(target) else {
                     throw SSHAuthenticationError.stateUnavailable
                 }
                 try Task.checkCancellation()
-                let hostKeyArguments =
-                    SSHConfigurationResolver.authenticationHostKeyArguments(
-                        for: target.host
-                    )
+                let hostKeyArguments = hostKeyArgumentsProvider(target.host)
                 try Task.checkCancellation()
-                let proxyArguments = SSHConnectionPool.proxyArguments(
-                    for: target
-                )
+                let proxyArguments = proxyArgumentsProvider(target)
                 try Task.checkCancellation()
+                guard controlPathProvider(target) == controlPath else {
+                    temporaryState.remove()
+                    return .configurationChanged
+                }
                 return .success(SSHAuthenticationPreparation(
                     target: target,
                     temporaryState: temporaryState,
@@ -73,8 +82,9 @@ private struct SSHAuthenticationPreparation: Sendable {
     }
 }
 
-private enum SSHAuthenticationPreparationResult: Sendable {
+enum SSHAuthenticationPreparationResult: Sendable {
     case success(SSHAuthenticationPreparation)
+    case configurationChanged
     case failure(String)
     case cancelled
 }
@@ -189,6 +199,8 @@ final class SSHAuthenticationSession: ObservableObject {
             switch result {
             case let .success(preparation):
                 launch(preparation)
+            case .configurationChanged:
+                state = .configurationChanged
             case let .failure(message):
                 state = .failed(message)
             case .cancelled:
@@ -466,6 +478,17 @@ final class SSHAuthenticationCoordinator {
             if session.controlPath == controlPath {
                 session.markConnected()
             }
+        }
+    }
+
+    func requiresRecoveryRestart(
+        target: SSHAuthenticationTarget,
+        controlPath: String
+    ) -> Bool {
+        entries.contains { entry in
+            entry.session.target == target
+                && entry.session.requestedControlPath == controlPath
+                && entry.session.state == .configurationChanged
         }
     }
 

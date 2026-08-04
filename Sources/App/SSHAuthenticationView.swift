@@ -34,6 +34,8 @@ struct SSHAuthenticationView: View {
             case .connected:
                 Label("SSH authentication succeeded", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
+            case .configurationChanged:
+                progress("SSH settings changed. Restarting…")
             case let .failed(message):
                 Label("SSH authentication failed", systemImage: "exclamationmark.triangle")
                     .font(.system(size: 13, weight: .semibold))

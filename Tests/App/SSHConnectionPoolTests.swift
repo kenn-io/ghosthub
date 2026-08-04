@@ -32,6 +32,12 @@ struct SSHConnectionPoolTests {
     @Test("connection checks preserve the explicit destination")
     func checkUsesSameControlIdentity() {
         #expect(SSHConnectionPool.connectionArguments(
+            controlPath: nil
+        ) == [
+            "-o", "ControlMaster=no",
+            "-o", "ControlPersist=no",
+        ])
+        #expect(SSHConnectionPool.connectionArguments(
             controlPath: "/tmp/ghosthub-test/control-%C"
         ) == [
             "-o", "ControlMaster=no",
