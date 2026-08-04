@@ -1,4 +1,5 @@
 import Darwin
+import Dispatch
 import Foundation
 import GhosthubTmux
 
@@ -51,33 +52,111 @@ final class SSHDiagnosticBuffer: @unchecked Sendable {
     }
 }
 
-struct SSHDiagnosticDrain: Sendable {
+private final class SSHDiagnosticCompletion: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isFinished = false
+    private var continuations: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if isFinished {
+                lock.unlock()
+                continuation.resume()
+            } else {
+                continuations.append(continuation)
+                lock.unlock()
+            }
+        }
+    }
+
+    func finish() {
+        lock.lock()
+        guard !isFinished else {
+            lock.unlock()
+            return
+        }
+        isFinished = true
+        let continuations = continuations
+        self.continuations.removeAll()
+        lock.unlock()
+        continuations.forEach { $0.resume() }
+    }
+}
+
+final class SSHDiagnosticDrain: @unchecked Sendable {
     private let buffer: SSHDiagnosticBuffer
-    private let task: Task<Void, Never>
+    private let source: DispatchSourceRead
+    private let completion: SSHDiagnosticCompletion
+
+    private init(
+        buffer: SSHDiagnosticBuffer,
+        source: DispatchSourceRead,
+        completion: SSHDiagnosticCompletion
+    ) {
+        self.buffer = buffer
+        self.source = source
+        self.completion = completion
+    }
 
     static func start(
         pipe: Pipe,
         maximumBytes: Int = SSHDiagnosticBuffer.defaultMaximumBytes
     ) -> SSHDiagnosticDrain {
         let buffer = SSHDiagnosticBuffer(maximumBytes: maximumBytes)
-        let task = Task.detached(priority: .utility) {
-            let handle = pipe.fileHandleForReading
-            while !Task.isCancelled {
-                let data = handle.availableData
-                guard !data.isEmpty else { return }
-                buffer.append(data)
+        let completion = SSHDiagnosticCompletion()
+        let handle = pipe.fileHandleForReading
+        let descriptor = handle.fileDescriptor
+        let flags = Darwin.fcntl(descriptor, F_GETFL)
+        if flags >= 0 {
+            _ = Darwin.fcntl(descriptor, F_SETFL, flags | O_NONBLOCK)
+        }
+        let source = DispatchSource.makeReadSource(
+            fileDescriptor: descriptor,
+            queue: DispatchQueue(label: "io.kenn.ghosthub.ssh-diagnostics")
+        )
+        source.setEventHandler {
+            var bytes = [UInt8](repeating: 0, count: 16 * 1024)
+            while true {
+                let count = bytes.withUnsafeMutableBytes { buffer in
+                    Darwin.read(
+                        descriptor,
+                        buffer.baseAddress,
+                        buffer.count
+                    )
+                }
+                if count > 0 {
+                    buffer.append(Data(bytes.prefix(Int(count))))
+                } else if count == 0 {
+                    source.cancel()
+                    return
+                } else if errno == EAGAIN || errno == EWOULDBLOCK {
+                    return
+                } else if errno != EINTR {
+                    source.cancel()
+                    return
+                }
             }
         }
-        return SSHDiagnosticDrain(buffer: buffer, task: task)
+        source.setCancelHandler {
+            try? handle.close()
+            completion.finish()
+        }
+        source.resume()
+        return SSHDiagnosticDrain(
+            buffer: buffer,
+            source: source,
+            completion: completion
+        )
     }
 
     func finish() async -> String {
-        await task.value
+        await completion.wait()
         return buffer.text()
     }
 
     func cancel() {
-        task.cancel()
+        source.cancel()
     }
 }
 
@@ -92,6 +171,7 @@ enum SSHAuthenticationSessionState: Equatable, Sendable {
 
 struct SSHAuthenticationPreparation: Sendable {
     let target: SSHAuthenticationTarget
+    let displayHost: SSHHostInfo
     let temporaryState: SSHAuthenticationTemporaryState
     let controlPath: String
     let hostKeyArguments: [String]
@@ -100,9 +180,10 @@ struct SSHAuthenticationPreparation: Sendable {
     static func prepare(
         for target: SSHAuthenticationTarget,
         controlPath: String?,
-        controlPathProvider: @Sendable (SSHAuthenticationTarget) -> String? = {
-            SSHConnectionPool.controlPath(for: $0)
-        },
+        identityProvider: @Sendable (SSHAuthenticationTarget) ->
+            SSHAuthenticationIdentity? = {
+                SSHConnectionPool.authenticationIdentity(for: $0)
+            },
         hostKeyArgumentsProvider: @Sendable (SSHHostInfo) -> [String] = {
             SSHConfigurationResolver.authenticationHostKeyArguments(for: $0)
         },
@@ -115,7 +196,7 @@ struct SSHAuthenticationPreparation: Sendable {
             do {
                 try Task.checkCancellation()
                 guard let controlPath = controlPath
-                    ?? controlPathProvider(target) else {
+                    ?? identityProvider(target)?.controlPath else {
                     throw SSHAuthenticationError.stateUnavailable
                 }
                 try Task.checkCancellation()
@@ -123,12 +204,14 @@ struct SSHAuthenticationPreparation: Sendable {
                 try Task.checkCancellation()
                 let proxyArguments = proxyArgumentsProvider(target)
                 try Task.checkCancellation()
-                guard controlPathProvider(target) == controlPath else {
+                guard let launchIdentity = identityProvider(target),
+                      launchIdentity.controlPath == controlPath else {
                     temporaryState.remove()
                     return .configurationChanged
                 }
                 return .success(SSHAuthenticationPreparation(
                     target: target,
+                    displayHost: launchIdentity.displayHost,
                     temporaryState: temporaryState,
                     controlPath: controlPath,
                     hostKeyArguments: hostKeyArguments,
@@ -146,6 +229,11 @@ struct SSHAuthenticationPreparation: Sendable {
     }
 }
 
+struct SSHAuthenticationProcessInvocation: Equatable, Sendable {
+    let executable: URL
+    let arguments: [String]
+}
+
 enum SSHAuthenticationPreparationResult: Sendable {
     case success(SSHAuthenticationPreparation)
     case configurationChanged
@@ -156,6 +244,7 @@ enum SSHAuthenticationPreparationResult: Sendable {
 @MainActor
 final class SSHAuthenticationSession: ObservableObject {
     @Published private(set) var state: SSHAuthenticationSessionState = .starting
+    @Published private(set) var displayHost: SSHHostInfo?
 
     let target: SSHAuthenticationTarget
     let requestedControlPath: String?
@@ -279,17 +368,18 @@ final class SSHAuthenticationSession: ObservableObject {
             let process = Process()
             let standardError = Pipe()
             let watchdogPipe = Pipe()
-            process.executableURL = URL(fileURLWithPath: "/bin/sh")
             let sshArguments = SSHConnectionPool.authenticationArguments(
                 for: preparation.target,
                 controlPath: preparation.controlPath,
                 hostKeyArguments: preparation.hostKeyArguments,
                 proxyArguments: preparation.proxyArguments
             )
-            process.arguments = [
-                "-c", Self.watchdogScript,
-                "ghosthub-ssh-watchdog", "/usr/bin/ssh",
-            ] + sshArguments
+            let invocation = Self.processInvocation(
+                sshArguments: sshArguments,
+                accountShell: TmuxBinaryResolver.loginShell()
+            )
+            process.executableURL = invocation.executable
+            process.arguments = invocation.arguments
             process.environment = ProcessInfo.processInfo.environment.merging([
                 "SSH_ASKPASS": preparation.temporaryState.helper.path,
                 "SSH_ASKPASS_REQUIRE": "force",
@@ -301,6 +391,7 @@ final class SSHAuthenticationSession: ObservableObject {
             process.standardInput = watchdogPipe.fileHandleForReading
             process.standardOutput = FileHandle.nullDevice
             process.standardError = standardError
+            displayHost = preparation.displayHost
             try process.run()
             try? watchdogPipe.fileHandleForReading.close()
             try? standardError.fileHandleForWriting.close()
@@ -391,6 +482,7 @@ final class SSHAuthenticationSession: ObservableObject {
         temporaryState = nil
         lastPromptID = nil
         controlPath = nil
+        displayHost = nil
     }
 
     deinit {
@@ -430,6 +522,23 @@ final class SSHAuthenticationSession: ObservableObject {
             usleep(50_000)
         }
         return false
+    }
+
+    nonisolated static func processInvocation(
+        sshArguments: [String],
+        accountShell: String
+    ) -> SSHAuthenticationProcessInvocation {
+        let arguments = [
+            "/bin/sh", "-c", watchdogScript,
+            "ghosthub-ssh-watchdog", "/usr/bin/ssh",
+        ] + sshArguments
+        let command = arguments
+            .map(shellQuotedCommandArgument)
+            .joined(separator: " ")
+        return SSHAuthenticationProcessInvocation(
+            executable: URL(fileURLWithPath: accountShell),
+            arguments: ["-lc", accountShellCommand(command)]
+        )
     }
 
     nonisolated static let watchdogScript = """

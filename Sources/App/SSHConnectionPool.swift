@@ -23,6 +23,7 @@ struct SSHAuthenticationTarget: Hashable, Sendable {
 struct SSHAuthenticationIdentity: Equatable, Sendable {
     let target: SSHAuthenticationTarget
     let controlPath: String
+    let displayHost: SSHHostInfo
 }
 
 enum SSHConnectionPool {
@@ -103,7 +104,11 @@ enum SSHConnectionPool {
         ) else { return nil }
         return SSHAuthenticationIdentity(
             target: resolved.target,
-            controlPath: controlPath
+            controlPath: controlPath,
+            displayHost: SSHConfigurationResolver.effectiveHost(
+                for: resolved.target.host,
+                configurationProvider: resolved.configurationProvider
+            )
         )
     }
 
@@ -128,14 +133,19 @@ enum SSHConnectionPool {
         ) else { return nil }
         return SSHAuthenticationIdentity(
             target: target,
-            controlPath: controlPath
+            controlPath: controlPath,
+            displayHost: SSHConfigurationResolver.effectiveHost(
+                for: target.host,
+                configurationProvider: snapshot
+            )
         )
     }
 
     static func authenticationArguments(
         for host: SSHHostInfo,
         controlPath: String,
-        hostKeyArguments: [String]
+        hostKeyArguments: [String],
+        environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> [String] {
         let target = SSHAuthenticationTarget(
             host: host,
@@ -145,7 +155,8 @@ enum SSHConnectionPool {
             for: target,
             controlPath: controlPath,
             hostKeyArguments: hostKeyArguments,
-            proxyArguments: proxyArguments(for: target)
+            proxyArguments: proxyArguments(for: target),
+            environment: environment
         )
     }
 
@@ -153,7 +164,8 @@ enum SSHConnectionPool {
         for target: SSHAuthenticationTarget,
         controlPath: String,
         hostKeyArguments: [String],
-        proxyArguments: [String]
+        proxyArguments: [String],
+        environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> [String] {
         var arguments = [
             "-N",
@@ -170,6 +182,9 @@ enum SSHConnectionPool {
         ]
         arguments.append(contentsOf: hostKeyArguments)
         arguments.append(contentsOf: proxyArguments)
+        arguments.append(contentsOf: tmuxSSHConnectionArguments(
+            environment: environment
+        ))
         if let port = target.host.port {
             arguments.append(contentsOf: ["-p", String(port)])
         }

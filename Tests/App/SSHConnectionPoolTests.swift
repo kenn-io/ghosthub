@@ -15,7 +15,11 @@ struct SSHConnectionPoolTests {
         let arguments = SSHConnectionPool.authenticationArguments(
             for: host,
             controlPath: "/tmp/ghosthub-test/control-%C",
-            hostKeyArguments: ["-o", "StrictHostKeyChecking=yes"]
+            hostKeyArguments: ["-o", "StrictHostKeyChecking=yes"],
+            environment: [
+                "GHOSTHUB_DEMO_SCRATCH": "/tmp/ghosthub-demo",
+                "GHOSTHUB_DEMO_SSH_DIR": "/tmp/ghosthub-demo/ssh",
+            ]
         )
 
         #expect(arguments.first == "-N")
@@ -25,6 +29,19 @@ struct SSHConnectionPoolTests {
         #expect(arguments.contains("ForkAfterAuthentication=no"))
         #expect(arguments.contains("NumberOfPasswordPrompts=1"))
         #expect(arguments.contains("StrictHostKeyChecking=yes"))
+        #expect(arguments.contains("/tmp/ghosthub-demo/ssh/config"))
+        #expect(arguments.contains(
+            "UserKnownHostsFile=/tmp/ghosthub-demo/ssh/known_hosts"
+        ))
+        #expect(arguments.filter {
+            $0.hasPrefix("ControlMaster=")
+        } == ["ControlMaster=yes", "ControlMaster=no"])
+        #expect(arguments.filter {
+            $0.hasPrefix("ControlPath=")
+        } == [
+            "ControlPath=/tmp/ghosthub-test/control-%C",
+            "ControlPath=none",
+        ])
         #expect(arguments.suffix(4) == [
             "-p", "22", "--", "operator@build.example.test",
         ])
@@ -33,13 +50,10 @@ struct SSHConnectionPoolTests {
     @Test("route authentication names the host controlling the prompt")
     func routeAuthenticationPresentationNamesControllingHost() {
         let presentation = SSHAuthenticationPresentation(
-            target: SSHAuthenticationTarget(
-                host: SSHHostInfo(
-                    user: "relay",
-                    hostname: "jump.example.test",
-                    port: 2200
-                ),
-                precedingProxyHops: []
+            target: SSHHostInfo(
+                user: "relay",
+                hostname: "jump.example.test",
+                port: 2200
             ),
             finalDestination: SSHHostInfo(
                 user: "operator",

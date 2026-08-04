@@ -138,8 +138,8 @@ authenticated control socket. The master has no persistence after the app
 session ends: Ghosthub prevents it from forking, a parent-held watchdog pipe
 terminates it if the app process disappears, the socket name contains an
 app-launch nonce, and the next launch removes stale control sockets. Its socket
-lives in the user-only Ghosthub state
-directory and is also scoped to the logical destination, every effective
+lives in the user-only Ghosthub state directory and is also scoped to the
+logical destination, every effective
 `HostKeyAlias`, and the proxy route, preventing a master authenticated under one
 host-key identity, route, or app launch from satisfying another.
 Routine clients explicitly disable `ControlMaster` and `ControlPersist`, so
@@ -149,6 +149,9 @@ cached control identity immediately before launching a master and restarts
 recovery if effective SSH identity changed while the prompt was being prepared.
 The cached route and path come from one effective-config snapshot rather than
 separate reads that could straddle a ProxyJump edit.
+Authentication uses the same account-login-shell boundary and guarded demo SSH
+configuration as resolution and host-key review, so those phases cannot consult
+different agent, configuration, or known-hosts state.
 Ghosthub never forces `accept-new`, writes a scanned key itself, or treats a
 trusted short alias as authorization for a canonical MagicDNS FQDN.
 When an SSH route contains unseen intermediate hosts, each trust sheet labels
@@ -156,8 +159,9 @@ the host exactly as OpenSSH names it and approval advances only to the next
 prompt. If that hop requires interactive authentication, Ghosthub establishes
 its app-session master before asking OpenSSH for the next host's key. The
 secure-entry sheet names that exact route host and warns that the host controls
-the challenge, so credentials for the final destination are not presented to
-an intermediate hop. A later
+the challenge. The label comes from the effective user, hostname, and port in
+the launch configuration, so credentials for the final destination are not
+presented to an intermediate hop. A later
 prompt is never treated as proof that the reviewed host changed its key.
 Routine inventory, transfer, and attachment operations prevent silent
 enrollment at every host in a direct ProxyJump list. Review-managed `ask` and

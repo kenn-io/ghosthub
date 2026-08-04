@@ -6,11 +6,11 @@ struct SSHAuthenticationPresentation: Equatable {
     let finalDestination: String
 
     init(
-        target: SSHAuthenticationTarget,
+        target: SSHHostInfo,
         finalDestination: SSHHostInfo
     ) {
         self.target = SSHConfigurationResolver.proxyJumpDestination(
-            for: target.host
+            for: target
         )
         self.finalDestination =
             SSHConfigurationResolver.proxyJumpDestination(
@@ -38,23 +38,28 @@ struct SSHAuthenticationView: View {
     @FocusState private var responseIsFocused: Bool
 
     var body: some View {
-        let presentation = SSHAuthenticationPresentation(
-            target: session.target,
-            finalDestination: finalDestination
-        )
         VStack(alignment: .leading, spacing: 14) {
-            Text(presentation.heading)
-                .font(.system(size: 14, weight: .semibold))
-                .fixedSize(horizontal: false, vertical: true)
+            if let displayHost = session.displayHost {
+                let presentation = SSHAuthenticationPresentation(
+                    target: displayHost,
+                    finalDestination: finalDestination
+                )
+                Text(presentation.heading)
+                    .font(.system(size: 14, weight: .semibold))
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if case .prompt = session.state {
+                    Text(presentation.credentialWarning)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
 
             switch session.state {
             case .starting:
                 progress("Starting OpenSSH…")
             case let .prompt(prompt):
-                Text(presentation.credentialWarning)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
                 Text(prompt.message)
                     .font(.system(size: 12, design: .monospaced))
                     .textSelection(.enabled)

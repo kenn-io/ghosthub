@@ -5,6 +5,21 @@ import Testing
 
 @Suite("SSH authentication prompt broker")
 struct SSHAuthenticationSessionTests {
+    @Test("authentication launches through the account login shell")
+    func launchesThroughAccountLoginShell() {
+        let invocation = SSHAuthenticationSession.processInvocation(
+            sshArguments: ["-N", "--", "operator@build.example.test"],
+            accountShell: "/bin/fish"
+        )
+
+        #expect(invocation.executable.path == "/bin/fish")
+        #expect(invocation.arguments.first == "-lc")
+        #expect(invocation.arguments.count == 2)
+        #expect(invocation.arguments[1].hasPrefix("exec /bin/sh -c "))
+        #expect(invocation.arguments[1].contains("ghosthub-ssh-watchdog"))
+        #expect(invocation.arguments[1].contains("operator@build.example.test"))
+    }
+
     @Test("SSH diagnostics drain continuously into a bounded tail")
     func drainsDiagnostics() async {
         let pipe = Pipe()
@@ -24,6 +39,16 @@ struct SSHAuthenticationSessionTests {
         #expect(diagnostic == "A-newest")
     }
 
+    @Test("cancelling diagnostics closes the nonblocking drain")
+    func cancelsDiagnosticDrain() async {
+        let pipe = Pipe()
+        let drain = SSHDiagnosticDrain.start(pipe: pipe)
+
+        drain.cancel()
+
+        #expect(await drain.finish().isEmpty)
+    }
+
     @Test("authentication rejects a changed cached SSH identity")
     func rejectsChangedCachedIdentity() {
         let target = SSHAuthenticationTarget(
@@ -38,8 +63,12 @@ struct SSHAuthenticationSessionTests {
         let result = SSHAuthenticationPreparation.prepare(
             for: target,
             controlPath: "/tmp/ghosthub-test/control-reviewed",
-            controlPathProvider: { _ in
-                "/tmp/ghosthub-test/control-changed"
+            identityProvider: { target in
+                SSHAuthenticationIdentity(
+                    target: target,
+                    controlPath: "/tmp/ghosthub-test/control-changed",
+                    displayHost: target.host
+                )
             },
             hostKeyArgumentsProvider: { _ in [] },
             proxyArgumentsProvider: { _ in [] }
@@ -49,6 +78,66 @@ struct SSHAuthenticationSessionTests {
             Issue.record("Expected the stale identity to be rejected")
             return
         }
+    }
+
+    @Test("authentication binds the effective SSH endpoint to its prompt")
+    func bindsEffectivePromptEndpoint() {
+        let alias = SSHHostInfo(
+            user: nil,
+            hostname: "relay",
+            port: nil
+        )
+        let resolved = SSHHostInfo(
+            user: "admin",
+            hostname: "jump.example.test",
+            port: 2222
+        )
+        let result = SSHAuthenticationPreparation.prepare(
+            for: SSHAuthenticationTarget(
+                host: alias,
+                precedingProxyHops: []
+            ),
+            controlPath: "/tmp/ghosthub-test/control-relay",
+            identityProvider: { target in
+                let displayHost = SSHConfigurationResolver.effectiveHost(
+                    for: target.host,
+                    configurationProvider: { configuredHost in
+                        #expect(configuredHost == alias)
+                        return EffectiveSSHConfiguration(
+                            user: resolved.user,
+                            strictHostKeyChecking: "yes",
+                            proxyJump: nil,
+                            proxyCommand: nil,
+                            hostname: resolved.hostname,
+                            port: resolved.port
+                        )
+                    }
+                )
+                return SSHAuthenticationIdentity(
+                    target: target,
+                    controlPath: "/tmp/ghosthub-test/control-relay",
+                    displayHost: displayHost
+                )
+            },
+            hostKeyArgumentsProvider: { _ in [] },
+            proxyArgumentsProvider: { _ in [] }
+        )
+
+        guard case let .success(preparation) = result else {
+            Issue.record("Expected authentication preparation to succeed")
+            return
+        }
+        defer { preparation.temporaryState.remove() }
+        #expect(preparation.displayHost == resolved)
+        let presentation = SSHAuthenticationPresentation(
+            target: preparation.displayHost,
+            finalDestination: SSHHostInfo(
+                user: "operator",
+                hostname: "build.example.test",
+                port: nil
+            )
+        )
+        #expect(presentation.target == "admin@jump.example.test:2222")
     }
 
     @Test("askpass exchanges a native response for the exact prompt")

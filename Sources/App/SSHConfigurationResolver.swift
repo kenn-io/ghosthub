@@ -266,6 +266,21 @@ enum SSHConfigurationResolver {
         return parse(result.stdout)
     }
 
+    static func effectiveHost(
+        for host: SSHHostInfo,
+        configurationProvider: ConfigurationProvider = configuration
+    ) -> SSHHostInfo {
+        guard let configuration = configurationProvider(host) else {
+            return host
+        }
+        return SSHHostInfo(
+            user: configuration.user ?? host.user,
+            hostname: configuration.hostname ?? host.hostname,
+            port: configuration.port ?? host.port,
+            platform: host.platform
+        )
+    }
+
     static func parse(_ output: String) -> EffectiveSSHConfiguration {
         var values: [String: String] = [:]
         for line in output.split(whereSeparator: \Character.isNewline) {
