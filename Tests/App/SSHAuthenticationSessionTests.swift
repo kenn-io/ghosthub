@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import GhosthubTmux
 import Testing
@@ -345,16 +346,58 @@ struct SSHAuthenticationSessionTests {
         #expect(!process.isRunning)
     }
 
+    @Test("a completed master does not leave a watchdog diagnostics writer")
+    func completedMasterReleasesDiagnostics() async throws {
+        let watchdog = Pipe()
+        let standardError = Pipe()
+        let process = Process()
+        defer {
+            if process.isRunning {
+                process.terminate()
+            }
+            try? watchdog.fileHandleForWriting.close()
+            try? standardError.fileHandleForReading.close()
+        }
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = [
+            "-c", SSHAuthenticationSession.watchdogScript,
+            "ghosthub-ssh-watchdog-test", "/usr/bin/true",
+        ]
+        process.standardInput = watchdog.fileHandleForReading
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = standardError
+        try process.run()
+        try watchdog.fileHandleForReading.close()
+        try standardError.fileHandleForWriting.close()
+
+        let deadline = ContinuousClock.now + .seconds(2)
+        while process.isRunning, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        try #require(!process.isRunning)
+
+        let descriptor = standardError.fileHandleForReading.fileDescriptor
+        let flags = Darwin.fcntl(descriptor, F_GETFL)
+        try #require(flags >= 0)
+        try #require(
+            Darwin.fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) == 0
+        )
+        var byte: UInt8 = 0
+        #expect(Darwin.read(descriptor, &byte, 1) == 0)
+    }
+
     @Test("live authentication master reaches an opt-in SSH destination")
     @MainActor
     func liveAuthenticationMaster() async throws {
         let environment = ProcessInfo.processInfo.environment
-        guard environment["GHOSTHUB_RUN_LIVE_INTEGRATION_TESTS"] == "1",
-              let destination = environment[
-                  "GHOSTHUB_SSH_INTEGRATION_DESTINATION"
-              ],
-              let host = TmuxHostResolver.parseSSHDestination(destination)
+        guard environment["GHOSTHUB_RUN_LIVE_INTEGRATION_TESTS"] == "1"
         else { return }
+        let destination = try #require(
+            environment["GHOSTHUB_SSH_INTEGRATION_DESTINATION"]
+        )
+        let host = try #require(
+            TmuxHostResolver.parseSSHDestination(destination)
+        )
 
         let snapshot = SSHConnectionPool.configurationSnapshot(for: host)
         let identity = try #require(

@@ -611,7 +611,7 @@ final class SSHAuthenticationSession: ObservableObject {
     }
     trap cleanup HUP INT TERM EXIT
     (
-        /bin/cat <&3 >/dev/null
+        while IFS= read -r ghosthub_watchdog_input <&3; do :; done
         /bin/kill -TERM "$ssh_pid" 2>/dev/null || true
     ) &
     watchdog_pid=$!
