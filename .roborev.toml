@@ -7,6 +7,15 @@ Threat model:
   Ghosthub may inspect that checkout with ordinary Git commands and may use its
   repository-local terminal configuration. Do not report those expected actions
   as untrusted-workspace or credential-exposure vulnerabilities.
+- CI intentionally routes canonical `main` pushes and same-repository pull
+  requests to the managed public macOS runner. Fork pull requests and
+  noncanonical repository copies fall back to GitHub-hosted runners. The managed
+  runner group admits only the reusable `.github/workflows/ci.yml` definition
+  from `main`, and `.github/workflows/ci-pr.yml` invokes that exact main-pinned
+  workflow. Pull-request changes therefore cannot retarget the managed runner by
+  editing or adding a dispatcher. Do not report this routing as PR-controlled
+  self-hosted execution unless the immutable-workflow runner-group restriction
+  or the same-repository checks are removed.
 - Continue to report actual command/argument injection, unsafe interpolation,
   automatic execution that is not a consequence of the user's explicit checkout
   or open action, and violations of an established credential boundary.
