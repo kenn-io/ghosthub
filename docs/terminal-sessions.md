@@ -125,7 +125,9 @@ ConPTY clients can inherit a containing Windows Job Object. When the job uses
 probe uses `IsProcessInJob` with the freshly queried psmux server process. If
 breakaway is denied, Ghosthub may attach only to a conservatively proven
 independent pre-existing server; otherwise attachment is blocked with a
-diagnostic.
+diagnostic. Bare session creation may target that proven independent server,
+but it may not bootstrap a new server. If no independent server exists,
+creation is refused with the same blocking diagnostic.
 
 Live integration tests supervise a child presentation/application, terminate
 it gracefully and forcibly, then launch a fresh child and reattach to the same
