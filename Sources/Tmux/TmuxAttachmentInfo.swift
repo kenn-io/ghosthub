@@ -675,6 +675,10 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
             [
                 "/bin/sh", "-c", Self.sshReconnectScript,
                 label,
+                shellCommand(sshControlCheckArguments(
+                    info: info,
+                    sshConnectionArguments: sshConnectionArguments
+                )),
             ] + sshArguments(
                 info: info,
                 allocateTTY: allocateTTY,
@@ -683,6 +687,26 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                     + evidenceArguments
             )
         )
+    }
+
+    private func sshControlCheckArguments(
+        info: SSHHostInfo,
+        sshConnectionArguments: [String]
+    ) -> [String] {
+        var arguments = [
+            "/usr/bin/ssh", "-O", "check",
+            "-o", "BatchMode=yes",
+            "-o", "ControlMaster=no",
+            "-o", "ControlPersist=no",
+        ]
+        arguments.append(contentsOf: sshConnectionArguments)
+        if let port = info.port {
+            arguments.append(contentsOf: ["-p", "\(port)"])
+        }
+        let destination = info.user.map { "\($0)@\(info.hostname)" }
+            ?? info.hostname
+        arguments.append(contentsOf: ["--", destination])
+        return arguments
     }
 
     private func remoteCreateThenAttachCommand(
@@ -902,6 +926,8 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
     /// recover authentication natively. Clean detach and ordinary tmux failures
     /// pass through unchanged.
     static let sshReconnectScript = """
+    control_check=$1
+    shift
     umask 077
     connection_marker=$(/usr/bin/mktemp /tmp/ghosthub-ssh.XXXXXX) || exit 255
     /bin/rm -f "$connection_marker"
@@ -911,12 +937,18 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
     failures=0
     while :; do
         /bin/rm -f "$connection_marker"
+        started=$(date +%s)
         "$@"
         status=$?
         [ "$status" -eq 255 ] || exit "$status"
         # A slow 255 can still be proxy, authentication, or transport setup
         # failure. Elapsed time alone must never make it a successful attach.
-        if [ -e "$connection_marker" ]; then
+        now=$(date +%s)
+        if [ -e "$connection_marker" ] || {
+            [ -n "$control_check" ] &&
+            [ $((now - started)) -ge 30 ] &&
+            /bin/sh -c "$control_check" >/dev/null 2>&1
+        }; then
             delay=1
             failures=0
         fi

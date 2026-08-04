@@ -212,12 +212,14 @@ one app launch and supervised by a parent-held descriptor that stays open for
 the app lifetime, so an app crash terminates the SSH master and a later launch
 cannot reuse its socket.
 Exit status 255, OpenSSH's transport/setup failure status, reconnects with
-bounded exponential backoff. An OpenSSH `LocalCommand` writes a private local
-marker only after transport and authentication succeed; that explicit evidence
-resets the retry budget. Attempts that never establish a connection exit after
-two retries regardless of how long setup took, so Ghosthub's native recovery
-flow can reauthenticate. Other statuses pass through unchanged, so a normal
-tmux detach or a missing session does not create a reconnect loop. Host
+bounded exponential backoff. A direct connection's OpenSSH `LocalCommand`
+writes a private marker after transport and authentication succeed. For a
+multiplexed client, a sufficiently long attachment resets its retry budget only
+when the supervised control master is still healthy afterward. Attempts without
+either signal exit after two retries regardless of how long setup took, so
+Ghosthub's native recovery flow can reauthenticate. Other statuses pass through
+unchanged, so a normal tmux detach or a missing session does not create a
+reconnect loop. Host
 verification emits a marker only after the remote command begins. Status 255
 and local wrapper failures such as an unconfirmed timeout leave the host
 offline; a nonzero login-shell or probe-command status is reachable and

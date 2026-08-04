@@ -499,6 +499,8 @@ struct TmuxAttachmentInfoTests {
         #expect(command.contains("'TCPKeepAlive=yes'"))
         #expect(command.contains("'PermitLocalCommand=yes'"))
         #expect(command.contains("GHOSTHUB_SSH_CONNECTION_MARKER"))
+        #expect(command.contains("-O"))
+        #expect(command.contains("check"))
         #expect(command.contains("'wesm@build-box'"))
         #expect(command.contains("'attach-session'"))
         #expect(command.contains("'-E'"))
@@ -1239,7 +1241,7 @@ struct TmuxAttachmentInfoTests {
         let createCommand = shellQuotedCommandArgument(fakeCreate.path)
         let attachCommand = [
             "/bin/sh", "-c", TmuxAttachmentInfo.sshReconnectScript,
-            "ghosthub-test", fakeAttach.path,
+            "ghosthub-test", "", fakeAttach.path,
         ].map(shellQuotedCommandArgument).joined(separator: " ")
 
         let process = Process()
@@ -1293,7 +1295,7 @@ struct TmuxAttachmentInfoTests {
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = [
             "-c", TmuxAttachmentInfo.sshReconnectScript,
-            "ghosthub-test", fake.path,
+            "ghosthub-test", "", fake.path,
         ]
         process.environment = ProcessInfo.processInfo.environment.merging([
             "GHOSTHUB_TEST_COUNTER": counter.path,
@@ -1330,7 +1332,7 @@ struct TmuxAttachmentInfoTests {
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = [
             "-c", TmuxAttachmentInfo.sshReconnectScript,
-            "ghosthub-test", fake.path,
+            "ghosthub-test", "", fake.path,
         ]
         process.environment = ProcessInfo.processInfo.environment.merging([
             "GHOSTHUB_TEST_COUNTER": counter.path,
@@ -1384,7 +1386,7 @@ struct TmuxAttachmentInfoTests {
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = [
             "-c", TmuxAttachmentInfo.sshReconnectScript,
-            "ghosthub-test", fakeSSH.path,
+            "ghosthub-test", "", fakeSSH.path,
         ]
         process.environment = ProcessInfo.processInfo.environment.merging([
             "GHOSTHUB_TEST_COUNTER": counter.path,
@@ -1401,8 +1403,8 @@ struct TmuxAttachmentInfoTests {
         #expect(try String(contentsOf: counter, encoding: .utf8) == "xxx")
     }
 
-    @Test("established SSH attempts reset the reconnect budget")
-    func establishedSSHAttemptResetsReconnectBudget() throws {
+    @Test("multiplexed attachment evidence resets the reconnect budget")
+    func multiplexedAttachmentEvidenceResetsReconnectBudget() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(
@@ -1410,22 +1412,34 @@ struct TmuxAttachmentInfoTests {
         )
         defer { try? FileManager.default.removeItem(at: directory) }
         let counter = directory.appendingPathComponent("count")
+        let clock = directory.appendingPathComponent("clock")
         let fakeSSH = directory.appendingPathComponent("fake-ssh")
+        let fakeCheck = directory.appendingPathComponent("fake-check")
+        let fakeDate = directory.appendingPathComponent("date")
         let fakeSleep = directory.appendingPathComponent("sleep")
         try """
         #!/bin/sh
         printf x >> "$GHOSTHUB_TEST_COUNTER"
         count=$(wc -c < "$GHOSTHUB_TEST_COUNTER")
-        if [ "$count" -eq 3 ]; then
-            : > "$GHOSTHUB_SSH_CONNECTION_MARKER"
-        fi
         [ "$count" -gt 5 ] && exit 0
         exit 255
         """.write(to: fakeSSH, atomically: true, encoding: .utf8)
+        try """
+        #!/bin/sh
+        [ "$(wc -c < "$GHOSTHUB_TEST_COUNTER")" -eq 3 ]
+        """.write(to: fakeCheck, atomically: true, encoding: .utf8)
+        try """
+        #!/bin/sh
+        count=0
+        [ ! -f "$GHOSTHUB_TEST_CLOCK" ] || count=$(cat "$GHOSTHUB_TEST_CLOCK")
+        count=$((count + 1))
+        printf '%s' "$count" > "$GHOSTHUB_TEST_CLOCK"
+        if [ $((count % 2)) -eq 1 ]; then printf '0\n'; else printf '31\n'; fi
+        """.write(to: fakeDate, atomically: true, encoding: .utf8)
         try "#!/bin/sh\nexit 0\n".write(
             to: fakeSleep, atomically: true, encoding: .utf8
         )
-        for executable in [fakeSSH, fakeSleep] {
+        for executable in [fakeSSH, fakeCheck, fakeDate, fakeSleep] {
             try FileManager.default.setAttributes(
                 [.posixPermissions: 0o755], ofItemAtPath: executable.path
             )
@@ -1435,10 +1449,11 @@ struct TmuxAttachmentInfoTests {
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = [
             "-c", TmuxAttachmentInfo.sshReconnectScript,
-            "ghosthub-test", fakeSSH.path,
+            "ghosthub-test", fakeCheck.path, fakeSSH.path,
         ]
         process.environment = ProcessInfo.processInfo.environment.merging([
             "GHOSTHUB_TEST_COUNTER": counter.path,
+            "GHOSTHUB_TEST_CLOCK": clock.path,
             "PATH": directory.path + ":"
                 + ProcessInfo.processInfo.environment["PATH", default: ""],
         ]) { _, new in new }
@@ -1474,7 +1489,7 @@ struct TmuxAttachmentInfoTests {
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = [
             "-c", TmuxAttachmentInfo.sshReconnectScript,
-            "ghosthub-test", fake.path,
+            "ghosthub-test", "", fake.path,
         ]
         process.environment = ProcessInfo.processInfo.environment.merging([
             "GHOSTHUB_TEST_COUNTER": counter.path,
