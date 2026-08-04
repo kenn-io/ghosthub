@@ -1,13 +1,14 @@
 import Foundation
 import GhosthubTmux
 
-struct EffectiveSSHConfiguration: Equatable {
+struct EffectiveSSHConfiguration: Equatable, Sendable {
     let user: String?
     let strictHostKeyChecking: String?
     let proxyJump: String?
     let proxyCommand: String?
     let hostname: String?
     let port: Int?
+    let hostKeyAlias: String?
 
     init(
         user: String?,
@@ -15,7 +16,8 @@ struct EffectiveSSHConfiguration: Equatable {
         proxyJump: String?,
         proxyCommand: String?,
         hostname: String? = nil,
-        port: Int? = nil
+        port: Int? = nil,
+        hostKeyAlias: String? = nil
     ) {
         self.user = user
         self.strictHostKeyChecking = strictHostKeyChecking
@@ -23,10 +25,11 @@ struct EffectiveSSHConfiguration: Equatable {
         self.proxyCommand = proxyCommand
         self.hostname = hostname
         self.port = port
+        self.hostKeyAlias = hostKeyAlias
     }
 }
 
-struct EffectiveProxyJumpHop {
+struct EffectiveProxyJumpHop: Sendable {
     let host: SSHHostInfo
     let configuration: EffectiveSSHConfiguration
 }
@@ -259,7 +262,8 @@ enum SSHConfigurationResolver {
             proxyJump: meaningfulProxyValue(values["proxyjump"]),
             proxyCommand: meaningfulProxyValue(values["proxycommand"]),
             hostname: values["hostname"],
-            port: values["port"].flatMap(Int.init)
+            port: values["port"].flatMap(Int.init),
+            hostKeyAlias: meaningfulProxyValue(values["hostkeyalias"])
         )
     }
 

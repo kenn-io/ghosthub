@@ -136,8 +136,9 @@ for that attempt but is never placed in process arguments, environment
 variables, logs, or persistent storage. Later app operations share only the
 authenticated control socket. The master has no persistence after the app
 session ends, and its socket lives in the user-only Ghosthub state directory.
-The socket name is scoped to the logical destination and effective proxy route,
-preventing a master authenticated through one route from satisfying another.
+The socket name is scoped to the logical destination, every effective
+`HostKeyAlias`, and the proxy route, preventing a master authenticated under one
+host-key identity or route from satisfying another.
 Ghosthub never forces `accept-new`, writes a scanned key itself, or treats a
 trusted short alias as authorization for a canonical MagicDNS FQDN.
 When an SSH route contains unseen intermediate hosts, each trust sheet labels

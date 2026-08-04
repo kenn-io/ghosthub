@@ -13,9 +13,16 @@ enum SSHConnectionPool {
 
     static func isAuthenticated(_ host: SSHHostInfo) -> Bool {
         guard let path = preparedControlPath(for: host) else { return false }
+        return isAuthenticated(host, controlPath: path)
+    }
+
+    static func isAuthenticated(
+        _ host: SSHHostInfo,
+        controlPath: String
+    ) -> Bool {
         let result = TmuxBinaryResolver.runProcessInLoginShell(
             executable: "/usr/bin/ssh",
-            arguments: checkArguments(for: host, controlPath: path),
+            arguments: checkArguments(for: host, controlPath: controlPath),
             timeout: 3,
             accountShell: TmuxBinaryResolver.loginShell()
         )
@@ -105,6 +112,7 @@ enum SSHConnectionPool {
             configuration?.hostname ?? "",
             configuration?.user ?? "",
             configuration?.port.map(String.init) ?? "",
+            configuration?.hostKeyAlias ?? "",
             configuration?.proxyJump ?? "",
             configuration?.proxyCommand ?? "",
         ].joined(separator: "\u{1f}")

@@ -13,6 +13,7 @@ struct SSHConfigurationResolverTests {
         proxycommand none
         hostname build.example.test
         port 2200
+        hostkeyalias build-key.example.test
         """)
 
         #expect(configuration.user == "deploy")
@@ -21,6 +22,7 @@ struct SSHConfigurationResolverTests {
         #expect(configuration.proxyCommand == nil)
         #expect(configuration.hostname == "build.example.test")
         #expect(configuration.port == 2200)
+        #expect(configuration.hostKeyAlias == "build-key.example.test")
     }
 
     @Test(

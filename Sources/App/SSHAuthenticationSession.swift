@@ -25,6 +25,50 @@ enum SSHAuthenticationSessionState: Equatable, Sendable {
     case failed(String)
 }
 
+private struct SSHAuthenticationPreparation: Sendable {
+    let temporaryState: SSHAuthenticationTemporaryState
+    let controlPath: String
+    let hostKeyArguments: [String]
+
+    static func prepare(for host: SSHHostInfo) -> SSHAuthenticationPreparationResult {
+        do {
+            let temporaryState = try SSHAuthenticationTemporaryState.create()
+            do {
+                try Task.checkCancellation()
+                guard let controlPath = SSHConnectionPool.controlPath(
+                    for: host
+                ) else {
+                    throw SSHAuthenticationError.stateUnavailable
+                }
+                try Task.checkCancellation()
+                let hostKeyArguments =
+                    SSHConfigurationResolver.interactiveHostKeyArguments(
+                        for: host
+                    )
+                try Task.checkCancellation()
+                return .success(SSHAuthenticationPreparation(
+                    temporaryState: temporaryState,
+                    controlPath: controlPath,
+                    hostKeyArguments: hostKeyArguments
+                ))
+            } catch {
+                temporaryState.remove()
+                throw error
+            }
+        } catch is CancellationError {
+            return .cancelled
+        } catch {
+            return .failure(error.localizedDescription)
+        }
+    }
+}
+
+private enum SSHAuthenticationPreparationResult: Sendable {
+    case success(SSHAuthenticationPreparation)
+    case failure(String)
+    case cancelled
+}
+
 @MainActor
 final class SSHAuthenticationSession: ObservableObject {
     @Published private(set) var state: SSHAuthenticationSessionState = .starting
@@ -32,9 +76,12 @@ final class SSHAuthenticationSession: ObservableObject {
     let host: SSHHostInfo
     private var process: Process?
     private var standardError: Pipe?
+    private var preparationTask: Task<Void, Never>?
+    private var preparationGeneration = UUID()
     private var monitorTask: Task<Void, Never>?
     private var temporaryState: SSHAuthenticationTemporaryState?
     private var lastPromptID: String?
+    private(set) var controlPath: String?
 
     init(host: SSHHostInfo) {
         self.host = host
@@ -73,38 +120,72 @@ final class SSHAuthenticationSession: ObservableObject {
         temporaryState = nil
     }
 
+    func restartIfIdentityChanged(to currentControlPath: String) {
+        guard let controlPath, controlPath != currentControlPath else { return }
+        stop()
+        state = .starting
+        start()
+    }
+
     private func start() {
-        do {
-            let temporaryState = try SSHAuthenticationTemporaryState.create()
-            guard let controlPath = SSHConnectionPool.controlPath(
-                for: host
-            ) else {
-                throw SSHAuthenticationError.stateUnavailable
+        let generation = UUID()
+        preparationGeneration = generation
+        let host = host
+        let resolver = Task.detached(priority: .userInitiated) {
+            SSHAuthenticationPreparation.prepare(for: host)
+        }
+        preparationTask = Task { [weak self] in
+            let result = await withTaskCancellationHandler {
+                await resolver.value
+            } onCancel: {
+                resolver.cancel()
             }
+            guard let self,
+                  !Task.isCancelled,
+                  preparationGeneration == generation
+            else {
+                if case let .success(preparation) = result {
+                    preparation.temporaryState.remove()
+                }
+                return
+            }
+            preparationTask = nil
+            switch result {
+            case let .success(preparation):
+                launch(preparation)
+            case let .failure(message):
+                state = .failed(message)
+            case .cancelled:
+                break
+            }
+        }
+    }
+
+    private func launch(_ preparation: SSHAuthenticationPreparation) {
+        do {
             let process = Process()
             let standardError = Pipe()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
             process.arguments = SSHConnectionPool.authenticationArguments(
                 for: host,
-                controlPath: controlPath,
-                hostKeyArguments:
-                SSHConfigurationResolver.interactiveHostKeyArguments(
-                    for: host
-                )
+                controlPath: preparation.controlPath,
+                hostKeyArguments: preparation.hostKeyArguments
             )
             process.environment = ProcessInfo.processInfo.environment.merging([
-                "SSH_ASKPASS": temporaryState.helper.path,
+                "SSH_ASKPASS": preparation.temporaryState.helper.path,
                 "SSH_ASKPASS_REQUIRE": "force",
                 "DISPLAY": "ghosthub",
-                "GHOSTHUB_SSH_PROMPT_PATH": temporaryState.prompt.path,
-                "GHOSTHUB_SSH_RESPONSE_FIFO": temporaryState.responseFIFO.path,
+                "GHOSTHUB_SSH_PROMPT_PATH": preparation.temporaryState.prompt.path,
+                "GHOSTHUB_SSH_RESPONSE_FIFO":
+                    preparation.temporaryState.responseFIFO.path,
             ]) { _, new in new }
             process.standardInput = FileHandle.nullDevice
             process.standardOutput = FileHandle.nullDevice
             process.standardError = standardError
             try process.run()
 
-            self.temporaryState = temporaryState
+            temporaryState = preparation.temporaryState
+            controlPath = preparation.controlPath
             self.process = process
             self.standardError = standardError
             lastPromptID = nil
@@ -112,6 +193,7 @@ final class SSHAuthenticationSession: ObservableObject {
                 await self?.monitor()
             }
         } catch {
+            preparation.temporaryState.remove()
             state = .failed(error.localizedDescription)
         }
     }
@@ -157,6 +239,9 @@ final class SSHAuthenticationSession: ObservableObject {
     }
 
     private func stop() {
+        preparationGeneration = UUID()
+        preparationTask?.cancel()
+        preparationTask = nil
         monitorTask?.cancel()
         monitorTask = nil
         if case .prompt = state,
@@ -171,9 +256,11 @@ final class SSHAuthenticationSession: ObservableObject {
         temporaryState?.remove()
         temporaryState = nil
         lastPromptID = nil
+        controlPath = nil
     }
 
     deinit {
+        preparationTask?.cancel()
         monitorTask?.cancel()
         if process?.isRunning == true {
             process?.terminate()
@@ -231,9 +318,23 @@ final class SSHAuthenticationCoordinator {
         sessions.removeValue(forKey: id)?.cancel()
     }
 
-    func markConnected(host: SSHHostInfo) {
+    func reconcileIdentity(
+        host: SSHHostInfo,
+        controlPath: String
+    ) {
         for session in sessions.values where session.host == host {
-            session.markConnected()
+            session.restartIfIdentityChanged(to: controlPath)
+        }
+    }
+
+    func markConnected(
+        host: SSHHostInfo,
+        controlPath: String
+    ) {
+        for session in sessions.values where session.host == host {
+            if session.controlPath == controlPath {
+                session.markConnected()
+            }
         }
     }
 
@@ -251,7 +352,7 @@ private enum SSHAuthenticationError: LocalizedError {
     }
 }
 
-struct SSHAuthenticationTemporaryState {
+struct SSHAuthenticationTemporaryState: Sendable {
     let directory: URL
     let helper: URL
     let prompt: URL

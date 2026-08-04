@@ -2482,11 +2482,30 @@ final class WorkspaceSceneModel: ObservableObject {
 
     func isSSHAuthenticationReady(for host: SSHHost) async -> Bool {
         guard let resolved = resolvedSSHHost(host) else { return false }
-        let isReady = await Task.detached {
-            SSHConnectionPool.isAuthenticated(resolved.info)
+        let status: (controlPath: String, isReady: Bool)? = await Task.detached {
+            () -> (controlPath: String, isReady: Bool)? in
+            guard let controlPath = SSHConnectionPool.controlPath(
+                for: resolved.info
+            ) else { return nil }
+            return (
+                controlPath: controlPath,
+                isReady:
+                SSHConnectionPool.isAuthenticated(
+                    resolved.info,
+                    controlPath: controlPath
+                )
+            )
         }.value
+        guard let (controlPath, isReady) = status else { return false }
+        sshAuthenticationCoordinator.reconcileIdentity(
+            host: resolved.info,
+            controlPath: controlPath
+        )
         if isReady {
-            sshAuthenticationCoordinator.markConnected(host: resolved.info)
+            sshAuthenticationCoordinator.markConnected(
+                host: resolved.info,
+                controlPath: controlPath
+            )
         }
         return isReady
     }

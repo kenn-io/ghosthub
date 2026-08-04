@@ -816,6 +816,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
     ) -> [String] {
         var arguments = [
             "/usr/bin/ssh", allocateTTY ? "-tt" : "-T",
+            "-o", "BatchMode=yes",
             "-o", "ServerAliveInterval=15",
             "-o", "ServerAliveCountMax=3",
             "-o", "TCPKeepAlive=yes",

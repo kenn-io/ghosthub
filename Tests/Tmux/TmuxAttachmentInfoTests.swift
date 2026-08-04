@@ -491,6 +491,7 @@ struct TmuxAttachmentInfoTests {
 
         #expect(command.contains("/usr/bin/ssh"))
         #expect(command.contains("-tt"))
+        #expect(command.contains("'BatchMode=yes'"))
         #expect(command.contains("${SHELL:-/bin/sh}"))
         #expect(command.contains(" -lc "))
         #expect(command.contains("'ServerAliveInterval=15'"))
