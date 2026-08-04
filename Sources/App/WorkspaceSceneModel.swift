@@ -2507,6 +2507,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 )
             )
         }.value
+        guard !Task.isCancelled else { return false }
         guard let (controlPath, isReady) = status else { return false }
         sshAuthenticationCoordinator.reconcileIdentity(
             host: resolved.info,

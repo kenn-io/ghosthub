@@ -1064,7 +1064,17 @@ public struct HostsSettingsView: View {
                   selectedDraftID: selectedSSHHostDraftID,
                   drafts: sshHosts
               ) {
-            if await isSSHAuthenticationReady(draft.sshHost) {
+            let isAuthenticationReady = await isSSHAuthenticationReady(
+                draft.sshHost
+            )
+            guard !Task.isCancelled,
+                  pendingSSHAuthentication == target,
+                  target.isCurrent(
+                      selectedDraftID: selectedSSHHostDraftID,
+                      drafts: sshHosts
+                  )
+            else { return }
+            if isAuthenticationReady {
                 cancelSSHAuthentication(target.draftID)
                 sshAuthenticationSucceeded = true
                 return
