@@ -67,16 +67,10 @@ jobs:
             llvm \
             pkg-config
 
-      - name: Check formatting
-        run: cargo fmt --all --check
-
       - name: Test and lint on Linux
         if: runner.os == 'Linux'
         shell: bash
-        run: |
-          cargo test --workspace --locked
-          cargo check --workspace --all-targets --locked
-          cargo clippy --workspace --all-targets --locked -- -D warnings
+        run: make -C .. rust-check
 
       - name: Test and lint on Windows
         if: runner.os == 'Windows'
@@ -84,6 +78,7 @@ jobs:
         run: |
           for /f "usebackq tokens=*" %%i in (`"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath`) do set "VSINSTALL=%%i"
           call "%VSINSTALL%\Common7\Tools\VsDevCmd.bat" -no_logo -arch=x64 -host_arch=x64
+          cargo fmt --all --check
           cargo test --workspace --locked
           cargo check --workspace --all-targets --locked
           cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -108,4 +103,4 @@ jobs:
         run: cargo install cargo-deny --version 0.20.2 --locked
 
       - name: Check dependency policy
-        run: cargo deny check
+        run: make -C .. rust-deny
