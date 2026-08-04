@@ -5,6 +5,12 @@ Ghosthub. Historical design plans are kept outside the generated docs site.
 Security guarantees and trusted-peer assumptions are defined separately in
 the [Threat Model](threat-model.md).
 
+The shipped macOS application remains SwiftUI/AppKit with libghostty. The
+locked design for planned native Windows and Linux applications uses Rust and
+GPUI while preserving the same product and session model. Its crate
+boundaries, dependency findings, platform roots, substrate gates, and delivery
+order are maintained in [Windows and Linux Rust Port](rust-port.md).
+
 ## Mental Model
 
 - **Host:** a machine that runs tmux sessions. The local Mac is the default
@@ -101,6 +107,37 @@ The Swift app owns native presentation and terminal rendering:
 Swift should stay focused on native app behavior and terminal hosting. Shared
 pure domain models belong in `Sources/Workspace`; external worktree state is
 consumed through kwt's machine-readable CLI surfaces.
+
+### Windows and Linux Rust applications
+
+The planned Windows and Linux applications are separate native Rust/GPUI
+implementations. They do not replace the macOS SwiftUI application or embed a
+Rust runtime into it. Cross-platform parity is enforced through the
+repository-root contracts corpus rather than a shared process, FFI domain
+model, or live database.
+
+Rust keeps backend and authority boundaries structural: UI cannot reach host,
+terminal, store, or config execution; persistence cannot reach session launch
+or kill authority; and the terminal backend remains private behind a
+capability-shaped seam. A small leaf surface package carries Rust-owned paint
+buffers and scroll-aware damage between the terminal worker and GPUI without
+granting UI any PTY capability.
+
+Ghosthub still has one UI application process and no Ghosthub-owned daemon.
+External tmux and psmux servers are the long-lived session owners. Closing or
+forcibly terminating a Rust application must leave those servers and sessions
+alive. Windows support is blocked rather than degraded if psmux cannot provide
+stable identity, exact targeting, independent lifetime, or safe non-default
+server isolation. See [Terminal Sessions](terminal-sessions.md) for the
+normative lifetime contract.
+
+The Rust composition root injects one presentation registry and per-host
+runtime dependencies. Host reads are concurrent, cancellable, timed, and
+generation-ordered; mutations are serialized separately. Persistence uses a
+single asynchronous SQLite WAL writer, coalesces high-frequency UI state, and
+never holds a transaction across an await point. Cold-start reconciliation
+consumes only published inventory generations and may forget application
+records, never probe or kill server state.
 
 ### Application Updates
 
@@ -353,6 +390,9 @@ repositories.
 | `Sources/TmuxControl/` | Small native tmux/SSH attachment command model |
 | `Sources/Workspace/` | Pure workspace, host, project, worktree, and session models |
 | `Sources/Persistence/` | GRDB repositories for app-local state |
+| `rust/` | Planned Rust workspace for native Windows and Linux applications |
+| `contracts/` | Language-neutral behavioral fixtures consumed by Swift and Rust |
+| `docs/rust-port.md` | Locked Rust-port architecture, gates, and delivery order |
 | `tools/` | Python bootstrap and packaging automation |
 | `Tests/` | Swift and Python tests |
 

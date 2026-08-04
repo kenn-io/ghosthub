@@ -10,6 +10,7 @@ nav = [
   {"Overview" = "index.md"},
   {"Quick Start" = "quickstart.md"},
   {"Architecture" = "architecture.md"},
+  {"Windows and Linux Rust Port" = "rust-port.md"},
   {"Threat Model" = "threat-model.md"},
   {"Terminal Sessions" = "terminal-sessions.md"},
   {"Development" = "development.md"},

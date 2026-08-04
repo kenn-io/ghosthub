@@ -24,6 +24,11 @@ New Tmux Session for a host. This is not a separate managed-session type: the
 result immediately joins the same direct tmux inventory and has the same
 detach-only presentation lifecycle as every other session.
 
+The planned Rust/GPUI Windows and Linux applications preserve this boundary.
+Their detailed backend, worker, surface, capability, and delivery design is in
+[Windows and Linux Rust Port](rust-port.md). This page remains authoritative
+for ownership, reconnect, detach, and restart semantics on every platform.
+
 ## Native Tmux Attachment
 
 Ghosthub invokes `tmux attach-session -E -t =<name>` for a local session. A
@@ -88,6 +93,51 @@ and may apply `reverse` across the client rather than only its status line. The
 persistent override and one-shot action are therefore unavailable for native
 Windows sessions.
 
+## Rust Client Lifetime and Application Death
+
+The planned Windows and Linux Rust applications use the same ordinary-client
+boundary. A terminal worker and PTY own only the disposable client. External
+tmux or psmux server processes own session lifetime and must survive client
+close, graceful application exit, and forced application termination.
+
+Launch authority is structural:
+
+- an attach plan is cloneable and cannot create
+- one-shot creation is neither cloneable nor serializable and is consumed into
+  an attach plan
+- kwt repair/open authority is cloneable only because its documented
+  probe/repair operation is intentionally safe to rerun
+
+Local client exit always detaches and never reconnects. Only remote OpenSSH
+status 255 enters transport reconnect. Bare remote creation becomes
+attach-only before that loop; ordinary and protected kwt paths retain only
+their explicitly documented repair/open behavior.
+
+Windows psmux support is conditional on exact command capabilities, stable
+session/server identity, a non-default isolated server namespace, and an
+independent server lifetime. If any of those gates fail, Windows returns to
+substrate selection. Ghosthub never degrades to app-lifetime sessions,
+name-based identity, or the user's default server.
+
+ConPTY clients can inherit a containing Windows Job Object. When the job uses
+`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, Ghosthub uses
+`CREATE_BREAKAWAY_FROM_JOB` only when permitted. The controlled lifetime
+probe uses `IsProcessInJob` with the freshly queried psmux server process. If
+breakaway is denied, Ghosthub may attach only to a conservatively proven
+independent pre-existing server; otherwise attachment is blocked with a
+diagnostic.
+
+Live integration tests supervise a child presentation/application, terminate
+it gracefully and forcibly, then launch a fresh child and reattach to the same
+server/session identity. POSIX uses an isolated tmux socket namespace and
+SIGKILL. Windows uses an isolated psmux named-pipe namespace, TerminateProcess,
+and a kill-on-close Job Object harness. Every test asserts that it never
+queries or mutates the user's default server.
+
+POSIX tmux daemonizes itself, so macOS/Linux survival primarily proves that
+Ghosthub does not retain stdio, process-group, or other accidental ownership.
+It is not evidence that the separate Windows Job Object path is safe.
+
 ## Relaunch Restoration
 
 Quitting Ghosthub or installing an update only drops disposable clients. When
@@ -127,6 +177,13 @@ the pending target. If a scene was captured without an active tmux
 presentation, Ghosthub restores its host, project, and worktree navigation but
 does not open or create the worktree session until the user explicitly selects
 it.
+
+The Rust cold-start Reconciler consumes only inventory generations already
+published by host read lanes. It cannot probe a host, invoke kwt, run
+tmux/psmux, or derive liveness independently. It may forget or mark Ghosthub
+records stale and remove presentation metadata; it can never destroy a server
+session. Pending automatic restoration also expires after three completed
+failed refreshes, ten minutes, or user navigation, whichever comes first.
 
 A protected worktree is distinct from a same-named session on the default tmux
 server. Restoration first probes the descriptor's exact host, protected socket,
