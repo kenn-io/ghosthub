@@ -8,6 +8,10 @@ on:
 
 permissions: read-all
 
+concurrency:
+  group: ghosthub-ci-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   run:
     uses: kenn-io/ghosthub/.github/workflows/ci.yml@main
