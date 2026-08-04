@@ -135,8 +135,9 @@ the system client through a user-only FIFO. The response exists in app memory
 for that attempt but is never placed in process arguments, environment
 variables, logs, or persistent storage. Later app operations share only the
 authenticated control socket. The master has no persistence after the app
-session ends: Ghosthub prevents it from forking, a parent-held watchdog pipe
-terminates it if the app process disappears, the socket name contains an
+session ends: Ghosthub prevents it from forking, a parent-held watchdog
+descriptor remains open while the app owns the master and terminates it at
+EOF, the socket name contains an
 app-launch nonce, and each launch uses its own process-owned socket namespace.
 Startup cleanup removes only namespaces whose owner process is no longer
 running, so a concurrent Ghosthub instance retains access to its masters. The

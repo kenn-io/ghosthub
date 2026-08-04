@@ -585,11 +585,12 @@ final class SSHAuthenticationSession: ObservableObject {
 
     nonisolated static func processInvocation(
         sshArguments: [String],
-        accountShell: String
+        accountShell: String,
+        sshExecutable: String = "/usr/bin/ssh"
     ) -> SSHAuthenticationProcessInvocation {
         let arguments = [
             "/bin/sh", "-c", watchdogScript,
-            "ghosthub-ssh-watchdog", "/usr/bin/ssh",
+            "ghosthub-ssh-watchdog", sshExecutable,
         ] + sshArguments
         let command = arguments
             .map(shellQuotedCommandArgument)
@@ -602,6 +603,7 @@ final class SSHAuthenticationSession: ObservableObject {
 
     nonisolated static let watchdogScript = """
     set -u
+    exec 3<&0
     "$@" &
     ssh_pid=$!
     cleanup() {
@@ -609,10 +611,11 @@ final class SSHAuthenticationSession: ObservableObject {
     }
     trap cleanup HUP INT TERM EXIT
     (
-        /bin/cat >/dev/null
+        /bin/cat <&3 >/dev/null
         /bin/kill -TERM "$ssh_pid" 2>/dev/null || true
     ) &
     watchdog_pid=$!
+    exec 3<&-
     wait "$ssh_pid"
     status=$?
     /bin/kill -TERM "$watchdog_pid" 2>/dev/null || true

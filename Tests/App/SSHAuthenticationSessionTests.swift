@@ -299,6 +299,9 @@ struct SSHAuthenticationSessionTests {
         try process.run()
         try watchdog.fileHandleForReading.close()
 
+        try await Task.sleep(for: .milliseconds(250))
+        try #require(process.isRunning)
+
         try watchdog.fileHandleForWriting.close()
         let deadline = ContinuousClock.now + .seconds(2)
         while process.isRunning, ContinuousClock.now < deadline {
@@ -306,6 +309,90 @@ struct SSHAuthenticationSessionTests {
         }
 
         #expect(!process.isRunning)
+    }
+
+    @Test("the login-shell watchdog stays alive while the app holds its pipe")
+    func loginShellWatchdogStaysAlive() async throws {
+        let watchdog = Pipe()
+        let process = Process()
+        defer {
+            if process.isRunning {
+                process.terminate()
+            }
+            try? watchdog.fileHandleForWriting.close()
+        }
+        let invocation = SSHAuthenticationSession.processInvocation(
+            sshArguments: ["30"],
+            accountShell: TmuxBinaryResolver.loginShell(),
+            sshExecutable: "/bin/sleep"
+        )
+        process.executableURL = invocation.executable
+        process.arguments = invocation.arguments
+        process.standardInput = watchdog.fileHandleForReading
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        try watchdog.fileHandleForReading.close()
+
+        try await Task.sleep(for: .milliseconds(250))
+        try #require(process.isRunning)
+
+        try watchdog.fileHandleForWriting.close()
+        let deadline = ContinuousClock.now + .seconds(2)
+        while process.isRunning, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(!process.isRunning)
+    }
+
+    @Test("live authentication master reaches an opt-in SSH destination")
+    @MainActor
+    func liveAuthenticationMaster() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["GHOSTHUB_RUN_LIVE_INTEGRATION_TESTS"] == "1",
+              let destination = environment[
+                  "GHOSTHUB_SSH_INTEGRATION_DESTINATION"
+              ],
+              let host = TmuxHostResolver.parseSSHDestination(destination)
+        else { return }
+
+        let snapshot = SSHConnectionPool.configurationSnapshot(for: host)
+        let identity = try #require(
+            SSHConnectionPool.authenticationIdentity(for: snapshot)
+        )
+        let session = SSHAuthenticationSession(
+            target: identity.target,
+            controlPath: identity.controlPath
+        )
+        defer { session.cancel() }
+
+        let deadline = ContinuousClock.now + .seconds(20)
+        while ContinuousClock.now < deadline {
+            if case let .failed(message) = session.state {
+                let redacted = [
+                    destination,
+                    host.hostname,
+                    host.user,
+                    FileManager.default.homeDirectoryForCurrentUser.path,
+                ].compactMap { $0 }.reduce(message) { output, value in
+                    output.replacingOccurrences(of: value, with: "<redacted>")
+                }
+                Issue.record(
+                    "The live OpenSSH authentication master failed: \(redacted)"
+                )
+                return
+            }
+            if SSHConnectionPool.isAuthenticated(
+                identity.target.host,
+                controlPath: identity.controlPath
+            ) {
+                session.markConnected()
+                #expect(session.state == .connected)
+                return
+            }
+            try await Task.sleep(for: .milliseconds(250))
+        }
+        Issue.record("The live OpenSSH authentication master timed out")
     }
 }
 

@@ -56,7 +56,7 @@ KWT_SOURCE_REVISION ?= unpinned
 endif
 SWIFT_TEST_FILTER ?=
 
-.PHONY: help bootstrap-kwt bootstrap-kwt-variants ensure-kwt ensure-kwt-variants bootstrap-libghostty bootstrap-libghostty-release check-libghostty check-libghostty-release test-libghostty-bootstrap test-terminal-fallback test-stage-release-app-bundles test-assemble-app-bundle test-essential-workflows build swift-warning-check build-release debug-app release-app release-dmg release-appcast run-release-app run-app swift-test test-tmux-attach purge-test-tmux python-test test smoke-test docs-build docs-serve site-deploy reset-app-state install-hooks format format-check
+.PHONY: help bootstrap-kwt bootstrap-kwt-variants ensure-kwt ensure-kwt-variants bootstrap-libghostty bootstrap-libghostty-release check-libghostty check-libghostty-release test-libghostty-bootstrap test-terminal-fallback test-stage-release-app-bundles test-assemble-app-bundle test-essential-workflows test-ssh-authentication-live build swift-warning-check build-release debug-app release-app release-dmg release-appcast run-release-app run-app swift-test test-tmux-attach purge-test-tmux python-test test smoke-test docs-build docs-serve site-deploy reset-app-state install-hooks format format-check
 
 help:
 	@printf '%s\n' \
@@ -95,6 +95,8 @@ help:
 		'      Build and open the debug Ghosthub.app bundle.' \
 		'  make swift-test' \
 		'      Run SwiftPM tests. Set SWIFT_TEST_FILTER=... for a narrower slice.' \
+		'  make test-ssh-authentication-live GHOSTHUB_SSH_INTEGRATION_DESTINATION=user@host' \
+		'      Establish an opt-in live master through Ghosthub SSH authentication.' \
 		'  make test-tmux-attach' \
 		'      Run the native tmux attachment tests.' \
 		'  make purge-test-tmux' \
@@ -270,6 +272,14 @@ test-essential-workflows:
 		sh tools/run_with_timeout.sh 600 sh tools/run_swift_tests.sh \
 			$(SWIFT) test --filter $$filter; \
 	done
+
+test-ssh-authentication-live: bootstrap-libghostty
+	@test -n "$(GHOSTHUB_SSH_INTEGRATION_DESTINATION)" || \
+		{ printf 'Set GHOSTHUB_SSH_INTEGRATION_DESTINATION=user@host\n' >&2; exit 2; }
+	@GHOSTHUB_RUN_LIVE_INTEGRATION_TESTS=1 \
+		GHOSTHUB_SSH_INTEGRATION_DESTINATION="$(GHOSTHUB_SSH_INTEGRATION_DESTINATION)" \
+		sh tools/run_swift_tests.sh $(SWIFT) test \
+			--filter SSHAuthenticationSessionTests/liveAuthenticationMaster
 
 build: bootstrap-libghostty
 	@$(SWIFT) build

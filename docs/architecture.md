@@ -185,7 +185,8 @@ name includes an app-launch nonce plus a digest of the logical destination,
 the normalized effective OpenSSH configuration for every route target, and the
 proxy route, so changes to credentials, known-hosts files, trust identities,
 routes, or app launches cannot reuse an authenticated master. A parent-held
-watchdog pipe terminates each master if the app process disappears. The next
+watchdog descriptor remains open for the app lifetime and terminates each
+master only when that descriptor reaches EOF. The next
 launch removes only socket namespaces owned by processes that are no longer
 running, so concurrent Ghosthub instances cannot unlink each other's masters.
 When the state-home path would exceed macOS's Unix-socket limit, Ghosthub uses
