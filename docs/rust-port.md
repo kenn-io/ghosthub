@@ -61,7 +61,7 @@ The backend is selected behind a capability-shaped TerminalEngine seam:
 bytes in, resize, modes queryable, semantic effects, and Rust-owned paint
 state out. No public crate or UI API presumes the outcome.
 
-The exact kwt revision in [KWT_REVISION](../KWT_REVISION) is
+The exact kwt revision in repository-root `KWT_REVISION` is
 12463d3a0b194d2d3937037ac5b57ad630114854. That source uses KWT_HOME or the
 fixed $HOME/.config/kwt default. It does not read Ghosthub init.toml,
 config_home, or XDG_CONFIG_HOME. Rust must not reproduce the unsupported
@@ -225,19 +225,24 @@ The psmux server, like a POSIX tmux server, is an external long-lived session
 owner. Terminal owns disconnecting the client; host capability resolution owns
 whether the server survives.
 
-portable-pty 0.9.0 does not create a Job Object. It creates the ConPTY child
-without CREATE_BREAKAWAY_FROM_JOB, so a containing kill-on-close job can still
-be inherited by the client and a server it starts.
+A source audit found that portable-pty 0.9.0 does not create a Job Object and
+creates the ConPTY child without CREATE_BREAKAWAY_FROM_JOB. This is a
+version-scoped finding, not a dependency contract: the runtime gate verifies
+the actual child and server Job Object membership and must rerun whenever the
+portable-pty version changes.
 
 When Ghosthub is in such a job:
 
 - use CREATE_BREAKAWAY_FROM_JOB when the containing job permits breakaway
-- use IsProcessInJob against the freshly queried psmux server process as the
-  required primitive for the controlled survival classification
+- use IsProcessInJob against both the spawned ConPTY client and the freshly
+  queried psmux server process as the required primitive for the controlled
+  inheritance and survival classifications
 - when breakaway is denied, attach only to a conservatively proven
   independent pre-existing psmux server
-- when no independent server exists, block local Windows attachment with a
-  diagnostic
+- bare session creation may target that proven independent server but may not
+  bootstrap a new server
+- when no independent server exists, block local Windows attachment and
+  creation with a diagnostic
 
 Ghosthub never degrades to an app-lifetime session, name-based identity, or
 the user's unsafe default server.
@@ -291,11 +296,13 @@ app
 ~~~
 
 Cargo metadata tests traverse normal, build, and development dependencies.
-Store cannot reach session through any transitive path. UI cannot reach host,
-terminal, store, config, or session. Cross-boundary negative persistence tests
-live in the contracts harness, which may depend on both store and session.
-Static trait assertions are regression guards, not proofs: manual store records
-that mirror authority fields remain an explicit human-review boundary.
+Store cannot reach session through any transitive path. UI's constraint is
+direct: across all three dependency kinds, it may depend directly only on
+workspace, model, and surface, and never directly on host, terminal, store,
+config, or session. Cross-boundary negative persistence tests live in the
+contracts harness, which may depend on both store and session. Static trait
+assertions are regression guards, not proofs: manual store records that mirror
+authority fields remain an explicit human-review boundary.
 
 Config reaches UI only when workspace projects font, theme, keybinding, and
 appearance preferences into UI-facing view state.
@@ -320,9 +327,9 @@ The remote helper activation root is a separate cross-controller contract:
 - POSIX remote: $HOME/.ghosthub/helpers/kwt/{revision}/kwt
 - Windows remote: %USERPROFILE%\.ghosthub\helpers\kwt\{revision}\kwt.exe
 
-[KwtBinaryLocator.swift](../Sources/App/KwtBinaryLocator.swift) already ships
-both conventions. A remote controller deliberately ignores every GHOSTHUB
-override on the remote host so another controller can find the same revision.
+The shipped `Sources/App/KwtBinaryLocator.swift` already carries both
+conventions. A remote controller deliberately ignores every GHOSTHUB override
+on the remote host so another controller can find the same revision.
 Consequently, an unavailable, unwritable, redirected, or pathological remote
 account home has no helper-path override. Installation fails with an actionable
 diagnostic requiring a corrected or different remote account. This enterprise
