@@ -116,6 +116,7 @@ enum SSHConfigurationResolver {
             return arguments + ["-o", "ProxyCommand=/usr/bin/false"]
         }
         arguments.append(contentsOf: [
+            "-o", "ProxyUseFdpass=no",
             "-o",
             "ProxyCommand=" + hardenedProxyCommand(
                 hops: proxyHops,
@@ -188,6 +189,7 @@ enum SSHConfigurationResolver {
                 "-o", "BatchMode=\(batchMode)",
                 "-o", "ControlMaster=no",
                 "-o", "ControlPersist=no",
+                "-o", "ProxyUseFdpass=no",
                 "-o", "ConnectTimeout=10",
                 "-o", "ConnectionAttempts=1",
             ]
@@ -327,6 +329,7 @@ enum SSHConfigurationResolver {
                 "hostkeyalias",
                 "proxyjump",
                 "proxycommand",
+                "proxyusefdpass",
                 "canonicalizehostname",
                 "canonicalizemaxdots",
                 "canonicalizefallbacklocal",

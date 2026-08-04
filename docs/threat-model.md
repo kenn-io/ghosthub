@@ -151,7 +151,9 @@ any path that remains too long.
 Routine clients and generated ProxyJump helpers explicitly disable
 `ControlMaster` and `ControlPersist`, so user configuration cannot turn them
 into unsupervised persistent masters even when Ghosthub cannot prepare its
-control socket. Authentication preparation
+control socket. Generated proxy commands force `ProxyUseFdpass=no`, keeping the
+route on the standard stream-forwarding contract that Ghosthub constructs.
+Authentication preparation
 resolves one effective-config snapshot, verifies its cached control identity,
 and launches the endpoint, route, authentication, and known-hosts options from
 that same snapshot under an empty base SSH configuration. It restarts recovery

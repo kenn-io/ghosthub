@@ -192,7 +192,9 @@ path before launching OpenSSH.
 Routine clients and generated ProxyJump helpers explicitly disable
 `ControlMaster` and `ControlPersist`; they may reuse Ghosthub's supervised
 socket but cannot create another master, even when Ghosthub cannot prepare that
-socket. Master preparation resolves one
+socket. Generated proxy commands also force ordinary stdin/stdout forwarding
+instead of inheriting `ProxyUseFdpass`, because Ghosthub's nested route commands
+do not return file descriptors. Master preparation resolves one
 effective-config snapshot, verifies that its control identity still matches
 the cached path, and launches the endpoint, route, authentication, and
 known-hosts options from that same snapshot under an empty base SSH

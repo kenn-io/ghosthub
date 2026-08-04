@@ -110,6 +110,7 @@ struct SSHConfigurationResolverTests {
                             resolvedOptions: [
                                 "controlmaster=auto",
                                 "controlpersist=600",
+                                "proxyusefdpass=yes",
                             ]
                         )
                     case "core.example.test":
@@ -121,6 +122,7 @@ struct SSHConfigurationResolverTests {
                             resolvedOptions: [
                                 "controlmaster=auto",
                                 "controlpersist=600",
+                                "proxyusefdpass=yes",
                             ]
                         )
                     default:
@@ -129,11 +131,13 @@ struct SSHConfigurationResolverTests {
                 }
             )
 
-        #expect(arguments.count == 2)
+        #expect(arguments.count == 4)
         #expect(arguments[0] == "-o")
-        #expect(arguments[1].hasPrefix("ProxyCommand="))
+        #expect(arguments[1] == "ProxyUseFdpass=no")
+        #expect(arguments[2] == "-o")
+        #expect(arguments[3].hasPrefix("ProxyCommand="))
         let proxyCommand = String(
-            arguments[1].dropFirst("ProxyCommand=".count)
+            arguments[3].dropFirst("ProxyCommand=".count)
         )
         #expect(SSHConfigurationResolver.proxyCommandHopArguments(
             for: SSHHostInfo(
@@ -160,6 +164,7 @@ struct SSHConfigurationResolverTests {
             "BatchMode=yes",
             "ControlMaster=no",
             "ControlPersist=no",
+            "ProxyUseFdpass=no",
             "ConnectTimeout=10",
             "ConnectionAttempts=1",
         ] {
@@ -169,6 +174,7 @@ struct SSHConfigurationResolverTests {
         }
         #expect(!proxyCommand.contains("ControlMaster=auto"))
         #expect(!proxyCommand.contains("ControlPersist=600"))
+        #expect(!proxyCommand.contains("ProxyUseFdpass=yes"))
         #expect(proxyCommand.contains("[%%h]:%%p"))
         #expect(proxyCommand.contains("[%h]:%p"))
     }
@@ -198,10 +204,11 @@ struct SSHConfigurationResolverTests {
             "-o", "StrictHostKeyChecking=yes",
             "-o", "UpdateHostKeys=no",
         ])
-        #expect(arguments[4] == "-o")
-        #expect(arguments[5].contains("BatchMode=no"))
-        #expect(arguments[5].contains("StrictHostKeyChecking=yes"))
-        #expect(arguments[5].contains("UpdateHostKeys=no"))
+        #expect(arguments[4 ... 5] == ["-o", "ProxyUseFdpass=no"])
+        #expect(arguments[6] == "-o")
+        #expect(arguments[7].contains("BatchMode=no"))
+        #expect(arguments[7].contains("StrictHostKeyChecking=yes"))
+        #expect(arguments[7].contains("UpdateHostKeys=no"))
     }
 
     @Test("malformed ProxyJump routes fail closed")
@@ -245,6 +252,36 @@ struct SSHConfigurationResolverTests {
         ) == [
             "-p", "22", "-W", "[%h]:%p", "relay@relay.example.test",
         ])
+    }
+
+    @Test("authentication snapshots defer fd passing to generated proxies")
+    func excludesProxyUseFdpassFromAuthenticationSnapshot() {
+        let host = SSHHostInfo(
+            user: "deploy",
+            hostname: "build.example.test",
+            port: nil
+        )
+
+        let arguments = SSHConfigurationResolver
+            .snapshotAuthenticationArguments(
+                for: host,
+                configurationProvider: { _ in
+                    EffectiveSSHConfiguration(
+                        user: "deploy",
+                        strictHostKeyChecking: "ask",
+                        proxyJump: "relay.example.test",
+                        proxyCommand: nil,
+                        hostname: "build.internal",
+                        resolvedOptions: [
+                            "identityfile=~/.ssh/id_ed25519",
+                            "proxyusefdpass=yes",
+                        ]
+                    )
+                }
+            )
+
+        #expect(arguments.contains("identityfile=~/.ssh/id_ed25519"))
+        #expect(!arguments.contains("proxyusefdpass=yes"))
     }
 
     @Test("opaque proxy commands fail routine SSH operations closed")

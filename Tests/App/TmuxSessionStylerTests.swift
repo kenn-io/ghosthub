@@ -171,7 +171,7 @@ struct TmuxSessionStylerTests {
         else {
             return
         }
-        let socketName = "ghosthub-style-\(UUID().uuidString.lowercased())"
+        let socketName = "style-\(UUID().uuidString.prefix(8).lowercased())"
         let sessionName = "review"
         defer {
             _ = TmuxBinaryResolver.runProcess(
@@ -188,7 +188,7 @@ struct TmuxSessionStylerTests {
             ],
             timeout: 5
         )
-        #expect(created.status == 0)
+        try #require(created.status == 0)
 
         let identity = try await TmuxSessionKiller(
             pathResolver: { _ in .success(tmuxPath) }

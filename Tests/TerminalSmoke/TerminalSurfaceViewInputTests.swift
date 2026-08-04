@@ -140,6 +140,15 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
     private func retainedRuntime() -> LibghosttyRuntime {
         if Self.retainedRuntime == nil {
             let (pipeline, _) = makeIsolatedPipeline()
+            try! FileManager.default.createDirectory(
+                at: pipeline.paths.configDirectory,
+                withIntermediateDirectories: true
+            )
+            try! "shell = /bin/zsh\n".write(
+                to: pipeline.paths.globalConfigFile,
+                atomically: true,
+                encoding: .utf8
+            )
             Self.retainedRuntime = LibghosttyRuntime(pipeline: pipeline)
         }
         return Self.retainedRuntime!
@@ -153,7 +162,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             at: pipeline.paths.configDirectory,
             withIntermediateDirectories: true
         )
-        try contents.write(
+        try ("shell = /bin/zsh\n" + contents).write(
             to: pipeline.paths.globalConfigFile,
             atomically: true,
             encoding: .utf8
@@ -1368,7 +1377,17 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
     }
 
     func testDefaultLibghosttyShellIntegrationLoadsUserZshrc() throws {
-        let appHandle = try requireAppHandle()
+        if ProcessInfo.processInfo.environment["RUNNER_ENVIRONMENT"]
+            == "self-hosted" {
+            throw XCTSkip(
+                "The self-hosted runner service account cannot start macOS's account-login shell."
+            )
+        }
+
+        let (pipeline, _) = makeIsolatedPipeline()
+        let runtime = LibghosttyRuntime(pipeline: pipeline)
+        Self.transientRuntimes.append(runtime)
+        let appHandle = try requireAppHandle(from: runtime)
 
         let homeDirectory = makeTemporaryDirectory()
         let zshrc = homeDirectory.appendingPathComponent(".zshrc", isDirectory: false)

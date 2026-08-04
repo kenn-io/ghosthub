@@ -1,7 +1,7 @@
 name: CI
 
 on:
-  pull_request:
+  workflow_call:
   push:
     branches: [main]
 
@@ -15,7 +15,18 @@ concurrency:
 jobs:
   macos-arm64:
     name: macOS (Apple Silicon)
-    runs-on: macos-26
+    runs-on: >-
+      ${{
+        github.repository == 'kenn-io/ghosthub' &&
+        (
+          (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+          (
+            github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name == github.repository &&
+            github.event.pull_request.base.repo.full_name == github.repository
+          )
+        ) && 'kenn-macos-arm64-public' || 'macos-26'
+      }}
     timeout-minutes: 90
     env:
       # The bootstrap default is intentionally arm64 for developer Macs.
@@ -25,6 +36,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Verify Apple Silicon runner
@@ -43,7 +55,9 @@ jobs:
           # Ghosthub intentionally follows the account shell from getpwuid,
           # just like a normal terminal. Hosted runner accounts still default
           # to bash, while supported macOS user accounts default to zsh.
-          sudo chsh -s /bin/zsh "$USER"
+          if [[ "${RUNNER_ENVIRONMENT:-}" == "github-hosted" ]]; then
+            sudo chsh -s /bin/zsh "$USER"
+          fi
           user_shell="$(dscl . -read "/Users/$USER" UserShell | awk '{print $2}')"
           if [[ "$user_shell" != "/bin/zsh" ]]; then
             echo "Expected /bin/zsh as the test account shell; found $user_shell." >&2
@@ -51,14 +65,15 @@ jobs:
           fi
           echo "SHELL=/bin/zsh" >> "$GITHUB_ENV"
 
-      - name: Select Xcode 26.0.1
+      - name: Select an Xcode with the Ghosthub toolchain
         shell: bash
         run: |
-          # Zig 0.15.2 cannot link Ghostty's build runner against newer
-          # Xcode 26 SDK stubs. The hosted image retains this baseline.
-          XCODE_APP=/Applications/Xcode_26.0.1.app
-          if [[ ! -d "$XCODE_APP" ]]; then
-            echo "Xcode 26.0.1 is not installed on the hosted runner." >&2
+          if [[ -d /Applications/Xcode.app ]]; then
+            XCODE_APP=/Applications/Xcode.app
+          elif [[ -d /Applications/Xcode_26.0.1.app ]]; then
+            XCODE_APP=/Applications/Xcode_26.0.1.app
+          else
+            echo "No supported Xcode installation found." >&2
             ls -1 /Applications >&2
             exit 1
           fi
@@ -71,6 +86,20 @@ jobs:
 
       - name: Set up uv
         uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+
+      - name: Configure isolated macOS test state
+        shell: bash
+        run: |
+          umask 077
+          state_root="$(mktemp -d /tmp/ghosthub-ci.XXXXXX)"
+          foundation_home="$state_root/home"
+          foundation_tmp="$state_root/tmp"
+          mkdir -p "$foundation_home/Library/Caches" "$foundation_tmp"
+          chmod 700 "$state_root" "$foundation_home" "$foundation_home/Library" \
+            "$foundation_home/Library/Caches" "$foundation_tmp"
+          echo "GHOSTHUB_CI_STATE_ROOT=$state_root" >> "$GITHUB_ENV"
+          echo "CFFIXED_USER_HOME=$foundation_home" >> "$GITHUB_ENV"
+          echo "TMPDIR=$foundation_tmp" >> "$GITHUB_ENV"
 
       - name: Install Zig 0.15.2
         shell: bash
@@ -100,7 +129,7 @@ jobs:
       # had drifted from them. Checked before the build so a formatting-only
       # failure does not wait on a full compile.
       - name: Install SwiftFormat
-        run: brew install swiftformat
+        run: command -v swiftformat >/dev/null || brew install swiftformat
 
       - name: Check Swift formatting
         run: make format-check
@@ -118,16 +147,22 @@ jobs:
         run: swift build --build-tests
 
       - name: Run terminal smoke tests
-        # Most AppKit/PTY tests are isolated by fixture, so two workers shorten
-        # the hosted-runner exposure window without saturating its three cores.
+        # Most AppKit/PTY tests are isolated by fixture, so parallel workers
+        # shorten the runner exposure window without saturating hosted Macs.
         # Keep tests marked Pasteboard out of this lane because they mutate
         # NSPasteboard.general, which is shared across worker processes.
-        run: >-
-          sh tools/run_swift_tests.sh
-          swift test --skip-build --disable-swift-testing
-          --filter GhosthubTerminalSmokeTests
-          --skip 'Clipboard|Paste'
-          --parallel --num-workers 2
+        shell: bash
+        run: |
+          test_workers=2
+          if [[ "${RUNNER_ENVIRONMENT:-}" == "self-hosted" ]]; then
+            test_workers=8
+          fi
+
+          sh tools/run_swift_tests.sh \
+            swift test --skip-build --disable-swift-testing \
+            --filter GhosthubTerminalSmokeTests \
+            --skip 'Clipboard|Paste' \
+            --parallel --num-workers "$test_workers"
 
       - name: Run pasteboard terminal smoke tests
         run: >-
@@ -149,3 +184,11 @@ jobs:
 
       - name: Run essential kwt and tmux workflows
         run: make test-essential-workflows
+
+      - name: Remove isolated macOS test state
+        if: always()
+        shell: bash
+        run: |
+          case "${GHOSTHUB_CI_STATE_ROOT:-}" in
+            /tmp/ghosthub-ci.*) rm -rf -- "$GHOSTHUB_CI_STATE_ROOT" ;;
+          esac
