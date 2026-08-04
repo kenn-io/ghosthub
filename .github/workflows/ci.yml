@@ -87,6 +87,16 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
 
+      - name: Configure isolated macOS test state
+        shell: bash
+        run: |
+          test -n "${HOME:-}"
+          test -n "${RUNNER_TEMP:-}"
+          mkdir -p "$HOME/Library/Caches" "$RUNNER_TEMP/ghosthub-tmp"
+          chmod 700 "$HOME/Library" "$HOME/Library/Caches" "$RUNNER_TEMP/ghosthub-tmp"
+          echo "CFFIXED_USER_HOME=$HOME" >> "$GITHUB_ENV"
+          echo "TMPDIR=$RUNNER_TEMP/ghosthub-tmp" >> "$GITHUB_ENV"
+
       - name: Install Zig 0.15.2
         shell: bash
         env:
