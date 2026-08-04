@@ -1,5 +1,5 @@
 [workspace]
-members = ["model"]
+members = ["app", "model", "ui"]
 resolver = "2"
 
 [workspace.package]
@@ -10,6 +10,7 @@ rust-version = "1.96"
 
 [workspace.dependencies]
 ghosthub-model = { path = "model" }
+ghosthub-ui = { path = "ui" }
 gpui = { version = "=0.2.2", default-features = false }
 
 [workspace.lints.rust]
