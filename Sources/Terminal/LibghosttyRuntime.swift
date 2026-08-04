@@ -961,7 +961,9 @@ public final class LibghosttyRuntime: ObservableObject {
             let contents = clipboardReadContents(
                 blocked: surfaceView.blocksClipboardReads,
                 request: request,
-                contents: NSPasteboard.general.string(forType: .string)
+                contents: TerminalPasteboardAccess.current.string(
+                    forType: .string
+                )
             )
             contents.withCString { ptr in
                 ghostty_surface_complete_clipboard_request(
@@ -1044,7 +1046,7 @@ public final class LibghosttyRuntime: ObservableObject {
         dispatchToMainSync {
             guard surfaceView(from: userdataValue) != nil else { return }
             let acceptedEntries = acceptedClipboardWriteEntries(entries)
-            let pasteboard = NSPasteboard.general
+            let pasteboard = TerminalPasteboardAccess.current
             pasteboard.clearContents()
             let types = acceptedEntries.compactMap {
                 pasteboardType(forMIMEType: $0.mime)

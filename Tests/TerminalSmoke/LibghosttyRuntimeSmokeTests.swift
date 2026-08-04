@@ -25,6 +25,19 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
     private static var retainedConditionalThemeCoordinators:
         [TerminalSurfaceCoordinator] = []
     private static var retainedConditionalThemeWindows: [NSWindow] = []
+    private var pasteboard: InMemoryTerminalPasteboard!
+
+    override func setUp() async throws {
+        try await super.setUp()
+        pasteboard = InMemoryTerminalPasteboard()
+        TerminalPasteboardAccess.current = pasteboard
+    }
+
+    override func tearDown() async throws {
+        TerminalPasteboardAccess.reset()
+        pasteboard = nil
+        try await super.tearDown()
+    }
 
     // MARK: - Helpers
 
@@ -1028,15 +1041,6 @@ final class LibghosttyRuntimeSmokeTests: XCTestCase {
         )
         view.blocksClipboardReads = true
         let userdata = Unmanaged.passUnretained(view.callbackToken).toOpaque()
-        let pasteboard = NSPasteboard.general
-        let priorContents = pasteboard.string(forType: .string)
-        defer {
-            pasteboard.clearContents()
-            if let priorContents {
-                pasteboard.setString(priorContents, forType: .string)
-            }
-        }
-
         "text/plain".withCString { mime in
             "selected text".withCString { data in
                 let contents = [ghostty_clipboard_content_s(

@@ -18,10 +18,19 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
     // still pending.
     private static var retainedRuntime: LibghosttyRuntime?
     private static var transientRuntimes: [LibghosttyRuntime] = []
+    private var pasteboard: InMemoryTerminalPasteboard!
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
+    override func setUp() async throws {
+        try await super.setUp()
         try skipUnlessLibghosttyReady()
+        pasteboard = InMemoryTerminalPasteboard()
+        TerminalPasteboardAccess.current = pasteboard
+    }
+
+    override func tearDown() async throws {
+        TerminalPasteboardAccess.reset()
+        pasteboard = nil
+        try await super.tearDown()
     }
 
     private func requireAppHandle(
@@ -2224,10 +2233,8 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             )
         }
 
-        let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString("pane-routed-paste", forType: .string)
-        defer { pasteboard.clearContents() }
 
         dispatch(
             makeKeyEvent(
@@ -2277,10 +2284,8 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             )
         }
 
-        let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString("caps-lock-pane-routed-paste", forType: .string)
-        defer { pasteboard.clearContents() }
 
         dispatch(
             makeKeyEvent(
@@ -2374,16 +2379,8 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         waitUntil(timeout: 5.0) { view.error == nil }
         waitForProbeReady(in: view)
 
-        let pasteboard = NSPasteboard.general
-        let priorContents = pasteboard.string(forType: .string)
         pasteboard.clearContents()
         pasteboard.setString(pastedText, forType: .string)
-        defer {
-            pasteboard.clearContents()
-            if let priorContents {
-                pasteboard.setString(priorContents, forType: .string)
-            }
-        }
 
         dispatch(
             makeKeyEvent(
@@ -2454,16 +2451,8 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         waitUntil(timeout: 5.0) { view.error == nil }
         waitForProbeReady(in: view)
 
-        let pasteboard = NSPasteboard.general
-        let priorContents = pasteboard.string(forType: .string)
         pasteboard.clearContents()
         pasteboard.setString(pastedText, forType: .string)
-        defer {
-            pasteboard.clearContents()
-            if let priorContents {
-                pasteboard.setString(priorContents, forType: .string)
-            }
-        }
 
         dispatch(
             makeKeyEvent(
@@ -2513,16 +2502,8 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         waitUntil(timeout: 5.0) { view.error == nil }
         waitForProbeReady(in: view)
 
-        let pasteboard = NSPasteboard.general
-        let priorContents = pasteboard.string(forType: .string)
         pasteboard.clearContents()
         pasteboard.setString(pastedText, forType: .string)
-        defer {
-            pasteboard.clearContents()
-            if let priorContents {
-                pasteboard.setString(priorContents, forType: .string)
-            }
-        }
 
         let oldShortcut = makeKeyEvent(
             characters: "v",
@@ -2570,16 +2551,8 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         )
         view.blocksClipboardReads = true
 
-        let pasteboard = NSPasteboard.general
-        let priorContents = pasteboard.string(forType: .string)
         pasteboard.clearContents()
         pasteboard.setString("local-secret", forType: .string)
-        defer {
-            pasteboard.clearContents()
-            if let priorContents {
-                pasteboard.setString(priorContents, forType: .string)
-            }
-        }
 
         _ = hostInWindow(view)
         waitUntil(timeout: 5.0) { view.error == nil }
@@ -2625,21 +2598,13 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         )
         view.blocksClipboardReads = true
 
-        let pasteboard = NSPasteboard.general
-        let priorContents = pasteboard.string(forType: .string)
         pasteboard.clearContents()
-        defer {
-            pasteboard.clearContents()
-            if let priorContents {
-                pasteboard.setString(priorContents, forType: .string)
-            }
-        }
 
         _ = hostInWindow(view)
         waitUntil(timeout: 5.0) { view.error == nil }
         waitForViewportText("<WROTE>", in: view)
         waitUntil(timeout: 3.0) {
-            pasteboard.string(forType: .string) == copiedText
+            self.pasteboard.string(forType: .string) == copiedText
         }
 
         XCTAssertEqual(

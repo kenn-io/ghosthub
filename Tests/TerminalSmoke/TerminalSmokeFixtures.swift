@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import GhosthubTestSupport
 import GhosthubWorkspace
@@ -5,6 +6,39 @@ import GhosthubWorkspace
 @testable import GhosthubTerminal
 @testable import GhosthubTerminalSupport
 import XCTest
+
+@MainActor
+final class InMemoryTerminalPasteboard: TerminalPasteboard {
+    private var contents: [NSPasteboard.PasteboardType: String] = [:]
+
+    func string(forType dataType: NSPasteboard.PasteboardType) -> String? {
+        contents[dataType]
+    }
+
+    @discardableResult
+    func clearContents() -> Int {
+        contents.removeAll()
+        return 1
+    }
+
+    @discardableResult
+    func declareTypes(
+        _ newTypes: [NSPasteboard.PasteboardType],
+        owner newOwner: Any?
+    ) -> Int {
+        contents.removeAll()
+        return newTypes.count
+    }
+
+    @discardableResult
+    func setString(
+        _ string: String,
+        forType dataType: NSPasteboard.PasteboardType
+    ) -> Bool {
+        contents[dataType] = string
+        return true
+    }
+}
 
 // MARK: - Skip Guard
 
