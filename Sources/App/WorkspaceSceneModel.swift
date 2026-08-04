@@ -383,6 +383,7 @@ final class WorkspaceSceneModel: ObservableObject {
     private let tmuxPresentationStyleProvider:
         (UInt?) -> TmuxPresentationStyle?
     private let sshHostProbeRunner: SSHHostProbeRunner
+    private let sshAuthenticationCoordinator = SSHAuthenticationCoordinator()
     private let configuredSSHHostsProvider: () -> [SSHHost]
     private var configuredSSHHostsCancellable: AnyCancellable?
     private var terminalColorsCancellable: AnyCancellable?
@@ -1078,6 +1079,7 @@ final class WorkspaceSceneModel: ObservableObject {
         endedCreatedTmuxSessionHandles.removeAll()
         confirmedEndedTmuxSessionHandles.removeAll()
         nativeTmuxSessionCoordinatorBacking?.shutdown()
+        sshAuthenticationCoordinator.shutdown()
     }
 
     /// Refreshes the sidebar directly from each host's kwt and tmux inventory.
@@ -2454,42 +2456,33 @@ final class WorkspaceSceneModel: ObservableObject {
         return await trustSSHHostKey(confirmation, for: host)
     }
 
-    func sshAuthenticationTerminal(
+    func sshAuthenticationView(
         surfaceID: UUID,
         for host: SSHHost
     ) -> AnyView? {
-        guard let resolved = resolvedSSHHost(host),
-              let command = SSHConnectionPool.authenticationCommand(
-                  for: resolved.info
-              )
-        else { return nil }
-        let key = SurfaceKey(
-            worktreeID: nil,
-            hostID: surfaceID,
-            target: .sshAuthentication
-        )
-        guard let surface = terminalCoordinator.surface(
-            for: key,
-            configuration: TerminalSurfaceConfiguration(
-                workingDirectory: NSHomeDirectory(),
-                command: command,
-                waitAfterCommand: true
+        guard let resolved = resolvedSSHHost(host) else { return nil }
+        return AnyView(SSHAuthenticationView(
+            session: sshAuthenticationCoordinator.session(
+                id: surfaceID,
+                host: resolved.info
             )
-        ) else { return nil }
-        surface.blocksClipboardReads = true
-        return AnyView(TerminalSurfaceSwiftUIView(surfaceView: surface))
+        ))
     }
 
-    func sshAuthenticationTerminal(forHostID hostID: UUID) -> AnyView? {
+    func sshAuthenticationView(forHostID hostID: UUID) -> AnyView? {
         guard let host = configuredSSHHost(for: hostID) else { return nil }
-        return sshAuthenticationTerminal(surfaceID: hostID, for: host)
+        return sshAuthenticationView(surfaceID: hostID, for: host)
     }
 
     func isSSHAuthenticationReady(for host: SSHHost) async -> Bool {
         guard let resolved = resolvedSSHHost(host) else { return false }
-        return await Task.detached {
+        let isReady = await Task.detached {
             SSHConnectionPool.isAuthenticated(resolved.info)
         }.value
+        if isReady {
+            sshAuthenticationCoordinator.markConnected(host: resolved.info)
+        }
+        return isReady
     }
 
     func isSSHAuthenticationReady(forHostID hostID: UUID) async -> Bool {
@@ -2498,11 +2491,7 @@ final class WorkspaceSceneModel: ObservableObject {
     }
 
     func cancelSSHAuthentication(surfaceID: UUID) {
-        terminalCoordinator.removeSurface(for: SurfaceKey(
-            worktreeID: nil,
-            hostID: surfaceID,
-            target: .sshAuthentication
-        ))
+        sshAuthenticationCoordinator.cancel(id: surfaceID)
     }
 
     private func configuredSSHHost(for hostID: UUID) -> SSHHost? {

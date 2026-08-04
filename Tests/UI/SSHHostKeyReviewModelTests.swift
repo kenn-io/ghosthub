@@ -82,8 +82,8 @@ struct SSHHostKeyReviewModelTests {
         #expect(model.presentation == .authentication)
     }
 
-    @Test("an SSH authentication failure opens the in-app terminal")
-    func authenticationFailureOpensTerminal() async {
+    @Test("an SSH authentication failure opens secure entry")
+    func authenticationFailureOpensSecureEntry() async {
         let model = WorkspaceSSHHostKeyReviewModel()
 
         await model.review(hostID: UUID(), hostName: "Build Node") {
@@ -93,6 +93,19 @@ struct SSHHostKeyReviewModelTests {
         #expect(model.presentation == .authentication)
         #expect(model.errorMessage == nil)
         #expect(model.confirmation == nil)
+    }
+
+    @Test("successful authentication remains visible for confirmation")
+    func successfulAuthenticationRequiresAcknowledgement() async {
+        let model = WorkspaceSSHHostKeyReviewModel()
+
+        await model.review(hostID: UUID(), hostName: "Build Node") {
+            .authenticationRequired
+        }
+        model.authenticationSucceeded()
+
+        #expect(model.isPresented)
+        #expect(model.presentation == .authenticationSucceeded)
     }
 
     @Test("an older request cannot overwrite a reopened review")

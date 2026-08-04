@@ -537,7 +537,7 @@ public struct RootView: View {
         while !Task.isCancelled,
               activeSSHAuthenticationHostID == hostID {
             if await isReady(hostID) {
-                sshHostKeyReview.dismiss()
+                sshHostKeyReview.authenticationSucceeded()
                 handlers.refreshWorkspaceInventory?()
                 return
             }

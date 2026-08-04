@@ -141,11 +141,11 @@ const imageAlt = {
           <p>
             Remote hosts need tmux. Key and SSH-agent authentication work
             without prompting. When OpenSSH needs a password or another
-            interactive response, Ghosthub opens an authentication terminal
-            and keeps that OpenSSH connection available for inventory and
-            tmux operations during the app session. Ghosthub never receives
-            or stores the password. An unreachable machine never blocks the
-            rest of your fleet.
+            interactive response, Ghosthub shows its exact prompt in a native
+            secure-entry sheet and keeps that OpenSSH connection available for
+            inventory and tmux operations during the app session. Responses
+            are not stored. An unreachable machine never blocks the rest of
+            your fleet.
           </p>
           <p>
             Native Windows support is experimental. Choose{' '}
@@ -189,8 +189,8 @@ const imageAlt = {
             opens fingerprint review only when OpenSSH reports an unseen key.
             Otherwise it tests the connection: reachable hosts keep their
             inventory diagnostic and offer Retry, while SSH authentication
-            opens an in-app terminal. After the prompt succeeds, Ghosthub
-            retries inventory automatically.
+            opens a native secure-entry sheet. Ghosthub confirms a successful
+            connection before continuing and then retries inventory.
             ProxyJump routes with unseen intermediate hosts show each OpenSSH
             prompt in sequence. Opaque ProxyCommand routes and jump hosts with
             another proxy route fail closed because their intermediate policies

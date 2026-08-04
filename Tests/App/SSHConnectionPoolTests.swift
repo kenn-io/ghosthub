@@ -4,7 +4,7 @@ import Testing
 
 @Suite("SSH connection pool")
 struct SSHConnectionPoolTests {
-    @Test("authentication keeps password handling inside OpenSSH")
+    @Test("authentication accepts a native secure response through OpenSSH")
     func authenticationUsesInteractiveOpenSSHMaster() {
         let host = SSHHostInfo(
             user: "operator",
@@ -17,10 +17,11 @@ struct SSHConnectionPoolTests {
             hostKeyArguments: ["-o", "StrictHostKeyChecking=yes"]
         )
 
-        #expect(arguments.first == "/usr/bin/ssh")
+        #expect(arguments.first == "-N")
         #expect(arguments.contains("BatchMode=no"))
         #expect(arguments.contains("ControlMaster=yes"))
         #expect(arguments.contains("ControlPersist=no"))
+        #expect(arguments.contains("NumberOfPasswordPrompts=1"))
         #expect(arguments.contains("StrictHostKeyChecking=yes"))
         #expect(arguments.suffix(4) == [
             "-p", "22", "--", "operator@build.example.test",

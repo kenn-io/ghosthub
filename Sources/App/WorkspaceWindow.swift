@@ -668,7 +668,7 @@ struct WorkspaceWindow: View {
                                 },
                                 sshAuthenticationView: {
                                     surfaceID, host in
-                                    sceneModel.sshAuthenticationTerminal(
+                                    sceneModel.sshAuthenticationView(
                                         surfaceID: surfaceID,
                                         for: host
                                     )
@@ -720,7 +720,7 @@ struct WorkspaceWindow: View {
                     sceneModel.logViewerTerminalView()
                 },
                 sshAuthenticationBuilder: { [sceneModel] hostID in
-                    sceneModel.sshAuthenticationTerminal(
+                    sceneModel.sshAuthenticationView(
                         forHostID: hostID
                     )
                 }

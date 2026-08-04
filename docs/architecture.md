@@ -171,11 +171,13 @@ a short alias nor writes a key obtained from a separate scanner. The approved
 key therefore lands in the `UserKnownHostsFile` selected by the user's OpenSSH
 configuration before the ordinary noninteractive probe or inventory refresh
 retries.
-When that retry needs interactive authentication, Ghosthub presents the system
-OpenSSH process in a libghostty terminal surface. A successful prompt leaves a
-non-persistent OpenSSH master alive for the app session, and inventory,
-transfers, and tmux clients reuse its control socket under `~/.ghosthub/ssh/`.
-Swift never receives or stores the password or other authentication response.
+When that retry needs interactive authentication, Ghosthub presents OpenSSH's
+exact challenge in a native secure-entry sheet. The app brokers the session-only
+response to the system client through a private FIFO; it does not put the
+response in process arguments, environment variables, logs, or persistent
+storage. A successful prompt leaves a non-persistent OpenSSH master alive for
+the app session, and inventory, transfers, and tmux clients reuse its control
+socket under `~/.ghosthub/ssh/`.
 Before opening that channel, Ghosthub reads the effective destination policy
 with `ssh -G`. It tightens `accept-new` to an explicit review but does not
 override `yes`, `no`, or `off`; approval matches the parsed algorithm and

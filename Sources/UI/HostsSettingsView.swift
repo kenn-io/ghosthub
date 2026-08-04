@@ -69,6 +69,7 @@ public struct HostsSettingsView: View {
     @State private var remoteProjectMessage: String?
     @State private var pendingSSHHostTrust: PendingSSHHostTrust?
     @State private var pendingSSHAuthentication: HostOperationTarget?
+    @State private var sshAuthenticationSucceeded = false
     @State private var isTrustingSSHHost = false
     @State private var hostTrustErrorMessage: String?
     @Binding var sshHosts: [SSHHostDraft]
@@ -758,7 +759,7 @@ public struct HostsSettingsView: View {
             switch trustResult {
             case let .success(confirmation):
                 guard let confirmation else {
-                    pendingSSHAuthentication = target
+                    beginSSHAuthentication(target)
                     return
                 }
                 pendingSSHHostTrust = PendingSSHHostTrust(
@@ -799,7 +800,7 @@ public struct HostsSettingsView: View {
                 )
             } else {
                 pendingSSHHostTrust = nil
-                pendingSSHAuthentication = pending.target
+                beginSSHAuthentication(pending.target)
             }
         case let .failure(error):
             hostTrustErrorMessage = error.displayMessage
@@ -930,6 +931,7 @@ public struct HostsSettingsView: View {
         hostProbeErrorMessage = nil
         pendingSSHHostTrust = nil
         pendingSSHAuthentication = nil
+        sshAuthenticationSucceeded = false
         hostTrustErrorMessage = nil
         remoteKwtInstallMessage = nil
         remoteProjectMessage = nil
@@ -985,47 +987,60 @@ public struct HostsSettingsView: View {
             .font(.system(size: 20, weight: .semibold))
 
             Text(
-                "Complete the SSH authentication prompt below. Ghosthub"
-                    + " will test the connection automatically once OpenSSH"
-                    + " connects."
+                "Enter the response requested by OpenSSH. Ghosthub keeps it"
+                    + " only long enough to complete this connection."
             )
             .font(.system(size: 12))
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
 
-            if let draft,
-               let terminal = sshAuthenticationView(
-                   target.draftID,
-                   draft.sshHost
-               ) {
-                terminal
-                    .frame(height: 320)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 8)
-                            .stroke(.separator, lineWidth: 1)
-                    }
+            if sshAuthenticationSucceeded {
+                Label(
+                    "Connected successfully",
+                    systemImage: "checkmark.circle.fill"
+                )
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.green)
+                Text(
+                    "Continue to test the remote tools available to Ghosthub."
+                )
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+            } else if let draft,
+                      let authentication = sshAuthenticationView(
+                          target.draftID,
+                          draft.sshHost
+                      ) {
+                authentication
             } else {
                 ContentUnavailableView(
-                    "SSH Terminal Unavailable",
-                    systemImage: "terminal",
+                    "SSH Authentication Unavailable",
+                    systemImage: "key.slash",
                     description: Text(
-                        "Ghosthub could not open the authentication terminal."
+                        "Ghosthub could not start OpenSSH authentication."
                     )
                 )
-                .frame(height: 240)
             }
 
             HStack {
                 Spacer()
-                Button("Cancel", role: .cancel) {
-                    cancelSSHAuthentication(target.draftID)
-                    pendingSSHAuthentication = nil
+                if sshAuthenticationSucceeded, let draft {
+                    Button("Continue") {
+                        pendingSSHAuthentication = nil
+                        sshAuthenticationSucceeded = false
+                        Task { await probeHost(draft) }
+                    }
+                    .keyboardShortcut(.defaultAction)
+                } else {
+                    Button("Cancel", role: .cancel) {
+                        cancelSSHAuthentication(target.draftID)
+                        pendingSSHAuthentication = nil
+                    }
                 }
             }
         }
         .padding(24)
-        .frame(width: 720)
+        .frame(width: 520)
         .task(id: target.id) {
             await monitorSSHAuthentication(target)
         }
@@ -1045,12 +1060,18 @@ public struct HostsSettingsView: View {
                   drafts: sshHosts
               ) {
             if await isSSHAuthenticationReady(draft.sshHost) {
-                pendingSSHAuthentication = nil
-                await probeHost(draft)
+                sshAuthenticationSucceeded = true
                 return
             }
             try? await Task.sleep(for: .seconds(1))
         }
+    }
+
+    private func beginSSHAuthentication(
+        _ target: HostOperationTarget
+    ) {
+        sshAuthenticationSucceeded = false
+        pendingSSHAuthentication = target
     }
 
     private func hostSettingField<Control: View>(

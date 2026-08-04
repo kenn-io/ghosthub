@@ -11,22 +11,6 @@ enum SSHConnectionPool {
         return connectionArguments(controlPath: path)
     }
 
-    static func authenticationCommand(for host: SSHHostInfo) -> String? {
-        guard let path = preparedControlPath() else { return nil }
-        return surfaceAccountLoginShellCommand(
-            authenticationArguments(
-                for: host,
-                controlPath: path,
-                hostKeyArguments:
-                SSHConfigurationResolver.interactiveHostKeyArguments(
-                    for: host
-                )
-            )
-            .map(shellQuotedCommandArgument)
-            .joined(separator: " ")
-        )
-    }
-
     static func isAuthenticated(_ host: SSHHostInfo) -> Bool {
         guard let path = preparedControlPath() else { return false }
         let result = TmuxBinaryResolver.runProcessInLoginShell(
@@ -42,18 +26,22 @@ enum SSHConnectionPool {
         ["-o", "ControlPath=\(controlPath)"]
     }
 
+    static func controlPath() -> String? {
+        preparedControlPath()
+    }
+
     static func authenticationArguments(
         for host: SSHHostInfo,
         controlPath: String,
         hostKeyArguments: [String]
     ) -> [String] {
         var arguments = [
-            "/usr/bin/ssh",
             "-N",
             "-o", "BatchMode=no",
             "-o", "ControlMaster=yes",
             "-o", "ControlPersist=no",
             "-o", "ControlPath=\(controlPath)",
+            "-o", "NumberOfPasswordPrompts=1",
             "-o", "ConnectTimeout=15",
             "-o", "ConnectionAttempts=1",
             "-o", "ServerAliveInterval=15",

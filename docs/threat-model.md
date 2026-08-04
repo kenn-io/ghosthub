@@ -130,11 +130,12 @@ approved key to its configured `UserKnownHostsFile`,
 after which Ghosthub retries the connection or inventory operation that led to
 the review.
 If OpenSSH then requires a password or another interactive response, Ghosthub
-hosts the system client in a terminal surface and shares only its authenticated
-control socket with later app operations. The credential stays between the
-user and OpenSSH: Ghosthub does not read, store, log, or forward it. The master
-has no persistence after its owning terminal process and app session end, and
-its socket lives in the user-only Ghosthub state directory.
+shows the exact challenge in a native secure field and brokers the response to
+the system client through a user-only FIFO. The response exists in app memory
+for that attempt but is never placed in process arguments, environment
+variables, logs, or persistent storage. Later app operations share only the
+authenticated control socket. The master has no persistence after the app
+session ends, and its socket lives in the user-only Ghosthub state directory.
 Ghosthub never forces `accept-new`, writes a scanned key itself, or treats a
 trusted short alias as authorization for a canonical MagicDNS FQDN.
 When an SSH route contains unseen intermediate hosts, each trust sheet labels

@@ -5,6 +5,7 @@ enum SSHConnectionRecoveryPresentation: Equatable {
     case checking
     case hostKey
     case authentication
+    case authenticationSucceeded
     case inventoryIssue
     case connectionIssue
 }
@@ -105,6 +106,11 @@ final class WorkspaceSSHHostKeyReviewModel: ObservableObject {
         resolvedPresentation = nil
         isLoading = false
     }
+
+    func authenticationSucceeded() {
+        guard presentation == .authentication else { return }
+        resolvedPresentation = .authenticationSucceeded
+    }
 }
 
 struct SSHHostKeyReviewView: View {
@@ -130,8 +136,8 @@ struct SSHHostKeyReviewView: View {
                 SSHHostKeyConfirmationDetails(confirmation: confirmation)
             } else if model.presentation == .authentication {
                 Text(
-                    "Complete the SSH authentication prompt below. Ghosthub"
-                        + " will continue automatically once OpenSSH connects."
+                    "Enter the response requested by OpenSSH. Ghosthub keeps"
+                        + " it only long enough to complete this connection."
                 )
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
@@ -139,22 +145,29 @@ struct SSHHostKeyReviewView: View {
 
                 if let authenticationContent {
                     authenticationContent
-                        .frame(height: 320)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 8)
-                                .stroke(.separator, lineWidth: 1)
-                        }
+                        .padding(.vertical, 4)
                 } else {
                     ContentUnavailableView(
-                        "SSH Terminal Unavailable",
-                        systemImage: "terminal",
+                        "SSH Authentication Unavailable",
+                        systemImage: "key.slash",
                         description: Text(
-                            "Ghosthub could not open the authentication terminal."
+                            "Ghosthub could not start OpenSSH authentication."
                         )
                     )
-                    .frame(height: 240)
                 }
+            } else if model.presentation == .authenticationSucceeded {
+                Label(
+                    "Connected successfully",
+                    systemImage: "checkmark.circle.fill"
+                )
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.green)
+                Text(
+                    "Ghosthub is refreshing this host’s inventory over the"
+                        + " authenticated SSH connection."
+                )
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
             }
 
             if let errorMessage = model.errorMessage {
@@ -163,8 +176,13 @@ struct SSHHostKeyReviewView: View {
 
             HStack {
                 Spacer()
-                Button("Cancel", role: .cancel, action: onCancel)
-                    .disabled(model.isTrusting)
+                if model.presentation == .authenticationSucceeded {
+                    Button("Done", action: onCancel)
+                        .keyboardShortcut(.defaultAction)
+                } else {
+                    Button("Cancel", role: .cancel, action: onCancel)
+                        .disabled(model.isTrusting)
+                }
                 if model.confirmation != nil {
                     Button(
                         model.isTrusting
@@ -187,7 +205,7 @@ struct SSHHostKeyReviewView: View {
         }
         .padding(24)
         .frame(
-            width: model.presentation == .authentication ? 720 : 520
+            width: 520
         )
         .interactiveDismissDisabled(model.isTrusting)
     }
@@ -205,6 +223,12 @@ struct SSHHostKeyReviewView: View {
             Label(
                 "Authenticate with \(model.hostName)",
                 systemImage: "key"
+            )
+            .font(.system(size: 20, weight: .semibold))
+        case .authenticationSucceeded:
+            Label(
+                "Connected to \(model.hostName)",
+                systemImage: "checkmark.circle"
             )
             .font(.system(size: 20, weight: .semibold))
         case .inventoryIssue:

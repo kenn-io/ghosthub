@@ -5,7 +5,6 @@ public enum TerminalSurfaceTarget: String, CaseIterable, Identifiable, Equatable
     case worktreeAssistant
     case console
     case logViewer
-    case sshAuthentication
     case tmuxSession
 
     public var id: String {
