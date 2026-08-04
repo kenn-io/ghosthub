@@ -186,6 +186,8 @@ enum SSHConfigurationResolver {
             var arguments = [
                 "/usr/bin/ssh",
                 "-o", "BatchMode=\(batchMode)",
+                "-o", "ControlMaster=no",
+                "-o", "ControlPersist=no",
                 "-o", "ConnectTimeout=10",
                 "-o", "ConnectionAttempts=1",
             ]

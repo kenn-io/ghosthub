@@ -71,7 +71,6 @@ struct SSHAuthenticationView: View {
                     Spacer()
                     Button("Continue", action: submit)
                         .keyboardShortcut(.defaultAction)
-                        .disabled(response.isEmpty)
                 }
                 .onAppear { responseIsFocused = true }
                 .onChange(of: prompt.id) { _, _ in
@@ -102,7 +101,6 @@ struct SSHAuthenticationView: View {
     }
 
     private func submit() {
-        guard !response.isEmpty else { return }
         let submittedResponse = response
         response = ""
         session.submit(submittedResponse)

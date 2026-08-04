@@ -106,14 +106,22 @@ struct SSHConfigurationResolverTests {
                             user: "relay",
                             strictHostKeyChecking: "ask",
                             proxyJump: nil,
-                            proxyCommand: nil
+                            proxyCommand: nil,
+                            resolvedOptions: [
+                                "controlmaster=auto",
+                                "controlpersist=600",
+                            ]
                         )
                     case "core.example.test":
                         EffectiveSSHConfiguration(
                             user: nil,
                             strictHostKeyChecking: "accept-new",
                             proxyJump: nil,
-                            proxyCommand: nil
+                            proxyCommand: nil,
+                            resolvedOptions: [
+                                "controlmaster=auto",
+                                "controlpersist=600",
+                            ]
                         )
                     default:
                         nil
@@ -150,6 +158,8 @@ struct SSHConfigurationResolverTests {
         )
         for option in [
             "BatchMode=yes",
+            "ControlMaster=no",
+            "ControlPersist=no",
             "ConnectTimeout=10",
             "ConnectionAttempts=1",
         ] {
@@ -157,6 +167,8 @@ struct SSHConfigurationResolverTests {
                 proxyCommand.components(separatedBy: option).count == 3
             )
         }
+        #expect(!proxyCommand.contains("ControlMaster=auto"))
+        #expect(!proxyCommand.contains("ControlPersist=600"))
         #expect(proxyCommand.contains("[%%h]:%%p"))
         #expect(proxyCommand.contains("[%h]:%p"))
     }

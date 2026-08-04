@@ -189,9 +189,10 @@ running, so concurrent Ghosthub instances cannot unlink each other's masters.
 When the state-home path would exceed macOS's Unix-socket limit, Ghosthub uses
 the same process-owned namespace under `/tmp` and rejects any still-oversized
 path before launching OpenSSH.
-Routine clients explicitly disable `ControlMaster` and `ControlPersist`; they
-may reuse Ghosthub's supervised socket but cannot create another master, even
-when Ghosthub cannot prepare that socket. Master preparation resolves one
+Routine clients and generated ProxyJump helpers explicitly disable
+`ControlMaster` and `ControlPersist`; they may reuse Ghosthub's supervised
+socket but cannot create another master, even when Ghosthub cannot prepare that
+socket. Master preparation resolves one
 effective-config snapshot, verifies that its control identity still matches
 the cached path, and launches the endpoint, route, authentication, and
 known-hosts options from that same snapshot under an empty base SSH
@@ -226,7 +227,8 @@ host needs a password or other challenge, Ghosthub authenticates that reviewed
 hop first and uses its app-session control connection to reach the next host.
 The secure-entry sheet names the exact route host controlling the challenge
 using its effective SSH user, hostname, and port, and warns the user to enter
-only that host's credentials.
+only that host's credentials. Continue also permits a deliberate empty response
+for keyboard-interactive challenges that require one.
 Opaque ProxyCommand routes and jump hosts that introduce another proxy route
 fail closed because Ghosthub cannot independently enforce every intermediate
 host-key policy.

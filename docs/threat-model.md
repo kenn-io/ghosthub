@@ -148,9 +148,10 @@ master.
 If that state path would exceed the Unix-socket limit, Ghosthub uses a random,
 process-owned `/tmp` namespace with the same dead-owner cleanup rule and rejects
 any path that remains too long.
-Routine clients explicitly disable `ControlMaster` and `ControlPersist`, so
-user configuration cannot turn them into unsupervised persistent masters even
-when Ghosthub cannot prepare its control socket. Authentication preparation
+Routine clients and generated ProxyJump helpers explicitly disable
+`ControlMaster` and `ControlPersist`, so user configuration cannot turn them
+into unsupervised persistent masters even when Ghosthub cannot prepare its
+control socket. Authentication preparation
 resolves one effective-config snapshot, verifies its cached control identity,
 and launches the endpoint, route, authentication, and known-hosts options from
 that same snapshot under an empty base SSH configuration. It restarts recovery
@@ -178,7 +179,8 @@ its app-session master before asking OpenSSH for the next host's key. The
 secure-entry sheet names that exact route host and warns that the host controls
 the challenge. The label comes from the effective user, hostname, and port in
 the launch configuration, so credentials for the final destination are not
-presented to an intermediate hop. A later
+presented to an intermediate hop. A deliberate Continue action can submit the
+empty response required by some keyboard-interactive challenges. A later
 prompt is never treated as proof that the reviewed host changed its key.
 Routine inventory, transfer, and attachment operations prevent silent
 enrollment at every host in a direct ProxyJump list. Review-managed `ask` and
