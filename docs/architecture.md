@@ -170,12 +170,13 @@ Rust runtime into it. Cross-platform parity is enforced through the
 repository-root contracts corpus rather than a shared process, FFI domain
 model, or live database.
 
-Rust keeps backend and authority boundaries structural: UI cannot reach host,
-terminal, store, or config execution; persistence cannot reach session launch
-or kill authority; and the terminal backend remains private behind a
-capability-shaped seam. A small leaf surface package carries Rust-owned paint
-buffers and scroll-aware damage between the terminal worker and GPUI without
-granting UI any PTY capability.
+Rust keeps backend and authority boundaries structural: the UI package has
+direct dependencies only on workspace, model, and surface, while persistence
+cannot reach session launch or kill authority through any transitive
+dependency. The terminal backend remains private behind a capability-shaped
+seam. A small leaf surface package carries Rust-owned paint buffers and
+scroll-aware damage between the terminal worker and GPUI without granting UI
+any PTY capability.
 
 Ghosthub still has one UI application process and no Ghosthub-owned daemon.
 External tmux and psmux servers are the long-lived session owners. Closing or
@@ -539,7 +540,7 @@ Ghosthub does not scan the host for repositories.
 | `Sources/Workspace/` | Pure workspace, host, project, worktree, and session models |
 | `Sources/Persistence/` | GRDB repositories for app-local state |
 | `rust/` | Planned Rust workspace for native Windows and Linux applications |
-| `contracts/` | Language-neutral behavioral fixtures consumed by Swift and Rust |
+| `contracts/` | Planned language-neutral behavioral fixtures consumed by Swift and Rust |
 | `docs/rust-port.md` | Locked Rust-port architecture, gates, and delivery order |
 | `tools/` | Python bootstrap and packaging automation |
 | `Tests/` | Swift tests |
