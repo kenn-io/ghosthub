@@ -2835,13 +2835,14 @@ final class WorkspaceSceneModel: ObservableObject {
                 sshHost,
                 probeCommand
             )
-            let sshReached = result.stdout.contains(
-                "GHOSTHUB_SSH_REACHED"
-            )
-            let tmuxAvailable = result.stdout.contains(
+            let protocolLines = Set(result.stdout.split(
+                whereSeparator: \Character.isNewline
+            ).map(String.init))
+            let sshReached = protocolLines.contains("GHOSTHUB_SSH_REACHED")
+            let tmuxAvailable = protocolLines.contains(
                 "GHOSTHUB_TMUX_AVAILABLE"
             )
-            let kwtAvailable = result.stdout.contains(
+            let kwtAvailable = protocolLines.contains(
                 "GHOSTHUB_KWT_AVAILABLE"
             )
             let diagnostics: [RemoteHostDiagnostic]

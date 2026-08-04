@@ -190,11 +190,13 @@ When the state-home path would exceed macOS's Unix-socket limit, Ghosthub uses
 the same process-owned namespace under `/tmp` and rejects any still-oversized
 path before launching OpenSSH.
 Routine clients and generated ProxyJump helpers explicitly disable
-`ControlMaster` and `ControlPersist`; they may reuse Ghosthub's supervised
-socket but cannot create another master, even when Ghosthub cannot prepare that
-socket. Generated proxy commands also force ordinary stdin/stdout forwarding
-instead of inheriting `ProxyUseFdpass`, because Ghosthub's nested route commands
-do not return file descriptors. Master preparation resolves one
+`ControlMaster` and `ControlPersist`; routine clients receive only Ghosthub's
+supervised socket, while fallback proxy helpers set `ControlPath=none` so they
+cannot inherit or create an unrelated master. Generated proxy commands also
+force ordinary stdin/stdout forwarding instead of inheriting `ProxyUseFdpass`,
+because Ghosthub's nested route commands do not return file descriptors.
+Host-key review replays resolved key-exchange, cipher, MAC, and minimum RSA-key
+constraints alongside known-hosts policy. Master preparation resolves one
 effective-config snapshot, verifies that its control identity still matches
 the cached path, and launches the endpoint, route, authentication, and
 known-hosts options from that same snapshot under an empty base SSH
@@ -210,9 +212,9 @@ forking, so the app watchdog retains ownership of its lifetime. It removes
 inherited tmux launcher state before starting the master through the account
 login shell, preserving the same environment boundary used
 by configuration checks and ordinary SSH operations.
-Remote connection probes parse their protocol markers only from stdout; SSH
-and login-shell stderr remains a separate diagnostic channel and cannot make a
-failed probe appear reachable.
+Remote connection probes parse exact protocol-marker lines only from stdout;
+SSH and login-shell diagnostics, including marker text embedded in a banner,
+cannot make a failed probe appear reachable.
 Window presentations hold leases on shared authentication attempts. Closing a
 window cancels an unfinished attempt only after its final presenting window
 releases it; an authenticated master remains available until the app exits.

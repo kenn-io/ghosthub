@@ -2171,7 +2171,7 @@ struct WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
-    @Test("connection probe reports an SSH failure independently")
+    @Test("connection probe requires exact protocol lines")
     func connectionProbeReportsSSHFailure() async throws {
         let environment = try setupStandardEnvironment()
         let model = try makeModel(
@@ -2180,10 +2180,10 @@ struct WorkspaceTmuxDiscoveryTests {
             sshHostProbeRunner: { _, _ in
                 (
                     status: 255,
-                    stdout: "",
-                    stderr:
-                    "debug: GHOSTHUB_SSH_REACHED "
-                        + "GHOSTHUB_TMUX_AVAILABLE\n"
+                    stdout:
+                    "banner: GHOSTHUB_SSH_REACHED "
+                        + "GHOSTHUB_TMUX_AVAILABLE\n",
+                    stderr: "connection failed\n"
                 )
             }
         )

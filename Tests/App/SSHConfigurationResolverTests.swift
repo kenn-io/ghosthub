@@ -164,6 +164,7 @@ struct SSHConfigurationResolverTests {
             "BatchMode=yes",
             "ControlMaster=no",
             "ControlPersist=no",
+            "ControlPath=none",
             "ProxyUseFdpass=no",
             "ConnectTimeout=10",
             "ConnectionAttempts=1",
@@ -282,6 +283,41 @@ struct SSHConfigurationResolverTests {
 
         #expect(arguments.contains("identityfile=~/.ssh/id_ed25519"))
         #expect(!arguments.contains("proxyusefdpass=yes"))
+    }
+
+    @Test("connection snapshots preserve transport and key constraints")
+    func preservesConnectionConstraints() {
+        let host = SSHHostInfo(
+            user: "deploy",
+            hostname: "build.example.test",
+            port: nil
+        )
+        let preserved = [
+            "ciphers=aes256-gcm@openssh.com",
+            "kexalgorithms=curve25519-sha256",
+            "macs=hmac-sha2-512-etm@openssh.com",
+            "requiredrsasize=4096",
+        ]
+
+        let arguments = SSHConfigurationResolver.snapshotConnectionArguments(
+            for: host,
+            configurationProvider: { _ in
+                EffectiveSSHConfiguration(
+                    user: "deploy",
+                    strictHostKeyChecking: "ask",
+                    proxyJump: nil,
+                    proxyCommand: nil,
+                    resolvedOptions: preserved + [
+                        "identityfile=/credentials/id_ed25519",
+                    ]
+                )
+            }
+        )
+
+        for option in preserved {
+            #expect(arguments.contains(option))
+        }
+        #expect(!arguments.contains("identityfile=/credentials/id_ed25519"))
     }
 
     @Test("opaque proxy commands fail routine SSH operations closed")

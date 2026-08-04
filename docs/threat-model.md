@@ -151,8 +151,12 @@ any path that remains too long.
 Routine clients and generated ProxyJump helpers explicitly disable
 `ControlMaster` and `ControlPersist`, so user configuration cannot turn them
 into unsupervised persistent masters even when Ghosthub cannot prepare its
-control socket. Generated proxy commands force `ProxyUseFdpass=no`, keeping the
-route on the standard stream-forwarding contract that Ghosthub constructs.
+control socket. Fallback proxy helpers also set `ControlPath=none`, preventing
+reuse of an inherited user-controlled master. Generated proxy commands force
+`ProxyUseFdpass=no`, keeping the route on the standard stream-forwarding
+contract that Ghosthub constructs. Host-key review preserves the resolved
+key-exchange, cipher, MAC, and minimum RSA-key constraints used by the later
+authenticated connection.
 Authentication preparation
 resolves one effective-config snapshot, verifies its cached control identity,
 and launches the endpoint, route, authentication, and known-hosts options from
@@ -169,9 +173,9 @@ inherited `TMUX` and `TMUX_PANE` values before login-shell startup. Host-key
 review launches with snapshot-derived endpoint, route, and known-hosts options
 under an empty base SSH configuration, so live config changes cannot redirect
 the reviewed operation.
-Remote connection probes accept reachability and capability markers only from
-stdout. Stderr is retained solely as diagnostics, so SSH or shell messages
-cannot spoof a successful probe.
+Remote connection probes accept only exact reachability and capability lines
+from stdout. Stderr and marker text embedded in shell banners are diagnostics,
+so SSH or shell messages cannot spoof a successful probe.
 Ghosthub never forces `accept-new`, writes a scanned key itself, or treats a
 trusted short alias as authorization for a canonical MagicDNS FQDN.
 When an SSH route contains unseen intermediate hosts, each trust sheet labels
