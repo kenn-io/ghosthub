@@ -895,15 +895,11 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
     delay=1
     failures=0
     while :; do
-        started=$(date +%s)
         "$@"
         status=$?
         [ "$status" -eq 255 ] || exit "$status"
-        now=$(date +%s)
-        if [ $((now - started)) -ge 30 ]; then
-            delay=1
-            failures=0
-        fi
+        # A slow 255 can still be proxy, authentication, or transport setup
+        # failure. Elapsed time alone must never make it a successful attach.
         failures=$((failures + 1))
         [ "$failures" -lt 3 ] || exit "$status"
         printf '\r\n[Ghosthub: SSH disconnected; reconnecting in %ss]\r\n' "$delay"

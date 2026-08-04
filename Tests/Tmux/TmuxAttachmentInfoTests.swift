@@ -1342,6 +1342,63 @@ struct TmuxAttachmentInfoTests {
         #expect(try String(contentsOf: counter, encoding: .utf8) == "xxx")
     }
 
+    @Test("slow SSH failures still return control to native recovery")
+    func slowPersistentSSHFailureStopsReconnect() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let counter = directory.appendingPathComponent("count")
+        let clock = directory.appendingPathComponent("clock")
+        let fakeSSH = directory.appendingPathComponent("fake-ssh")
+        let fakeDate = directory.appendingPathComponent("date")
+        let fakeSleep = directory.appendingPathComponent("sleep")
+        try """
+        #!/bin/sh
+        printf x >> "$GHOSTHUB_TEST_COUNTER"
+        [ "$(wc -c < "$GHOSTHUB_TEST_COUNTER")" -gt 4 ] && exit 0
+        exit 255
+        """.write(to: fakeSSH, atomically: true, encoding: .utf8)
+        try """
+        #!/bin/sh
+        count=0
+        [ ! -f "$GHOSTHUB_TEST_CLOCK" ] || count=$(cat "$GHOSTHUB_TEST_CLOCK")
+        count=$((count + 1))
+        printf '%s' "$count" > "$GHOSTHUB_TEST_CLOCK"
+        if [ $((count % 2)) -eq 1 ]; then printf '0\n'; else printf '31\n'; fi
+        """.write(to: fakeDate, atomically: true, encoding: .utf8)
+        try "#!/bin/sh\nexit 0\n".write(
+            to: fakeSleep, atomically: true, encoding: .utf8
+        )
+        for executable in [fakeSSH, fakeDate, fakeSleep] {
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o755], ofItemAtPath: executable.path
+            )
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = [
+            "-c", TmuxAttachmentInfo.sshReconnectScript,
+            "ghosthub-test", fakeSSH.path,
+        ]
+        process.environment = ProcessInfo.processInfo.environment.merging([
+            "GHOSTHUB_TEST_COUNTER": counter.path,
+            "GHOSTHUB_TEST_CLOCK": clock.path,
+            "PATH": directory.path + ":"
+                + ProcessInfo.processInfo.environment["PATH", default: ""],
+        ]) { _, new in new }
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+
+        #expect(process.terminationStatus == 255)
+        #expect(try String(contentsOf: counter, encoding: .utf8) == "xxx")
+    }
+
     @Test("ordinary remote-command failure does not reconnect")
     func doesNotRetryTmuxFailure() throws {
         let directory = FileManager.default.temporaryDirectory
