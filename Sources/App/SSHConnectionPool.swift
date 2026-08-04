@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 import GhosthubTmux
 import GhosthubWorkspace
@@ -52,6 +53,10 @@ enum SSHConnectionPool {
 
     private static let directoryName = "ssh"
     private static let appSessionID = UUID().uuidString
+    private static let appSessionDirectoryName = sessionDirectoryName(
+        processID: ProcessInfo.processInfo.processIdentifier,
+        sessionID: appSessionID
+    )
 
     static func connectionArguments(for host: SSHHostInfo) -> [String] {
         connectionArguments(controlPath: controlPath(for: host))
@@ -342,7 +347,8 @@ enum SSHConnectionPool {
 
     static func removeStaleControlSockets(
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        processIsRunning: (Int32) -> Bool = liveProcessExists
     ) {
         let directory = controlDirectory(
             environment: environment,
@@ -352,9 +358,42 @@ enum SSHConnectionPool {
             at: directory,
             includingPropertiesForKeys: nil
         ) else { return }
-        for url in contents where url.lastPathComponent.hasPrefix("control-") {
+        for url in contents {
+            guard let owner = sessionOwnerProcessID(
+                directoryName: url.lastPathComponent
+            ), !processIsRunning(owner)
+            else { continue }
             try? fileManager.removeItem(at: url)
         }
+    }
+
+    private static func sessionDirectoryName(
+        processID: Int32,
+        sessionID: String
+    ) -> String {
+        "session-\(processID)-\(sessionID.prefix(8))"
+    }
+
+    private static func sessionOwnerProcessID(
+        directoryName: String
+    ) -> Int32? {
+        let components = directoryName.split(
+            separator: "-",
+            maxSplits: 2
+        )
+        guard components.count == 3,
+              components[0] == "session",
+              !components[2].isEmpty
+        else { return nil }
+        return Int32(components[1])
+    }
+
+    private static func liveProcessExists(_ processID: Int32) -> Bool {
+        guard processID > 0 else { return false }
+        if kill(processID, 0) == 0 {
+            return true
+        }
+        return errno == EPERM
     }
 
     private static func routeComponent(
@@ -387,7 +426,7 @@ enum SSHConnectionPool {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         fileManager: FileManager = .default
     ) -> String? {
-        let directory = controlDirectory(
+        let directory = controlSessionDirectory(
             environment: environment,
             fileManager: fileManager
         )
@@ -468,5 +507,18 @@ enum SSHConnectionPool {
             environment: environment,
             fileManager: fileManager
         ).appendingPathComponent(directoryName, isDirectory: true)
+    }
+
+    private static func controlSessionDirectory(
+        environment: [String: String],
+        fileManager: FileManager
+    ) -> URL {
+        controlDirectory(
+            environment: environment,
+            fileManager: fileManager
+        ).appendingPathComponent(
+            appSessionDirectoryName,
+            isDirectory: true
+        )
     }
 }

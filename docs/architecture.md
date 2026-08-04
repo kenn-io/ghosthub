@@ -177,13 +177,15 @@ response to the system client through a private FIFO; it does not put the
 response in process arguments, environment variables, logs, or persistent
 storage. A successful prompt leaves a non-persistent OpenSSH master owned by
 the application session, and every window's inventory, transfer, and tmux
-clients reuse its control socket under `~/.ghosthub/ssh/`. Its bounded socket
+clients reuse its control socket in a per-launch namespace under
+`~/.ghosthub/ssh/`. Its bounded socket
 name includes an app-launch nonce plus a digest of the logical destination,
 the normalized effective OpenSSH configuration for every route target, and the
 proxy route, so changes to credentials, known-hosts files, trust identities,
 routes, or app launches cannot reuse an authenticated master. A parent-held
-watchdog pipe terminates each master if
-the app process disappears, and the next launch removes stale control sockets.
+watchdog pipe terminates each master if the app process disappears. The next
+launch removes only socket namespaces owned by processes that are no longer
+running, so concurrent Ghosthub instances cannot unlink each other's masters.
 Routine clients explicitly disable `ControlMaster` and `ControlPersist`; they
 may reuse Ghosthub's supervised socket but cannot create another master, even
 when Ghosthub cannot prepare that socket. Immediately before launching a master,

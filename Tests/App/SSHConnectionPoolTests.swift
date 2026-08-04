@@ -258,8 +258,8 @@ struct SSHConnectionPoolTests {
         ))
     }
 
-    @Test("stale Ghosthub control sockets are removed at app launch")
-    func removesStaleControlSockets() throws {
+    @Test("control cleanup removes dead sessions and preserves live sessions")
+    func removesOnlyDeadControlSessions() throws {
         let stateHome = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: stateHome) }
@@ -271,10 +271,34 @@ struct SSHConnectionPoolTests {
             at: directory,
             withIntermediateDirectories: true
         )
-        let stale = directory.appendingPathComponent("control-stale")
+        let stale = directory.appendingPathComponent(
+            "session-101-stale",
+            isDirectory: true
+        )
+        let live = directory.appendingPathComponent(
+            "session-202-live",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: stale,
+            withIntermediateDirectories: false
+        )
+        try FileManager.default.createDirectory(
+            at: live,
+            withIntermediateDirectories: false
+        )
+        let legacyControl = directory.appendingPathComponent("control-legacy")
         let unrelated = directory.appendingPathComponent("notes")
         _ = FileManager.default.createFile(
-            atPath: stale.path,
+            atPath: stale.appendingPathComponent("control-old").path,
+            contents: Data()
+        )
+        _ = FileManager.default.createFile(
+            atPath: live.appendingPathComponent("control-active").path,
+            contents: Data()
+        )
+        _ = FileManager.default.createFile(
+            atPath: legacyControl.path,
             contents: Data()
         )
         _ = FileManager.default.createFile(
@@ -283,10 +307,13 @@ struct SSHConnectionPoolTests {
         )
 
         SSHConnectionPool.removeStaleControlSockets(
-            environment: ["GHOSTHUB_STATE_HOME": stateHome.path]
+            environment: ["GHOSTHUB_STATE_HOME": stateHome.path],
+            processIsRunning: { $0 == 202 }
         )
 
         #expect(!FileManager.default.fileExists(atPath: stale.path))
+        #expect(FileManager.default.fileExists(atPath: live.path))
+        #expect(FileManager.default.fileExists(atPath: legacyControl.path))
         #expect(FileManager.default.fileExists(atPath: unrelated.path))
     }
 

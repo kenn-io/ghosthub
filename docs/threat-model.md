@@ -137,8 +137,10 @@ variables, logs, or persistent storage. Later app operations share only the
 authenticated control socket. The master has no persistence after the app
 session ends: Ghosthub prevents it from forking, a parent-held watchdog pipe
 terminates it if the app process disappears, the socket name contains an
-app-launch nonce, and the next launch removes stale control sockets. Its socket
-lives in the user-only Ghosthub state directory and is also scoped to the
+app-launch nonce, and each launch uses its own process-owned socket namespace.
+Startup cleanup removes only namespaces whose owner process is no longer
+running, so a concurrent Ghosthub instance retains access to its masters. The
+socket lives in the user-only Ghosthub state directory and is also scoped to the
 logical destination, the normalized effective OpenSSH configuration for every
 route target, and the proxy route. Changes to credentials, known-hosts files,
 host-key identity, route, or app launch therefore cannot reuse an authenticated
