@@ -1,9 +1,9 @@
 # Windows and Linux Rust Port
 
 This document is the maintained design for native Ghosthub applications on
-Windows and Linux. The Rust applications are planned and gated; the shipped
-macOS application remains SwiftUI/AppKit with libghostty. The shared product
-and terminal invariants remain authoritative in
+Windows and Linux. The Rust applications are under active development; the
+shipped macOS application remains SwiftUI/AppKit with libghostty. The shared
+product and terminal invariants remain authoritative in
 [architecture.md](architecture.md) and
 [terminal-sessions.md](terminal-sessions.md).
 
@@ -29,8 +29,11 @@ SwiftUI.
 - The implementations share behavioral contracts and fixtures, not a
   language-runtime boundary or a live database.
 
-The Rust workspace will live under rust/, while the repository-root contracts/
-directory will be consumed by both Swift and Rust tests.
+The Rust workspace lives under rust/. Rust-port development does not modify
+Swift sources, tests, package configuration, or macOS workflows. The
+repository-root contracts/ directory begins as a Rust-owned compatibility
+corpus. Any future Swift consumer is a separately authorized parity project,
+not an implicit requirement of Rust feature work.
 
 ### License closure
 
@@ -39,10 +42,18 @@ Apache-2.0-compatible policy. MIT and Apache-2.0 components are acceptable.
 GPL and AGPL Zed crates, including its UI and terminal application layers, are
 not acceptable dependencies.
 
-The repository will keep a deny.toml reviewed allowlist and run cargo-deny
-against normal, build, development, target-specific, and GPUI transitive
-dependencies. A dependency cannot enter the lockfile merely because its direct
-crate has an acceptable license; the complete linked closure must pass.
+The repository keeps `rust/deny.toml` as a reviewed allowlist and runs
+cargo-deny against normal, build, development, target-specific, and GPUI
+transitive dependencies. A dependency cannot enter the lockfile merely because
+its direct crate has an acceptable license; the complete linked closure must
+pass.
+
+GPUI 0.2.2's complete Windows/Linux graph currently requires two exact
+MPL-2.0 exceptions, `dwrote` 0.11.5 and `option-ext` 0.2.0. MPL-2.0 permits
+combination with Apache-licensed code, but the exception remains crate-scoped
+so a new copyleft dependency cannot arrive silently. Known unmaintained
+transitives are individually identified in deny.toml and must be reconsidered
+whenever the GPUI pin changes. GPL and AGPL remain unconditionally rejected.
 
 ### Verified dependency findings
 
@@ -65,9 +76,21 @@ The exact kwt revision in repository-root `KWT_REVISION` is
 12463d3a0b194d2d3937037ac5b57ad630114854. That source uses KWT_HOME or the
 fixed $HOME/.config/kwt default. It does not read Ghosthub init.toml,
 config_home, or XDG_CONFIG_HOME. Rust must not reproduce the unsupported
-Ghosthub init.toml scanner. Removing the two existing Swift copies is tracked
-as a prerelease compatibility cleanup before shared path fixtures become
-normative.
+Ghosthub init.toml scanner. The two existing Swift copies are outside the Rust
+port's scope and are not a prerequisite for Rust path fixtures.
+
+### Executable bootstrap
+
+The first checked-in workspace pins Rust 1.96.1 and GPUI 0.2.2. It contains
+`ghosthub-model`, `ghosthub-ui`, and the `ghosthub-app` composition root with a
+`ghosthub` binary. The GPUI window has been built and launched as a native
+Windows ARM64 process. Linux enables both Wayland and X11 backends and is
+compiled and tested independently rather than inferred from the Windows build.
+
+Rust CI exists only in `.github/workflows/rust-port.yml`. It runs Windows and
+Linux jobs for pushes and pull requests targeting the `rust-port` integration
+branch. It is neither present on nor triggered for `main`; the shipped Swift
+application's CI remains unchanged.
 
 ## 2. Terminal Presentation and Session Execution
 
@@ -411,12 +434,14 @@ failed host refreshes, ten minutes after scene activation, or user navigation.
 Expiry returns to host/project navigation with an explicit retry. A host
 returning hours later cannot spontaneously attach a window.
 
-### Shared contracts
+### Compatibility contracts
 
-The repository-root contracts/ manifest has stable IDs, schema versions,
-platform tags, and paths. Swift and Rust suites enumerate every applicable
-entry and fail on unknown, missing, duplicate, or unconsumed fixtures. Portable
-Rust contract tests run in macOS CI in addition to Windows and Linux.
+The planned repository-root contracts/ manifest has stable IDs, schema
+versions, platform tags, and paths. Rust suites enumerate every applicable
+entry and fail on unknown, missing, duplicate, or unconsumed fixtures. Rust
+contract tests run in Windows and Linux CI. A later, separately authorized
+Swift adapter may consume the same manifest without making Swift changes part
+of the Rust delivery path.
 
 The corpus covers:
 
@@ -438,8 +463,7 @@ The first product UI integration starts only after these tracked gates close:
 
 | Kata | Gate |
 | --- | --- |
-| gx9b | Remove both unsupported Swift init.toml scanners and update their tests |
-| 9bmg | Establish shared contracts, architecture checks, and cargo-deny |
+| 9bmg | Establish Rust contracts, architecture checks, and cargo-deny |
 | xvrf | Select the VT backend and prove reusable scroll-aware surface publication |
 | c2xv | Prove ConPTY I/O, Job Object handling, and application-death survival |
 | v27t | Prove psmux command, isolation, and identity capabilities |
@@ -516,8 +540,8 @@ scaffolding. POSIX uses a unique socket namespace. Windows uses a unique psmux
 namespace backed by its named-pipe transport. Both assert that the user's
 default server is untouched.
 
-The shipped Swift app gains a separate live macOS tmux survival gate, tracked
-by kata 87wp. Its result is not used as evidence for Windows.
+The Rust port adds no Swift or macOS live-attach work. POSIX tmux behavior on
+Linux is not used as evidence for the separate Windows Job Object path.
 
 ### Follow-on order
 
