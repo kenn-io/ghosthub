@@ -141,6 +141,8 @@ removes stale control sockets. Its socket lives in the user-only Ghosthub state
 directory and is also scoped to the logical destination, every effective
 `HostKeyAlias`, and the proxy route, preventing a master authenticated under one
 host-key identity, route, or app launch from satisfying another.
+Routine clients explicitly disable `ControlMaster` and `ControlPersist`, so
+user configuration cannot turn them into unsupervised persistent masters.
 Ghosthub never forces `accept-new`, writes a scanned key itself, or treats a
 trusted short alias as authorization for a canonical MagicDNS FQDN.
 When an SSH route contains unseen intermediate hosts, each trust sheet labels
@@ -149,9 +151,11 @@ prompt. If that hop requires interactive authentication, Ghosthub establishes
 its app-session master before asking OpenSSH for the next host's key. A later
 prompt is never treated as proof that the reviewed host changed its key.
 Routine inventory, transfer, and attachment operations prevent silent
-enrollment at every host in a direct ProxyJump list. Opaque ProxyCommand routes
-and jump hosts that introduce another proxy route fail closed because Ghosthub
-cannot resolve every intermediate trust policy independently.
+enrollment at every host in a direct ProxyJump list. Review-managed `ask` and
+`accept-new` connections also disable `UpdateHostKeys` so only the explicitly
+approved key is persisted. Opaque ProxyCommand routes and jump hosts that
+introduce another proxy route fail closed because Ghosthub cannot resolve every
+intermediate trust policy independently.
 
 When the user opens the imported workspace, Ghosthub invokes kwt's protected
 attach command through the remote account's login shell when applicable. Kwt

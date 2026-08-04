@@ -387,6 +387,10 @@ final class WorkspaceSceneModel: ObservableObject {
     private let sshAuthenticationScopeID = UUID()
     private var pendingSSHAuthenticationTargets:
         [String: SSHAuthenticationTarget] = [:]
+    private var configuredSSHAuthenticationTargets:
+        [String: SSHAuthenticationTarget] = [:]
+    private var sshAuthenticationControlPaths:
+        [SSHAuthenticationTarget: String] = [:]
     private let configuredSSHHostsProvider: () -> [SSHHost]
     private var configuredSSHHostsCancellable: AnyCancellable?
     private var terminalColorsCancellable: AnyCancellable?
@@ -2376,20 +2380,7 @@ final class WorkspaceSceneModel: ObservableObject {
         guard let resolved = resolvedSSHHost(host) else {
             return .failure(.message("Enter a valid SSH destination."))
         }
-        let result: Result<SSHHostTrustRequirement, HostProbeError> =
-            await Task.detached {
-                do {
-                    return .success(try SSHHostTrustManager()
-                        .pendingRequirement(
-                            for: resolved.info,
-                            destination: resolved.destination
-                        ))
-                } catch {
-                    return .failure(.message(
-                        error.localizedDescription
-                    ))
-                }
-            }.value
+        let result = await resolveSSHHostTrust(for: resolved)
         return mapSSHHostTrustRequirement(
             result,
             destination: resolved.destination
@@ -2420,18 +2411,7 @@ final class WorkspaceSceneModel: ObservableObject {
         guard let resolved = resolvedSSHHost(host) else {
             return .connectionIssue("Enter a valid SSH destination.")
         }
-        let trustResult: Result<SSHHostTrustRequirement, HostProbeError> =
-            await Task.detached {
-                do {
-                    return .success(try SSHHostTrustManager()
-                        .pendingRequirement(
-                            for: resolved.info,
-                            destination: resolved.destination
-                        ))
-                } catch {
-                    return .failure(.message(error.localizedDescription))
-                }
-            }.value
+        let trustResult = await resolveSSHHostTrust(for: resolved)
         switch trustResult {
         case let .success(requirement):
             switch requirement {
@@ -2489,6 +2469,9 @@ final class WorkspaceSceneModel: ObservableObject {
                     ))
                 }
             }.value
+        if case let .success(.authentication(target)) = result {
+            await cacheSSHAuthenticationControlPath(for: target)
+        }
         return mapSSHHostTrustRequirement(
             result,
             destination: resolved.destination
@@ -2519,12 +2502,18 @@ final class WorkspaceSceneModel: ObservableObject {
         for host: SSHHost
     ) -> AnyView? {
         guard let resolved = resolvedSSHHost(host) else { return nil }
-        let target = sshAuthenticationTarget(for: resolved)
+        guard let target = sshAuthenticationTarget(for: resolved) else {
+            return nil
+        }
+        guard let controlPath = sshAuthenticationControlPaths[target] else {
+            return nil
+        }
         return AnyView(SSHAuthenticationView(
             session: sshAuthenticationCoordinator.session(
                 scopeID: sshAuthenticationScopeID,
                 presentationID: surfaceID,
-                target: target
+                target: target,
+                controlPath: controlPath
             )
         ))
     }
@@ -2538,23 +2527,19 @@ final class WorkspaceSceneModel: ObservableObject {
         for host: SSHHost
     ) async -> SSHAuthenticationReadiness {
         guard let resolved = resolvedSSHHost(host) else { return .pending }
-        let target = sshAuthenticationTarget(for: resolved)
-        let status: (controlPath: String, isReady: Bool)? = await Task.detached {
-            () -> (controlPath: String, isReady: Bool)? in
-            guard let controlPath = SSHConnectionPool.controlPath(
-                for: target
-            ) else { return nil }
-            return (
-                controlPath: controlPath,
-                isReady:
-                SSHConnectionPool.isAuthenticated(
-                    target.host,
-                    controlPath: controlPath
-                )
+        guard let target = sshAuthenticationTarget(for: resolved) else {
+            return .pending
+        }
+        guard let controlPath = sshAuthenticationControlPaths[target] else {
+            return .pending
+        }
+        let isReady = await Task.detached {
+            SSHConnectionPool.isAuthenticated(
+                target.host,
+                controlPath: controlPath
             )
         }.value
         guard !Task.isCancelled else { return .pending }
-        guard let (controlPath, isReady) = status else { return .pending }
         sshAuthenticationCoordinator.reconcileIdentity(
             target: target,
             controlPath: controlPath
@@ -2564,9 +2549,9 @@ final class WorkspaceSceneModel: ObservableObject {
                 target: target,
                 controlPath: controlPath
             )
-            let configuredTarget = SSHConnectionPool.configuredTarget(
-                for: resolved.info
-            )
+            guard let configuredTarget =
+                configuredSSHAuthenticationTargets[resolved.destination]
+            else { return .pending }
             if target != configuredTarget {
                 pendingSSHAuthenticationTargets.removeValue(
                     forKey: resolved.destination
@@ -2620,9 +2605,62 @@ final class WorkspaceSceneModel: ObservableObject {
 
     private func sshAuthenticationTarget(
         for resolved: (info: SSHHostInfo, destination: String)
-    ) -> SSHAuthenticationTarget {
+    ) -> SSHAuthenticationTarget? {
         pendingSSHAuthenticationTargets[resolved.destination]
-            ?? SSHConnectionPool.configuredTarget(for: resolved.info)
+            ?? configuredSSHAuthenticationTargets[resolved.destination]
+    }
+
+    private func resolveSSHHostTrust(
+        for resolved: (info: SSHHostInfo, destination: String)
+    ) async -> Result<SSHHostTrustRequirement, HostProbeError> {
+        let targetTask = Task.detached(priority: .userInitiated) {
+            let target = SSHConnectionPool.configuredTarget(for: resolved.info)
+            return (
+                target: target,
+                controlPath: SSHConnectionPool.controlPath(for: target)
+            )
+        }
+        let trustTask = Task.detached(priority: .userInitiated) {
+            do {
+                return Result<SSHHostTrustRequirement, HostProbeError>.success(
+                    try SSHHostTrustManager().pendingRequirement(
+                        for: resolved.info,
+                        destination: resolved.destination
+                    )
+                )
+            } catch {
+                return .failure(.message(error.localizedDescription))
+            }
+        }
+        let resolution = await withTaskCancellationHandler {
+            await (targetTask.value, trustTask.value)
+        } onCancel: {
+            targetTask.cancel()
+            trustTask.cancel()
+        }
+        if !Task.isCancelled {
+            configuredSSHAuthenticationTargets[resolved.destination] =
+                resolution.0.target
+            if let controlPath = resolution.0.controlPath {
+                sshAuthenticationControlPaths[resolution.0.target] =
+                    controlPath
+            }
+            if case let .success(.authentication(target)) = resolution.1,
+               target != resolution.0.target {
+                await cacheSSHAuthenticationControlPath(for: target)
+            }
+        }
+        return resolution.1
+    }
+
+    private func cacheSSHAuthenticationControlPath(
+        for target: SSHAuthenticationTarget
+    ) async {
+        let controlPath = await Task.detached(priority: .userInitiated) {
+            SSHConnectionPool.controlPath(for: target)
+        }.value
+        guard !Task.isCancelled, let controlPath else { return }
+        sshAuthenticationControlPaths[target] = controlPath
     }
 
     private func configuredSSHHost(for hostID: UUID) -> SSHHost? {

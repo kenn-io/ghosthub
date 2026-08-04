@@ -31,6 +31,14 @@ struct SSHConnectionPoolTests {
 
     @Test("connection checks preserve the explicit destination")
     func checkUsesSameControlIdentity() {
+        #expect(SSHConnectionPool.connectionArguments(
+            controlPath: "/tmp/ghosthub-test/control-%C"
+        ) == [
+            "-o", "ControlMaster=no",
+            "-o", "ControlPersist=no",
+            "-o", "ControlPath=/tmp/ghosthub-test/control-%C",
+        ])
+
         let arguments = SSHConnectionPool.checkArguments(
             for: SSHHostInfo(
                 user: "operator",
@@ -44,6 +52,7 @@ struct SSHConnectionPoolTests {
             "-O", "check",
             "-o", "BatchMode=yes",
             "-o", "ControlMaster=no",
+            "-o", "ControlPersist=no",
             "-o", "ControlPath=/tmp/ghosthub-test/control-%C",
             "-p", "2200",
             "--", "operator@build.example.test",
@@ -190,6 +199,8 @@ struct SSHConnectionPoolTests {
         #expect(arguments.contains(where: {
             $0.hasPrefix("ProxyCommand=")
                 && $0.contains("ControlPath=")
+                && $0.contains("ControlMaster=no")
+                && $0.contains("ControlPersist=no")
                 && $0.contains("relay@jump.example.test")
         }))
     }

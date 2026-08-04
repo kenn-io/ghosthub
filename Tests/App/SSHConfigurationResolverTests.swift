@@ -50,7 +50,10 @@ struct SSHConfigurationResolverTests {
         #expect(
             SSHConfigurationResolver.noninteractiveHostKeyArguments(
                 effectivePolicy: policy
-            ) == ["-o", "StrictHostKeyChecking=yes"]
+            ) == [
+                "-o", "StrictHostKeyChecking=yes",
+                "-o", "UpdateHostKeys=no",
+            ]
         )
     }
 
@@ -128,6 +131,11 @@ struct SSHConfigurationResolverTests {
                 separatedBy: "StrictHostKeyChecking=yes"
             ).count == 3
         )
+        #expect(
+            proxyCommand.components(
+                separatedBy: "UpdateHostKeys=no"
+            ).count == 3
+        )
         for option in [
             "BatchMode=yes",
             "ConnectTimeout=10",
@@ -162,12 +170,14 @@ struct SSHConfigurationResolverTests {
             }
         )
 
-        #expect(arguments[0 ... 1] == [
+        #expect(arguments[0 ... 3] == [
             "-o", "StrictHostKeyChecking=yes",
+            "-o", "UpdateHostKeys=no",
         ])
-        #expect(arguments[2] == "-o")
-        #expect(arguments[3].contains("BatchMode=no"))
-        #expect(arguments[3].contains("StrictHostKeyChecking=yes"))
+        #expect(arguments[4] == "-o")
+        #expect(arguments[5].contains("BatchMode=no"))
+        #expect(arguments[5].contains("StrictHostKeyChecking=yes"))
+        #expect(arguments[5].contains("UpdateHostKeys=no"))
     }
 
     @Test("malformed ProxyJump routes fail closed")
@@ -236,6 +246,7 @@ struct SSHConfigurationResolverTests {
 
         #expect(arguments == [
             "-o", "StrictHostKeyChecking=yes",
+            "-o", "UpdateHostKeys=no",
             "-o", "ProxyCommand=/usr/bin/false",
         ])
     }
@@ -265,6 +276,7 @@ struct SSHConfigurationResolverTests {
 
         #expect(arguments == [
             "-o", "StrictHostKeyChecking=yes",
+            "-o", "UpdateHostKeys=no",
             "-o", "ProxyCommand=/usr/bin/false",
         ])
     }
@@ -283,6 +295,7 @@ struct SSHConfigurationResolverTests {
 
         #expect(arguments == [
             "-o", "StrictHostKeyChecking=yes",
+            "-o", "UpdateHostKeys=no",
             "-o", "ProxyCommand=/usr/bin/false",
         ])
     }

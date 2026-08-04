@@ -78,6 +78,7 @@ enum SSHConfigurationResolver {
         else {
             return [
                 "-o", "StrictHostKeyChecking=yes",
+                "-o", "UpdateHostKeys=no",
                 "-o", "ProxyCommand=/usr/bin/false",
             ]
         }
@@ -94,6 +95,7 @@ enum SSHConfigurationResolver {
         guard let configuration = configurationProvider(host) else {
             return [
                 "-o", "StrictHostKeyChecking=yes",
+                "-o", "UpdateHostKeys=no",
                 "-o", "ProxyCommand=/usr/bin/false",
             ]
         }
@@ -236,7 +238,10 @@ enum SSHConfigurationResolver {
         case "yes", "no", "off":
             return []
         default:
-            return ["-o", "StrictHostKeyChecking=yes"]
+            return [
+                "-o", "StrictHostKeyChecking=yes",
+                "-o", "UpdateHostKeys=no",
+            ]
         }
     }
 

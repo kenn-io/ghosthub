@@ -30,17 +30,18 @@ private struct SSHAuthenticationPreparation: Sendable {
     let temporaryState: SSHAuthenticationTemporaryState
     let controlPath: String
     let hostKeyArguments: [String]
+    let proxyArguments: [String]
 
     static func prepare(
-        for target: SSHAuthenticationTarget
+        for target: SSHAuthenticationTarget,
+        controlPath: String?
     ) -> SSHAuthenticationPreparationResult {
         do {
             let temporaryState = try SSHAuthenticationTemporaryState.create()
             do {
                 try Task.checkCancellation()
-                guard let controlPath = SSHConnectionPool.controlPath(
-                    for: target
-                ) else {
+                guard let controlPath = controlPath
+                    ?? SSHConnectionPool.controlPath(for: target) else {
                     throw SSHAuthenticationError.stateUnavailable
                 }
                 try Task.checkCancellation()
@@ -49,11 +50,16 @@ private struct SSHAuthenticationPreparation: Sendable {
                         for: target.host
                     )
                 try Task.checkCancellation()
+                let proxyArguments = SSHConnectionPool.proxyArguments(
+                    for: target
+                )
+                try Task.checkCancellation()
                 return .success(SSHAuthenticationPreparation(
                     target: target,
                     temporaryState: temporaryState,
                     controlPath: controlPath,
-                    hostKeyArguments: hostKeyArguments
+                    hostKeyArguments: hostKeyArguments,
+                    proxyArguments: proxyArguments
                 ))
             } catch {
                 temporaryState.remove()
@@ -78,6 +84,7 @@ final class SSHAuthenticationSession: ObservableObject {
     @Published private(set) var state: SSHAuthenticationSessionState = .starting
 
     let target: SSHAuthenticationTarget
+    let requestedControlPath: String?
     var host: SSHHostInfo { target.host }
     private var process: Process?
     private var standardError: Pipe?
@@ -94,11 +101,16 @@ final class SSHAuthenticationSession: ObservableObject {
             host: host,
             precedingProxyHops: []
         )
+        requestedControlPath = nil
         start()
     }
 
-    init(target: SSHAuthenticationTarget) {
+    init(
+        target: SSHAuthenticationTarget,
+        controlPath: String? = nil
+    ) {
         self.target = target
+        requestedControlPath = controlPath
         start()
     }
 
@@ -139,7 +151,9 @@ final class SSHAuthenticationSession: ObservableObject {
     }
 
     func restartIfIdentityChanged(to currentControlPath: String) {
-        guard let controlPath, controlPath != currentControlPath else { return }
+        guard requestedControlPath == nil,
+              let controlPath,
+              controlPath != currentControlPath else { return }
         stop()
         state = .starting
         start()
@@ -149,8 +163,12 @@ final class SSHAuthenticationSession: ObservableObject {
         let generation = UUID()
         preparationGeneration = generation
         let target = target
+        let controlPath = requestedControlPath
         let resolver = Task.detached(priority: .userInitiated) {
-            SSHAuthenticationPreparation.prepare(for: target)
+            SSHAuthenticationPreparation.prepare(
+                for: target,
+                controlPath: controlPath
+            )
         }
         preparationTask = Task { [weak self] in
             let result = await withTaskCancellationHandler {
@@ -188,7 +206,8 @@ final class SSHAuthenticationSession: ObservableObject {
             let sshArguments = SSHConnectionPool.authenticationArguments(
                 for: preparation.target,
                 controlPath: preparation.controlPath,
-                hostKeyArguments: preparation.hostKeyArguments
+                hostKeyArguments: preparation.hostKeyArguments,
+                proxyArguments: preparation.proxyArguments
             )
             process.arguments = [
                 "-c", Self.watchdogScript,
@@ -379,7 +398,8 @@ final class SSHAuthenticationCoordinator {
     func session(
         scopeID: UUID,
         presentationID: UUID,
-        target: SSHAuthenticationTarget
+        target: SSHAuthenticationTarget,
+        controlPath: String? = nil
     ) -> SSHAuthenticationSession {
         let owner = Owner(
             scopeID: scopeID,
@@ -389,13 +409,15 @@ final class SSHAuthenticationCoordinator {
            let entry = entries.first(where: {
                ObjectIdentifier($0.session) == sessionID
            }),
-           entry.session.target == target {
+           entry.session.target == target,
+           entry.session.requestedControlPath == controlPath {
             return entry.session
         }
         release(owner)
 
         if let index = entries.firstIndex(where: {
             $0.session.target == target
+                && $0.session.requestedControlPath == controlPath
         }) {
             entries[index].owners.insert(owner)
             let session = entries[index].session
@@ -403,7 +425,10 @@ final class SSHAuthenticationCoordinator {
             return session
         }
 
-        let session = SSHAuthenticationSession(target: target)
+        let session = SSHAuthenticationSession(
+            target: target,
+            controlPath: controlPath
+        )
         entries.append(Entry(session: session, owners: [owner]))
         sessionIDsByOwner[owner] = ObjectIdentifier(session)
         return session

@@ -133,4 +133,32 @@ struct SSHAuthenticationCoordinatorTests {
         ) === replacement)
         coordinator.shutdown()
     }
+
+    @Test("a cached control identity scopes shared authentication")
+    func separatesCachedControlIdentities() {
+        let coordinator = SSHAuthenticationCoordinator()
+        let target = SSHAuthenticationTarget(
+            host: SSHHostInfo(
+                user: "operator",
+                hostname: "unreachable.example.test",
+                port: nil
+            ),
+            precedingProxyHops: []
+        )
+        let first = coordinator.session(
+            scopeID: UUID(),
+            presentationID: UUID(),
+            target: target,
+            controlPath: "/tmp/ghosthub-test/control-first"
+        )
+        let second = coordinator.session(
+            scopeID: UUID(),
+            presentationID: UUID(),
+            target: target,
+            controlPath: "/tmp/ghosthub-test/control-second"
+        )
+
+        #expect(first !== second)
+        coordinator.shutdown()
+    }
 }

@@ -183,13 +183,17 @@ effective host-key policy, effective host-key aliases, and proxy route, so two
 trust identities, routes, or app launches cannot reuse one another's
 authenticated master. A parent-held watchdog pipe terminates each master if
 the app process disappears, and the next launch removes stale control sockets.
+Routine clients explicitly disable `ControlMaster` and `ControlPersist`; they
+may reuse Ghosthub's supervised socket but cannot create another master.
 Window presentations hold leases on shared authentication attempts. Closing a
 window cancels an unfinished attempt only after its final presenting window
 releases it; an authenticated master remains available until the app exits.
 Before opening that channel, Ghosthub reads the effective destination policy
 with `ssh -G`. It tightens `accept-new` to an explicit review but does not
 override `yes`, `no`, or `off`; approval matches the parsed algorithm and
-fingerprint rather than address-bearing prompt prose.
+fingerprint rather than address-bearing prompt prose. Review-managed `ask` and
+`accept-new` connections also disable `UpdateHostKeys`, so the connection
+cannot persist additional server-advertised keys that were not reviewed.
 Trust invocations use the same local account login-shell boundary as ordinary
 SSH operations. For ProxyJump routes, Ghosthub names the host from OpenSSH's
 prompt and reviews each unseen route key sequentially. When a preceding jump

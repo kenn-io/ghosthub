@@ -53,7 +53,11 @@ enum SSHConnectionPool {
     }
 
     static func connectionArguments(controlPath: String) -> [String] {
-        ["-o", "ControlPath=\(controlPath)"]
+        [
+            "-o", "ControlMaster=no",
+            "-o", "ControlPersist=no",
+            "-o", "ControlPath=\(controlPath)",
+        ]
     }
 
     static func controlPath(for host: SSHHostInfo) -> String? {
@@ -69,20 +73,23 @@ enum SSHConnectionPool {
         controlPath: String,
         hostKeyArguments: [String]
     ) -> [String] {
-        authenticationArguments(
-            for: SSHAuthenticationTarget(
-                host: host,
-                precedingProxyHops: []
-            ),
+        let target = SSHAuthenticationTarget(
+            host: host,
+            precedingProxyHops: []
+        )
+        return authenticationArguments(
+            for: target,
             controlPath: controlPath,
-            hostKeyArguments: hostKeyArguments
+            hostKeyArguments: hostKeyArguments,
+            proxyArguments: proxyArguments(for: target)
         )
     }
 
     static func authenticationArguments(
         for target: SSHAuthenticationTarget,
         controlPath: String,
-        hostKeyArguments: [String]
+        hostKeyArguments: [String],
+        proxyArguments: [String]
     ) -> [String] {
         var arguments = [
             "-N",
@@ -97,7 +104,7 @@ enum SSHConnectionPool {
             "-o", "ServerAliveCountMax=3",
         ]
         arguments.append(contentsOf: hostKeyArguments)
-        arguments.append(contentsOf: proxyArguments(for: target))
+        arguments.append(contentsOf: proxyArguments)
         if let port = target.host.port {
             arguments.append(contentsOf: ["-p", String(port)])
         }
@@ -113,6 +120,7 @@ enum SSHConnectionPool {
             "-O", "check",
             "-o", "BatchMode=yes",
             "-o", "ControlMaster=no",
+            "-o", "ControlPersist=no",
             "-o", "ControlPath=\(controlPath)",
         ]
         if let port = host.port {
@@ -213,6 +221,7 @@ enum SSHConnectionPool {
             "/usr/bin/ssh",
             "-o", "BatchMode=yes",
             "-o", "ControlMaster=no",
+            "-o", "ControlPersist=no",
             "-o", "ControlPath=\(controlPath)",
         ]
         if let port = proxy.host.port {
