@@ -284,6 +284,60 @@ enum SSHConfigurationResolver {
         )
     }
 
+    static func snapshotConnectionArguments(
+        for host: SSHHostInfo,
+        configurationProvider: ConfigurationProvider
+    ) -> [String] {
+        guard let configuration = configurationProvider(host) else {
+            return [
+                "-F", "/dev/null",
+                "-o", "ProxyCommand=/usr/bin/false",
+            ]
+        }
+        var arguments = [
+            "-F", "/dev/null",
+            "-o", "CanonicalizeHostname=no",
+        ]
+        if let hostname = configuration.hostname {
+            arguments.append(contentsOf: ["-o", "HostName=\(hostname)"])
+        }
+        if let user = configuration.user {
+            arguments.append(contentsOf: ["-o", "User=\(user)"])
+        }
+        if let port = configuration.port {
+            arguments.append(contentsOf: ["-p", String(port)])
+        }
+        if let hostKeyAlias = configuration.hostKeyAlias {
+            arguments.append(contentsOf: [
+                "-o", "HostKeyAlias=\(hostKeyAlias)",
+            ])
+        }
+        let preservedOptions = [
+            "userknownhostsfile",
+            "globalknownhostsfile",
+            "knownhostscommand",
+            "revokedhostkeys",
+            "hostkeyalgorithms",
+            "casignaturealgorithms",
+            "checkhostip",
+            "hashknownhosts",
+            "verifyhostkeydns",
+            "visualhostkey",
+            "fingerprinthash",
+            "addressfamily",
+            "bindaddress",
+            "bindinterface",
+        ]
+        for option in configuration.resolvedOptions {
+            guard let separator = option.firstIndex(of: "=") else { continue }
+            let name = String(option[..<separator])
+            guard preservedOptions.contains(name) else { continue }
+            let value = option[option.index(after: separator)...]
+            arguments.append(contentsOf: ["-o", "\(name)=\(value)"])
+        }
+        return arguments
+    }
+
     static func parse(_ output: String) -> EffectiveSSHConfiguration {
         var values: [String: String] = [:]
         var optionValues: [String: [String]] = [:]

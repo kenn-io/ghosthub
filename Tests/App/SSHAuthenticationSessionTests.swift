@@ -20,6 +20,27 @@ struct SSHAuthenticationSessionTests {
         #expect(invocation.arguments[1].contains("operator@build.example.test"))
     }
 
+    @Test("authentication removes inherited tmux launcher state")
+    func sanitizesLauncherEnvironment() {
+        let environment = SSHAuthenticationSession.processEnvironment(
+            launcherEnvironment: [
+                "PATH": "/usr/bin:/bin",
+                "TMUX": "/tmp/tmux/default,1,0",
+                "TMUX_PANE": "%3",
+                "SSH_ASKPASS": "/untrusted/helper",
+            ],
+            askPassEnvironment: [
+                "SSH_ASKPASS": "/private/ghosthub/askpass",
+                "DISPLAY": "ghosthub",
+            ]
+        )
+
+        #expect(environment["TMUX"] == nil)
+        #expect(environment["TMUX_PANE"] == nil)
+        #expect(environment["PATH"] == "/usr/bin:/bin")
+        #expect(environment["SSH_ASKPASS"] == "/private/ghosthub/askpass")
+    }
+
     @Test("SSH diagnostics drain continuously into a bounded tail")
     func drainsDiagnostics() async {
         let pipe = Pipe()

@@ -145,6 +145,9 @@ logical destination, the normalized effective OpenSSH configuration for every
 route target, and the proxy route. Changes to credentials, known-hosts files,
 host-key identity, route, or app launch therefore cannot reuse an authenticated
 master.
+If that state path would exceed the Unix-socket limit, Ghosthub uses a random,
+process-owned `/tmp` namespace with the same dead-owner cleanup rule and rejects
+any path that remains too long.
 Routine clients explicitly disable `ControlMaster` and `ControlPersist`, so
 user configuration cannot turn them into unsupervised persistent masters even
 when Ghosthub cannot prepare its control socket. Authentication revalidates the
@@ -157,7 +160,11 @@ and control path again; a mismatch terminates the stale shared session and
 returns to explicit recovery.
 Authentication uses the same account-login-shell boundary and guarded demo SSH
 configuration as resolution and host-key review, so those phases cannot consult
-different agent, configuration, or known-hosts state.
+different agent, configuration, or known-hosts state. Authentication removes
+inherited `TMUX` and `TMUX_PANE` values before login-shell startup. Host-key
+review launches with snapshot-derived endpoint, route, and known-hosts options
+under an empty base SSH configuration, so live config changes cannot redirect
+the reviewed operation.
 Ghosthub never forces `accept-new`, writes a scanned key itself, or treats a
 trusted short alias as authorization for a canonical MagicDNS FQDN.
 When an SSH route contains unseen intermediate hosts, each trust sheet labels

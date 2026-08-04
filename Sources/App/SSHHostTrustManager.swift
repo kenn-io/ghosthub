@@ -53,7 +53,8 @@ struct SSHHostTrustManager: Sendable {
         URL,
         URL,
         URL,
-        URL?
+        URL?,
+        SSHConfigurationResolver.ConfigurationProvider
     ) -> Void
     typealias StrictHostKeyPolicyProvider = @Sendable (SSHHostInfo) -> String?
     typealias RouteProvider = @Sendable (SSHHostInfo) throws -> [SSHHostInfo]
@@ -64,6 +65,8 @@ struct SSHHostTrustManager: Sendable {
     private let strictHostKeyPolicyProvider: StrictHostKeyPolicyProvider
     private let routeProvider: RouteProvider
     private let authenticationProvider: AuthenticationProvider
+    private let configurationProvider:
+        SSHConfigurationResolver.ConfigurationProvider
 
     init(
         askPassRunner: @escaping AskPassRunner = Self.runAskPass,
@@ -75,18 +78,26 @@ struct SSHHostTrustManager: Sendable {
         routeProvider: @escaping RouteProvider = { try Self.route(for: $0) },
         authenticationProvider: @escaping AuthenticationProvider = {
             SSHConnectionPool.isAuthenticated($0)
-        }
+        },
+        configurationProvider:
+        @escaping SSHConfigurationResolver.ConfigurationProvider =
+            SSHConfigurationResolver.configuration
     ) {
         self.askPassRunner = askPassRunner
         self.strictHostKeyPolicyProvider = strictHostKeyPolicyProvider
         self.routeProvider = routeProvider
         self.authenticationProvider = authenticationProvider
+        self.configurationProvider = configurationProvider
     }
 
-    init(configurationSnapshot: SSHConnectionConfigurationSnapshot) {
+    init(
+        configurationSnapshot: SSHConnectionConfigurationSnapshot,
+        askPassRunner: @escaping AskPassRunner = Self.runAskPass
+    ) {
         let configurationProvider =
             configurationSnapshot.configurationProvider
         self.init(
+            askPassRunner: askPassRunner,
             strictHostKeyPolicyProvider: {
                 configurationProvider($0)?.strictHostKeyChecking
             },
@@ -106,7 +117,8 @@ struct SSHHostTrustManager: Sendable {
                     target.host,
                     controlPath: identity.controlPath
                 )
-            }
+            },
+            configurationProvider: configurationProvider
         )
     }
 
@@ -183,7 +195,8 @@ struct SSHHostTrustManager: Sendable {
                     state.helper,
                     state.observedPrompt,
                     state.approvedPrompt,
-                    nil
+                    nil,
+                    configurationProvider
                 )
                 guard let prompt = try readPrompt(
                     at: state.observedPrompt
@@ -237,7 +250,8 @@ struct SSHHostTrustManager: Sendable {
                     state.helper,
                     state.observedPrompt,
                     state.approvedPrompt,
-                    state.expectedKeyIdentity
+                    state.expectedKeyIdentity,
+                    configurationProvider
                 )
                 return FileManager.default.fileExists(
                     atPath: state.approvedPrompt.path
@@ -479,7 +493,8 @@ struct SSHHostTrustManager: Sendable {
         helper: URL,
         observedPrompt: URL,
         approvedPrompt: URL,
-        expectedKeyIdentity: URL?
+        expectedKeyIdentity: URL?,
+        configurationProvider: SSHConfigurationResolver.ConfigurationProvider
     ) {
         var arguments = [
             "-T",
@@ -496,12 +511,18 @@ struct SSHHostTrustManager: Sendable {
             "-o", "HostbasedAuthentication=no",
             "-o", "GSSAPIAuthentication=no",
         ]
-        arguments.append(contentsOf: tmuxSSHConnectionArguments())
+        arguments.append(contentsOf:
+            SSHConfigurationResolver.snapshotConnectionArguments(
+                for: host,
+                configurationProvider: configurationProvider
+            )
+        )
         arguments.append(contentsOf: SSHConnectionPool.proxyArguments(
             for: SSHAuthenticationTarget(
                 host: host,
                 precedingProxyHops: precedingProxyHops
-            )
+            ),
+            configurationProvider: configurationProvider
         ))
         if let port = host.port {
             arguments.append(contentsOf: ["-p", String(port)])

@@ -52,10 +52,19 @@ enum SSHConnectionPool {
     }
 
     private static let directoryName = "ssh"
+    private static let fallbackDirectoryPrefix = "ghosthub-ssh"
+    private static let maximumControlPathBytes = 103
     private static let appSessionID = UUID().uuidString
+    private static let appProcessID = ProcessInfo.processInfo.processIdentifier
     private static let appSessionDirectoryName = sessionDirectoryName(
-        processID: ProcessInfo.processInfo.processIdentifier,
-        sessionID: appSessionID
+        prefix: "s",
+        processID: appProcessID,
+        sessionID: String(appSessionID.prefix(8))
+    )
+    private static let fallbackSessionDirectoryName = sessionDirectoryName(
+        prefix: fallbackDirectoryPrefix,
+        processID: appProcessID,
+        sessionID: appSessionID.replacingOccurrences(of: "-", with: "")
     )
 
     static func connectionArguments(for host: SSHHostInfo) -> [String] {
@@ -314,7 +323,10 @@ enum SSHConnectionPool {
                 "-o", "ProxyCommand=/usr/bin/false",
             ]
         }
-        guard let command = proxyCommand(for: target) else {
+        guard let command = proxyCommand(
+            for: target,
+            configurationProvider: configurationProvider
+        ) else {
             return ["-o", "ProxyJump=none", "-o", "ProxyCommand=none"]
         }
         return [
@@ -324,10 +336,15 @@ enum SSHConnectionPool {
     }
 
     static func proxyCommand(
-        for target: SSHAuthenticationTarget
+        for target: SSHAuthenticationTarget,
+        configurationProvider: SSHConfigurationResolver.ConfigurationProvider =
+            SSHConfigurationResolver.configuration
     ) -> String? {
         guard let proxy = target.precedingTarget,
-              let controlPath = controlPath(for: proxy)
+              let controlPath = authenticationIdentity(
+                  for: proxy,
+                  configurationProvider: configurationProvider
+              )?.controlPath
         else { return nil }
         var arguments = [
             "/usr/bin/ssh",
@@ -348,19 +365,40 @@ enum SSHConnectionPool {
     static func removeStaleControlSockets(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         fileManager: FileManager = .default,
-        processIsRunning: (Int32) -> Bool = liveProcessExists
+        processIsRunning: (Int32) -> Bool = liveProcessExists,
+        fallbackRoot: URL = URL(fileURLWithPath: "/tmp", isDirectory: true)
     ) {
-        let directory = controlDirectory(
-            environment: environment,
-            fileManager: fileManager
+        removeStaleControlDirectories(
+            in: controlDirectory(
+                environment: environment,
+                fileManager: fileManager
+            ),
+            prefix: "s",
+            fileManager: fileManager,
+            processIsRunning: processIsRunning
         )
+        removeStaleControlDirectories(
+            in: fallbackRoot,
+            prefix: fallbackDirectoryPrefix,
+            fileManager: fileManager,
+            processIsRunning: processIsRunning
+        )
+    }
+
+    private static func removeStaleControlDirectories(
+        in directory: URL,
+        prefix: String,
+        fileManager: FileManager,
+        processIsRunning: (Int32) -> Bool
+    ) {
         guard let contents = try? fileManager.contentsOfDirectory(
             at: directory,
             includingPropertiesForKeys: nil
         ) else { return }
         for url in contents {
             guard let owner = sessionOwnerProcessID(
-                directoryName: url.lastPathComponent
+                directoryName: url.lastPathComponent,
+                prefix: prefix
             ), !processIsRunning(owner)
             else { continue }
             try? fileManager.removeItem(at: url)
@@ -368,24 +406,27 @@ enum SSHConnectionPool {
     }
 
     private static func sessionDirectoryName(
+        prefix: String,
         processID: Int32,
         sessionID: String
     ) -> String {
-        "session-\(processID)-\(sessionID.prefix(8))"
+        "\(prefix)-\(processID)-\(sessionID)"
     }
 
     private static func sessionOwnerProcessID(
-        directoryName: String
+        directoryName: String,
+        prefix: String
     ) -> Int32? {
-        let components = directoryName.split(
+        let marker = "\(prefix)-"
+        guard directoryName.hasPrefix(marker) else { return nil }
+        let components = directoryName.dropFirst(marker.count).split(
             separator: "-",
-            maxSplits: 2
+            maxSplits: 1
         )
-        guard components.count == 3,
-              components[0] == "session",
-              !components[2].isEmpty
+        guard components.count == 2,
+              !components[1].isEmpty
         else { return nil }
-        return Int32(components[1])
+        return Int32(components[0])
     }
 
     private static func liveProcessExists(_ processID: Int32) -> Bool {
@@ -420,31 +461,44 @@ enum SSHConnectionPool {
         return components.joined(separator: "\u{1f}")
     }
 
-    private static func preparedControlPath(
+    static func preparedControlPath(
         for target: SSHAuthenticationTarget,
         configurationProvider: SSHConfigurationResolver.ConfigurationProvider,
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        fallbackRoot: URL = URL(fileURLWithPath: "/tmp", isDirectory: true)
     ) -> String? {
-        let directory = controlSessionDirectory(
-            environment: environment,
-            fileManager: fileManager
+        let name = controlName(
+            for: target,
+            configurationProvider: configurationProvider
         )
+        let directories = [
+            controlSessionDirectory(
+                environment: environment,
+                fileManager: fileManager
+            ),
+            fallbackRoot.appendingPathComponent(
+                fallbackSessionDirectoryName,
+                isDirectory: true
+            ),
+        ]
+        guard let path = directories.lazy.compactMap({ directory in
+            let path = directory.appendingPathComponent(name).path
+            return path.utf8.count <= maximumControlPathBytes
+                ? (directory, path)
+                : nil
+        }).first else { return nil }
         do {
             try fileManager.createDirectory(
-                at: directory,
+                at: path.0,
                 withIntermediateDirectories: true,
                 attributes: [.posixPermissions: 0o700]
             )
             try fileManager.setAttributes(
                 [.posixPermissions: 0o700],
-                ofItemAtPath: directory.path
+                ofItemAtPath: path.0.path
             )
-            let name = controlName(
-                for: target,
-                configurationProvider: configurationProvider
-            )
-            return directory.appendingPathComponent(name).path
+            return path.1
         } catch {
             return nil
         }

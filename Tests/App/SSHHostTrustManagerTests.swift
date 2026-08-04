@@ -29,7 +29,7 @@ struct SSHHostTrustManagerTests {
     func acceptsOnlyThePresentedPrompt() throws {
         let calls = LockedValue(0)
         let manager = SSHHostTrustManager(
-            askPassRunner: { _, _, _, _, approved, expected in
+            askPassRunner: { _, _, _, _, approved, expected, _ in
                 calls.withLock { $0 += 1 }
                 guard expected != nil else { return }
                 FileManager.default.createFile(
@@ -66,7 +66,7 @@ struct SSHHostTrustManagerTests {
             with: "different-synthetic-fingerprint"
         )
         let manager = SSHHostTrustManager(
-            askPassRunner: { _, _, _, observed, _, expected in
+            askPassRunner: { _, _, _, observed, _, expected, _ in
                 guard expected != nil else { return }
                 try? Data(changedPrompt.utf8).write(to: observed)
             },
@@ -91,6 +91,57 @@ struct SSHHostTrustManagerTests {
         }
     }
 
+    @Test("host-key review uses its effective configuration snapshot")
+    func reviewUsesConfigurationSnapshot() throws {
+        let host = SSHHostInfo(
+            user: nil,
+            hostname: "build-alias",
+            port: nil
+        )
+        let snapshot = SSHConnectionPool.configurationSnapshot(
+            for: host,
+            configurationProvider: { _ in
+                EffectiveSSHConfiguration(
+                    user: "snapshot-user",
+                    strictHostKeyChecking: "ask",
+                    proxyJump: nil,
+                    proxyCommand: nil,
+                    hostname: "snapshot.example.test",
+                    port: 2200,
+                    resolvedOptions: [
+                        "userknownhostsfile=/snapshot/known_hosts",
+                        "globalknownhostsfile=/snapshot/global_known_hosts",
+                    ]
+                )
+            }
+        )
+        let manager = SSHHostTrustManager(
+            configurationSnapshot: snapshot,
+            askPassRunner: {
+                reviewedHost, _, _, observed, _, _, configurationProvider in
+                let arguments = SSHConfigurationResolver
+                    .snapshotConnectionArguments(
+                        for: reviewedHost,
+                        configurationProvider: configurationProvider
+                    )
+                #expect(arguments.contains("HostName=snapshot.example.test"))
+                #expect(arguments.contains("User=snapshot-user"))
+                #expect(arguments.contains("2200"))
+                #expect(arguments.contains(
+                    "userknownhostsfile=/snapshot/known_hosts"
+                ))
+                try? Data(prompt.utf8).write(to: observed)
+            }
+        )
+
+        let confirmation = try manager.pendingConfirmation(
+            for: host,
+            destination: "build-alias"
+        )
+
+        #expect(confirmation?.fingerprint == "SHA256:synthetic-fingerprint")
+    }
+
     @Test("a proxy using ask is reviewed even when the destination uses yes")
     func reviewsAskProxyBeforeStrictDestination() throws {
         let proxyPrompt = prompt.replacingOccurrences(
@@ -113,7 +164,8 @@ struct SSHHostTrustManagerTests {
         let reviewedHosts = LockedValue(Set<String>())
         let calls = LockedValue([(host: String, proxies: [String])]())
         let manager = SSHHostTrustManager(
-            askPassRunner: { host, proxies, _, observed, approved, expected in
+            askPassRunner: {
+                host, proxies, _, observed, approved, expected, _ in
                 calls.withLock {
                     $0.append((host.hostname, proxies.map(\.hostname)))
                 }
@@ -170,7 +222,8 @@ struct SSHHostTrustManagerTests {
         )
         let reviewedHosts = LockedValue(Set<String>())
         let manager = SSHHostTrustManager(
-            askPassRunner: { host, proxies, _, observed, approved, expected in
+            askPassRunner: {
+                host, proxies, _, observed, approved, expected, _ in
                 if expected != nil {
                     FileManager.default.createFile(
                         atPath: approved.path,
@@ -226,7 +279,7 @@ struct SSHHostTrustManagerTests {
         let askPassCalls = LockedValue(0)
         let downstreamPrompt = prompt
         let manager = SSHHostTrustManager(
-            askPassRunner: { host, proxies, _, observed, _, _ in
+            askPassRunner: { host, proxies, _, observed, _, _, _ in
                 askPassCalls.withLock { $0 += 1 }
                 #expect(host == destinationHost)
                 #expect(proxies == [proxyHost])
@@ -282,7 +335,7 @@ struct SSHHostTrustManagerTests {
         )
         let authenticated = LockedValue(Set<SSHAuthenticationTarget>())
         let manager = SSHHostTrustManager(
-            askPassRunner: { _, _, _, _, _, _ in
+            askPassRunner: { _, _, _, _, _, _, _ in
                 Issue.record("askpass must not run for non-review policies")
             },
             strictHostKeyPolicyProvider: {
@@ -333,7 +386,7 @@ struct SSHHostTrustManagerTests {
     )
     func respectsStrictHostKeyPolicy(policy: String) {
         let manager = SSHHostTrustManager(
-            askPassRunner: { _, _, _, _, _, _ in
+            askPassRunner: { _, _, _, _, _, _, _ in
                 Issue.record("askpass must not run for a strict policy")
             },
             strictHostKeyPolicyProvider: { _ in policy },

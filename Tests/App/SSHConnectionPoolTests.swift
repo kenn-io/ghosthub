@@ -272,11 +272,11 @@ struct SSHConnectionPoolTests {
             withIntermediateDirectories: true
         )
         let stale = directory.appendingPathComponent(
-            "session-101-stale",
+            "s-101-stale",
             isDirectory: true
         )
         let live = directory.appendingPathComponent(
-            "session-202-live",
+            "s-202-live",
             isDirectory: true
         )
         try FileManager.default.createDirectory(
@@ -308,13 +308,61 @@ struct SSHConnectionPoolTests {
 
         SSHConnectionPool.removeStaleControlSockets(
             environment: ["GHOSTHUB_STATE_HOME": stateHome.path],
-            processIsRunning: { $0 == 202 }
+            processIsRunning: { $0 == 202 },
+            fallbackRoot: stateHome.appendingPathComponent(
+                "fallback",
+                isDirectory: true
+            )
         )
 
         #expect(!FileManager.default.fileExists(atPath: stale.path))
         #expect(FileManager.default.fileExists(atPath: live.path))
         #expect(FileManager.default.fileExists(atPath: legacyControl.path))
         #expect(FileManager.default.fileExists(atPath: unrelated.path))
+    }
+
+    @Test("long state paths use a bounded temporary control socket path")
+    func longStatePathUsesShortFallback() throws {
+        let target = SSHAuthenticationTarget(
+            host: SSHHostInfo(
+                user: "operator",
+                hostname: "build.example.test",
+                port: nil
+            ),
+            precedingProxyHops: []
+        )
+        let configurationProvider:
+            SSHConfigurationResolver.ConfigurationProvider = { _ in
+                EffectiveSSHConfiguration(
+                    user: "operator",
+                    strictHostKeyChecking: "yes",
+                    proxyJump: nil,
+                    proxyCommand: nil
+                )
+            }
+        let resolvedPath = SSHConnectionPool.preparedControlPath(
+            for: target,
+            configurationProvider: configurationProvider,
+            environment: [
+                "GHOSTHUB_STATE_HOME": "/tmp/" + String(
+                    repeating: "long-state-path-",
+                    count: 8
+                ),
+            ],
+            fallbackRoot: URL(
+                fileURLWithPath: "/tmp",
+                isDirectory: true
+            )
+        )
+        let path = try #require(resolvedPath)
+        defer {
+            try? FileManager.default.removeItem(
+                at: URL(fileURLWithPath: path).deletingLastPathComponent()
+            )
+        }
+
+        #expect(path.hasPrefix("/tmp/ghosthub-ssh-"))
+        #expect(path.utf8.count <= 103)
     }
 
     @Test("route authentication reuses the preceding control master")

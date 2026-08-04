@@ -380,14 +380,17 @@ final class SSHAuthenticationSession: ObservableObject {
             )
             process.executableURL = invocation.executable
             process.arguments = invocation.arguments
-            process.environment = ProcessInfo.processInfo.environment.merging([
-                "SSH_ASKPASS": preparation.temporaryState.helper.path,
-                "SSH_ASKPASS_REQUIRE": "force",
-                "DISPLAY": "ghosthub",
-                "GHOSTHUB_SSH_PROMPT_PATH": preparation.temporaryState.prompt.path,
-                "GHOSTHUB_SSH_RESPONSE_FIFO":
-                    preparation.temporaryState.responseFIFO.path,
-            ]) { _, new in new }
+            process.environment = Self.processEnvironment(
+                launcherEnvironment: ProcessInfo.processInfo.environment,
+                askPassEnvironment: [
+                    "SSH_ASKPASS": preparation.temporaryState.helper.path,
+                    "SSH_ASKPASS_REQUIRE": "force",
+                    "DISPLAY": "ghosthub",
+                    "GHOSTHUB_SSH_PROMPT_PATH": preparation.temporaryState.prompt.path,
+                    "GHOSTHUB_SSH_RESPONSE_FIFO":
+                        preparation.temporaryState.responseFIFO.path,
+                ]
+            )
             process.standardInput = watchdogPipe.fileHandleForReading
             process.standardOutput = FileHandle.nullDevice
             process.standardError = standardError
@@ -414,6 +417,14 @@ final class SSHAuthenticationSession: ObservableObject {
             preparation.temporaryState.remove()
             state = .failed(error.localizedDescription)
         }
+    }
+
+    nonisolated static func processEnvironment(
+        launcherEnvironment: [String: String],
+        askPassEnvironment: [String: String]
+    ) -> [String: String] {
+        TmuxBinaryResolver.sanitizedProcessEnvironment(launcherEnvironment)
+            .merging(askPassEnvironment) { _, new in new }
     }
 
     private func monitor() async {

@@ -186,6 +186,9 @@ routes, or app launches cannot reuse an authenticated master. A parent-held
 watchdog pipe terminates each master if the app process disappears. The next
 launch removes only socket namespaces owned by processes that are no longer
 running, so concurrent Ghosthub instances cannot unlink each other's masters.
+When the state-home path would exceed macOS's Unix-socket limit, Ghosthub uses
+the same process-owned namespace under `/tmp` and rejects any still-oversized
+path before launching OpenSSH.
 Routine clients explicitly disable `ControlMaster` and `ControlPersist`; they
 may reuse Ghosthub's supervised socket but cannot create another master, even
 when Ghosthub cannot prepare that socket. Immediately before launching a master,
@@ -200,8 +203,9 @@ bounded diagnostic buffer through a nonblocking dispatch source, so verbose
 OpenSSH logging cannot block the connection or occupy Swift concurrency
 workers. Ghosthub keeps
 the master in the foreground even if the user's SSH configuration requests
-forking, so the app watchdog retains ownership of its lifetime. It starts the
-master through the account login shell, preserving the same environment used
+forking, so the app watchdog retains ownership of its lifetime. It removes
+inherited tmux launcher state before starting the master through the account
+login shell, preserving the same environment boundary used
 by configuration checks and ordinary SSH operations.
 Window presentations hold leases on shared authentication attempts. Closing a
 window cancels an unfinished attempt only after its final presenting window
