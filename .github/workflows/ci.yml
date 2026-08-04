@@ -18,14 +18,9 @@ jobs:
     runs-on: >-
       ${{
         github.repository == 'kenn-io/ghosthub' &&
-        (
-          (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-          (
-            github.event_name == 'pull_request' &&
-            github.event.pull_request.head.repo.full_name == github.repository &&
-            github.event.pull_request.base.repo.full_name == github.repository
-          )
-        ) && 'kenn-macos-arm64-public' || 'macos-26'
+        github.event_name == 'push' &&
+        github.ref == 'refs/heads/main' &&
+        'kenn-macos-arm64-public' || 'macos-26'
       }}
     timeout-minutes: 90
     env:
