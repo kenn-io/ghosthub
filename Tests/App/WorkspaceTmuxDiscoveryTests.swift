@@ -2099,10 +2099,13 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.host.id,
             sshHostProbeRunner: { _, command in
                 #expect(command.contains("command -v tmux"))
-                #expect(command.contains("GHOSTHUB_SSH_REACHED"))
+                #expect(command.contains(
+                    "printf '\\nGHOSTHUB_SSH_REACHED\\n'"
+                ))
                 return (
                     status: 0,
                     stdout: """
+                    unterminated startup output
                     GHOSTHUB_SSH_REACHED
                     GHOSTHUB_TMUX_AVAILABLE
                     GHOSTHUB_KWT_UNAVAILABLE
@@ -2183,7 +2186,9 @@ struct WorkspaceTmuxDiscoveryTests {
                     stdout:
                     "banner: GHOSTHUB_SSH_REACHED "
                         + "GHOSTHUB_TMUX_AVAILABLE\n",
-                    stderr: "connection failed\n"
+                    stderr:
+                    "GHOSTHUB_SSH_REACHED\n"
+                        + "GHOSTHUB_TMUX_AVAILABLE\n"
                 )
             }
         )
@@ -2351,6 +2356,7 @@ struct WorkspaceTmuxDiscoveryTests {
             sshHostProbeRunner: { host, command in
                 #expect(host.platform == .windows)
                 #expect(command.contains("Get-Command tmux.exe"))
+                #expect(command.contains("[Console]::Out.WriteLine()"))
                 #expect(command.contains("GHOSTHUB_KWT_AVAILABLE"))
                 if let managedPath =
                     KwtBinaryLocator.windowsRemoteManagedRelativePath(
@@ -2370,6 +2376,7 @@ struct WorkspaceTmuxDiscoveryTests {
                 return (
                     status: 0,
                     stdout: """
+                    unterminated startup output
                     GHOSTHUB_SSH_REACHED
                     GHOSTHUB_TMUX_AVAILABLE
                     GHOSTHUB_KWT_AVAILABLE

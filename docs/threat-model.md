@@ -173,9 +173,10 @@ inherited `TMUX` and `TMUX_PANE` values before login-shell startup. Host-key
 review launches with snapshot-derived endpoint, route, and known-hosts options
 under an empty base SSH configuration, so live config changes cannot redirect
 the reviewed operation.
-Remote connection probes accept only exact reachability and capability lines
-from stdout. Stderr and marker text embedded in shell banners are diagnostics,
-so SSH or shell messages cannot spoof a successful probe.
+Remote connection probes emit a leading delimiter before accepting exact
+reachability and capability lines from stdout. Stderr and marker text embedded
+in shell banners are diagnostics, so SSH or shell messages cannot spoof a
+successful probe.
 Ghosthub never forces `accept-new`, writes a scanned key itself, or treats a
 trusted short alias as authorization for a canonical MagicDNS FQDN.
 When an SSH route contains unseen intermediate hosts, each trust sheet labels

@@ -2798,6 +2798,7 @@ final class WorkspaceSceneModel: ObservableObject {
             $ErrorActionPreference = 'Stop'
             [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
             $OutputEncoding = [Console]::OutputEncoding
+            [Console]::Out.WriteLine()
             Write-Output 'GHOSTHUB_SSH_REACHED'
             $ghosthubMuxCommand = Get-Command tmux.exe -CommandType Application -ErrorAction SilentlyContinue
             if ($null -eq $ghosthubMuxCommand) {
@@ -2821,7 +2822,7 @@ final class WorkspaceSceneModel: ObservableObject {
             """
         } else {
             probeCommand =
-                "printf 'GHOSTHUB_SSH_REACHED\\n'; "
+                "printf '\\nGHOSTHUB_SSH_REACHED\\n'; "
                     + "ghosthub_tmux_path=$(command -v tmux) || { "
                     + "printf 'GHOSTHUB_TMUX_UNAVAILABLE\\n'; exit 127; }; "
                     + "printf 'GHOSTHUB_TMUX_AVAILABLE\\n'; "

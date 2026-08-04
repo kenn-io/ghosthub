@@ -212,9 +212,10 @@ forking, so the app watchdog retains ownership of its lifetime. It removes
 inherited tmux launcher state before starting the master through the account
 login shell, preserving the same environment boundary used
 by configuration checks and ordinary SSH operations.
-Remote connection probes parse exact protocol-marker lines only from stdout;
-SSH and login-shell diagnostics, including marker text embedded in a banner,
-cannot make a failed probe appear reachable.
+Remote connection probes emit a leading line delimiter, then parse exact
+protocol-marker lines only from stdout. SSH and login-shell diagnostics,
+including marker text embedded in a banner, cannot make a failed probe appear
+reachable.
 Window presentations hold leases on shared authentication attempts. Closing a
 window cancels an unfinished attempt only after its final presenting window
 releases it; an authenticated master remains available until the app exits.
