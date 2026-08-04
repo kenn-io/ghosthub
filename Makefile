@@ -4,6 +4,7 @@ SHELL = /bin/bash
 PYTHON ?= python3
 UV ?= uv
 SWIFT ?= swift
+CARGO ?= cargo
 PNPM ?= pnpm
 VERCEL ?= vercel
 GHOSTHUB_APP ?= Ghosthub
@@ -49,6 +50,7 @@ KWT_SOURCE_DIR ?= $(abspath .build/kwt-source)
 KWT_BINARY_PATH ?= $(abspath .build/kwt/kwt)
 KWT_VARIANTS_DIR ?= $(abspath .build/kwt/variants)
 THIRD_PARTY_LICENSES_DIR ?= LICENSES
+RUST_DIR ?= rust
 
 # Only the helper this Makefile builds is the pinned one. A developer-supplied
 # KWT_BINARY_PATH must not inherit the pin's provenance in the bundle, so ask
@@ -66,7 +68,7 @@ KWT_SOURCE_REVISION ?= unpinned
 endif
 SWIFT_TEST_FILTER ?=
 
-.PHONY: help ensure-go ensure-tmux bootstrap-kwt bootstrap-kwt-variants ensure-kwt ensure-kwt-variants bootstrap-libghostty bootstrap-libghostty-release check-libghostty check-libghostty-release test-libghostty-bootstrap test-terminal-fallback test-stage-release-app-bundles test-assemble-app-bundle test-kwt-contract test-essential-workflows test-ssh-authentication-live build swift-warning-check build-release debug-app release-app release-dmg release-appcast nightly-app nightly-dmg nightly-appcast run-release-app run-app swift-test test-tmux-attach purge-test-tmux python-test sandbox-image-check sandbox-image-prepare-candidate sandbox-image-refresh sandbox-image-vet sandbox-image-pin sandbox-image-promote sandbox-image-clean sandbox-image-status sandbox-image-authority-configure sandbox-image-authority-enable sandbox-image-authority-audit sandbox-image-python-lint sandbox-image-python-typecheck zizmor test smoke-test docs-build docs-serve site-docs-serve site-deploy reset-app-state install-hooks format format-check
+.PHONY: help ensure-go ensure-tmux bootstrap-kwt bootstrap-kwt-variants ensure-kwt ensure-kwt-variants bootstrap-libghostty bootstrap-libghostty-release check-libghostty check-libghostty-release test-libghostty-bootstrap test-terminal-fallback test-stage-release-app-bundles test-assemble-app-bundle test-kwt-contract test-essential-workflows test-ssh-authentication-live build swift-warning-check build-release debug-app release-app release-dmg release-appcast nightly-app nightly-dmg nightly-appcast run-release-app run-app swift-test test-tmux-attach purge-test-tmux python-test sandbox-image-check sandbox-image-prepare-candidate sandbox-image-refresh sandbox-image-vet sandbox-image-pin sandbox-image-promote sandbox-image-clean sandbox-image-status sandbox-image-authority-configure sandbox-image-authority-enable sandbox-image-authority-audit sandbox-image-python-lint sandbox-image-python-typecheck zizmor test rust-format-check rust-test rust-lint rust-deny rust-check smoke-test docs-build docs-serve site-docs-serve site-deploy reset-app-state install-hooks format format-check
 
 help:
 	@printf '%s\n' \
@@ -125,6 +127,10 @@ help:
 		'      Run the full Python test suite via uv-managed pytest.' \
 		'  make test' \
 		'      Run both the Swift and Python test suites.' \
+		'  make rust-check' \
+		'      Run Rust formatting, tests, checks, and clippy for the current platform.' \
+		'  make rust-deny' \
+		'      Check the complete Windows/Linux Rust dependency graph with cargo-deny.' \
 		'  make format' \
 		'      Apply the repository SwiftFormat rules in place.' \
 		'  make format-check' \
@@ -581,6 +587,21 @@ zizmor:
 		.github/workflows/sandbox-image*.yml
 
 test: swift-test python-test
+
+rust-format-check:
+	@cd "$(RUST_DIR)" && $(CARGO) fmt --all --check
+
+rust-test:
+	@cd "$(RUST_DIR)" && $(CARGO) test --workspace --locked
+
+rust-lint:
+	@cd "$(RUST_DIR)" && $(CARGO) check --workspace --all-targets --locked
+	@cd "$(RUST_DIR)" && $(CARGO) clippy --workspace --all-targets --locked -- -D warnings
+
+rust-deny:
+	@cd "$(RUST_DIR)" && $(CARGO) deny check
+
+rust-check: rust-format-check rust-test rust-lint
 
 smoke-test: bootstrap-libghostty
 	@sh tools/run_swift_tests.sh \
