@@ -83,6 +83,30 @@ struct SSHAuthenticationSessionTests {
         try? pipe.fileHandleForWriting.close()
     }
 
+    @Test("authentication stops a continuously readable diagnostic drain")
+    func boundsContinuouslyWrittenDiagnostics() async throws {
+        let pipe = Pipe()
+        let drain = SSHDiagnosticDrain.start(pipe: pipe)
+        let writer = Process()
+        writer.executableURL = URL(fileURLWithPath: "/bin/sh")
+        writer.arguments = [
+            "-c",
+            "while :; do printf diagnostic >&2; done",
+        ]
+        writer.standardOutput = FileHandle.nullDevice
+        writer.standardError = pipe
+        try writer.run()
+        try pipe.fileHandleForWriting.close()
+
+        let diagnostic = await drain.finish(after: .milliseconds(50))
+
+        if writer.isRunning {
+            writer.terminate()
+        }
+        writer.waitUntilExit()
+        #expect(!diagnostic.isEmpty)
+    }
+
     @Test("authentication rejects a changed cached SSH identity")
     func rejectsChangedCachedIdentity() {
         let target = SSHAuthenticationTarget(

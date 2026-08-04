@@ -117,7 +117,9 @@ final class SSHDiagnosticDrain: @unchecked Sendable {
         )
         source.setEventHandler {
             var bytes = [UInt8](repeating: 0, count: 16 * 1024)
-            while true {
+            var remainingReads = 64
+            while remainingReads > 0, !source.isCancelled {
+                remainingReads -= 1
                 let count = bytes.withUnsafeMutableBytes { buffer in
                     Darwin.read(
                         descriptor,
