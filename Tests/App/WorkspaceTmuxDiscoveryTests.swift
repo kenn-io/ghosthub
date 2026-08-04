@@ -10,6 +10,19 @@ import Testing
 
 @Suite("Workspace tmux discovery", .serialized)
 struct WorkspaceTmuxDiscoveryTests {
+    private static let probeNonce = "TEST-NONCE"
+
+    private static func probeOutput(
+        _ lines: [String],
+        startupOutput: String? = nil
+    ) -> String {
+        ([startupOutput].compactMap { $0 }
+            + ["GHOSTHUB_SSH_PROBE_\(probeNonce)_START"]
+            + lines
+            + ["GHOSTHUB_SSH_PROBE_\(probeNonce)_END", ""])
+            .joined(separator: "\n")
+    }
+
     @Test("inventory refresh completion waits for kwt and tmux")
     @MainActor
     func inventoryRefreshCompletionWaitsForBothSources() async throws {
@@ -2100,17 +2113,18 @@ struct WorkspaceTmuxDiscoveryTests {
             sshHostProbeRunner: { _, command in
                 #expect(command.contains("command -v tmux"))
                 #expect(command.contains(
-                    "printf '\\nGHOSTHUB_SSH_REACHED\\n'"
+                    "GHOSTHUB_SSH_PROBE_TEST-NONCE_START"
                 ))
                 return (
                     status: 0,
-                    stdout: """
-                    unterminated startup output
-                    GHOSTHUB_SSH_REACHED
-                    GHOSTHUB_TMUX_AVAILABLE
-                    GHOSTHUB_KWT_UNAVAILABLE
-
-                    """,
+                    stdout: Self.probeOutput(
+                        [
+                            "GHOSTHUB_SSH_REACHED",
+                            "GHOSTHUB_TMUX_AVAILABLE",
+                            "GHOSTHUB_KWT_UNAVAILABLE",
+                        ],
+                        startupOutput: "unterminated startup output"
+                    ),
                     stderr: ""
                 )
             }
@@ -2121,7 +2135,7 @@ struct WorkspaceTmuxDiscoveryTests {
             name: "Tmux Only",
             platform: .linux,
             sshDestination: "tmux-only"
-        ))
+        ), protocolNonce: Self.probeNonce)
         let summary = try result.get()
 
         #expect(summary.connectionState == .online)
@@ -2146,10 +2160,10 @@ struct WorkspaceTmuxDiscoveryTests {
             sshHostProbeRunner: { _, _ in
                 (
                     status: 127,
-                    stdout:
-                    "GHOSTHUB_SSH_REACHED\n"
-                        + "GHOSTHUB_TMUX_UNAVAILABLE\n"
-                        + "GHOSTHUB_KWT_UNAVAILABLE\n",
+                    stdout: Self.probeOutput([
+                        "GHOSTHUB_SSH_REACHED",
+                        "GHOSTHUB_TMUX_UNAVAILABLE",
+                    ]),
                     stderr: ""
                 )
             }
@@ -2160,7 +2174,7 @@ struct WorkspaceTmuxDiscoveryTests {
             name: "DGX Spark",
             platform: .linux,
             sshDestination: "wesm@dgx-spark"
-        ))
+        ), protocolNonce: Self.probeNonce)
         let summary = try result.get()
 
         #expect(summary.connectionState == .degraded)
@@ -2174,7 +2188,7 @@ struct WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
-    @Test("connection probe requires exact protocol lines")
+    @Test("connection probe requires its nonce-framed protocol block")
     func connectionProbeReportsSSHFailure() async throws {
         let environment = try setupStandardEnvironment()
         let model = try makeModel(
@@ -2184,7 +2198,7 @@ struct WorkspaceTmuxDiscoveryTests {
                 (
                     status: 255,
                     stdout:
-                    "banner: GHOSTHUB_SSH_REACHED "
+                    "GHOSTHUB_SSH_REACHED\n"
                         + "GHOSTHUB_TMUX_AVAILABLE\n",
                     stderr:
                     "GHOSTHUB_SSH_REACHED\n"
@@ -2198,7 +2212,7 @@ struct WorkspaceTmuxDiscoveryTests {
             name: "Offline",
             platform: .linux,
             sshDestination: "offline"
-        ))
+        ), protocolNonce: Self.probeNonce)
         let summary = try result.get()
 
         #expect(summary.connectionState == .offline)
@@ -2226,9 +2240,10 @@ struct WorkspaceTmuxDiscoveryTests {
             sshHostProbeRunner: { _, _ in
                 (
                     status: status,
-                    stdout:
-                    "GHOSTHUB_SSH_REACHED\n"
-                        + "GHOSTHUB_TMUX_AVAILABLE\n",
+                    stdout: Self.probeOutput([
+                        "GHOSTHUB_SSH_REACHED",
+                        "GHOSTHUB_TMUX_AVAILABLE",
+                    ]),
                     stderr: ""
                 )
             }
@@ -2239,7 +2254,7 @@ struct WorkspaceTmuxDiscoveryTests {
             name: "Misconfigured Shell",
             platform: .linux,
             sshDestination: "misconfigured-shell"
-        ))
+        ), protocolNonce: Self.probeNonce)
         let summary = try result.get()
 
         #expect(summary.connectionState == .degraded)
@@ -2274,7 +2289,7 @@ struct WorkspaceTmuxDiscoveryTests {
             name: "Timed Out",
             platform: .linux,
             sshDestination: "timed-out"
-        ))
+        ), protocolNonce: Self.probeNonce)
         let summary = try result.get()
 
         #expect(summary.connectionState == .offline)
@@ -2375,13 +2390,14 @@ struct WorkspaceTmuxDiscoveryTests {
                 #expect(!command.contains("command -v"))
                 return (
                     status: 0,
-                    stdout: """
-                    unterminated startup output
-                    GHOSTHUB_SSH_REACHED
-                    GHOSTHUB_TMUX_AVAILABLE
-                    GHOSTHUB_KWT_AVAILABLE
-
-                    """,
+                    stdout: Self.probeOutput(
+                        [
+                            "GHOSTHUB_SSH_REACHED",
+                            "GHOSTHUB_TMUX_AVAILABLE",
+                            "GHOSTHUB_KWT_AVAILABLE",
+                        ],
+                        startupOutput: "unterminated startup output"
+                    ),
                     stderr: ""
                 )
             }
@@ -2392,7 +2408,7 @@ struct WorkspaceTmuxDiscoveryTests {
             name: "ARM Builder",
             platform: .windows,
             sshDestination: "wesm@arm-builder"
-        ))
+        ), protocolNonce: Self.probeNonce)
         let summary = try result.get()
 
         #expect(summary.connectionState == .online)
@@ -2411,11 +2427,10 @@ struct WorkspaceTmuxDiscoveryTests {
             sshHostProbeRunner: { _, _ in
                 (
                     status: 127,
-                    stdout: """
-                    GHOSTHUB_SSH_REACHED
-                    GHOSTHUB_TMUX_UNAVAILABLE
-
-                    """,
+                    stdout: Self.probeOutput([
+                        "GHOSTHUB_SSH_REACHED",
+                        "GHOSTHUB_TMUX_UNAVAILABLE",
+                    ]),
                     stderr: ""
                 )
             }
@@ -2426,7 +2441,7 @@ struct WorkspaceTmuxDiscoveryTests {
             name: "ARM Builder",
             platform: .windows,
             sshDestination: "wesm@arm-builder"
-        ))
+        ), protocolNonce: Self.probeNonce)
         let summary = try result.get()
         let diagnostic = try #require(summary.diagnostics.first)
 

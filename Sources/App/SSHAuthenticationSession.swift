@@ -155,6 +155,18 @@ final class SSHDiagnosticDrain: @unchecked Sendable {
         return buffer.text()
     }
 
+    func finish(after timeout: Duration) async -> String {
+        let source = source
+        let timeoutTask = Task.detached {
+            try? await Task.sleep(for: timeout)
+            guard !Task.isCancelled else { return }
+            source.cancel()
+        }
+        await completion.wait()
+        timeoutTask.cancel()
+        return buffer.text()
+    }
+
     func cancel() {
         source.cancel()
     }
@@ -485,7 +497,9 @@ final class SSHAuthenticationSession: ObservableObject {
             if process?.isRunning != true {
                 let diagnosticDrain = diagnosticDrain
                 self.diagnosticDrain = nil
-                let diagnostic = await diagnosticDrain?.finish() ?? ""
+                let diagnostic = await diagnosticDrain?.finish(
+                    after: .seconds(1)
+                ) ?? ""
                 guard !Task.isCancelled else { return }
                 let message = state == .connected
                     ? "The SSH connection ended. Try again."

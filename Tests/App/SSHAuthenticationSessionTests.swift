@@ -71,6 +71,18 @@ struct SSHAuthenticationSessionTests {
         #expect(await drain.finish().isEmpty)
     }
 
+    @Test("authentication bounds diagnostics held open by a descendant")
+    func boundsInheritedDiagnosticPipe() async {
+        let pipe = Pipe()
+        let drain = SSHDiagnosticDrain.start(pipe: pipe)
+        pipe.fileHandleForWriting.write(Data("last diagnostic".utf8))
+
+        let diagnostic = await drain.finish(after: .milliseconds(50))
+
+        #expect(diagnostic == "last diagnostic")
+        try? pipe.fileHandleForWriting.close()
+    }
+
     @Test("authentication rejects a changed cached SSH identity")
     func rejectsChangedCachedIdentity() {
         let target = SSHAuthenticationTarget(

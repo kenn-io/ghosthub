@@ -8,6 +8,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,17 @@ WEBSITE_ASSET_NAMES = (
     "guide-command-center.png",
     "guide-native-tabs.png",
 )
+
+
+@pytest.fixture
+def tmp_path() -> Iterator[Path]:
+    """Keep path-security fixtures below the account's trusted home."""
+    account_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+    with tempfile.TemporaryDirectory(
+        prefix="ghosthub-demo-test-",
+        dir=account_home,
+    ) as directory:
+        yield Path(directory)
 
 
 def run_bash(script: str, *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:

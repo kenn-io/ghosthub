@@ -2775,7 +2775,8 @@ final class WorkspaceSceneModel: ObservableObject {
     }
 
     func probeSSHHost(
-        _ host: SSHHost
+        _ host: SSHHost,
+        protocolNonce: String = UUID().uuidString
     ) async -> Result<
         HostProbeSummary,
         HostProbeError
@@ -2792,6 +2793,8 @@ final class WorkspaceSceneModel: ObservableObject {
             KwtBinaryLocator.windowsRemoteManagedRelativePath(
                 revision: KwtBinaryLocator.bundledRemoteRevision()
             )
+        let protocolStart = "GHOSTHUB_SSH_PROBE_\(protocolNonce)_START"
+        let protocolEnd = "GHOSTHUB_SSH_PROBE_\(protocolNonce)_END"
         let probeCommand: String
         if host.platform == .windows {
             probeCommand = """
@@ -2799,16 +2802,19 @@ final class WorkspaceSceneModel: ObservableObject {
             [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
             $OutputEncoding = [Console]::OutputEncoding
             [Console]::Out.WriteLine()
+            Write-Output '\(protocolStart)'
             Write-Output 'GHOSTHUB_SSH_REACHED'
             $ghosthubMuxCommand = Get-Command tmux.exe -CommandType Application -ErrorAction SilentlyContinue
             if ($null -eq $ghosthubMuxCommand) {
                 Write-Output 'GHOSTHUB_TMUX_UNAVAILABLE'
+                Write-Output '\(protocolEnd)'
                 exit 127
             }
             Write-Output 'GHOSTHUB_TMUX_AVAILABLE'
             $ghosthubMux = $ghosthubMuxCommand.Source
             & $ghosthubMux '-V' *> $null
             if ($LASTEXITCODE -ne 0) {
+                Write-Output '\(protocolEnd)'
                 exit $LASTEXITCODE
             }
             \(KwtPowerShellCommand.availabilityPrelude(
@@ -2819,26 +2825,34 @@ final class WorkspaceSceneModel: ObservableObject {
             } else {
                 Write-Output 'GHOSTHUB_KWT_UNAVAILABLE'
             }
+            Write-Output '\(protocolEnd)'
             """
         } else {
             probeCommand =
-                "printf '\\nGHOSTHUB_SSH_REACHED\\n'; "
+                "printf '\\n\(protocolStart)\\nGHOSTHUB_SSH_REACHED\\n'; "
                     + "ghosthub_tmux_path=$(command -v tmux) || { "
-                    + "printf 'GHOSTHUB_TMUX_UNAVAILABLE\\n'; exit 127; }; "
+                    + "printf 'GHOSTHUB_TMUX_UNAVAILABLE\\n\(protocolEnd)\\n'; "
+                    + "exit 127; }; "
                     + "printf 'GHOSTHUB_TMUX_AVAILABLE\\n'; "
-                    + "\"$ghosthub_tmux_path\" -V >/dev/null || exit $?; "
+                    + "\"$ghosthub_tmux_path\" -V >/dev/null || { "
+                    + "ghosthub_probe_status=$?; "
+                    + "printf '\(protocolEnd)\\n'; "
+                    + "exit \"$ghosthub_probe_status\"; }; "
                     + "if ( \(kwtPrelude): ); then "
                     + "printf 'GHOSTHUB_KWT_AVAILABLE\\n'; "
-                    + "else printf 'GHOSTHUB_KWT_UNAVAILABLE\\n'; fi"
+                    + "else printf 'GHOSTHUB_KWT_UNAVAILABLE\\n'; fi; "
+                    + "printf '\(protocolEnd)\\n'"
         }
         return await Task.detached {
             let result = sshHostProbeRunner(
                 sshHost,
                 probeCommand
             )
-            let protocolLines = Set(result.stdout.split(
-                whereSeparator: \Character.isNewline
-            ).map(String.init))
+            let protocolLines = Self.sshProbeProtocolLines(
+                result.stdout,
+                start: protocolStart,
+                end: protocolEnd
+            ) ?? []
             let sshReached = protocolLines.contains("GHOSTHUB_SSH_REACHED")
             let tmuxAvailable = protocolLines.contains(
                 "GHOSTHUB_TMUX_AVAILABLE"
@@ -2898,6 +2912,22 @@ final class WorkspaceSceneModel: ObservableObject {
                 )
             ))
         }.value
+    }
+
+    nonisolated static func sshProbeProtocolLines(
+        _ output: String,
+        start: String,
+        end: String
+    ) -> Set<String>? {
+        let lines = output.split(
+            separator: "\n",
+            omittingEmptySubsequences: false
+        ).map { String($0).trimmingCharacters(in: .newlines) }
+        guard let startIndex = lines.firstIndex(of: start),
+              let endIndex = lines[lines.index(after: startIndex)...]
+              .firstIndex(of: end)
+        else { return nil }
+        return Set(lines[lines.index(after: startIndex) ..< endIndex])
     }
 
     func installRemoteKwt(
