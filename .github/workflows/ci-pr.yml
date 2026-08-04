@@ -1,0 +1,11 @@
+name: CI
+
+# Keep pull requests on the canonical workflow definition.
+on:
+  pull_request:
+
+permissions: read-all
+
+jobs:
+  run:
+    uses: kenn-io/ghosthub/.github/workflows/ci.yml@main
