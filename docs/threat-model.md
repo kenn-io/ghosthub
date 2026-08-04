@@ -146,6 +146,8 @@ user configuration cannot turn them into unsupervised persistent masters even
 when Ghosthub cannot prepare its control socket. Authentication revalidates the
 cached control identity immediately before launching a master and restarts
 recovery if effective SSH identity changed while the prompt was being prepared.
+The cached route and path come from one effective-config snapshot rather than
+separate reads that could straddle a ProxyJump edit.
 Ghosthub never forces `accept-new`, writes a scanned key itself, or treats a
 trusted short alias as authorization for a canonical MagicDNS FQDN.
 When an SSH route contains unseen intermediate hosts, each trust sheet labels

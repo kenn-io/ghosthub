@@ -17,6 +17,70 @@ struct SSHAuthenticationPrompt: Equatable, Sendable {
     }
 }
 
+final class SSHDiagnosticBuffer: @unchecked Sendable {
+    static let defaultMaximumBytes = 64 * 1024
+
+    private let lock = NSLock()
+    private let maximumBytes: Int
+    private var data = Data()
+
+    init(maximumBytes: Int = defaultMaximumBytes) {
+        self.maximumBytes = maximumBytes
+    }
+
+    func append(_ chunk: Data) {
+        guard maximumBytes > 0, !chunk.isEmpty else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        if chunk.count >= maximumBytes {
+            data = Data(chunk.suffix(maximumBytes))
+            return
+        }
+        let overflow = data.count + chunk.count - maximumBytes
+        if overflow > 0 {
+            data.removeFirst(overflow)
+        }
+        data.append(chunk)
+    }
+
+    func text() -> String {
+        lock.lock()
+        let snapshot = data
+        lock.unlock()
+        return String(decoding: snapshot, as: UTF8.self)
+    }
+}
+
+struct SSHDiagnosticDrain: Sendable {
+    private let buffer: SSHDiagnosticBuffer
+    private let task: Task<Void, Never>
+
+    static func start(
+        pipe: Pipe,
+        maximumBytes: Int = SSHDiagnosticBuffer.defaultMaximumBytes
+    ) -> SSHDiagnosticDrain {
+        let buffer = SSHDiagnosticBuffer(maximumBytes: maximumBytes)
+        let task = Task.detached(priority: .utility) {
+            let handle = pipe.fileHandleForReading
+            while !Task.isCancelled {
+                let data = handle.availableData
+                guard !data.isEmpty else { return }
+                buffer.append(data)
+            }
+        }
+        return SSHDiagnosticDrain(buffer: buffer, task: task)
+    }
+
+    func finish() async -> String {
+        await task.value
+        return buffer.text()
+    }
+
+    func cancel() {
+        task.cancel()
+    }
+}
+
 enum SSHAuthenticationSessionState: Equatable, Sendable {
     case starting
     case prompt(SSHAuthenticationPrompt)
@@ -98,6 +162,7 @@ final class SSHAuthenticationSession: ObservableObject {
     var host: SSHHostInfo { target.host }
     private var process: Process?
     private var standardError: Pipe?
+    private var diagnosticDrain: SSHDiagnosticDrain?
     private var watchdogPipe: Pipe?
     private var preparationTask: Task<Void, Never>?
     private var preparationGeneration = UUID()
@@ -238,11 +303,17 @@ final class SSHAuthenticationSession: ObservableObject {
             process.standardError = standardError
             try process.run()
             try? watchdogPipe.fileHandleForReading.close()
+            try? standardError.fileHandleForWriting.close()
+
+            let diagnosticDrain = SSHDiagnosticDrain.start(
+                pipe: standardError
+            )
 
             temporaryState = preparation.temporaryState
             controlPath = preparation.controlPath
             self.process = process
             self.standardError = standardError
+            self.diagnosticDrain = diagnosticDrain
             self.watchdogPipe = watchdogPipe
             lastPromptID = nil
             monitorTask = Task { [weak self] in
@@ -262,9 +333,13 @@ final class SSHAuthenticationSession: ObservableObject {
             }
 
             if process?.isRunning != true {
+                let diagnosticDrain = diagnosticDrain
+                self.diagnosticDrain = nil
+                let diagnostic = await diagnosticDrain?.finish() ?? ""
+                guard !Task.isCancelled else { return }
                 let message = state == .connected
                     ? "The SSH connection ended. Try again."
-                    : connectionFailureMessage()
+                    : connectionFailureMessage(diagnostic)
                 state = .failed(message)
                 temporaryState?.remove()
                 temporaryState = nil
@@ -283,12 +358,11 @@ final class SSHAuthenticationSession: ObservableObject {
         return SSHAuthenticationPrompt.parse(data)
     }
 
-    private func connectionFailureMessage() -> String {
-        let data = standardError?.fileHandleForReading.readDataToEndOfFile()
-            ?? Data()
-        let diagnostic = String(data: data, encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let diagnostic, !diagnostic.isEmpty else {
+    private func connectionFailureMessage(_ output: String) -> String {
+        let diagnostic = output.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !diagnostic.isEmpty else {
             return "OpenSSH could not authenticate this connection."
         }
         return diagnostic
@@ -308,8 +382,10 @@ final class SSHAuthenticationSession: ObservableObject {
             process?.terminate()
         }
         try? watchdogPipe?.fileHandleForWriting.close()
+        diagnosticDrain?.cancel()
         process = nil
         standardError = nil
+        diagnosticDrain = nil
         watchdogPipe = nil
         temporaryState?.remove()
         temporaryState = nil
@@ -324,6 +400,7 @@ final class SSHAuthenticationSession: ObservableObject {
             process?.terminate()
         }
         try? watchdogPipe?.fileHandleForWriting.close()
+        diagnosticDrain?.cancel()
         temporaryState?.remove()
     }
 

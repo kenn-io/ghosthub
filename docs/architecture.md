@@ -187,7 +187,11 @@ Routine clients explicitly disable `ControlMaster` and `ControlPersist`; they
 may reuse Ghosthub's supervised socket but cannot create another master, even
 when Ghosthub cannot prepare that socket. Immediately before launching a master,
 Ghosthub revalidates its cached control identity after resolving launch options;
-an identity change restarts recovery instead of using the old socket path.
+an identity change restarts recovery instead of using the old socket path. The
+route and socket identity are initially derived from one effective-config
+snapshot, so a concurrent ProxyJump edit cannot combine old hops with a new
+control path. Master stderr is continuously drained into a bounded diagnostic
+buffer so verbose OpenSSH logging cannot block the connection.
 Window presentations hold leases on shared authentication attempts. Closing a
 window cancels an unfinished attempt only after its final presenting window
 releases it; an authenticated master remains available until the app exits.

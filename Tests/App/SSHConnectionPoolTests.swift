@@ -114,6 +114,76 @@ struct SSHConnectionPoolTests {
         #expect(proxiedName.count <= 40)
     }
 
+    @Test("authentication route and control path share one config snapshot")
+    func authenticationIdentityUsesOneSnapshot() throws {
+        let host = SSHHostInfo(
+            user: "operator",
+            hostname: "build.example.test",
+            port: nil
+        )
+        let originalProxy = SSHHostInfo(
+            user: nil,
+            hostname: "original-jump.example.test",
+            port: nil
+        )
+        let changedProxy = "changed-jump.example.test"
+        let rootReads = LockedValue(0)
+        let originalConfiguration = EffectiveSSHConfiguration(
+            user: "operator",
+            strictHostKeyChecking: "yes",
+            proxyJump: originalProxy.hostname,
+            proxyCommand: nil,
+            hostname: "build.internal"
+        )
+        let changingConfiguration:
+            SSHConfigurationResolver.ConfigurationProvider = {
+                requestedHost in
+                if requestedHost == host {
+                    let read = rootReads.load()
+                    rootReads.store(read + 1)
+                    if read == 0 {
+                        return originalConfiguration
+                    }
+                    return EffectiveSSHConfiguration(
+                        user: "operator",
+                        strictHostKeyChecking: "yes",
+                        proxyJump: changedProxy,
+                        proxyCommand: nil,
+                        hostname: "build.internal"
+                    )
+                }
+                return EffectiveSSHConfiguration(
+                    user: "relay",
+                    strictHostKeyChecking: "yes",
+                    proxyJump: nil,
+                    proxyCommand: nil
+                )
+            }
+        let resolvedIdentity = SSHConnectionPool.authenticationIdentity(
+            for: host,
+            configurationProvider: changingConfiguration
+        )
+        let identity = try #require(resolvedIdentity)
+        let expectedName = SSHConnectionPool.controlName(
+            for: identity.target,
+            configurationProvider: { requestedHost in
+                if requestedHost == host {
+                    return originalConfiguration
+                }
+                return EffectiveSSHConfiguration(
+                    user: "relay",
+                    strictHostKeyChecking: "yes",
+                    proxyJump: nil,
+                    proxyCommand: nil
+                )
+            }
+        )
+
+        #expect(identity.target.precedingProxyHops == [originalProxy])
+        #expect(URL(fileURLWithPath: identity.controlPath).lastPathComponent == expectedName)
+        #expect(rootReads.load() == 1)
+    }
+
     @Test("control sockets are scoped to one app launch")
     func controlSocketUsesAppSession() {
         let host = SSHHostInfo(

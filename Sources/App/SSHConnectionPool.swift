@@ -20,21 +20,37 @@ struct SSHAuthenticationTarget: Hashable, Sendable {
     }
 }
 
+struct SSHAuthenticationIdentity: Equatable, Sendable {
+    let target: SSHAuthenticationTarget
+    let controlPath: String
+}
+
 enum SSHConnectionPool {
+    private struct ResolvedTarget: Sendable {
+        let target: SSHAuthenticationTarget
+        let configurations: [SSHHostInfo: EffectiveSSHConfiguration]
+
+        var configurationProvider:
+            SSHConfigurationResolver.ConfigurationProvider {
+            let configurations = configurations
+            return { configurations[$0] }
+        }
+    }
+
     private static let directoryName = "ssh"
     private static let appSessionID = UUID().uuidString
 
     static func connectionArguments(for host: SSHHostInfo) -> [String] {
-        connectionArguments(controlPath: preparedControlPath(for: host))
+        connectionArguments(controlPath: controlPath(for: host))
     }
 
     static func isAuthenticated(_ host: SSHHostInfo) -> Bool {
-        guard let path = preparedControlPath(for: host) else { return false }
+        guard let path = controlPath(for: host) else { return false }
         return isAuthenticated(host, controlPath: path)
     }
 
     static func isAuthenticated(_ target: SSHAuthenticationTarget) -> Bool {
-        guard let path = preparedControlPath(for: target) else { return false }
+        guard let path = controlPath(for: target) else { return false }
         return isAuthenticated(target.host, controlPath: path)
     }
 
@@ -65,11 +81,55 @@ enum SSHConnectionPool {
     }
 
     static func controlPath(for host: SSHHostInfo) -> String? {
-        preparedControlPath(for: host)
+        authenticationIdentity(for: host)?.controlPath
     }
 
     static func controlPath(for target: SSHAuthenticationTarget) -> String? {
-        preparedControlPath(for: target)
+        authenticationIdentity(for: target)?.controlPath
+    }
+
+    static func authenticationIdentity(
+        for host: SSHHostInfo,
+        configurationProvider: SSHConfigurationResolver.ConfigurationProvider =
+            SSHConfigurationResolver.configuration
+    ) -> SSHAuthenticationIdentity? {
+        let resolved = resolvedTarget(
+            for: host,
+            configurationProvider: configurationProvider
+        )
+        guard let controlPath = preparedControlPath(
+            for: resolved.target,
+            configurationProvider: resolved.configurationProvider
+        ) else { return nil }
+        return SSHAuthenticationIdentity(
+            target: resolved.target,
+            controlPath: controlPath
+        )
+    }
+
+    static func authenticationIdentity(
+        for target: SSHAuthenticationTarget,
+        configurationProvider: SSHConfigurationResolver.ConfigurationProvider =
+            SSHConfigurationResolver.configuration
+    ) -> SSHAuthenticationIdentity? {
+        var configurations: [SSHHostInfo: EffectiveSSHConfiguration] = [:]
+        for host in target.route {
+            if let configuration = configurationProvider(host) {
+                configurations[host] = configuration
+            }
+        }
+        let snapshotConfigurations = configurations
+        let snapshot: SSHConfigurationResolver.ConfigurationProvider = {
+            snapshotConfigurations[$0]
+        }
+        guard let controlPath = preparedControlPath(
+            for: target,
+            configurationProvider: snapshot
+        ) else { return nil }
+        return SSHAuthenticationIdentity(
+            target: target,
+            controlPath: controlPath
+        )
     }
 
     static func authenticationArguments(
@@ -174,21 +234,10 @@ enum SSHConnectionPool {
         configurationProvider: SSHConfigurationResolver.ConfigurationProvider =
             SSHConfigurationResolver.configuration
     ) -> SSHAuthenticationTarget {
-        guard let proxyJump = configurationProvider(host)?.proxyJump,
-              let hops = SSHConfigurationResolver.effectiveProxyJumpHops(
-                  proxyJump,
-                  configurationProvider: configurationProvider
-              )
-        else {
-            return SSHAuthenticationTarget(
-                host: host,
-                precedingProxyHops: []
-            )
-        }
-        return SSHAuthenticationTarget(
-            host: host,
-            precedingProxyHops: hops.map(\.host)
-        )
+        resolvedTarget(
+            for: host,
+            configurationProvider: configurationProvider
+        ).target
     }
 
     static func proxyArguments(
@@ -278,19 +327,8 @@ enum SSHConnectionPool {
     }
 
     private static func preparedControlPath(
-        for host: SSHHostInfo,
-        environment: [String: String] = ProcessInfo.processInfo.environment,
-        fileManager: FileManager = .default
-    ) -> String? {
-        preparedControlPath(
-            for: configuredTarget(for: host),
-            environment: environment,
-            fileManager: fileManager
-        )
-    }
-
-    private static func preparedControlPath(
         for target: SSHAuthenticationTarget,
+        configurationProvider: SSHConfigurationResolver.ConfigurationProvider,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         fileManager: FileManager = .default
     ) -> String? {
@@ -310,12 +348,61 @@ enum SSHConnectionPool {
             )
             let name = controlName(
                 for: target,
-                configurationProvider: SSHConfigurationResolver.configuration
+                configurationProvider: configurationProvider
             )
             return directory.appendingPathComponent(name).path
         } catch {
             return nil
         }
+    }
+
+    private static func resolvedTarget(
+        for host: SSHHostInfo,
+        configurationProvider: SSHConfigurationResolver.ConfigurationProvider
+    ) -> ResolvedTarget {
+        var configurations: [SSHHostInfo: EffectiveSSHConfiguration] = [:]
+        let configuration = configurationProvider(host)
+        if let configuration {
+            configurations[host] = configuration
+        }
+        guard let proxyJump = configuration?.proxyJump,
+              let proxyHosts = SSHConfigurationResolver.proxyJumpHosts(
+                  proxyJump
+              )
+        else {
+            return ResolvedTarget(
+                target: SSHAuthenticationTarget(
+                    host: host,
+                    precedingProxyHops: []
+                ),
+                configurations: configurations
+            )
+        }
+
+        var hops: [SSHHostInfo] = []
+        for proxyHost in proxyHosts {
+            guard let proxyConfiguration = configurationProvider(proxyHost),
+                  proxyConfiguration.proxyJump == nil,
+                  proxyConfiguration.proxyCommand == nil
+            else {
+                return ResolvedTarget(
+                    target: SSHAuthenticationTarget(
+                        host: host,
+                        precedingProxyHops: []
+                    ),
+                    configurations: configurations
+                )
+            }
+            configurations[proxyHost] = proxyConfiguration
+            hops.append(proxyHost)
+        }
+        return ResolvedTarget(
+            target: SSHAuthenticationTarget(
+                host: host,
+                precedingProxyHops: hops
+            ),
+            configurations: configurations
+        )
     }
 
     private static func controlDirectory(

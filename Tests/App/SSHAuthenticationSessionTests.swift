@@ -5,6 +5,25 @@ import Testing
 
 @Suite("SSH authentication prompt broker")
 struct SSHAuthenticationSessionTests {
+    @Test("SSH diagnostics drain continuously into a bounded tail")
+    func drainsDiagnostics() async {
+        let pipe = Pipe()
+        let drain = SSHDiagnosticDrain.start(
+            pipe: pipe,
+            maximumBytes: 8
+        )
+        let writer = Task.detached {
+            pipe.fileHandleForWriting.write(Data(repeating: 65, count: 128_000))
+            pipe.fileHandleForWriting.write(Data("-newest".utf8))
+            try? pipe.fileHandleForWriting.close()
+        }
+
+        await writer.value
+        let diagnostic = await drain.finish()
+
+        #expect(diagnostic == "A-newest")
+    }
+
     @Test("authentication rejects a changed cached SSH identity")
     func rejectsChangedCachedIdentity() {
         let target = SSHAuthenticationTarget(

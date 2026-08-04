@@ -2626,12 +2626,8 @@ final class WorkspaceSceneModel: ObservableObject {
     private func resolveSSHHostTrust(
         for resolved: (info: SSHHostInfo, destination: String)
     ) async -> Result<SSHHostTrustRequirement, HostProbeError> {
-        let targetTask = Task.detached(priority: .userInitiated) {
-            let target = SSHConnectionPool.configuredTarget(for: resolved.info)
-            return (
-                target: target,
-                controlPath: SSHConnectionPool.controlPath(for: target)
-            )
+        let identityTask = Task.detached(priority: .userInitiated) {
+            SSHConnectionPool.authenticationIdentity(for: resolved.info)
         }
         let trustTask = Task.detached(priority: .userInitiated) {
             do {
@@ -2646,20 +2642,20 @@ final class WorkspaceSceneModel: ObservableObject {
             }
         }
         let resolution = await withTaskCancellationHandler {
-            await (targetTask.value, trustTask.value)
+            await (identityTask.value, trustTask.value)
         } onCancel: {
-            targetTask.cancel()
+            identityTask.cancel()
             trustTask.cancel()
         }
         if !Task.isCancelled {
-            configuredSSHAuthenticationTargets[resolved.destination] =
-                resolution.0.target
-            if let controlPath = resolution.0.controlPath {
-                sshAuthenticationControlPaths[resolution.0.target] =
-                    controlPath
+            if let identity = resolution.0 {
+                configuredSSHAuthenticationTargets[resolved.destination] =
+                    identity.target
+                sshAuthenticationControlPaths[identity.target] =
+                    identity.controlPath
             }
             if case let .success(.authentication(target)) = resolution.1,
-               target != resolution.0.target {
+               target != resolution.0?.target {
                 await cacheSSHAuthenticationControlPath(for: target)
             }
         }
@@ -2669,11 +2665,11 @@ final class WorkspaceSceneModel: ObservableObject {
     private func cacheSSHAuthenticationControlPath(
         for target: SSHAuthenticationTarget
     ) async {
-        let controlPath = await Task.detached(priority: .userInitiated) {
-            SSHConnectionPool.controlPath(for: target)
+        let identity = await Task.detached(priority: .userInitiated) {
+            SSHConnectionPool.authenticationIdentity(for: target)
         }.value
-        guard !Task.isCancelled, let controlPath else { return }
-        sshAuthenticationControlPaths[target] = controlPath
+        guard !Task.isCancelled, let identity else { return }
+        sshAuthenticationControlPaths[target] = identity.controlPath
     }
 
     private func configuredSSHHost(for hostID: UUID) -> SSHHost? {
