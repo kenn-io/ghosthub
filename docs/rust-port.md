@@ -53,7 +53,9 @@ MPL-2.0 exceptions, `dwrote` 0.11.5 and `option-ext` 0.2.0. MPL-2.0 permits
 combination with Apache-licensed code, but the exception remains crate-scoped
 so a new copyleft dependency cannot arrive silently. Known unmaintained
 transitives are individually identified in deny.toml and must be reconsidered
-whenever the GPUI pin changes. GPL and AGPL remain unconditionally rejected.
+whenever the GPUI pin changes. GPL and AGPL third-party dependencies remain
+unconditionally rejected. Ghosthub's own Rust packages retain the repository's
+AGPL-3.0-or-later license and are excluded from the third-party allowlist check.
 
 ### Verified dependency findings
 
