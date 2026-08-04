@@ -263,6 +263,70 @@ struct SSHHostTrustManagerTests {
         #expect(askPassCalls.load() == 1)
     }
 
+    @Test("non-review route hops authenticate in order")
+    func authenticatesEveryNonReviewRouteHop() throws {
+        let firstProxy = SSHHostInfo(
+            user: "first",
+            hostname: "first.example.test",
+            port: nil
+        )
+        let secondProxy = SSHHostInfo(
+            user: "second",
+            hostname: "second.example.test",
+            port: nil
+        )
+        let destinationHost = SSHHostInfo(
+            user: "dev",
+            hostname: "build.example.test",
+            port: nil
+        )
+        let authenticated = LockedValue(Set<SSHAuthenticationTarget>())
+        let manager = SSHHostTrustManager(
+            askPassRunner: { _, _, _, _, _, _ in
+                Issue.record("askpass must not run for non-review policies")
+            },
+            strictHostKeyPolicyProvider: {
+                switch $0 {
+                case firstProxy:
+                    "yes"
+                case secondProxy:
+                    "off"
+                default:
+                    "no"
+                }
+            },
+            routeProvider: { _ in
+                [firstProxy, secondProxy, destinationHost]
+            },
+            authenticationProvider: { authenticated.load().contains($0) }
+        )
+        let firstTarget = SSHAuthenticationTarget(
+            host: firstProxy,
+            precedingProxyHops: []
+        )
+        let secondTarget = SSHAuthenticationTarget(
+            host: secondProxy,
+            precedingProxyHops: [firstProxy]
+        )
+
+        #expect(try manager.pendingRequirement(
+            for: destinationHost,
+            destination: "dev@build.example.test"
+        ) == .authentication(firstTarget))
+
+        authenticated.withLock { $0.insert(firstTarget) }
+        #expect(try manager.pendingRequirement(
+            for: destinationHost,
+            destination: "dev@build.example.test"
+        ) == .authentication(secondTarget))
+
+        authenticated.withLock { $0.insert(secondTarget) }
+        #expect(try manager.pendingRequirement(
+            for: destinationHost,
+            destination: "dev@build.example.test"
+        ) == .none)
+    }
+
     @Test(
         "explicit strict host-key policies are never overridden",
         arguments: ["yes", "no", "off", "true", "false"]

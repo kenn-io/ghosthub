@@ -141,12 +141,13 @@ struct SSHHostTrustManager: Sendable {
         for host: SSHHostInfo,
         destination: String
     ) throws -> SSHHostTrustRequirement {
-        for target in try reviewTargets(for: host) where target.requiresReview {
+        for target in try reviewTargets(for: host) {
             if let precedingTarget = target.authenticationTarget
                 .precedingTarget,
                 !authenticationProvider(precedingTarget) {
                 return .authentication(precedingTarget)
             }
+            guard target.requiresReview else { continue }
             let confirmation = try withTemporaryState {
                 state -> SSHHostKeyConfirmation? in
                 askPassRunner(
