@@ -1305,6 +1305,43 @@ struct TmuxAttachmentInfoTests {
         #expect(try String(contentsOf: counter, encoding: .utf8) == "2")
     }
 
+    @Test("persistent SSH failure returns control to native recovery")
+    func persistentSSHFailureStopsReconnect() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let counter = directory.appendingPathComponent("count")
+        let fake = directory.appendingPathComponent("fake-ssh")
+        try """
+        #!/bin/sh
+        printf x >> "$GHOSTHUB_TEST_COUNTER"
+        exit 255
+        """.write(to: fake, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755], ofItemAtPath: fake.path
+        )
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = [
+            "-c", TmuxAttachmentInfo.sshReconnectScript,
+            "ghosthub-test", fake.path,
+        ]
+        process.environment = ProcessInfo.processInfo.environment.merging([
+            "GHOSTHUB_TEST_COUNTER": counter.path,
+        ]) { _, new in new }
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+
+        #expect(process.terminationStatus == 255)
+        #expect(try String(contentsOf: counter, encoding: .utf8) == "xxx")
+    }
+
     @Test("ordinary remote-command failure does not reconnect")
     func doesNotRetryTmuxFailure() throws {
         let directory = FileManager.default.temporaryDirectory

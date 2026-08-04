@@ -210,8 +210,10 @@ private FIFO. Later inventory and tmux clients reuse that app-session control
 connection and remain noninteractive.
 Exit status 255, OpenSSH's transport/setup failure status, reconnects with
 bounded exponential backoff. A connection that remains healthy for at least
-30 seconds resets the backoff. Other statuses pass through unchanged, so a
-normal tmux detach or a missing session does not create a reconnect loop. Host
+30 seconds resets the backoff. Persistent quick failures exit after two retries
+so Ghosthub's native recovery flow can reauthenticate. Other statuses pass
+through unchanged, so a normal tmux detach or a missing session does not create
+a reconnect loop. Host
 verification emits a marker only after the remote command begins. Status 255
 and local wrapper failures such as an unconfirmed timeout leave the host
 offline; a nonzero login-shell or probe-command status is reachable and

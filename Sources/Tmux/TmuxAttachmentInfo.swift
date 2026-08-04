@@ -887,18 +887,25 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
     done
     """
 
-    /// OpenSSH reserves status 255 for transport/setup failure. Clean detach
-    /// and ordinary tmux failures pass through so Ghosthub does not fight an
-    /// intentional detach or spin on a missing session.
+    /// OpenSSH reserves status 255 for transport/setup failure. Brief transport
+    /// interruptions retry, while persistent failures exit so Ghosthub can
+    /// recover authentication natively. Clean detach and ordinary tmux failures
+    /// pass through unchanged.
     static let sshReconnectScript = """
     delay=1
+    failures=0
     while :; do
         started=$(date +%s)
         "$@"
         status=$?
         [ "$status" -eq 255 ] || exit "$status"
         now=$(date +%s)
-        if [ $((now - started)) -ge 30 ]; then delay=1; fi
+        if [ $((now - started)) -ge 30 ]; then
+            delay=1
+            failures=0
+        fi
+        failures=$((failures + 1))
+        [ "$failures" -lt 3 ] || exit "$status"
         printf '\r\n[Ghosthub: SSH disconnected; reconnecting in %ss]\r\n' "$delay"
         sleep "$delay"
         if [ "$delay" -lt 30 ]; then

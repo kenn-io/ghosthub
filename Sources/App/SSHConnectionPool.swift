@@ -106,16 +106,19 @@ enum SSHConnectionPool {
         _ host: SSHHostInfo,
         _ configuration: EffectiveSSHConfiguration?
     ) -> String {
-        [
+        let hostPort = host.port.map { String($0) } ?? ""
+        let configurationPort = configuration?.port.map { String($0) } ?? ""
+        let components: [String] = [
             destination(for: host),
-            host.port.map(String.init) ?? "",
+            hostPort,
             configuration?.hostname ?? "",
             configuration?.user ?? "",
-            configuration?.port.map(String.init) ?? "",
+            configurationPort,
             configuration?.hostKeyAlias ?? "",
             configuration?.proxyJump ?? "",
             configuration?.proxyCommand ?? "",
-        ].joined(separator: "\u{1f}")
+        ]
+        return components.joined(separator: "\u{1f}")
     }
 
     private static func preparedControlPath(

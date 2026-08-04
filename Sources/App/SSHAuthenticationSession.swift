@@ -92,12 +92,16 @@ final class SSHAuthenticationSession: ObservableObject {
         guard case .prompt = state,
               let responseFIFO = temporaryState?.responseFIFO
         else { return }
+        let generation = preparationGeneration
         state = .verifying
         Task { [weak self] in
             let wroteResponse = await Task.detached {
                 Self.writeResponse(response, toFIFO: responseFIFO)
             }.value
-            guard let self, !wroteResponse else { return }
+            guard let self,
+                  !wroteResponse,
+                  preparationGeneration == generation
+            else { return }
             state = .failed(
                 "Ghosthub could not send the response to OpenSSH. Try again."
             )
