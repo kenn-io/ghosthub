@@ -179,9 +179,10 @@ storage. A successful prompt leaves a non-persistent OpenSSH master owned by
 the application session, and every window's inventory, transfer, and tmux
 clients reuse its control socket under `~/.ghosthub/ssh/`. Its bounded socket
 name includes an app-launch nonce plus a digest of the logical destination,
-effective host-key policy, effective host-key aliases, and proxy route, so two
-trust identities, routes, or app launches cannot reuse one another's
-authenticated master. A parent-held watchdog pipe terminates each master if
+the normalized effective OpenSSH configuration for every route target, and the
+proxy route, so changes to credentials, known-hosts files, trust identities,
+routes, or app launches cannot reuse an authenticated master. A parent-held
+watchdog pipe terminates each master if
 the app process disappears, and the next launch removes stale control sockets.
 Routine clients explicitly disable `ControlMaster` and `ControlPersist`; they
 may reuse Ghosthub's supervised socket but cannot create another master, even

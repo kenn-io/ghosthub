@@ -139,9 +139,10 @@ session ends: Ghosthub prevents it from forking, a parent-held watchdog pipe
 terminates it if the app process disappears, the socket name contains an
 app-launch nonce, and the next launch removes stale control sockets. Its socket
 lives in the user-only Ghosthub state directory and is also scoped to the
-logical destination, every effective
-`HostKeyAlias`, and the proxy route, preventing a master authenticated under one
-host-key identity, route, or app launch from satisfying another.
+logical destination, the normalized effective OpenSSH configuration for every
+route target, and the proxy route. Changes to credentials, known-hosts files,
+host-key identity, route, or app launch therefore cannot reuse an authenticated
+master.
 Routine clients explicitly disable `ControlMaster` and `ControlPersist`, so
 user configuration cannot turn them into unsupervised persistent masters even
 when Ghosthub cannot prepare its control socket. Authentication revalidates the

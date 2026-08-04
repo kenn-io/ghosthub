@@ -14,6 +14,9 @@ struct SSHConfigurationResolverTests {
         hostname build.example.test
         port 2200
         hostkeyalias build-key.example.test
+        identityfile ~/.ssh/id_ed25519
+        identityfile ~/.ssh/id_rsa
+        userknownhostsfile ~/.ssh/known_hosts
         """)
 
         #expect(configuration.user == "deploy")
@@ -23,6 +26,15 @@ struct SSHConfigurationResolverTests {
         #expect(configuration.hostname == "build.example.test")
         #expect(configuration.port == 2200)
         #expect(configuration.hostKeyAlias == "build-key.example.test")
+        #expect(configuration.resolvedOptions.filter {
+            $0.hasPrefix("identityfile=")
+        } == [
+            "identityfile=~/.ssh/id_ed25519",
+            "identityfile=~/.ssh/id_rsa",
+        ])
+        #expect(configuration.resolvedOptions.contains(
+            "userknownhostsfile=~/.ssh/known_hosts"
+        ))
     }
 
     @Test(

@@ -480,4 +480,44 @@ struct SSHConnectionPoolTests {
                 == name(destinationPolicy: "yes", proxyPolicy: "yes")
         )
     }
+
+    @Test(
+        "control sockets are scoped to resolved SSH security settings",
+        arguments: [
+            (
+                "identityfile ~/.ssh/original_ed25519",
+                "identityfile ~/.ssh/replacement_ed25519"
+            ),
+            (
+                "userknownhostsfile ~/.ssh/known_hosts",
+                "userknownhostsfile ~/.ssh/isolated_known_hosts"
+            ),
+        ]
+    )
+    func controlSocketUsesResolvedSecuritySettings(
+        originalOption: String,
+        changedOption: String
+    ) {
+        let host = SSHHostInfo(
+            user: "operator",
+            hostname: "build.example.test",
+            port: nil
+        )
+        func name(option: String) -> String {
+            let configuration = SSHConfigurationResolver.parse("""
+            user operator
+            hostname build.example.test
+            port 22
+            stricthostkeychecking true
+            \(option)
+            """)
+            return SSHConnectionPool.controlName(
+                for: host,
+                configurationProvider: { _ in configuration },
+                sessionID: "test-launch"
+            )
+        }
+
+        #expect(name(option: originalOption) != name(option: changedOption))
+    }
 }

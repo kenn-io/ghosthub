@@ -338,6 +338,7 @@ enum SSHConnectionPool {
             hostKeyPolicy,
             configuration?.proxyJump ?? "",
             configuration?.proxyCommand ?? "",
+            configuration?.resolvedOptions.joined(separator: "\u{1e}") ?? "",
         ]
         return components.joined(separator: "\u{1f}")
     }

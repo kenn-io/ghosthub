@@ -9,6 +9,7 @@ struct EffectiveSSHConfiguration: Equatable, Sendable {
     let hostname: String?
     let port: Int?
     let hostKeyAlias: String?
+    let resolvedOptions: [String]
 
     init(
         user: String?,
@@ -17,7 +18,8 @@ struct EffectiveSSHConfiguration: Equatable, Sendable {
         proxyCommand: String?,
         hostname: String? = nil,
         port: Int? = nil,
-        hostKeyAlias: String? = nil
+        hostKeyAlias: String? = nil,
+        resolvedOptions: [String] = []
     ) {
         self.user = user
         self.strictHostKeyChecking = strictHostKeyChecking
@@ -26,6 +28,7 @@ struct EffectiveSSHConfiguration: Equatable, Sendable {
         self.hostname = hostname
         self.port = port
         self.hostKeyAlias = hostKeyAlias
+        self.resolvedOptions = resolvedOptions
     }
 }
 
@@ -283,13 +286,22 @@ enum SSHConfigurationResolver {
 
     static func parse(_ output: String) -> EffectiveSSHConfiguration {
         var values: [String: String] = [:]
+        var optionValues: [String: [String]] = [:]
         for line in output.split(whereSeparator: \Character.isNewline) {
             let fields = line.split(
                 maxSplits: 1,
                 whereSeparator: \Character.isWhitespace
             )
             guard fields.count == 2 else { continue }
-            values[String(fields[0]).lowercased()] = String(fields[1])
+            let name = String(fields[0]).lowercased()
+            let value = String(fields[1])
+            values[name] = value
+            optionValues[name, default: []].append(value)
+        }
+        let resolvedOptions = optionValues.keys.sorted().flatMap { name in
+            optionValues[name, default: []].map { value in
+                "\(name)=\(value)"
+            }
         }
         return EffectiveSSHConfiguration(
             user: values["user"],
@@ -300,7 +312,8 @@ enum SSHConfigurationResolver {
             proxyCommand: meaningfulProxyValue(values["proxycommand"]),
             hostname: values["hostname"],
             port: values["port"].flatMap(Int.init),
-            hostKeyAlias: meaningfulProxyValue(values["hostkeyalias"])
+            hostKeyAlias: meaningfulProxyValue(values["hostkeyalias"]),
+            resolvedOptions: resolvedOptions
         )
     }
 
