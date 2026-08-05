@@ -26,22 +26,40 @@ source "$demo_root/process.sh"
 pid_record="$scratch/app.pid"
 demo_stop_recorded_process "$pid_record" "$bin"
 
-env -u TMUX \
-  HOME="$scratch/home" \
-  ZDOTDIR="$scratch/home" \
-  SHELL=/bin/zsh \
-  GHOSTHUB_CONFIG_HOME="$scratch/ghosthub-config" \
-  GHOSTHUB_STATE_HOME="$scratch/ghosthub-state" \
-  GHOSTHUB_DEMO_ROOT="$demo_root" \
-  GHOSTHUB_DEMO_SCRATCH="$scratch" \
-  GHOSTHUB_DEMO_SSH_DIR="$scratch/ssh" \
-  TMUX_TMPDIR="$scratch/tmux" \
-  DYLD_INSERT_LIBRARIES="$scratch/libdemohost.dylib" \
-  "$bin" -ApplePersistenceIgnoreState YES \
-  -ghosthub.settings.hosts.ssh "<$hosts_hex>" \
-  > "$scratch/app.log" 2>&1 &
+existing_pids=" $(demo_pids_for_executable "$bin" | tr '\n' ' ')"
+rm -f "$scratch/app.log"
+open -n \
+  --env HOME="$scratch/home" \
+  --env ZDOTDIR="$scratch/home" \
+  --env SHELL=/bin/zsh \
+  --env GHOSTHUB_CONFIG_HOME="$scratch/ghosthub-config" \
+  --env GHOSTHUB_STATE_HOME="$scratch/ghosthub-state" \
+  --env GHOSTHUB_DEMO_ROOT="$demo_root" \
+  --env GHOSTHUB_DEMO_SCRATCH="$scratch" \
+  --env GHOSTHUB_DEMO_SSH_DIR="$scratch/ssh" \
+  --env TMUX_TMPDIR="$scratch/tmux" \
+  --env DYLD_INSERT_LIBRARIES="$scratch/libdemohost.dylib" \
+  --stdout "$scratch/app.log" \
+  --stderr "$scratch/app.log" \
+  "$app" --args -ApplePersistenceIgnoreState YES \
+  -ghosthub.settings.hosts.ssh "<$hosts_hex>"
 
-demo_pid=$!
+demo_pid=""
+for _ in $(seq 1 40); do
+  while read -r candidate; do
+    [[ -n "$candidate" ]] || continue
+    if [[ "$existing_pids" != *" $candidate "* ]]; then
+      demo_pid="$candidate"
+      break
+    fi
+  done < <(demo_pids_for_executable "$bin")
+  [[ -n "$demo_pid" ]] && break
+  sleep 0.05
+done
+[[ -n "$demo_pid" ]] || {
+  echo "error: launched demo application was not discovered" >&2
+  exit 1
+}
 # Until the ownership record is durable, every exit path owns cleanup of this
 # exact child. Reap it even if TERM is ignored so teardown can never delete the
 # executable beneath an untracked live process.

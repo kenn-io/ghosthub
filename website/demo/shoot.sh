@@ -229,16 +229,20 @@ demo_input escape
 echo "==> hero: active coding-agent worktree"
 palette "fix-reconnect-backoff"
 sleep 5
-demo_input press "Expand Projects"
+# The group and project disclosure controls are deliberately compact. Their
+# rendered positions are stable because the demo window has a fixed 1600×1000
+# frame, while SwiftUI does not expose those two controls as pressable nodes on
+# every supported macOS build.
+demo_input click "80,666"
 sleep 0.5
-demo_input press "Expand ghosthub"
+demo_input click "32,628"
 sleep 0.5
 capture_state hero.png
 
 echo "==> guide: ordinary worktree session"
 palette "add-session-filters"
 sleep 4
-demo_input press "Expand agentsview"
+demo_input click "32,492"
 sleep 0.5
 capture_state guide-sessions.png
 
@@ -281,17 +285,16 @@ prepare_command_window() {
     palette "$query"
   fi
   sleep 3
-  demo_input hide-sidebar
-  sleep 1
+  palette "Hide Sidebar"
 }
 
 echo "==> guide: six-window tmux command center"
 prepare_command_window "fix-reconnect-backoff" false
 prepare_command_window "add-session-filters"
-prepare_command_window "scratch" true press
-prepare_command_window "docbank-export" true press
-prepare_command_window "release-watch" true press
-prepare_command_window "test-matrix" true press
+prepare_command_window "scratch"
+prepare_command_window "docbank-export"
+prepare_command_window "release-watch"
+prepare_command_window "test-matrix"
 matrix_raw="$scratch/screenshots-raw/guide-command-center.png"
 "$demo_root/capture.sh" "$matrix_raw" matrix
 process_matrix_capture "$matrix_raw" "$out_dir/guide-command-center.png"
@@ -312,8 +315,7 @@ prepare_command_tab() {
     palette "$query"
   fi
   sleep 3
-  demo_input hide-sidebar
-  sleep 1
+  palette "Hide Sidebar"
 }
 
 echo "==> guide: six-tab tmux workspace"
@@ -321,10 +323,10 @@ demo_input new-window
 sleep 2
 prepare_command_tab "fix-reconnect-backoff" false
 prepare_command_tab "add-session-filters"
-prepare_command_tab "scratch" true press
-prepare_command_tab "docbank-export" true press
-prepare_command_tab "release-watch" true press
-prepare_command_tab "test-matrix" true press
+prepare_command_tab "scratch"
+prepare_command_tab "docbank-export"
+prepare_command_tab "release-watch"
+prepare_command_tab "test-matrix"
 capture_state guide-native-tabs.png
 
 echo "captured website asset set -> $out_dir"

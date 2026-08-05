@@ -29,6 +29,25 @@ print(String(cString: buffer))
 SWIFT
 }
 
+demo_pids_for_executable() {
+  local expected="$1"
+  /usr/bin/swift - "$expected" <<'SWIFT'
+import AppKit
+import Foundation
+
+guard CommandLine.arguments.count == 2 else { exit(1) }
+let expected = URL(fileURLWithPath: CommandLine.arguments[1])
+    .resolvingSymlinksInPath().standardizedFileURL.path
+for application in NSWorkspace.shared.runningApplications {
+    guard let executable = application.executableURL?
+        .resolvingSymlinksInPath().standardizedFileURL.path,
+        executable == expected
+    else { continue }
+    print(application.processIdentifier)
+}
+SWIFT
+}
+
 demo_require_recorded_process() {
   local record="$1" expected="$2" pid actual
   expected="$(realpath "$expected" 2>/dev/null)" || {

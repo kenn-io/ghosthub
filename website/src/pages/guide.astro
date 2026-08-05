@@ -139,14 +139,22 @@ const imageAlt = {
             each host’s full MagicDNS name.
           </p>
           <p>
-            Remote hosts need tmux. Key and SSH-agent authentication work
-            without prompting. When OpenSSH needs a password or another
-            interactive response, Ghosthub shows its exact prompt in a native
-            secure-entry sheet and keeps that OpenSSH connection available for
-            inventory and tmux operations during the app session. Responses
-            are not stored. Continue can send a deliberate empty response when
-            a keyboard-interactive challenge requires one. An unreachable
-            machine never blocks the rest of your fleet.
+            Remote hosts need tmux. Ghosthub follows your OpenSSH configuration
+            for users, ports, keys, and routing. If OpenSSH encounters an unseen
+            key under an interactive trust policy, Ghosthub shows the exact
+            destination and fingerprint for approval. Passwords and other
+            interactive challenges use a native secure-entry sheet that names
+            the host requesting the response. Responses are kept only for the
+            app session, and <strong>Continue</strong> can deliberately send an
+            empty response when a challenge requires one.
+          </p>
+          <p>
+            ProxyJump routes are handled one host at a time, with every trust
+            and credential prompt naming the hop that controls it. Ghosthub
+            refuses opaque ProxyCommand routes and jump hosts that themselves
+            use another proxy because it cannot safely review those intermediate
+            policies. An unreachable machine never blocks the rest of your
+            fleet.
           </p>
           <p>
             Native Windows support is experimental. Choose{' '}
@@ -164,43 +172,24 @@ const imageAlt = {
             <a href="https://kwt.sh">kwt, a Git worktree manager</a>,
             system-wide, test the connection and choose{' '}
             <strong>Install kwt Worktree Helper</strong>. Ghosthub asks through that
-            explicit action. Testing a connection follows your OpenSSH
-            host-key policy. For an unseen key, Ghosthub shows the exact full
-            destination and OpenSSH fingerprint for explicit approval, asks
-            OpenSSH to save that same key, and retries the connection. A trusted
-            short hostname or alias is a separate OpenSSH identity. Ghosthub
-            reviews effective <code>ask</code> and <code>accept-new</code>{' '}
-            policies without overriding <code>yes</code>, <code>no</code>, or{' '}
-            <code>off</code>. Ghosthub
-            then copies its pinned build for the host’s OS and CPU, verifies it,
-            and keeps it under <code>~/.ghosthub/</code>.
+            explicit action, then copies its pinned build for the host’s OS and
+            CPU, verifies it, and keeps it under <code>~/.ghosthub/</code>.
             On a fresh macOS or Linux host, open the <strong>+</strong> menu
             beside it, choose <strong>Add Project</strong>, and enter each
             existing checkout’s absolute path. Ghosthub delegates registration
             to kwt and refreshes inventory without scanning the machine.
             Project registration is not yet available for Windows hosts. If the
             host’s SSH address changes while Add Project is open, close the
-            sheet and try again against the updated host. Ghosthub marks the
-            machine reachable only when the remote verification command
-            actually begins; SSH failures and unconfirmed local timeouts remain
-            offline, while a confirmed remote command failure is shown as
-            degraded. Tmux-only hosts do not need either step. An expanded host
-            with no inventory says so in the sidebar. If a host shows a caution
-            icon, click it once. Ghosthub checks the exact SSH destination and
-            opens fingerprint review only when OpenSSH reports an unseen key.
-            Otherwise it tests the connection: reachable hosts keep their
-            inventory diagnostic and offer Retry, while SSH authentication
-            opens a native secure-entry sheet. Ghosthub confirms a successful
-            connection before continuing and then retries inventory.
-            ProxyJump routes handle each host in sequence. Ghosthub reviews a
-            hop's unseen key, asks for that hop's password or verification code
-            when needed, and names the exact hop controlling the prompt before
-            continuing to the next route host. Enter only that hop's
-            credentials. Opaque
-            ProxyCommand routes and jump hosts with another proxy route fail
-            closed because their intermediate policies cannot be reviewed
-            safely. After every required approval, Ghosthub retries inventory
-            automatically.
+            sheet and try again against the updated host. Tmux-only hosts do not
+            need either step.
+          </p>
+          <p>
+            If a host shows a caution icon, click it to review trust,
+            authenticate, or retry the connection. Ghosthub confirms success
+            before dismissing the sheet and retries inventory automatically.
+            Reachable hosts keep any separate inventory diagnostic visible so
+            you can retry it without repeating SSH setup. An expanded host with
+            no projects or tmux sessions says so in the sidebar.
           </p>
           <aside class="reconnect">
             <span aria-hidden="true">↻</span>

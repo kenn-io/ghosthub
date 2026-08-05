@@ -254,7 +254,7 @@ fi
 app_copy="$scratch/app/Ghosthub.app"
 rm -rf "$scratch/app"
 mkdir -p "$scratch/app"
-cp -R "$app_src" "$app_copy"
+cp -RX "$app_src" "$app_copy"
 # The packaged app pins kwt to Contents/Helpers/kwt (no PATH fallback), so
 # the faux inventory has to be installed inside the bundle. Helpers/ is
 # absent when the bundle was built without a packaged kwt.
@@ -269,6 +269,12 @@ chmod +x "$app_copy/Contents/Helpers/kwt"
 # Re-sign ad hoc without the hardened runtime so DYLD_INSERT_LIBRARIES (the
 # hostname override in run.sh) takes effect.
 codesign --force --deep -s - "$app_copy" 2>/dev/null
+# Files produced from toolchains downloaded by a browser can inherit macOS
+# provenance metadata even when cp omits extended attributes. The isolated,
+# ad-hoc-signed demo copy is not a downloaded release artifact, so remove that
+# metadata after signing to keep Gatekeeper from terminating the injected
+# capture process before its first window opens.
+xattr -dr com.apple.provenance "$app_copy" 2>/dev/null || true
 
 cc -dynamiclib -fobjc-arc -framework AppKit -framework ImageIO \
   -o "$scratch/libdemohost.dylib" "$demo_root/assets/demohost.m"

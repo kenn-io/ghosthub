@@ -5,6 +5,37 @@ test, and documentation-only changes are omitted.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-04
+
+### Added
+
+- SSH host setup now stays inside Ghosthub: unseen host keys are reviewed with
+  their exact destination and fingerprint, while password and
+  keyboard-interactive challenges use a native secure-entry sheet. Session-only
+  credentials can authenticate direct hosts and supported ProxyJump routes
+  without being written to disk.
+
+### Changed
+
+- Worktrees within a project and standalone tmux sessions within a host can be
+  reordered by dragging. Ghosthub preserves that order across launches and
+  inventory changes and uses it for keyboard navigation and the Command
+  Palette.
+- Tailscale imports preserve full MagicDNS identities and use the effective
+  OpenSSH user when configured, falling back to the current macOS user.
+- Sidebar resizing is smoother, and the active host and session title remain
+  visible when the sidebar width changes.
+- The terminal font picker lists fixed-width fonts while retaining a configured
+  font that is temporarily unavailable.
+
+### Fixed
+
+- Fresh launches now open a workspace window when macOS has no restorable
+  window state.
+- Remote connections preserve explicit SSH ports, reuse authenticated
+  connections for inventory, tmux, and helper installation, and report normal
+  tmux detachment separately from authentication or transport failures.
+
 ## [0.5.3] - 2026-08-02
 
 ### Changed
@@ -163,7 +194,8 @@ test, and documentation-only changes are omitted.
   and SSH tmux session discovery, automatic reconnect, and kwt-backed project
   and worktree navigation.
 
-[Unreleased]: https://github.com/kenn-io/ghosthub/compare/v0.5.3...HEAD
+[Unreleased]: https://github.com/kenn-io/ghosthub/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/kenn-io/ghosthub/compare/v0.5.3...v0.6.0
 [0.5.3]: https://github.com/kenn-io/ghosthub/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/kenn-io/ghosthub/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/kenn-io/ghosthub/compare/v0.5.0...v0.5.1

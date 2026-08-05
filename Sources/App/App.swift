@@ -115,6 +115,8 @@ struct GhosthubApp: App {
                 AppAppearance.apply(appearance)
                 #endif
             }
+        } defaultValue: {
+            WorkspaceWindowState.fresh()
         }
         .defaultSize(width: 1600, height: 1000)
         .windowStyle(.hiddenTitleBar)
