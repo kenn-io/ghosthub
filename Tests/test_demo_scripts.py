@@ -652,21 +652,8 @@ def test_recorded_process_uses_literal_executable_path(tmp_path: Path) -> None:
     assert not record.exists()
 
 
-@pytest.mark.skipif(sys.platform != "darwin", reason="process path coverage targets macOS")
-def test_run_reaps_app_when_pid_recording_fails(tmp_path: Path) -> None:
+def stage_launch_test_app(tmp_path: Path) -> tuple[Path, Path, Path]:
     scratch = tmp_path / "scratch"
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    fake_mktemp = bin_dir / "mktemp"
-    fake_mktemp.write_text(
-        "#!/usr/bin/env bash\n"
-        "for _ in {1..500}; do\n"
-        "  [[ -f $CHILD_STATE ]] && exit 1\n"
-        "  /bin/sleep 0.01\n"
-        "done\n"
-        "exit 2\n"
-    )
-    fake_mktemp.chmod(0o755)
     executable = scratch / "app/Ghosthub.app/Contents/MacOS/Ghosthub"
     executable.parent.mkdir(parents=True)
     home = scratch / "home"
@@ -680,13 +667,18 @@ def test_run_reaps_app_when_pid_recording_fails(tmp_path: Path) -> None:
     source.write_text(
         "#include <stdio.h>\n"
         "#include <stdlib.h>\n"
+        "#include <string.h>\n"
         "#include <unistd.h>\n"
         "int main(void) {\n"
-        "  FILE *f = fopen(getenv(\"CHILD_STATE\"), \"w\");\n"
-        "  fprintf(f, \"%d\\n%s\\n%s\\n\", getpid(), getenv(\"SHELL\"),\n"
-        "          getenv(\"ZDOTDIR\"));\n"
+        "  char path[4096];\n"
+        "  snprintf(path, sizeof(path), \"%s/child-state\",\n"
+        "           getenv(\"GHOSTHUB_DEMO_SCRATCH\"));\n"
+        "  FILE *f = fopen(path, \"w\");\n"
+        "  const char *ssh_auth_sock = getenv(\"SSH_AUTH_SOCK\");\n"
+        "  fprintf(f, \"%d\\n%s\\n%s\\n%s\\n\", getpid(), getenv(\"SHELL\"),\n"
+        "          getenv(\"ZDOTDIR\"), ssh_auth_sock ? ssh_auth_sock : \"\");\n"
         "  fclose(f);\n"
-        "  sleep(30);\n"
+        "  sleep(120);\n"
         "  return 0;\n"
         "}\n"
     )
@@ -713,12 +705,58 @@ def test_run_reaps_app_when_pid_recording_fails(tmp_path: Path) -> None:
         ],
         check=True,
     )
+    return scratch, executable, state
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="demo launch targets macOS")
+def test_launch_helper_reaps_app_when_pid_record_cannot_be_published(
+    tmp_path: Path,
+) -> None:
+    scratch, executable, state = stage_launch_test_app(tmp_path)
+    app = executable.parents[2]
+    ssh_auth_sock = str(tmp_path / "agent.sock")
+
+    result = subprocess.run(
+        [
+            "/usr/bin/swift",
+            str(DEMO / "launch.swift"),
+            str(app),
+            str(executable),
+            str(scratch / "launch-owner.pid"),
+            str(scratch / "missing/app.pid"),
+            "00",
+            str(DEMO),
+            str(scratch),
+            ssh_auth_sock,
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    child_pid, child_shell, child_zdotdir, child_ssh_auth_sock = (
+        state.read_text().splitlines()
+    )
+    assert child_shell == "/bin/zsh"
+    assert child_zdotdir == str(scratch / "home")
+    assert child_ssh_auth_sock == ssh_auth_sock
+    with pytest.raises(ProcessLookupError):
+        os.kill(int(child_pid), 0)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="demo launch targets macOS")
+def test_run_records_exact_launchservices_pid_and_forwards_ssh_agent(
+    tmp_path: Path,
+) -> None:
+    scratch, executable, state = stage_launch_test_app(tmp_path)
+    ssh_auth_sock = str(tmp_path / "agent.sock")
     env = {
         **os.environ,
-        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
         "SHELL": "/opt/homebrew/bin/fish",
         "ZDOTDIR": "/tmp/personal-zdotdir",
-        "CHILD_STATE": str(state),
+        "SSH_AUTH_SOCK": ssh_auth_sock,
         "GHOSTHUB_DEMO_SCRATCH": str(scratch),
     }
 
@@ -731,13 +769,27 @@ def test_run_reaps_app_when_pid_recording_fails(tmp_path: Path) -> None:
         check=False,
     )
 
-    assert result.returncode != 0
-    child_pid, child_shell, child_zdotdir = state.read_text().splitlines()
-    assert child_shell == "/bin/zsh"
-    assert child_zdotdir == str(home)
-    with pytest.raises(ProcessLookupError):
+    try:
+        assert result.returncode == 0, result.stderr
+        child_pid, child_shell, child_zdotdir, child_ssh_auth_sock = (
+            state.read_text().splitlines()
+        )
+        assert (scratch / "app.pid").read_text().strip() == child_pid
+        assert child_shell == "/bin/zsh"
+        assert child_zdotdir == str(scratch / "home")
+        assert child_ssh_auth_sock == ssh_auth_sock
         os.kill(int(child_pid), 0)
-    assert not (scratch / "app.pid").exists()
+    finally:
+        cleanup = run_bash(
+            'source "$HELPER"; demo_stop_recorded_process "$RECORD" "$EXECUTABLE"',
+            env={
+                **os.environ,
+                "HELPER": str(DEMO / "process.sh"),
+                "RECORD": str(scratch / "app.pid"),
+                "EXECUTABLE": str(executable),
+            },
+        )
+        assert cleanup.returncode == 0, cleanup.stderr
 
 
 @pytest.mark.parametrize(

@@ -25,64 +25,35 @@ hosts_hex="$(printf '%s' "$hosts_json" | xxd -p | tr -d '\n')"
 source "$demo_root/process.sh"
 pid_record="$scratch/app.pid"
 demo_stop_recorded_process "$pid_record" "$bin"
+launch_dir="$(mktemp -d "$scratch/.launch.XXXXXX")"
+launch_record="$launch_dir/app.pid"
 
-existing_pids=" $(demo_pids_for_executable "$bin" | tr '\n' ' ')"
-rm -f "$scratch/app.log"
-open -n \
-  --env HOME="$scratch/home" \
-  --env ZDOTDIR="$scratch/home" \
-  --env SHELL=/bin/zsh \
-  --env GHOSTHUB_CONFIG_HOME="$scratch/ghosthub-config" \
-  --env GHOSTHUB_STATE_HOME="$scratch/ghosthub-state" \
-  --env GHOSTHUB_DEMO_ROOT="$demo_root" \
-  --env GHOSTHUB_DEMO_SCRATCH="$scratch" \
-  --env GHOSTHUB_DEMO_SSH_DIR="$scratch/ssh" \
-  --env TMUX_TMPDIR="$scratch/tmux" \
-  --env DYLD_INSERT_LIBRARIES="$scratch/libdemohost.dylib" \
-  --stdout "$scratch/app.log" \
-  --stderr "$scratch/app.log" \
-  "$app" --args -ApplePersistenceIgnoreState YES \
-  -ghosthub.settings.hosts.ssh "<$hosts_hex>"
-
-demo_pid=""
-for _ in $(seq 1 40); do
-  while read -r candidate; do
-    [[ -n "$candidate" ]] || continue
-    if [[ "$existing_pids" != *" $candidate "* ]]; then
-      demo_pid="$candidate"
-      break
-    fi
-  done < <(demo_pids_for_executable "$bin")
-  [[ -n "$demo_pid" ]] && break
-  sleep 0.05
-done
-[[ -n "$demo_pid" ]] || {
-  echo "error: launched demo application was not discovered" >&2
-  exit 1
-}
-# Until the ownership record is durable, every exit path owns cleanup of this
-# exact child. Reap it even if TERM is ignored so teardown can never delete the
-# executable beneath an untracked live process.
-cleanup_unrecorded_app() {
+# Install cleanup before LaunchServices can create the application. launch.swift
+# either publishes its exact NSRunningApplication PID or terminates it itself.
+cleanup_launched_app() {
   local status=$?
   trap - EXIT HUP INT TERM
-  if kill -0 "$demo_pid" 2>/dev/null; then
-    kill "$demo_pid" 2>/dev/null || true
-    for _ in $(seq 1 30); do
-      kill -0 "$demo_pid" 2>/dev/null || break
-      sleep 0.1
-    done
-    if kill -0 "$demo_pid" 2>/dev/null; then
-      kill -KILL "$demo_pid" 2>/dev/null || true
-    fi
+  if [[ -e "$launch_record" || -L "$launch_record" ]]; then
+    demo_stop_recorded_process "$launch_record" "$bin" || status=1
   fi
-  wait "$demo_pid" 2>/dev/null || true
+  rmdir "$launch_dir" 2>/dev/null || status=1
   exit "$status"
 }
-trap cleanup_unrecorded_app EXIT
+trap cleanup_launched_app EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
-demo_record_process "$demo_pid" "$pid_record" "$bin"
+
+/usr/bin/swift "$demo_root/launch.swift" \
+  "$app" "$bin" "$launch_record" "$pid_record" "$hosts_hex" \
+  "$demo_root" "$scratch" "${SSH_AUTH_SOCK:-}"
+demo_pid="$(demo_require_recorded_process "$launch_record" "$bin")"
+published_pid="$(demo_require_recorded_process "$pid_record" "$bin")"
+[[ "$published_pid" == "$demo_pid" ]] || {
+  echo "error: demo PID record does not match launched application" >&2
+  exit 1
+}
 trap - EXIT HUP INT TERM
-echo "Ghosthub demo instance launched (pid $demo_pid). Log: $scratch/app.log"
+rm -f "$launch_record"
+rmdir "$launch_dir"
+echo "Ghosthub demo instance launched (pid $demo_pid)."
