@@ -26,7 +26,7 @@ const heroAlt =
     <div class="install-action">
       <InstallCommand>
         <a class="learn" href="/guide/" slot="secondary">
-          Learn More <span aria-hidden="true">&rarr;</span>
+          Learn More
         </a>
       </InstallCommand>
     </div>
@@ -104,17 +104,23 @@ const heroAlt =
   }
 
   .learn {
+    display: flex;
+    align-items: center;
+    padding: 0.68rem 1.1rem;
+    border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--line));
+    border-radius: 9px;
+    background: color-mix(in srgb, var(--accent) 4%, transparent);
     color: var(--accent);
     font-family: var(--font-mono);
-    font-size: 0.84rem;
+    font-size: 0.82rem;
     font-weight: 700;
-    text-decoration: underline;
-    text-decoration-color: color-mix(in srgb, var(--accent) 55%, transparent);
-    text-underline-offset: 0.2em;
-    transition: color 0.15s;
+    white-space: nowrap;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
   }
 
   .learn:hover {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
     color: var(--text);
   }
 

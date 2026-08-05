@@ -10,7 +10,7 @@ describe('InstallCommand', () => {
     container = await AstroContainer.create();
   });
 
-  it('renders a supplied secondary action beside the DMG fallback', async () => {
+  it('renders a supplied secondary action beside the primary command', async () => {
     const html = await container.renderToString(InstallCommand, {
       slots: {
         secondary: '<a href="/guide/">Learn More</a>',
@@ -18,8 +18,11 @@ describe('InstallCommand', () => {
     });
 
     expect(html).toContain('href="/guide/"');
-    expect(html.indexOf('download the DMG')).toBeLessThan(
+    expect(html.indexOf('brew install kenn-io/tap/ghosthub')).toBeLessThan(
       html.indexOf('Learn More'),
+    );
+    expect(html.indexOf('Learn More')).toBeLessThan(
+      html.indexOf('download the DMG'),
     );
   });
 
