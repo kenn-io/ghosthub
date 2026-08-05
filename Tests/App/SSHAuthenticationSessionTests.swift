@@ -101,21 +101,24 @@ struct SSHAuthenticationSessionTests {
 
         let diagnostic = await drain.finish(after: .milliseconds(50))
 
-        if writer.isRunning {
-            writer.terminate()
-        }
-        var exitDeadline = ContinuousClock.now + .seconds(2)
-        while writer.isRunning, ContinuousClock.now < exitDeadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
-        if writer.isRunning {
-            Darwin.kill(writer.processIdentifier, SIGKILL)
-            exitDeadline = ContinuousClock.now + .seconds(2)
-            while writer.isRunning, ContinuousClock.now < exitDeadline {
-                try await Task.sleep(for: .milliseconds(20))
+        let writerStopped = await Task.detached {
+            if writer.isRunning {
+                writer.terminate()
             }
-        }
-        try #require(!writer.isRunning)
+            var exitDeadline = ContinuousClock.now + .seconds(2)
+            while writer.isRunning, ContinuousClock.now < exitDeadline {
+                try? await Task.sleep(for: .milliseconds(20))
+            }
+            if writer.isRunning {
+                Darwin.kill(writer.processIdentifier, SIGKILL)
+                exitDeadline = ContinuousClock.now + .seconds(2)
+                while writer.isRunning, ContinuousClock.now < exitDeadline {
+                    try? await Task.sleep(for: .milliseconds(20))
+                }
+            }
+            return !writer.isRunning
+        }.value
+        try #require(writerStopped)
         #expect(!diagnostic.isEmpty)
     }
 
