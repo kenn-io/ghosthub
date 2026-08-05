@@ -144,6 +144,13 @@ pub struct ProbeObservation {
     pub stderr: String,
 }
 
+impl ProbeObservation {
+    #[must_use]
+    pub fn is_supported(&self) -> bool {
+        self.exit_code == 0 && self.stdout.trim() == "supported" && self.stderr.trim().is_empty()
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MuxCapabilities {
     bits: u8,
@@ -268,12 +275,10 @@ pub fn resolve_tmux_binary(
     }
 
     for capability in REQUIRED_CAPABILITIES {
-        if !observations.iter().any(|observation| {
-            observation.name == capability
-                && observation.exit_code == 0
-                && observation.stdout.trim() == "supported"
-                && observation.stderr.trim().is_empty()
-        }) {
+        if !observations
+            .iter()
+            .any(|observation| observation.name == capability && observation.is_supported())
+        {
             return Err(error(ResolveErrorKind::MissingCapability, capability));
         }
     }
