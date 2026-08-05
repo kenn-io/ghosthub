@@ -119,6 +119,16 @@ fn rejects_an_unrecognized_internal_crate() {
 }
 
 #[test]
+fn contracts_harness_may_cross_the_store_session_boundary() {
+    let policy = locked_dependency_policy();
+
+    assert_eq!(
+        policy.get("ghosthub-contracts"),
+        Some(&set(&["ghosthub-session", "ghosthub-store"]))
+    );
+}
+
+#[test]
 fn actual_workspace_satisfies_dependency_boundaries() {
     let metadata = MetadataCommand::new()
         .manifest_path(workspace_manifest())
