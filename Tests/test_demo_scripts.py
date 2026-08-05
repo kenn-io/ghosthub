@@ -742,6 +742,7 @@ def test_launch_helper_reaps_app_when_pid_record_cannot_be_published(
     assert child_shell == "/bin/zsh"
     assert child_zdotdir == str(scratch / "home")
     assert child_ssh_auth_sock == ssh_auth_sock
+    assert (scratch / "launch-owner.pid").read_text().strip() == child_pid
     with pytest.raises(ProcessLookupError):
         os.kill(int(child_pid), 0)
 

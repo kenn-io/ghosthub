@@ -126,7 +126,6 @@ do {
     }
 } catch {
     try? FileManager.default.removeItem(at: temporaryRecord)
-    try? FileManager.default.removeItem(at: ownershipRecordURL)
     stop(application)
     if !application.isTerminated {
         fail("cannot record or terminate launched demo application: \(error.localizedDescription)")
