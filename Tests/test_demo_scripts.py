@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import plistlib
 import pwd
 import shutil
 import socket
@@ -690,6 +691,16 @@ def test_run_reaps_app_when_pid_recording_fails(tmp_path: Path) -> None:
         "}\n"
     )
     subprocess.run(["cc", "-o", str(executable), str(source)], check=True)
+    with (executable.parents[1] / "Info.plist").open("wb") as plist:
+        plistlib.dump(
+            {
+                "CFBundleExecutable": executable.name,
+                "CFBundleIdentifier": "com.ghosthub.demo.cleanup-test",
+                "CFBundleName": "Ghosthub Demo Cleanup Test",
+                "CFBundlePackageType": "APPL",
+            },
+            plist,
+        )
     dylib_source = tmp_path / "demohost.c"
     dylib_source.write_text("void ghosthub_demo_test(void) {}\n")
     subprocess.run(

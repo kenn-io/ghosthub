@@ -186,12 +186,18 @@ final class UpdateRelaunchRestorer {
         reconcileIfNativeRestorationFinished()
     }
 
+    @discardableResult
     func nativeWindowRestorationDidFinish(
         expectedSceneCount: Int
-    ) {
-        guard expectedNativeSceneCount == nil else { return }
+    ) -> Bool {
+        guard expectedNativeSceneCount == nil else { return false }
         expectedNativeSceneCount = expectedSceneCount
+        // A saved updater manifest owns zero-window recovery so it can replay
+        // exact workspaces; only an ordinary launch needs a fresh window.
+        let needsFreshWindow = expectedSceneCount == 0
+            && orderedWindowIDs.isEmpty
         reconcileIfNativeRestorationFinished()
+        return needsFreshWindow
     }
 
     func reconcileIfNativeRestorationFinished() {

@@ -65,10 +65,13 @@ struct GhosthubApp: App {
                     )
                 }
                 appDelegate.setWindowRestorationFinishedHandler { count in
-                    updateRelaunchRestorer
+                    let needsFreshWindow = updateRelaunchRestorer
                         .nativeWindowRestorationDidFinish(
                             expectedSceneCount: count
                         )
+                    if needsFreshWindow {
+                        appDelegate.requestNewWorkspaceWindow()
+                    }
                 }
                 appDelegate.needsConfirmQuit = {
                     QuitPolicy.needsConfirmation(
@@ -115,8 +118,6 @@ struct GhosthubApp: App {
                 AppAppearance.apply(appearance)
                 #endif
             }
-        } defaultValue: {
-            WorkspaceWindowState.fresh()
         }
         .defaultSize(width: 1600, height: 1000)
         .windowStyle(.hiddenTitleBar)

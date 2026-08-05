@@ -563,7 +563,7 @@ private struct CompactToolbarButton: View {
 struct WorkspaceWindow: View {
     #if canImport(AppKit)
     let applicationDelegate: ApplicationDelegate
-    @Binding var windowState: WorkspaceWindowState
+    @Binding var windowState: WorkspaceWindowState?
     let updateRelaunchRestorer: UpdateRelaunchRestorer
     let openRelaunchWindow: (WorkspaceWindowState) -> Void
     #endif
@@ -582,7 +582,7 @@ struct WorkspaceWindow: View {
     #if canImport(AppKit)
     init(
         applicationDelegate: ApplicationDelegate,
-        windowState: Binding<WorkspaceWindowState>,
+        windowState: Binding<WorkspaceWindowState?>,
         updateRelaunchRestorer: UpdateRelaunchRestorer,
         openRelaunchWindow: @escaping (WorkspaceWindowState) -> Void
     ) {

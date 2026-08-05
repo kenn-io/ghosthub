@@ -5,8 +5,8 @@ import Testing
 @MainActor
 @Suite("Update relaunch restoration")
 struct UpdateRelaunchRestorationTests {
-    @Test("missing native scenes are assigned before new windows open")
-    func replaysMissingNativeScenes() throws {
+    @Test("zero native windows restore a temporarily nil relaunch scene")
+    func zeroNativeWindowsRestoreNilRelaunchScene() throws {
         let scratch = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: scratch) }
@@ -39,8 +39,10 @@ struct UpdateRelaunchRestorationTests {
                 openWindow: { opened.append($0) }
             ) == .waitingForNativeRestoration
         )
-        restorer.nativeWindowRestorationDidFinish(
-            expectedSceneCount: 1
+        #expect(
+            !restorer.nativeWindowRestorationDidFinish(
+                expectedSceneCount: 0
+            )
         )
         restorer.reconcileAfterSceneBindingsSettled()
 
@@ -64,6 +66,24 @@ struct UpdateRelaunchRestorationTests {
         restorer.didBeginRestoring(windowID: second.windowID)
 
         #expect(!FileManager.default.fileExists(atPath: store.fileURL.path))
+    }
+
+    @Test("zero native windows without relaunch state need a fresh window")
+    func zeroNativeWindowsNeedFreshWindow() {
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let restorer = UpdateRelaunchRestorer(
+            store: UpdateRelaunchManifestStore(
+                fileURL: scratch.appendingPathComponent("relaunch.json")
+            )
+        )
+
+        #expect(
+            restorer.nativeWindowRestorationDidFinish(
+                expectedSceneCount: 0
+            )
+        )
     }
 
     @Test("an aborted relaunch manifest can be discarded")
