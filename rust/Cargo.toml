@@ -1,5 +1,5 @@
 [workspace]
-members = ["app", "contracts", "model", "ui"]
+members = ["app", "config", "contracts", "model", "ui"]
 resolver = "2"
 
 [workspace.package]
@@ -9,6 +9,8 @@ publish = false
 rust-version = "1.96"
 
 [workspace.dependencies]
+ghosthub-contracts = { path = "contracts", version = "=0.0.0" }
+ghosthub-config = { path = "config", version = "=0.0.0" }
 ghosthub-model = { path = "model", version = "=0.0.0" }
 ghosthub-ui = { path = "ui", version = "=0.0.0" }
 gpui = { version = "=0.2.2", default-features = false }

@@ -1,0 +1,145 @@
+{
+  "schema_version": 1,
+  "platform": "windows",
+  "cases": [
+    {
+      "id": "defaults",
+      "user_home": "C:\\Users\\alice",
+      "environment": {},
+      "expected": {
+        "ghosthub_home": "C:\\Users\\alice\\.ghosthub",
+        "config": "C:\\Users\\alice\\.ghosthub\\config",
+        "state": "C:\\Users\\alice\\.ghosthub\\state",
+        "helpers": "C:\\Users\\alice\\.ghosthub\\helpers"
+      }
+    },
+    {
+      "id": "home-override",
+      "user_home": "C:\\Users\\alice",
+      "environment": {
+        "GHOSTHUB_HOME": "D:\\Ghosthub"
+      },
+      "expected": {
+        "ghosthub_home": "D:\\Ghosthub",
+        "config": "D:\\Ghosthub\\config",
+        "state": "D:\\Ghosthub\\state",
+        "helpers": "D:\\Ghosthub\\helpers"
+      }
+    },
+    {
+      "id": "config-and-state-overrides-do-not-move-helpers",
+      "user_home": "C:\\Users\\alice",
+      "environment": {
+        "GHOSTHUB_CONFIG_HOME": "D:\\Config",
+        "GHOSTHUB_STATE_HOME": "E:\\State"
+      },
+      "expected": {
+        "ghosthub_home": "C:\\Users\\alice\\.ghosthub",
+        "config": "D:\\Config",
+        "state": "E:\\State",
+        "helpers": "C:\\Users\\alice\\.ghosthub\\helpers"
+      }
+    },
+    {
+      "id": "accepted-forward-slashes-are-normalized",
+      "user_home": "C:/Users/alice",
+      "environment": {
+        "GHOSTHUB_HOME": "D:/Ghosthub",
+        "GHOSTHUB_CONFIG_HOME": "E:/Config",
+        "GHOSTHUB_STATE_HOME": "F:/State"
+      },
+      "expected": {
+        "ghosthub_home": "D:\\Ghosthub",
+        "config": "E:\\Config",
+        "state": "F:\\State",
+        "helpers": "D:\\Ghosthub\\helpers"
+      }
+    },
+    {
+      "id": "valid-home-override-escapes-unc-user-profile",
+      "user_home": "\\\\server\\profiles\\alice",
+      "environment": {
+        "GHOSTHUB_HOME": "D:\\Ghosthub"
+      },
+      "expected": {
+        "ghosthub_home": "D:\\Ghosthub",
+        "config": "D:\\Ghosthub\\config",
+        "state": "D:\\Ghosthub\\state",
+        "helpers": "D:\\Ghosthub\\helpers"
+      }
+    },
+    {
+      "id": "drive-relative-home-override-is-blocking",
+      "user_home": "C:\\Users\\alice",
+      "environment": {
+        "GHOSTHUB_HOME": "D:Ghosthub"
+      },
+      "expected_error": {
+        "input": "GHOSTHUB_HOME",
+        "kind": "not-local-absolute"
+      }
+    },
+    {
+      "id": "root-relative-config-override-is-blocking",
+      "user_home": "C:\\Users\\alice",
+      "environment": {
+        "GHOSTHUB_CONFIG_HOME": "\\Config"
+      },
+      "expected_error": {
+        "input": "GHOSTHUB_CONFIG_HOME",
+        "kind": "not-local-absolute"
+      }
+    },
+    {
+      "id": "unc-state-override-is-blocking",
+      "user_home": "C:\\Users\\alice",
+      "environment": {
+        "GHOSTHUB_STATE_HOME": "\\\\server\\state"
+      },
+      "expected_error": {
+        "input": "GHOSTHUB_STATE_HOME",
+        "kind": "not-local-absolute"
+      }
+    },
+    {
+      "id": "verbatim-home-override-is-blocking",
+      "user_home": "C:\\Users\\alice",
+      "environment": {
+        "GHOSTHUB_HOME": "\\\\?\\D:\\Ghosthub"
+      },
+      "expected_error": {
+        "input": "GHOSTHUB_HOME",
+        "kind": "not-local-absolute"
+      }
+    },
+    {
+      "id": "empty-state-override-is-blocking",
+      "user_home": "C:\\Users\\alice",
+      "environment": {
+        "GHOSTHUB_STATE_HOME": ""
+      },
+      "expected_error": {
+        "input": "GHOSTHUB_STATE_HOME",
+        "kind": "not-local-absolute"
+      }
+    },
+    {
+      "id": "relative-user-profile-is-blocking",
+      "user_home": "Users\\alice",
+      "environment": {},
+      "expected_error": {
+        "input": "USERPROFILE",
+        "kind": "not-local-absolute"
+      }
+    },
+    {
+      "id": "unc-user-profile-is-blocking",
+      "user_home": "\\\\server\\profiles\\alice",
+      "environment": {},
+      "expected_error": {
+        "input": "USERPROFILE",
+        "kind": "not-local-absolute"
+      }
+    }
+  ]
+}
