@@ -57,7 +57,41 @@ impl KeyInput {
 pub struct TerminalModes {
     pub application_cursor: bool,
     pub bracketed_paste: bool,
+    pub mouse_tracking: MouseTracking,
     pub sgr_mouse: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum MouseTracking {
+    #[default]
+    None,
+    Click,
+    Drag,
+    Motion,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MouseButton {
+    Left,
+    Middle,
+    Right,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MouseAction {
+    Press(MouseButton),
+    Release(MouseButton),
+    Move(Option<MouseButton>),
+    WheelUp,
+    WheelDown,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MouseInput {
+    pub action: MouseAction,
+    pub column: usize,
+    pub row: usize,
+    pub modifiers: Modifiers,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -105,7 +139,11 @@ pub fn encode_input(input: &KeyInput, modes: TerminalModes) -> EncodedInput {
             bytes.extend_from_slice(b"\x1b[200~");
             bytes.extend_from_slice(text.as_bytes());
             bytes.extend_from_slice(b"\x1b[201~");
-            EncodedInput::ready(bytes)
+            if text.contains("\x1b[201~") {
+                EncodedInput::confirmation_required(bytes)
+            } else {
+                EncodedInput::ready(bytes)
+            }
         }
         KeyInput::Paste(text) => {
             let normalized = text.replace("\r\n", "\n").replace('\n', "\r");
@@ -115,6 +153,51 @@ pub fn encode_input(input: &KeyInput, modes: TerminalModes) -> EncodedInput {
                 EncodedInput::ready(normalized.into_bytes())
             }
         }
+    }
+}
+
+/// Encode one terminal-grid mouse event using SGR 1006 coordinates.
+///
+/// Events are suppressed unless the hosted application enabled both mouse
+/// reporting and SGR encoding. Motion is further restricted to the mode the
+/// application selected, matching normal terminal behavior.
+#[must_use]
+pub fn encode_mouse(input: MouseInput, modes: TerminalModes) -> Vec<u8> {
+    if modes.mouse_tracking == MouseTracking::None || !modes.sgr_mouse {
+        return Vec::new();
+    }
+
+    let (base, terminator) = match input.action {
+        MouseAction::Press(button) => (mouse_button_code(button), 'M'),
+        MouseAction::Release(button) => (mouse_button_code(button), 'm'),
+        MouseAction::Move(button)
+            if modes.mouse_tracking == MouseTracking::Motion
+                || (modes.mouse_tracking == MouseTracking::Drag && button.is_some()) =>
+        {
+            (button.map_or(3, mouse_button_code) + 32, 'M')
+        }
+        MouseAction::Move(_) => return Vec::new(),
+        MouseAction::WheelUp => (64, 'M'),
+        MouseAction::WheelDown => (65, 'M'),
+    };
+    let modifiers = u8::from(input.modifiers.shift) * 4
+        + u8::from(input.modifiers.alt) * 8
+        + u8::from(input.modifiers.control) * 16;
+    format!(
+        "\x1b[<{};{};{}{}",
+        base + modifiers,
+        input.column.saturating_add(1),
+        input.row.saturating_add(1),
+        terminator
+    )
+    .into_bytes()
+}
+
+const fn mouse_button_code(button: MouseButton) -> u8 {
+    match button {
+        MouseButton::Left => 0,
+        MouseButton::Middle => 1,
+        MouseButton::Right => 2,
     }
 }
 
@@ -146,6 +229,13 @@ fn control_byte(text: &str) -> Option<u8> {
 }
 
 fn encode_named(key: NamedKey, modifiers: Modifiers, modes: TerminalModes) -> Vec<u8> {
+    if key == NamedKey::Tab && modifiers.shift && !modifiers.alt && !modifiers.control {
+        return b"\x1b[Z".to_vec();
+    }
+    if let Some(sequence) = modified_named_sequence(key, modifiers) {
+        return sequence;
+    }
+
     let sequence: &[u8] = match key {
         NamedKey::Enter => b"\r",
         NamedKey::Tab => b"\t",
@@ -185,4 +275,37 @@ fn encode_named(key: NamedKey, modifiers: Modifiers, modes: TerminalModes) -> Ve
         bytes.insert(0, b'\x1b');
     }
     bytes
+}
+
+fn modified_named_sequence(key: NamedKey, modifiers: Modifiers) -> Option<Vec<u8>> {
+    let parameter = modifier_parameter(modifiers);
+    if parameter == 1 {
+        return None;
+    }
+    let sequence = match key {
+        NamedKey::ArrowUp => format!("\x1b[1;{parameter}A"),
+        NamedKey::ArrowDown => format!("\x1b[1;{parameter}B"),
+        NamedKey::ArrowRight => format!("\x1b[1;{parameter}C"),
+        NamedKey::ArrowLeft => format!("\x1b[1;{parameter}D"),
+        NamedKey::Home => format!("\x1b[1;{parameter}H"),
+        NamedKey::End => format!("\x1b[1;{parameter}F"),
+        NamedKey::PageUp => format!("\x1b[5;{parameter}~"),
+        NamedKey::PageDown => format!("\x1b[6;{parameter}~"),
+        NamedKey::Insert => format!("\x1b[2;{parameter}~"),
+        NamedKey::Delete => format!("\x1b[3;{parameter}~"),
+        NamedKey::F(number @ 1..=4) => {
+            let final_byte = char::from(b'P' + number - 1);
+            format!("\x1b[1;{parameter}{final_byte}")
+        }
+        NamedKey::F(number @ 5..=12) => {
+            let code = [15, 17, 18, 19, 20, 21, 23, 24][usize::from(number - 5)];
+            format!("\x1b[{code};{parameter}~")
+        }
+        _ => return None,
+    };
+    Some(sequence.into_bytes())
+}
+
+const fn modifier_parameter(modifiers: Modifiers) -> u8 {
+    1 + modifiers.shift as u8 + (modifiers.alt as u8 * 2) + (modifiers.control as u8 * 4)
 }
