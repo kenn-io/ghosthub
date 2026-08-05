@@ -31,8 +31,9 @@ SwiftUI.
 
 The Rust workspace lives under rust/. Rust-port development does not modify
 Swift sources, tests, package configuration, or macOS workflows. The
-repository-root contracts/ directory begins as a Rust-owned compatibility
-corpus. Any future Swift consumer is a separately authorized parity project,
+repository-root contracts/ directory is a Rust-owned compatibility corpus; its
+manifest and first path-resolution fixtures are now executable on either Rust
+target. Any future Swift consumer is a separately authorized parity project,
 not an implicit requirement of Rust feature work.
 
 ### License closure
@@ -369,8 +370,8 @@ Rust config resolution is:
 State resolution is:
 
 1. valid GHOSTHUB_STATE_HOME
-2. valid GHOSTHUB_HOME with state appended
-3. platform default
+2. the platform state mapping from GhosthubHome: the root itself on POSIX and
+   its state child on Windows
 
 Rust does not honor XDG_CONFIG_HOME or XDG_STATE_HOME. Linux's fixed config
 default matches the usual XDG default location, while explicit relocation uses
@@ -381,11 +382,13 @@ platform predicate. Windows accepts fully qualified drive-rooted paths and
 rejects drive-relative, root-relative, UNC, and user-supplied device/verbatim
 paths. A UNC-backed computed %USERPROFILE% is a blocking startup diagnostic
 with a local override escape hatch. Windows builds enable long-path awareness;
-validated local paths may use extended-length form internally.
+validated local paths may use extended-length form internally. A present but
+invalid explicit override is also a blocking diagnostic; it is never ignored
+in favor of a lower-precedence value.
 
-Environment, filesystem, home-directory, and platform path behavior are
-injected so contract tests can execute Windows cases on macOS without touching
-the host filesystem.
+Environment, home-directory, and platform path behavior are injected so
+contract tests can execute either path flavor on either host. Rust has no
+config-home file redirect, so root resolution has no filesystem dependency.
 
 ### Process and concurrency ownership
 
@@ -438,14 +441,16 @@ returning hours later cannot spontaneously attach a window.
 
 ### Compatibility contracts
 
-The planned repository-root contracts/ manifest has stable IDs, schema
-versions, platform tags, and paths. Rust suites enumerate every applicable
-entry and fail on unknown, missing, duplicate, or unconsumed fixtures. Rust
-contract tests run in Windows and Linux CI. A later, separately authorized
-Swift adapter may consume the same manifest without making Swift changes part
-of the Rust delivery path.
+The repository-root contracts/ manifest has stable IDs, schema versions,
+platform tags, suites, and paths. Rust suites enumerate every applicable entry
+and fail on unknown, missing, duplicate, unsafe, or unconsumed fixtures. The
+first shipped suite covers POSIX and Windows root resolution; subsequent gate
+work adds its fixtures and consumer atomically. `cargo test-contracts` runs the
+manifest, path, and Cargo-architecture gates in Windows and Linux CI. A later,
+separately authorized Swift adapter may consume the same manifest without
+making Swift changes part of the Rust delivery path.
 
-The corpus covers:
+The planned complete corpus covers:
 
 - kwt inventory and worktree create/branch import/PR import lifecycles
 - tmux/psmux resolution, capabilities, identity, and exact commands
@@ -531,8 +536,8 @@ WorkspaceSidebarModelTests. It does not launch a live tmux server.
 
 Rust keeps the same separation:
 
-- test-rust-contracts is the fast parsing, capability, plan, sidebar,
-  registry, and manifest gate
+- cargo test-contracts is the fast manifest, parsing, capability, plan,
+  sidebar, registry, and architecture gate
 - test-rust-live-attach launches real isolated tmux/psmux servers, PTYs, and
   supervisor children for detach and app-death survival
 
