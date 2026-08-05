@@ -6,11 +6,11 @@ use std::{
 };
 
 use session::probe::{ProbeNamespace, probe_psmux};
-use session::{ExecutablePlatform, resolve_tmux_binary};
+use session::{ExecutablePlatform, ResolveErrorKind, resolve_tmux_binary};
 
 #[test]
 #[ignore = "requires an explicitly resolved psmux executable and creates an isolated server"]
-fn installed_psmux_proves_every_required_capability() {
+fn installed_psmux_remains_inadmissible() {
     let executable = env::var("GHOSTHUB_PSMUX_EXE")
         .expect("set GHOSTHUB_PSMUX_EXE to an absolute psmux.exe path");
     let nonce = SystemTime::now()
@@ -21,12 +21,23 @@ fn installed_psmux_proves_every_required_capability() {
         .expect("generated namespace");
 
     let report = probe_psmux(&executable, &namespace).expect("run isolated psmux probe");
-    let verified = resolve_tmux_binary(
+    let exact_targets = report
+        .observations()
+        .iter()
+        .find(|observation| observation.name == "exact-targets")
+        .expect("exact-target observation");
+    assert_ne!(
+        exact_targets.exit_code, 0,
+        "this psmux build unexpectedly passed the exact-target probe: {report:#?}"
+    );
+
+    let error = resolve_tmux_binary(
         ExecutablePlatform::Windows,
         &executable,
         report.version_output(),
         report.observations(),
-    );
+    )
+    .expect_err("this psmux build must remain inadmissible");
 
-    assert!(verified.is_ok(), "psmux is not admissible: {report:#?}");
+    assert_eq!(error.kind(), ResolveErrorKind::MissingCapability);
 }

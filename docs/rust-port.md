@@ -160,10 +160,28 @@ configuration supplies a different absolute binary or socket directory.
 Ghosthub does not source login or interactive shell files, so a
 shell-configured `TMUX_TMPDIR` must be repeated in Ghosthub configuration.
 
+Discovery uses one `list-sessions -F` crossing whose format carries the server
+PID, session ID, creation time, name, and attached state. It never starts one
+transport process per discovered session.
+
 The first attach classifies tmux's missing-or-unsuitable-terminal diagnostic.
 It retries the same exact attach once with `TERM=xterm` and displays a
 reduced-color notice rather than requiring `infocmp`, `tput`, or
 `ncurses-bin`. Other local client exits do not loop.
+
+Host publishes classified diagnostics rather than flattening command failures:
+
+- an absent tmux server is successful empty inventory
+- exec status 127 is a missing configured tmux binary and points to the binary
+  override
+- permission denial identifies the executable or socket directory involved
+- a non-WSL2 kernel is an unsupported-environment diagnostic
+- invalid instance or inventory fields are malformed-output diagnostics
+- failure to start or communicate with `wsl.exe` is a transport diagnostic
+
+Failures remain retryable where another attempt can change the result. The
+empty state names the resolved distro, binary, and default or configured socket
+environment so zero sessions cannot silently conceal where Ghosthub looked.
 
 ### Terminal ownership
 
@@ -256,14 +274,22 @@ Version alone does not prove:
 
 The first Windows probe targeted psmux 3.3.7 (`05cc5d4`, SHA-256
 `8A2370A98C47F5FF68DA4A317BFBAF4316DF19FE990B839BDACF856BEBC00405`)
-through an isolated `-L ghosthub-test-*` namespace. It proves `new-session
+through an isolated `-L ghosthub-test-*` namespace. It proved `new-session
 -A`, `new-session -e`, exact `has-session`, stable `$3` identity across
 rename, server PID change across restart, and namespace isolation. That build
 is inadmissible: `kill-session -t =name` reports that the session is
 still present after five seconds, and `attach-session -E` remains unproven
 for that implementation. `cargo test-psmux-live` remains an opt-in rejection
-regression and must keep rejecting this build rather than granting either
-capability from its version or help output. It is not a Windows MVP gate.
+regression: it passes by observing the failed exact-target proof and rejecting
+the build rather than granting either capability from version or help output.
+It is not a Windows MVP gate.
+
+The experimental Swift remote-Windows path uses the same psmux build but does
+not issue the demonstrated failing mutation: it resolves the exact target and
+fresh identity, then kills by session ID. Its complete conditional-kill flow
+still requires an isolated end-to-end psmux verification; the Rust rejection
+does not make that shipped path dead code or establish that it reports false
+success.
 
 The Windows MVP instead verifies POSIX tmux inside WSL2. Host constructs a
 fully resolved invocation whose Windows launcher is `wsl.exe`, whose prefix is
