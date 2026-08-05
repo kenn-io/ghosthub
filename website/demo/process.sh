@@ -74,6 +74,18 @@ demo_record_process() {
   mv -f "$tmp" "$record"
 }
 
+demo_remove_matching_process_record() {
+  local owner="$1" published="$2"
+  [[ -e "$published" || -L "$published" ]] || return 0
+  if [[ ! -f "$owner" || -L "$owner"
+        || ! -f "$published" || -L "$published" ]]; then
+    echo "error: invalid demo PID record link; preserving $published" >&2
+    return 1
+  fi
+  [[ "$owner" -ef "$published" ]] || return 0
+  rm -f "$published"
+}
+
 demo_stop_recorded_process() {
   local record="$1" expected="$2" pid actual
   [[ -e "$record" || -L "$record" ]] || return 0

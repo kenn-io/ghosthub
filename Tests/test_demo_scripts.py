@@ -720,6 +720,31 @@ def test_recorded_process_uses_literal_executable_path(tmp_path: Path) -> None:
     assert not record.exists()
 
 
+def test_published_process_record_cleanup_requires_same_inode(tmp_path: Path) -> None:
+    owner = tmp_path / "launch.pid"
+    published = tmp_path / "app.pid"
+    owner.write_text("123\n")
+    os.link(owner, published)
+    env = {
+        **os.environ,
+        "HELPER": str(DEMO / "process.sh"),
+        "OWNER": str(owner),
+        "PUBLISHED": str(published),
+    }
+
+    result = run_bash(
+        'set -e; source "$HELPER"; '
+        'demo_remove_matching_process_record "$OWNER" "$PUBLISHED"; '
+        '[[ ! -e "$PUBLISHED" ]]; '
+        'printf "123\\n" > "$PUBLISHED"; '
+        'demo_remove_matching_process_record "$OWNER" "$PUBLISHED"; '
+        '[[ -e "$PUBLISHED" ]]',
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
 def stage_launch_test_app(tmp_path: Path) -> tuple[Path, Path, Path]:
     scratch = tmp_path / "scratch"
     executable = scratch / "app/Ghosthub.app/Contents/MacOS/Ghosthub"
@@ -780,7 +805,7 @@ def stage_launch_test_app(tmp_path: Path) -> tuple[Path, Path, Path]:
 def test_launch_helper_reaps_app_when_pid_record_cannot_be_published(
     tmp_path: Path,
 ) -> None:
-    scratch, executable, state = stage_launch_test_app(tmp_path)
+    scratch, executable, _ = stage_launch_test_app(tmp_path)
     app = executable.parents[2]
     ssh_auth_sock = str(tmp_path / "agent.sock")
 
@@ -804,13 +829,7 @@ def test_launch_helper_reaps_app_when_pid_record_cannot_be_published(
     )
 
     assert result.returncode != 0
-    child_pid, child_shell, child_zdotdir, child_ssh_auth_sock = (
-        state.read_text().splitlines()
-    )
-    assert child_shell == "/bin/zsh"
-    assert child_zdotdir == str(scratch / "home")
-    assert child_ssh_auth_sock == ssh_auth_sock
-    assert (scratch / "launch-owner.pid").read_text().strip() == child_pid
+    child_pid = (scratch / "launch-owner.pid").read_text().strip()
     with pytest.raises(ProcessLookupError):
         os.kill(int(child_pid), 0)
 

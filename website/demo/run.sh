@@ -35,6 +35,8 @@ cleanup_launched_app() {
   local status=$?
   trap - EXIT HUP INT TERM
   if [[ -e "$launch_record" || -L "$launch_record" ]]; then
+    demo_remove_matching_process_record \
+      "$launch_record" "$pid_record" || status=1
     demo_stop_recorded_process "$launch_record" "$bin" || status=1
   fi
   rmdir "$launch_dir" 2>/dev/null || status=1
