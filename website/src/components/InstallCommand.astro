@@ -9,22 +9,30 @@ const hasSecondary = Astro.slots.has('secondary');
   data-install-command
   data-command={HOMEBREW_INSTALL_COMMAND}
 >
-  <div class="primary-actions">
-    <div class="bubble">
-      <span class="prompt" aria-hidden="true">$</span>
-      <code>{HOMEBREW_INSTALL_COMMAND}</code>
-      <button
-        type="button"
-        data-install-copy
-        aria-label="Copy Homebrew install command"
-        title="Copy Homebrew install command"
-      >
-        <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
-          <rect x="5" y="5" width="8" height="8" rx="1"></rect>
-          <path d="M3 11H2a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1h8a1 1 0 0 1 1 1v1"></path>
-        </svg>
-      </button>
-    </div>
+  <div class="bubble">
+    <span class="prompt" aria-hidden="true">$</span>
+    <code>{HOMEBREW_INSTALL_COMMAND}</code>
+    <button
+      type="button"
+      data-install-copy
+      aria-label="Copy Homebrew install command"
+      title="Copy Homebrew install command"
+    >
+      <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+        <rect x="5" y="5" width="8" height="8" rx="1"></rect>
+        <path d="M3 11H2a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1h8a1 1 0 0 1 1 1v1"></path>
+      </svg>
+    </button>
+  </div>
+  <span class="status" data-install-status aria-live="polite"></span>
+  <div class:list={['secondary-actions', { 'button-row': hasSecondary }]}>
+    <a class="download" data-download href={RELEASES_URL}>
+      {
+        hasSecondary
+          ? 'Download DMG'
+          : <>or download the DMG <span aria-hidden="true">&rarr;</span></>
+      }
+    </a>
     {
       hasSecondary && (
         <span class="secondary-action">
@@ -33,10 +41,6 @@ const hasSecondary = Astro.slots.has('secondary');
       )
     }
   </div>
-  <span class="status" data-install-status aria-live="polite"></span>
-  <a class="download" data-download href={RELEASES_URL}>
-    or download the DMG <span aria-hidden="true">&rarr;</span>
-  </a>
 </div>
 
 <style>
@@ -45,15 +49,6 @@ const hasSecondary = Astro.slots.has('secondary');
     max-width: 100%;
     flex-direction: column;
     align-items: center;
-  }
-
-  .primary-actions {
-    display: flex;
-    max-width: 100%;
-    flex-wrap: wrap;
-    align-items: stretch;
-    justify-content: center;
-    gap: 0.75rem;
   }
 
   .bubble {
@@ -123,11 +118,11 @@ const hasSecondary = Astro.slots.has('secondary');
   }
 
   .status {
-    min-height: 1.45rem;
+    min-height: 1.25rem;
     color: var(--text-dim);
     font-family: var(--font-mono);
     font-size: 0.68rem;
-    line-height: 1.45rem;
+    line-height: 1.25rem;
   }
 
   .download {
@@ -144,15 +139,42 @@ const hasSecondary = Astro.slots.has('secondary');
     color: var(--text-dim);
   }
 
+  .secondary-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0.75rem;
+  }
+
   .secondary-action {
     display: flex;
   }
 
-  @media (max-width: 390px) {
-    .primary-actions {
-      width: 100%;
-    }
+  .button-row .download,
+  .button-row :global(a) {
+    display: flex;
+    align-items: center;
+    padding: 0.62rem 1.1rem;
+    border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--line));
+    border-radius: 9px;
+    background: color-mix(in srgb, var(--accent) 4%, transparent);
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    font-weight: 700;
+    text-decoration: none;
+    white-space: nowrap;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+  }
 
+  .button-row .download:hover,
+  .button-row :global(a:hover) {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+    color: var(--text);
+  }
+
+  @media (max-width: 390px) {
     .bubble {
       width: 100%;
     }
