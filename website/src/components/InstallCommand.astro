@@ -1,5 +1,7 @@
 ---
 import { HOMEBREW_INSTALL_COMMAND, RELEASES_URL } from '../config';
+
+const hasSecondary = Astro.slots.has('secondary');
 ---
 
 <div
@@ -23,9 +25,19 @@ import { HOMEBREW_INSTALL_COMMAND, RELEASES_URL } from '../config';
     </button>
   </div>
   <span class="status" data-install-status aria-live="polite"></span>
-  <a class="download" data-download href={RELEASES_URL}>
-    or download the DMG <span aria-hidden="true">&rarr;</span>
-  </a>
+  <div class="secondary-actions">
+    <a class="download" data-download href={RELEASES_URL}>
+      or download the DMG <span aria-hidden="true">&rarr;</span>
+    </a>
+    {
+      hasSecondary && (
+        <>
+          <span class="separator" aria-hidden="true">&middot;</span>
+          <slot name="secondary" />
+        </>
+      )
+    }
+  </div>
 </div>
 
 <style>
@@ -122,6 +134,17 @@ import { HOMEBREW_INSTALL_COMMAND, RELEASES_URL } from '../config';
 
   .download:hover {
     color: var(--text-dim);
+  }
+
+  .secondary-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0.25rem 0.55rem;
+  }
+
+  .separator {
+    color: var(--text-faint);
   }
 
   @media (max-width: 390px) {
