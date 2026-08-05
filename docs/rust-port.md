@@ -213,6 +213,17 @@ Version alone does not prove:
 - isolated non-default server namespaces
 - stable session and server-instance identity
 
+The first Windows probe targets psmux 3.3.7 (`05cc5d4`, SHA-256
+`8A2370A98C47F5FF68DA4A317BFBAF4316DF19FE990B839BDACF856BEBC00405`)
+through an isolated `-L ghosthub-test-*` namespace. It proves `new-session
+-A`, `new-session -e`, exact `has-session`, stable `$3` identity across
+rename, server PID change across restart, and namespace isolation. That build
+is not yet admissible: `kill-session -t =name` reports that the session is
+still present after five seconds, and `attach-session -E` remains unproven
+until exercised by a genuine ConPTY client. `cargo test-psmux-live` is the
+opt-in gate and must remain failing for this build rather than granting either
+capability from its version or help output.
+
 VerifiedKwtHelper requires the exact revision, verified SHA-256, and
 revision-scoped managed path.
 

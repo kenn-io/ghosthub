@@ -4,6 +4,8 @@ use std::fmt;
 
 use serde::Deserialize;
 
+pub mod probe;
+
 const REQUIRED_CAPABILITIES: [&str; 7] = [
     "atomic-create-or-attach",
     "new-session-environment",
