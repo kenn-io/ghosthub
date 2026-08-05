@@ -7,15 +7,18 @@ use std::time::{Duration, Instant};
 
 use config::TerminalAppearance;
 use host::WslConfig;
-use workspace::{KeyInput, Modifiers, NamedKey, Workspace, WorkspaceContent};
+use workspace::{KeyInput, Modifiers, NamedKey, Workspace, WorkspaceContent, WorkspaceEvent};
 
 struct IsolatedServer {
     tmpdir: String,
 }
 
 impl IsolatedServer {
-    fn start() -> Self {
-        let tmpdir = format!("/tmp/ghosthub-workspace-test-{}", std::process::id());
+    fn start(label: &str) -> Self {
+        let tmpdir = format!(
+            "/tmp/ghosthub-workspace-test-{}-{label}",
+            std::process::id()
+        );
         assert!(tmpdir.starts_with("/tmp/ghosthub-workspace-test-"));
         let server = Self { tmpdir };
         server.run_tmux(["new-session", "-d", "-s", "workspace-live"]);
@@ -82,7 +85,7 @@ impl Drop for IsolatedServer {
 #[test]
 #[ignore = "requires WSL2 and tmux; creates only an isolated TMUX_TMPDIR server"]
 fn discovers_attaches_renders_and_detaches_through_workspace() {
-    let server = IsolatedServer::start();
+    let server = IsolatedServer::start("roundtrip");
     let identity = server.identity();
     let config = WslConfig::configured(None, "/usr/bin/tmux", Some(server.tmpdir.clone()))
         .expect("valid isolated config");
@@ -96,6 +99,10 @@ fn discovers_attaches_renders_and_detaches_through_workspace() {
         )
     });
     workspace.attach("workspace-live").expect("attach session");
+    assert!(
+        workspace.attach("workspace-live").is_err(),
+        "a second presentation must lose the single-window reservation"
+    );
     wait_until(|| {
         matches!(
             workspace.snapshot().content(),
@@ -110,6 +117,16 @@ fn discovers_attaches_renders_and_detaches_through_workspace() {
         .expect("send enter");
     wait_until(|| terminal_contains(&workspace, "workspace-ready"));
 
+    server.run_tmux(["set-buffer", "-w", "Hello"]);
+    wait_until(|| {
+        workspace.drain_events().into_iter().any(|event| {
+            matches!(
+                event,
+                WorkspaceEvent::ClipboardWrite { text, primary: false } if text == "Hello"
+            )
+        })
+    });
+
     workspace.detach();
     wait_until(|| {
         matches!(
@@ -120,6 +137,37 @@ fn discovers_attaches_renders_and_detaches_through_workspace() {
     assert_eq!(server.identity(), identity);
 }
 
+#[test]
+#[ignore = "requires WSL2 and tmux; creates only an isolated TMUX_TMPDIR server"]
+fn refuses_to_attach_when_the_discovered_session_was_replaced() {
+    let server = IsolatedServer::start("stale-identity");
+    let config = WslConfig::configured(None, "/usr/bin/tmux", Some(server.tmpdir.clone()))
+        .expect("valid isolated config");
+    let workspace = Workspace::start_wsl(config, TerminalAppearance::default());
+
+    wait_until(|| {
+        matches!(
+            workspace.snapshot().content(),
+            WorkspaceContent::Ready { sessions, .. }
+                if sessions.iter().any(|session| session.name() == "workspace-live")
+        )
+    });
+    server.run_tmux(["kill-session", "-t", "=workspace-live"]);
+    server.run_tmux(["new-session", "-d", "-s", "workspace-live"]);
+
+    workspace
+        .attach("workspace-live")
+        .expect("begin guarded attach");
+
+    wait_until(|| {
+        matches!(
+            workspace.snapshot().content(),
+            WorkspaceContent::Error { message }
+                if message.contains("identity changed")
+        )
+    });
+}
+
 fn terminal_contains(workspace: &Workspace, expected: &str) -> bool {
     let snapshot = workspace.snapshot();
     let WorkspaceContent::Terminal { surface, .. } = snapshot.content() else {
@@ -128,7 +176,6 @@ fn terminal_contains(workspace: &Workspace, expected: &str) -> bool {
     surface
         .load()
         .cells()
-        .iter()
         .map(surface::Cell::text)
         .collect::<String>()
         .contains(expected)

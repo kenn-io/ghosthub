@@ -1,4 +1,4 @@
-use surface::{Cell, Damage, GridSize, SurfaceFrame, SurfaceStore};
+use surface::{Cell, Damage, GridSize, PixelSize, SurfaceFrame, SurfaceStore};
 
 #[test]
 fn frame_carries_the_grid_dimensions_it_was_built_for() {
@@ -7,7 +7,17 @@ fn frame_carries_the_grid_dimensions_it_was_built_for() {
 
     assert_eq!(frame.generation(), 7);
     assert_eq!(frame.size(), size);
-    assert_eq!(frame.cells().len(), 80 * 24);
+    assert_eq!(frame.cells().count(), 80 * 24);
+}
+
+#[test]
+fn frame_carries_the_ordered_resize_and_pixel_dimensions() {
+    let size = GridSize::new(120, 40).expect("valid grid");
+    let mut frame = SurfaceFrame::blank(7, size);
+    frame.set_resize_metadata(11, PixelSize::new(1_080, 720));
+
+    assert_eq!(frame.resize_sequence(), 11);
+    assert_eq!(frame.pixel_size(), PixelSize::new(1_080, 720));
 }
 
 #[test]
@@ -44,16 +54,16 @@ fn damage_vocabulary_represents_scroll_and_dirty_rows() {
 #[test]
 fn cells_are_owned_values() {
     let mut frame = SurfaceFrame::blank(1, GridSize::new(1, 1).expect("valid grid"));
-    frame.cells_mut()[0] = Cell::plain("界");
+    *frame.cell_mut(0) = Cell::plain("界");
 
-    assert_eq!(frame.cells()[0].text(), "界");
+    assert_eq!(frame.cell(0).text(), "界");
 }
 
 #[test]
 fn store_applies_scroll_before_updating_exposed_rows() {
     let size = GridSize::new(1, 3).expect("valid grid");
     let mut initial = SurfaceFrame::blank(1, size);
-    for (cell, text) in initial.cells_mut().iter_mut().zip(["a", "b", "c"]) {
+    for (cell, text) in initial.cells_mut().zip(["a", "b", "c"]) {
         *cell = Cell::plain(text);
     }
     let store = SurfaceStore::new(initial);
@@ -61,7 +71,7 @@ fn store_applies_scroll_before_updating_exposed_rows() {
     assert!(store.update(
         2,
         size,
-        vec![
+        &[
             Damage::Scroll {
                 top: 0,
                 bottom: 3,
@@ -69,12 +79,26 @@ fn store_applies_scroll_before_updating_exposed_rows() {
             },
             Damage::Rows { start: 2, end: 3 },
         ],
-        |frame| frame.cells_mut()[2] = Cell::plain("d"),
+        |frame| *frame.cell_mut(2) = Cell::plain("d"),
     ));
 
     let frame = store.load();
     assert_eq!(
-        frame.cells().iter().map(Cell::text).collect::<Vec<_>>(),
+        frame.cells().map(Cell::text).collect::<Vec<_>>(),
         ["b", "c", "d"]
     );
+}
+
+#[test]
+fn skipped_generation_requires_a_full_repaint_without_blocking_publication() {
+    let size = GridSize::new(1, 1).expect("valid grid");
+    let store = SurfaceStore::new(SurfaceFrame::blank(1, size));
+    let held_lease = store.load();
+
+    assert!(store.update(2, size, &[Damage::Rows { start: 0, end: 1 }], |_| {}));
+    assert!(store.update(3, size, &[Damage::Rows { start: 0, end: 1 }], |_| {}));
+
+    let latest = store.load();
+    assert_eq!(latest.previous_generation(), 2);
+    assert!(latest.requires_full_repaint(held_lease.generation()));
 }

@@ -1,8 +1,9 @@
 //! Backend-neutral terminal paint vocabulary.
 
 use std::fmt;
-use std::ops::Deref;
-use std::sync::{RwLock, RwLockReadGuard};
+use std::sync::{Arc, Mutex};
+
+use arc_swap::ArcSwap;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GridSize {
@@ -85,6 +86,9 @@ impl CellStyle {
     pub const UNDERLINE: Self = Self(1 << 2);
     pub const INVERSE: Self = Self(1 << 3);
     pub const WIDE: Self = Self(1 << 4);
+    pub const DIM: Self = Self(1 << 5);
+    pub const HIDDEN: Self = Self(1 << 6);
+    pub const STRIKE: Self = Self(1 << 7);
 
     #[must_use]
     pub const fn contains(self, style: Self) -> bool {
@@ -143,11 +147,27 @@ pub struct Cursor {
     pub visible: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PixelSize {
+    pub width: u16,
+    pub height: u16,
+}
+
+impl PixelSize {
+    #[must_use]
+    pub const fn new(width: u16, height: u16) -> Self {
+        Self { width, height }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SurfaceFrame {
     generation: u64,
+    previous_generation: u64,
     size: GridSize,
-    cells: Vec<Cell>,
+    resize_sequence: u64,
+    pixel_size: PixelSize,
+    rows: Vec<Vec<Cell>>,
     cursor: Option<Cursor>,
     damage: Vec<Damage>,
 }
@@ -157,8 +177,13 @@ impl SurfaceFrame {
     pub fn blank(generation: u64, size: GridSize) -> Self {
         Self {
             generation,
+            previous_generation: generation,
             size,
-            cells: vec![Cell::default(); size.cell_count()],
+            resize_sequence: 0,
+            pixel_size: PixelSize::new(0, 0),
+            rows: (0..size.rows())
+                .map(|_| vec![Cell::default(); size.columns()])
+                .collect(),
             cursor: None,
             damage: vec![Damage::Full],
         }
@@ -170,17 +195,58 @@ impl SurfaceFrame {
     }
 
     #[must_use]
+    pub const fn previous_generation(&self) -> u64 {
+        self.previous_generation
+    }
+
+    #[must_use]
     pub const fn size(&self) -> GridSize {
         self.size
     }
 
     #[must_use]
-    pub fn cells(&self) -> &[Cell] {
-        &self.cells
+    pub const fn resize_sequence(&self) -> u64 {
+        self.resize_sequence
     }
 
-    pub fn cells_mut(&mut self) -> &mut [Cell] {
-        &mut self.cells
+    #[must_use]
+    pub const fn pixel_size(&self) -> PixelSize {
+        self.pixel_size
+    }
+
+    pub fn set_resize_metadata(&mut self, sequence: u64, pixel_size: PixelSize) {
+        self.resize_sequence = sequence;
+        self.pixel_size = pixel_size;
+    }
+
+    pub fn cells(&self) -> impl Iterator<Item = &Cell> {
+        self.rows.iter().flatten()
+    }
+
+    pub fn cells_mut(&mut self) -> impl Iterator<Item = &mut Cell> {
+        self.rows.iter_mut().flatten()
+    }
+
+    #[must_use]
+    pub fn cell(&self, index: usize) -> &Cell {
+        let row = index / self.size.columns();
+        let column = index % self.size.columns();
+        &self.rows[row][column]
+    }
+
+    pub fn cell_mut(&mut self, index: usize) -> &mut Cell {
+        let row = index / self.size.columns();
+        let column = index % self.size.columns();
+        &mut self.rows[row][column]
+    }
+
+    #[must_use]
+    pub fn row(&self, row: usize) -> &[Cell] {
+        &self.rows[row]
+    }
+
+    pub fn row_mut(&mut self, row: usize) -> &mut [Cell] {
+        &mut self.rows[row]
     }
 
     #[must_use]
@@ -200,31 +266,40 @@ impl SurfaceFrame {
     pub fn set_damage(&mut self, damage: Vec<Damage>) {
         self.damage = damage;
     }
+
+    #[must_use]
+    pub const fn requires_full_repaint(&self, consumed_generation: u64) -> bool {
+        consumed_generation != self.previous_generation
+    }
 }
 
 #[derive(Debug)]
 pub struct SurfaceStore {
-    latest: RwLock<SurfaceFrame>,
+    latest: ArcSwap<SurfaceFrame>,
+    producer: Mutex<SurfaceFrame>,
 }
 
 impl SurfaceStore {
     #[must_use]
     pub fn new(initial: SurfaceFrame) -> Self {
         Self {
-            latest: RwLock::new(initial),
+            producer: Mutex::new(initial.clone()),
+            latest: ArcSwap::from_pointee(initial),
         }
     }
 
     #[must_use]
-    pub fn publish(&self, frame: SurfaceFrame) -> bool {
-        let mut latest = self
-            .latest
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    pub fn publish(&self, mut frame: SurfaceFrame) -> bool {
+        let latest = self.latest.load_full();
         if frame.generation() <= latest.generation() {
             return false;
         }
-        *latest = frame;
+        frame.previous_generation = latest.generation();
+        *self
+            .producer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = frame.clone();
+        self.latest.store(Arc::new(frame));
         true
     }
 
@@ -237,47 +312,62 @@ impl SurfaceStore {
         &self,
         generation: u64,
         size: GridSize,
-        damage: Vec<Damage>,
-        render: impl FnOnce(&mut SurfaceFrame),
+        damage: &[Damage],
+        mut render: impl FnMut(&mut SurfaceFrame),
     ) -> bool {
-        let mut latest = self
-            .latest
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if generation <= latest.generation() {
+        let current_generation = self.latest.load().generation();
+        if generation <= current_generation {
             return false;
         }
 
-        if latest.size() == size {
-            for entry in &damage {
-                if let Damage::Scroll { top, bottom, delta } = *entry {
-                    apply_scroll(&mut latest, top, bottom, delta);
-                }
-            }
-            latest.generation = generation;
-            latest.damage = damage;
-        } else {
-            *latest = SurfaceFrame::blank(generation, size);
-        }
+        let mut producer = self
+            .producer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let previous_generation = producer.generation();
+        prepare_frame(&mut producer, generation, size, damage);
+        render(&mut producer);
 
-        render(&mut latest);
+        let published = std::mem::replace(&mut *producer, SurfaceFrame::blank(0, size));
+        let retired = self.latest.swap(Arc::new(published));
+        *producer = match Arc::try_unwrap(retired) {
+            Ok(mut reusable) => {
+                prepare_frame(&mut reusable, generation, size, damage);
+                render(&mut reusable);
+                reusable
+            }
+            Err(_) => self.latest.load_full().as_ref().clone(),
+        };
+        debug_assert_eq!(producer.generation(), generation);
+        debug_assert_eq!(producer.previous_generation(), previous_generation);
         true
     }
 
     #[must_use]
-    pub fn load(&self) -> SurfaceLease<'_> {
-        SurfaceLease {
-            frame: self
-                .latest
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
+    pub fn load(&self) -> SurfaceLease {
+        self.latest.load_full()
+    }
+}
+
+fn prepare_frame(frame: &mut SurfaceFrame, generation: u64, size: GridSize, damage: &[Damage]) {
+    let previous_generation = frame.generation();
+    if frame.size() == size {
+        for entry in damage {
+            if let Damage::Scroll { top, bottom, delta } = *entry {
+                apply_scroll(frame, top, bottom, delta);
+            }
         }
+        frame.generation = generation;
+        frame.previous_generation = previous_generation;
+        frame.damage = damage.to_vec();
+    } else {
+        *frame = SurfaceFrame::blank(generation, size);
+        frame.previous_generation = previous_generation;
     }
 }
 
 fn apply_scroll(frame: &mut SurfaceFrame, top: usize, bottom: usize, delta: i32) {
     let rows = frame.size.rows();
-    let columns = frame.size.columns();
     if top >= bottom || bottom > rows || delta == 0 {
         return;
     }
@@ -286,27 +376,19 @@ fn apply_scroll(frame: &mut SurfaceFrame, top: usize, bottom: usize, delta: i32)
     let distance = usize::try_from(delta.unsigned_abs())
         .unwrap_or(usize::MAX)
         .min(height);
-    let cells = &mut frame.cells[top * columns..bottom * columns];
-    let cell_distance = distance * columns;
-    let cell_count = cells.len();
+    let affected = &mut frame.rows[top..bottom];
 
     if delta < 0 {
-        cells.rotate_left(cell_distance);
-        cells[cell_count - cell_distance..].fill(Cell::default());
+        affected.rotate_left(distance);
+        for row in &mut affected[height - distance..] {
+            row.fill(Cell::default());
+        }
     } else {
-        cells.rotate_right(cell_distance);
-        cells[..cell_distance].fill(Cell::default());
+        affected.rotate_right(distance);
+        for row in &mut affected[..distance] {
+            row.fill(Cell::default());
+        }
     }
 }
 
-pub struct SurfaceLease<'a> {
-    frame: RwLockReadGuard<'a, SurfaceFrame>,
-}
-
-impl Deref for SurfaceLease<'_> {
-    type Target = SurfaceFrame;
-
-    fn deref(&self) -> &Self::Target {
-        &self.frame
-    }
-}
+pub type SurfaceLease = Arc<SurfaceFrame>;
