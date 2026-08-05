@@ -296,10 +296,12 @@ worktree lifecycle contract is in [Worktree Sandboxes](sandboxes.md).
 
 ## Rust Client Lifetime and Application Death
 
-The planned Windows and Linux Rust applications use the same ordinary-client
-boundary. A terminal worker and PTY own only the disposable client. External
-tmux or psmux server processes own session lifetime and must survive client
-close, graceful application exit, and forced application termination.
+The planned Rust applications use the same ordinary-client boundary. The first
+product slice is a native Windows GPUI client attaching to tmux inside WSL2;
+Linux remains a compile-and-contract target until its native product slice is
+authorized. A terminal worker and PTY own only the disposable client. The WSL
+tmux server owns session lifetime and must survive client close, graceful
+application exit, and forced Ghosthub termination.
 
 Launch authority is structural:
 
@@ -314,32 +316,31 @@ status 255 enters transport reconnect. Bare remote creation becomes
 attach-only before that loop; ordinary and protected kwt paths retain only
 their explicitly documented repair/open behavior.
 
-Windows psmux support is conditional on exact command capabilities, stable
-session/server identity, a non-default isolated server namespace, and an
-independent server lifetime. If any of those gates fail, Windows returns to
-substrate selection. Ghosthub never degrades to app-lifetime sessions,
-name-based identity, or the user's default server.
+Psmux 3.3.7 failed the required exact-kill proof and never established genuine
+ConPTY `attach-session -E` behavior. Its probe remains rejection evidence, but
+it is not the Rust Windows substrate. The Windows MVP uses real POSIX tmux in
+WSL2 and never degrades to psmux or an app-lifetime session.
 
-ConPTY clients can inherit a containing Windows Job Object. When the job uses
-`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, Ghosthub uses
-`CREATE_BREAKAWAY_FROM_JOB` only when permitted. The controlled lifetime
-probe uses `IsProcessInJob` with the freshly queried psmux server process. If
-breakaway is denied, Ghosthub may attach only to a conservatively proven
-independent pre-existing server; otherwise attachment is blocked with a
-diagnostic. Bare session creation may target that proven independent server,
-but it may not bootstrap a new server. If no independent server exists,
-creation is refused with the same blocking diagnostic.
+The tmux server lives inside WSL2 and cannot inherit a Windows Job Object.
+Ghosthub intentionally puts only the disposable `wsl.exe` ConPTY relay in an
+application-owned `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` job and verifies its
+membership with `IsProcessInJob`. This is client containment, not server
+breakaway. If job creation, assignment, or verification fails after spawn,
+Ghosthub closes the PTY master, waits a bounded interval, applies the
+client-only termination fallback if required, releases the presentation
+reservation, and only then reports failure.
 
 Live integration tests supervise a child presentation/application, terminate
 it gracefully and forcibly, then launch a fresh child and reattach to the same
-server/session identity. POSIX uses an isolated tmux socket namespace and
-SIGKILL. Windows uses an isolated psmux named-pipe namespace, TerminateProcess,
-and a kill-on-close Job Object harness. Every test asserts that it never
-queries or mutates the user's default server.
+WSL runtime, server, and session identity. Windows uses an isolated WSL tmux
+socket namespace, TerminateProcess, and a client-only kill-on-close Job Object.
+The test also proves that the Linux-side tmux client is reaped and that the
+user's default server was never queried or mutated.
 
-POSIX tmux daemonizes itself, so macOS/Linux survival primarily proves that
-Ghosthub does not retain stdio, process-group, or other accidental ownership.
-It is not evidence that the separate Windows Job Object path is safe.
+The guarantee covers Ghosthub termination, not `wsl --shutdown`, distro
+termination, or a Windows lifecycle event that restarts WSL. Runtime identity
+combines the kernel boot ID with PID 1 start time so a distro-only restart is
+classified even while another distro keeps the shared kernel alive.
 
 ## Relaunch Restoration
 
