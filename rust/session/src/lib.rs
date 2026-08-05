@@ -48,12 +48,20 @@ impl MuxCapabilities {
 pub struct TmuxVersion {
     major: u32,
     minor: u32,
-    patch: u32,
+    patch: Option<u32>,
+    suffix: Option<char>,
 }
 
 impl fmt::Display for TmuxVersion {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}.{}.{}", self.major, self.minor, self.patch)
+        write!(formatter, "{}.{}", self.major, self.minor)?;
+        if let Some(patch) = self.patch {
+            write!(formatter, ".{patch}")?;
+        }
+        if let Some(suffix) = self.suffix {
+            write!(formatter, "{suffix}")?;
+        }
+        Ok(())
     }
 }
 
@@ -188,17 +196,37 @@ fn is_absolute(platform: ExecutablePlatform, path: &str) -> bool {
 
 fn parse_version(output: &str) -> Option<TmuxVersion> {
     let value = output.lines().find_map(|line| line.strip_prefix("tmux "))?;
-    let mut numbers = value.trim().split('.');
-    let major = numbers.next()?.parse().ok()?;
-    let minor = numbers.next()?.parse().ok()?;
-    let patch = numbers.next().map_or(Some(0), |value| value.parse().ok())?;
-    if numbers.next().is_some() {
-        return None;
-    }
+    let (major, remainder) = value.trim().split_once('.')?;
+    let major = major.parse().ok()?;
+    let minor_end = remainder
+        .find(|character: char| !character.is_ascii_digit())
+        .unwrap_or(remainder.len());
+    let (minor, remainder) = remainder.split_at(minor_end);
+    let minor = minor.parse().ok()?;
+    let (patch, suffix) = match remainder.as_bytes() {
+        [] => (None, None),
+        [suffix] if suffix.is_ascii_alphabetic() => (None, Some(char::from(*suffix))),
+        [b'.', rest @ ..] => {
+            let patch_end = rest
+                .iter()
+                .position(|byte| !byte.is_ascii_digit())
+                .unwrap_or(rest.len());
+            let (patch, suffix) = rest.split_at(patch_end);
+            let patch = std::str::from_utf8(patch).ok()?.parse().ok()?;
+            let suffix = match suffix {
+                [] => None,
+                [suffix] if suffix.is_ascii_alphabetic() => Some(char::from(*suffix)),
+                _ => return None,
+            };
+            (Some(patch), suffix)
+        }
+        _ => return None,
+    };
     Some(TmuxVersion {
         major,
         minor,
         patch,
+        suffix,
     })
 }
 
