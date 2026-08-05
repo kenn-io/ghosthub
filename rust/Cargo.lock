@@ -2033,6 +2033,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ghosthub-input"
+version = "0.0.0"
+
+[[package]]
 name = "ghosthub-model"
 version = "0.0.0"
 
@@ -2044,6 +2048,10 @@ dependencies = [
  "serde",
  "serde_json",
 ]
+
+[[package]]
+name = "ghosthub-surface"
+version = "0.0.0"
 
 [[package]]
 name = "ghosthub-ui"
