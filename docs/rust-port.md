@@ -322,6 +322,10 @@ app
 ~~~
 
 Cargo metadata tests traverse normal, build, and development dependencies.
+The diagram is enforced as a direct allowlist for every declared package;
+planned packages may be absent, but an undeclared internal package or edge
+fails the gate. Test fixture consumers separately declare their development
+edge to the contracts harness.
 Store cannot reach session through any transitive path. UI's constraint is
 direct: across all three dependency kinds, it may depend directly only on
 workspace, model, and surface, and never directly on host, terminal, store,
