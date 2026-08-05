@@ -164,4 +164,19 @@ fn actual_workspace_satisfies_dependency_boundaries() {
         unexpected_direct_internal_dependencies(actual_ui, &allowed_ui).is_empty(),
         "UI has an unapproved direct internal dependency"
     );
+
+    for package in metadata
+        .workspace_packages()
+        .into_iter()
+        .filter(|package| package.name.as_str().starts_with("ghosthub-"))
+    {
+        let manifest = std::fs::read_to_string(&package.manifest_path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", package.manifest_path));
+        assert!(
+            manifest.contains("[lints]\nworkspace = true")
+                || manifest.contains("[lints]\r\nworkspace = true"),
+            "{} must inherit workspace lints",
+            package.name
+        );
+    }
 }
