@@ -1976,6 +1976,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ghosthub-contracts"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "ghosthub-model"
 version = "0.0.0"
 
