@@ -285,7 +285,8 @@ struct ConfiguredHostOverlayTests {
         #expect(
             secondWindow.borrowedTmuxSessionView(
                 host: oldHost,
-                sessionName: activeSelection.name
+                sessionName: activeSelection.name,
+                defersTerminalResize: false
             ) != nil
         )
 
@@ -310,7 +311,8 @@ struct ConfiguredHostOverlayTests {
         #expect(
             secondWindow.borrowedTmuxSessionView(
                 host: updatedHost,
-                sessionName: activeSelection.name
+                sessionName: activeSelection.name,
+                defersTerminalResize: false
             ) == nil
         )
 
@@ -321,7 +323,8 @@ struct ConfiguredHostOverlayTests {
         #expect(
             secondWindow.borrowedTmuxSessionView(
                 host: updatedHost,
-                sessionName: activeSelection.name
+                sessionName: activeSelection.name,
+                defersTerminalResize: false
             ) != nil
         )
         configuredHosts.send([])
@@ -330,7 +333,8 @@ struct ConfiguredHostOverlayTests {
         #expect(
             secondWindow.borrowedTmuxSessionView(
                 host: updatedHost,
-                sessionName: activeSelection.name
+                sessionName: activeSelection.name,
+                defersTerminalResize: false
             ) == nil
         )
     }

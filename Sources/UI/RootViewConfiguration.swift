@@ -80,14 +80,14 @@ public struct WorkspaceDisplayState {
 /// View factory closures and providers consumed by RootView.
 public struct ContentBuilders {
     public let tmuxSessionContentBuilder:
-        ((HostSummary, String) -> AnyView?)?
+        ((HostSummary, String, Bool) -> AnyView?)?
     public let settingsSheetBuilder: ((SettingsStore) -> AnyView)?
     public let logViewerBuilder: (() -> AnyView?)?
     public let sshAuthenticationBuilder: ((UUID) -> AnyView?)?
 
     public init(
         tmuxSessionContentBuilder:
-        ((HostSummary, String) -> AnyView?)? = nil,
+        ((HostSummary, String, Bool) -> AnyView?)? = nil,
         settingsSheetBuilder: ((SettingsStore) -> AnyView)? = nil,
         logViewerBuilder: (() -> AnyView?)? = nil,
         sshAuthenticationBuilder: ((UUID) -> AnyView?)? = nil

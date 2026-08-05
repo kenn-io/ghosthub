@@ -3,16 +3,24 @@ import SwiftUI
 
 public struct TerminalSurfaceRepresentable: NSViewRepresentable {
     public let surfaceView: TerminalSurfaceView
+    public let defersSurfaceResize: Bool
 
-    public init(surfaceView: TerminalSurfaceView) {
+    public init(
+        surfaceView: TerminalSurfaceView,
+        defersSurfaceResize: Bool = false
+    ) {
         self.surfaceView = surfaceView
+        self.defersSurfaceResize = defersSurfaceResize
     }
 
     public func makeNSView(context _: Context) -> TerminalSurfaceView {
-        surfaceView
+        surfaceView.setPresentationResizeDeferred(defersSurfaceResize)
+        return surfaceView
     }
 
     public func updateNSView(
-        _: TerminalSurfaceView, context _: Context
-    ) {}
+        _ nsView: TerminalSurfaceView, context _: Context
+    ) {
+        nsView.setPresentationResizeDeferred(defersSurfaceResize)
+    }
 }

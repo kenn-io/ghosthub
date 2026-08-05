@@ -144,6 +144,9 @@ public final class TerminalSurfaceView: ObservableObject {
     public func sizeDidChange(_ size: CGSize) {
         _ = size
     }
+    func setPresentationResizeDeferred(_ deferred: Bool) {
+        _ = deferred
+    }
     public func registerPaneFocusObserver(
         id: UUID,
         onFocusChange: @escaping (Bool) -> Void,
@@ -297,8 +300,12 @@ struct SurfaceResizeState: Equatable {
 }
 
 public struct TerminalSurfaceSwiftUIView: View {
-    public init(surfaceView: TerminalSurfaceView) {
+    public init(
+        surfaceView: TerminalSurfaceView,
+        defersSurfaceResize: Bool = false
+    ) {
         _ = surfaceView
+        _ = defersSurfaceResize
     }
 
     public var body: some View {
@@ -309,9 +316,14 @@ public struct TerminalSurfaceSwiftUIView: View {
 
 public struct TerminalSurfaceRepresentable: NSViewRepresentable {
     public let surfaceView: TerminalSurfaceView
+    public let defersSurfaceResize: Bool
 
-    public init(surfaceView: TerminalSurfaceView) {
+    public init(
+        surfaceView: TerminalSurfaceView,
+        defersSurfaceResize: Bool = false
+    ) {
         self.surfaceView = surfaceView
+        self.defersSurfaceResize = defersSurfaceResize
     }
 
     public func makeNSView(context _: Context) -> NSView {

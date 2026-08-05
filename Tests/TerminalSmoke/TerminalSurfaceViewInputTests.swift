@@ -392,7 +392,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
                 activeTmuxSession: activeTmuxSession
             ),
             content: ContentBuilders(
-                tmuxSessionContentBuilder: { _, _ in
+                tmuxSessionContentBuilder: { _, _, _ in
                     tmuxContentBuilder()
                 }
             ),
@@ -1569,7 +1569,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
                         activeTmuxSession: model.activeTmuxSession
                     ),
                     content: ContentBuilders(
-                        tmuxSessionContentBuilder: { _, sessionName in
+                        tmuxSessionContentBuilder: { _, sessionName, _ in
                             guard let surfaceView =
                                 surfacesBySession[sessionName]
                             else { return nil }
@@ -1882,6 +1882,82 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         )
         XCTAssertEqual(appliedSizes.last?.width, UInt32(expectedSize.width))
         XCTAssertEqual(appliedSizes.last?.height, UInt32(expectedSize.height))
+    }
+
+    func testPresentationResizeAppliesOnlyTheFinalSurfaceSize() throws {
+        let appHandle = try requireAppHandle()
+        let previousSetter = TerminalSurfaceView.sizeSetter
+        var appliedSizes: [(width: UInt32, height: UInt32)] = []
+        TerminalSurfaceView.sizeSetter = { surface, width, height in
+            appliedSizes.append((width, height))
+            ghostty_surface_set_size(surface, width, height)
+        }
+        defer {
+            TerminalSurfaceView.sizeSetter = previousSetter
+        }
+
+        let view = TerminalSurfaceView(
+            app: appHandle,
+            configuration: TerminalSurfaceConfiguration()
+        )
+        let window = hostInWindow(view)
+        defer { window.orderOut(nil) }
+        appliedSizes.removeAll()
+
+        view.setPresentationResizeDeferred(true)
+        view.setFrameSize(NSSize(width: 700, height: 450))
+        view.setFrameSize(NSSize(width: 760, height: 480))
+
+        XCTAssertTrue(
+            appliedSizes.isEmpty,
+            "A presentation transition must keep the terminal grid stable."
+        )
+
+        view.setPresentationResizeDeferred(false)
+
+        let expectedSize = view.convertToBacking(view.bounds.size)
+        XCTAssertEqual(
+            appliedSizes.count,
+            1,
+            "Ending a presentation transition must apply only its final size."
+        )
+        XCTAssertEqual(appliedSizes.last?.width, UInt32(expectedSize.width))
+        XCTAssertEqual(appliedSizes.last?.height, UInt32(expectedSize.height))
+    }
+
+    func testPresentationResizeWaitsForOverlappingLiveResize() throws {
+        let appHandle = try requireAppHandle()
+        let previousSetter = TerminalSurfaceView.sizeSetter
+        var appliedSizes: [(width: UInt32, height: UInt32)] = []
+        TerminalSurfaceView.sizeSetter = { surface, width, height in
+            appliedSizes.append((width, height))
+            ghostty_surface_set_size(surface, width, height)
+        }
+        defer {
+            TerminalSurfaceView.sizeSetter = previousSetter
+        }
+
+        let view = TerminalSurfaceView(
+            app: appHandle,
+            configuration: TerminalSurfaceConfiguration()
+        )
+        let window = hostInWindow(view)
+        defer { window.orderOut(nil) }
+        appliedSizes.removeAll()
+
+        view.viewWillStartLiveResize()
+        view.setPresentationResizeDeferred(true)
+        view.setFrameSize(NSSize(width: 760, height: 480))
+        view.setPresentationResizeDeferred(false)
+
+        XCTAssertTrue(
+            appliedSizes.isEmpty,
+            "Ending one resize transition must not flush another active transition."
+        )
+
+        view.viewDidEndLiveResize()
+
+        XCTAssertEqual(appliedSizes.count, 1)
     }
 
     func testDetachingViewMarksSurfaceOccluded() throws {

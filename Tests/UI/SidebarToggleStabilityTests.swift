@@ -39,8 +39,15 @@ struct SidebarToggleStabilityTests {
         let viewBefore = env.findStableContent()
         #expect(viewBefore != nil, "stable content should exist initially")
 
+        env.clearTerminalResizeDeferrals()
         env.isSidebarVisible = false
-        env.settle()
+        env.settle(for: 0.05)
+
+        #expect(env.terminalResizeDeferrals.last == true)
+
+        env.settle(for: 0.25)
+
+        #expect(env.terminalResizeDeferrals.last == false)
 
         let viewAfter = env.findStableContent()
         #expect(viewAfter != nil, "stable content should exist after hiding sidebar")
@@ -58,6 +65,43 @@ struct SidebarToggleStabilityTests {
             viewBefore === viewRestored,
             "terminal content view must be the same instance after sidebar restore"
         )
+    }
+
+    @Test("rapid sidebar toggles defer terminal resize through the latest transition")
+    func rapidSidebarTogglesKeepTerminalResizeDeferred() {
+        let env = StabilityTestEnvironment()
+        defer { env.close() }
+
+        env.clearTerminalResizeDeferrals()
+        env.isSidebarVisible = false
+        env.settle(for: 0.05)
+        env.isSidebarVisible = true
+        env.settle(for: 0.17)
+
+        #expect(env.terminalResizeDeferrals.last == true)
+
+        env.settle(for: 0.1)
+
+        #expect(env.terminalResizeDeferrals.last == false)
+    }
+
+    @Test("sidebar toggle animates the terminal viewport width")
+    func sidebarToggleAnimatesTerminalViewportWidth() throws {
+        let env = StabilityTestEnvironment()
+        defer { env.close() }
+
+        let terminal = try #require(env.findStableContent())
+        let startingWidth = terminal.frame.width
+
+        env.isSidebarVisible = false
+        env.settle(for: 0.1)
+        let transitionWidth = terminal.frame.width
+
+        env.settle(for: 0.15)
+        let finalWidth = terminal.frame.width
+
+        #expect(transitionWidth > startingWidth)
+        #expect(transitionWidth < finalWidth)
     }
 
     @Test("sidebar command toggles only its targeted window")
@@ -161,6 +205,10 @@ private final class StabilityTestEnvironment {
 
     var columnVisibility: NavigationSplitViewVisibility {
         model.columnVisibility
+    }
+
+    var terminalResizeDeferrals: [Bool] {
+        model.terminalResizeDeferrals
     }
 
     init(sidebarToggleTarget: AnyObject = SidebarToggleTarget()) {
@@ -267,15 +315,20 @@ private final class StabilityTestEnvironment {
         )
     }
 
+    func clearTerminalResizeDeferrals() {
+        model.clearTerminalResizeDeferrals()
+    }
+
     func close() {
         window.orderOut(nil)
         defaults.removePersistentDomain(forName: defaultsSuiteName)
         try? FileManager.default.removeItem(at: tempRoot)
     }
 
-    func settle() {
+    func settle(for duration: TimeInterval = 0.05) {
         hostingView.layoutSubtreeIfNeeded()
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        RunLoop.main.run(until: Date().addingTimeInterval(duration))
+        hostingView.layoutSubtreeIfNeeded()
     }
 }
 
@@ -285,6 +338,7 @@ private final class StabilityTestModel: ObservableObject {
     @Published var selection: WorkspaceSelection
     @Published var activeSession: WorkspaceTmuxSessionSelection?
     @Published var columnVisibility: NavigationSplitViewVisibility = .all
+    private(set) var terminalResizeDeferrals: [Bool] = []
 
     init(
         snapshot: WorkspaceSnapshot,
@@ -294,6 +348,14 @@ private final class StabilityTestModel: ObservableObject {
         self.snapshot = snapshot
         self.selection = selection
         self.activeSession = activeSession
+    }
+
+    func recordTerminalResizeDeferral(_ deferred: Bool) {
+        terminalResizeDeferrals.append(deferred)
+    }
+
+    func clearTerminalResizeDeferrals() {
+        terminalResizeDeferrals.removeAll()
     }
 }
 
@@ -310,8 +372,12 @@ private struct StabilityTestHarness: View {
                 activeTmuxSession: model.activeSession
             ),
             content: ContentBuilders(
-                tmuxSessionContentBuilder: { _, sessionName in
-                    AnyView(
+                tmuxSessionContentBuilder: {
+                    _, sessionName, defersTerminalResize in
+                    model.recordTerminalResizeDeferral(
+                        defersTerminalResize
+                    )
+                    return AnyView(
                         PresentedTmuxSessionMarker(sessionName: sessionName)
                     )
                 }

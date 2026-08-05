@@ -136,6 +136,10 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     private var consumedCommandKeyCodes: Set<UInt16> = []
     private var surfaceResizeState = SurfaceResizeState()
     private var isDeferringLiveResize = false
+    private var isDeferringPresentationResize = false
+    private var isDeferringSurfaceResize: Bool {
+        isDeferringLiveResize || isDeferringPresentationResize
+    }
     private var hasSyncedFocusState = false
     private let keyEventInterpreter: (([NSEvent]) -> Void)?
     let textInputObserver: ((String) -> Void)?
@@ -410,6 +414,14 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
         handleSizeChange(size)
     }
 
+    func setPresentationResizeDeferred(_ deferred: Bool) {
+        guard isDeferringPresentationResize != deferred else { return }
+        isDeferringPresentationResize = deferred
+        if !isDeferringSurfaceResize {
+            flushPendingSurfaceResize()
+        }
+    }
+
     private func handleSizeChange(_ size: CGSize) {
         let scaledSize = convertToBacking(size)
         guard scaledSize.width >= 1, scaledSize.height >= 1
@@ -422,7 +434,7 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
         ) else { return }
 
         switch SurfaceResizePolicy.decision(
-            isLiveResize: isDeferringLiveResize
+            isLiveResize: isDeferringSurfaceResize
         ) {
         case .immediate:
             applySurfaceSize(width: width, height: height)
@@ -922,7 +934,9 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     override public func viewDidEndLiveResize() {
         super.viewDidEndLiveResize()
         isDeferringLiveResize = false
-        flushPendingSurfaceResize()
+        if !isDeferringSurfaceResize {
+            flushPendingSurfaceResize()
+        }
     }
 
     // MARK: - Mouse Events
