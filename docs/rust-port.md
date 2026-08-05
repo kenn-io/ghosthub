@@ -1,9 +1,10 @@
 # Windows and Linux Rust Port
 
 This document is the maintained design for native Ghosthub applications on
-Windows and Linux. The Rust applications are under active development; the
-shipped macOS application remains SwiftUI/AppKit with libghostty. The shared
-product and terminal invariants remain authoritative in
+Windows and Linux. The first product slice is Windows-only and uses tmux in
+WSL2; Linux remains a compile-and-contract target until a native Linux product
+slice is authorized. The shipped macOS application remains SwiftUI/AppKit with
+libghostty. The shared product and terminal invariants remain authoritative in
 [architecture.md](architecture.md) and
 [terminal-sessions.md](terminal-sessions.md).
 
@@ -17,13 +18,18 @@ SwiftUI.
 ### Platform split
 
 - macOS remains SwiftUI/AppKit and libghostty.
-- Windows and Linux use Rust and GPUI.
+- Windows uses Rust and GPUI. Its first product slice attaches to real tmux in
+  a WSL2 distro through `wsl.exe` and ConPTY.
+- Linux remains in Rust CI for compilation, contracts, architecture, lint, and
+  dependency policy. A native Linux application is deferred.
 - All platforms preserve the Host, Project, Worktree, and ordinary tmux
   Session mental model.
 - Kwt remains authoritative for project/worktree identity and exact session
   names. Direct tmux-compatible discovery supplies otherwise-unbound sessions.
-- Tmux or psmux owns server-side windows, panes, layout, history, alternate
-  screen state, processes, and lifetime.
+- Tmux owns server-side windows, panes, layout, history, alternate-screen
+  state, processes, and lifetime for the first slice. The rejected psmux 3.3.7
+  capability result remains regression evidence rather than a product
+  substrate.
 - Ghosthub owns discovery, presentation, ordinary-client attachment,
   transport reconnect, and explicit confirmed destruction.
 - The implementations share behavioral contracts and fixtures, not a
@@ -122,10 +128,42 @@ The path matrix is:
 No mutable creation boolean exists. The remote reconnect loop cannot accept
 CreateOnce.
 
-Local ordinary-client exit always ends the presentation. Local tmux/psmux has
-no transport reconnect. Remote OpenSSH exit status 255 alone invokes bounded
-exponential reconnect; a connection healthy for 30 seconds resets backoff.
-Every other status passes through unchanged.
+Local ordinary-client exit always ends the presentation. The Windows WSL MVP
+does not reconnect a local `wsl.exe` relay after client exit. Remote OpenSSH
+exit status 255 alone invokes bounded exponential reconnect; a connection
+healthy for 30 seconds resets backoff. Every other status passes through
+unchanged.
+
+### Windows WSL command boundary
+
+Host owns the concrete WSL transport and all WSL-shaped knowledge. It resolves
+the configured distro or invokes the default distro directly to read
+`WSL_DISTRO_NAME`, then pins every later command to that exact name. It does
+not parse localized `wsl.exe --list` output. One direct `/usr/bin/cat` call
+reads `/proc/version`, `/proc/sys/kernel/random/boot_id`, and `/proc/1/stat`;
+the result must identify WSL2 and yields both shared-kernel and distro-instance
+identity.
+
+Host constructs AttachPlan with a fully resolved program and argv. Terminal
+launches that value through ConPTY and never names or depends on the WSL
+transport:
+
+~~~text
+wsl.exe --distribution <distro> --exec /usr/bin/env \
+  TERM=xterm-256color [TMUX_TMPDIR=<configured absolute POSIX path>] \
+  <configured absolute POSIX tmux path> attach-session -E -t =<exact name>
+~~~
+
+Every value is a separate argv entry; no shell command is composed. Defaults
+are `/usr/bin/tmux` and tmux's own socket resolution. Optional read-only
+configuration supplies a different absolute binary or socket directory.
+Ghosthub does not source login or interactive shell files, so a
+shell-configured `TMUX_TMPDIR` must be repeated in Ghosthub configuration.
+
+The first attach classifies tmux's missing-or-unsuitable-terminal diagnostic.
+It retries the same exact attach once with `TERM=xterm` and displays a
+reduced-color notice rather than requiring `infocmp`, `tput`, or
+`ncurses-bin`. Other local client exits do not loop.
 
 ### Terminal ownership
 
@@ -153,6 +191,9 @@ composition.
 OSC 52 reads are denied by default and never receive clipboard contents merely
 because terminal output requested them. OSC 52 writes follow explicit policy.
 Only a genuine user paste action may acquire clipboard contents for PTY input.
+The Windows WSL MVP denies both OSC 52 reads and writes. Tmux copy mode remains
+usable, but a copy-mode yank does not reach the Windows clipboard in this
+slice.
 
 ### PTY and worker flow
 
@@ -213,16 +254,32 @@ Version alone does not prove:
 - isolated non-default server namespaces
 - stable session and server-instance identity
 
-The first Windows probe targets psmux 3.3.7 (`05cc5d4`, SHA-256
+The first Windows probe targeted psmux 3.3.7 (`05cc5d4`, SHA-256
 `8A2370A98C47F5FF68DA4A317BFBAF4316DF19FE990B839BDACF856BEBC00405`)
 through an isolated `-L ghosthub-test-*` namespace. It proves `new-session
 -A`, `new-session -e`, exact `has-session`, stable `$3` identity across
 rename, server PID change across restart, and namespace isolation. That build
-is not yet admissible: `kill-session -t =name` reports that the session is
+is inadmissible: `kill-session -t =name` reports that the session is
 still present after five seconds, and `attach-session -E` remains unproven
-until exercised by a genuine ConPTY client. `cargo test-psmux-live` is the
-opt-in gate and must remain failing for this build rather than granting either
-capability from its version or help output.
+for that implementation. `cargo test-psmux-live` remains an opt-in rejection
+regression and must keep rejecting this build rather than granting either
+capability from its version or help output. It is not a Windows MVP gate.
+
+The Windows MVP instead verifies POSIX tmux inside WSL2. Host constructs a
+fully resolved invocation whose Windows launcher is `wsl.exe`, whose prefix is
+`--distribution <name> --exec`, and whose absolute mux path and null config are
+POSIX values such as `/usr/bin/tmux` and `/dev/null`. The invocation carries
+`ExecutablePlatform::Posix`; the contract platform remains Windows because the
+fixture executes where `wsl.exe` exists. WSL fixtures use a new strict fixture
+ID and shape with an explicit executable-platform field. The existing psmux
+fixture schema is unchanged.
+
+All seven mux capabilities remain required even though the attach-only MVP
+does not create sessions. Six are established on an isolated WSL tmux server.
+The genuine ConPTY lifetime gate supplies the seventh
+`attach-preserve-environment` observation by attaching with `-E`, presenting a
+conflicting client sentinel, and proving the session environment did not
+change. No `VerifiedTmuxBinary` exists until that live observation succeeds.
 
 VerifiedKwtHelper requires the exact revision, verified SHA-256, and
 revision-scoped managed path.
@@ -240,11 +297,14 @@ and injects it; it is not static global state.
 
 During attachment, an RAII PresentationLease reserves the effective endpoint,
 socket, and requested exact name. The effective SSH endpoint includes resolved
-hostname, port, and user. After a fresh query, promotion atomically replaces
-the reservation with the live key:
+hostname, port, and user. A WSL endpoint contains the resolved distro name;
+kernel boot ID plus `/proc/1/stat` field 22 form a separate runtime instance
+identity so a distro restart is detectable even when the shared WSL2 kernel
+does not restart. After a fresh query, promotion atomically replaces the
+reservation with the live key:
 
 ~~~text
-endpoint + socket + server PID + session ID + session creation time
+endpoint + runtime instance + socket + server PID + session ID + session creation time
 ~~~
 
 Name is display/attachment metadata, not instance identity. Rename updates the
@@ -256,33 +316,43 @@ disconnects its already-connected ordinary client, releases its lease, and
 focuses the winner. Drop releases reservations and durable entries on normal
 close, PTY EOF, failure, and unwind.
 
-### Windows server lifetime
+### Windows WSL relay and server lifetime
 
-The psmux server, like a POSIX tmux server, is an external long-lived session
-owner. Terminal owns disconnecting the client; host capability resolution owns
-whether the server survives.
+The WSL2 tmux server is the external long-lived session owner. It runs inside
+the WSL utility VM rather than as a Windows descendant, so a Windows Job Object
+cannot turn presentation teardown into server destruction. Terminal owns only
+the disposable ConPTY and resolved `wsl.exe` attach client.
 
-A source audit found that portable-pty 0.9.0 does not create a Job Object and
-creates the ConPTY child without CREATE_BREAKAWAY_FROM_JOB. This is a
-version-scoped finding, not a dependency contract: the runtime gate verifies
-the actual child and server Job Object membership and must rerun whenever the
-portable-pty version changes.
+The first implementation pins portable-pty 0.9.0 after its full dependency
+closure passes cargo-deny. Its raw Windows child-handle API is a
+version-scoped source finding, not a lifetime contract, and is reverified on
+every upgrade. Ghosthub assigns the spawned relay immediately to an
+application-owned Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` and
+uses `IsProcessInJob` as the runtime membership assertion. This intentionally
+inverts the obsolete psmux breakaway design: the relay must remain contained so
+forced Ghosthub termination reaps the Linux-side tmux client, while the server
+is inherently outside the job.
 
-When Ghosthub is in such a job:
+If job creation, assignment, or membership verification fails, Ghosthub closes
+the PTY master, waits a bounded interval for the relay, applies the client-only
+termination fallback if needed, releases the presentation reservation, and
+only then publishes a diagnostic. It never leaves an already-spawned relay
+running merely because promotion was refused. Portable-pty cannot create the
+relay suspended, so a bounded spawn-to-assignment race remains accepted; a
+presentation becomes active only after membership is proven.
 
-- use CREATE_BREAKAWAY_FROM_JOB when the containing job permits breakaway
-- use IsProcessInJob against both the spawned ConPTY client and the freshly
-  queried psmux server process as the required primitive for the controlled
-  inheritance and survival classifications
-- when breakaway is denied, attach only to a conservatively proven
-  independent pre-existing psmux server
-- bare session creation may target that proven independent server but may not
-  bootstrap a new server
-- when no independent server exists, block local Windows attachment and
-  creation with a diagnostic
+The workspace changes `unsafe_code` from `forbid` to `deny` and adds
+`unsafe_op_in_unsafe_fn = "deny"`. One Windows-only terminal module may use a
+narrowly scoped `allow` to wrap `CreateJobObjectW`,
+`SetInformationJobObject`, `AssignProcessToJobObject`, and `IsProcessInJob`
+behind a safe RAII API. Every other crate retains the workspace denial. The
+architecture harness verifies that every `ghosthub-*` workspace member opts
+into workspace lints so a new crate cannot silently escape that policy.
 
-Ghosthub never degrades to an app-lifetime session, name-based identity, or
-the user's unsafe default server.
+The module uses the `windows-sys` 0.61.2 already selected by GPUI 0.2.2's
+Windows graph rather than introducing another version. Its direct dependency,
+portable-pty, and the selected terminal engine must pass cargo-deny before the
+live gate links them.
 
 The live integration matrix kills the presentation/application child
 gracefully and forcibly, then launches a fresh child and reattaches to the same
@@ -290,15 +360,16 @@ identity:
 
 | Platform/context | Forced termination | Required result |
 | --- | --- | --- |
-| Linux | SIGKILL | tmux server/session survives |
 | macOS Swift gate | SIGKILL | tmux server/session survives |
-| Windows ordinary process | TerminateProcess | psmux server/session survives |
-| Windows inherited kill-on-close job | Close/terminate containing process | independent psmux server/session survives |
-| Windows breakaway denied with no independent server | No attachment | blocking diagnostic |
+| Windows WSL2 ordinary process | TerminateProcess | relay/client exits; exact tmux identity survives |
+| Windows WSL2 inherited job | Close/terminate containing process | client-only job reaps relay; exact tmux identity survives |
+| Windows job assignment or membership failure | No promoted presentation | spawned relay is unwound before diagnostic |
 
-POSIX tmux daemonizes itself. The macOS/Linux gate primarily proves Ghosthub
-does not retain stdio, process-group, or other accidental ownership. That
-result is not evidence for the separate Windows Job Object path.
+The guarantee covers Ghosthub presentation and application termination. It
+does not promise survival across `wsl --shutdown`, distro termination, or a
+Windows lifecycle event that restarts the WSL instance. The runtime instance
+identity distinguishes that condition from disappearance inside the same
+instance.
 
 ## 3. Workspace and State Ownership
 
@@ -313,8 +384,8 @@ Workspace directories use short names and namespaced package names:
 | session | ghosthub-session, lib session | Launch capabilities, verified mux/helper capabilities, live identity |
 | config | ghosthub-config, lib config | Path resolution and read-only/writable preferences |
 | store | ghosthub-store, lib store | SQLite records and attach-only descriptors |
-| host | ghosthub-host, lib host | Local/SSH inventory, kwt, tmux/psmux, managed helpers |
-| terminal | ghosthub-terminal, lib terminal | TerminalEngine, PTY worker, input, clipboard, surface publication |
+| host | ghosthub-host, lib host | Local/WSL/SSH resolution and inventory, kwt, muxes, managed helpers |
+| terminal | ghosthub-terminal, lib terminal | TerminalEngine, resolved-client PTY worker, input, clipboard, surface publication |
 | workspace | ghosthub-workspace, lib workspace | Inventory reconciliation, actions, selection, restoration |
 | ui | ghosthub-ui, lib ui | GPUI windows and elements |
 | app | ghosthub-app, bin ghosthub | Composition root |
@@ -336,7 +407,8 @@ Cargo metadata tests traverse normal, build, and development dependencies.
 The diagram is enforced as a direct allowlist for every declared package;
 planned packages may be absent, but an undeclared internal package or edge
 fails the gate. Test fixture consumers separately declare their development
-edge to the contracts harness.
+edge to the contracts harness. The same harness reads each package manifest
+and requires `[lints] workspace = true` for every `ghosthub-*` member.
 Store cannot reach session through any transitive path. UI's constraint is
 direct: across all three dependency kinds, it may depend directly only on
 workspace, model, and surface, and never directly on host, terminal, store,
@@ -481,24 +553,26 @@ The planned complete corpus covers:
 
 ### Blocking substrate gates
 
-The first product UI integration starts only after these tracked gates close:
+The first Windows product UI integration starts only after these gates close:
 
 | Gate |
 | --- |
 | Establish Rust contracts, architecture checks, and cargo-deny |
 | Select the VT backend and prove reusable scroll-aware surface publication |
-| Prove ConPTY I/O, Job Object handling, and application-death survival |
-| Prove psmux command, isolation, and identity capabilities |
+| Admit portable-pty and the terminal engine through the license closure |
+| Prove WSL2 ConPTY I/O, client Job Object containment, relay teardown, and application-death survival |
+| Verify WSL tmux commands, isolation, identity, and all seven required capabilities |
 
 Prototype code may exercise GPUI or a candidate backend, but product crates do
 not expose provisional backend-specific APIs.
 
 ### Slice 1: local attach only
 
-The first executable milestone discovers and attaches to an existing local
-tmux/psmux session in a native GPUI window, then detaches without destroying
-it. It contains one local host, a minimal discovered-session sidebar, one
-terminal presentation, and retryable diagnostics.
+The first executable milestone discovers and attaches to an existing tmux
+session in one resolved WSL2 distro from a native Windows GPUI window, then
+detaches without destroying it. It contains a minimal discovered-session
+sidebar, one terminal presentation, a visible cancellable WSL startup state,
+and retryable diagnostics.
 
 The flow resolves and verifies the exact mux binary, discovers live identity,
 reserves the presentation, launches an AttachPlan, promotes the reservation,
@@ -513,36 +587,51 @@ config → workspace projection → UI-facing state → GPUI
 
 It has no settings editor.
 
-Windows manual acceptance requires psmux to be installed and an isolated
-named server/session to be started outside Ghosthub. Linux acceptance uses an
-out-of-band isolated tmux server/session. Setup is documented as deterministic
-commands rather than an implicit prerequisite.
+Read-only configuration may select a distro name, an absolute POSIX tmux
+binary, and an absolute POSIX `TMUX_TMPDIR`. Defaults are the current WSL
+distro, `/usr/bin/tmux`, and tmux's own default socket resolution. Ghosthub
+does not source interactive or login shell files in this slice. Users whose
+sessions use another binary or socket directory must configure it explicitly;
+the empty state names the resolved distro and whether the default or configured
+socket environment was queried.
+
+Windows manual acceptance requires WSL2, tmux, and an existing session started
+outside Ghosthub. Setup is documented as deterministic commands rather than an
+implicit prerequisite. A missing server is an empty inventory, not an error.
 
 The milestone proves:
 
 - GPUI paints the selected VT backend through scroll-aware surface buffers
-- keyboard, mouse, AltGr, IME, paste, and local clipboard policy work
+- keyboard, SGR 1006 mouse reporting, AltGr, and bracketed paste work
 - ordered resize and stale-frame letterboxing work
 - buffers remain bounded and UI never blocks on PTY or store work
 - reselecting the same session in one window refuses a second client and
-  focuses the existing terminal
+  focuses the existing terminal as Ghosthub policy rather than a tmux limit
 - client close, graceful app exit, and forced app death preserve the server
-  and permit fresh-process reattachment
-- Linux works under at least one Wayland and one X11 session
+  and permit fresh-process reattachment to the exact same live identity
+- failed relay-job membership fully unwinds the spawned attachment before the
+  reservation is released and a diagnostic appears
+- the genuine ConPTY attach proves `attach-session -E`, and TTY plumbing
+  failure cannot be recorded as a missing mux capability
+- `TERM=xterm-256color` works end-to-end or the initial attach retries once
+  with `TERM=xterm` and displays a reduced-color notice
 
 Cross-window focus arbitration is deferred until multi-window delivery.
 
-Slice 1 excludes creation, kill, kwt inventory, worktree mutation, remote SSH,
-managed-helper installation, persistence/restoration, multiple windows,
-Console Panel, telemetry, updates, packaging, and acceptance screenshots.
+Slice 1 denies OSC 52 reads and writes; tmux copy-mode yanks therefore do not
+reach the Windows clipboard. It excludes IME composition, dead keys, creation,
+kill, kwt inventory, worktree mutation, remote SSH, managed-helper
+installation, native Linux product UI, persistence/restoration, multiple
+windows, Console Panel, telemetry, updates, packaging, and acceptance
+screenshots.
 
 ### Failure branches
 
-If the ConPTY/lifetime or psmux capability gate fails, Slice 1 lands Linux-only
-and Windows returns to substrate selection. It does not negotiate a weaker
-session lifetime under schedule pressure. If every VT candidate fails the
-terminal-state gate, Slice 1 stops for architecture reconsideration on both
-platforms.
+If the WSL ConPTY/lifetime or tmux capability gate fails, Windows returns to
+substrate selection; there is no app-lifetime or psmux fallback. If every VT
+candidate fails the terminal-state gate, product integration stops for
+architecture reconsideration. Linux CI remains a compile-and-contract signal,
+not an alternate product delivery branch.
 
 ### Test categories
 
@@ -554,17 +643,16 @@ Rust keeps the same separation:
 
 - cargo test-contracts is the fast manifest, parsing, capability, plan,
   sidebar, registry, and architecture gate
-- test-rust-live-attach launches real isolated tmux/psmux servers, PTYs, and
-  supervisor children for detach and app-death survival
+- test-rust-live-attach launches a real isolated tmux server inside a WSL2
+  distro plus PTYs and supervisor children for detach and app-death survival
 
 Cargo test binaries own cross-platform orchestration. Make targets are thin
 wrappers; Windows CI invokes the same Cargo tests without POSIX shell
-scaffolding. POSIX uses a unique socket namespace. Windows uses a unique psmux
-namespace backed by its named-pipe transport. Both assert that the user's
-default server is untouched.
+scaffolding. Windows tests use a unique WSL tmux socket namespace and assert
+before and after each run that the user's default server is untouched.
 
-The Rust port adds no Swift or macOS live-attach work. POSIX tmux behavior on
-Linux is not used as evidence for the separate Windows Job Object path.
+The Rust port adds no Swift or macOS live-attach work. Linux compilation is not
+used as evidence for the Windows ConPTY-to-WSL relay path.
 
 ### Follow-on order
 
