@@ -1,4 +1,19 @@
 {
   "schema_version": 1,
-  "fixtures": []
+  "fixtures": [
+    {
+      "id": "paths.posix.roots.v1",
+      "suite": "paths",
+      "schema_version": 1,
+      "platforms": ["posix"],
+      "path": "paths/posix-roots-v1.json"
+    },
+    {
+      "id": "paths.windows.roots.v1",
+      "suite": "paths",
+      "schema_version": 1,
+      "platforms": ["windows"],
+      "path": "paths/windows-roots-v1.json"
+    }
+  ]
 }

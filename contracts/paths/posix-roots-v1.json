@@ -1,0 +1,115 @@
+{
+  "schema_version": 1,
+  "platform": "posix",
+  "cases": [
+    {
+      "id": "defaults",
+      "user_home": "/home/alice",
+      "environment": {},
+      "expected": {
+        "ghosthub_home": "/home/alice/.ghosthub",
+        "config": "/home/alice/.config/ghosthub",
+        "state": "/home/alice/.ghosthub",
+        "helpers": "/home/alice/.ghosthub/helpers"
+      }
+    },
+    {
+      "id": "home-override",
+      "user_home": "/home/alice",
+      "environment": {
+        "GHOSTHUB_HOME": "/srv/ghosthub"
+      },
+      "expected": {
+        "ghosthub_home": "/srv/ghosthub",
+        "config": "/srv/ghosthub/config",
+        "state": "/srv/ghosthub",
+        "helpers": "/srv/ghosthub/helpers"
+      }
+    },
+    {
+      "id": "config-and-state-overrides-do-not-move-helpers",
+      "user_home": "/home/alice",
+      "environment": {
+        "GHOSTHUB_CONFIG_HOME": "/etc/ghosthub",
+        "GHOSTHUB_STATE_HOME": "/var/lib/ghosthub"
+      },
+      "expected": {
+        "ghosthub_home": "/home/alice/.ghosthub",
+        "config": "/etc/ghosthub",
+        "state": "/var/lib/ghosthub",
+        "helpers": "/home/alice/.ghosthub/helpers"
+      }
+    },
+    {
+      "id": "all-overrides",
+      "user_home": "/home/alice",
+      "environment": {
+        "GHOSTHUB_HOME": "/srv/ghosthub",
+        "GHOSTHUB_CONFIG_HOME": "/etc/ghosthub",
+        "GHOSTHUB_STATE_HOME": "/var/lib/ghosthub"
+      },
+      "expected": {
+        "ghosthub_home": "/srv/ghosthub",
+        "config": "/etc/ghosthub",
+        "state": "/var/lib/ghosthub",
+        "helpers": "/srv/ghosthub/helpers"
+      }
+    },
+    {
+      "id": "xdg-variables-are-ignored",
+      "user_home": "/home/alice",
+      "environment": {
+        "XDG_CONFIG_HOME": "/xdg/config",
+        "XDG_STATE_HOME": "/xdg/state"
+      },
+      "expected": {
+        "ghosthub_home": "/home/alice/.ghosthub",
+        "config": "/home/alice/.config/ghosthub",
+        "state": "/home/alice/.ghosthub",
+        "helpers": "/home/alice/.ghosthub/helpers"
+      }
+    },
+    {
+      "id": "empty-home-override-is-blocking",
+      "user_home": "/home/alice",
+      "environment": {
+        "GHOSTHUB_HOME": ""
+      },
+      "expected_error": {
+        "input": "GHOSTHUB_HOME",
+        "kind": "not-local-absolute"
+      }
+    },
+    {
+      "id": "relative-config-override-is-blocking",
+      "user_home": "/home/alice",
+      "environment": {
+        "GHOSTHUB_CONFIG_HOME": "relative/config"
+      },
+      "expected_error": {
+        "input": "GHOSTHUB_CONFIG_HOME",
+        "kind": "not-local-absolute"
+      }
+    },
+    {
+      "id": "relative-state-override-is-blocking",
+      "user_home": "/home/alice",
+      "environment": {
+        "GHOSTHUB_STATE_HOME": "relative/state"
+      },
+      "expected_error": {
+        "input": "GHOSTHUB_STATE_HOME",
+        "kind": "not-local-absolute"
+      }
+    },
+    {
+      "id": "relative-home-is-blocking",
+      "user_home": "home/alice",
+      "environment": {},
+      "expected_error": {
+        "input": "HOME",
+        "kind": "not-local-absolute"
+      }
+    }
+  ]
+}
