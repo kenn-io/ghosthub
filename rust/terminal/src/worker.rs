@@ -5,6 +5,7 @@ use std::thread;
 use std::time::Duration;
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError, bounded, select, unbounded};
+use input::{EncodedInput, KeyInput, encode_input};
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 use session::AttachPlan;
 use surface::{GridSize, SurfaceStore};
@@ -17,6 +18,7 @@ const READ_BUFFER_SIZE: usize = 64 * 1024;
 pub enum TerminalEvent {
     ClipboardWrite(ClipboardWrite),
     ClipboardRead(ClipboardReadRequest),
+    ConfirmPaste(EncodedInput),
     Exited(u32),
     Error(String),
 }
@@ -40,6 +42,8 @@ impl std::error::Error for WorkerError {}
 
 enum Command {
     Input(Vec<u8>),
+    Key(KeyInput),
+    ConfirmPaste(EncodedInput),
     Resize(GridSize),
     Shutdown,
 }
@@ -137,6 +141,33 @@ impl TerminalWorker {
         &self.surface
     }
 
+    #[must_use]
+    pub fn surface_handle(&self) -> Arc<SurfaceStore> {
+        Arc::clone(&self.surface)
+    }
+
+    /// Queue one neutral key or paste event for mode-aware encoding.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after the terminal worker has stopped.
+    pub fn send_key(&self, input: KeyInput) -> Result<(), WorkerError> {
+        self.commands
+            .send(Command::Key(input))
+            .map_err(|error| WorkerError::new("send terminal key", error))
+    }
+
+    /// Approve and queue a paste previously reported for confirmation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after the terminal worker has stopped.
+    pub fn confirm_paste(&self, input: EncodedInput) -> Result<(), WorkerError> {
+        self.commands
+            .send(Command::ConfirmPaste(input))
+            .map_err(|error| WorkerError::new("confirm terminal paste", error))
+    }
+
     /// Send already-authorized bytes to the attached client.
     ///
     /// # Errors
@@ -219,7 +250,22 @@ fn run_worker(
         select! {
             recv(commands) -> message => match message {
                 Ok(Command::Input(bytes)) => {
-                    if let Err(error) = writer.write_all(&bytes).and_then(|()| writer.flush()) {
+                    if let Err(error) = write_input(&mut writer, &bytes) {
+                        let _ignored = events.send(TerminalEvent::Error(error.to_string()));
+                        break;
+                    }
+                }
+                Ok(Command::Key(input)) => {
+                    let encoded = encode_input(&input, engine.modes());
+                    if encoded.requires_confirmation() {
+                        let _ignored = events.send(TerminalEvent::ConfirmPaste(encoded));
+                    } else if let Err(error) = write_input(&mut writer, &encoded.approve()) {
+                        let _ignored = events.send(TerminalEvent::Error(error.to_string()));
+                        break;
+                    }
+                }
+                Ok(Command::ConfirmPaste(input)) => {
+                    if let Err(error) = write_input(&mut writer, &input.approve()) {
                         let _ignored = events.send(TerminalEvent::Error(error.to_string()));
                         break;
                     }
@@ -273,6 +319,11 @@ fn run_worker(
     }
     let _ignored = child.kill();
     let _ignored = child.wait();
+}
+
+fn write_input(writer: &mut dyn Write, bytes: &[u8]) -> std::io::Result<()> {
+    writer.write_all(bytes)?;
+    writer.flush()
 }
 
 fn pty_size(size: GridSize) -> Result<PtySize, WorkerError> {
