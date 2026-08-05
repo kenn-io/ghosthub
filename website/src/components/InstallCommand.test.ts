@@ -1,5 +1,6 @@
 import { experimental_AstroContainer as AstroContainer } from 'astro/container';
 import { beforeAll, describe, expect, it } from 'vitest';
+import Hero from './Hero.astro';
 import InstallCommand from './InstallCommand.astro';
 
 describe('InstallCommand', () => {
@@ -26,5 +27,15 @@ describe('InstallCommand', () => {
     const html = await container.renderToString(InstallCommand);
 
     expect(html).not.toContain('href="/guide/"');
+  });
+
+  it('keeps Homebrew primary while exposing the Guide', async () => {
+    const html = await container.renderToString(Hero);
+    const commandIndex = html.indexOf('brew install kenn-io/tap/ghosthub');
+    const guideIndex = html.indexOf('href="/guide/"');
+
+    expect(commandIndex).toBeGreaterThan(-1);
+    expect(guideIndex).toBeGreaterThan(commandIndex);
+    expect(html.slice(guideIndex)).toContain('Learn More');
   });
 });
