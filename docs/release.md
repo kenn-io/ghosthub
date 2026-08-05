@@ -324,11 +324,14 @@ of these gates:
 
 Any failure leaves the existing cask untouched and creates no pull request.
 Successful update pull requests use the tap repository's workflow-scoped
-`GITHUB_TOKEN`. GitHub may leave their ordinary pull-request CI waiting for
-maintainer approval, so the successful pre-PR macOS validation is the
-authoritative test evidence. This boundary deliberately avoids a personal
-access token, separate GitHub App, or credential in Ghosthub's release
-environment.
+`GITHUB_TOKEN`. GitHub does not automatically execute ordinary `pull_request`
+workflows for pull requests created by that token; depending on repository
+settings, the corresponding runs may instead appear waiting for maintainer
+approval. The successful pre-PR macOS validation is therefore the authoritative
+test evidence, and tap branch protection must not require an automatically
+started pull-request check for these automation PRs. This boundary deliberately
+avoids a personal access token, separate GitHub App, or credential in Ghosthub's
+release environment.
 
 ## Local packaging
 
