@@ -4,7 +4,8 @@ use std::{
 };
 
 use architecture::{
-    Graph, internal_dependency_path, internal_graph, unexpected_direct_internal_dependencies,
+    DependencyViolation, Graph, dependency_policy_violations, internal_dependency_path,
+    internal_graph, locked_dependency_policy, unexpected_direct_internal_dependencies,
 };
 use cargo_metadata::MetadataCommand;
 
@@ -91,12 +92,45 @@ fn accepts_the_locked_direct_ui_crates() {
 }
 
 #[test]
+fn rejects_an_undeclared_edge_for_any_product_crate() {
+    let actual = graph(&[("ghosthub-config", &["ghosthub-session"])]);
+    let policy = graph(&[("ghosthub-config", &["ghosthub-model"])]);
+
+    assert_eq!(
+        dependency_policy_violations(&actual, &policy),
+        vec![DependencyViolation::UnexpectedDependency {
+            package: "ghosthub-config".to_owned(),
+            dependency: "ghosthub-session".to_owned(),
+        }]
+    );
+}
+
+#[test]
+fn rejects_an_unrecognized_internal_crate() {
+    let actual = graph(&[("ghosthub-shortcut", &[])]);
+    let policy = graph(&[("ghosthub-model", &[])]);
+
+    assert_eq!(
+        dependency_policy_violations(&actual, &policy),
+        vec![DependencyViolation::UnrecognizedPackage(
+            "ghosthub-shortcut".to_owned()
+        )]
+    );
+}
+
+#[test]
 fn actual_workspace_satisfies_dependency_boundaries() {
     let metadata = MetadataCommand::new()
         .manifest_path(workspace_manifest())
         .exec()
         .expect("load workspace cargo metadata");
     let graph = internal_graph(&metadata);
+
+    assert_eq!(
+        dependency_policy_violations(&graph, &locked_dependency_policy()),
+        Vec::<DependencyViolation>::new(),
+        "workspace has an undeclared internal dependency boundary"
+    );
 
     assert!(
         graph
