@@ -1,0 +1,2 @@
+[alias]
+test-contracts = "test -p ghosthub-contracts -p ghosthub-config -p ghosthub-architecture"

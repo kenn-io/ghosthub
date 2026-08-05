@@ -1,0 +1,17 @@
+[package]
+name = "ghosthub-architecture"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "architecture"
+path = "src/lib.rs"
+
+[dependencies]
+cargo_metadata.workspace = true
+
+[lints]
+workspace = true

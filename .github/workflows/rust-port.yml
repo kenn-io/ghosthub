@@ -70,7 +70,9 @@ jobs:
       - name: Test and lint on Linux
         if: runner.os == 'Linux'
         shell: bash
-        run: make -C .. rust-check
+        run: |
+          cargo test-contracts --locked
+          make -C .. rust-check
 
       - name: Test and lint on Windows
         if: runner.os == 'Windows'
@@ -79,6 +81,7 @@ jobs:
           for /f "usebackq tokens=*" %%i in (`"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath`) do set "VSINSTALL=%%i"
           call "%VSINSTALL%\Common7\Tools\VsDevCmd.bat" -no_logo -arch=x64 -host_arch=x64
           cargo fmt --all --check
+          cargo test-contracts --locked
           cargo test --workspace --locked
           cargo check --workspace --all-targets --locked
           cargo clippy --workspace --all-targets --locked -- -D warnings
