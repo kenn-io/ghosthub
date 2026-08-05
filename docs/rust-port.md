@@ -483,12 +483,12 @@ The planned complete corpus covers:
 
 The first product UI integration starts only after these tracked gates close:
 
-| Kata | Gate |
-| --- | --- |
-| 9bmg | Establish Rust contracts, architecture checks, and cargo-deny |
-| xvrf | Select the VT backend and prove reusable scroll-aware surface publication |
-| c2xv | Prove ConPTY I/O, Job Object handling, and application-death survival |
-| v27t | Prove psmux command, isolation, and identity capabilities |
+| Gate |
+| --- |
+| Establish Rust contracts, architecture checks, and cargo-deny |
+| Select the VT backend and prove reusable scroll-aware surface publication |
+| Prove ConPTY I/O, Job Object handling, and application-death survival |
+| Prove psmux command, isolation, and identity capabilities |
 
 Prototype code may exercise GPUI or a candidate backend, but product crates do
 not expose provisional backend-specific APIs.
@@ -538,10 +538,11 @@ Console Panel, telemetry, updates, packaging, and acceptance screenshots.
 
 ### Failure branches
 
-If c2xv or v27t fails, Slice 1 lands Linux-only and Windows returns to substrate
-selection. It does not negotiate a weaker session lifetime under schedule
-pressure. If every VT candidate fails xvrf, Slice 1 stops for architecture
-reconsideration on both platforms.
+If the ConPTY/lifetime or psmux capability gate fails, Slice 1 lands Linux-only
+and Windows returns to substrate selection. It does not negotiate a weaker
+session lifetime under schedule pressure. If every VT candidate fails the
+terminal-state gate, Slice 1 stops for architecture reconsideration on both
+platforms.
 
 ### Test categories
 
