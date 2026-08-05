@@ -65,13 +65,10 @@ struct GhosthubApp: App {
                     )
                 }
                 appDelegate.setWindowRestorationFinishedHandler { count in
-                    if let freshScene = updateRelaunchRestorer
+                    updateRelaunchRestorer
                         .nativeWindowRestorationDidFinish(
-                            expectedSceneCount: count,
-                            presentedScene: windowState.wrappedValue
-                        ) {
-                        windowState.wrappedValue = freshScene
-                    }
+                            expectedSceneCount: count
+                        )
                 }
                 appDelegate.needsConfirmQuit = {
                     QuitPolicy.needsConfirmation(

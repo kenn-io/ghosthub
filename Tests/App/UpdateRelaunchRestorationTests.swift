@@ -39,11 +39,8 @@ struct UpdateRelaunchRestorationTests {
                 openWindow: { opened.append($0) }
             ) == .waitingForNativeRestoration
         )
-        #expect(
-            restorer.nativeWindowRestorationDidFinish(
-                expectedSceneCount: 0,
-                presentedScene: nil
-            ) == nil
+        restorer.nativeWindowRestorationDidFinish(
+            expectedSceneCount: 0
         )
         restorer.reconcileAfterSceneBindingsSettled()
 
@@ -67,47 +64,6 @@ struct UpdateRelaunchRestorationTests {
         restorer.didBeginRestoring(windowID: second.windowID)
 
         #expect(!FileManager.default.fileExists(atPath: store.fileURL.path))
-    }
-
-    @Test("zero native windows initialize the current nil scene")
-    func zeroNativeWindowsInitializeCurrentScene() throws {
-        let scratch = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: scratch) }
-        let restorer = UpdateRelaunchRestorer(
-            store: UpdateRelaunchManifestStore(
-                fileURL: scratch.appendingPathComponent("relaunch.json")
-            )
-        )
-
-        let recovered = try #require(
-            restorer.nativeWindowRestorationDidFinish(
-                expectedSceneCount: 0,
-                presentedScene: nil
-            )
-        )
-        #expect(recovered.navigation == nil)
-        #expect(recovered.tmux == nil)
-    }
-
-    @Test("late window identity preserves the current scene")
-    func lateWindowIdentityPreservesCurrentScene() {
-        let scratch = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: scratch) }
-        let restorer = UpdateRelaunchRestorer(
-            store: UpdateRelaunchManifestStore(
-                fileURL: scratch.appendingPathComponent("relaunch.json")
-            )
-        )
-        let presented = WorkspaceWindowState.fresh()
-
-        #expect(
-            restorer.nativeWindowRestorationDidFinish(
-                expectedSceneCount: 0,
-                presentedScene: presented
-            ) == nil
-        )
     }
 
     @Test("an aborted relaunch manifest can be discarded")
