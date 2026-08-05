@@ -41,7 +41,12 @@ pub fn locked_dependency_policy() -> Graph {
         ),
         (
             "ghosthub-host",
-            &["ghosthub-config", "ghosthub-model", "ghosthub-session"][..],
+            &[
+                "ghosthub-config",
+                "ghosthub-contracts",
+                "ghosthub-model",
+                "ghosthub-session",
+            ][..],
         ),
         ("ghosthub-input", &[][..]),
         ("ghosthub-model", &[][..]),
