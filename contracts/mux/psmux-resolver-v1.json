@@ -1,5 +1,14 @@
 {
   "schema_version": 1,
+  "required_capabilities": [
+    "atomic-create-or-attach",
+    "new-session-environment",
+    "attach-preserve-environment",
+    "exact-targets",
+    "stable-session-identity",
+    "server-instance-identity",
+    "isolated-namespace"
+  ],
   "cases": [
     {
       "id": "verified-psmux-3-3-7",
@@ -18,6 +27,22 @@
       "expected": { "version": "3.3.7", "implementation_revision": "05cc5d4" }
     },
     {
+      "id": "accepts-letter-suffixed-tmux-version",
+      "platform": "windows",
+      "path": "C:\\Tools\\psmux.exe",
+      "version_output": "tmux 3.2a\npsmux 3.2a (05cc5d4 2026-07-20)",
+      "observations": [
+        { "name": "atomic-create-or-attach", "exit_code": 0, "stdout": "supported", "stderr": "" },
+        { "name": "new-session-environment", "exit_code": 0, "stdout": "supported", "stderr": "" },
+        { "name": "attach-preserve-environment", "exit_code": 0, "stdout": "supported", "stderr": "" },
+        { "name": "exact-targets", "exit_code": 0, "stdout": "supported", "stderr": "" },
+        { "name": "stable-session-identity", "exit_code": 0, "stdout": "supported", "stderr": "" },
+        { "name": "server-instance-identity", "exit_code": 0, "stdout": "supported", "stderr": "" },
+        { "name": "isolated-namespace", "exit_code": 0, "stdout": "supported", "stderr": "" }
+      ],
+      "expected": { "version": "3.2a", "implementation_revision": "05cc5d4" }
+    },
+    {
       "id": "version-is-not-capability-proof",
       "platform": "windows",
       "path": "C:\\Tools\\psmux.exe",
@@ -31,7 +56,7 @@
       "path": "/usr/bin/tmux",
       "version_output": "tmux 3.1",
       "observations": [],
-      "expected_error": { "kind": "unsupported-version", "subject": "3.1.0" }
+      "expected_error": { "kind": "unsupported-version", "subject": "3.1" }
     },
     {
       "id": "rejects-relative-executable",
