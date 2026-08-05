@@ -1,6 +1,7 @@
 //! Composition root for the Rust Ghosthub application.
 
 use model::PortStatus;
+use workspace::Workspace;
 
 #[cfg(target_os = "linux")]
 const PLATFORM_NAME: &str = "Linux";
@@ -13,5 +14,9 @@ pub const fn bootstrap_status() -> PortStatus {
 }
 
 pub fn run() {
-    ui::run(bootstrap_status());
+    let workspace = Workspace::start_wsl(
+        host::WslConfig::default(),
+        config::TerminalAppearance::default(),
+    );
+    ui::run(bootstrap_status(), workspace);
 }
