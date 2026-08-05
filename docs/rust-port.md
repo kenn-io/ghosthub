@@ -185,9 +185,11 @@ environment so zero sessions cannot silently conceal where Ghosthub looked.
 
 ### Terminal ownership
 
-The terminal crate owns the complete frontend behavior, not merely VT parsing:
+The terminal boundary owns the complete frontend behavior, not merely VT
+parsing. UI performs the mechanical GPUI-to-neutral event conversion through
+workspace re-exports; terminal owns every terminal-semantic decision:
 
-- GPUI key-event mapping and mode-aware encoding
+- mode-aware key encoding
 - mouse protocol encoding and coordinates
 - bracketed-paste framing and unsafe-paste confirmation
 - OSC 52 parsing effects and clipboard policy
@@ -406,6 +408,7 @@ Workspace directories use short names and namespaced package names:
 | Directory | Cargo package / output | Responsibility |
 | --- | --- | --- |
 | model | ghosthub-model, lib model | Pure domain values and classified diagnostics |
+| input | ghosthub-input, lib input | Backend-neutral terminal input events, modes, and encoding |
 | surface | ghosthub-surface, lib surface | Rust-owned terminal paint vocabulary |
 | session | ghosthub-session, lib session | Launch capabilities, verified mux/helper capabilities, live identity |
 | config | ghosthub-config, lib config | Path resolution and read-only/writable preferences |
@@ -421,12 +424,14 @@ The dependency constraints are:
 ~~~text
 app
 ├── ui ─────────→ workspace, model, surface
-├── workspace ──→ host, terminal, store, session, config, model, surface
+├── workspace ──→ host, terminal, store, session, config, model, surface, input
 ├── host ───────→ session, config, model
-├── terminal ───→ session, config, model, surface
+├── terminal ───→ session, config, model, surface, input
 ├── store ──────→ model
 ├── session ────→ model
-└── config ─────→ model
+├── config ─────→ model
+├── surface ────→ (leaf)
+└── input ──────→ (leaf)
 ~~~
 
 Cargo metadata tests traverse normal, build, and development dependencies.
@@ -438,7 +443,9 @@ and requires `[lints] workspace = true` for every `ghosthub-*` member.
 Store cannot reach session through any transitive path. UI's constraint is
 direct: across all three dependency kinds, it may depend directly only on
 workspace, model, and surface, and never directly on host, terminal, store,
-config, or session. Cross-boundary negative persistence tests live in the
+config, input, or session. UI names neutral input values only through
+workspace re-exports, preserving the direct dependency boundary. Cross-boundary
+negative persistence tests live in the
 contracts harness, which may depend on both store and session. Static trait
 assertions are regression guards, not proofs: manual store records that mirror
 authority fields remain an explicit human-review boundary.
