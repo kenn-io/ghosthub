@@ -104,7 +104,18 @@ struct SSHAuthenticationSessionTests {
         if writer.isRunning {
             writer.terminate()
         }
-        writer.waitUntilExit()
+        var exitDeadline = ContinuousClock.now + .seconds(2)
+        while writer.isRunning, ContinuousClock.now < exitDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        if writer.isRunning {
+            Darwin.kill(writer.processIdentifier, SIGKILL)
+            exitDeadline = ContinuousClock.now + .seconds(2)
+            while writer.isRunning, ContinuousClock.now < exitDeadline {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+        }
+        try #require(!writer.isRunning)
         #expect(!diagnostic.isEmpty)
     }
 
