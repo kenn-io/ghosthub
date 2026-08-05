@@ -12,8 +12,19 @@ path = "src/lib.rs"
 
 [dependencies]
 alacritty_terminal.workspace = true
+crossbeam-channel.workspace = true
 ghosthub-input.workspace = true
+ghosthub-session.workspace = true
 ghosthub-surface.workspace = true
+portable-pty.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
 
 [lints]
 workspace = true
