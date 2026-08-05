@@ -40,9 +40,10 @@ struct UpdateRelaunchRestorationTests {
             ) == .waitingForNativeRestoration
         )
         #expect(
-            !restorer.nativeWindowRestorationDidFinish(
-                expectedSceneCount: 0
-            )
+            restorer.nativeWindowRestorationDidFinish(
+                expectedSceneCount: 0,
+                presentedScene: nil
+            ) == nil
         )
         restorer.reconcileAfterSceneBindingsSettled()
 
@@ -68,8 +69,8 @@ struct UpdateRelaunchRestorationTests {
         #expect(!FileManager.default.fileExists(atPath: store.fileURL.path))
     }
 
-    @Test("zero native windows without relaunch state need a fresh window")
-    func zeroNativeWindowsNeedFreshWindow() {
+    @Test("zero native windows initialize the current nil scene")
+    func zeroNativeWindowsInitializeCurrentScene() throws {
         let scratch = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: scratch) }
@@ -79,10 +80,33 @@ struct UpdateRelaunchRestorationTests {
             )
         )
 
+        let recovered = try #require(
+            restorer.nativeWindowRestorationDidFinish(
+                expectedSceneCount: 0,
+                presentedScene: nil
+            )
+        )
+        #expect(recovered.navigation == nil)
+        #expect(recovered.tmux == nil)
+    }
+
+    @Test("late window identity preserves the current scene")
+    func lateWindowIdentityPreservesCurrentScene() {
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let restorer = UpdateRelaunchRestorer(
+            store: UpdateRelaunchManifestStore(
+                fileURL: scratch.appendingPathComponent("relaunch.json")
+            )
+        )
+        let presented = WorkspaceWindowState.fresh()
+
         #expect(
             restorer.nativeWindowRestorationDidFinish(
-                expectedSceneCount: 0
-            )
+                expectedSceneCount: 0,
+                presentedScene: presented
+            ) == nil
         )
     }
 

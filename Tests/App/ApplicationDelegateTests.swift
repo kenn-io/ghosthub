@@ -150,28 +150,6 @@ final class ApplicationDelegateTests: XCTestCase {
         XCTAssertEqual(receivedCount, expectedCount)
     }
 
-    func testFreshWorkspaceRecoveryOpensOneWindowWhenNoneExists() {
-        let delegate = ApplicationDelegate()
-        var opened: [WorkspaceWindowState] = []
-        delegate.openWorkspaceWindow = { opened.append($0) }
-
-        delegate.requestNewWorkspaceWindowIfNone(in: [])
-
-        XCTAssertEqual(opened.count, 1)
-    }
-
-    func testFreshWorkspaceRecoveryPreservesExistingWindow() {
-        let delegate = ApplicationDelegate()
-        var opened: [WorkspaceWindowState] = []
-        delegate.openWorkspaceWindow = { opened.append($0) }
-        let window = NSWindow()
-        window.tabbingIdentifier = WorkspaceWindowIdentity.tabbingIdentifier
-
-        delegate.requestNewWorkspaceWindowIfNone(in: [window])
-
-        XCTAssertTrue(opened.isEmpty)
-    }
-
     private final class NotificationCenterSpy: UserNotificationCentering {
         private(set) var requestAuthorizationCallCount = 0
         private(set) var addedRequests: [UNNotificationRequest] = []

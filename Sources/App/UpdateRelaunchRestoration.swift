@@ -188,16 +188,21 @@ final class UpdateRelaunchRestorer {
 
     @discardableResult
     func nativeWindowRestorationDidFinish(
-        expectedSceneCount: Int
-    ) -> Bool {
-        guard expectedNativeSceneCount == nil else { return false }
+        expectedSceneCount: Int,
+        presentedScene: WorkspaceWindowState? = nil
+    ) -> WorkspaceWindowState? {
+        guard expectedNativeSceneCount == nil else { return nil }
         expectedNativeSceneCount = expectedSceneCount
         // A saved updater manifest owns zero-window recovery so it can replay
-        // exact workspaces; only an ordinary launch needs a fresh window.
-        let needsFreshWindow = expectedSceneCount == 0
+        // exact workspaces. An ordinary nil-valued scene is initialized in
+        // place instead of opening a second scene while its window identity
+        // may still be attaching.
+        let freshScene = expectedSceneCount == 0
             && orderedWindowIDs.isEmpty
+            && presentedScene == nil
+            ? WorkspaceWindowState.fresh() : nil
         reconcileIfNativeRestorationFinished()
-        return needsFreshWindow
+        return freshScene
     }
 
     func reconcileIfNativeRestorationFinished() {

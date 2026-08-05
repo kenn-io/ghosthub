@@ -65,18 +65,12 @@ struct GhosthubApp: App {
                     )
                 }
                 appDelegate.setWindowRestorationFinishedHandler { count in
-                    let needsFreshWindow = updateRelaunchRestorer
+                    if let freshScene = updateRelaunchRestorer
                         .nativeWindowRestorationDidFinish(
-                            expectedSceneCount: count
-                        )
-                    if needsFreshWindow {
-                        Task { @MainActor in
-                            try? await Task.sleep(
-                                for: .milliseconds(100)
-                            )
-                            appDelegate
-                                .requestNewWorkspaceWindowIfNone()
-                        }
+                            expectedSceneCount: count,
+                            presentedScene: windowState.wrappedValue
+                        ) {
+                        windowState.wrappedValue = freshScene
                     }
                 }
                 appDelegate.needsConfirmQuit = {
