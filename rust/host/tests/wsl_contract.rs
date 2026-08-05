@@ -6,7 +6,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use contracts::{Manifest, PlatformTag};
-use host::{CommandOutput, CommandRunner, HostErrorKind, WslConfig, WslHost};
+use host::{CancellationToken, CommandOutput, CommandRunner, HostErrorKind, WslConfig, WslHost};
 use serde::Deserialize;
 use session::ExecutablePlatform;
 
@@ -30,7 +30,13 @@ impl RecordingRunner {
 }
 
 impl CommandRunner for RecordingRunner {
-    fn run(&self, program: &OsStr, args: &[OsString]) -> io::Result<CommandOutput> {
+    fn run(
+        &self,
+        program: &OsStr,
+        args: &[OsString],
+        _cancellation: &CancellationToken,
+        _timeout: std::time::Duration,
+    ) -> io::Result<CommandOutput> {
         self.calls
             .lock()
             .expect("calls lock")
@@ -52,13 +58,82 @@ fn output(status: i32, stdout: &str, stderr: &str) -> CommandOutput {
 }
 
 fn instance_output() -> CommandOutput {
+    instance_output_with("65c18272-9676-4d59-9f67-ff4556cd1601", 987_654)
+}
+
+fn instance_output_with(boot_id: &str, start_ticks: u64) -> CommandOutput {
     output(
         0,
-        "Linux version 6.6.114.1-microsoft-standard-WSL2\n\
-         65c18272-9676-4d59-9f67-ff4556cd1601\n\
-         1 (systemd) S 0 1 1 0 -1 4194560 1 2 3 4 5 6 7 8 9 10 11 12 987654 15\n",
+        &format!(
+            "Linux version 6.6.114.1-microsoft-standard-WSL2\n\
+             {boot_id}\n\
+             1 (systemd) S 0 1 1 0 -1 4194560 1 2 3 4 5 6 7 8 9 10 11 12 {start_ticks} 15\n"
+        ),
         "",
     )
+}
+
+#[test]
+fn retries_discovery_when_the_distro_restarts_between_crossings() {
+    let old = instance_output_with("65c18272-9676-4d59-9f67-ff4556cd1601", 100);
+    let new = instance_output_with("91d83b4d-2b1a-47b7-bd2d-5d5bb698bdf7", 200);
+    let runner = RecordingRunner::new(vec![
+        old,
+        output(0, "4242\t$3\t1700000000\tstale\t0\n", ""),
+        new.clone(),
+        new.clone(),
+        output(0, "5252\t$4\t1700000001\tfresh\t0\n", ""),
+        new,
+    ]);
+    let host = WslHost::new(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        runner,
+    );
+
+    let snapshot = host.discover().expect("retry stable discovery");
+
+    assert_eq!(snapshot.runtime().init_start_ticks(), 200);
+    assert_eq!(snapshot.sessions()[0].name(), "fresh");
+    assert_eq!(host.runner().calls().len(), 6);
+}
+
+#[test]
+fn rejects_malformed_runtime_and_session_identity() {
+    for runtime in [
+        instance_output_with("not-a-uuid", 100),
+        output(
+            0,
+            "Linux version 6.6.114.1-microsoft-standard-WSL2\n\
+             65c18272-9676-4d59-9f67-ff4556cd1601\n\
+             2 (systemd) S 0 1 1 0 -1 4194560 1 2 3 4 5 6 7 8 9 10 11 12 100 15\n",
+            "",
+        ),
+    ] {
+        let host = WslHost::new(
+            WslConfig::with_distro("Ubuntu").expect("valid config"),
+            RecordingRunner::new(vec![runtime, output(0, "", "")]),
+        );
+        assert_eq!(
+            host.discover()
+                .expect_err("identity must be rejected")
+                .kind(),
+            HostErrorKind::MalformedOutput
+        );
+    }
+
+    let host = WslHost::new(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        RecordingRunner::new(vec![
+            instance_output(),
+            output(0, "4242\tnot-an-id\t1700000000\twork\t0\n", ""),
+        ]),
+    );
+    assert_eq!(
+        host.discover()
+            .expect_err("session ID must be rejected")
+            .kind(),
+        HostErrorKind::MalformedOutput
+    );
 }
 
 #[test]
@@ -71,6 +146,7 @@ fn default_distro_with_no_tmux_server_is_empty_inventory() {
             "",
             "error connecting to /tmp/tmux-1000/default (No such file or directory)\n",
         ),
+        instance_output(),
     ]);
     let host = WslHost::new(WslConfig::default(), runner);
 
@@ -79,7 +155,7 @@ fn default_distro_with_no_tmux_server_is_empty_inventory() {
     assert_eq!(snapshot.endpoint().distro(), "Ubuntu");
     assert!(snapshot.sessions().is_empty());
     assert_eq!(snapshot.runtime().init_start_ticks(), 987_654);
-    assert_eq!(host.runner().calls().len(), 3);
+    assert_eq!(host.runner().calls().len(), 4);
 }
 
 #[test]
@@ -87,6 +163,7 @@ fn discovers_identity_in_one_tmux_crossing() {
     let runner = RecordingRunner::new(vec![
         instance_output(),
         output(0, "4242\t$3\t1700000000\twork name\t1\n", ""),
+        instance_output(),
     ]);
     let host = WslHost::new(
         WslConfig::with_distro("Ubuntu").expect("valid config"),
@@ -101,7 +178,7 @@ fn discovers_identity_in_one_tmux_crossing() {
     assert_eq!(session.identity().session_id(), "$3");
     assert_eq!(session.identity().created_at(), 1_700_000_000);
     assert_eq!(session.attached_clients(), 1);
-    assert_eq!(host.runner().calls().len(), 2);
+    assert_eq!(host.runner().calls().len(), 3);
 }
 
 #[test]
@@ -109,6 +186,7 @@ fn attach_plan_preserves_exact_name_as_one_argument() {
     let runner = RecordingRunner::new(vec![
         instance_output(),
         output(0, "4242\t$3\t1700000000\twork name\t0\n", ""),
+        instance_output(),
     ]);
     let host = WslHost::new(
         WslConfig::with_distro("Ubuntu").expect("valid config"),
@@ -158,6 +236,7 @@ fn configured_socket_directory_is_explicit_environment() {
     let runner = RecordingRunner::new(vec![
         instance_output(),
         output(0, "4242\t$3\t1700000000\twork\t0\n", ""),
+        instance_output(),
     ]);
     let host = WslHost::new(config, runner);
     let snapshot = host.discover().expect("discover sessions");
@@ -269,6 +348,7 @@ fn consumes_the_windows_hosted_posix_wsl_contract() {
     let runner = RecordingRunner::new(vec![
         output(0, &fixture.instance_output, ""),
         output(0, &fixture.inventory_output, ""),
+        output(0, &fixture.instance_output, ""),
     ]);
     let host = WslHost::new(
         WslConfig::configured(Some(fixture.distro), fixture.tmux_path, fixture.tmux_tmpdir)

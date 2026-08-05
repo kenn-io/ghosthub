@@ -26,8 +26,8 @@ fn installed_psmux_remains_inadmissible() {
         .iter()
         .find(|observation| observation.name == "exact-targets")
         .expect("exact-target observation");
-    assert_ne!(
-        exact_targets.exit_code, 0,
+    assert!(
+        !exact_targets.is_supported(),
         "this psmux build unexpectedly passed the exact-target probe: {report:#?}"
     );
 

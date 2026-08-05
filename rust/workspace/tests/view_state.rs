@@ -16,3 +16,20 @@ fn projects_config_and_inventory_into_ui_only_values() {
     assert_eq!(sessions[0].name(), "editor");
     assert_eq!(sessions[0].attached_clients(), 1);
 }
+
+#[test]
+fn preview_workspace_cannot_accidentally_start_host_discovery() {
+    let workspace = workspace::Workspace::preview(WorkspaceSnapshot::ready(
+        Appearance::default(),
+        "Ubuntu",
+        Vec::new(),
+    ));
+
+    assert_eq!(
+        workspace
+            .refresh()
+            .expect_err("preview must stay inert")
+            .to_string(),
+        "preview workspace cannot refresh WSL"
+    );
+}

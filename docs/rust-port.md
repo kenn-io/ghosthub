@@ -308,9 +308,13 @@ fixture schema is unchanged.
 All seven mux capabilities remain required even though the attach-only MVP
 does not create sessions. Six are established on an isolated WSL tmux server.
 The genuine ConPTY lifetime gate supplies the seventh
-`attach-preserve-environment` observation by attaching with `-E`, presenting a
-conflicting client sentinel, and proving the session environment did not
-change. No `VerifiedTmuxBinary` exists until that live observation succeeds.
+`attach-preserve-environment` observation. The isolated session first adds a
+sentinel name to `update-environment`. A control attachment without `-E`
+presents a conflicting client value and must change the session environment;
+after the sentinel is reset, the same attachment with `-E` must leave the
+session value unchanged. This positive control prevents a broken attachment
+or irrelevant variable from looking like proof. No `VerifiedTmuxBinary`
+exists until that live observation succeeds.
 
 VerifiedKwtHelper requires the exact revision, verified SHA-256, and
 revision-scoped managed path.
