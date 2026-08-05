@@ -110,11 +110,12 @@ consumed through kwt's machine-readable CLI surfaces.
 
 ### Windows and Linux Rust applications
 
-The planned Windows and Linux applications are separate native Rust/GPUI
-implementations. They do not replace the macOS SwiftUI application or embed a
-Rust runtime into it. Cross-platform parity is enforced through the
-repository-root contracts corpus rather than a shared process, FFI domain
-model, or live database.
+The first Rust product slice is a native Windows GPUI application attaching to
+tmux inside WSL2. Linux remains a compile-and-contract target until a native
+Linux product slice is authorized. Neither replaces the macOS SwiftUI
+application or embeds a Rust runtime into it. Cross-platform parity is enforced
+through the repository-root contracts corpus rather than a shared process, FFI
+domain model, or live database.
 
 Rust keeps backend and authority boundaries structural: the UI package has
 direct dependencies only on workspace, model, and surface, while persistence
@@ -125,12 +126,12 @@ scroll-aware damage between the terminal worker and GPUI without granting UI
 any PTY capability.
 
 Ghosthub still has one UI application process and no Ghosthub-owned daemon.
-External tmux and psmux servers are the long-lived session owners. Closing or
-forcibly terminating a Rust application must leave those servers and sessions
-alive. Windows support is blocked rather than degraded if psmux cannot provide
-stable identity, exact targeting, independent lifetime, or safe non-default
-server isolation. See [Terminal Sessions](terminal-sessions.md) for the
-normative lifetime contract.
+For the Windows MVP, tmux inside WSL2 is the long-lived session owner. Closing
+or forcibly terminating the Rust application must reap only its `wsl.exe`
+relay and Linux tmux client while leaving the exact server/session identity
+alive. Psmux capability failures are retained as rejection evidence rather
+than weakened into a product path. See
+[Terminal Sessions](terminal-sessions.md) for the normative lifetime contract.
 
 The Rust composition root injects one presentation registry and per-host
 runtime dependencies. Host reads are concurrent, cancellable, timed, and
