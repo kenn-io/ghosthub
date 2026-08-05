@@ -173,11 +173,3 @@ jobs:
 
       - name: Run essential kwt and tmux workflows
         run: make test-essential-workflows
-
-      - name: Remove isolated macOS test state
-        if: always()
-        shell: bash
-        run: |
-          case "${GHOSTHUB_CI_STATE_ROOT:-}" in
-            /tmp/ghosthub-ci.*) rm -rf -- "$GHOSTHUB_CI_STATE_ROOT" ;;
-          esac
