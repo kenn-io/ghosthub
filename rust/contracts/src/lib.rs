@@ -25,6 +25,7 @@ pub enum ErrorKind {
     InvalidFixturePath,
     InvalidManifest,
     MissingFixture,
+    MissingPlatforms,
     UnconsumedFixtures,
     UnknownFixture,
     UnsupportedSchema,
@@ -78,11 +79,12 @@ struct FixtureEntry {
     schema_version: u32,
     platforms: Vec<PlatformTag>,
     path: PathBuf,
+    #[serde(skip)]
+    resolved_path: PathBuf,
 }
 
 #[derive(Debug)]
 pub struct Manifest {
-    root: PathBuf,
     fixtures: Vec<FixtureEntry>,
 }
 
@@ -95,10 +97,12 @@ impl Manifest {
     /// unsupported schema, contains duplicate identity, or references an
     /// unsafe or missing fixture path.
     pub fn load(root: &Path) -> Result<Self, Error> {
+        let root = fs::canonicalize(root)
+            .map_err(|_| Error::new(ErrorKind::InvalidManifest, MANIFEST_NAME))?;
         let manifest_path = root.join(MANIFEST_NAME);
         let contents = fs::read_to_string(&manifest_path)
             .map_err(|_| Error::new(ErrorKind::InvalidManifest, MANIFEST_NAME))?;
-        let parsed: ManifestFile = serde_json::from_str(&contents)
+        let mut parsed: ManifestFile = serde_json::from_str(&contents)
             .map_err(|_| Error::new(ErrorKind::InvalidManifest, MANIFEST_NAME))?;
 
         if parsed.schema_version != SCHEMA_VERSION {
@@ -107,9 +111,12 @@ impl Manifest {
 
         let mut ids = BTreeSet::new();
         let mut paths = BTreeSet::new();
-        for fixture in &parsed.fixtures {
+        for fixture in &mut parsed.fixtures {
             if fixture.schema_version != SCHEMA_VERSION {
                 return Err(Error::new(ErrorKind::UnsupportedSchema, fixture.id.clone()));
+            }
+            if fixture.platforms.is_empty() {
+                return Err(Error::new(ErrorKind::MissingPlatforms, fixture.id.clone()));
             }
             if !ids.insert(fixture.id.clone()) {
                 return Err(Error::new(ErrorKind::DuplicateId, fixture.id.clone()));
@@ -126,13 +133,22 @@ impl Manifest {
                     fixture.id.clone(),
                 ));
             }
-            if !root.join(&fixture.path).is_file() {
+            let unresolved_path = root.join(&fixture.path);
+            let resolved_path = fs::canonicalize(&unresolved_path)
+                .map_err(|_| Error::new(ErrorKind::MissingFixture, fixture.id.clone()))?;
+            if !resolved_path.starts_with(&root) {
+                return Err(Error::new(
+                    ErrorKind::InvalidFixturePath,
+                    fixture.id.clone(),
+                ));
+            }
+            if !resolved_path.is_file() {
                 return Err(Error::new(ErrorKind::MissingFixture, fixture.id.clone()));
             }
+            fixture.resolved_path = resolved_path;
         }
 
         Ok(Self {
-            root: root.to_path_buf(),
             fixtures: parsed.fixtures,
         })
     }
@@ -156,16 +172,12 @@ impl Manifest {
             .map(|fixture| (fixture.id.as_str(), fixture))
             .collect();
 
-        SuiteRun {
-            root: &self.root,
-            pending,
-        }
+        SuiteRun { pending }
     }
 }
 
 #[derive(Debug)]
 pub struct SuiteRun<'manifest> {
-    root: &'manifest Path,
     pending: BTreeMap<&'manifest str, &'manifest FixtureEntry>,
 }
 
@@ -181,7 +193,7 @@ impl SuiteRun<'_> {
             .pending
             .remove(id)
             .ok_or_else(|| Error::new(ErrorKind::UnknownFixture, id))?;
-        Ok(self.root.join(&fixture.path))
+        Ok(fixture.resolved_path.clone())
     }
 
     /// Verify that the suite consumed every applicable fixture exactly once.
