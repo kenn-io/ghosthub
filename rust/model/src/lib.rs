@@ -1,5 +1,14 @@
 //! Pure domain values for the Rust Ghosthub application.
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DiagnosticKind {
+    ExecutableNotFound,
+    MalformedOutput,
+    PermissionDenied,
+    Transport,
+    UnsupportedEnvironment,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PortStatus {
     platform: &'static str,
