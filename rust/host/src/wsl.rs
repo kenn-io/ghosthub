@@ -1,13 +1,16 @@
 use std::ffi::{OsStr, OsString};
 use std::fmt;
+use std::time::Duration;
 
 use model::DiagnosticKind;
 use session::{AttachPlan, DiscoveredSession, SessionIdentity};
 
-use crate::{CommandOutput, CommandRunner};
+use crate::{CancellationToken, CommandOutput, CommandRunner};
 
 const WSL_EXE: &str = "wsl.exe";
 const DEFAULT_TMUX: &str = "/usr/bin/tmux";
+const DISCOVERY_ATTEMPTS: usize = 2;
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
 const INVENTORY_FORMAT: &str =
     "#{pid}\t#{session_id}\t#{session_created}\t#{session_name}\t#{session_attached}";
 
@@ -162,7 +165,7 @@ impl fmt::Display for HostError {
 
 impl std::error::Error for HostError {}
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct WslHost<R> {
     config: WslConfig,
     runner: R,
@@ -186,14 +189,34 @@ impl<R: CommandRunner> WslHost<R> {
     /// Returns a classified error for transport, executable, permission,
     /// unsupported runtime, or malformed-output failures.
     pub fn discover(&self) -> Result<HostSnapshot, HostError> {
-        let endpoint = self.resolve_endpoint()?;
-        let runtime = self.resolve_runtime(&endpoint)?;
-        let sessions = self.discover_sessions(&endpoint)?;
-        Ok(HostSnapshot {
-            endpoint,
-            runtime,
-            sessions,
-        })
+        self.discover_with_cancel(&CancellationToken::new())
+    }
+
+    /// Discover inventory with cooperative cancellation for superseded reads.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified transport error when cancelled or timed out.
+    pub fn discover_with_cancel(
+        &self,
+        cancellation: &CancellationToken,
+    ) -> Result<HostSnapshot, HostError> {
+        let endpoint = self.resolve_endpoint(cancellation)?;
+        for _attempt in 0..DISCOVERY_ATTEMPTS {
+            let runtime = self.resolve_runtime(&endpoint, cancellation)?;
+            let sessions = self.discover_sessions(&endpoint, cancellation)?;
+            if runtime == self.resolve_runtime(&endpoint, cancellation)? {
+                return Ok(HostSnapshot {
+                    endpoint,
+                    runtime,
+                    sessions,
+                });
+            }
+        }
+        Err(HostError::new(
+            DiagnosticKind::Transport,
+            "WSL distro restarted during tmux discovery",
+        ))
     }
 
     /// Build an attach-only plan for a discovered session.
@@ -239,14 +262,17 @@ impl<R: CommandRunner> WslHost<R> {
         ))
     }
 
-    fn resolve_endpoint(&self) -> Result<WslEndpoint, HostError> {
+    fn resolve_endpoint(&self, cancellation: &CancellationToken) -> Result<WslEndpoint, HostError> {
         if let Some(distro) = &self.config.distro {
             return Ok(WslEndpoint {
                 distro: distro.clone(),
             });
         }
 
-        let output = self.run(&[OsString::from("--exec"), OsString::from("/usr/bin/env")])?;
+        let output = self.run(
+            &[OsString::from("--exec"), OsString::from("/usr/bin/env")],
+            cancellation,
+        )?;
         if output.status != 0 {
             return Err(classify_command_failure(
                 output.status,
@@ -270,7 +296,11 @@ impl<R: CommandRunner> WslHost<R> {
         })
     }
 
-    fn resolve_runtime(&self, endpoint: &WslEndpoint) -> Result<WslRuntimeIdentity, HostError> {
+    fn resolve_runtime(
+        &self,
+        endpoint: &WslEndpoint,
+        cancellation: &CancellationToken,
+    ) -> Result<WslRuntimeIdentity, HostError> {
         let mut args = pinned_prefix(endpoint);
         args.extend(
             [
@@ -282,7 +312,7 @@ impl<R: CommandRunner> WslHost<R> {
             .into_iter()
             .map(OsString::from),
         );
-        let output = self.run(&args)?;
+        let output = self.run(&args, cancellation)?;
         if output.status != 0 {
             return Err(classify_command_failure(
                 output.status,
@@ -296,6 +326,7 @@ impl<R: CommandRunner> WslHost<R> {
     fn discover_sessions(
         &self,
         endpoint: &WslEndpoint,
+        cancellation: &CancellationToken,
     ) -> Result<Vec<DiscoveredSession>, HostError> {
         let mut args = pinned_prefix(endpoint);
         args.push(OsString::from("/usr/bin/env"));
@@ -315,7 +346,7 @@ impl<R: CommandRunner> WslHost<R> {
             .into_iter()
             .map(OsString::from),
         );
-        let output = self.run(&args)?;
+        let output = self.run(&args, cancellation)?;
         if output.status != 0 {
             let stderr = String::from_utf8_lossy(&output.stderr);
             if is_no_server(&stderr) {
@@ -330,9 +361,13 @@ impl<R: CommandRunner> WslHost<R> {
         parse_inventory(&output.stdout)
     }
 
-    fn run(&self, args: &[OsString]) -> Result<CommandOutput, HostError> {
+    fn run(
+        &self,
+        args: &[OsString],
+        cancellation: &CancellationToken,
+    ) -> Result<CommandOutput, HostError> {
         self.runner
-            .run(OsStr::new(WSL_EXE), args)
+            .run(OsStr::new(WSL_EXE), args, cancellation, COMMAND_TIMEOUT)
             .map_err(|error| HostError::new(DiagnosticKind::Transport, error.to_string()))
     }
 }
@@ -357,10 +392,16 @@ fn parse_runtime(bytes: &[u8]) -> Result<WslRuntimeIdentity, HostError> {
             format!("WSL2 required; kernel reported: {version}"),
         ));
     }
-    if kernel_boot_id.is_empty() {
+    if !is_boot_id(kernel_boot_id) {
         return Err(HostError::new(
             DiagnosticKind::MalformedOutput,
-            "kernel boot ID is missing",
+            "kernel boot ID is not a UUID",
+        ));
+    }
+    if !init_stat.starts_with("1 (") {
+        return Err(HostError::new(
+            DiagnosticKind::MalformedOutput,
+            "PID 1 stat does not identify process 1",
         ));
     }
     let close_paren = init_stat.rfind(')').ok_or_else(|| {
@@ -404,6 +445,18 @@ fn parse_inventory(bytes: &[u8]) -> Result<Vec<DiscoveredSession>, HostError> {
             let server_pid = fields[0].parse::<u32>().map_err(|_| {
                 HostError::new(DiagnosticKind::MalformedOutput, "invalid tmux server PID")
             })?;
+            if server_pid == 0 {
+                return Err(HostError::new(
+                    DiagnosticKind::MalformedOutput,
+                    "invalid tmux server PID",
+                ));
+            }
+            if !is_tmux_session_id(fields[1]) {
+                return Err(HostError::new(
+                    DiagnosticKind::MalformedOutput,
+                    "invalid tmux session ID",
+                ));
+            }
             let created_at = fields[2].parse::<u64>().map_err(|_| {
                 HostError::new(
                     DiagnosticKind::MalformedOutput,
@@ -455,4 +508,18 @@ fn is_no_server(stderr: &str) -> bool {
 
 fn is_posix_absolute(path: &str) -> bool {
     path.starts_with('/')
+}
+
+fn is_boot_id(value: &str) -> bool {
+    value.len() == 36
+        && value.bytes().enumerate().all(|(index, byte)| match index {
+            8 | 13 | 18 | 23 => byte == b'-',
+            _ => byte.is_ascii_hexdigit(),
+        })
+}
+
+fn is_tmux_session_id(value: &str) -> bool {
+    value.strip_prefix('$').is_some_and(|digits| {
+        !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
+    })
 }
