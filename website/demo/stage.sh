@@ -8,6 +8,7 @@ demo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # The demo lives at <repo>/website/demo; default the clone source and the
 # app build to this repo so the workflow works from any checkout.
 repo_root="$(cd "$demo_root/../.." && pwd)"
+release_version="$(tr -d '[:space:]' < "$repo_root/RELEASE_VERSION")"
 # Short path required: tmux unix sockets cap out near 104 characters.
 scratch="${GHOSTHUB_DEMO_SCRATCH:-/tmp/ghosthub-demo}"
 
@@ -239,7 +240,7 @@ new_session scratch "$scratch/repos/msgvault" \
 new_session docbank-export "$scratch" \
   "clear; echo 'exported 4,812 threads (2.1 GiB) in 96s'; echo done."
 new_session release-watch "$scratch/repos/ghosthub" \
-  "clear; printf 'release v0.5.0\\n\\n  ✓ build\\n  ✓ swift tests\\n  ✓ notarization\\n  ● publish\\n'"
+  "clear; printf 'release v${release_version}\\n\\n  ✓ build\\n  ✓ swift tests\\n  ✓ notarization\\n  ● publish\\n'"
 new_session test-matrix "$scratch/repos/agentsview" \
   "clear; printf 'test matrix\\n\\nmacOS 26 arm64     ✓ 680 passed\\nUbuntu 24.04       ✓ 149 passed\\nSSH integration    ✓  42 passed\\n'"
 

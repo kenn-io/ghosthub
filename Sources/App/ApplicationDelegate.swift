@@ -204,6 +204,15 @@ final class ApplicationDelegate: NSObject,
         openWorkspaceWindow(requestWorkspaceWindow(parent: nil))
     }
 
+    func requestNewWorkspaceWindowIfNone(
+        in windows: [NSWindow] = NSApplication.shared.windows
+    ) {
+        // AppKit can announce zero restored windows before SwiftUI's ordinary
+        // nil-valued scene attaches its NSWindow and workspace identity.
+        guard WorkspaceWindowIdentity.count(in: windows) == 0 else { return }
+        requestNewWorkspaceWindow()
+    }
+
     func requestNewWorkspaceTab() {
         requestNewWorkspaceTab(from: NSApplication.shared.keyWindow)
     }

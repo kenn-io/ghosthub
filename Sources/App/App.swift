@@ -70,7 +70,13 @@ struct GhosthubApp: App {
                             expectedSceneCount: count
                         )
                     if needsFreshWindow {
-                        appDelegate.requestNewWorkspaceWindow()
+                        Task { @MainActor in
+                            try? await Task.sleep(
+                                for: .milliseconds(100)
+                            )
+                            appDelegate
+                                .requestNewWorkspaceWindowIfNone()
+                        }
                     }
                 }
                 appDelegate.needsConfirmQuit = {
