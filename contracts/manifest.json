@@ -14,6 +14,13 @@
       "schema_version": 1,
       "platforms": ["windows"],
       "path": "paths/windows-roots-v1.json"
+    },
+    {
+      "id": "mux.psmux.resolver.v1",
+      "suite": "mux-resolver",
+      "schema_version": 1,
+      "platforms": ["windows"],
+      "path": "mux/psmux-resolver-v1.json"
     }
   ]
 }

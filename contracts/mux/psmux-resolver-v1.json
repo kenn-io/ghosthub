@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "verified-psmux-3-3-7",
+      "platform": "windows",
+      "path": "C:\\Tools\\psmux.exe",
+      "version_output": "diagnostic before version\ntmux 3.3.7\npsmux 3.3.7 (05cc5d4 2026-07-20)",
+      "observations": [
+        { "name": "atomic-create-or-attach", "exit_code": 0, "stdout": "supported", "stderr": "" },
+        { "name": "new-session-environment", "exit_code": 0, "stdout": "supported", "stderr": "" },
+        { "name": "attach-preserve-environment", "exit_code": 0, "stdout": "supported", "stderr": "" },
+        { "name": "exact-targets", "exit_code": 0, "stdout": "supported", "stderr": "" },
+        { "name": "stable-session-identity", "exit_code": 0, "stdout": "supported", "stderr": "" },
+        { "name": "server-instance-identity", "exit_code": 0, "stdout": "supported", "stderr": "" },
+        { "name": "isolated-namespace", "exit_code": 0, "stdout": "supported", "stderr": "" }
+      ],
+      "expected": { "version": "3.3.7", "implementation_revision": "05cc5d4" }
+    },
+    {
+      "id": "version-is-not-capability-proof",
+      "platform": "windows",
+      "path": "C:\\Tools\\psmux.exe",
+      "version_output": "tmux 3.3.7\npsmux 3.3.7 (05cc5d4 2026-07-20)",
+      "observations": [],
+      "expected_error": { "kind": "missing-capability", "subject": "atomic-create-or-attach" }
+    },
+    {
+      "id": "rejects-version-below-floor",
+      "platform": "posix",
+      "path": "/usr/bin/tmux",
+      "version_output": "tmux 3.1",
+      "observations": [],
+      "expected_error": { "kind": "unsupported-version", "subject": "3.1.0" }
+    },
+    {
+      "id": "rejects-relative-executable",
+      "platform": "windows",
+      "path": "psmux.exe",
+      "version_output": "tmux 3.3.7",
+      "observations": [],
+      "expected_error": { "kind": "not-absolute", "subject": "psmux.exe" }
+    },
+    {
+      "id": "rejects-invalid-version-output",
+      "platform": "windows",
+      "path": "C:\\Tools\\psmux.exe",
+      "version_output": "psmux diagnostic only",
+      "observations": [],
+      "expected_error": { "kind": "invalid-version", "subject": "version-output" }
+    }
+  ]
+}
