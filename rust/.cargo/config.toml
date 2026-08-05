@@ -1,3 +1,4 @@
 [alias]
-test-contracts = "test -p ghosthub-contracts -p ghosthub-config -p ghosthub-session -p ghosthub-architecture"
+test-contracts = "test -p ghosthub-contracts -p ghosthub-config -p ghosthub-host -p ghosthub-session -p ghosthub-architecture"
 test-psmux-live = "test -p ghosthub-session --test psmux_live -- --ignored --nocapture"
+test-wsl-host-live = "test -p ghosthub-host --test wsl_live -- --ignored --nocapture"

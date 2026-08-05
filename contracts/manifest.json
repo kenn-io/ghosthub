@@ -21,6 +21,13 @@
       "schema_version": 1,
       "platforms": ["windows"],
       "path": "mux/psmux-resolver-v1.json"
+    },
+    {
+      "id": "mux.wsl-tmux.host.v1",
+      "suite": "wsl-host",
+      "schema_version": 1,
+      "platforms": ["windows"],
+      "path": "mux/wsl-tmux-host-v1.json"
     }
   ]
 }
