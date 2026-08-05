@@ -60,19 +60,61 @@ pub struct TerminalModes {
     pub sgr_mouse: bool,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EncodedInput {
+    bytes: Vec<u8>,
+    requires_confirmation: bool,
+}
+
+impl EncodedInput {
+    fn ready(bytes: Vec<u8>) -> Self {
+        Self {
+            bytes,
+            requires_confirmation: false,
+        }
+    }
+
+    fn confirmation_required(bytes: Vec<u8>) -> Self {
+        Self {
+            bytes,
+            requires_confirmation: true,
+        }
+    }
+
+    #[must_use]
+    pub const fn requires_confirmation(&self) -> bool {
+        self.requires_confirmation
+    }
+
+    /// Release the encoded bytes after any required user confirmation.
+    #[must_use]
+    pub fn approve(self) -> Vec<u8> {
+        self.bytes
+    }
+}
+
 #[must_use]
-pub fn encode_input(input: &KeyInput, modes: TerminalModes) -> Vec<u8> {
+pub fn encode_input(input: &KeyInput, modes: TerminalModes) -> EncodedInput {
     match input {
-        KeyInput::Text { text, modifiers } => encode_text(text, *modifiers),
-        KeyInput::Named { key, modifiers } => encode_named(*key, *modifiers, modes),
+        KeyInput::Text { text, modifiers } => EncodedInput::ready(encode_text(text, *modifiers)),
+        KeyInput::Named { key, modifiers } => {
+            EncodedInput::ready(encode_named(*key, *modifiers, modes))
+        }
         KeyInput::Paste(text) if modes.bracketed_paste => {
             let mut bytes = Vec::with_capacity(text.len() + 12);
             bytes.extend_from_slice(b"\x1b[200~");
             bytes.extend_from_slice(text.as_bytes());
             bytes.extend_from_slice(b"\x1b[201~");
-            bytes
+            EncodedInput::ready(bytes)
         }
-        KeyInput::Paste(text) => text.as_bytes().to_vec(),
+        KeyInput::Paste(text) => {
+            let normalized = text.replace("\r\n", "\n").replace('\n', "\r");
+            if text.chars().any(char::is_control) {
+                EncodedInput::confirmation_required(normalized.into_bytes())
+            } else {
+                EncodedInput::ready(normalized.into_bytes())
+            }
+        }
     }
 }
 
