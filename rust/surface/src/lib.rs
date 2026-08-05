@@ -228,6 +228,42 @@ impl SurfaceStore {
         true
     }
 
+    /// Update the latest frame in place after applying structural damage.
+    ///
+    /// Scroll damage is applied before `render`, allowing a terminal backend
+    /// to repaint only newly exposed or otherwise dirty rows.
+    #[must_use]
+    pub fn update(
+        &self,
+        generation: u64,
+        size: GridSize,
+        damage: Vec<Damage>,
+        render: impl FnOnce(&mut SurfaceFrame),
+    ) -> bool {
+        let mut latest = self
+            .latest
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if generation <= latest.generation() {
+            return false;
+        }
+
+        if latest.size() == size {
+            for entry in &damage {
+                if let Damage::Scroll { top, bottom, delta } = *entry {
+                    apply_scroll(&mut latest, top, bottom, delta);
+                }
+            }
+            latest.generation = generation;
+            latest.damage = damage;
+        } else {
+            *latest = SurfaceFrame::blank(generation, size);
+        }
+
+        render(&mut latest);
+        true
+    }
+
     #[must_use]
     pub fn load(&self) -> SurfaceLease<'_> {
         SurfaceLease {
@@ -236,6 +272,30 @@ impl SurfaceStore {
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         }
+    }
+}
+
+fn apply_scroll(frame: &mut SurfaceFrame, top: usize, bottom: usize, delta: i32) {
+    let rows = frame.size.rows();
+    let columns = frame.size.columns();
+    if top >= bottom || bottom > rows || delta == 0 {
+        return;
+    }
+
+    let height = bottom - top;
+    let distance = usize::try_from(delta.unsigned_abs())
+        .unwrap_or(usize::MAX)
+        .min(height);
+    let cells = &mut frame.cells[top * columns..bottom * columns];
+    let cell_distance = distance * columns;
+    let cell_count = cells.len();
+
+    if delta < 0 {
+        cells.rotate_left(cell_distance);
+        cells[cell_count - cell_distance..].fill(Cell::default());
+    } else {
+        cells.rotate_right(cell_distance);
+        cells[..cell_distance].fill(Cell::default());
     }
 }
 
