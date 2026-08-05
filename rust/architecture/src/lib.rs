@@ -20,6 +20,7 @@ pub fn locked_dependency_policy() -> Graph {
             &[
                 "ghosthub-config",
                 "ghosthub-host",
+                "ghosthub-input",
                 "ghosthub-model",
                 "ghosthub-session",
                 "ghosthub-store",
@@ -42,6 +43,7 @@ pub fn locked_dependency_policy() -> Graph {
             "ghosthub-host",
             &["ghosthub-config", "ghosthub-model", "ghosthub-session"][..],
         ),
+        ("ghosthub-input", &[][..]),
         ("ghosthub-model", &[][..]),
         (
             "ghosthub-session",
@@ -53,6 +55,7 @@ pub fn locked_dependency_policy() -> Graph {
             "ghosthub-terminal",
             &[
                 "ghosthub-config",
+                "ghosthub-input",
                 "ghosthub-model",
                 "ghosthub-session",
                 "ghosthub-surface",
@@ -67,6 +70,7 @@ pub fn locked_dependency_policy() -> Graph {
             &[
                 "ghosthub-config",
                 "ghosthub-host",
+                "ghosthub-input",
                 "ghosthub-model",
                 "ghosthub-session",
                 "ghosthub-store",
