@@ -6,6 +6,7 @@ import {
   writeCache,
   type Release,
 } from '../lib/github';
+import { copyInstallCommand } from '../lib/install';
 
 const API = `https://api.github.com/repos/${GITHUB_REPO}`;
 const HOUR_MS = 60 * 60 * 1000;
@@ -113,6 +114,42 @@ function setupImageLightbox(): void {
   });
 }
 
+function setupInstallCommands(): void {
+  for (const root of document.querySelectorAll('[data-install-command]')) {
+    if (!(root instanceof HTMLElement)) continue;
+    const button = root.querySelector('[data-install-copy]');
+    const status = root.querySelector('[data-install-status]');
+    const command = root.dataset['command'];
+    if (
+      !(button instanceof HTMLButtonElement)
+      || !(status instanceof HTMLElement)
+      || !command
+    ) {
+      continue;
+    }
+
+    let resetTimer: number | undefined;
+    button.addEventListener('click', async () => {
+      const writeText = navigator.clipboard?.writeText.bind(
+        navigator.clipboard,
+      );
+      const result = writeText
+        ? await copyInstallCommand(writeText, command)
+        : 'failed';
+      status.textContent = result === 'copied'
+        ? 'Copied'
+        : 'Copy failed — select the command to copy';
+      window.clearTimeout(resetTimer);
+      if (result === 'copied') {
+        resetTimer = window.setTimeout(() => {
+          status.textContent = '';
+        }, 2_000);
+      }
+    });
+  }
+}
+
 setupImageLightbox();
+setupInstallCommands();
 renderRepoFacts().catch(ignoreNetworkFailure);
 renderDownload().catch(ignoreNetworkFailure);

@@ -1,7 +1,8 @@
 ---
 import { Image } from 'astro:assets';
-import { GITHUB_URL, RELEASES_URL } from '../config';
+import { GITHUB_URL } from '../config';
 import AppIcon from './AppIcon.astro';
+import InstallCommand from './InstallCommand.astro';
 import ZoomableImage from './ZoomableImage.astro';
 import hero from '../assets/hero.png';
 
@@ -22,9 +23,8 @@ const heroAlt =
       worktree-bound sessions from Git branches and GitHub pull requests, with
       keepalives and automatic reconnect.
     </p>
-    <div class="actions">
-      <a class="cta" data-download href={RELEASES_URL}>Download for Apple Silicon</a>
-      <a class="learn" href="/guide/">Learn how it works</a>
+    <div class="install-action">
+      <InstallCommand />
     </div>
     <p class="meta">
       <span data-version></span>macOS 26+ &middot; Apple Silicon
@@ -95,42 +95,8 @@ const heroAlt =
     margin: 0.9rem auto 1.6rem;
   }
 
-  .actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.85rem;
-    justify-content: center;
-  }
-
-  .cta {
-    font-family: var(--font-mono);
-    font-weight: 700;
-    background: var(--accent);
-    color: #06222e;
-    padding: 0.8rem 1.5rem;
-    border-radius: 10px;
-    box-shadow: 0 0 32px color-mix(in srgb, var(--accent) 30%, transparent);
-    transition: transform 0.15s, box-shadow 0.15s;
-  }
-
-  .cta:hover {
-    transform: translateY(-1px);
-    box-shadow: 0 0 44px color-mix(in srgb, var(--accent) 45%, transparent);
-  }
-
-  .learn {
-    font-family: var(--font-mono);
-    padding: 0.8rem 1.5rem;
-    border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--line));
-    border-radius: 10px;
-    color: var(--accent);
-    transition: color 0.15s, border-color 0.15s, background 0.15s;
-  }
-
-  .learn:hover {
-    background: color-mix(in srgb, var(--accent) 8%, transparent);
-    color: var(--text);
-    border-color: var(--accent);
+  .install-action {
+    max-width: 100%;
   }
 
   .meta {
@@ -174,7 +140,7 @@ const heroAlt =
     .lockup,
     h1,
     .sub,
-    .actions,
+    .install-action,
     .meta,
     .window {
       animation: rise 0.55s cubic-bezier(0.2, 0.7, 0.3, 1) both;
@@ -188,7 +154,7 @@ const heroAlt =
       animation-delay: 0.14s;
     }
 
-    .actions {
+    .install-action {
       animation-delay: 0.2s;
     }
 

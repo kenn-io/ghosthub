@@ -1,0 +1,132 @@
+---
+import { HOMEBREW_INSTALL_COMMAND, RELEASES_URL } from '../config';
+---
+
+<div
+  class="install-command"
+  data-install-command
+  data-command={HOMEBREW_INSTALL_COMMAND}
+>
+  <div class="bubble">
+    <span class="prompt" aria-hidden="true">$</span>
+    <code>{HOMEBREW_INSTALL_COMMAND}</code>
+    <button
+      type="button"
+      data-install-copy
+      aria-label="Copy Homebrew install command"
+      title="Copy Homebrew install command"
+    >
+      <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+        <rect x="5" y="5" width="8" height="8" rx="1"></rect>
+        <path d="M3 11H2a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1h8a1 1 0 0 1 1 1v1"></path>
+      </svg>
+    </button>
+  </div>
+  <span class="status" data-install-status aria-live="polite"></span>
+  <a class="download" data-download href={RELEASES_URL}>
+    or download the DMG <span aria-hidden="true">&rarr;</span>
+  </a>
+</div>
+
+<style>
+  .install-command {
+    display: flex;
+    max-width: 100%;
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .bubble {
+    display: grid;
+    width: fit-content;
+    max-width: 100%;
+    grid-template-columns: auto minmax(0, auto) auto;
+    align-items: stretch;
+    overflow: hidden;
+    border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--line));
+    border-radius: 9px;
+    background: linear-gradient(180deg, #151a20, #0e1217);
+    box-shadow:
+      0 12px 28px rgb(0 0 0 / 0.4),
+      0 0 28px color-mix(in srgb, var(--accent) 7%, transparent);
+    color: var(--text);
+    font-family: var(--font-mono);
+  }
+
+  .prompt,
+  code {
+    display: flex;
+    align-items: center;
+    padding-block: 0.68rem;
+  }
+
+  .prompt {
+    padding-left: 0.85rem;
+    color: var(--accent);
+    font-weight: 700;
+  }
+
+  code {
+    min-width: 0;
+    padding-inline: 0.55rem 0.8rem;
+    font: inherit;
+    font-size: clamp(0.72rem, 2.4vw, 0.86rem);
+    overflow-wrap: anywhere;
+    text-align: left;
+  }
+
+  button {
+    display: grid;
+    width: 2.75rem;
+    min-height: 2.75rem;
+    padding: 0;
+    place-items: center;
+    border: 0;
+    border-left: 1px solid var(--line);
+    background: color-mix(in srgb, var(--bg-raise) 84%, var(--accent) 3%);
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+
+  button:hover {
+    background: color-mix(in srgb, var(--accent) 12%, var(--bg-raise));
+    color: var(--accent);
+  }
+
+  button svg {
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.35;
+  }
+
+  .status {
+    min-height: 1.45rem;
+    color: var(--text-dim);
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    line-height: 1.45rem;
+  }
+
+  .download {
+    color: var(--text-faint);
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    text-decoration: underline;
+    text-decoration-color: color-mix(in srgb, var(--text-faint) 55%, transparent);
+    text-underline-offset: 0.2em;
+    transition: color 0.15s;
+  }
+
+  .download:hover {
+    color: var(--text-dim);
+  }
+
+  @media (max-width: 390px) {
+    .bubble {
+      width: 100%;
+    }
+  }
+</style>
