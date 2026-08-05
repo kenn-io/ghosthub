@@ -14,6 +14,11 @@ use surface::{
     Cell as SurfaceCell, CellStyle, Cursor, Damage, GridSize, Rgb, SurfaceFrame, SurfaceStore,
 };
 
+mod windows_job;
+mod worker;
+
+pub use worker::{TerminalEvent, TerminalWorker, WorkerError};
+
 #[derive(Clone, Debug, Default)]
 struct EventCollector {
     pending: Arc<Mutex<Vec<Event>>>,
@@ -182,6 +187,11 @@ impl TerminalEngine {
     #[must_use]
     pub fn surface(&self) -> &SurfaceStore {
         &self.surface
+    }
+
+    #[must_use]
+    pub fn surface_handle(&self) -> Arc<SurfaceStore> {
+        Arc::clone(&self.surface)
     }
 
     #[must_use]
