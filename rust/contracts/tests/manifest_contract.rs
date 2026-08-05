@@ -134,6 +134,20 @@ fn rejects_unsupported_fixture_schema() {
 }
 
 #[test]
+fn rejects_fixtures_without_a_platform() {
+    let fixture = r#"{"id":"paths.nowhere.v1","suite":"paths","schema_version":1,"platforms":[],"path":"nowhere.json"}"#;
+    let root = ContractRoot::new(
+        &format!(r#"{{"schema_version":1,"fixtures":[{fixture}]}}"#),
+        &[("nowhere.json", "{}")],
+    );
+
+    let error = Manifest::load(root.path()).expect_err("empty platforms must fail");
+
+    assert_eq!(error.kind(), ErrorKind::MissingPlatforms);
+    assert_eq!(error.subject(), "paths.nowhere.v1");
+}
+
+#[test]
 fn rejects_fixture_paths_outside_the_contract_root() {
     let parent = ContractRoot::new(r#"{"schema_version":1,"fixtures":[]}"#, &[]);
     let escaped = parent.path().join("escaped.json");
@@ -152,6 +166,31 @@ fn rejects_fixture_paths_outside_the_contract_root() {
 
     assert_eq!(error.kind(), ErrorKind::InvalidFixturePath);
     assert_eq!(error.subject(), "paths.escape.v1");
+}
+
+#[cfg(unix)]
+#[test]
+fn rejects_fixture_symlinks_outside_the_contract_root() {
+    use std::os::unix::fs::symlink;
+
+    let outside = ContractRoot::new(r#"{"schema_version":1,"fixtures":[]}"#, &[]);
+    let escaped = outside.path().join("escaped.json");
+    fs::write(&escaped, "{}").expect("write escaped fixture");
+    let root = ContractRoot::new(
+        &manifest(&[entry(
+            "paths.symlink-escape.v1",
+            "paths",
+            "posix",
+            "linked.json",
+        )]),
+        &[],
+    );
+    symlink(&escaped, root.path().join("linked.json")).expect("link escaped fixture");
+
+    let error = Manifest::load(root.path()).expect_err("symlink escape must fail");
+
+    assert_eq!(error.kind(), ErrorKind::InvalidFixturePath);
+    assert_eq!(error.subject(), "paths.symlink-escape.v1");
 }
 
 #[test]
@@ -204,6 +243,9 @@ fn ignores_other_suites_and_platforms() {
         .consume("paths.posix.v1")
         .expect("consume applicable fixture");
 
-    assert_eq!(path, root.path().join("posix.json"));
+    assert_eq!(
+        path,
+        fs::canonicalize(root.path().join("posix.json")).expect("canonical fixture path")
+    );
     run.finish().expect("all applicable fixtures consumed");
 }
