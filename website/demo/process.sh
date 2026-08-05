@@ -1,6 +1,49 @@
 # shellcheck shell=bash
 # Track only the demo process we launched. Process-table regex searches are
 # unsafe because custom scratch paths can contain regex metacharacters.
+demo_acquire_process_record_lock() {
+  local record="$1" lock="$1.lock" attempt
+  if [[ -L "$lock" ]]; then
+    echo "error: invalid demo PID record lock: $lock" >&2
+    return 1
+  fi
+  for attempt in $(seq 1 200); do
+    if /usr/bin/shlock -f "$lock" -p "$$"; then
+      return 0
+    fi
+    sleep 0.05
+  done
+  echo "error: timed out waiting for demo PID record lock: $lock" >&2
+  return 1
+}
+
+demo_release_process_record_lock() {
+  local record="$1" lock="$1.lock" owner
+  if [[ ! -f "$lock" || -L "$lock" ]]; then
+    echo "error: invalid demo PID record lock: $lock" >&2
+    return 1
+  fi
+  owner="$(cat "$lock")"
+  if [[ "$owner" != "$$" ]]; then
+    echo "error: demo PID record lock belongs to process $owner: $lock" >&2
+    return 1
+  fi
+  rm -f "$lock"
+}
+
+demo_with_process_record_lock() {
+  local record="$1" status
+  shift
+  demo_acquire_process_record_lock "$record" || return 1
+  if "$@"; then
+    status=0
+  else
+    status=$?
+  fi
+  demo_release_process_record_lock "$record" || return 1
+  return "$status"
+}
+
 demo_pid_value() {
   local record="$1" pid
   if [[ ! -f "$record" || -L "$record" ]]; then
@@ -51,7 +94,7 @@ demo_require_recorded_process() {
   printf '%s\n' "$pid"
 }
 
-demo_record_process() {
+_demo_record_process() {
   local pid="$1" record="$2" expected="$3" tmp actual
   expected="$(realpath "$expected" 2>/dev/null)" || return 1
   actual=""
@@ -74,7 +117,31 @@ demo_record_process() {
   mv -f "$tmp" "$record"
 }
 
-demo_stop_recorded_process() {
+demo_record_process() {
+  local pid="$1" record="$2" expected="$3"
+  demo_with_process_record_lock \
+    "$record" _demo_record_process "$pid" "$record" "$expected"
+}
+
+_demo_remove_matching_process_record() {
+  local owner="$1" published="$2"
+  [[ -e "$published" || -L "$published" ]] || return 0
+  if [[ ! -f "$owner" || -L "$owner"
+        || ! -f "$published" || -L "$published" ]]; then
+    echo "error: invalid demo PID record link; preserving $published" >&2
+    return 1
+  fi
+  [[ "$owner" -ef "$published" ]] || return 0
+  rm -f "$published"
+}
+
+demo_remove_matching_process_record() {
+  local owner="$1" published="$2"
+  demo_with_process_record_lock \
+    "$published" _demo_remove_matching_process_record "$owner" "$published"
+}
+
+_demo_stop_recorded_process() {
   local record="$1" expected="$2" pid actual
   [[ -e "$record" || -L "$record" ]] || return 0
   expected="$(realpath "$expected" 2>/dev/null)" || {
@@ -104,4 +171,28 @@ demo_stop_recorded_process() {
   done
   echo "error: demo process $pid did not exit; preserving PID record and scratch" >&2
   return 1
+}
+
+demo_stop_recorded_process() {
+  local record="$1" expected="$2"
+  demo_with_process_record_lock \
+    "$record" _demo_stop_recorded_process "$record" "$expected"
+}
+
+demo_stop_retained_launches() {
+  local scratch="$1" expected="$2" launch_dir record
+  local launch_dirs=("$scratch"/.launch.*)
+  for launch_dir in "${launch_dirs[@]}"; do
+    [[ -e "$launch_dir" || -L "$launch_dir" ]] || continue
+    if [[ ! -d "$launch_dir" || -L "$launch_dir" ]]; then
+      echo "error: invalid retained launch directory: $launch_dir" >&2
+      return 1
+    fi
+    record="$launch_dir/app.pid"
+    demo_stop_recorded_process "$record" "$expected" || return 1
+    if ! rmdir "$launch_dir"; then
+      echo "error: retained launch state remains in $launch_dir; preserving scratch" >&2
+      return 1
+    fi
+  done
 }

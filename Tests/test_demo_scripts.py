@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import os
+import plistlib
 import pwd
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -462,6 +464,73 @@ def test_teardown_preserves_scratch_when_docker_cleanup_fails(tmp_path: Path) ->
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="demo scripts target macOS")
+def test_teardown_recovers_retained_live_launch(tmp_path: Path) -> None:
+    scratch = tmp_path / "scratch"
+    executable = scratch / "app/Ghosthub.app/Contents/MacOS/Ghosthub"
+    executable.parent.mkdir(parents=True)
+    scratch.chmod(0o700)
+    (scratch / ".ghosthub-demo-scratch").touch()
+    state = scratch / "retained-pid"
+    source = tmp_path / "retained.c"
+    source.write_text(
+        "#include <stdio.h>\n"
+        "#include <stdlib.h>\n"
+        "#include <unistd.h>\n"
+        "int main(int argc, char **argv) {\n"
+        "  int ready[2];\n"
+        "  if (argc != 2 || pipe(ready) != 0) return 1;\n"
+        "  pid_t pid = fork();\n"
+        "  if (pid < 0) return 1;\n"
+        "  if (pid > 0) {\n"
+        "    char byte;\n"
+        "    close(ready[1]);\n"
+        "    int result = read(ready[0], &byte, 1) == 1 ? 0 : 1;\n"
+        "    close(ready[0]);\n"
+        "    return result;\n"
+        "  }\n"
+        "  close(ready[0]);\n"
+        "  if (setsid() < 0) _exit(1);\n"
+        "  FILE *f = fopen(argv[1], \"w\");\n"
+        "  if (!f) _exit(1);\n"
+        "  fprintf(f, \"%d\\n\", getpid());\n"
+        "  fclose(f);\n"
+        "  if (write(ready[1], \"x\", 1) != 1) _exit(1);\n"
+        "  close(ready[1]);\n"
+        "  sleep(120);\n"
+        "  return 0;\n"
+        "}\n"
+    )
+    subprocess.run(["cc", "-o", str(executable), str(source)], check=True)
+    subprocess.run([str(executable), str(state)], check=True)
+    child_pid = int(state.read_text().strip())
+    launch_dir = scratch / ".launch.retained"
+    launch_dir.mkdir()
+    (launch_dir / "app.pid").write_text(f"{child_pid}\n")
+
+    try:
+        result = subprocess.run(
+            ["bash", str(DEMO / "teardown.sh")],
+            cwd=ROOT,
+            env={**os.environ, "GHOSTHUB_DEMO_SCRATCH": str(scratch)},
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert not scratch.exists()
+        with pytest.raises(ProcessLookupError):
+            os.kill(child_pid, 0)
+    finally:
+        try:
+            os.kill(child_pid, 0)
+        except ProcessLookupError:
+            pass
+        else:
+            os.kill(child_pid, signal.SIGKILL)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="demo scripts target macOS")
 def test_teardown_preserves_scratch_when_tmux_shutdown_is_unconfirmed(
     tmp_path: Path,
 ) -> None:
@@ -651,21 +720,67 @@ def test_recorded_process_uses_literal_executable_path(tmp_path: Path) -> None:
     assert not record.exists()
 
 
-@pytest.mark.skipif(sys.platform != "darwin", reason="process path coverage targets macOS")
-def test_run_reaps_app_when_pid_recording_fails(tmp_path: Path) -> None:
-    scratch = tmp_path / "scratch"
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    fake_mktemp = bin_dir / "mktemp"
-    fake_mktemp.write_text(
-        "#!/usr/bin/env bash\n"
-        "for _ in {1..500}; do\n"
-        "  [[ -f $CHILD_STATE ]] && exit 1\n"
-        "  /bin/sleep 0.01\n"
-        "done\n"
-        "exit 2\n"
+def test_published_process_record_cleanup_requires_same_inode(tmp_path: Path) -> None:
+    owner = tmp_path / "launch.pid"
+    published = tmp_path / "app.pid"
+    owner.write_text("123\n")
+    os.link(owner, published)
+    env = {
+        **os.environ,
+        "HELPER": str(DEMO / "process.sh"),
+        "OWNER": str(owner),
+        "PUBLISHED": str(published),
+    }
+
+    result = run_bash(
+        'set -e; source "$HELPER"; '
+        'demo_remove_matching_process_record "$OWNER" "$PUBLISHED"; '
+        '[[ ! -e "$PUBLISHED" ]]; '
+        'printf "123\\n" > "$PUBLISHED"; '
+        'demo_remove_matching_process_record "$OWNER" "$PUBLISHED"; '
+        '[[ -e "$PUBLISHED" ]]',
+        env=env,
     )
-    fake_mktemp.chmod(0o755)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_published_process_record_cleanup_waits_for_concurrent_replacement(
+    tmp_path: Path,
+) -> None:
+    owner = tmp_path / "launch.pid"
+    published = tmp_path / "app.pid"
+    cleanup_started = tmp_path / "cleanup-started"
+    owner.write_text("123\n")
+    os.link(owner, published)
+    env = {
+        **os.environ,
+        "HELPER": str(DEMO / "process.sh"),
+        "OWNER": str(owner),
+        "PUBLISHED": str(published),
+        "CLEANUP_STARTED": str(cleanup_started),
+    }
+    result = run_bash(
+        'set -e; source "$HELPER"; '
+        'demo_acquire_process_record_lock "$PUBLISHED"; '
+        'trap \'rm -f "$PUBLISHED.lock"\' EXIT; '
+        '(touch "$CLEANUP_STARTED"; '
+        'demo_remove_matching_process_record "$OWNER" "$PUBLISHED") & '
+        'cleanup_pid=$!; '
+        'while [[ ! -e "$CLEANUP_STARTED" ]]; do sleep 0.01; done; '
+        'sleep 0.05; kill -0 "$cleanup_pid"; '
+        'rm -f "$PUBLISHED"; printf "456\\n" > "$PUBLISHED"; '
+        'demo_release_process_record_lock "$PUBLISHED"; '
+        'wait "$cleanup_pid"; trap - EXIT; '
+        '[[ "$(cat "$PUBLISHED")" == 456 ]]',
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def stage_launch_test_app(tmp_path: Path) -> tuple[Path, Path, Path]:
+    scratch = tmp_path / "scratch"
     executable = scratch / "app/Ghosthub.app/Contents/MacOS/Ghosthub"
     executable.parent.mkdir(parents=True)
     home = scratch / "home"
@@ -679,17 +794,32 @@ def test_run_reaps_app_when_pid_recording_fails(tmp_path: Path) -> None:
     source.write_text(
         "#include <stdio.h>\n"
         "#include <stdlib.h>\n"
+        "#include <string.h>\n"
         "#include <unistd.h>\n"
         "int main(void) {\n"
-        "  FILE *f = fopen(getenv(\"CHILD_STATE\"), \"w\");\n"
-        "  fprintf(f, \"%d\\n%s\\n%s\\n\", getpid(), getenv(\"SHELL\"),\n"
-        "          getenv(\"ZDOTDIR\"));\n"
+        "  char path[4096];\n"
+        "  snprintf(path, sizeof(path), \"%s/child-state\",\n"
+        "           getenv(\"GHOSTHUB_DEMO_SCRATCH\"));\n"
+        "  FILE *f = fopen(path, \"w\");\n"
+        "  const char *ssh_auth_sock = getenv(\"SSH_AUTH_SOCK\");\n"
+        "  fprintf(f, \"%d\\n%s\\n%s\\n%s\\n\", getpid(), getenv(\"SHELL\"),\n"
+        "          getenv(\"ZDOTDIR\"), ssh_auth_sock ? ssh_auth_sock : \"\");\n"
         "  fclose(f);\n"
-        "  sleep(30);\n"
+        "  sleep(120);\n"
         "  return 0;\n"
         "}\n"
     )
     subprocess.run(["cc", "-o", str(executable), str(source)], check=True)
+    with (executable.parents[1] / "Info.plist").open("wb") as plist:
+        plistlib.dump(
+            {
+                "CFBundleExecutable": executable.name,
+                "CFBundleIdentifier": "com.ghosthub.demo.cleanup-test",
+                "CFBundleName": "Ghosthub Demo Cleanup Test",
+                "CFBundlePackageType": "APPL",
+            },
+            plist,
+        )
     dylib_source = tmp_path / "demohost.c"
     dylib_source.write_text("void ghosthub_demo_test(void) {}\n")
     subprocess.run(
@@ -702,12 +832,53 @@ def test_run_reaps_app_when_pid_recording_fails(tmp_path: Path) -> None:
         ],
         check=True,
     )
+    return scratch, executable, state
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="demo launch targets macOS")
+def test_launch_helper_reaps_app_when_pid_record_cannot_be_published(
+    tmp_path: Path,
+) -> None:
+    scratch, executable, _ = stage_launch_test_app(tmp_path)
+    app = executable.parents[2]
+    ssh_auth_sock = str(tmp_path / "agent.sock")
+
+    result = subprocess.run(
+        [
+            "/usr/bin/swift",
+            str(DEMO / "launch.swift"),
+            str(app),
+            str(executable),
+            str(scratch / "launch-owner.pid"),
+            str(scratch / "missing/app.pid"),
+            "00",
+            str(DEMO),
+            str(scratch),
+            ssh_auth_sock,
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    child_pid = (scratch / "launch-owner.pid").read_text().strip()
+    with pytest.raises(ProcessLookupError):
+        os.kill(int(child_pid), 0)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="demo launch targets macOS")
+def test_run_records_exact_launchservices_pid_and_forwards_ssh_agent(
+    tmp_path: Path,
+) -> None:
+    scratch, executable, state = stage_launch_test_app(tmp_path)
+    ssh_auth_sock = str(tmp_path / "agent.sock")
     env = {
         **os.environ,
-        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
         "SHELL": "/opt/homebrew/bin/fish",
         "ZDOTDIR": "/tmp/personal-zdotdir",
-        "CHILD_STATE": str(state),
+        "SSH_AUTH_SOCK": ssh_auth_sock,
         "GHOSTHUB_DEMO_SCRATCH": str(scratch),
     }
 
@@ -720,13 +891,27 @@ def test_run_reaps_app_when_pid_recording_fails(tmp_path: Path) -> None:
         check=False,
     )
 
-    assert result.returncode != 0
-    child_pid, child_shell, child_zdotdir = state.read_text().splitlines()
-    assert child_shell == "/bin/zsh"
-    assert child_zdotdir == str(home)
-    with pytest.raises(ProcessLookupError):
+    try:
+        assert result.returncode == 0, result.stderr
+        child_pid, child_shell, child_zdotdir, child_ssh_auth_sock = (
+            state.read_text().splitlines()
+        )
+        assert (scratch / "app.pid").read_text().strip() == child_pid
+        assert child_shell == "/bin/zsh"
+        assert child_zdotdir == str(scratch / "home")
+        assert child_ssh_auth_sock == ssh_auth_sock
         os.kill(int(child_pid), 0)
-    assert not (scratch / "app.pid").exists()
+    finally:
+        cleanup = run_bash(
+            'source "$HELPER"; demo_stop_recorded_process "$RECORD" "$EXECUTABLE"',
+            env={
+                **os.environ,
+                "HELPER": str(DEMO / "process.sh"),
+                "RECORD": str(scratch / "app.pid"),
+                "EXECUTABLE": str(executable),
+            },
+        )
+        assert cleanup.returncode == 0, cleanup.stderr
 
 
 @pytest.mark.parametrize(

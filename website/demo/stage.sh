@@ -8,6 +8,7 @@ demo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # The demo lives at <repo>/website/demo; default the clone source and the
 # app build to this repo so the workflow works from any checkout.
 repo_root="$(cd "$demo_root/../.." && pwd)"
+release_version="$(tr -d '[:space:]' < "$repo_root/RELEASE_VERSION")"
 # Short path required: tmux unix sockets cap out near 104 characters.
 scratch="${GHOSTHUB_DEMO_SCRATCH:-/tmp/ghosthub-demo}"
 
@@ -52,6 +53,8 @@ touch "$sentinel"
 # so teardown can still recover through the original executable and socket.
 # shellcheck source=SCRIPTDIR/process.sh
 source "$demo_root/process.sh"
+demo_stop_retained_launches \
+  "$scratch" "$scratch/app/Ghosthub.app/Contents/MacOS/Ghosthub"
 demo_stop_recorded_process \
   "$scratch/app.pid" "$scratch/app/Ghosthub.app/Contents/MacOS/Ghosthub"
 # The staged bundle uses this demo-only defaults domain. Clear it between
@@ -239,7 +242,7 @@ new_session scratch "$scratch/repos/msgvault" \
 new_session docbank-export "$scratch" \
   "clear; echo 'exported 4,812 threads (2.1 GiB) in 96s'; echo done."
 new_session release-watch "$scratch/repos/ghosthub" \
-  "clear; printf 'release v0.5.0\\n\\n  ✓ build\\n  ✓ swift tests\\n  ✓ notarization\\n  ● publish\\n'"
+  "clear; printf 'release v${release_version}\\n\\n  ✓ build\\n  ✓ swift tests\\n  ✓ notarization\\n  ● publish\\n'"
 new_session test-matrix "$scratch/repos/agentsview" \
   "clear; printf 'test matrix\\n\\nmacOS 26 arm64     ✓ 680 passed\\nUbuntu 24.04       ✓ 149 passed\\nSSH integration    ✓  42 passed\\n'"
 
@@ -254,7 +257,7 @@ fi
 app_copy="$scratch/app/Ghosthub.app"
 rm -rf "$scratch/app"
 mkdir -p "$scratch/app"
-cp -R "$app_src" "$app_copy"
+cp -RX "$app_src" "$app_copy"
 # The packaged app pins kwt to Contents/Helpers/kwt (no PATH fallback), so
 # the faux inventory has to be installed inside the bundle. Helpers/ is
 # absent when the bundle was built without a packaged kwt.
@@ -269,6 +272,12 @@ chmod +x "$app_copy/Contents/Helpers/kwt"
 # Re-sign ad hoc without the hardened runtime so DYLD_INSERT_LIBRARIES (the
 # hostname override in run.sh) takes effect.
 codesign --force --deep -s - "$app_copy" 2>/dev/null
+# Files produced from toolchains downloaded by a browser can inherit macOS
+# provenance metadata even when cp omits extended attributes. The isolated,
+# ad-hoc-signed demo copy is not a downloaded release artifact, so remove that
+# metadata after signing to keep Gatekeeper from terminating the injected
+# capture process before its first window opens.
+xattr -dr com.apple.provenance "$app_copy" 2>/dev/null || true
 
 cc -dynamiclib -fobjc-arc -framework AppKit -framework ImageIO \
   -o "$scratch/libdemohost.dylib" "$demo_root/assets/demohost.m"

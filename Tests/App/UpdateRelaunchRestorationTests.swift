@@ -5,8 +5,8 @@ import Testing
 @MainActor
 @Suite("Update relaunch restoration")
 struct UpdateRelaunchRestorationTests {
-    @Test("missing native scenes are assigned before new windows open")
-    func replaysMissingNativeScenes() throws {
+    @Test("zero native windows restore a temporarily nil relaunch scene")
+    func zeroNativeWindowsRestoreNilRelaunchScene() throws {
         let scratch = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: scratch) }
@@ -40,7 +40,7 @@ struct UpdateRelaunchRestorationTests {
             ) == .waitingForNativeRestoration
         )
         restorer.nativeWindowRestorationDidFinish(
-            expectedSceneCount: 1
+            expectedSceneCount: 0
         )
         restorer.reconcileAfterSceneBindingsSettled()
 

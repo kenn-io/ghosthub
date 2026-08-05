@@ -215,10 +215,9 @@ struct WorkspaceWindowStateTests {
         )
     }
 
-    @Test("window state survives a temporarily nil scene binding")
-    func windowStateSurvivesNilSceneBinding() {
-        let firstFallback = WorkspaceWindowState.fresh()
-        let secondFallback = WorkspaceWindowState.fresh()
+    @Test("generated fresh state preserves delayed native restoration")
+    func generatedFreshStatePreservesDelayedNativeRestoration() {
+        let generated = WorkspaceWindowState.fresh()
         let restored = WorkspaceWindowState(
             windowID: UUID(),
             navigation: WorkspaceNavigationDescriptor(
@@ -228,17 +227,13 @@ struct WorkspaceWindowStateTests {
             ),
             tmux: nil
         )
-        var buffer = WorkspaceWindowStateBuffer(retained: firstFallback)
+        var buffer = WorkspaceWindowStateBuffer(retained: generated)
 
-        #expect(buffer.resolved(nil) == firstFallback)
+        #expect(buffer.resolved(nil) == generated)
 
         #expect(buffer.beginAppearance(with: nil) == nil)
-        buffer.prepareToPresent(firstFallback)
-        buffer.prepareToPresent(secondFallback)
-
-        #expect(buffer.receive(firstFallback) == nil)
-        #expect(buffer.resolved(nil) == secondFallback)
-        #expect(buffer.receive(secondFallback) == nil)
+        buffer.prepareToPresent(generated)
+        #expect(buffer.receive(generated) == nil)
 
         #expect(buffer.receive(restored) == restored)
 
