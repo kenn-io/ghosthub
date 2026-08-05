@@ -421,8 +421,8 @@ repositories.
 | `Sources/TmuxControl/` | Small native tmux/SSH attachment command model |
 | `Sources/Workspace/` | Pure workspace, host, project, worktree, and session models |
 | `Sources/Persistence/` | GRDB repositories for app-local state |
-| `rust/` | Planned Rust workspace for native Windows and Linux applications |
-| `contracts/` | Planned language-neutral behavioral fixtures consumed by Swift and Rust |
+| `rust/` | Rust workspace for native Windows and Linux applications |
+| `contracts/` | Rust-owned language-neutral behavioral fixtures; future Swift consumption is separately authorized |
 | `docs/rust-port.md` | Locked Rust-port architecture, gates, and delivery order |
 | `tools/` | Python bootstrap and packaging automation |
 | `Tests/` | Swift and Python tests |
