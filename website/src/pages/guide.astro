@@ -1,6 +1,7 @@
 ---
 import { Image } from 'astro:assets';
 import SiteLayout from '../layouts/SiteLayout.astro';
+import InstallCommand from '../components/InstallCommand.astro';
 import ZoomableImage from '../components/ZoomableImage.astro';
 import commandCenter from '../assets/guide-command-center.png';
 import hosts from '../assets/guide-hosts.png';
@@ -56,7 +57,7 @@ const imageAlt = {
         <span>macOS 26+</span>
         <span>tmux 3.2+</span>
       </div>
-      <a class="download" data-download href={RELEASES_URL}>Download Ghosthub</a>
+      <InstallCommand />
     </div>
   </section>
 
@@ -530,7 +531,6 @@ const imageAlt = {
     padding: 0.3rem 0.7rem;
   }
 
-  .download,
   .finish a {
     display: inline-block;
     border-radius: 10px;
