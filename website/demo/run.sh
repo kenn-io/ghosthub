@@ -28,12 +28,17 @@ demo_stop_retained_launches "$scratch" "$bin"
 demo_stop_recorded_process "$pid_record" "$bin"
 launch_dir="$(mktemp -d "$scratch/.launch.XXXXXX")"
 launch_record="$launch_dir/app.pid"
+publication_lock_held=""
 
 # Install cleanup before LaunchServices can create the application. launch.swift
 # either publishes its exact NSRunningApplication PID or terminates it itself.
 cleanup_launched_app() {
   local status=$?
   trap - EXIT HUP INT TERM
+  if [[ -n "$publication_lock_held" ]]; then
+    demo_release_process_record_lock "$pid_record" || status=1
+    publication_lock_held=""
+  fi
   if [[ -e "$launch_record" || -L "$launch_record" ]]; then
     demo_remove_matching_process_record \
       "$launch_record" "$pid_record" || status=1
@@ -47,9 +52,13 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+demo_acquire_process_record_lock "$pid_record"
+publication_lock_held=1
 /usr/bin/swift "$demo_root/launch.swift" \
   "$app" "$bin" "$launch_record" "$pid_record" "$hosts_hex" \
   "$demo_root" "$scratch" "${SSH_AUTH_SOCK:-}"
+demo_release_process_record_lock "$pid_record"
+publication_lock_held=""
 demo_pid="$(demo_require_recorded_process "$launch_record" "$bin")"
 published_pid="$(demo_require_recorded_process "$pid_record" "$bin")"
 [[ "$published_pid" == "$demo_pid" ]] || {

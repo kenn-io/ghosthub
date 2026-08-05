@@ -745,6 +745,40 @@ def test_published_process_record_cleanup_requires_same_inode(tmp_path: Path) ->
     assert result.returncode == 0, result.stderr
 
 
+def test_published_process_record_cleanup_waits_for_concurrent_replacement(
+    tmp_path: Path,
+) -> None:
+    owner = tmp_path / "launch.pid"
+    published = tmp_path / "app.pid"
+    cleanup_started = tmp_path / "cleanup-started"
+    owner.write_text("123\n")
+    os.link(owner, published)
+    env = {
+        **os.environ,
+        "HELPER": str(DEMO / "process.sh"),
+        "OWNER": str(owner),
+        "PUBLISHED": str(published),
+        "CLEANUP_STARTED": str(cleanup_started),
+    }
+    result = run_bash(
+        'set -e; source "$HELPER"; '
+        'demo_acquire_process_record_lock "$PUBLISHED"; '
+        'trap \'rm -f "$PUBLISHED.lock"\' EXIT; '
+        '(touch "$CLEANUP_STARTED"; '
+        'demo_remove_matching_process_record "$OWNER" "$PUBLISHED") & '
+        'cleanup_pid=$!; '
+        'while [[ ! -e "$CLEANUP_STARTED" ]]; do sleep 0.01; done; '
+        'sleep 0.05; kill -0 "$cleanup_pid"; '
+        'rm -f "$PUBLISHED"; printf "456\\n" > "$PUBLISHED"; '
+        'demo_release_process_record_lock "$PUBLISHED"; '
+        'wait "$cleanup_pid"; trap - EXIT; '
+        '[[ "$(cat "$PUBLISHED")" == 456 ]]',
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
 def stage_launch_test_app(tmp_path: Path) -> tuple[Path, Path, Path]:
     scratch = tmp_path / "scratch"
     executable = scratch / "app/Ghosthub.app/Contents/MacOS/Ghosthub"
