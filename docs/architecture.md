@@ -390,6 +390,12 @@ to sessions using the same exact-target and attach-only reconnect model as
 POSIX tmux hosts. Windows 11 build 22523 or newer is the initial interactive
 target because its ConPTY path supports ordinary OpenSSH TTY allocation.
 
+Psmux 3.3.7 fails the Rust port's `kill-session -t =name` capability proof.
+The experimental Swift path does not issue that mutation: it resolves the exact
+target and fresh identity, then kills by session ID. Its complete conditional
+kill remains subject to isolated end-to-end verification; the Rust substrate
+rejection neither proves a shipped false-success bug nor makes this path dead.
+
 When Ghosthub creates a native Windows session, it passes the SSH account
 process's `PATH` through psmux's session-environment argument so the initial
 PowerShell and later panes resolve the same user-installed tools as a direct
