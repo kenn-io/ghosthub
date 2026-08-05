@@ -208,12 +208,15 @@ cover Kitty levels, modifyOtherKeys, cursor/keypad application modes,
 bracketed paste, AltGr as distinct from ordinary Ctrl+Alt, dead keys, and IME
 composition.
 
-OSC 52 reads are denied by default and never receive clipboard contents merely
-because terminal output requested them. OSC 52 writes follow explicit policy.
-Only a genuine user paste action may acquire clipboard contents for PTY input.
-The Windows WSL MVP denies both OSC 52 reads and writes. Tmux copy mode remains
-usable, but a copy-mode yank does not reach the Windows clipboard in this
-slice.
+Clipboard behavior follows the shipped Swift contract. Local and remote tmux
+surfaces may write the system clipboard through OSC 52 when `clipboard-write`
+allows it, so tmux copy-mode yanks reach Windows as they do on macOS. Remote
+OSC 52 reads always receive an empty response regardless of `clipboard-read`;
+local OSC 52 reads follow the configured local policy. Only a genuine user
+paste action may acquire clipboard contents for PTY input, and the terminal
+worker applies bracketed-paste framing and unsafe-paste confirmation before
+writing it. The Windows WSL MVP includes OSC 52 writes, remote-read denial,
+and explicit clipboard paste rather than treating them as deferred parity.
 
 ### PTY and worker flow
 
@@ -651,9 +654,10 @@ The milestone proves:
 
 Cross-window focus arbitration is deferred until multi-window delivery.
 
-Slice 1 denies OSC 52 reads and writes; tmux copy-mode yanks therefore do not
-reach the Windows clipboard. It excludes IME composition, dead keys, creation,
-kill, kwt inventory, worktree mutation, remote SSH, managed-helper
+Slice 1 includes policy-controlled OSC 52 writes to the Windows clipboard,
+empty responses for remote OSC 52 reads, and explicit clipboard paste with
+bracketed framing. It excludes IME composition, dead keys, creation, kill,
+kwt inventory, worktree mutation, remote SSH, managed-helper
 installation, native Linux product UI, persistence/restoration, multiple
 windows, Console Panel, telemetry, updates, packaging, and acceptance
 screenshots.
