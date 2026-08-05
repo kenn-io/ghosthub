@@ -2033,6 +2033,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ghosthub-host"
+version = "0.0.0"
+dependencies = [
+ "ghosthub-contracts",
+ "ghosthub-model",
+ "ghosthub-session",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "ghosthub-input"
 version = "0.0.0"
 
