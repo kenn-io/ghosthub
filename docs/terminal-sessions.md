@@ -321,6 +321,12 @@ ConPTY `attach-session -E` behavior. Its probe remains rejection evidence, but
 it is not the Rust Windows substrate. The Windows MVP uses real POSIX tmux in
 WSL2 and never degrades to psmux or an app-lifetime session.
 
+That failed proof exercises `kill-session -t =name`. The experimental Swift
+remote-Windows path instead resolves the exact target and fresh identity before
+killing by session ID. Its complete conditional-kill flow remains subject to
+isolated end-to-end psmux verification; the Rust rejection does not by itself
+establish false success in the shipped path or make that path dead code.
+
 The tmux server lives inside WSL2 and cannot inherit a Windows Job Object.
 Ghosthub intentionally puts only the disposable `wsl.exe` ConPTY relay in an
 application-owned `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` job and verifies its
