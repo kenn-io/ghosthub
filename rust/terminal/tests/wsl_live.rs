@@ -5,6 +5,7 @@ use std::process::{Command, Output};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use input::{KeyInput, Modifiers, NamedKey};
 use session::{AttachPlan, SessionIdentity};
 use surface::GridSize;
 use terminal::TerminalWorker;
@@ -123,9 +124,7 @@ fn attach_detach_and_reattach_preserve_the_exact_session() {
     let plan = server.attach_plan(identity.clone());
     let worker = TerminalWorker::attach(&plan, size).expect("attach ordinary WSL tmux client");
     wait_for_client_count(&server, 1);
-    worker
-        .send_bytes(b"echo relay-ready\r".to_vec())
-        .expect("send terminal input");
+    send_command(&worker, "echo relay-ready");
     wait_for_surface_text(&worker, "relay-ready");
     drop(worker);
 
@@ -135,15 +134,22 @@ fn attach_detach_and_reattach_preserve_the_exact_session() {
     let plan = server.attach_plan(identity.clone());
     let worker = TerminalWorker::attach(&plan, size).expect("reattach ordinary WSL tmux client");
     wait_for_client_count(&server, 1);
-    worker
-        .send_bytes(b"echo reattached\r".to_vec())
-        .expect("send terminal input after reattach");
+    send_command(&worker, "echo reattached");
     wait_for_surface_text(&worker, "reattached");
     assert_eq!(
         server.identity(),
         identity,
         "reattach must use the same session"
     );
+}
+
+fn send_command(worker: &TerminalWorker, command: &str) {
+    worker
+        .send_key(KeyInput::text(command, Modifiers::default()))
+        .expect("send terminal text");
+    worker
+        .send_key(KeyInput::named(NamedKey::Enter, Modifiers::default()))
+        .expect("send terminal enter");
 }
 
 fn wait_for_client_count(server: &IsolatedServer, expected: usize) {

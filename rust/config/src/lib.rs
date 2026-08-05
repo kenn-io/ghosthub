@@ -8,6 +8,47 @@ const CONFIG_HOME: &str = "GHOSTHUB_CONFIG_HOME";
 const STATE_HOME: &str = "GHOSTHUB_STATE_HOME";
 const GHOSTHUB_HOME: &str = "GHOSTHUB_HOME";
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct TerminalAppearance {
+    font_family: String,
+    font_size: u16,
+    background: u32,
+    foreground: u32,
+}
+
+impl TerminalAppearance {
+    #[must_use]
+    pub fn font_family(&self) -> &str {
+        &self.font_family
+    }
+
+    #[must_use]
+    pub const fn font_size(&self) -> u16 {
+        self.font_size
+    }
+
+    #[must_use]
+    pub const fn background(&self) -> u32 {
+        self.background
+    }
+
+    #[must_use]
+    pub const fn foreground(&self) -> u32 {
+        self.foreground
+    }
+}
+
+impl Default for TerminalAppearance {
+    fn default() -> Self {
+        Self {
+            font_family: "Cascadia Mono".to_owned(),
+            font_size: 14,
+            background: 0x11_13_18,
+            foreground: 0xee_f0_f4,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "kebab-case")]
 pub enum Platform {

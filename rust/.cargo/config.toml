@@ -3,3 +3,4 @@ test-contracts = "test -p ghosthub-contracts -p ghosthub-config -p ghosthub-host
 test-psmux-live = "test -p ghosthub-session --test psmux_live -- --ignored --nocapture"
 test-wsl-host-live = "test -p ghosthub-host --test wsl_live -- --ignored --nocapture"
 test-wsl-terminal-live = "test -p ghosthub-terminal --test wsl_live -- --ignored --nocapture"
+test-wsl-workspace-live = "test -p ghosthub-workspace --test wsl_live -- --ignored --nocapture"
