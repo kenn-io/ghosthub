@@ -2037,6 +2037,15 @@ name = "ghosthub-model"
 version = "0.0.0"
 
 [[package]]
+name = "ghosthub-session"
+version = "0.0.0"
+dependencies = [
+ "ghosthub-contracts",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "ghosthub-ui"
 version = "0.0.0"
 dependencies = [
