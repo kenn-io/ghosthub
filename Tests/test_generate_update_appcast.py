@@ -358,6 +358,8 @@ def test_pinned_generate_appcast_accepts_the_standard_seed_export(tmp_path):
         capture_output=True,
         text=True,
     )
+    fixed_home = tmp_path / "home"
+    fixed_home.mkdir()
 
     result = subprocess.run(
         [
@@ -371,6 +373,7 @@ def test_pinned_generate_appcast_accepts_the_standard_seed_export(tmp_path):
             tmp_path,
         ],
         input=base64.b64encode(seed).decode(),
+        env={**os.environ, "CFFIXED_USER_HOME": str(fixed_home)},
         text=True,
         capture_output=True,
         check=False,

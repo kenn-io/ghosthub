@@ -482,16 +482,12 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         let remoteAttach = accountLoginShellCommand(
             remoteAttachCommands.joined(separator: "; ")
         )
-        return shellCommand(
-            [
-                "/bin/sh", "-c", Self.sshReconnectScript,
-                "ghosthub-ssh-tmux",
-            ] + sshArguments(
-                info: info,
-                allocateTTY: true,
-                remoteCommand: remoteAttach,
-                sshConnectionArguments: sshConnectionArguments
-            )
+        return sshReconnectCommand(
+            label: "ghosthub-ssh-tmux",
+            info: info,
+            allocateTTY: true,
+            remoteCommand: remoteAttach,
+            sshConnectionArguments: sshConnectionArguments
         )
     }
 
@@ -547,16 +543,12 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         ).map(shellQuotedCommandArgument).joined(separator: " ")
         let remoteProbe = "unset TMUX TMUX_PANE; "
             + "exec \(hasSession) >/dev/null 2>&1"
-        let sessionProbe = shellCommand(
-            [
-                "/bin/sh", "-c", Self.sshReconnectScript,
-                "ghosthub-ssh-kwt-probe",
-            ] + sshArguments(
-                info: info,
-                allocateTTY: false,
-                remoteCommand: accountLoginShellCommand(remoteProbe),
-                sshConnectionArguments: sshConnectionArguments
-            )
+        let sessionProbe = sshReconnectCommand(
+            label: "ghosthub-ssh-kwt-probe",
+            info: info,
+            allocateTTY: false,
+            remoteCommand: accountLoginShellCommand(remoteProbe),
+            sshConnectionArguments: sshConnectionArguments
         )
         return shellCommand([
             "/bin/sh", "-c", Self.remoteWorkspaceAttachScript,
@@ -608,16 +600,12 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         )) *> $null
         exit $LASTEXITCODE
         """
-        let sessionProbe = shellCommand(
-            [
-                "/bin/sh", "-c", Self.sshReconnectScript,
-                "ghosthub-ssh-kwt-probe",
-            ] + sshArguments(
-                info: info,
-                allocateTTY: false,
-                remoteCommand: powerShellEncodedCommand(probeScript),
-                sshConnectionArguments: sshConnectionArguments
-            )
+        let sessionProbe = sshReconnectCommand(
+            label: "ghosthub-ssh-kwt-probe",
+            info: info,
+            allocateTTY: false,
+            remoteCommand: powerShellEncodedCommand(probeScript),
+            sshConnectionArguments: sshConnectionArguments
         )
         let reconnectAttach = windowsRemoteAttachCommand(
             info: info,
@@ -662,17 +650,63 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         exit $LASTEXITCODE
         """
         let remoteCommand = powerShellEncodedCommand(script)
+        return sshReconnectCommand(
+            label: "ghosthub-ssh-psmux",
+            info: info,
+            allocateTTY: true,
+            remoteCommand: remoteCommand,
+            sshConnectionArguments: sshConnectionArguments
+        )
+    }
+
+    private func sshReconnectCommand(
+        label: String,
+        info: SSHHostInfo,
+        allocateTTY: Bool,
+        remoteCommand: String,
+        sshConnectionArguments: [String]
+    ) -> String {
+        let evidenceArguments = [
+            "-o", "PermitLocalCommand=yes",
+            "-o",
+            "LocalCommand=/usr/bin/touch \"$GHOSTHUB_SSH_CONNECTION_MARKER\"",
+        ]
         return shellCommand(
             [
                 "/bin/sh", "-c", Self.sshReconnectScript,
-                "ghosthub-ssh-psmux",
+                label,
+                shellCommand(sshControlCheckArguments(
+                    info: info,
+                    sshConnectionArguments: sshConnectionArguments
+                )),
             ] + sshArguments(
                 info: info,
-                allocateTTY: true,
+                allocateTTY: allocateTTY,
                 remoteCommand: remoteCommand,
                 sshConnectionArguments: sshConnectionArguments
+                    + evidenceArguments
             )
         )
+    }
+
+    private func sshControlCheckArguments(
+        info: SSHHostInfo,
+        sshConnectionArguments: [String]
+    ) -> [String] {
+        var arguments = [
+            "/usr/bin/ssh", "-O", "check",
+            "-o", "BatchMode=yes",
+            "-o", "ControlMaster=no",
+            "-o", "ControlPersist=no",
+        ]
+        arguments.append(contentsOf: sshConnectionArguments)
+        if let port = info.port {
+            arguments.append(contentsOf: ["-p", "\(port)"])
+        }
+        let destination = info.user.map { "\($0)@\(info.hostname)" }
+            ?? info.hostname
+        arguments.append(contentsOf: ["--", destination])
+        return arguments
     }
 
     private func remoteCreateThenAttachCommand(
@@ -816,13 +850,14 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
     ) -> [String] {
         var arguments = [
             "/usr/bin/ssh", allocateTTY ? "-tt" : "-T",
+            "-o", "BatchMode=yes",
             "-o", "ServerAliveInterval=15",
             "-o", "ServerAliveCountMax=3",
             "-o", "TCPKeepAlive=yes",
             "-o", "ConnectTimeout=15",
         ]
         arguments.append(contentsOf: sshConnectionArguments)
-        if let port = info.port, port != 22 {
+        if let port = info.port {
             arguments.append(contentsOf: ["-p", "\(port)"])
         }
         let destination = info.user.map { "\($0)@\(info.hostname)" }
@@ -886,18 +921,39 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
     done
     """
 
-    /// OpenSSH reserves status 255 for transport/setup failure. Clean detach
-    /// and ordinary tmux failures pass through so Ghosthub does not fight an
-    /// intentional detach or spin on a missing session.
+    /// OpenSSH reserves status 255 for transport/setup failure. Brief transport
+    /// interruptions retry, while persistent failures exit so Ghosthub can
+    /// recover authentication natively. Clean detach and ordinary tmux failures
+    /// pass through unchanged.
     static let sshReconnectScript = """
+    control_check=$1
+    shift
+    umask 077
+    connection_marker=$(/usr/bin/mktemp /tmp/ghosthub-ssh.XXXXXX) || exit 255
+    /bin/rm -f "$connection_marker"
+    export GHOSTHUB_SSH_CONNECTION_MARKER="$connection_marker"
+    trap '/bin/rm -f "$connection_marker"' EXIT
     delay=1
+    failures=0
     while :; do
+        /bin/rm -f "$connection_marker"
         started=$(date +%s)
         "$@"
         status=$?
         [ "$status" -eq 255 ] || exit "$status"
+        # A slow 255 can still be proxy, authentication, or transport setup
+        # failure. Elapsed time alone must never make it a successful attach.
         now=$(date +%s)
-        if [ $((now - started)) -ge 30 ]; then delay=1; fi
+        if [ -e "$connection_marker" ] || {
+            [ -n "$control_check" ] &&
+            [ $((now - started)) -ge 30 ] &&
+            /bin/sh -c "$control_check" >/dev/null 2>&1
+        }; then
+            delay=1
+            failures=0
+        fi
+        failures=$((failures + 1))
+        [ "$failures" -lt 3 ] || exit "$status"
         printf '\r\n[Ghosthub: SSH disconnected; reconnecting in %ss]\r\n' "$delay"
         sleep "$delay"
         if [ "$delay" -lt 30 ]; then

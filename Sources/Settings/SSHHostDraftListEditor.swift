@@ -16,11 +16,16 @@ public struct SSHHostDraftImport: Equatable, Sendable {
         self.sshDestination = sshDestination
     }
 
-    public init(tailscalePeer peer: TailscalePeer) {
+    public init(
+        tailscalePeer peer: TailscalePeer,
+        username: String = NSUserName()
+    ) {
         self.init(
             name: peer.hostName,
             platform: peer.platform,
-            sshDestination: peer.sshAddress
+            sshDestination: peer.sshDestination(
+                defaultUsername: username
+            )
         )
     }
 }

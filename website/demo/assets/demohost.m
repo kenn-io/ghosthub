@@ -600,15 +600,21 @@ static void DemoCapture(NSString *path, BOOL matrix) {
                         message:message];
             });
       });
-    } else if ([action isEqualToString:@"sidebar"]) {
+    } else if ([action isEqualToString:@"hide-sidebar"]) {
       NSView *content = DemoRootWindow().contentView;
       BOOL wasVisible = DemoContainsText(content, @"Workspaces", 0);
-      BOOL sent =
-          DemoSendKey(@"b", 11, NSEventModifierFlagCommand);
-      if (!sent) {
+      if (!wasVisible) {
+        [self acknowledge:requestID
+                  success:YES
+                  message:@"sidebar already hidden"];
+        return;
+      }
+      BOOL pressed = DemoPressLabel(
+          DemoRootWindow(), @"Hide Sidebar (Cmd+B)", 0);
+      if (!pressed) {
         [self acknowledge:requestID
                   success:NO
-                  message:@"no active window"];
+                  message:@"sidebar control was not available"];
         return;
       }
       dispatch_after(
@@ -616,11 +622,10 @@ static void DemoCapture(NSString *path, BOOL matrix) {
           dispatch_get_main_queue(), ^{
             BOOL isVisible =
                 DemoContainsText(content, @"Workspaces", 0);
-            BOOL toggled = isVisible != wasVisible;
             [self acknowledge:requestID
-                      success:toggled
-                      message:toggled ? @"sidebar visibility changed"
-                                      : @"sidebar visibility did not change"];
+                      success:!isVisible
+                      message:isVisible ? @"sidebar remained visible"
+                                        : @"sidebar hidden"];
           });
     } else if ([action isEqualToString:@"frame"]) {
 #pragma clang diagnostic push

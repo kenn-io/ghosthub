@@ -57,8 +57,8 @@ enum TmuxBinaryError: Error, Equatable, LocalizedError, Sendable {
                 + " locating tmux. Check your shell startup files."
         case let .sshConnectionFailed(host):
             return "SSH could not connect to \(host). Open Host Settings and"
-                + " run Test Connection to verify the host key,"
-                + " authentication, and network access."
+                + " run Test Connection to review an unseen host key or"
+                + " diagnose authentication and network access."
         case let .probeTimedOut(shell):
             return "Timed out while locating tmux through \(shell). Check"
                 + " for commands that block in your shell startup files."
@@ -109,7 +109,7 @@ struct DiscoveredTmuxSession: Equatable, Sendable {
 /// launchd-launched GUI app does not inherit Homebrew or user-bin PATH
 /// entries. Reads the passwd shell (not $SHELL, which may be absent).
 struct TmuxBinaryResolver: Sendable {
-    private static let timedOutStatus: Int32 = -124
+    static let timedOutStatus: Int32 = -124
     private static let outputExceededStatus: Int32 = -125
     private static let cancelledStatus: Int32 = -130
     private static let maximumProbeOutputBytes = 1 * 1_024 * 1_024
@@ -361,13 +361,20 @@ struct TmuxBinaryResolver: Sendable {
         shell: String,
         command: String,
         timeout: TimeInterval,
-        captureStandardError: Bool = false
+        captureStandardError: Bool = false,
+        environmentOverrides: [String: String] = [:]
     ) -> (status: Int32, stdout: String) {
-        runProcess(
+        let result = runProcess(
             executable: shell,
             arguments: ["-lc", accountShellCommand(command)],
             timeout: timeout,
-            captureStandardError: captureStandardError
+            environmentOverrides: environmentOverrides
+        )
+        return (
+            result.status,
+            captureStandardError
+                ? result.stdout + result.stderr
+                : result.stdout
         )
     }
 
@@ -376,7 +383,8 @@ struct TmuxBinaryResolver: Sendable {
         arguments: [String],
         timeout: TimeInterval,
         captureStandardError: Bool = false,
-        accountShell: String = loginShell()
+        accountShell: String = loginShell(),
+        environmentOverrides: [String: String] = [:]
     ) -> (status: Int32, stdout: String) {
         let command = ([executable] + arguments)
             .map(shellQuotedCommandArgument)
@@ -385,7 +393,8 @@ struct TmuxBinaryResolver: Sendable {
             shell: accountShell,
             command: command,
             timeout: timeout,
-            captureStandardError: captureStandardError
+            captureStandardError: captureStandardError,
+            environmentOverrides: environmentOverrides
         )
     }
 
@@ -393,23 +402,57 @@ struct TmuxBinaryResolver: Sendable {
         host: SSHHostInfo,
         command: String,
         timeout: TimeInterval,
-        accountShell: String = loginShell()
+        accountShell: String = loginShell(),
+        captureStandardError: Bool = false
     ) -> (status: Int32, stdout: String) {
+        let arguments = remoteLoginArguments(host: host, command: command)
+        return runProcessInLoginShell(
+            executable: "/usr/bin/ssh",
+            arguments: arguments,
+            timeout: timeout,
+            captureStandardError: captureStandardError,
+            accountShell: accountShell
+        )
+    }
+
+    static func runRemoteLoginShellSeparatingStandardError(
+        host: SSHHostInfo,
+        command: String,
+        timeout: TimeInterval,
+        accountShell: String = loginShell()
+    ) -> (status: Int32, stdout: String, stderr: String) {
+        let command = (["/usr/bin/ssh"] + remoteLoginArguments(
+            host: host,
+            command: command
+        )).map(shellQuotedCommandArgument).joined(separator: " ")
+        return runProcess(
+            executable: accountShell,
+            arguments: ["-lc", accountShellCommand(command)],
+            timeout: timeout
+        )
+    }
+
+    private static func remoteLoginArguments(
+        host: SSHHostInfo,
+        command: String
+    ) -> [String] {
         var arguments = ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
         arguments.append(contentsOf: tmuxSSHConnectionArguments())
-        if let port = host.port, port != 22 {
+        arguments.append(contentsOf:
+            SSHConnectionPool.connectionArguments(for: host)
+        )
+        arguments.append(contentsOf:
+            SSHConfigurationResolver.noninteractiveHostKeyArguments(
+                for: host
+            ))
+        if let port = host.port {
             arguments.append(contentsOf: ["-p", String(port)])
         }
         let target = host.user.map { "\($0)@\(host.hostname)" } ?? host.hostname
         arguments.append(contentsOf: [
             "--", target, remoteLoginCommand(host: host, command: command),
         ])
-        return runProcessInLoginShell(
-            executable: "/usr/bin/ssh",
-            arguments: arguments,
-            timeout: timeout,
-            accountShell: accountShell
-        )
+        return arguments
     }
 
     static func remoteLoginCommand(
@@ -433,22 +476,26 @@ struct TmuxBinaryResolver: Sendable {
         executable: String,
         arguments: [String],
         timeout: TimeInterval,
-        captureStandardError: Bool = false
-    ) -> (status: Int32, stdout: String) {
+        environmentOverrides: [String: String] = [:]
+    ) -> (status: Int32, stdout: String, stderr: String) {
         var outputDescriptors = [Int32](repeating: -1, count: 2)
         guard outputDescriptors.withUnsafeMutableBufferPointer({ descriptors in
             pipe(descriptors.baseAddress!)
         }) == 0 else {
-            return (status: 127, stdout: "")
+            return (status: 127, stdout: "", stderr: "")
         }
         let outputRead = outputDescriptors[0]
         let outputWrite = outputDescriptors[1]
-        let nullDescriptor = open("/dev/null", O_WRONLY)
-        guard nullDescriptor >= 0 else {
+        var errorDescriptors = [Int32](repeating: -1, count: 2)
+        guard errorDescriptors.withUnsafeMutableBufferPointer({ descriptors in
+            pipe(descriptors.baseAddress!)
+        }) == 0 else {
             close(outputRead)
             close(outputWrite)
-            return (status: 127, stdout: "")
+            return (status: 127, stdout: "", stderr: "")
         }
+        let errorRead = errorDescriptors[0]
+        let errorWrite = errorDescriptors[1]
         var fileActions: posix_spawn_file_actions_t? = nil
         var attributes: posix_spawnattr_t? = nil
         posix_spawn_file_actions_init(&fileActions)
@@ -456,18 +503,17 @@ struct TmuxBinaryResolver: Sendable {
         defer {
             posix_spawn_file_actions_destroy(&fileActions)
             posix_spawnattr_destroy(&attributes)
-            close(nullDescriptor)
         }
         posix_spawn_file_actions_adddup2(
             &fileActions, outputWrite, STDOUT_FILENO
         )
         posix_spawn_file_actions_adddup2(
-            &fileActions,
-            captureStandardError ? outputWrite : nullDescriptor,
-            STDERR_FILENO
+            &fileActions, errorWrite, STDERR_FILENO
         )
         posix_spawn_file_actions_addclose(&fileActions, outputRead)
         posix_spawn_file_actions_addclose(&fileActions, outputWrite)
+        posix_spawn_file_actions_addclose(&fileActions, errorRead)
+        posix_spawn_file_actions_addclose(&fileActions, errorWrite)
         posix_spawnattr_setflags(
             &attributes,
             Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT)
@@ -479,9 +525,10 @@ struct TmuxBinaryResolver: Sendable {
         var cArguments = argumentStrings.map { strdup($0) }
         defer { cArguments.forEach { free($0) } }
         cArguments.append(nil)
-        let environment = sanitizedProcessEnvironment(
+        var environment = sanitizedProcessEnvironment(
             ProcessInfo.processInfo.environment
         )
+        environment.merge(environmentOverrides) { _, override in override }
         var cEnvironment = environment.map {
             strdup("\($0.key)=\($0.value)")
         }
@@ -502,22 +549,34 @@ struct TmuxBinaryResolver: Sendable {
             }
         }
         close(outputWrite)
+        close(errorWrite)
         guard spawnStatus == 0 else {
             close(outputRead)
-            return (status: 127, stdout: "")
+            close(errorRead)
+            return (status: 127, stdout: "", stderr: "")
         }
 
         defer { close(outputRead) }
-        let currentFlags = fcntl(outputRead, F_GETFL)
-        guard currentFlags >= 0,
-              fcntl(outputRead, F_SETFL, currentFlags | O_NONBLOCK) == 0
-        else {
+        defer { close(errorRead) }
+        let outputFlags = fcntl(outputRead, F_GETFL)
+        let errorFlags = fcntl(errorRead, F_GETFL)
+        guard outputFlags >= 0,
+              errorFlags >= 0,
+              fcntl(
+                  outputRead,
+                  F_SETFL,
+                  outputFlags | O_NONBLOCK
+              ) == 0,
+              fcntl(errorRead, F_SETFL, errorFlags | O_NONBLOCK) == 0 else {
             kill(-processID, SIGKILL)
             var waitStatus = Int32(0)
             _ = waitpid(processID, &waitStatus, 0)
-            return (status: 127, stdout: "")
+            return (status: 127, stdout: "", stderr: "")
         }
         let output = TmuxProbeOutputCollector(
+            limit: maximumProbeOutputBytes
+        )
+        let errorOutput = TmuxProbeOutputCollector(
             limit: maximumProbeOutputBytes
         )
         var readBuffer = [UInt8](repeating: 0, count: 64 * 1_024)
@@ -526,6 +585,7 @@ struct TmuxBinaryResolver: Sendable {
         var waitStatus = Int32(0)
         var processFinished = false
         var outputReachedEOF = false
+        var errorReachedEOF = false
         let maximumReadsPerDrain = 16
 
         func currentInterruptionStatus() -> Int32? {
@@ -535,36 +595,52 @@ struct TmuxBinaryResolver: Sendable {
             if Date() >= deadline {
                 return timedOutStatus
             }
-            if output.didOverflow {
+            if output.didOverflow || errorOutput.didOverflow {
                 return outputExceededStatus
             }
             return nil
         }
 
-        while !processFinished || !outputReachedEOF {
+        func drain(
+            descriptor: Int32,
+            collector: TmuxProbeOutputCollector,
+            reachedEOF: inout Bool
+        ) {
             var readsRemaining = maximumReadsPerDrain
-            while !outputReachedEOF, readsRemaining > 0 {
-                let count = read(outputRead, &readBuffer, readBuffer.count)
+            while !reachedEOF, readsRemaining > 0 {
+                let count = read(descriptor, &readBuffer, readBuffer.count)
                 readsRemaining -= 1
                 if count > 0 {
-                    output.append(Data(readBuffer.prefix(Int(count))))
-                    if let status = currentInterruptionStatus() {
-                        interruptedStatus = status
-                        break
-                    }
+                    collector.append(Data(readBuffer.prefix(Int(count))))
                     continue
                 }
                 if count == 0 {
-                    outputReachedEOF = true
+                    reachedEOF = true
                     break
                 }
                 if errno == EINTR {
                     continue
                 }
                 if errno != EAGAIN, errno != EWOULDBLOCK {
-                    outputReachedEOF = true
+                    reachedEOF = true
                 }
                 break
+            }
+        }
+
+        while !processFinished || !outputReachedEOF || !errorReachedEOF {
+            drain(
+                descriptor: outputRead,
+                collector: output,
+                reachedEOF: &outputReachedEOF
+            )
+            drain(
+                descriptor: errorRead,
+                collector: errorOutput,
+                reachedEOF: &errorReachedEOF
+            )
+            if let status = currentInterruptionStatus() {
+                interruptedStatus = status
             }
             if interruptedStatus != nil {
                 break
@@ -573,7 +649,7 @@ struct TmuxBinaryResolver: Sendable {
                 let waited = waitpid(processID, &waitStatus, WNOHANG)
                 processFinished = waited == processID
             }
-            if processFinished, outputReachedEOF {
+            if processFinished, outputReachedEOF, errorReachedEOF {
                 break
             }
             if let status = currentInterruptionStatus() {
@@ -596,15 +672,17 @@ struct TmuxBinaryResolver: Sendable {
             if !processFinished {
                 _ = waitpid(processID, &waitStatus, 0)
             }
-            return (status: interruptedStatus, stdout: "")
+            return (status: interruptedStatus, stdout: "", stderr: "")
         }
         let collected = output.snapshot()
-        if collected.overflowed {
-            return (status: outputExceededStatus, stdout: "")
+        let collectedError = errorOutput.snapshot()
+        if collected.overflowed || collectedError.overflowed {
+            return (status: outputExceededStatus, stdout: "", stderr: "")
         }
         return (
             status: exitStatus(from: waitStatus),
-            stdout: String(decoding: collected.data, as: UTF8.self)
+            stdout: String(decoding: collected.data, as: UTF8.self),
+            stderr: String(decoding: collectedError.data, as: UTF8.self)
         )
     }
 

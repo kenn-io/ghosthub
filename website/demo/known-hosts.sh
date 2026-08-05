@@ -61,13 +61,13 @@ demo_known_hosts_replace() {
     return 1
   fi
   demo_lexical_ancestry_guard \
-    "$(dirname "$known_hosts")" reject-writable "known_hosts ancestor" || return 1
+    "$(dirname "$known_hosts")" allow-sticky "known_hosts ancestor" || return 1
   configured_dir="$(realpath "$(dirname "$known_hosts")" 2>/dev/null)" || {
     echo "error: cannot resolve known_hosts directory: $known_hosts" >&2
     return 1
   }
   demo_directory_ancestry_guard \
-    "$configured_dir" reject-writable "known_hosts ancestor" || return 1
+    "$configured_dir" allow-sticky "known_hosts ancestor" || return 1
 
   destination="$known_hosts"
   if [[ -L "$known_hosts" ]]; then
@@ -99,9 +99,11 @@ demo_known_hosts_replace() {
   fi
   # Every later operation reopens a temporary file by pathname. That is safe
   # only when no other account can replace directory entries anywhere in the
-  # resolved hierarchy.
+  # resolved hierarchy. A root-owned sticky temporary ancestor is safe once
+  # the path enters an owner-only directory because other users cannot replace
+  # that directory entry.
   demo_directory_ancestry_guard \
-    "$ssh_dir" reject-writable "known_hosts ancestor" || return 1
+    "$ssh_dir" allow-sticky "known_hosts ancestor" || return 1
   if [[ -e "$destination" ]]; then
     demo_owner_file_guard "$destination" "known_hosts target" || return 1
   fi

@@ -5,34 +5,40 @@ import SwiftUI
 struct BorrowedTmuxSessionView: View {
     var handle: BorrowedTmuxSessionHandle
     var hostName: String
+    var isRemoteHost: Bool
     var displayTitle: String?
     var connectionState: ConnectionState?
-    var attachmentClosed: Bool
+    var attachmentClosure: BorrowedTmuxAttachmentClosure?
     var sessionClosed: Bool
     var surface: () -> TerminalSurfaceView?
     var onCloseRequest: () -> Void
     var onRetryRequest: () -> Void
+    var onHostSettingsRequest: () -> Void
 
     init(
         handle: BorrowedTmuxSessionHandle,
         hostName: String,
+        isRemoteHost: Bool,
         displayTitle: String? = nil,
         connectionState: ConnectionState?,
-        attachmentClosed: Bool = false,
+        attachmentClosure: BorrowedTmuxAttachmentClosure? = nil,
         sessionClosed: Bool = false,
         surface: @escaping () -> TerminalSurfaceView?,
         onCloseRequest: @escaping () -> Void,
-        onRetryRequest: @escaping () -> Void
+        onRetryRequest: @escaping () -> Void,
+        onHostSettingsRequest: @escaping () -> Void
     ) {
         self.handle = handle
         self.hostName = hostName
+        self.isRemoteHost = isRemoteHost
         self.displayTitle = displayTitle
         self.connectionState = connectionState
-        self.attachmentClosed = attachmentClosed
+        self.attachmentClosure = attachmentClosure
         self.sessionClosed = sessionClosed
         self.surface = surface
         self.onCloseRequest = onCloseRequest
         self.onRetryRequest = onRetryRequest
+        self.onHostSettingsRequest = onHostSettingsRequest
     }
 
     var body: some View {
@@ -47,7 +53,7 @@ struct BorrowedTmuxSessionView: View {
                     disconnectionTitle,
                     systemImage: sessionClosed
                         ? "rectangle.portrait.and.arrow.right"
-                        : attachmentClosed
+                        : attachmentClosure == .detached
                         ? "rectangle.portrait.and.arrow.right"
                         : "network.slash"
                 )
@@ -55,6 +61,9 @@ struct BorrowedTmuxSessionView: View {
                 Text(disconnectionReason)
             } actions: {
                 Button(recoveryActionTitle, action: onRetryRequest)
+                if showsHostSettingsAction {
+                    Button("Host Settings", action: onHostSettingsRequest)
+                }
             }
         } else {
             ProgressView("Opening \(displayTitle ?? handle.name)…")
@@ -77,14 +86,20 @@ struct BorrowedTmuxSessionView: View {
         if sessionClosed {
             return "Session ended"
         }
-        return attachmentClosed ? "Attachment closed" : "Unable to attach"
+        return attachmentClosure == .detached
+            ? "Attachment closed"
+            : "Unable to attach"
     }
 
     var recoveryActionTitle: String {
         if sessionClosed {
             return "Reopen"
         }
-        return attachmentClosed ? "Reconnect" : "Retry"
+        return attachmentClosure == .detached ? "Reconnect" : "Retry"
+    }
+
+    var showsHostSettingsAction: Bool {
+        isRemoteHost && attachmentClosure != .detached && !sessionClosed
     }
 }
 

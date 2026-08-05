@@ -4,11 +4,13 @@ import GhosthubWorkspace
 public enum KeyboardNavigationModel {
     public static func orderedWorktrees(
         in snapshot: WorkspaceSnapshot,
-        visibility: WorktreeVisibility = .default
+        visibility: WorktreeVisibility = .default,
+        worktreeOrderRawValue: String = ""
     ) -> [WorktreeSummary] {
         WorkspaceSidebarModel.sections(
             in: snapshot,
-            visibility: visibility
+            visibility: visibility,
+            worktreeOrderRawValue: worktreeOrderRawValue
         ).flatMap { section in
             section.projects.flatMap(\.worktrees)
         }
@@ -18,9 +20,14 @@ public enum KeyboardNavigationModel {
         from selection: WorkspaceSelection,
         in snapshot: WorkspaceSnapshot,
         step: Int,
-        visibility: WorktreeVisibility = .default
+        visibility: WorktreeVisibility = .default,
+        worktreeOrderRawValue: String = ""
     ) -> WorkspaceSelection? {
-        let worktrees = orderedWorktrees(in: snapshot, visibility: visibility)
+        let worktrees = orderedWorktrees(
+            in: snapshot,
+            visibility: visibility,
+            worktreeOrderRawValue: worktreeOrderRawValue
+        )
         guard !worktrees.isEmpty else {
             return nil
         }
@@ -42,9 +49,14 @@ public enum KeyboardNavigationModel {
         _ index: Int,
         from selection: WorkspaceSelection,
         in snapshot: WorkspaceSnapshot,
-        visibility: WorktreeVisibility = .default
+        visibility: WorktreeVisibility = .default,
+        worktreeOrderRawValue: String = ""
     ) -> WorkspaceSelection? {
-        let worktrees = orderedWorktrees(in: snapshot, visibility: visibility)
+        let worktrees = orderedWorktrees(
+            in: snapshot,
+            visibility: visibility,
+            worktreeOrderRawValue: worktreeOrderRawValue
+        )
         guard index > 0, index <= worktrees.count else {
             return nil
         }

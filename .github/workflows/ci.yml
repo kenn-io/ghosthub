@@ -79,12 +79,14 @@ jobs:
       - name: Configure isolated macOS test state
         shell: bash
         run: |
-          test -n "${RUNNER_TEMP:-}"
-          foundation_home="$RUNNER_TEMP/ghosthub-home"
-          foundation_tmp="$RUNNER_TEMP/ghosthub-tmp"
+          umask 077
+          state_root="$(mktemp -d /tmp/ghosthub-ci.XXXXXX)"
+          foundation_home="$state_root/home"
+          foundation_tmp="$state_root/tmp"
           mkdir -p "$foundation_home/Library/Caches" "$foundation_tmp"
-          chmod 700 "$foundation_home" "$foundation_home/Library" \
+          chmod 700 "$state_root" "$foundation_home" "$foundation_home/Library" \
             "$foundation_home/Library/Caches" "$foundation_tmp"
+          echo "GHOSTHUB_CI_STATE_ROOT=$state_root" >> "$GITHUB_ENV"
           echo "CFFIXED_USER_HOME=$foundation_home" >> "$GITHUB_ENV"
           echo "TMPDIR=$foundation_tmp" >> "$GITHUB_ENV"
 
@@ -134,16 +136,22 @@ jobs:
         run: swift build --build-tests
 
       - name: Run terminal smoke tests
-        # Most AppKit/PTY tests are isolated by fixture, so two workers shorten
-        # the hosted-runner exposure window without saturating its three cores.
+        # Most AppKit/PTY tests are isolated by fixture, so parallel workers
+        # shorten the runner exposure window without saturating hosted Macs.
         # Keep tests marked Pasteboard out of this lane because they mutate
         # NSPasteboard.general, which is shared across worker processes.
-        run: >-
-          sh tools/run_swift_tests.sh
-          swift test --skip-build --disable-swift-testing
-          --filter GhosthubTerminalSmokeTests
-          --skip 'Clipboard|Paste'
-          --parallel --num-workers 2
+        shell: bash
+        run: |
+          test_workers=2
+          if [[ "${RUNNER_ENVIRONMENT:-}" == "self-hosted" ]]; then
+            test_workers=8
+          fi
+
+          sh tools/run_swift_tests.sh \
+            swift test --skip-build --disable-swift-testing \
+            --filter GhosthubTerminalSmokeTests \
+            --skip 'Clipboard|Paste' \
+            --parallel --num-workers "$test_workers"
 
       - name: Run pasteboard terminal smoke tests
         run: >-
@@ -165,3 +173,11 @@ jobs:
 
       - name: Run essential kwt and tmux workflows
         run: make test-essential-workflows
+
+      - name: Remove isolated macOS test state
+        if: always()
+        shell: bash
+        run: |
+          case "${GHOSTHUB_CI_STATE_ROOT:-}" in
+            /tmp/ghosthub-ci.*) rm -rf -- "$GHOSTHUB_CI_STATE_ROOT" ;;
+          esac

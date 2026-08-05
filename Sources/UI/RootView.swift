@@ -8,6 +8,7 @@ public struct RootView: View {
     private let content: ContentBuilders
     private let handlers: InteractionHandlers
     private let sidebarToggleTarget: AnyObject
+    private let sidebarWidthChanged: (CGFloat) -> Void
     @Binding private var selection: WorkspaceSelection
     @Binding private var isSidePanelVisible: Bool
     @Binding private var columnVisibility: NavigationSplitViewVisibility
@@ -28,12 +29,19 @@ public struct RootView: View {
     @State private var newTmuxSessionHost: HostSummary?
     @State private var addProjectHost: HostSummary?
     @State private var workspaceAlert: WorkspaceAlert?
+    @StateObject private var sshHostKeyReview =
+        WorkspaceSSHHostKeyReviewModel()
+    @AppStorage(WorkspaceSidebarOrderStorage.worktreeKey)
+    private var worktreeOrderRawValue = ""
+    @AppStorage(WorkspaceSidebarOrderStorage.tmuxSessionKey)
+    private var tmuxSessionOrderRawValue = ""
 
     public init(
         display: WorkspaceDisplayState,
         content: ContentBuilders = ContentBuilders(),
         handlers: InteractionHandlers = InteractionHandlers(),
         sidebarToggleTarget: AnyObject = NSObject(),
+        sidebarWidthChanged: @escaping (CGFloat) -> Void = { _ in },
         settingsStore: SettingsStore = .shared,
         selection: Binding<WorkspaceSelection>,
         isSidePanelVisible: Binding<Bool> = .constant(false),
@@ -46,6 +54,7 @@ public struct RootView: View {
         self.content = content
         self.handlers = handlers
         self.sidebarToggleTarget = sidebarToggleTarget
+        self.sidebarWidthChanged = sidebarWidthChanged
         self.settingsStore = settingsStore
         _selection = selection
         _isSidePanelVisible = isSidePanelVisible
@@ -76,6 +85,34 @@ public struct RootView: View {
             }
             .sheet(isPresented: $isLogViewerPresented) {
                 logViewerSheet
+            }
+            .sheet(
+                isPresented: Binding(
+                    get: { sshHostKeyReview.isPresented },
+                    set: {
+                        if !$0 {
+                            cancelSSHAuthenticationIfNeeded()
+                            sshHostKeyReview.dismiss()
+                        }
+                    }
+                )
+            ) {
+                SSHHostKeyReviewView(
+                    model: sshHostKeyReview,
+                    onTrust: trustReviewedSSHHostKey,
+                    onRetry: retrySSHRecovery,
+                    onOpenHostSettings: openHostSettings,
+                    onCancel: cancelSSHRecovery,
+                    authenticationContent:
+                    sshAuthenticationContent
+                )
+                .task(id: activeSSHAuthenticationHostID) {
+                    await monitorSSHAuthentication()
+                }
+                .interactiveDismissDisabled(
+                    sshHostKeyReview.isTrusting
+                        || sshHostKeyReview.presentation == .authentication
+                )
             }
             .sheet(item: $newWorktreeProject) { project in
                 NewWorktreeSheet(
@@ -155,7 +192,8 @@ public struct RootView: View {
                 applySidebarAutoCollapse(windowWidth: width)
                 applySidePanelAutoCollapse(windowWidth: width)
             }
-            .onChange(of: sidebarWidth) { _, _ in
+            .onChange(of: sidebarWidth) { _, width in
+                sidebarWidthChanged(width)
                 guard lastKnownWindowWidth > 0 else { return }
                 applySidePanelAutoCollapse(
                     windowWidth: lastKnownWindowWidth
@@ -178,6 +216,7 @@ public struct RootView: View {
                 )
             )
             .onAppear {
+                sidebarWidthChanged(sidebarWidth)
                 normalizeSelectionForWorktreeVisibilityChanges()
                 synchronizeSelectedWorktreeSession()
                 initializeTmuxSelectionBaselineIfNeeded()
@@ -287,21 +326,43 @@ public struct RootView: View {
 
     private var workspaceColumns: some View {
         GeometryReader { _ in
-            HStack(spacing: 0) {
-                if isSidebarVisible {
+            ZStack(alignment: .leading) {
+                HStack(spacing: 0) {
+                    Color.clear
+                        .frame(
+                            width: isSidebarVisible
+                                ? sidebarWidth + Self.dividerHit
+                                : 0
+                        )
+
+                    terminalWorkspaceContent
+                        .frame(
+                            maxWidth: .infinity,
+                            maxHeight: .infinity
+                        )
+                }
+                .transaction { transaction in
+                    transaction.animation = nil
+                }
+
+                HStack(spacing: 0) {
                     workspaceSidebarColumn
                         .frame(width: sidebarWidth)
 
                     columnDivider
                         .gesture(sidebarDragGesture)
                 }
-
-                terminalWorkspaceContent
-                    .frame(
-                        maxWidth: .infinity,
-                        maxHeight: .infinity
-                    )
-
+                .offset(
+                    x: isSidebarVisible
+                        ? 0 : -(sidebarWidth + Self.dividerHit)
+                )
+                .opacity(isSidebarVisible ? 1 : 0)
+                .allowsHitTesting(isSidebarVisible)
+                .accessibilityHidden(!isSidebarVisible)
+                .animation(
+                    .easeInOut(duration: 0.2),
+                    value: isSidebarVisible
+                )
             }
             .coordinateSpace(name: Self.columnSpace)
         }
@@ -396,18 +457,129 @@ public struct RootView: View {
                 handlers.refreshWorkspaceInventory?()
             },
             onOpenHostSettings: {
-                settingsStore.selectedDomain = .hosts
-                isSettingsPresented = true
+                openHostSettings()
+            },
+            onReviewSSHHostKey: { hostID, inventoryWarning in
+                reviewSSHHostKey(
+                    hostID,
+                    inventoryWarning: inventoryWarning
+                )
             },
             inventoryWarning: display.workspaceInventoryWarning,
             inventoryWarningsByHost:
             display.workspaceInventoryWarningsByHost,
+            inventoryRefreshComplete:
+            display.isWorkspaceInventoryRefreshComplete,
+            worktreeOrderRawValue: $worktreeOrderRawValue,
+            tmuxSessionOrderRawValue: $tmuxSessionOrderRawValue,
             onOpen: { worktree in
                 selectWorkspace(.worktree(worktree.id))
             }
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(WorkspaceSurfaceColor.color)
+    }
+
+    private func reviewSSHHostKey(
+        _ hostID: UUID,
+        inventoryWarning: String
+    ) {
+        guard let review = handlers.reviewSSHHostKey,
+              let host = snapshot.host(id: hostID) else {
+            openHostSettings()
+            return
+        }
+        Task {
+            await sshHostKeyReview.review(
+                hostID: hostID,
+                hostName: host.name,
+                using: {
+                    await review(hostID, inventoryWarning)
+                }
+            )
+        }
+    }
+
+    private func retrySSHRecovery() {
+        cancelSSHAuthenticationIfNeeded()
+        sshHostKeyReview.dismiss()
+        handlers.refreshWorkspaceInventory?()
+    }
+
+    private func trustReviewedSSHHostKey() {
+        guard let trust = handlers.trustSSHHostKey else {
+            openHostSettings()
+            return
+        }
+        Task {
+            await sshHostKeyReview.trust(
+                using: trust,
+                onTrusted: {}
+            )
+        }
+    }
+
+    private var activeSSHAuthenticationHostID: UUID? {
+        guard sshHostKeyReview.presentation == .authentication else {
+            return nil
+        }
+        return sshHostKeyReview.hostID
+    }
+
+    private var sshAuthenticationContent: AnyView? {
+        guard let hostID = activeSSHAuthenticationHostID else { return nil }
+        return content.sshAuthenticationBuilder?(hostID)
+    }
+
+    private func monitorSSHAuthentication() async {
+        guard let hostID = activeSSHAuthenticationHostID,
+              let isReady = handlers.isSSHAuthenticationReady else { return }
+        while !Task.isCancelled,
+              activeSSHAuthenticationHostID == hostID {
+            let readiness = await isReady(hostID)
+            guard !Task.isCancelled,
+                  activeSSHAuthenticationHostID == hostID
+            else { return }
+            switch readiness {
+            case .pending:
+                break
+            case .reviewRequired:
+                handlers.cancelSSHAuthentication?(hostID)
+                reviewSSHHostKey(
+                    hostID,
+                    inventoryWarning:
+                    display.workspaceInventoryWarningsByHost[hostID]
+                        ?? "Remote inventory is unavailable."
+                )
+                return
+            case .connected:
+                handlers.cancelSSHAuthentication?(hostID)
+                sshHostKeyReview.authenticationSucceeded()
+                handlers.refreshWorkspaceInventory?()
+                return
+            }
+            try? await Task.sleep(for: .seconds(1))
+        }
+    }
+
+    private func cancelSSHAuthenticationIfNeeded() {
+        guard let hostID = activeSSHAuthenticationHostID else { return }
+        handlers.cancelSSHAuthentication?(hostID)
+    }
+
+    private func cancelSSHRecovery() {
+        cancelSSHAuthenticationIfNeeded()
+        sshHostKeyReview.dismiss()
+    }
+
+    private func openHostSettings() {
+        cancelSSHAuthenticationIfNeeded()
+        sshHostKeyReview.dismiss()
+        settingsStore.selectedDomain = .hosts
+        Task { @MainActor in
+            await Task.yield()
+            isSettingsPresented = true
+        }
     }
 
     private func activateTmuxSession(_ session: WorkspaceTmuxSessionSelection) {
@@ -771,7 +943,9 @@ public struct RootView: View {
             interfaceAppearance: settingsStore.interfaceAppearance,
             worktreeVisibility: worktreeVisibility,
             tmuxSessionVisibility: tmuxSessionVisibility,
-            supportsSettings: content.settingsSheetBuilder != nil
+            supportsSettings: content.settingsSheetBuilder != nil,
+            worktreeOrderRawValue: worktreeOrderRawValue,
+            tmuxSessionOrderRawValue: tmuxSessionOrderRawValue
         )
     }
 
@@ -808,7 +982,8 @@ public struct RootView: View {
                 from: selection,
                 in: snapshot,
                 step: -1,
-                visibility: worktreeVisibility
+                visibility: worktreeVisibility,
+                worktreeOrderRawValue: worktreeOrderRawValue
             ) {
                 selectWorkspace(updatedSelection)
             }
@@ -817,7 +992,8 @@ public struct RootView: View {
                 from: selection,
                 in: snapshot,
                 step: 1,
-                visibility: worktreeVisibility
+                visibility: worktreeVisibility,
+                worktreeOrderRawValue: worktreeOrderRawValue
             ) {
                 selectWorkspace(updatedSelection)
             }
@@ -940,7 +1116,8 @@ public struct RootView: View {
             index,
             from: selection,
             in: snapshot,
-            visibility: worktreeVisibility
+            visibility: worktreeVisibility,
+            worktreeOrderRawValue: worktreeOrderRawValue
         ) {
             selectWorkspace(updatedSelection)
         }

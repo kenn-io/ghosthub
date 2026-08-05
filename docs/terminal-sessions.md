@@ -204,10 +204,22 @@ retryable and are presented to the user.
 ## SSH Keepalive and Reconnect
 
 Remote clients use the user's OpenSSH configuration and add server keepalives.
+If OpenSSH requires interactive authentication, Ghosthub shows its challenge
+in a native secure-entry sheet and passes the session-only response through a
+private FIFO. Later inventory and tmux clients reuse that app-session control
+connection and remain noninteractive. Every control connection is named for
+one app launch and supervised by a parent-held descriptor that stays open for
+the app lifetime, so an app crash terminates the SSH master and a later launch
+cannot reuse its socket.
 Exit status 255, OpenSSH's transport/setup failure status, reconnects with
-bounded exponential backoff. A connection that remains healthy for at least
-30 seconds resets the backoff. Other statuses pass through unchanged, so a
-normal tmux detach or a missing session does not create a reconnect loop. Host
+bounded exponential backoff. A direct connection's OpenSSH `LocalCommand`
+writes a private marker after transport and authentication succeed. For a
+multiplexed client, a sufficiently long attachment resets its retry budget only
+when the supervised control master is still healthy afterward. Attempts without
+either signal exit after two retries regardless of how long setup took, so
+Ghosthub's native recovery flow can reauthenticate. Other statuses pass through
+unchanged, so a normal tmux detach or a missing session does not create a
+reconnect loop. Host
 verification emits a marker only after the remote command begins. Status 255
 and local wrapper failures such as an unconfirmed timeout leave the host
 offline; a nonzero login-shell or probe-command status is reachable and

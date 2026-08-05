@@ -311,7 +311,7 @@ private struct ProtectedRestorationHarness {
 }
 
 @MainActor
-@Suite("Workspace restoration")
+@Suite("Workspace restoration", .serialized)
 struct WorkspaceRestorationTests {
     @Test("ordinary restoration waits for exact direct discovery then attaches only")
     func ordinaryRestorationIsAttachOnly() async throws {

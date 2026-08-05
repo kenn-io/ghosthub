@@ -134,11 +134,19 @@ const imageAlt = {
             Open <strong>Settings → Hosts</strong> and add any destination
             accepted by your SSH configuration, such as{' '}
             <code>devbox</code> or <code>alice@build-server</code>.
+            Importing from Tailscale uses the user resolved by your OpenSSH
+            configuration (falling back to your local username) and preserves
+            each host’s full MagicDNS name.
           </p>
           <p>
-            Remote hosts need tmux and non-interactive SSH authentication
-            backed by a key or SSH agent. Ghosthub keeps each host isolated,
-            so an unreachable machine never blocks the rest of your fleet.
+            Remote hosts need tmux. Key and SSH-agent authentication work
+            without prompting. When OpenSSH needs a password or another
+            interactive response, Ghosthub shows its exact prompt in a native
+            secure-entry sheet and keeps that OpenSSH connection available for
+            inventory and tmux operations during the app session. Responses
+            are not stored. Continue can send a deliberate empty response when
+            a keyboard-interactive challenge requires one. An unreachable
+            machine never blocks the rest of your fleet.
           </p>
           <p>
             Native Windows support is experimental. Choose{' '}
@@ -157,10 +165,15 @@ const imageAlt = {
             system-wide, test the connection and choose{' '}
             <strong>Install kwt Worktree Helper</strong>. Ghosthub asks through that
             explicit action. Testing a connection follows your OpenSSH
-            host-key policy; verify a new host with system <code>ssh</code>{' '}
-            first when your policy prompts for trust. Ghosthub then copies its
-            pinned build for the host’s OS and CPU, verifies it, and keeps it
-            under <code>~/.ghosthub/</code>.
+            host-key policy. For an unseen key, Ghosthub shows the exact full
+            destination and OpenSSH fingerprint for explicit approval, asks
+            OpenSSH to save that same key, and retries the connection. A trusted
+            short hostname or alias is a separate OpenSSH identity. Ghosthub
+            reviews effective <code>ask</code> and <code>accept-new</code>{' '}
+            policies without overriding <code>yes</code>, <code>no</code>, or{' '}
+            <code>off</code>. Ghosthub
+            then copies its pinned build for the host’s OS and CPU, verifies it,
+            and keeps it under <code>~/.ghosthub/</code>.
             On a fresh macOS or Linux host, open the <strong>+</strong> menu
             beside it, choose <strong>Add Project</strong>, and enter each
             existing checkout’s absolute path. Ghosthub delegates registration
@@ -168,13 +181,26 @@ const imageAlt = {
             Project registration is not yet available for Windows hosts. If the
             host’s SSH address changes while Add Project is open, close the
             sheet and try again against the updated host. Ghosthub marks the
-            machine reachable only
-            when the remote verification command actually begins; SSH failures
-            and unconfirmed local timeouts remain offline, while a confirmed
-            remote command failure is shown as degraded. Tmux-only hosts do not
-            need either step. An expanded host with no inventory says so in the
-            sidebar. If a host shows a caution icon, click it for the connection
-            details and a shortcut back to Host Settings.
+            machine reachable only when the remote verification command
+            actually begins; SSH failures and unconfirmed local timeouts remain
+            offline, while a confirmed remote command failure is shown as
+            degraded. Tmux-only hosts do not need either step. An expanded host
+            with no inventory says so in the sidebar. If a host shows a caution
+            icon, click it once. Ghosthub checks the exact SSH destination and
+            opens fingerprint review only when OpenSSH reports an unseen key.
+            Otherwise it tests the connection: reachable hosts keep their
+            inventory diagnostic and offer Retry, while SSH authentication
+            opens a native secure-entry sheet. Ghosthub confirms a successful
+            connection before continuing and then retries inventory.
+            ProxyJump routes handle each host in sequence. Ghosthub reviews a
+            hop's unseen key, asks for that hop's password or verification code
+            when needed, and names the exact hop controlling the prompt before
+            continuing to the next route host. Enter only that hop's
+            credentials. Opaque
+            ProxyCommand routes and jump hosts with another proxy route fail
+            closed because their intermediate policies cannot be reviewed
+            safely. After every required approval, Ghosthub retries inventory
+            automatically.
           </p>
           <aside class="reconnect">
             <span aria-hidden="true">↻</span>
@@ -316,7 +342,10 @@ const imageAlt = {
           <p>
             Press <kbd>⌘B</kbd> in any window to hide its sidebar and give
             the terminal the full frame. Press it again whenever you need
-            fleet navigation back.
+            fleet navigation back. Drag worktrees within a project or standalone
+            tmux sessions within a host to arrange them; the insertion line
+            previews the destination. Ghosthub remembers these display orders
+            without changing anything in kwt, git, or tmux.
           </p>
         </div>
       </div>

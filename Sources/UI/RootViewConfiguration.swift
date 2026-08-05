@@ -16,6 +16,7 @@ public struct WorkspaceDisplayState {
     public let idleThresholdsBySessionID: [UUID: Int]
     public let defaultIdleThresholdSeconds: Int
     public let isWorkspaceInventoryLoading: Bool
+    public let isWorkspaceInventoryRefreshComplete: Bool
     public let workspaceInventoryError: String?
     public let workspaceInventoryWarning: String?
     public let workspaceInventoryWarningsByHost: [UUID: String]
@@ -37,6 +38,7 @@ public struct WorkspaceDisplayState {
         idleThresholdsBySessionID: [UUID: Int] = [:],
         defaultIdleThresholdSeconds: Int = 300,
         isWorkspaceInventoryLoading: Bool = false,
+        isWorkspaceInventoryRefreshComplete: Bool = false,
         workspaceInventoryError: String? = nil,
         workspaceInventoryWarning: String? = nil,
         workspaceInventoryWarningsByHost: [UUID: String] = [:],
@@ -57,6 +59,8 @@ public struct WorkspaceDisplayState {
         self.idleThresholdsBySessionID = idleThresholdsBySessionID
         self.defaultIdleThresholdSeconds = defaultIdleThresholdSeconds
         self.isWorkspaceInventoryLoading = isWorkspaceInventoryLoading
+        self.isWorkspaceInventoryRefreshComplete =
+            isWorkspaceInventoryRefreshComplete
         self.workspaceInventoryError = workspaceInventoryError
         self.workspaceInventoryWarning = workspaceInventoryWarning
         self.workspaceInventoryWarningsByHost =
@@ -79,16 +83,19 @@ public struct ContentBuilders {
         ((HostSummary, String) -> AnyView?)?
     public let settingsSheetBuilder: ((SettingsStore) -> AnyView)?
     public let logViewerBuilder: (() -> AnyView?)?
+    public let sshAuthenticationBuilder: ((UUID) -> AnyView?)?
 
     public init(
         tmuxSessionContentBuilder:
         ((HostSummary, String) -> AnyView?)? = nil,
         settingsSheetBuilder: ((SettingsStore) -> AnyView)? = nil,
-        logViewerBuilder: (() -> AnyView?)? = nil
+        logViewerBuilder: (() -> AnyView?)? = nil,
+        sshAuthenticationBuilder: ((UUID) -> AnyView?)? = nil
     ) {
         self.tmuxSessionContentBuilder = tmuxSessionContentBuilder
         self.settingsSheetBuilder = settingsSheetBuilder
         self.logViewerBuilder = logViewerBuilder
+        self.sshAuthenticationBuilder = sshAuthenticationBuilder
     }
 }
 
@@ -134,6 +141,25 @@ public struct WorktreeRemovalRequest: Equatable, Sendable {
     }
 }
 
+public enum SSHConnectionRecoveryResult: Equatable, Sendable {
+    case hostKey(SSHHostKeyConfirmation)
+    case authenticationRequired
+    case inventoryIssue(String)
+    case connectionIssue(String)
+}
+
+public enum SSHAuthenticationReadiness: Equatable, Sendable {
+    case pending
+    case reviewRequired
+    case connected
+}
+
+public enum SSHHostKeyReviewRequirement: Equatable, Sendable {
+    case none
+    case confirmation(SSHHostKeyConfirmation)
+    case authenticationRequired
+}
+
 public struct InteractionHandlers {
     public let closeWindow: (() -> Void)?
     public let dismissLogViewer: (() -> Void)?
@@ -150,6 +176,15 @@ public struct InteractionHandlers {
         ((WorkspaceTmuxSessionSelection) async throws -> Void)?
     public let createTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)?
     public let refreshWorkspaceInventory: (() -> Void)?
+    public let reviewSSHHostKey:
+        ((UUID, String) async -> SSHConnectionRecoveryResult)?
+    public let trustSSHHostKey:
+        ((UUID, SSHHostKeyConfirmation) async -> Result<
+            SSHHostKeyConfirmation?, HostProbeError
+        >)?
+    public let isSSHAuthenticationReady:
+        ((UUID) async -> SSHAuthenticationReadiness)?
+    public let cancelSSHAuthentication: ((UUID) -> Void)?
     public let registerProject:
         ((HostSummary, String) async -> Result<String, HostProbeError>)?
     public let createWorktree:
@@ -181,6 +216,15 @@ public struct InteractionHandlers {
         ((WorkspaceTmuxSessionSelection) async throws -> Void)? = nil,
         createTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)? = nil,
         refreshWorkspaceInventory: (() -> Void)? = nil,
+        reviewSSHHostKey:
+        ((UUID, String) async -> SSHConnectionRecoveryResult)? = nil,
+        trustSSHHostKey:
+        ((UUID, SSHHostKeyConfirmation) async -> Result<
+            SSHHostKeyConfirmation?, HostProbeError
+        >)? = nil,
+        isSSHAuthenticationReady:
+        ((UUID) async -> SSHAuthenticationReadiness)? = nil,
+        cancelSSHAuthentication: ((UUID) -> Void)? = nil,
         registerProject:
         ((HostSummary, String) async -> Result<String, HostProbeError>)? = nil,
         createWorktree:
@@ -207,6 +251,10 @@ public struct InteractionHandlers {
         self.applyTmuxSessionTheme = applyTmuxSessionTheme
         self.createTmuxSession = createTmuxSession
         self.refreshWorkspaceInventory = refreshWorkspaceInventory
+        self.reviewSSHHostKey = reviewSSHHostKey
+        self.trustSSHHostKey = trustSSHHostKey
+        self.isSSHAuthenticationReady = isSSHAuthenticationReady
+        self.cancelSSHAuthentication = cancelSSHAuthentication
         self.registerProject = registerProject
         self.createWorktree = createWorktree
         self.listBranches = listBranches

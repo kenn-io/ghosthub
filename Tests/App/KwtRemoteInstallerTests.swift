@@ -154,6 +154,24 @@ struct KwtRemoteInstallerTests {
         )
     }
 
+    @Test("SCP reuses authentication and preserves an explicit port")
+    func reusesAuthenticationForUpload() throws {
+        let arguments = KwtRemoteInstaller.uploadArguments(
+            host: SSHHostInfo(
+                user: "developer",
+                hostname: "build-node.example.test",
+                port: 22
+            ),
+            source: URL(fileURLWithPath: "/tmp/kwt"),
+            destination: "/opt/ghosthub/kwt"
+        )
+
+        #expect(arguments.contains(where: { $0.hasPrefix("ControlPath=") }))
+        #expect(arguments.contains("-B"))
+        let portIndex = try #require(arguments.firstIndex(of: "-P"))
+        #expect(arguments[portIndex + 1] == "22")
+    }
+
     @Test("upload failures preserve the SCP diagnostic")
     func preservesUploadFailureDiagnostic() async throws {
         let revision = String(repeating: "e", count: 40)

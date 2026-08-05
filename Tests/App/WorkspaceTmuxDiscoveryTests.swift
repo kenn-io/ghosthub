@@ -8,8 +8,59 @@ import GhosthubWorkspace
 import Testing
 @testable import GhosthubApp
 
-@Suite("Workspace tmux discovery")
+@Suite("Workspace tmux discovery", .serialized)
 struct WorkspaceTmuxDiscoveryTests {
+    private static let probeNonce = "TEST-NONCE"
+
+    private static func probeOutput(
+        _ lines: [String],
+        startupOutput: String? = nil
+    ) -> String {
+        ([startupOutput].compactMap { $0 }
+            + ["GHOSTHUB_SSH_PROBE_\(probeNonce)_START"]
+            + lines
+            + ["GHOSTHUB_SSH_PROBE_\(probeNonce)_END", ""])
+            .joined(separator: "\n")
+    }
+
+    @Test("inventory refresh completion waits for kwt and tmux")
+    @MainActor
+    func inventoryRefreshCompletionWaitsForBothSources() async throws {
+        let environment = try setupStandardEnvironment()
+        let kwtGate = KillGate()
+        let kwtCompletions = Counter()
+        let tmuxGate = BlockingGate()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            kwtInventoryLoader: { _ in
+                await kwtGate.suspend()
+                _ = kwtCompletions.increment()
+                return KwtHostInventory(projects: [])
+            },
+            tmuxSessionDiscovery: { _ in
+                tmuxGate.wait()
+                return .success([])
+            },
+            startServices: true
+        )
+
+        await kwtGate.waitUntilStarted()
+        await waitUntilMainActor { tmuxGate.didStart }
+        #expect(!model.isWorkspaceInventoryRefreshComplete)
+
+        await kwtGate.release()
+        await waitUntilMainActor { kwtCompletions.count == 1 }
+        #expect(!model.isWorkspaceInventoryRefreshComplete)
+
+        tmuxGate.release()
+        await waitUntilMainActor {
+            model.isWorkspaceInventoryRefreshComplete
+        }
+        #expect(model.isWorkspaceInventoryRefreshComplete)
+        await model.shutdown()
+    }
+
     private enum CreationKwtFailurePhase: CaseIterable, Sendable {
         case command
         case inventoryRefresh
@@ -30,6 +81,29 @@ struct WorkspaceTmuxDiscoveryTests {
             lock.lock()
             defer { lock.unlock() }
             return value
+        }
+    }
+
+    private final class BlockingGate: @unchecked Sendable {
+        private let lock = NSLock()
+        private let semaphore = DispatchSemaphore(value: 0)
+        private var started = false
+
+        func wait() {
+            lock.lock()
+            started = true
+            lock.unlock()
+            semaphore.wait()
+        }
+
+        var didStart: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return started
+        }
+
+        func release() {
+            semaphore.signal()
         }
     }
 
@@ -832,7 +906,7 @@ struct WorkspaceTmuxDiscoveryTests {
         let close = try #require(
             surfaceStore.surface.closeObservers.values.first
         )
-        close(true)
+        close(true, nil)
         #expect(!model.activeBorrowedTmuxSessionIsConfirmedEnded)
 
         await waitUntilMainActor {
@@ -884,7 +958,7 @@ struct WorkspaceTmuxDiscoveryTests {
         let close = try #require(
             surfaceStore.surface.closeObservers.values.first
         )
-        close(true)
+        close(true, nil)
         await waitUntilMainActor { discoveryCalls.count >= 2 }
 
         #expect(!model.activeBorrowedTmuxSessionIsConfirmedEnded)
@@ -1179,7 +1253,7 @@ struct WorkspaceTmuxDiscoveryTests {
         let close = try #require(
             surfaceStore.surface.closeObservers.values.first
         )
-        close(false)
+        close(false, 1)
 
         await waitUntilMainActor { attempts.count == 1 }
         #expect(model.pendingCreatedTmuxSessionCount == 1)
@@ -2038,15 +2112,20 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.host.id,
             sshHostProbeRunner: { _, command in
                 #expect(command.contains("command -v tmux"))
-                #expect(command.contains("GHOSTHUB_SSH_REACHED"))
+                #expect(command.contains(
+                    "GHOSTHUB_SSH_PROBE_TEST-NONCE_START"
+                ))
                 return (
                     status: 0,
-                    stdout: """
-                    GHOSTHUB_SSH_REACHED
-                    GHOSTHUB_TMUX_AVAILABLE
-                    GHOSTHUB_KWT_UNAVAILABLE
-
-                    """
+                    stdout: Self.probeOutput(
+                        [
+                            "GHOSTHUB_SSH_REACHED",
+                            "GHOSTHUB_TMUX_AVAILABLE",
+                            "GHOSTHUB_KWT_UNAVAILABLE",
+                        ],
+                        startupOutput: "unterminated startup output"
+                    ),
+                    stderr: ""
                 )
             }
         )
@@ -2056,7 +2135,7 @@ struct WorkspaceTmuxDiscoveryTests {
             name: "Tmux Only",
             platform: .linux,
             sshDestination: "tmux-only"
-        ))
+        ), protocolNonce: Self.probeNonce)
         let summary = try result.get()
 
         #expect(summary.connectionState == .online)
@@ -2081,10 +2160,11 @@ struct WorkspaceTmuxDiscoveryTests {
             sshHostProbeRunner: { _, _ in
                 (
                     status: 127,
-                    stdout:
-                    "GHOSTHUB_SSH_REACHED\n"
-                        + "GHOSTHUB_TMUX_UNAVAILABLE\n"
-                        + "GHOSTHUB_KWT_UNAVAILABLE\n"
+                    stdout: Self.probeOutput([
+                        "GHOSTHUB_SSH_REACHED",
+                        "GHOSTHUB_TMUX_UNAVAILABLE",
+                    ]),
+                    stderr: ""
                 )
             }
         )
@@ -2094,7 +2174,7 @@ struct WorkspaceTmuxDiscoveryTests {
             name: "DGX Spark",
             platform: .linux,
             sshDestination: "wesm@dgx-spark"
-        ))
+        ), protocolNonce: Self.probeNonce)
         let summary = try result.get()
 
         #expect(summary.connectionState == .degraded)
@@ -2108,14 +2188,22 @@ struct WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
-    @Test("connection probe reports an SSH failure independently")
+    @Test("connection probe requires its nonce-framed protocol block")
     func connectionProbeReportsSSHFailure() async throws {
         let environment = try setupStandardEnvironment()
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
             sshHostProbeRunner: { _, _ in
-                (status: 255, stdout: "")
+                (
+                    status: 255,
+                    stdout:
+                    "GHOSTHUB_SSH_REACHED\n"
+                        + "GHOSTHUB_TMUX_AVAILABLE\n",
+                    stderr:
+                    "GHOSTHUB_SSH_REACHED\n"
+                        + "GHOSTHUB_TMUX_AVAILABLE\n"
+                )
             }
         )
 
@@ -2124,7 +2212,7 @@ struct WorkspaceTmuxDiscoveryTests {
             name: "Offline",
             platform: .linux,
             sshDestination: "offline"
-        ))
+        ), protocolNonce: Self.probeNonce)
         let summary = try result.get()
 
         #expect(summary.connectionState == .offline)
@@ -2134,7 +2222,7 @@ struct WorkspaceTmuxDiscoveryTests {
         ])
         #expect(
             summary.diagnostics.first?.summary
-                == "SSH could not be reached."
+                == "SSH could not connect to the host."
         )
         await model.shutdown()
     }
@@ -2152,9 +2240,11 @@ struct WorkspaceTmuxDiscoveryTests {
             sshHostProbeRunner: { _, _ in
                 (
                     status: status,
-                    stdout:
-                    "GHOSTHUB_SSH_REACHED\n"
-                        + "GHOSTHUB_TMUX_AVAILABLE\n"
+                    stdout: Self.probeOutput([
+                        "GHOSTHUB_SSH_REACHED",
+                        "GHOSTHUB_TMUX_AVAILABLE",
+                    ]),
+                    stderr: ""
                 )
             }
         )
@@ -2164,7 +2254,7 @@ struct WorkspaceTmuxDiscoveryTests {
             name: "Misconfigured Shell",
             platform: .linux,
             sshDestination: "misconfigured-shell"
-        ))
+        ), protocolNonce: Self.probeNonce)
         let summary = try result.get()
 
         #expect(summary.connectionState == .degraded)
@@ -2186,7 +2276,11 @@ struct WorkspaceTmuxDiscoveryTests {
             database: environment.database,
             localHostID: environment.host.id,
             sshHostProbeRunner: { _, _ in
-                (status: -124, stdout: "SSH wrapper output\n")
+                (
+                    status: -124,
+                    stdout: "",
+                    stderr: "SSH wrapper output\n"
+                )
             }
         )
 
@@ -2195,7 +2289,7 @@ struct WorkspaceTmuxDiscoveryTests {
             name: "Timed Out",
             platform: .linux,
             sshDestination: "timed-out"
-        ))
+        ), protocolNonce: Self.probeNonce)
         let summary = try result.get()
 
         #expect(summary.connectionState == .offline)
@@ -2204,7 +2298,7 @@ struct WorkspaceTmuxDiscoveryTests {
         #expect(summary.diagnostics.map(\.code) == [.sshConnectionFailed])
         #expect(
             summary.diagnostics.first?.summary
-                == "SSH could not be reached."
+                == "The SSH connection timed out."
         )
         await model.shutdown()
     }
@@ -2277,6 +2371,7 @@ struct WorkspaceTmuxDiscoveryTests {
             sshHostProbeRunner: { host, command in
                 #expect(host.platform == .windows)
                 #expect(command.contains("Get-Command tmux.exe"))
+                #expect(command.contains("[Console]::Out.WriteLine()"))
                 #expect(command.contains("GHOSTHUB_KWT_AVAILABLE"))
                 if let managedPath =
                     KwtBinaryLocator.windowsRemoteManagedRelativePath(
@@ -2295,12 +2390,15 @@ struct WorkspaceTmuxDiscoveryTests {
                 #expect(!command.contains("command -v"))
                 return (
                     status: 0,
-                    stdout: """
-                    GHOSTHUB_SSH_REACHED
-                    GHOSTHUB_TMUX_AVAILABLE
-                    GHOSTHUB_KWT_AVAILABLE
-
-                    """
+                    stdout: Self.probeOutput(
+                        [
+                            "GHOSTHUB_SSH_REACHED",
+                            "GHOSTHUB_TMUX_AVAILABLE",
+                            "GHOSTHUB_KWT_AVAILABLE",
+                        ],
+                        startupOutput: "unterminated startup output"
+                    ),
+                    stderr: ""
                 )
             }
         )
@@ -2310,7 +2408,7 @@ struct WorkspaceTmuxDiscoveryTests {
             name: "ARM Builder",
             platform: .windows,
             sshDestination: "wesm@arm-builder"
-        ))
+        ), protocolNonce: Self.probeNonce)
         let summary = try result.get()
 
         #expect(summary.connectionState == .online)
@@ -2329,11 +2427,11 @@ struct WorkspaceTmuxDiscoveryTests {
             sshHostProbeRunner: { _, _ in
                 (
                     status: 127,
-                    stdout: """
-                    GHOSTHUB_SSH_REACHED
-                    GHOSTHUB_TMUX_UNAVAILABLE
-
-                    """
+                    stdout: Self.probeOutput([
+                        "GHOSTHUB_SSH_REACHED",
+                        "GHOSTHUB_TMUX_UNAVAILABLE",
+                    ]),
+                    stderr: ""
                 )
             }
         )
@@ -2343,7 +2441,7 @@ struct WorkspaceTmuxDiscoveryTests {
             name: "ARM Builder",
             platform: .windows,
             sshDestination: "wesm@arm-builder"
-        ))
+        ), protocolNonce: Self.probeNonce)
         let summary = try result.get()
         let diagnostic = try #require(summary.diagnostics.first)
 
@@ -2457,11 +2555,12 @@ struct WorkspaceTmuxDiscoveryTests {
 private final class SceneTmuxPaneSurfaceStub: TmuxPaneSurfacing {
     var blocksClipboardReads = false
     var launchError: Error? { nil }
-    private(set) var closeObservers: [UUID: (Bool) -> Void] = [:]
+    var childExitCode: UInt32?
+    private(set) var closeObservers: [UUID: (Bool, UInt32?) -> Void] = [:]
 
     func registerSurfaceCloseObserver(
         id: UUID,
-        onSurfaceClosed: @escaping (Bool) -> Void
+        onSurfaceClosed: @escaping (Bool, UInt32?) -> Void
     ) {
         closeObservers[id] = onSurfaceClosed
     }

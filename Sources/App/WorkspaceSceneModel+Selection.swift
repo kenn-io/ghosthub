@@ -51,18 +51,22 @@ extension WorkspaceSceneModel {
     }
 
     func selectIndexedWorktree(_ index: Int) {
+        let worktreeOrder = WorkspaceSidebarOrderStorage.worktreeRawValue()
         if let updated = KeyboardNavigationModel.selectionForShortcutIndex(
             index, from: selection, in: snapshot,
-            visibility: worktreeVisibility
+            visibility: worktreeVisibility,
+            worktreeOrderRawValue: worktreeOrder
         ) {
             selectFromUser(updated)
         }
     }
 
     func stepWorktree(by step: Int) {
+        let worktreeOrder = WorkspaceSidebarOrderStorage.worktreeRawValue()
         if let updated = KeyboardNavigationModel.steppedSelection(
             from: selection, in: snapshot, step: step,
-            visibility: worktreeVisibility
+            visibility: worktreeVisibility,
+            worktreeOrderRawValue: worktreeOrder
         ) {
             selectFromUser(updated)
         }

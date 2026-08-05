@@ -1,3 +1,4 @@
+import AppKit
 import GhosthubSettings
 import SwiftUI
 import GhosthubWorkspace
@@ -11,6 +12,22 @@ public struct SettingsActions {
         > = { _ in
             .failure(.message("SSH host probing is unavailable."))
         }
+    var pendingSSHHostKeyConfirmation:
+        (SSHHost) async -> Result<
+            SSHHostKeyReviewRequirement,
+            HostProbeError
+        > = { _ in .success(.none) }
+    var trustSSHHostKey:
+        (SSHHostKeyConfirmation, SSHHost) async -> Result<
+            SSHHostKeyConfirmation?,
+            HostProbeError
+        > = { _, _ in
+            .failure(.message("SSH host-key approval is unavailable."))
+        }
+    var sshAuthenticationView: (UUID, SSHHost) -> AnyView? = { _, _ in nil }
+    var isSSHAuthenticationReady:
+        (SSHHost) async -> SSHAuthenticationReadiness = { _ in .pending }
+    var cancelSSHAuthentication: (UUID) -> Void = { _ in }
     var loadTailscalePeers: () async -> TailscalePeerLoadResult = {
         .failure("Tailscale import is unavailable.")
     }
@@ -37,6 +54,26 @@ public struct SettingsActions {
         > = { _ in
             .failure(.message("SSH host probing is unavailable."))
         },
+        pendingSSHHostKeyConfirmation: @escaping (
+            SSHHost
+        ) async -> Result<SSHHostKeyReviewRequirement, HostProbeError> = {
+            _ in .success(.none)
+        },
+        trustSSHHostKey: @escaping (
+            SSHHostKeyConfirmation,
+            SSHHost
+        ) async -> Result<SSHHostKeyConfirmation?, HostProbeError> = { _, _ in
+            .failure(.message("SSH host-key approval is unavailable."))
+        },
+        sshAuthenticationView: @escaping (UUID, SSHHost) -> AnyView? = {
+            _, _ in nil
+        },
+        isSSHAuthenticationReady: @escaping (
+            SSHHost
+        ) async -> SSHAuthenticationReadiness = {
+            _ in .pending
+        },
+        cancelSSHAuthentication: @escaping (UUID) -> Void = { _ in },
         loadTailscalePeers: @escaping () async -> TailscalePeerLoadResult = {
             .failure("Tailscale import is unavailable.")
         },
@@ -61,6 +98,12 @@ public struct SettingsActions {
     ) {
         self.refreshHosts = refreshHosts
         self.probeSSHHost = probeSSHHost
+        self.pendingSSHHostKeyConfirmation =
+            pendingSSHHostKeyConfirmation
+        self.trustSSHHostKey = trustSSHHostKey
+        self.sshAuthenticationView = sshAuthenticationView
+        self.isSSHAuthenticationReady = isSSHAuthenticationReady
+        self.cancelSSHAuthentication = cancelSSHAuthentication
         self.loadTailscalePeers = loadTailscalePeers
         self.installRemoteKwt = installRemoteKwt
         self.registerRemoteProject = registerRemoteProject
@@ -219,16 +262,35 @@ public struct SettingsView: View {
     }
 
     private var availableTerminalFontFamilies: [String] {
-        let installed = NSFontManager.shared.availableFontFamilies.sorted()
-        let trimmedCurrent = draft.terminalFontFamily.trimmingCharacters(
-            in: .whitespacesAndNewlines
-        )
-        guard !trimmedCurrent.isEmpty,
-              !installed.contains(trimmedCurrent)
-        else {
-            return installed
+        let manager = NSFontManager.shared
+        let installedFixedPitchFamilies = manager.availableFontFamilies.filter { family in
+            manager.availableMembers(ofFontFamily: family)?.contains {
+                member in
+                guard member.count > 3 else { return false }
+                if let traits = member[3] as? NSNumber,
+                   NSFontTraitMask(rawValue: traits.uintValue)
+                   .contains(.fixedPitchFontMask) {
+                    return true
+                }
+                guard let fontName = member[0] as? String,
+                      let font = NSFont(name: fontName, size: 14)
+                else { return false }
+                if font.fontDescriptor.symbolicTraits.contains(.monoSpace) {
+                    return true
+                }
+                let advances = ["i", "W", "0", "m", " "].map {
+                    ($0 as NSString).size(withAttributes: [.font: font]).width
+                }
+                guard let minimum = advances.min(),
+                      let maximum = advances.max()
+                else { return false }
+                return maximum - minimum < 0.01
+            } == true
         }
-        return [trimmedCurrent] + installed
+        return TerminalFontFamilyOptions.families(
+            installedFixedPitch: installedFixedPitchFamilies,
+            configured: draft.terminalFontFamily
+        )
     }
 
     private var availableTerminalFontSizes: [Double] {
@@ -252,6 +314,14 @@ public struct SettingsView: View {
             isTailscaleSheetPresented: $isTailscaleSheetPresented,
             isInstallingWindowsKwt: $isInstallingWindowsKwt,
             probeSSHHost: actions.probeSSHHost,
+            pendingSSHHostKeyConfirmation:
+            actions.pendingSSHHostKeyConfirmation,
+            trustSSHHostKey: actions.trustSSHHostKey,
+            sshAuthenticationView: actions.sshAuthenticationView,
+            isSSHAuthenticationReady:
+            actions.isSSHAuthenticationReady,
+            cancelSSHAuthentication:
+            actions.cancelSSHAuthentication,
             installRemoteKwt: actions.installRemoteKwt,
             registerRemoteProject: actions.registerRemoteProject,
             loadTailscalePeers: actions.loadTailscalePeers,

@@ -162,6 +162,85 @@ twice.
 
 ### External State
 
+SSH transport, configuration resolution, and host-key storage remain owned by
+the system OpenSSH client. Effective `ssh -G` output is nonce-framed inside the
+account login shell so startup banners cannot become replayed SSH options. When
+**Test Connection** or a host-scoped inventory
+warning encounters an unseen key, Ghosthub presents the exact destination and
+fingerprint through an explicit trust sheet. Approval is returned to that same
+OpenSSH prompt through a private askpass channel; Ghosthub neither substitutes
+a short alias nor writes a key obtained from a separate scanner. The approved
+key therefore lands in the `UserKnownHostsFile` selected by the user's OpenSSH
+configuration before the ordinary noninteractive probe or inventory refresh
+retries.
+When that retry needs interactive authentication, Ghosthub presents OpenSSH's
+exact challenge in a native secure-entry sheet. The app brokers the session-only
+response to the system client through a private FIFO; it does not put the
+response in process arguments, environment variables, logs, or persistent
+storage. A successful prompt leaves a non-persistent OpenSSH master owned by
+the application session, and every window's inventory, transfer, and tmux
+clients reuse its control socket in a per-launch namespace under
+`~/.ghosthub/ssh/`. Its bounded socket
+name includes an app-launch nonce plus a digest of the logical destination,
+the normalized effective OpenSSH configuration for every route target, and the
+proxy route, so changes to credentials, known-hosts files, trust identities,
+routes, or app launches cannot reuse an authenticated master. A parent-held
+watchdog descriptor remains open for the app lifetime and terminates each
+master only when that descriptor reaches EOF. The next
+launch removes only socket namespaces owned by processes that are no longer
+running, so concurrent Ghosthub instances cannot unlink each other's masters.
+When the state-home path would exceed macOS's Unix-socket limit, Ghosthub uses
+the same process-owned namespace under `/tmp` and rejects any still-oversized
+path before launching OpenSSH.
+Routine clients and generated ProxyJump helpers explicitly disable
+`ControlMaster` and `ControlPersist`; routine clients receive only Ghosthub's
+supervised socket, while fallback proxy helpers set `ControlPath=none` so they
+cannot inherit or create an unrelated master. Generated proxy commands also
+force ordinary stdin/stdout forwarding instead of inheriting `ProxyUseFdpass`,
+because Ghosthub's nested route commands do not return file descriptors.
+Host-key review replays resolved key-exchange, cipher, MAC, and minimum RSA-key
+constraints alongside known-hosts policy. Master preparation resolves one
+effective-config snapshot, verifies that its control identity still matches
+the cached path, and launches the endpoint, route, authentication, and
+known-hosts options from that same snapshot under an empty base SSH
+configuration. An identity change restarts recovery instead of using the old
+socket path. Readiness resolves that identity again before reporting a
+connection, invalidating the stale session and returning to recovery if the
+route or control path changed. Master stderr is continuously drained into a
+bounded diagnostic buffer through a nonblocking dispatch source, so verbose
+OpenSSH logging cannot block the connection or occupy Swift concurrency
+workers. Ghosthub keeps
+the master in the foreground even if the user's SSH configuration requests
+forking, so the app watchdog retains ownership of its lifetime. It removes
+inherited tmux launcher state before starting the master through the account
+login shell, preserving the same environment boundary used
+by configuration checks and ordinary SSH operations.
+Remote connection probes emit a leading line delimiter, then parse exact
+protocol-marker lines only from stdout. SSH and login-shell diagnostics,
+including marker text embedded in a banner, cannot make a failed probe appear
+reachable.
+Window presentations hold leases on shared authentication attempts. Closing a
+window cancels an unfinished attempt only after its final presenting window
+releases it; an authenticated master remains available until the app exits.
+Before opening that channel, Ghosthub reads the effective destination policy
+with `ssh -G`. It tightens `accept-new` to an explicit review but does not
+override `yes`, `no`, or `off`; approval matches the parsed algorithm and
+fingerprint rather than address-bearing prompt prose. Review-managed `ask` and
+`accept-new` connections also disable `UpdateHostKeys`, so the connection
+cannot persist additional server-advertised keys that were not reviewed.
+Trust invocations use the same local account login-shell boundary as ordinary
+SSH operations. For ProxyJump routes, Ghosthub names the host from OpenSSH's
+prompt and reviews each unseen route key sequentially. When a preceding jump
+host needs a password or other challenge, Ghosthub authenticates that reviewed
+hop first and uses its app-session control connection to reach the next host.
+The secure-entry sheet names the exact route host controlling the challenge
+using its effective SSH user, hostname, and port, and warns the user to enter
+only that host's credentials. Continue also permits a deliberate empty response
+for keyboard-interactive challenges that require one.
+Opaque ProxyCommand routes and jump hosts that introduce another proxy route
+fail closed because Ghosthub cannot independently enforce every intermediate
+host-key policy.
+
 Ghosthub bundles revision-pinned kwt CLI builds for local project and worktree
 operations and for `darwin/{amd64,arm64}`, `linux/{amd64,arm64}`, and
 `windows/{amd64,arm64}` remote hosts. The local helper is signed as app code and invoked by its exact bundle
@@ -216,13 +295,13 @@ then executes an ordinary client with environment updates disabled. The user
 may explicitly run project commands after attachment. Other workspaces and
 unbound sessions continue to attach directly to the host's normal tmux server.
 
-Remote kwt installation is never implicit. Ordinary inventory, connection
-testing, and tmux attachment remain non-mutating, and a remote host without the
+Remote kwt installation is never implicit. Ordinary inventory and tmux
+attachment remain non-mutating. Connection testing mutates host-key state only
+after the explicit fingerprint approval above, and a remote host without the
 managed helper remains tmux-only. Install and Update are explicit Settings
 actions and never replace a host's system kwt. Versioned directories retain
 older pinned helpers, so installing an older Ghosthub build can select and
-restore its own revision; reinstalling one revision also retains
-`kwt.previous`.
+restore its own revision; reinstalling one revision also retains `kwt.previous`.
 
 Native Windows installation uses a separate PowerShell boundary. The explicit
 **Install Bundled kwt** action probes the remote process architecture, uploads

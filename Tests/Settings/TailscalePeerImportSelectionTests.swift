@@ -14,6 +14,29 @@ struct TailscalePeerImportSelectionTests {
                 "box.tailnet.ts.net"
             ) == "box.tailnet.ts.net"
         )
+        #expect(
+            TailscalePeerImportSelection.normalizedHost(
+                " DEV@Box.Tailnet.TS.NET. "
+            ) == "box.tailnet.ts.net"
+        )
+    }
+
+    @Test("short host collisions do not hide canonical peers")
+    func shortHostCollisionsRemainImportable() {
+        let peer = makePeer(
+            id: "builder",
+            hostName: "builder",
+            dnsName: "builder.example-tailnet.ts.net."
+        )
+
+        #expect(!TailscalePeerImportSelection.alreadyImported(
+            peer,
+            existingAddresses: ["builder"]
+        ))
+        #expect(TailscalePeerImportSelection.defaultSelectedPeerIDs(
+            peers: [peer],
+            existingAddresses: ["builder"]
+        ) == ["builder"])
     }
 
     @Test("marks existing peers after normalizing SSH destinations")
@@ -27,7 +50,7 @@ struct TailscalePeerImportSelectionTests {
         #expect(
             TailscalePeerImportSelection.alreadyImported(
                 peer,
-                existingAddresses: ["wes@box.tailnet.ts.net"]
+                existingAddresses: ["DEV@BOX.TAILNET.TS.NET."]
             )
         )
     }
@@ -78,7 +101,8 @@ struct TailscalePeerImportSelectionTests {
             hostName: hostName,
             dnsName: dnsName ?? "\(hostName).tailnet.ts.net.",
             os: "linux",
-            isOnline: isOnline
+            isOnline: isOnline,
+            sshUsername: nil
         )
     }
 }

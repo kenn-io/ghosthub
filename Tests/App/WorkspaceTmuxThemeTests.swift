@@ -23,7 +23,7 @@ private let newerStyle = TmuxPresentationStyle(
     background: "#F0F1F2"
 )
 
-@Suite("workspace tmux themes")
+@Suite("workspace tmux themes", .serialized)
 struct WorkspaceTmuxThemeTests {
     @Test("follow-config uses effective libghostty colors")
     func followConfigStyle() {
@@ -836,10 +836,11 @@ private func connectActiveTmuxSession(
 private final class ThemeTmuxPaneSurfaceStub: TmuxPaneSurfacing {
     var blocksClipboardReads = false
     var launchError: Error? { nil }
+    var childExitCode: UInt32?
 
     func registerSurfaceCloseObserver(
         id _: UUID,
-        onSurfaceClosed _: @escaping (Bool) -> Void
+        onSurfaceClosed _: @escaping (Bool, UInt32?) -> Void
     ) {}
 }
 

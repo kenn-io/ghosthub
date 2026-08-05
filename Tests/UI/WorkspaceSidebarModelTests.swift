@@ -5,6 +5,154 @@ import Testing
 @testable import GhosthubUI
 
 struct WorkspaceSidebarModelTests {
+    @Test("drag ordering is durable and scoped to one project")
+    func worktreeDragOrdering() {
+        let first = WorktreeSummary.fixture(name: "first")
+        let second = WorktreeSummary.fixture(name: "second")
+        let third = WorktreeSummary.fixture(name: "third")
+        let otherProject = WorktreeSummary.fixture(name: "other")
+        var order = WorkspaceSidebarOrder()
+
+        let didMove = order.move(
+            first.id.uuidString,
+            to: third.id.uuidString,
+            within: [first, second, third].map { $0.id.uuidString }
+        )
+        #expect(didMove)
+        #expect(order.ordered(
+            [first, second, third],
+            identifiedBy: { $0.id.uuidString }
+        ).map(\.id)
+            == [second.id, third.id, first.id])
+
+        let restored = WorkspaceSidebarOrder(rawValue: order.rawValue)
+        #expect(restored.ordered(
+            [first, second, third],
+            identifiedBy: { $0.id.uuidString }
+        ).map(\.id)
+            == [second.id, third.id, first.id])
+        #expect(restored.ordered(
+            [otherProject],
+            identifiedBy: { $0.id.uuidString }
+        ).map(\.id)
+            == [otherProject.id])
+    }
+
+    @Test("drag ordering preserves omitted siblings in their stored slots")
+    func dragOrderingPreservesOmittedSiblings() {
+        var order = WorkspaceSidebarOrder(rawValue: "first\nsecond\nthird")
+
+        let didMove = order.move(
+            "first",
+            to: "third",
+            within: ["first", "third"]
+        )
+
+        #expect(didMove)
+        #expect(order.rawValue == "third\nsecond\nfirst")
+    }
+
+    @Test("removed inventory identities are pruned from persisted order")
+    func prunesRemovedInventoryIdentities() {
+        var order = WorkspaceSidebarOrder(
+            rawValue: "present\nremoved\nhidden"
+        )
+
+        let didPrune = order.prune(keeping: ["present", "hidden"])
+        #expect(didPrune)
+        #expect(order.rawValue == "present\nhidden")
+        let didPruneAgain = order.prune(keeping: ["present", "hidden"])
+        #expect(!didPruneAgain)
+    }
+
+    @Test("staggered inventory results cannot trigger order pruning")
+    func incompleteInventoryDoesNotPrune() {
+        #expect(!WorkspaceSidebarPruningPolicy.shouldPrune(
+            refreshComplete: false,
+            inventoryWarning: nil,
+            inventoryWarningsByHost: [:]
+        ))
+        #expect(WorkspaceSidebarPruningPolicy.shouldPrune(
+            refreshComplete: true,
+            inventoryWarning: nil,
+            inventoryWarningsByHost: [:]
+        ))
+    }
+
+    @Test("drop placement matches the final directional insertion")
+    func dropPlacement() {
+        let orderedIDs = ["first", "second", "third"]
+
+        #expect(WorkspaceSidebarDropPlacement.resolve(
+            sourceID: "first",
+            targetID: "third",
+            orderedIDs: orderedIDs
+        ) == .after)
+        #expect(WorkspaceSidebarDropPlacement.resolve(
+            sourceID: "third",
+            targetID: "first",
+            orderedIDs: orderedIDs
+        ) == .before)
+        #expect(WorkspaceSidebarDropPlacement.resolve(
+            sourceID: "second",
+            targetID: "second",
+            orderedIDs: orderedIDs
+        ) == nil)
+    }
+
+    @Test("tmux session order persists independently for each host")
+    func tmuxSessionOrdering() {
+        let firstHostID = UUID()
+        let secondHostID = UUID()
+        let sessionNames = ["alpha", "beta", "gamma"]
+        let firstHostIDs = sessionNames.map {
+            WorkspaceSidebarModel.tmuxSessionOrderID(
+                hostID: firstHostID,
+                name: $0
+            )
+        }
+        var order = WorkspaceSidebarOrder()
+        let didMove = order.move(
+            firstHostIDs[0],
+            to: firstHostIDs[2],
+            within: firstHostIDs
+        )
+        #expect(didMove)
+
+        let snapshot = WorkspaceSnapshot.fixture(hosts: [
+            .fixture(
+                id: firstHostID,
+                tmuxSessions: sessionNames.reversed().map {
+                    TmuxSessionSummary(
+                        name: $0,
+                        managed: false,
+                        windows: []
+                    )
+                }
+            ),
+            .fixture(
+                id: secondHostID,
+                kind: .remote,
+                tmuxSessions: sessionNames.reversed().map {
+                    TmuxSessionSummary(
+                        name: $0,
+                        managed: false,
+                        windows: []
+                    )
+                }
+            ),
+        ])
+        let sections = WorkspaceSidebarModel.sections(
+            in: snapshot,
+            tmuxSessionOrderRawValue: order.rawValue
+        )
+
+        #expect(sections[0].tmuxSessionRows.map(\.title)
+            == ["beta", "gamma", "alpha"])
+        #expect(sections[1].tmuxSessionRows.map(\.title)
+            == ["alpha", "beta", "gamma"])
+    }
+
     @Test("sidebar hierarchy advances one compact indent per level")
     func hierarchyIndentAdvancesByLevel() {
         let host = WorkspaceSidebarHierarchy.indent(level: 0)

@@ -57,6 +57,7 @@ private struct WindowFocusTracker: NSViewRepresentable {
     let requestID: UUID?
     @Binding var isFocused: Bool
     var isSidebarVisible: Bool
+    var sidebarWidth: CGFloat
     var canCreateWorktree: Bool
     var sessionTitle: SessionTitlebarPresentation?
     var onToggleSidebar: () -> Void
@@ -84,6 +85,7 @@ private struct WindowFocusTracker: NSViewRepresentable {
     private func configureTitlebar(_ view: FocusTrackingView) {
         view.titlebarController.update(
             isSidebarVisible: isSidebarVisible,
+            sidebarWidth: sidebarWidth,
             canCreateWorktree: canCreateWorktree,
             sessionTitle: sessionTitle,
             onToggleSidebar: onToggleSidebar,
@@ -305,7 +307,9 @@ final class CompactWorkspaceTitlebarController {
     private let actionsHost = NSHostingView(rootView: AnyView(EmptyView()))
     private let closeDelegate = WorkspaceWindowCloseDelegate()
     private weak var installedWindow: NSWindow?
+    private var titleLeadingConstraint: NSLayoutConstraint?
     private var isSidebarVisible = true
+    private var sidebarWidth = WorkspaceSidebarWidthPolicy.defaultWidth
     private var canCreateWorktree = false
     private var sessionTitle: SessionTitlebarPresentation?
     private var onToggleSidebar: () -> Void = {}
@@ -361,6 +365,14 @@ final class CompactWorkspaceTitlebarController {
         titlebar.addSubview(sidebarHost)
         titlebar.addSubview(titleHost)
         titlebar.addSubview(actionsHost)
+        let titleLeadingConstraint = titleHost.leadingAnchor.constraint(
+            equalTo: titlebar.leadingAnchor,
+            constant: Self.titleLeadingOffset(
+                isSidebarVisible: isSidebarVisible,
+                sidebarWidth: sidebarWidth
+            )
+        )
+        self.titleLeadingConstraint = titleLeadingConstraint
         NSLayoutConstraint.activate([
             sidebarHost.leadingAnchor.constraint(
                 equalTo: zoomButton.trailingAnchor,
@@ -371,10 +383,7 @@ final class CompactWorkspaceTitlebarController {
             ),
             sidebarHost.widthAnchor.constraint(equalToConstant: 22),
             sidebarHost.heightAnchor.constraint(equalToConstant: 22),
-            titleHost.leadingAnchor.constraint(
-                equalTo: sidebarHost.trailingAnchor,
-                constant: 8
-            ),
+            titleLeadingConstraint,
             titleHost.trailingAnchor.constraint(
                 lessThanOrEqualTo: actionsHost.leadingAnchor,
                 constant: -12
@@ -400,8 +409,17 @@ final class CompactWorkspaceTitlebarController {
         tabCount <= 1
     }
 
+    static func titleLeadingOffset(
+        isSidebarVisible: Bool,
+        sidebarWidth: CGFloat
+    ) -> CGFloat {
+        guard isSidebarVisible else { return 120 }
+        return max(120, sidebarWidth + 12)
+    }
+
     func update(
         isSidebarVisible: Bool,
+        sidebarWidth: CGFloat = WorkspaceSidebarWidthPolicy.defaultWidth,
         canCreateWorktree: Bool,
         sessionTitle: SessionTitlebarPresentation?,
         onToggleSidebar: @escaping () -> Void,
@@ -409,7 +427,12 @@ final class CompactWorkspaceTitlebarController {
         onSettings: @escaping () -> Void,
         onNewWorktree: @escaping () -> Void
     ) {
+        let sidebarVisibilityChanged = self.isSidebarVisible
+            != isSidebarVisible
         self.isSidebarVisible = isSidebarVisible
+        self.sidebarWidth = WorkspaceSidebarWidthPolicy.clampedWidth(
+            sidebarWidth
+        )
         self.canCreateWorktree = canCreateWorktree
         self.sessionTitle = sessionTitle
         self.onToggleSidebar = onToggleSidebar
@@ -417,6 +440,25 @@ final class CompactWorkspaceTitlebarController {
         self.onSettings = onSettings
         self.onNewWorktree = onNewWorktree
         refreshHosts()
+        let titleLeadingOffset = Self.titleLeadingOffset(
+            isSidebarVisible: isSidebarVisible,
+            sidebarWidth: self.sidebarWidth
+        )
+        if sidebarVisibilityChanged,
+           let titleLeadingConstraint {
+            let container = titleHost.superview
+            container?.layoutSubtreeIfNeeded()
+            titleLeadingConstraint.constant = titleLeadingOffset
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.2
+                context.timingFunction = CAMediaTimingFunction(
+                    name: .easeInEaseOut
+                )
+                container?.animator().layoutSubtreeIfNeeded()
+            }
+        } else {
+            titleLeadingConstraint?.constant = titleLeadingOffset
+        }
     }
 
     private func refreshHosts() {
@@ -488,6 +530,7 @@ final class CompactWorkspaceTitlebarController {
     }
 
     private func removeControlsFromInstalledWindow() {
+        titleLeadingConstraint = nil
         sidebarHost.removeFromSuperview()
         titleHost.removeFromSuperview()
         actionsHost.removeFromSuperview()
@@ -527,12 +570,32 @@ struct WorkspaceWindow: View {
     @State private var windowStateBuffer = WorkspaceWindowStateBuffer()
     @State private var updateRelaunchSceneID = UUID()
     @State private var updateRelaunchWindowID: UUID?
-    @StateObject private var sceneModel = WorkspaceSceneModel()
+    @StateObject private var sceneModel: WorkspaceSceneModel
     @EnvironmentObject private var terminalRuntime: LibghosttyRuntime
     @ObservedObject private var settingsStore = SettingsStore.shared
     @State private var visibleConfigReloadNotice:
         LibghosttyConfigReloadNotice?
+    @State private var titlebarSidebarWidth =
+        WorkspaceSidebarWidthPolicy.defaultWidth
     private let registry = WindowRegistry.shared
+
+    #if canImport(AppKit)
+    init(
+        applicationDelegate: ApplicationDelegate,
+        windowState: Binding<WorkspaceWindowState?>,
+        updateRelaunchRestorer: UpdateRelaunchRestorer,
+        openRelaunchWindow: @escaping (WorkspaceWindowState) -> Void
+    ) {
+        self.applicationDelegate = applicationDelegate
+        _windowState = windowState
+        self.updateRelaunchRestorer = updateRelaunchRestorer
+        self.openRelaunchWindow = openRelaunchWindow
+        _sceneModel = StateObject(wrappedValue: WorkspaceSceneModel(
+            sshAuthenticationCoordinator:
+            applicationDelegate.sshAuthenticationCoordinator
+        ))
+    }
+    #endif
 
     var body: some View {
         return RootView(
@@ -558,6 +621,8 @@ struct WorkspaceWindow: View {
                 sceneModel.defaultIdleThresholdSeconds,
                 isWorkspaceInventoryLoading:
                 sceneModel.workspaceInventoryState == .loading,
+                isWorkspaceInventoryRefreshComplete:
+                sceneModel.isWorkspaceInventoryRefreshComplete,
                 workspaceInventoryError: {
                     if case let .failed(message) =
                         sceneModel.workspaceInventoryState {
@@ -604,6 +669,37 @@ struct WorkspaceWindow: View {
                                             host
                                         )
                                 },
+                                pendingSSHHostKeyConfirmation: {
+                                    host in
+                                    await sceneModel
+                                        .pendingSSHHostKeyConfirmation(
+                                            for: host
+                                        )
+                                },
+                                trustSSHHostKey: {
+                                    confirmation, host in
+                                    await sceneModel
+                                        .trustSSHHostKey(
+                                            confirmation,
+                                            for: host
+                                        )
+                                },
+                                sshAuthenticationView: {
+                                    surfaceID, host in
+                                    sceneModel.sshAuthenticationView(
+                                        surfaceID: surfaceID,
+                                        for: host
+                                    )
+                                },
+                                isSSHAuthenticationReady: { host in
+                                    await sceneModel
+                                        .isSSHAuthenticationReady(for: host)
+                                },
+                                cancelSSHAuthentication: { surfaceID in
+                                    sceneModel.cancelSSHAuthentication(
+                                        surfaceID: surfaceID
+                                    )
+                                },
                                 loadTailscalePeers: {
                                     await TailscaleDiscovery
                                         .discoverPeers()
@@ -640,6 +736,11 @@ struct WorkspaceWindow: View {
                 },
                 logViewerBuilder: { [sceneModel] in
                     sceneModel.logViewerTerminalView()
+                },
+                sshAuthenticationBuilder: { [sceneModel] hostID in
+                    sceneModel.sshAuthenticationView(
+                        forHostID: hostID
+                    )
                 }
             ),
             handlers: InteractionHandlers(
@@ -678,6 +779,28 @@ struct WorkspaceWindow: View {
                 refreshWorkspaceInventory: { [sceneModel] in
                     sceneModel.refreshKwtInventory()
                 },
+                reviewSSHHostKey: { [sceneModel] hostID, inventoryWarning in
+                    await sceneModel.sshConnectionRecovery(
+                        forHostID: hostID,
+                        inventoryWarning: inventoryWarning
+                    )
+                },
+                trustSSHHostKey: { [sceneModel] hostID, confirmation in
+                    await sceneModel.trustSSHHostKey(
+                        confirmation,
+                        forHostID: hostID
+                    )
+                },
+                isSSHAuthenticationReady: { [sceneModel] hostID in
+                    await sceneModel.isSSHAuthenticationReady(
+                        forHostID: hostID
+                    )
+                },
+                cancelSSHAuthentication: { [sceneModel] hostID in
+                    sceneModel.cancelSSHAuthentication(
+                        surfaceID: hostID
+                    )
+                },
                 registerProject: { [sceneModel] host, path in
                     await sceneModel.registerProject(path, on: host)
                 },
@@ -701,6 +824,9 @@ struct WorkspaceWindow: View {
                 }
             ),
             sidebarToggleTarget: sceneModel,
+            sidebarWidthChanged: { width in
+                titlebarSidebarWidth = width
+            },
             settingsStore: settingsStore,
             selection: Binding(
                 get: { sceneModel.selection },
@@ -759,6 +885,7 @@ struct WorkspaceWindow: View {
                 ),
                 isSidebarVisible:
                 sceneModel.columnVisibility != .detailOnly,
+                sidebarWidth: titlebarSidebarWidth,
                 canCreateWorktree: canCreateWorktree,
                 sessionTitle: SessionTitlebarPresentation.resolve(
                     activeSession: sceneModel.activeBorrowedTmuxSelection,

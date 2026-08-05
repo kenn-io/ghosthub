@@ -77,15 +77,37 @@ Ghostty revision.
 
 ## Remote tmux attach fails on an SSH host
 
-Confirm the remote host has `git` and `tmux` on its login-shell `PATH`, then
-verify the same SSH destination works with the system `ssh` command. Kwt does
-not need a system installation: use **Test Connection** followed by **Install
-kwt Worktree Helper** in Host Settings when project inventory is missing. If the host
+Click the host's caution icon. Ghosthub checks the exact SSH destination and,
+if OpenSSH reports an unseen key, immediately presents its destination and
+fingerprint for approval, saves it through OpenSSH, and retries inventory.
+ProxyJump routes may show one review for each unseen host in the route. When a
+jump host needs a password or another interactive response, Ghosthub asks for
+it after that host's key is approved, names the exact hop controlling the
+prompt, then continues to the next route key. Enter only that hop's credentials.
+Opaque ProxyCommand routes and jump hosts with another proxy route cannot be
+reviewed safely and fail closed. If no unseen key is reported, the same
+recovery sheet checks the connection. A reachable host keeps its inventory
+diagnostic and offers **Retry**. Ghosthub shows interactive challenges in a
+native secure-entry sheet, confirms the connection before you continue, and
+keeps that OpenSSH control connection for the app session. The response is not
+saved.
+Use **Test Connection** to verify authentication and that `tmux` is on the
+remote login-shell `PATH`.
+Kwt does not need a system installation: follow a successful test with
+**Install kwt Worktree Helper** when project inventory is missing. If the host
 has never used kwt, enter an existing checkout's absolute path under **Add
 Project** from the **+** menu beside that host; repeat for each repository
 Ghosthub should display.
 
-**Test Connection** follows your OpenSSH host-key policy. If a new destination
-requires interactive verification, connect to it once with the system `ssh`
-command, verify its fingerprint, and retry. A reachable host without tmux is
-reported separately as **tmux is not installed** rather than as an SSH failure.
+**Test Connection** follows your OpenSSH host-key policy. If the exact full
+destination has an unseen key, Ghosthub presents OpenSSH's fingerprint for
+explicit approval, asks OpenSSH to save that same key using its configured
+`UserKnownHostsFile`, and retries the probe. A trusted short hostname or alias
+is a separate OpenSSH identity. Ghosthub reviews effective `ask` and
+`accept-new` policies but does not override `yes`, `no`, or `off`; change that
+destination's SSH configuration deliberately if you want an in-app review.
+After host-key review, Ghosthub securely brokers interactive responses to the
+system OpenSSH client without putting them in command arguments, environment
+variables, logs, or persistent storage.
+A reachable host without tmux is reported
+separately as **tmux is not installed** rather than as an SSH failure.

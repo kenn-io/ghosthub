@@ -1,5 +1,6 @@
-import SwiftUI
+import Foundation
 import GhosthubWorkspace
+import SwiftUI
 
 struct WorkspaceTmuxSessionActionPresentation: Equatable {
     static let controlWidth: CGFloat = 30
@@ -47,6 +48,63 @@ enum WorkspaceSidebarHierarchy {
     }
 }
 
+private enum WorkspaceSidebarDragItem: Equatable {
+    case worktree(UUID)
+    case tmuxSession(hostID: UUID, name: String)
+
+    init?(rawValue: String) {
+        let parts = rawValue.split(
+            separator: ":",
+            maxSplits: 2,
+            omittingEmptySubsequences: false
+        )
+        guard let kind = parts.first else { return nil }
+        switch kind {
+        case "worktree":
+            guard parts.count == 2,
+                  let id = UUID(uuidString: String(parts[1]))
+            else { return nil }
+            self = .worktree(id)
+        case "tmux":
+            guard parts.count == 3,
+                  let hostID = UUID(uuidString: String(parts[1]))
+            else { return nil }
+            self = .tmuxSession(
+                hostID: hostID,
+                name: String(parts[2])
+            )
+        default:
+            return nil
+        }
+    }
+
+    var rawValue: String {
+        switch self {
+        case let .worktree(id):
+            return "worktree:\(id.uuidString)"
+        case let .tmuxSession(hostID, name):
+            return "tmux:\(hostID.uuidString):\(name)"
+        }
+    }
+
+    var orderID: String {
+        switch self {
+        case let .worktree(id):
+            return id.uuidString
+        case let .tmuxSession(hostID, name):
+            return WorkspaceSidebarModel.tmuxSessionOrderID(
+                hostID: hostID,
+                name: name
+            )
+        }
+    }
+}
+
+private struct WorkspaceSidebarReorderIndicator: Equatable {
+    let item: WorkspaceSidebarDragItem
+    let placement: WorkspaceSidebarDropPlacement
+}
+
 // MARK: - WorkspaceSidebarView
 
 struct WorkspaceSidebarView: View {
@@ -70,8 +128,10 @@ struct WorkspaceSidebarView: View {
     let onAddProject: (HostSummary) -> Void
     let onRefreshInventory: () -> Void
     let onOpenHostSettings: () -> Void
+    let onReviewSSHHostKey: (UUID, String) -> Void
     let inventoryWarning: String?
     let inventoryWarningsByHost: [UUID: String]
+    let inventoryRefreshComplete: Bool
     @State private var presentedInventoryWarning:
         PresentedInventoryWarning?
     @State private var hoveredTmuxSessionID: String?
@@ -80,10 +140,15 @@ struct WorkspaceSidebarView: View {
     @State private var hoveredWorktreeID: UUID?
     @State private var hoveredWorktreeActionID: UUID?
     @State private var worktreeHoverDismissTask: Task<Void, Never>?
+    @State private var draggedSidebarItem: WorkspaceSidebarDragItem?
+    @State private var reorderIndicator:
+        WorkspaceSidebarReorderIndicator?
     @AppStorage("workspaceSidebarDisclosureStateV2")
     private var disclosureState = ""
     @AppStorage("workspaceSidebarCollapsedItems")
     private var legacyCollapsedItems = ""
+    @Binding private var worktreeOrderRawValue: String
+    @Binding private var tmuxSessionOrderRawValue: String
 
     init(
         snapshot: WorkspaceSnapshot,
@@ -108,8 +173,12 @@ struct WorkspaceSidebarView: View {
         onAddProject: @escaping (HostSummary) -> Void = { _ in },
         onRefreshInventory: @escaping () -> Void = {},
         onOpenHostSettings: @escaping () -> Void = {},
+        onReviewSSHHostKey: @escaping (UUID, String) -> Void = { _, _ in },
         inventoryWarning: String? = nil,
         inventoryWarningsByHost: [UUID: String] = [:],
+        inventoryRefreshComplete: Bool = false,
+        worktreeOrderRawValue: Binding<String> = .constant(""),
+        tmuxSessionOrderRawValue: Binding<String> = .constant(""),
         onOpen: @escaping (WorktreeSummary) -> Void = { _ in }
     ) {
         self.snapshot = snapshot
@@ -128,8 +197,12 @@ struct WorkspaceSidebarView: View {
         self.onAddProject = onAddProject
         self.onRefreshInventory = onRefreshInventory
         self.onOpenHostSettings = onOpenHostSettings
+        self.onReviewSSHHostKey = onReviewSSHHostKey
         self.inventoryWarning = inventoryWarning
         self.inventoryWarningsByHost = inventoryWarningsByHost
+        self.inventoryRefreshComplete = inventoryRefreshComplete
+        _worktreeOrderRawValue = worktreeOrderRawValue
+        _tmuxSessionOrderRawValue = tmuxSessionOrderRawValue
         self.onOpen = onOpen
     }
 
@@ -139,7 +212,9 @@ struct WorkspaceSidebarView: View {
         WorkspaceSidebarModel.sections(
             in: snapshot,
             visibility: visibility,
-            tmuxSessionVisibility: tmuxSessionVisibility
+            tmuxSessionVisibility: tmuxSessionVisibility,
+            worktreeOrderRawValue: worktreeOrderRawValue,
+            tmuxSessionOrderRawValue: tmuxSessionOrderRawValue
         )
     }
 
@@ -179,7 +254,14 @@ struct WorkspaceSidebarView: View {
                 }
             }
         }
-        .onAppear(perform: migrateDisclosureStateIfNeeded)
+        .onAppear {
+            migrateDisclosureStateIfNeeded()
+        }
+        .onChange(of: inventoryRefreshComplete) { _, isComplete in
+            if isComplete {
+                pruneSidebarOrders()
+            }
+        }
         .alert(
             "Workspace Inventory Issue",
             isPresented: inventoryWarningIsPresented,
@@ -258,7 +340,10 @@ struct WorkspaceSidebarView: View {
                     )
                     if isExpanded(sessionsKey) {
                         ForEach(section.tmuxSessionRows) { row in
-                            sidebarButton(row)
+                            tmuxSessionButton(
+                                row,
+                                orderedRows: section.tmuxSessionRows
+                            )
                         }
                     }
                 }
@@ -298,7 +383,11 @@ struct WorkspaceSidebarView: View {
                                 }
                                 if isExpanded(projectKey) {
                                     ForEach(project.worktreeRows) { row in
-                                        worktreeButton(row)
+                                        worktreeButton(
+                                            row,
+                                            projectWorktreeIDs:
+                                            project.worktrees.map(\.id)
+                                        )
                                     }
                                 }
                             }
@@ -357,9 +446,9 @@ struct WorkspaceSidebarView: View {
             Spacer()
             if let inventoryWarning {
                 Button {
-                    presentInventoryWarning(
+                    resolveInventoryWarning(
                         inventoryWarning,
-                        isHostScoped: false
+                        host: nil
                     )
                 } label: {
                     Image(systemName: "exclamationmark.triangle.fill")
@@ -473,6 +562,39 @@ struct WorkspaceSidebarView: View {
     }
 
     // MARK: - Row builders
+
+    private func tmuxSessionButton(
+        _ row: WorkspaceSidebarRow,
+        orderedRows: [WorkspaceSidebarRow]
+    ) -> some View {
+        guard case let .tmuxSession(hostID, name) = row.target else {
+            return AnyView(sidebarButton(row))
+        }
+        let item = WorkspaceSidebarDragItem.tmuxSession(
+            hostID: hostID,
+            name: name
+        )
+        let groupItems: [WorkspaceSidebarDragItem] = orderedRows.compactMap {
+            orderedRow in
+            guard case let .tmuxSession(orderedHostID, orderedName) =
+                orderedRow.target
+            else { return nil }
+            return WorkspaceSidebarDragItem.tmuxSession(
+                hostID: orderedHostID,
+                name: orderedName
+            )
+        }
+        return AnyView(
+            reorderableRow(
+                sidebarButton(row),
+                item: item,
+                groupItems: groupItems,
+                orderRawValue: tmuxSessionOrderRawValue
+            ) { updatedRawValue in
+                tmuxSessionOrderRawValue = updatedRawValue
+            }
+        )
+    }
 
     private func sidebarButton(
         _ row: WorkspaceSidebarRow,
@@ -764,7 +886,10 @@ struct WorkspaceSidebarView: View {
         }
     }
 
-    private func worktreeButton(_ row: WorkspaceSidebarRow) -> some View {
+    private func worktreeButton(
+        _ row: WorkspaceSidebarRow,
+        projectWorktreeIDs: [UUID]
+    ) -> some View {
         guard case let .worktree(worktreeID) = row.target,
               let worktree = snapshot.worktree(id: worktreeID)
         else {
@@ -872,7 +997,138 @@ struct WorkspaceSidebarView: View {
                     onRequestKillTmuxSession(runningTmuxSession)
                 }
             }
+            .modifier(
+                WorkspaceSidebarReorderModifier(
+                    item: .worktree(worktreeID),
+                    groupItems: projectWorktreeIDs.map {
+                        .worktree($0)
+                    },
+                    orderRawValue: worktreeOrderRawValue,
+                    draggedItem: $draggedSidebarItem,
+                    indicator: $reorderIndicator,
+                    updateOrder: { updatedRawValue in
+                        worktreeOrderRawValue = updatedRawValue
+                    }
+                )
+            )
         )
+    }
+
+    private func reorderableRow<Content: View>(
+        _ content: Content,
+        item: WorkspaceSidebarDragItem,
+        groupItems: [WorkspaceSidebarDragItem],
+        orderRawValue: String,
+        updateOrder: @escaping (String) -> Void
+    ) -> some View {
+        content.modifier(
+            WorkspaceSidebarReorderModifier(
+                item: item,
+                groupItems: groupItems,
+                orderRawValue: orderRawValue,
+                draggedItem: $draggedSidebarItem,
+                indicator: $reorderIndicator,
+                updateOrder: updateOrder
+            )
+        )
+    }
+
+    private struct WorkspaceSidebarReorderModifier: ViewModifier {
+        let item: WorkspaceSidebarDragItem
+        let groupItems: [WorkspaceSidebarDragItem]
+        let orderRawValue: String
+        @Binding var draggedItem: WorkspaceSidebarDragItem?
+        @Binding var indicator: WorkspaceSidebarReorderIndicator?
+        let updateOrder: (String) -> Void
+
+        func body(content: Content) -> some View {
+            content
+                .onDrag {
+                    draggedItem = item
+                    return NSItemProvider(
+                        object: item.rawValue as NSString
+                    )
+                }
+                .dropDestination(for: String.self) { values, _ in
+                    guard let rawValue = values.first,
+                          let source = WorkspaceSidebarDragItem(
+                              rawValue: rawValue
+                          )
+                    else {
+                        clearDragState()
+                        return false
+                    }
+                    var order = WorkspaceSidebarOrder(
+                        rawValue: orderRawValue
+                    )
+                    let moved = order.move(
+                        source.orderID,
+                        to: item.orderID,
+                        within: groupItems.map(\.orderID)
+                    )
+                    if moved {
+                        withAnimation(.easeInOut(duration: 0.16)) {
+                            updateOrder(order.rawValue)
+                        }
+                    }
+                    clearDragState()
+                    return moved
+                } isTargeted: { isTargeted in
+                    updateIndicator(isTargeted: isTargeted)
+                }
+                .overlay {
+                    insertionIndicator
+                }
+        }
+
+        @ViewBuilder
+        private var insertionIndicator: some View {
+            if let indicator, indicator.item == item {
+                VStack(spacing: 0) {
+                    if indicator.placement == .after {
+                        Spacer(minLength: 0)
+                    }
+                    Capsule()
+                        .fill(Color.accentColor)
+                        .frame(height: 3)
+                        .padding(.horizontal, 6)
+                    if indicator.placement == .before {
+                        Spacer(minLength: 0)
+                    }
+                }
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+                .transition(.opacity)
+            }
+        }
+
+        private func updateIndicator(isTargeted: Bool) {
+            guard isTargeted else {
+                if indicator?.item == item {
+                    indicator = nil
+                }
+                return
+            }
+            guard let draggedItem,
+                  let placement = WorkspaceSidebarDropPlacement.resolve(
+                      sourceID: draggedItem.orderID,
+                      targetID: item.orderID,
+                      orderedIDs: groupItems.map(\.orderID)
+                  )
+            else {
+                indicator = nil
+                return
+            }
+            indicator = WorkspaceSidebarReorderIndicator(
+                item: item,
+                placement: placement
+            )
+        }
+
+        private func clearDragState() {
+            draggedItem = nil
+            indicator = nil
+        }
     }
 
     private func scheduleWorktreeHoverDismiss(_ worktreeID: UUID) {
@@ -904,6 +1160,7 @@ struct WorkspaceSidebarView: View {
             if let inventoryWarning {
                 inventoryWarningButton(
                     inventoryWarning,
+                    host: actionHost,
                     accessibilityLabel:
                     "Show connection issue for \(row.title)"
                 )
@@ -1051,10 +1308,11 @@ struct WorkspaceSidebarView: View {
 
     private func inventoryWarningButton(
         _ warning: String,
+        host: HostSummary?,
         accessibilityLabel: String
     ) -> some View {
         Button {
-            presentInventoryWarning(warning, isHostScoped: true)
+            resolveInventoryWarning(warning, host: host)
         } label: {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 11, weight: .semibold))
@@ -1063,9 +1321,16 @@ struct WorkspaceSidebarView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help("Show connection issue details")
+        .help(
+            host?.kind == .remote
+                ? "Resolve connection issue"
+                : "Show inventory issue details"
+        )
         .accessibilityLabel(accessibilityLabel)
-        .accessibilityValue(warning)
+        .accessibilityValue(
+            host?.kind == .remote
+                ? "Connection needs attention." : warning
+        )
         .accessibilityIdentifier("host-inventory-warning")
     }
 
@@ -1080,14 +1345,16 @@ struct WorkspaceSidebarView: View {
         )
     }
 
-    private func presentInventoryWarning(
+    private func resolveInventoryWarning(
         _ message: String,
-        isHostScoped: Bool
+        host: HostSummary?
     ) {
-        presentedInventoryWarning = PresentedInventoryWarning(
-            message: message,
-            isHostScoped: isHostScoped
-        )
+        switch InventoryWarningDestination(message: message, host: host) {
+        case let .connectionRecovery(hostID, inventoryWarning):
+            onReviewSSHHostKey(hostID, inventoryWarning)
+        case let .details(warning):
+            presentedInventoryWarning = warning
+        }
     }
 
     // MARK: - Row content
@@ -1156,6 +1423,44 @@ struct WorkspaceSidebarView: View {
         guard migrated != disclosureState else { return }
         disclosureState = migrated
         legacyCollapsedItems = ""
+    }
+
+    private func pruneSidebarOrders() {
+        // Missing inventory is not proof of deletion. Preserve order while
+        // any host is unreachable or reporting an inventory failure, and
+        // prune only from a complete authoritative fleet snapshot.
+        guard WorkspaceSidebarPruningPolicy.shouldPrune(
+            refreshComplete: inventoryRefreshComplete,
+            inventoryWarning: inventoryWarning,
+            inventoryWarningsByHost: inventoryWarningsByHost
+        )
+        else { return }
+        var worktreeOrder = WorkspaceSidebarOrder(
+            rawValue: worktreeOrderRawValue
+        )
+        let worktreeIDs = Set(
+            snapshot.worktrees
+                .filter { !$0.isStale }
+                .map { $0.id.uuidString }
+        )
+        if worktreeOrder.prune(keeping: worktreeIDs) {
+            worktreeOrderRawValue = worktreeOrder.rawValue
+        }
+
+        var tmuxSessionOrder = WorkspaceSidebarOrder(
+            rawValue: tmuxSessionOrderRawValue
+        )
+        let tmuxSessionIDs = Set(snapshot.hosts.flatMap { host in
+            host.tmuxSessions.map {
+                WorkspaceSidebarModel.tmuxSessionOrderID(
+                    hostID: host.id,
+                    name: $0.name
+                )
+            }
+        })
+        if tmuxSessionOrder.prune(keeping: tmuxSessionIDs) {
+            tmuxSessionOrderRawValue = tmuxSessionOrder.rawValue
+        }
     }
 
     /// Two-line status row for worktrees: title + trailing status cluster on
@@ -1302,7 +1607,23 @@ struct WorkspaceSidebarView: View {
     }
 }
 
-private struct PresentedInventoryWarning {
+enum InventoryWarningDestination: Equatable {
+    case connectionRecovery(UUID, String)
+    case details(PresentedInventoryWarning)
+
+    init(message: String, host: HostSummary?) {
+        if let host, host.kind == .remote {
+            self = .connectionRecovery(host.id, message)
+        } else {
+            self = .details(PresentedInventoryWarning(
+                message: message,
+                isHostScoped: host != nil
+            ))
+        }
+    }
+}
+
+struct PresentedInventoryWarning: Equatable {
     let message: String
     let isHostScoped: Bool
 }

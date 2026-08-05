@@ -8,7 +8,8 @@ let packageRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
 let libghosttyBuildRoot = packageRoot.appendingPathComponent(".build/libghostty", isDirectory: true)
 let vendorMetadataPath = packageRoot.appendingPathComponent("Vendor/ghostty.version.json")
 let libghosttyManifestPath = libghosttyBuildRoot.appendingPathComponent("manifest.json")
-let requiredLibghosttyBootstrapVersion = 21
+/// Increment whenever Ghosthub's libghostty patch surface changes.
+let requiredLibghosttyBootstrapVersion = 22
 
 func loadJSONDictionary(at url: URL) -> [String: Any]? {
     guard let data = try? Data(contentsOf: url),
@@ -112,7 +113,7 @@ var targets: [Target] = [
 if hasBootstrappedLibghostty {
     targets.append(
         .binaryTarget(
-            name: "CGhostty",
+            name: "GhosttyKit",
             path: ".build/libghostty/GhosttyKit.xcframework"
         )
     )
@@ -122,7 +123,7 @@ if hasBootstrappedLibghostty {
             dependencies: [
                 "GhosthubTerminalSupport",
                 "GhosthubWorkspace",
-                "CGhostty",
+                "GhosttyKit",
             ],
             path: "Sources/Terminal",
             linkerSettings: [
@@ -258,7 +259,7 @@ var terminalTestDependencies: [Target.Dependency] = [
 ]
 if hasBootstrappedLibghostty {
     // AttachedTmuxInputTests imports the XCFramework's Clang module directly.
-    terminalTestDependencies.append("CGhostty")
+    terminalTestDependencies.append("GhosttyKit")
 }
 targets.append(
     .testTarget(

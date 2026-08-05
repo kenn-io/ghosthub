@@ -71,6 +71,7 @@ public final class TerminalSurfaceView: ObservableObject {
     @Published public internal(set) var title: String = ""
     @Published public private(set) var focused: Bool = false
     @Published public var error: Error?
+    public internal(set) var childExitCode: UInt32?
 
     public var suppressAutoFocus: Bool = false
     public var onFocusChange: ((Bool) -> Void)?

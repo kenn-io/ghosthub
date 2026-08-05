@@ -50,6 +50,15 @@ enum TmuxSessionThemeError: Error, Equatable, LocalizedError {
     }
 }
 
+struct WorkspaceInventoryRefreshProgress: Equatable {
+    var kwtCompleted = false
+    var tmuxCompleted = false
+
+    var isComplete: Bool {
+        kwtCompleted && tmuxCompleted
+    }
+}
+
 @MainActor
 final class WorktreeMutationCoordinator {
     struct Scope: Hashable, Sendable {
@@ -163,7 +172,7 @@ final class WorkspaceSceneModel: ObservableObject {
     ) async throws -> Void
     typealias SSHHostProbeRunner = @Sendable (
         SSHHostInfo, String
-    ) -> (status: Int32, stdout: String)
+    ) -> (status: Int32, stdout: String, stderr: String)
 
     @Published var snapshot: WorkspaceSnapshot {
         didSet {
@@ -178,6 +187,7 @@ final class WorkspaceSceneModel: ObservableObject {
     private var tmuxLastSeenByHost: [UUID: Date] = [:]
     private var tmuxDiscoveryFailuresByHost: [UUID: String] = [:]
     private var isTmuxDiscoveryLoading = false
+    private var inventoryRefreshProgress = WorkspaceInventoryRefreshProgress()
     private var tmuxDiscoveryGeneration = 0
     private var tmuxDiscoveryTask: Task<Void, Never>?
     private var createdSessionDiscoveryTasks: [UUID: Task<Void, Never>] = [:]
@@ -206,6 +216,14 @@ final class WorkspaceSceneModel: ObservableObject {
             WorktreeMutationCoordinator.Scope:
                 Set<WorktreeMutationCoordinator.RemovalTombstone>
         ] = [:]
+
+    var isWorkspaceInventoryRefreshComplete: Bool {
+        inventoryRefreshProgress.isComplete
+            && !isKwtInventoryLoading
+            && !isTmuxDiscoveryLoading
+            && kwtInventoryFailuresByHost.isEmpty
+            && tmuxDiscoveryFailuresByHost.isEmpty
+    }
 
     var workspaceResourceSummary: WorkspaceResourceSummary {
         activityController.workspaceResourceSummary
@@ -365,6 +383,14 @@ final class WorkspaceSceneModel: ObservableObject {
     private let tmuxPresentationStyleProvider:
         (UInt?) -> TmuxPresentationStyle?
     private let sshHostProbeRunner: SSHHostProbeRunner
+    private let sshAuthenticationCoordinator: SSHAuthenticationCoordinator
+    private let sshAuthenticationScopeID = UUID()
+    private var pendingSSHAuthenticationTargets:
+        [String: SSHAuthenticationTarget] = [:]
+    private var configuredSSHAuthenticationTargets:
+        [String: SSHAuthenticationTarget] = [:]
+    private var sshAuthenticationControlPaths:
+        [SSHAuthenticationTarget: String] = [:]
     private let configuredSSHHostsProvider: () -> [SSHHost]
     private var configuredSSHHostsCancellable: AnyCancellable?
     private var terminalColorsCancellable: AnyCancellable?
@@ -419,7 +445,10 @@ final class WorkspaceSceneModel: ObservableObject {
     var defaultIdleThresholdSeconds: Int {
         workspaceConfiguration.notifications.idleThresholdSeconds
     }
-    convenience init(terminalRuntime: LibghosttyRuntime = .shared) {
+    convenience init(
+        terminalRuntime: LibghosttyRuntime = .shared,
+        sshAuthenticationCoordinator: SSHAuthenticationCoordinator
+    ) {
         do {
             let boot = try WorkspaceSceneBootstrap.resources()
             try self.init(
@@ -444,6 +473,7 @@ final class WorkspaceSceneModel: ObservableObject {
                     SettingsStore.shared.terminalAppearancePreferences
                         .appliesThemeToTmuxSessions
                 },
+                sshAuthenticationCoordinator: sshAuthenticationCoordinator,
                 localHostID: boot.localHostID,
                 startServices: true
             )
@@ -554,12 +584,14 @@ final class WorkspaceSceneModel: ObservableObject {
             )
         },
         sshHostProbeRunner: @escaping SSHHostProbeRunner = { host, command in
-            TmuxBinaryResolver.runRemoteLoginShell(
+            TmuxBinaryResolver.runRemoteLoginShellSeparatingStandardError(
                 host: host,
                 command: command,
                 timeout: 10
             )
         },
+        sshAuthenticationCoordinator: SSHAuthenticationCoordinator =
+            SSHAuthenticationCoordinator(),
         configuredSSHHostsProvider: @escaping () -> [SSHHost] = {
             SettingsStore.shared.sshHosts
         },
@@ -604,6 +636,7 @@ final class WorkspaceSceneModel: ObservableObject {
         self.tmuxPresentationStyleProvider =
             tmuxPresentationStyleProvider
         self.sshHostProbeRunner = sshHostProbeRunner
+        self.sshAuthenticationCoordinator = sshAuthenticationCoordinator
         self.createdSessionDiscoveryDelays =
             createdSessionDiscoveryDelays
         self.deferredTmuxPresentationRetryDelays =
@@ -1060,6 +1093,9 @@ final class WorkspaceSceneModel: ObservableObject {
         endedCreatedTmuxSessionHandles.removeAll()
         confirmedEndedTmuxSessionHandles.removeAll()
         nativeTmuxSessionCoordinatorBacking?.shutdown()
+        sshAuthenticationCoordinator.cancelAll(
+            scopeID: sshAuthenticationScopeID
+        )
     }
 
     /// Refreshes the sidebar directly from each host's kwt and tmux inventory.
@@ -1823,9 +1859,11 @@ final class WorkspaceSceneModel: ObservableObject {
         guard !targets.isEmpty else {
             kwtInventoryTask = nil
             isKwtInventoryLoading = false
+            inventoryRefreshProgress.kwtCompleted = true
             updateWorkspaceInventoryState()
             return
         }
+        inventoryRefreshProgress.kwtCompleted = false
         isKwtInventoryLoading = true
         updateWorkspaceInventoryState()
         let kwtInventoryLoader = kwtInventoryLoader
@@ -1898,6 +1936,7 @@ final class WorkspaceSceneModel: ObservableObject {
             guard let self, !Task.isCancelled,
                   generation == kwtInventoryGeneration else { return }
             isKwtInventoryLoading = false
+            inventoryRefreshProgress.kwtCompleted = true
             updateWorkspaceInventoryState()
         }
     }
@@ -1907,6 +1946,7 @@ final class WorkspaceSceneModel: ObservableObject {
         kwtInventoryTask?.cancel()
         kwtInventoryTask = nil
         isKwtInventoryLoading = false
+        inventoryRefreshProgress.kwtCompleted = false
         updateWorkspaceInventoryState()
     }
 
@@ -2068,6 +2108,7 @@ final class WorkspaceSceneModel: ObservableObject {
         tmuxDiscoveryGeneration += 1
         let generation = tmuxDiscoveryGeneration
         tmuxDiscoveryTask?.cancel()
+        inventoryRefreshProgress.tmuxCompleted = false
         isTmuxDiscoveryLoading = true
         updateWorkspaceInventoryState()
         let tmuxSessionDiscovery = tmuxSessionDiscovery
@@ -2118,6 +2159,7 @@ final class WorkspaceSceneModel: ObservableObject {
             guard let self, !Task.isCancelled,
                   generation == tmuxDiscoveryGeneration else { return }
             isTmuxDiscoveryLoading = false
+            inventoryRefreshProgress.tmuxCompleted = true
             updateWorkspaceInventoryState()
         }
     }
@@ -2146,6 +2188,7 @@ final class WorkspaceSceneModel: ObservableObject {
         tmuxDiscoveryTask?.cancel()
         tmuxDiscoveryTask = nil
         isTmuxDiscoveryLoading = false
+        inventoryRefreshProgress.tmuxCompleted = false
         if tmuxDiscoveryEnabled {
             scheduleTmuxSessionDiscovery()
         } else {
@@ -2330,23 +2373,418 @@ final class WorkspaceSceneModel: ObservableObject {
         activeBorrowedTmuxLaunchMode = nil
     }
 
-    func probeSSHHost(
+    func pendingSSHHostKeyConfirmation(
+        for host: SSHHost
+    ) async -> Result<SSHHostKeyReviewRequirement, HostProbeError> {
+        guard let resolved = resolvedSSHHost(host) else {
+            return .failure(.message("Enter a valid SSH destination."))
+        }
+        let result = await resolveSSHHostTrust(for: resolved)
+        return mapSSHHostTrustRequirement(
+            result,
+            destination: resolved.destination
+        )
+    }
+
+    func pendingSSHHostKeyConfirmation(
+        forHostID hostID: UUID
+    ) async -> Result<SSHHostKeyReviewRequirement, HostProbeError> {
+        guard let host = configuredSSHHost(for: hostID) else {
+            return .failure(.message(
+                "The selected remote host is no longer configured."
+            ))
+        }
+        return await pendingSSHHostKeyConfirmation(for: host)
+    }
+
+    func sshConnectionRecovery(
+        forHostID hostID: UUID,
+        inventoryWarning: String
+    ) async -> SSHConnectionRecoveryResult {
+        guard let host = configuredSSHHost(for: hostID) else {
+            return .connectionIssue(
+                "The selected remote host is no longer configured."
+            )
+        }
+
+        guard let resolved = resolvedSSHHost(host) else {
+            return .connectionIssue("Enter a valid SSH destination.")
+        }
+        let trustResult = await resolveSSHHostTrust(for: resolved)
+        switch trustResult {
+        case let .success(requirement):
+            switch requirement {
+            case let .confirmation(confirmation):
+                return .hostKey(confirmation)
+            case let .authentication(target):
+                pendingSSHAuthenticationTargets[resolved.destination] = target
+                return .authenticationRequired
+            case .none:
+                pendingSSHAuthenticationTargets.removeValue(
+                    forKey: resolved.destination
+                )
+            }
+        case let .failure(error):
+            return .connectionIssue(error.displayMessage)
+        }
+
+        switch await probeSSHHost(host) {
+        case let .success(summary):
+            let diagnostic = summary.diagnostics.first.map {
+                "\($0.summary) \($0.recoverySuggestion)"
+            }
+            if summary.host.lastKnownReachable {
+                return .inventoryIssue(diagnostic ?? inventoryWarning)
+            }
+            if summary.diagnostics.first?.code == .sshAuthenticationFailed {
+                return .authenticationRequired
+            }
+            return .connectionIssue(
+                diagnostic ?? "Ghosthub could not reach this host over SSH."
+            )
+        case let .failure(error):
+            return .connectionIssue(error.displayMessage)
+        }
+    }
+
+    func trustSSHHostKey(
+        _ confirmation: SSHHostKeyConfirmation,
+        for host: SSHHost
+    ) async -> Result<SSHHostKeyConfirmation?, HostProbeError> {
+        guard let resolved = resolvedSSHHost(host) else {
+            return .failure(.message("Enter a valid SSH destination."))
+        }
+        let result = await resolveSSHHostTrust(
+            for: resolved,
+            operation: { manager in
+                try manager.acceptRequirement(
+                    confirmation,
+                    for: resolved.info,
+                    destination: resolved.destination
+                )
+            }
+        )
+        return mapSSHHostTrustRequirement(
+            result,
+            destination: resolved.destination
+        ).map { requirement in
+            switch requirement {
+            case let .confirmation(confirmation):
+                return confirmation
+            case .authenticationRequired, .none:
+                return nil
+            }
+        }
+    }
+
+    func trustSSHHostKey(
+        _ confirmation: SSHHostKeyConfirmation,
+        forHostID hostID: UUID
+    ) async -> Result<SSHHostKeyConfirmation?, HostProbeError> {
+        guard let host = configuredSSHHost(for: hostID) else {
+            return .failure(.message(
+                "The selected remote host is no longer configured."
+            ))
+        }
+        return await trustSSHHostKey(confirmation, for: host)
+    }
+
+    func sshAuthenticationView(
+        surfaceID: UUID,
+        for host: SSHHost
+    ) -> AnyView? {
+        guard let resolved = resolvedSSHHost(host) else { return nil }
+        guard let target = sshAuthenticationTarget(for: resolved) else {
+            return nil
+        }
+        guard let controlPath = sshAuthenticationControlPaths[target] else {
+            return nil
+        }
+        return AnyView(SSHAuthenticationView(
+            session: sshAuthenticationCoordinator.session(
+                scopeID: sshAuthenticationScopeID,
+                presentationID: surfaceID,
+                target: target,
+                controlPath: controlPath
+            ),
+            finalDestination: resolved.info
+        ))
+    }
+
+    func sshAuthenticationView(forHostID hostID: UUID) -> AnyView? {
+        guard let host = configuredSSHHost(for: hostID) else { return nil }
+        return sshAuthenticationView(surfaceID: hostID, for: host)
+    }
+
+    func isSSHAuthenticationReady(
+        for host: SSHHost
+    ) async -> SSHAuthenticationReadiness {
+        guard let resolved = resolvedSSHHost(host) else { return .pending }
+        guard let target = sshAuthenticationTarget(for: resolved) else {
+            return .pending
+        }
+        guard let controlPath = sshAuthenticationControlPaths[target] else {
+            return .pending
+        }
+        if sshAuthenticationCoordinator.requiresRecoveryRestart(
+            target: target,
+            controlPath: controlPath
+        ) {
+            invalidateSSHAuthentication(
+                destination: resolved.destination,
+                target: target,
+                controlPath: controlPath
+            )
+            return .reviewRequired
+        }
+        let isReady = await Task.detached {
+            SSHConnectionPool.isAuthenticated(
+                target.host,
+                controlPath: controlPath
+            )
+        }.value
+        guard !Task.isCancelled else { return .pending }
+        if isReady {
+            let currentIdentity = await Task.detached(priority: .userInitiated) {
+                Self.currentSSHAuthenticationIdentity(
+                    for: target,
+                    finalHost: resolved.info
+                )
+            }.value
+            guard !Task.isCancelled else { return .pending }
+            guard currentIdentity?.target == target,
+                  currentIdentity?.controlPath == controlPath else {
+                invalidateSSHAuthentication(
+                    destination: resolved.destination,
+                    target: target,
+                    controlPath: controlPath
+                )
+                return .reviewRequired
+            }
+        }
+        sshAuthenticationCoordinator.reconcileIdentity(
+            target: target,
+            controlPath: controlPath
+        )
+        if isReady {
+            sshAuthenticationCoordinator.markConnected(
+                target: target,
+                controlPath: controlPath
+            )
+            guard let configuredTarget =
+                configuredSSHAuthenticationTargets[resolved.destination]
+            else { return .pending }
+            if target != configuredTarget {
+                pendingSSHAuthenticationTargets.removeValue(
+                    forKey: resolved.destination
+                )
+                return .reviewRequired
+            }
+            return .connected
+        }
+        return .pending
+    }
+
+    nonisolated static func currentSSHAuthenticationIdentity(
+        for target: SSHAuthenticationTarget,
+        finalHost: SSHHostInfo,
+        configurationProvider: SSHConfigurationResolver.ConfigurationProvider =
+            SSHConfigurationResolver.configuration
+    ) -> SSHAuthenticationIdentity? {
+        let snapshot = SSHConnectionPool.configurationSnapshot(
+            for: finalHost,
+            configurationProvider: configurationProvider
+        )
+        return SSHConnectionPool.authenticationIdentity(
+            for: target,
+            configurationSnapshot: snapshot
+        )
+    }
+
+    func isSSHAuthenticationReady(
+        forHostID hostID: UUID
+    ) async -> SSHAuthenticationReadiness {
+        guard let host = configuredSSHHost(for: hostID) else { return .pending }
+        return await isSSHAuthenticationReady(for: host)
+    }
+
+    func cancelSSHAuthentication(surfaceID: UUID) {
+        sshAuthenticationCoordinator.cancel(
+            scopeID: sshAuthenticationScopeID,
+            presentationID: surfaceID
+        )
+    }
+
+    private func mapSSHHostTrustRequirement(
+        _ result: Result<SSHHostTrustRequirement, HostProbeError>,
+        destination: String
+    ) -> Result<SSHHostKeyReviewRequirement, HostProbeError> {
+        switch result {
+        case let .success(requirement):
+            switch requirement {
+            case let .confirmation(confirmation):
+                pendingSSHAuthenticationTargets.removeValue(
+                    forKey: destination
+                )
+                return .success(.confirmation(confirmation))
+            case let .authentication(target):
+                pendingSSHAuthenticationTargets[destination] = target
+                return .success(.authenticationRequired)
+            case .none:
+                pendingSSHAuthenticationTargets.removeValue(
+                    forKey: destination
+                )
+                return .success(.none)
+            }
+        case let .failure(error):
+            return .failure(error)
+        }
+    }
+
+    private func sshAuthenticationTarget(
+        for resolved: (info: SSHHostInfo, destination: String)
+    ) -> SSHAuthenticationTarget? {
+        pendingSSHAuthenticationTargets[resolved.destination]
+            ?? configuredSSHAuthenticationTargets[resolved.destination]
+    }
+
+    private func resolveSSHHostTrust(
+        for resolved: (info: SSHHostInfo, destination: String)
+    ) async -> Result<SSHHostTrustRequirement, HostProbeError> {
+        await resolveSSHHostTrust(
+            for: resolved,
+            operation: { manager in
+                try manager.pendingRequirement(
+                    for: resolved.info,
+                    destination: resolved.destination
+                )
+            }
+        )
+    }
+
+    private func resolveSSHHostTrust(
+        for resolved: (info: SSHHostInfo, destination: String),
+        operation: @escaping @Sendable (SSHHostTrustManager) throws
+            -> SSHHostTrustRequirement
+    ) async -> Result<SSHHostTrustRequirement, HostProbeError> {
+        let resolutionTask = Task.detached(priority: .userInitiated) {
+            let snapshot = SSHConnectionPool.configurationSnapshot(
+                for: resolved.info
+            )
+            let identity = SSHConnectionPool.authenticationIdentity(
+                for: snapshot
+            )
+            do {
+                let requirement = try operation(SSHHostTrustManager(
+                    configurationSnapshot: snapshot
+                ))
+                let requirementIdentity: SSHAuthenticationIdentity?
+                if case let .authentication(target) = requirement {
+                    requirementIdentity = SSHConnectionPool
+                        .authenticationIdentity(
+                            for: target,
+                            configurationSnapshot: snapshot
+                        )
+                } else {
+                    requirementIdentity = nil
+                }
+                return (
+                    identity,
+                    requirementIdentity,
+                    Result<SSHHostTrustRequirement, HostProbeError>.success(
+                        requirement
+                    )
+                )
+            } catch {
+                return (
+                    identity,
+                    nil,
+                    Result<SSHHostTrustRequirement, HostProbeError>.failure(
+                        .message(error.localizedDescription)
+                    )
+                )
+            }
+        }
+        let resolution = await withTaskCancellationHandler {
+            await resolutionTask.value
+        } onCancel: {
+            resolutionTask.cancel()
+        }
+        if !Task.isCancelled {
+            if let identity = resolution.0 {
+                configuredSSHAuthenticationTargets[resolved.destination] =
+                    identity.target
+                sshAuthenticationControlPaths[identity.target] =
+                    identity.controlPath
+            }
+            if let requirementIdentity = resolution.1,
+               requirementIdentity.target != resolution.0?.target {
+                sshAuthenticationControlPaths[requirementIdentity.target] =
+                    requirementIdentity.controlPath
+            }
+        }
+        return resolution.2
+    }
+
+    private func invalidateSSHAuthentication(
+        destination: String,
+        target: SSHAuthenticationTarget,
+        controlPath: String
+    ) {
+        pendingSSHAuthenticationTargets.removeValue(forKey: destination)
+        configuredSSHAuthenticationTargets.removeValue(forKey: destination)
+        sshAuthenticationControlPaths.removeValue(forKey: target)
+        sshAuthenticationCoordinator.invalidate(
+            target: target,
+            controlPath: controlPath
+        )
+    }
+
+    private func configuredSSHHost(for hostID: UUID) -> SSHHost? {
+        guard let host = snapshot.host(id: hostID),
+              host.kind == .remote,
+              let destination = host.sshDestination else { return nil }
+        return SSHHost(
+            configKey: host.configKey,
+            name: host.name,
+            platform: host.platform,
+            sshDestination: destination
+        )
+    }
+
+    private func resolvedSSHHost(
         _ host: SSHHost
+    ) -> (info: SSHHostInfo, destination: String)? {
+        let destination = host.sshDestination.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard let parsed = TmuxHostResolver.parseSSHDestination(
+            destination
+        ) else {
+            return nil
+        }
+        return (
+            SSHHostInfo(
+                user: parsed.user,
+                hostname: parsed.hostname,
+                port: parsed.port,
+                platform: host.platform == .windows ? .windows : .posix
+            ),
+            destination
+        )
+    }
+
+    func probeSSHHost(
+        _ host: SSHHost,
+        protocolNonce: String = UUID().uuidString
     ) async -> Result<
         HostProbeSummary,
         HostProbeError
     > {
-        guard let parsedSSHHost = TmuxHostResolver.parseSSHDestination(
-            host.sshDestination
-        ) else {
+        guard let resolved = resolvedSSHHost(host) else {
             return .failure(.message("Enter a valid SSH destination."))
         }
-        let sshHost = SSHHostInfo(
-            user: parsedSSHHost.user,
-            hostname: parsedSSHHost.hostname,
-            port: parsedSSHHost.port,
-            platform: host.platform == .windows ? .windows : .posix
-        )
+        let sshHost = resolved.info
         let sshHostProbeRunner = sshHostProbeRunner
         let kwtPrelude = KwtBinaryLocator.remoteCommandPrelude(
             revision: KwtBinaryLocator.bundledRemoteRevision()
@@ -2355,22 +2793,28 @@ final class WorkspaceSceneModel: ObservableObject {
             KwtBinaryLocator.windowsRemoteManagedRelativePath(
                 revision: KwtBinaryLocator.bundledRemoteRevision()
             )
+        let protocolStart = "GHOSTHUB_SSH_PROBE_\(protocolNonce)_START"
+        let protocolEnd = "GHOSTHUB_SSH_PROBE_\(protocolNonce)_END"
         let probeCommand: String
         if host.platform == .windows {
             probeCommand = """
             $ErrorActionPreference = 'Stop'
             [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
             $OutputEncoding = [Console]::OutputEncoding
+            [Console]::Out.WriteLine()
+            Write-Output '\(protocolStart)'
             Write-Output 'GHOSTHUB_SSH_REACHED'
             $ghosthubMuxCommand = Get-Command tmux.exe -CommandType Application -ErrorAction SilentlyContinue
             if ($null -eq $ghosthubMuxCommand) {
                 Write-Output 'GHOSTHUB_TMUX_UNAVAILABLE'
+                Write-Output '\(protocolEnd)'
                 exit 127
             }
             Write-Output 'GHOSTHUB_TMUX_AVAILABLE'
             $ghosthubMux = $ghosthubMuxCommand.Source
             & $ghosthubMux '-V' *> $null
             if ($LASTEXITCODE -ne 0) {
+                Write-Output '\(protocolEnd)'
                 exit $LASTEXITCODE
             }
             \(KwtPowerShellCommand.availabilityPrelude(
@@ -2381,41 +2825,46 @@ final class WorkspaceSceneModel: ObservableObject {
             } else {
                 Write-Output 'GHOSTHUB_KWT_UNAVAILABLE'
             }
+            Write-Output '\(protocolEnd)'
             """
         } else {
             probeCommand =
-                "printf 'GHOSTHUB_SSH_REACHED\\n'; "
+                "printf '\\n\(protocolStart)\\nGHOSTHUB_SSH_REACHED\\n'; "
                     + "ghosthub_tmux_path=$(command -v tmux) || { "
-                    + "printf 'GHOSTHUB_TMUX_UNAVAILABLE\\n'; exit 127; }; "
+                    + "printf 'GHOSTHUB_TMUX_UNAVAILABLE\\n\(protocolEnd)\\n'; "
+                    + "exit 127; }; "
                     + "printf 'GHOSTHUB_TMUX_AVAILABLE\\n'; "
-                    + "\"$ghosthub_tmux_path\" -V >/dev/null || exit $?; "
+                    + "\"$ghosthub_tmux_path\" -V >/dev/null || { "
+                    + "ghosthub_probe_status=$?; "
+                    + "printf '\(protocolEnd)\\n'; "
+                    + "exit \"$ghosthub_probe_status\"; }; "
                     + "if ( \(kwtPrelude): ); then "
                     + "printf 'GHOSTHUB_KWT_AVAILABLE\\n'; "
-                    + "else printf 'GHOSTHUB_KWT_UNAVAILABLE\\n'; fi"
+                    + "else printf 'GHOSTHUB_KWT_UNAVAILABLE\\n'; fi; "
+                    + "printf '\(protocolEnd)\\n'"
         }
         return await Task.detached {
             let result = sshHostProbeRunner(
                 sshHost,
                 probeCommand
             )
-            let sshReached = result.stdout.contains(
-                "GHOSTHUB_SSH_REACHED"
-            )
-            let tmuxAvailable = result.stdout.contains(
+            let protocolLines = Self.sshProbeProtocolLines(
+                result.stdout,
+                start: protocolStart,
+                end: protocolEnd
+            ) ?? []
+            let sshReached = protocolLines.contains("GHOSTHUB_SSH_REACHED")
+            let tmuxAvailable = protocolLines.contains(
                 "GHOSTHUB_TMUX_AVAILABLE"
             )
-            let kwtAvailable = result.stdout.contains(
+            let kwtAvailable = protocolLines.contains(
                 "GHOSTHUB_KWT_AVAILABLE"
             )
             let diagnostics: [RemoteHostDiagnostic]
             if !sshReached {
-                diagnostics = [RemoteHostDiagnostic(
-                    code: .sshConnectionFailed,
-                    severity: .error,
-                    summary: "SSH could not be reached.",
-                    recoverySuggestion:
-                    "Confirm the host key is trusted and key-based "
-                        + "authentication is available from your login shell."
+                diagnostics = [SSHConnectionFailure.diagnostic(
+                    status: result.status,
+                    output: result.stderr
                 )]
             } else if !tmuxAvailable {
                 diagnostics = [RemoteHostDiagnostic(
@@ -2463,6 +2912,22 @@ final class WorkspaceSceneModel: ObservableObject {
                 )
             ))
         }.value
+    }
+
+    nonisolated static func sshProbeProtocolLines(
+        _ output: String,
+        start: String,
+        end: String
+    ) -> Set<String>? {
+        let lines = output.split(
+            separator: "\n",
+            omittingEmptySubsequences: false
+        ).map { String($0).trimmingCharacters(in: .newlines) }
+        guard let startIndex = lines.firstIndex(of: start),
+              let endIndex = lines[lines.index(after: startIndex)...]
+              .firstIndex(of: end)
+        else { return nil }
+        return Set(lines[lines.index(after: startIndex) ..< endIndex])
     }
 
     func installRemoteKwt(
@@ -2653,13 +3118,14 @@ final class WorkspaceSceneModel: ObservableObject {
             BorrowedTmuxSessionView(
                 handle: handle,
                 hostName: host.name,
+                isRemoteHost: host.kind == .remote,
                 displayTitle: snapshot.worktrees.first {
                     $0.hostID == host.id
                         && $0.tmuxSessionName == sessionName
                 }?.name,
                 connectionState: borrowedTmuxConnectionStates[handle.id],
-                attachmentClosed:
-                nativeTmuxSessionCoordinator.hasClosedAttachment(handle),
+                attachmentClosure:
+                nativeTmuxSessionCoordinator.attachmentClosure(handle),
                 sessionClosed:
                 confirmedEndedTmuxSessionHandles.contains(handle.id),
                 surface: { [weak self] in
@@ -2672,6 +3138,10 @@ final class WorkspaceSceneModel: ObservableObject {
                 },
                 onRetryRequest: { [weak self] in
                     self?.retryBorrowedTmuxSession(selection)
+                },
+                onHostSettingsRequest: { [weak self] in
+                    SettingsStore.shared.selectedDomain = .hosts
+                    self?.isSettingsPresented = true
                 }
             )
         )

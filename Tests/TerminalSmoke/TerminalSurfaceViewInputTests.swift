@@ -18,10 +18,19 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
     // still pending.
     private static var retainedRuntime: LibghosttyRuntime?
     private static var transientRuntimes: [LibghosttyRuntime] = []
+    private var pasteboard: InMemoryTerminalPasteboard!
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
+    override func setUp() async throws {
+        try await super.setUp()
         try skipUnlessLibghosttyReady()
+        pasteboard = InMemoryTerminalPasteboard()
+        TerminalPasteboardAccess.current = pasteboard
+    }
+
+    override func tearDown() async throws {
+        TerminalPasteboardAccess.reset()
+        pasteboard = nil
+        try await super.tearDown()
     }
 
     private func requireAppHandle(
@@ -140,6 +149,15 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
     private func retainedRuntime() -> LibghosttyRuntime {
         if Self.retainedRuntime == nil {
             let (pipeline, _) = makeIsolatedPipeline()
+            try! FileManager.default.createDirectory(
+                at: pipeline.paths.configDirectory,
+                withIntermediateDirectories: true
+            )
+            try! "shell = /bin/zsh\n".write(
+                to: pipeline.paths.globalConfigFile,
+                atomically: true,
+                encoding: .utf8
+            )
             Self.retainedRuntime = LibghosttyRuntime(pipeline: pipeline)
         }
         return Self.retainedRuntime!
@@ -153,7 +171,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             at: pipeline.paths.configDirectory,
             withIntermediateDirectories: true
         )
-        try contents.write(
+        try ("shell = /bin/zsh\n" + contents).write(
             to: pipeline.paths.globalConfigFile,
             atomically: true,
             encoding: .utf8
@@ -1148,6 +1166,53 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         )
     }
 
+    func testClosingSurfaceCapturesSuccessfulChildExitCode() throws {
+        let runtime = try runtimeWithTerminalConfig(
+            "abnormal-command-exit-runtime = 0\n"
+        )
+        let appHandle = try requireAppHandle(from: runtime)
+        let home = makeShellHome()
+        let view = TerminalSurfaceView(
+            app: appHandle,
+            configuration: TerminalSurfaceConfiguration(
+                environmentVariables: [
+                    "HOME": home.path,
+                    "SHELL": "/bin/zsh",
+                    "ZDOTDIR": home.path,
+                ],
+                initialInput: "exec /bin/sh -c 'sleep 1; exit 0'\n"
+            )
+        )
+        let window = hostInWindow(view)
+        var reportedProcessAlive: Bool?
+        view.registerSurfaceCloseObserver(id: UUID()) {
+            reportedProcessAlive = $0
+        }
+
+        waitUntil(timeout: 10.0) {
+            view.surfaceHandle.map(ghostty_surface_process_exited) == true
+        }
+        let surface = try XCTUnwrap(view.surfaceHandle)
+        XCTAssertTrue(ghostty_surface_process_exited(surface))
+
+        // The action callback also reports this status. Clear it so the
+        // assertion below proves the close callback obtains the code from
+        // libghostty's durable process-exit state instead.
+        view.childExitCode = nil
+        ghostty_surface_request_close(surface)
+
+        waitUntil(timeout: 2.0) { reportedProcessAlive != nil }
+        withExtendedLifetime(window) {}
+
+        XCTAssertNotNil(reportedProcessAlive)
+        XCTAssertEqual(reportedProcessAlive, false)
+        XCTAssertEqual(
+            view.childExitCode,
+            0,
+            "A normal status-zero close should carry its exit code through libghostty's close callback."
+        )
+    }
+
     func testControlASendsSOHToPTY() throws {
         try assertPTYReceives(
             readBytes: 1,
@@ -1321,7 +1386,17 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
     }
 
     func testDefaultLibghosttyShellIntegrationLoadsUserZshrc() throws {
-        let appHandle = try requireAppHandle()
+        if ProcessInfo.processInfo.environment["RUNNER_ENVIRONMENT"]
+            == "self-hosted" {
+            throw XCTSkip(
+                "The self-hosted runner service account cannot start macOS's account-login shell."
+            )
+        }
+
+        let (pipeline, _) = makeIsolatedPipeline()
+        let runtime = LibghosttyRuntime(pipeline: pipeline)
+        Self.transientRuntimes.append(runtime)
+        let appHandle = try requireAppHandle(from: runtime)
 
         let homeDirectory = makeTemporaryDirectory()
         let zshrc = homeDirectory.appendingPathComponent(".zshrc", isDirectory: false)
@@ -2158,10 +2233,8 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             )
         }
 
-        let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString("pane-routed-paste", forType: .string)
-        defer { pasteboard.clearContents() }
 
         dispatch(
             makeKeyEvent(
@@ -2211,10 +2284,8 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             )
         }
 
-        let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString("caps-lock-pane-routed-paste", forType: .string)
-        defer { pasteboard.clearContents() }
 
         dispatch(
             makeKeyEvent(
@@ -2308,16 +2379,8 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         waitUntil(timeout: 5.0) { view.error == nil }
         waitForProbeReady(in: view)
 
-        let pasteboard = NSPasteboard.general
-        let priorContents = pasteboard.string(forType: .string)
         pasteboard.clearContents()
         pasteboard.setString(pastedText, forType: .string)
-        defer {
-            pasteboard.clearContents()
-            if let priorContents {
-                pasteboard.setString(priorContents, forType: .string)
-            }
-        }
 
         dispatch(
             makeKeyEvent(
@@ -2388,16 +2451,8 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         waitUntil(timeout: 5.0) { view.error == nil }
         waitForProbeReady(in: view)
 
-        let pasteboard = NSPasteboard.general
-        let priorContents = pasteboard.string(forType: .string)
         pasteboard.clearContents()
         pasteboard.setString(pastedText, forType: .string)
-        defer {
-            pasteboard.clearContents()
-            if let priorContents {
-                pasteboard.setString(priorContents, forType: .string)
-            }
-        }
 
         dispatch(
             makeKeyEvent(
@@ -2447,16 +2502,8 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         waitUntil(timeout: 5.0) { view.error == nil }
         waitForProbeReady(in: view)
 
-        let pasteboard = NSPasteboard.general
-        let priorContents = pasteboard.string(forType: .string)
         pasteboard.clearContents()
         pasteboard.setString(pastedText, forType: .string)
-        defer {
-            pasteboard.clearContents()
-            if let priorContents {
-                pasteboard.setString(priorContents, forType: .string)
-            }
-        }
 
         let oldShortcut = makeKeyEvent(
             characters: "v",
@@ -2504,16 +2551,8 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         )
         view.blocksClipboardReads = true
 
-        let pasteboard = NSPasteboard.general
-        let priorContents = pasteboard.string(forType: .string)
         pasteboard.clearContents()
         pasteboard.setString("local-secret", forType: .string)
-        defer {
-            pasteboard.clearContents()
-            if let priorContents {
-                pasteboard.setString(priorContents, forType: .string)
-            }
-        }
 
         _ = hostInWindow(view)
         waitUntil(timeout: 5.0) { view.error == nil }
@@ -2559,21 +2598,13 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         )
         view.blocksClipboardReads = true
 
-        let pasteboard = NSPasteboard.general
-        let priorContents = pasteboard.string(forType: .string)
         pasteboard.clearContents()
-        defer {
-            pasteboard.clearContents()
-            if let priorContents {
-                pasteboard.setString(priorContents, forType: .string)
-            }
-        }
 
         _ = hostInWindow(view)
         waitUntil(timeout: 5.0) { view.error == nil }
         waitForViewportText("<WROTE>", in: view)
         waitUntil(timeout: 3.0) {
-            pasteboard.string(forType: .string) == copiedText
+            self.pasteboard.string(forType: .string) == copiedText
         }
 
         XCTAssertEqual(

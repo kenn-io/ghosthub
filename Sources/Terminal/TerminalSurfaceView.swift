@@ -82,6 +82,7 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
 
     @Published public internal(set) var title: String = ""
     @Published public var pwd: String?
+    public internal(set) var childExitCode: UInt32?
     @Published public var cellSize: NSSize = .zero
     @Published public var surfaceSize: ghostty_surface_size_s?
     @Published public private(set) var healthy: Bool = true
@@ -322,6 +323,13 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
 
     package var surfaceIdentity: UInt? {
         surfaceHandle.map { UInt(bitPattern: $0) }
+    }
+
+    package func captureChildExitCode() {
+        guard childExitCode == nil, let surface else { return }
+        let exitCode = ghostty_surface_child_exit_code(surface)
+        guard exitCode >= 0 else { return }
+        childExitCode = UInt32(exitCode)
     }
 
     package func synchronizeColorScheme() {
@@ -1261,7 +1269,9 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
             // "Cmd-held stays local" rule below, or paste silently goes to
             // the local core even when a pane sink is attached.
             if action != GHOSTTY_ACTION_RELEASE, isPasteShortcut(event) {
-                if let data = Self.explicitPasteData(from: .general) {
+                if let data = Self.explicitPasteData(
+                    from: TerminalPasteboardAccess.current
+                ) {
                     if let pasteSink = tmuxPanePasteSink {
                         pasteSink(data)
                     } else {
@@ -1498,7 +1508,9 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     /// Diverges from fantastty: fantastty reads the pasteboard through its
     /// own `NSPasteboard.getOpinionatedStringContents()` extension (not
     /// ported here). This uses the standard `.string` pasteboard type.
-    static func explicitPasteData(from pasteboard: NSPasteboard) -> Data? {
+    static func explicitPasteData(
+        from pasteboard: any TerminalPasteboard
+    ) -> Data? {
         guard let string = pasteboard.string(forType: .string),
               !string.isEmpty
         else { return nil }

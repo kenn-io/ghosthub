@@ -689,6 +689,23 @@ final class ApplicationDelegateTests: XCTestCase {
         )
     }
 
+    func testWorkspaceTitleClearsTheVisibleSidebar() {
+        XCTAssertEqual(
+            CompactWorkspaceTitlebarController.titleLeadingOffset(
+                isSidebarVisible: true,
+                sidebarWidth: 360
+            ),
+            372
+        )
+        XCTAssertEqual(
+            CompactWorkspaceTitlebarController.titleLeadingOffset(
+                isSidebarVisible: false,
+                sidebarWidth: 360
+            ),
+            120
+        )
+    }
+
     func testWindowCloseDelegateClosesWithoutTerminating() throws {
         let delegate = ApplicationDelegate.forTesting()
         var terminationRequests = 0

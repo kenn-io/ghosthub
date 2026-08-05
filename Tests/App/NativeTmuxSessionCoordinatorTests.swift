@@ -5,7 +5,7 @@ import GhosthubWorkspace
 import Testing
 @testable import GhosthubApp
 
-@Suite("Native tmux connection identity")
+@Suite("Native tmux connection identity", .serialized)
 @MainActor
 struct NativeTmuxSessionCoordinatorTests {
     @Test("new named sessions use tmux create-or-attach mode")
@@ -233,6 +233,38 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(!command.contains("attach-session"))
     }
 
+    @Test("remote attachment uses non-enrolling host-key policy")
+    func remoteAttachmentUsesNonEnrollingHostKeyPolicy() async throws {
+        let store = RecordingTmuxSurfaceStore()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { .success("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            sshConnectionArgumentsProvider: { _ in
+                ["-o", "StrictHostKeyChecking=yes"]
+            }
+        )
+        var isReady = false
+        coordinator.onSurfaceReady = { _ in isReady = true }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "existing",
+            host: .ssh(SSHHostInfo(
+                user: "operator",
+                hostname: "build.example.test",
+                port: nil
+            ))
+        )
+
+        await waitUntilMainActor { isReady }
+        _ = coordinator.surface(handle: handle)
+
+        let command = try #require(
+            store.requestedConfigurations.last?.command
+        )
+        #expect(command.contains("StrictHostKeyChecking=yes"))
+    }
+
     @Test("endpoint changes replace provisioning and active handles")
     func endpointChangesReplaceHandles() async throws {
         let store = RecordingTmuxSurfaceStore()
@@ -328,11 +360,12 @@ struct NativeTmuxSessionCoordinatorTests {
 
         #expect(!states.contains(.connected))
         #expect(!coordinator.hasLaunched(handle))
+        #expect(coordinator.attachmentClosure(handle) == .launchFailed)
         #expect(store.removedKeys.count == 1)
     }
 
-    @Test("an exited tmux client records a closed attachment")
-    func exitedClientClosesAttachment() async throws {
+    @Test("a detached live client records a closed attachment")
+    func detachedLiveClientClosesAttachment() async throws {
         let store = RecordingTmuxSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
@@ -352,12 +385,66 @@ struct NativeTmuxSessionCoordinatorTests {
         await waitUntilMainActor { states.contains(.connected) }
 
         let close = try #require(store.surface.closeObservers[handle.id])
-        close(true)
+        close(true, nil)
 
         #expect(coordinator.hasClosedAttachment(handle))
+        #expect(coordinator.attachmentClosure(handle) == .detached)
         #expect(states.last == .disconnected(
             reason: "The tmux attachment to “release-work” closed."
         ))
+    }
+
+    @Test("a successful tmux client exit records a manual detach")
+    func successfulClientExitRecordsDetach() async throws {
+        let store = RecordingTmuxSurfaceStore()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { .success("/usr/bin/tmux") }
+        )
+        var isSurfaceReady = false
+        coordinator.onSurfaceReady = { _ in isSurfaceReady = true }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "release-work",
+            host: .local
+        )
+        await waitUntilMainActor { isSurfaceReady }
+        _ = coordinator.surface(handle: handle)
+
+        let close = try #require(store.surface.closeObservers[handle.id])
+        close(false, 0)
+
+        #expect(coordinator.hasClosedAttachment(handle))
+        #expect(coordinator.attachmentClosure(handle) == .detached)
+    }
+
+    @Test("an exited attachment process is recorded as a failure outcome")
+    func exitedProcessRecordsFailureOutcome() async throws {
+        let store = RecordingTmuxSurfaceStore()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { .success("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") }
+        )
+        var isSurfaceReady = false
+        coordinator.onSurfaceReady = { _ in isSurfaceReady = true }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "release-work",
+            host: .ssh(SSHHostInfo(
+                user: "dev",
+                hostname: "build.example.test",
+                port: nil
+            ))
+        )
+        await waitUntilMainActor { isSurfaceReady }
+        _ = coordinator.surface(handle: handle)
+
+        let close = try #require(store.surface.closeObservers[handle.id])
+        close(false, 1)
+
+        #expect(coordinator.hasClosedAttachment(handle))
+        #expect(coordinator.attachmentClosure(handle) == .processExited)
     }
 }
 

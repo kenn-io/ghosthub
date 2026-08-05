@@ -89,6 +89,24 @@ struct TmuxBinaryResolverTests {
         #expect(result.stdout == argument)
     }
 
+    @Test("login-shell process preserves explicit environment overrides")
+    func loginShellProcessPreservesEnvironmentOverrides() throws {
+        let password = try #require(getpwuid(getuid()))
+        let shell = String(cString: password.pointee.pw_shell)
+        let result = TmuxBinaryResolver.runProcessInLoginShell(
+            executable: "/usr/bin/printenv",
+            arguments: ["GHOSTHUB_TEST_OVERRIDE"],
+            timeout: 15,
+            accountShell: shell,
+            environmentOverrides: [
+                "GHOSTHUB_TEST_OVERRIDE": "available-through-login-shell",
+            ]
+        )
+
+        #expect(result.status == 0)
+        #expect(result.stdout == "available-through-login-shell\n")
+    }
+
     @Test("remote POSIX command runs under the configured account shell")
     func remotePOSIXCommandRunsUnderConfiguredAccountShell() throws {
         let password = try #require(getpwuid(getuid()))
@@ -115,6 +133,23 @@ struct TmuxBinaryResolverTests {
 
         #expect(result.status == 0)
         #expect(result.stdout == "GHOSTHUB_REMOTE_SHELL_READY\n")
+    }
+
+    @Test("process output keeps diagnostics separate from protocol output")
+    func separatesStandardError() {
+        let result = TmuxBinaryResolver.runProcess(
+            executable: "/bin/sh",
+            arguments: [
+                "-c",
+                "printf 'GHOSTHUB_SSH_REACHED\\n'; "
+                    + "printf 'diagnostic\\n' >&2",
+            ],
+            timeout: 5
+        )
+
+        #expect(result.status == 0)
+        #expect(result.stdout == "GHOSTHUB_SSH_REACHED\n")
+        #expect(result.stderr == "diagnostic\n")
     }
 
     @Test("rejects unsupported tmux versions")

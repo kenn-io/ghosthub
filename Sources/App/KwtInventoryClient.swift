@@ -101,8 +101,9 @@ enum KwtInventoryError: Error, Equatable, LocalizedError {
         switch self {
         case let .commandFailed(host, status):
             if status == 255 {
-                return "SSH could not connect to \(host) while loading"
-                    + " kwt projects."
+                return "Remote kwt inventory could not complete on \(host)."
+                    + " Open Host Settings and test the exact SSH"
+                    + " destination."
             }
             return "kwt inventory failed on \(host) with status \(status)."
         case let .malformedOutput(host):

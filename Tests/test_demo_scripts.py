@@ -8,6 +8,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,16 @@ WEBSITE_ASSET_NAMES = (
     "guide-command-center.png",
     "guide-native-tabs.png",
 )
+
+
+@pytest.fixture
+def tmp_path() -> Iterator[Path]:
+    """Keep path-security fixtures below macOS's trusted sticky temp root."""
+    with tempfile.TemporaryDirectory(
+        prefix="ghosthub-demo-test-",
+        dir="/tmp",
+    ) as directory:
+        yield Path(directory)
 
 
 def run_bash(script: str, *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -646,7 +657,14 @@ def test_run_reaps_app_when_pid_recording_fails(tmp_path: Path) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     fake_mktemp = bin_dir / "mktemp"
-    fake_mktemp.write_text("#!/usr/bin/env bash\nexit 1\n")
+    fake_mktemp.write_text(
+        "#!/usr/bin/env bash\n"
+        "for _ in {1..500}; do\n"
+        "  [[ -f $CHILD_STATE ]] && exit 1\n"
+        "  /bin/sleep 0.01\n"
+        "done\n"
+        "exit 2\n"
+    )
     fake_mktemp.chmod(0o755)
     executable = scratch / "app/Ghosthub.app/Contents/MacOS/Ghosthub"
     executable.parent.mkdir(parents=True)

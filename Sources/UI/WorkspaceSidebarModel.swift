@@ -1,6 +1,149 @@
 import Foundation
 import GhosthubWorkspace
 
+public enum WorkspaceSidebarOrderStorage {
+    public static let worktreeKey = "workspaceSidebarWorktreeOrderV1"
+    public static let tmuxSessionKey = "workspaceSidebarTmuxSessionOrderV1"
+
+    public static func worktreeRawValue(
+        in defaults: UserDefaults = .standard
+    ) -> String {
+        defaults.string(forKey: worktreeKey) ?? ""
+    }
+}
+
+struct WorkspaceSidebarOrder: Equatable {
+    private var itemIDs: [String]
+
+    init(rawValue: String = "") {
+        var seen = Set<String>()
+        itemIDs = rawValue
+            .split(whereSeparator: \Character.isNewline)
+            .map(String.init)
+            .filter { seen.insert($0).inserted }
+    }
+
+    var rawValue: String {
+        itemIDs.joined(separator: "\n")
+    }
+
+    func ordered<Item>(
+        _ items: [Item],
+        identifiedBy identifier: (Item) -> String
+    ) -> [Item] {
+        let positions = Dictionary(
+            uniqueKeysWithValues: itemIDs.enumerated().map {
+                ($0.element, $0.offset)
+            }
+        )
+        return items.enumerated().sorted { lhs, rhs in
+            let lhsPosition = positions[identifier(lhs.element)]
+            let rhsPosition = positions[identifier(rhs.element)]
+            switch (lhsPosition, rhsPosition) {
+            case let (lhsPosition?, rhsPosition?):
+                return lhsPosition < rhsPosition
+            case (_?, nil):
+                return true
+            case (nil, _?):
+                return false
+            case (nil, nil):
+                return lhs.offset < rhs.offset
+            }
+        }
+        .map(\.element)
+    }
+
+    mutating func move(
+        _ sourceID: String,
+        to targetID: String,
+        within groupItemIDs: [String]
+    ) -> Bool {
+        guard sourceID != targetID else { return false }
+
+        let groupIDSet = Set(groupItemIDs)
+        var orderedGroupIDs = orderedIDs(groupItemIDs)
+        guard let sourceIndex = orderedGroupIDs.firstIndex(of: sourceID),
+              let targetIndex = orderedGroupIDs.firstIndex(of: targetID)
+        else { return false }
+        orderedGroupIDs.remove(at: sourceIndex)
+        guard let orderedTargetIndex = orderedGroupIDs.firstIndex(of: targetID)
+        else { return false }
+        let insertionIndex = sourceIndex < targetIndex
+            ? orderedTargetIndex + 1
+            : orderedTargetIndex
+        orderedGroupIDs.insert(sourceID, at: insertionIndex)
+
+        var replacements = orderedGroupIDs.makeIterator()
+        itemIDs = itemIDs.map { itemID in
+            guard groupIDSet.contains(itemID) else { return itemID }
+            return replacements.next() ?? itemID
+        }
+        while let replacement = replacements.next() {
+            itemIDs.append(replacement)
+        }
+        return true
+    }
+
+    mutating func prune(keeping knownItemIDs: Set<String>) -> Bool {
+        let pruned = itemIDs.filter(knownItemIDs.contains)
+        guard pruned != itemIDs else { return false }
+        itemIDs = pruned
+        return true
+    }
+
+    private func orderedIDs(_ ids: [String]) -> [String] {
+        let positions = Dictionary(
+            uniqueKeysWithValues: itemIDs.enumerated().map {
+                ($0.element, $0.offset)
+            }
+        )
+        return ids.enumerated().sorted { lhs, rhs in
+            let lhsPosition = positions[lhs.element]
+            let rhsPosition = positions[rhs.element]
+            switch (lhsPosition, rhsPosition) {
+            case let (lhsPosition?, rhsPosition?):
+                return lhsPosition < rhsPosition
+            case (_?, nil):
+                return true
+            case (nil, _?):
+                return false
+            case (nil, nil):
+                return lhs.offset < rhs.offset
+            }
+        }
+        .map(\.element)
+    }
+}
+
+enum WorkspaceSidebarPruningPolicy {
+    static func shouldPrune(
+        refreshComplete: Bool,
+        inventoryWarning: String?,
+        inventoryWarningsByHost: [UUID: String]
+    ) -> Bool {
+        refreshComplete
+            && inventoryWarning == nil
+            && inventoryWarningsByHost.isEmpty
+    }
+}
+
+enum WorkspaceSidebarDropPlacement: Equatable {
+    case before
+    case after
+
+    static func resolve(
+        sourceID: String,
+        targetID: String,
+        orderedIDs: [String]
+    ) -> Self? {
+        guard sourceID != targetID,
+              let sourceIndex = orderedIDs.firstIndex(of: sourceID),
+              let targetIndex = orderedIDs.firstIndex(of: targetID)
+        else { return nil }
+        return sourceIndex < targetIndex ? .after : .before
+    }
+}
+
 public struct WorkspaceTmuxSessionSelection:
     Equatable, Hashable, Identifiable, Sendable {
     public var hostID: UUID
@@ -194,9 +337,17 @@ public enum WorkspaceSidebarModel {
     public static func sections(
         in snapshot: WorkspaceSnapshot,
         visibility: WorktreeVisibility = .default,
-        tmuxSessionVisibility: TmuxSessionVisibility = TmuxSessionVisibility()
+        tmuxSessionVisibility: TmuxSessionVisibility = TmuxSessionVisibility(),
+        worktreeOrderRawValue: String = "",
+        tmuxSessionOrderRawValue: String = ""
     ) -> [WorkspaceSidebarSection] {
-        snapshot.hosts.map { host in
+        let worktreeOrder = WorkspaceSidebarOrder(
+            rawValue: worktreeOrderRawValue
+        )
+        let tmuxSessionOrder = WorkspaceSidebarOrder(
+            rawValue: tmuxSessionOrderRawValue
+        )
+        return snapshot.hosts.map { host in
             // Discovery only lists the host's default tmux server. A
             // protected PR workspace lives on its own socket, so its session
             // name never identifies a discovered session and must not
@@ -214,12 +365,15 @@ public enum WorkspaceSidebarModel {
                         && $0.kind == .repository
                 }
                 .map { project in
-                    let worktrees = snapshot.worktrees.filter {
-                        $0.hostID == host.id
-                            && $0.projectID == project.id
-                            && !$0.isStale
-                            && visibility.includes($0)
-                    }
+                    let worktrees = worktreeOrder.ordered(
+                        snapshot.worktrees.filter {
+                            $0.hostID == host.id
+                                && $0.projectID == project.id
+                                && !$0.isStale
+                                && visibility.includes($0)
+                        },
+                        identifiedBy: { $0.id.uuidString }
+                    )
                     let rows = worktrees.map { worktree in
                         worktreeRow(for: worktree, snapshot: snapshot)
                     }
@@ -232,15 +386,33 @@ public enum WorkspaceSidebarModel {
             return WorkspaceSidebarSection(
                 host: host,
                 projects: projects,
-                tmuxSessionRows: host.tmuxSessions
-                    .filter {
-                        !defaultServerSessionNames.contains($0.name)
-                            && !tmuxSessionVisibility.isHidden($0.name)
+                tmuxSessionRows: tmuxSessionOrder.ordered(
+                    host.tmuxSessions
+                        .filter {
+                            !defaultServerSessionNames.contains($0.name)
+                                && !tmuxSessionVisibility.isHidden($0.name)
+                        }
+                        .sorted {
+                            $0.name.localizedStandardCompare($1.name)
+                                == .orderedAscending
+                        },
+                    identifiedBy: {
+                        tmuxSessionOrderID(
+                            hostID: host.id,
+                            name: $0.name
+                        )
                     }
-                    .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-                    .map { tmuxSessionRow($0, hostID: host.id) }
+                )
+                .map { tmuxSessionRow($0, hostID: host.id) }
             )
         }
+    }
+
+    static func tmuxSessionOrderID(
+        hostID: UUID,
+        name: String
+    ) -> String {
+        "\(hostID.uuidString):\(name)"
     }
 
     private static func tmuxSessionRow(

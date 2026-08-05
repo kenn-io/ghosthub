@@ -115,11 +115,89 @@ its tmux session. Import itself does not start tmux or execute a configured
 project layout, bootstrap, agent, or checkout command. It returns the
 deterministic workspace-specific socket identity without creating the server.
 
-Testing a newly configured SSH connection delegates host-key verification to
-the user's OpenSSH configuration, just like inventory, attachment, and helper
-installation. Ghosthub never forces `accept-new` or another weaker policy. If
-the configured policy requires interactive trust for an unseen key, the user
-verifies that host with system `ssh` before retrying the noninteractive test.
+Testing a newly configured SSH connection and reviewing a host-scoped
+inventory warning delegate host-key verification and storage to the user's
+OpenSSH configuration, just like inventory, attachment, and helper
+installation. Ghosthub first reads the destination's effective configuration
+with `ssh -G` and opens its private askpass review only when
+`StrictHostKeyChecking` resolves to `ask` or `accept-new`; it never weakens a
+configured `yes`, `no`, or `off` policy. For an unseen key, Ghosthub presents
+the exact destination and fingerprint and returns `yes` only after explicit
+approval. The approval is bound to the parsed algorithm and fingerprint, so a
+benign address change cannot be mislabeled as a key change, and to the logical
+host so the same key cannot authorize another route target. OpenSSH writes the
+approved key to its configured `UserKnownHostsFile`,
+after which Ghosthub retries the connection or inventory operation that led to
+the review.
+If OpenSSH then requires a password or another interactive response, Ghosthub
+shows the exact challenge in a native secure field and brokers the response to
+the system client through a user-only FIFO. The response exists in app memory
+for that attempt but is never placed in process arguments, environment
+variables, logs, or persistent storage. Later app operations share only the
+authenticated control socket. The master has no persistence after the app
+session ends: Ghosthub prevents it from forking, a parent-held watchdog
+descriptor remains open while the app owns the master and terminates it at
+EOF, the socket name contains an
+app-launch nonce, and each launch uses its own process-owned socket namespace.
+Startup cleanup removes only namespaces whose owner process is no longer
+running, so a concurrent Ghosthub instance retains access to its masters. The
+socket lives in the user-only Ghosthub state directory and is also scoped to the
+logical destination, the normalized effective OpenSSH configuration for every
+route target, and the proxy route. Changes to credentials, known-hosts files,
+host-key identity, route, or app launch therefore cannot reuse an authenticated
+master.
+If that state path would exceed the Unix-socket limit, Ghosthub uses a random,
+process-owned `/tmp` namespace with the same dead-owner cleanup rule and rejects
+any path that remains too long.
+Routine clients and generated ProxyJump helpers explicitly disable
+`ControlMaster` and `ControlPersist`, so user configuration cannot turn them
+into unsupervised persistent masters even when Ghosthub cannot prepare its
+control socket. Fallback proxy helpers also set `ControlPath=none`, preventing
+reuse of an inherited user-controlled master. Generated proxy commands force
+`ProxyUseFdpass=no`, keeping the route on the standard stream-forwarding
+contract that Ghosthub constructs. Host-key review preserves the resolved
+key-exchange, cipher, MAC, and minimum RSA-key constraints used by the later
+authenticated connection.
+Authentication preparation
+resolves one effective-config snapshot, verifies its cached control identity,
+and launches the endpoint, route, authentication, and known-hosts options from
+that same snapshot under an empty base SSH configuration. It restarts recovery
+if the identity changed instead of mixing a cached socket path with live SSH
+configuration.
+Before Ghosthub reports authentication complete, it resolves the current route
+and control path again; a mismatch terminates the stale shared session and
+returns to explicit recovery.
+Authentication uses the same account-login-shell boundary and guarded demo SSH
+configuration as resolution and host-key review, so those phases cannot consult
+different agent, configuration, or known-hosts state. Authentication removes
+inherited `TMUX` and `TMUX_PANE` values before login-shell startup. Host-key
+configuration resolution nonce-frames `ssh -G` output so login-shell banners
+cannot enter the replayed option set. Host-key review launches with
+snapshot-derived endpoint, route, and known-hosts options
+under an empty base SSH configuration, so live config changes cannot redirect
+the reviewed operation.
+Remote connection probes emit a leading delimiter before accepting exact
+reachability and capability lines from stdout. Stderr and marker text embedded
+in shell banners are diagnostics, so SSH or shell messages cannot spoof a
+successful probe.
+Ghosthub never forces `accept-new`, writes a scanned key itself, or treats a
+trusted short alias as authorization for a canonical MagicDNS FQDN.
+When an SSH route contains unseen intermediate hosts, each trust sheet labels
+the host exactly as OpenSSH names it and approval advances only to the next
+prompt. If that hop requires interactive authentication, Ghosthub establishes
+its app-session master before asking OpenSSH for the next host's key. The
+secure-entry sheet names that exact route host and warns that the host controls
+the challenge. The label comes from the effective user, hostname, and port in
+the launch configuration, so credentials for the final destination are not
+presented to an intermediate hop. A deliberate Continue action can submit the
+empty response required by some keyboard-interactive challenges. A later
+prompt is never treated as proof that the reviewed host changed its key.
+Routine inventory, transfer, and attachment operations prevent silent
+enrollment at every host in a direct ProxyJump list. Review-managed `ask` and
+`accept-new` connections also disable `UpdateHostKeys` so only the explicitly
+approved key is persisted. Opaque ProxyCommand routes and jump hosts that
+introduce another proxy route fail closed because Ghosthub cannot resolve every
+intermediate trust policy independently.
 
 When the user opens the imported workspace, Ghosthub invokes kwt's protected
 attach command through the remote account's login shell when applicable. Kwt

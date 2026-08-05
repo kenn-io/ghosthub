@@ -54,6 +54,9 @@ layer, as subject to direct iteration.
 - Commit every turn when you make changes.
 - Commit before responding without asking whether to commit; committing is the
   expected default after every change.
+- Ending a completed turn with task-related uncommitted work is forbidden. A
+  clean task worktree is a precondition for handoff and for any roborev
+  interaction.
 - Never commit directly to `main` or `master`. When a task starts on the
   default branch, create a task-specific branch before the first commit. If a
   local commit lands on the default branch accidentally, move it to a task

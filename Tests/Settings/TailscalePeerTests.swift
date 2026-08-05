@@ -3,30 +3,53 @@ import Testing
 @testable import GhosthubSettings
 
 struct TailscalePeerTests {
-    @Test("strips trailing dot from DNS name")
-    func stripsDotFromDNS() {
+    @Test("uses the canonical MagicDNS hostname for SSH")
+    func usesCanonicalHostnameForSSH() {
         let peer = TailscalePeer(
             id: "x",
             hostName: "box",
             dnsName: "box.tailnet.ts.net.",
             os: "linux",
-            isOnline: true
+            isOnline: true,
+            sshUsername: nil
         )
 
         #expect(peer.sshAddress == "box.tailnet.ts.net")
+        #expect(
+            peer.sshDestination(username: "operator")
+                == "operator@box.tailnet.ts.net"
+        )
     }
 
-    @Test("preserves DNS name without trailing dot")
-    func preservesDNSWithoutDot() {
+    @Test("does not depend on DNS name formatting")
+    func ignoresDNSNameFormatting() {
         let peer = TailscalePeer(
             id: "x",
             hostName: "box",
             dnsName: "box.tailnet.ts.net",
             os: "linux",
-            isOnline: true
+            isOnline: true,
+            sshUsername: nil
         )
 
         #expect(peer.sshAddress == "box.tailnet.ts.net")
+    }
+
+    @Test("resolved SSH user overrides the local fallback")
+    func resolvedSSHUserOverridesFallback() {
+        let peer = TailscalePeer(
+            id: "x",
+            hostName: "box",
+            dnsName: "box.tailnet.ts.net",
+            os: "linux",
+            isOnline: true,
+            sshUsername: "operator"
+        )
+
+        #expect(
+            peer.sshDestination(defaultUsername: "local-user")
+                == "operator@box.tailnet.ts.net"
+        )
     }
 
     @Test("maps supported operating systems to host platforms")
@@ -51,7 +74,8 @@ struct TailscalePeerTests {
             hostName: os,
             dnsName: "\(os).tailnet.ts.net.",
             os: os,
-            isOnline: true
+            isOnline: true,
+            sshUsername: nil
         )
     }
 }

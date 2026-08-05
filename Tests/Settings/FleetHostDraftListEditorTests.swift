@@ -113,13 +113,38 @@ struct SSHHostDraftListEditorTests {
                 hostName: "Mac Mini",
                 dnsName: "mac-mini.tailnet.ts.net.",
                 os: "macOS",
-                isOnline: true
-            )
+                isOnline: true,
+                sshUsername: nil
+            ),
+            username: "operator"
         )
 
         #expect(imported.name == "Mac Mini")
         #expect(imported.platform == .macOS)
-        #expect(imported.sshDestination == "mac-mini.tailnet.ts.net")
+        #expect(
+            imported.sshDestination
+                == "operator@mac-mini.tailnet.ts.net"
+        )
+    }
+
+    @Test("Tailscale imports prefer the effective OpenSSH user")
+    func tailscaleImportPrefersEffectiveSSHUser() {
+        let imported = SSHHostDraftImport(
+            tailscalePeer: TailscalePeer(
+                id: "node-1",
+                hostName: "Build Node",
+                dnsName: "build-node.tailnet.ts.net.",
+                os: "linux",
+                isOnline: true,
+                sshUsername: "deployer"
+            ),
+            username: "local-user"
+        )
+
+        #expect(
+            imported.sshDestination
+                == "deployer@build-node.tailnet.ts.net"
+        )
     }
 
     private func draft(

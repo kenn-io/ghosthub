@@ -113,6 +113,7 @@ public enum RemoteHostDiagnosticCode: String, Codable, Equatable, Sendable {
     case missingInstallDependencies
     case bootstrapFailure
     case configurationFailure
+    case sshAuthenticationFailed
     case sshConnectionFailed
     case probeFailure
 }
@@ -146,6 +147,7 @@ public struct RemoteHostDiagnostic: Codable, Equatable, Sendable, Identifiable {
              .missingInstallDependencies,
              .bootstrapFailure,
              .configurationFailure,
+             .sshAuthenticationFailed,
              .sshConnectionFailed,
              .probeFailure:
             return true
@@ -164,6 +166,7 @@ public struct RemoteHostDiagnostic: Codable, Equatable, Sendable, Identifiable {
              .missingInstallDependencies,
              .bootstrapFailure,
              .configurationFailure,
+             .sshAuthenticationFailed,
              .sshConnectionFailed,
              .probeFailure:
             return true

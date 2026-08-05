@@ -908,6 +908,13 @@ public final class LibghosttyRuntime: ObservableObject {
 
         case GHOSTTY_ACTION_SHOW_CHILD_EXITED:
             let exitInfo = action.action.child_exited
+            dispatchToMainSync {
+                if let surfaceView = surfaceView(
+                    fromSurfaceIdentity: sourceSurfaceIdentity
+                ) {
+                    surfaceView.childExitCode = exitInfo.exit_code
+                }
+            }
             DispatchQueue.main.async {
                 let state = runtime(from: userdataValue)
                 state.runtimeState.recordAction(
@@ -954,7 +961,9 @@ public final class LibghosttyRuntime: ObservableObject {
             let contents = clipboardReadContents(
                 blocked: surfaceView.blocksClipboardReads,
                 request: request,
-                contents: NSPasteboard.general.string(forType: .string)
+                contents: TerminalPasteboardAccess.current.string(
+                    forType: .string
+                )
             )
             contents.withCString { ptr in
                 ghostty_surface_complete_clipboard_request(
@@ -1037,7 +1046,7 @@ public final class LibghosttyRuntime: ObservableObject {
         dispatchToMainSync {
             guard surfaceView(from: userdataValue) != nil else { return }
             let acceptedEntries = acceptedClipboardWriteEntries(entries)
-            let pasteboard = NSPasteboard.general
+            let pasteboard = TerminalPasteboardAccess.current
             pasteboard.clearContents()
             let types = acceptedEntries.compactMap {
                 pasteboardType(forMIMEType: $0.mime)
@@ -1104,6 +1113,9 @@ public final class LibghosttyRuntime: ObservableObject {
         dispatchToMainSync {
             guard let surfaceView = surfaceView(from: userdataValue) else {
                 return
+            }
+            if !processAlive {
+                surfaceView.captureChildExitCode()
             }
             surfaceView.error = TerminalSurfaceError.surfaceClosed(
                 processAlive: processAlive

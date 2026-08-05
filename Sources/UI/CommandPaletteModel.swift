@@ -129,7 +129,9 @@ public enum CommandPaletteModel {
         interfaceAppearance: AppearancePreference = .system,
         worktreeVisibility: WorktreeVisibility = .default,
         tmuxSessionVisibility: TmuxSessionVisibility = TmuxSessionVisibility(),
-        supportsSettings: Bool = true
+        supportsSettings: Bool = true,
+        worktreeOrderRawValue: String = "",
+        tmuxSessionOrderRawValue: String = ""
     ) -> [WorkspaceCommandItem] {
         var commands = [
             WorkspaceCommandItem(
@@ -199,7 +201,9 @@ public enum CommandPaletteModel {
             activeSelection: activeTmuxSession,
             activeSelectionIsConnected: activeTmuxSessionIsConnected,
             visibility: worktreeVisibility,
-            tmuxSessionVisibility: tmuxSessionVisibility
+            tmuxSessionVisibility: tmuxSessionVisibility,
+            worktreeOrderRawValue: worktreeOrderRawValue,
+            tmuxSessionOrderRawValue: tmuxSessionOrderRawValue
         ))
         commands.append(contentsOf: newWorktreeCommands(
             in: snapshot,
@@ -215,7 +219,8 @@ public enum CommandPaletteModel {
         ))
         commands.append(contentsOf: worktreeCommands(
             in: snapshot,
-            visibility: worktreeVisibility
+            visibility: worktreeVisibility,
+            worktreeOrderRawValue: worktreeOrderRawValue
         ))
         return commands
     }
@@ -390,12 +395,16 @@ public enum CommandPaletteModel {
         activeSelection: WorkspaceTmuxSessionSelection?,
         activeSelectionIsConnected: Bool,
         visibility: WorktreeVisibility,
-        tmuxSessionVisibility: TmuxSessionVisibility
+        tmuxSessionVisibility: TmuxSessionVisibility,
+        worktreeOrderRawValue: String,
+        tmuxSessionOrderRawValue: String
     ) -> [WorkspaceCommandItem] {
         let sections = WorkspaceSidebarModel.sections(
             in: snapshot,
             visibility: visibility,
-            tmuxSessionVisibility: tmuxSessionVisibility
+            tmuxSessionVisibility: tmuxSessionVisibility,
+            worktreeOrderRawValue: worktreeOrderRawValue,
+            tmuxSessionOrderRawValue: tmuxSessionOrderRawValue
         )
         let sessions = sections.flatMap { section -> [(
             session: WorkspaceTmuxSessionSelection,
@@ -600,11 +609,13 @@ public enum CommandPaletteModel {
 
     private static func worktreeCommands(
         in snapshot: WorkspaceSnapshot,
-        visibility: WorktreeVisibility = .default
+        visibility: WorktreeVisibility = .default,
+        worktreeOrderRawValue: String = ""
     ) -> [WorkspaceCommandItem] {
         let rows = WorkspaceSidebarModel.sections(
             in: snapshot,
-            visibility: visibility
+            visibility: visibility,
+            worktreeOrderRawValue: worktreeOrderRawValue
         )
         .flatMap { section in
             section.projects.flatMap { sidebarProject in
