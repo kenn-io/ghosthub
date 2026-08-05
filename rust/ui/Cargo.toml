@@ -12,6 +12,8 @@ path = "src/lib.rs"
 
 [dependencies]
 ghosthub-model.workspace = true
+ghosthub-surface.workspace = true
+ghosthub-workspace.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 gpui = { workspace = true, features = ["windows-manifest"] }

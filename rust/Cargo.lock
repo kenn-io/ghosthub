@@ -2049,8 +2049,11 @@ dependencies = [
 name = "ghosthub-app"
 version = "0.0.0"
 dependencies = [
+ "ghosthub-config",
+ "ghosthub-host",
  "ghosthub-model",
  "ghosthub-ui",
+ "ghosthub-workspace",
 ]
 
 [[package]]
@@ -2127,7 +2130,22 @@ name = "ghosthub-ui"
 version = "0.0.0"
 dependencies = [
  "ghosthub-model",
+ "ghosthub-surface",
+ "ghosthub-workspace",
  "gpui",
+]
+
+[[package]]
+name = "ghosthub-workspace"
+version = "0.0.0"
+dependencies = [
+ "ghosthub-config",
+ "ghosthub-host",
+ "ghosthub-input",
+ "ghosthub-model",
+ "ghosthub-session",
+ "ghosthub-surface",
+ "ghosthub-terminal",
 ]
 
 [[package]]
