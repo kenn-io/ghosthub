@@ -647,10 +647,11 @@ struct WorkspaceWindow: View {
             ),
             content: ContentBuilders(
                 tmuxSessionContentBuilder: {
-                    [sceneModel] host, sessionName in
+                    [sceneModel] host, sessionName, defersTerminalResize in
                     sceneModel.borrowedTmuxSessionView(
                         host: host,
-                        sessionName: sessionName
+                        sessionName: sessionName,
+                        defersTerminalResize: defersTerminalResize
                     )
                 },
                 settingsSheetBuilder: { settingsStore in

@@ -361,7 +361,7 @@ private struct EndpointChangePresentationHarness: View {
         RootView(
             display: model.display,
             content: ContentBuilders(
-                tmuxSessionContentBuilder: { _, _ in
+                tmuxSessionContentBuilder: { _, _, _ in
                     AnyView(
                         ActiveTmuxPresentationMarker()
                     )

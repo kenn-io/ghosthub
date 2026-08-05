@@ -3094,7 +3094,8 @@ final class WorkspaceSceneModel: ObservableObject {
 
     func borrowedTmuxSessionView(
         host: HostSummary,
-        sessionName: String
+        sessionName: String,
+        defersTerminalResize: Bool
     ) -> AnyView? {
         guard TmuxHostResolver.resolve(host) != nil else {
             return AnyView(
@@ -3128,6 +3129,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 nativeTmuxSessionCoordinator.attachmentClosure(handle),
                 sessionClosed:
                 confirmedEndedTmuxSessionHandles.contains(handle.id),
+                defersTerminalResize: defersTerminalResize,
                 surface: { [weak self] in
                     self?.nativeTmuxSessionCoordinator.surface(handle: handle)
                 },

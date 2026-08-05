@@ -19,6 +19,9 @@ public struct RootView: View {
     /// Tracks whether the sidebar was auto-collapsed due to narrow
     /// window width so we can auto-expand it when the window grows.
     @State private var sidebarAutoCollapsed = false
+    @State private var sidebarVisibilityProgress: CGFloat
+    @State private var isSidebarTransitioning = false
+    @State private var sidebarTransitionID = UUID()
     @Environment(\.controlActiveState) private var controlActiveState
     @State private var lastKnownWindowWidth: CGFloat = 0
     @State private var sidePanelAutoCollapsed = false
@@ -62,6 +65,9 @@ public struct RootView: View {
         _isCommandPalettePresented = isCommandPalettePresented
         _isLogViewerPresented = isLogViewerPresented
         _isSettingsPresented = isSettingsPresented
+        _sidebarVisibilityProgress = State(
+            initialValue: columnVisibility.wrappedValue == .detailOnly ? 0 : 1
+        )
     }
 
     // MARK: - Convenience accessors
@@ -318,6 +324,7 @@ public struct RootView: View {
     private static let dividerHit =
         WorkspaceSidebarWidthPolicy.dividerHitWidth
     private static let columnSpace = "workspaceColumns"
+    private static let sidebarAnimationDuration = 0.2
 
     private var workspaceContent: some View {
         workspaceColumns
@@ -330,9 +337,8 @@ public struct RootView: View {
                 HStack(spacing: 0) {
                     Color.clear
                         .frame(
-                            width: isSidebarVisible
-                                ? sidebarWidth + Self.dividerHit
-                                : 0
+                            width: (sidebarWidth + Self.dividerHit)
+                                * sidebarVisibilityProgress
                         )
 
                     terminalWorkspaceContent
@@ -341,10 +347,6 @@ public struct RootView: View {
                             maxHeight: .infinity
                         )
                 }
-                .transaction { transaction in
-                    transaction.animation = nil
-                }
-
                 HStack(spacing: 0) {
                     workspaceSidebarColumn
                         .frame(width: sidebarWidth)
@@ -353,18 +355,32 @@ public struct RootView: View {
                         .gesture(sidebarDragGesture)
                 }
                 .offset(
-                    x: isSidebarVisible
-                        ? 0 : -(sidebarWidth + Self.dividerHit)
+                    x: -(sidebarWidth + Self.dividerHit)
+                        * (1 - sidebarVisibilityProgress)
                 )
-                .opacity(isSidebarVisible ? 1 : 0)
+                .opacity(sidebarVisibilityProgress)
                 .allowsHitTesting(isSidebarVisible)
                 .accessibilityHidden(!isSidebarVisible)
-                .animation(
-                    .easeInOut(duration: 0.2),
-                    value: isSidebarVisible
-                )
             }
             .coordinateSpace(name: Self.columnSpace)
+            .onChange(of: isSidebarVisible) { _, visible in
+                animateSidebarVisibility(visible)
+            }
+        }
+    }
+
+    private func animateSidebarVisibility(_ visible: Bool) {
+        let transitionID = UUID()
+        sidebarTransitionID = transitionID
+        isSidebarTransitioning = true
+        withAnimation(
+            .easeInOut(duration: Self.sidebarAnimationDuration),
+            completionCriteria: .logicallyComplete
+        ) {
+            sidebarVisibilityProgress = visible ? 1 : 0
+        } completion: {
+            guard sidebarTransitionID == transitionID else { return }
+            isSidebarTransitioning = false
         }
     }
 
@@ -841,7 +857,8 @@ public struct RootView: View {
             activeTmuxSession == presentedSession,
             let view = content.tmuxSessionContentBuilder?(
                 host,
-                presentedSession.name
+                presentedSession.name,
+                isSidebarTransitioning
             ) {
             view
         } else if display.suppressesAutomaticWorktreeSessionOpen,

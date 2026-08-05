@@ -10,6 +10,7 @@ struct BorrowedTmuxSessionView: View {
     var connectionState: ConnectionState?
     var attachmentClosure: BorrowedTmuxAttachmentClosure?
     var sessionClosed: Bool
+    var defersTerminalResize: Bool
     var surface: () -> TerminalSurfaceView?
     var onCloseRequest: () -> Void
     var onRetryRequest: () -> Void
@@ -23,6 +24,7 @@ struct BorrowedTmuxSessionView: View {
         connectionState: ConnectionState?,
         attachmentClosure: BorrowedTmuxAttachmentClosure? = nil,
         sessionClosed: Bool = false,
+        defersTerminalResize: Bool = false,
         surface: @escaping () -> TerminalSurfaceView?,
         onCloseRequest: @escaping () -> Void,
         onRetryRequest: @escaping () -> Void,
@@ -35,6 +37,7 @@ struct BorrowedTmuxSessionView: View {
         self.connectionState = connectionState
         self.attachmentClosure = attachmentClosure
         self.sessionClosed = sessionClosed
+        self.defersTerminalResize = defersTerminalResize
         self.surface = surface
         self.onCloseRequest = onCloseRequest
         self.onRetryRequest = onRetryRequest
@@ -45,6 +48,7 @@ struct BorrowedTmuxSessionView: View {
         if let surfaceView = surface() {
             NativeTmuxTerminalView(
                 surfaceView: surfaceView,
+                defersTerminalResize: defersTerminalResize,
                 onCloseRequest: onCloseRequest
             )
         } else if let disconnectionReason {
@@ -105,25 +109,29 @@ struct BorrowedTmuxSessionView: View {
 
 private struct NativeTmuxTerminalView: View {
     @ObservedObject var surfaceView: TerminalSurfaceView
+    var defersTerminalResize: Bool
     var onCloseRequest: () -> Void
     @State private var observerID = UUID()
 
     var body: some View {
-        TerminalSurfaceSwiftUIView(surfaceView: surfaceView)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color(nsColor: .textBackgroundColor))
-            .onAppear {
-                surfaceView.registerPaneCloseRequestObserver(
-                    id: observerID,
-                    onCloseRequest: onCloseRequest
-                )
-                surfaceView.suppressAutoFocus = false
-                DispatchQueue.main.async { [surfaceView] in
-                    surfaceView.requestKeyboardFocus()
-                }
+        TerminalSurfaceSwiftUIView(
+            surfaceView: surfaceView,
+            defersSurfaceResize: defersTerminalResize
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .textBackgroundColor))
+        .onAppear {
+            surfaceView.registerPaneCloseRequestObserver(
+                id: observerID,
+                onCloseRequest: onCloseRequest
+            )
+            surfaceView.suppressAutoFocus = false
+            DispatchQueue.main.async { [surfaceView] in
+                surfaceView.requestKeyboardFocus()
             }
-            .onDisappear {
-                surfaceView.unregisterPaneFocusObserver(id: observerID)
-            }
+        }
+        .onDisappear {
+            surfaceView.unregisterPaneFocusObserver(id: observerID)
+        }
     }
 }
