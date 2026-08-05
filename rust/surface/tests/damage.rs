@@ -48,3 +48,33 @@ fn cells_are_owned_values() {
 
     assert_eq!(frame.cells()[0].text(), "界");
 }
+
+#[test]
+fn store_applies_scroll_before_updating_exposed_rows() {
+    let size = GridSize::new(1, 3).expect("valid grid");
+    let mut initial = SurfaceFrame::blank(1, size);
+    for (cell, text) in initial.cells_mut().iter_mut().zip(["a", "b", "c"]) {
+        *cell = Cell::plain(text);
+    }
+    let store = SurfaceStore::new(initial);
+
+    assert!(store.update(
+        2,
+        size,
+        vec![
+            Damage::Scroll {
+                top: 0,
+                bottom: 3,
+                delta: -1,
+            },
+            Damage::Rows { start: 2, end: 3 },
+        ],
+        |frame| frame.cells_mut()[2] = Cell::plain("d"),
+    ));
+
+    let frame = store.load();
+    assert_eq!(
+        frame.cells().iter().map(Cell::text).collect::<Vec<_>>(),
+        ["b", "c", "d"]
+    );
+}
