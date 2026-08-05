@@ -1,7 +1,8 @@
 #![cfg(windows)]
 
 use std::ffi::{OsStr, OsString};
-use std::process::{Command, Output};
+use std::fs;
+use std::process::{Child, Command, Output};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -15,8 +16,8 @@ struct IsolatedServer {
 }
 
 impl IsolatedServer {
-    fn start() -> Self {
-        let tmpdir = format!("/tmp/ghosthub-terminal-test-{}", std::process::id());
+    fn start(label: &str) -> Self {
+        let tmpdir = format!("/tmp/ghosthub-terminal-test-{}-{label}", std::process::id());
         assert!(tmpdir.starts_with("/tmp/ghosthub-terminal-test-"));
         let server = Self { tmpdir };
         server.run_tmux(["new-session", "-d", "-s", "ghosthub-live"]);
@@ -64,25 +65,7 @@ impl IsolatedServer {
     }
 
     fn attach_plan(&self, identity: SessionIdentity) -> AttachPlan {
-        AttachPlan::attach_only(
-            "wsl.exe",
-            [
-                "--exec",
-                "/usr/bin/env",
-                "TERM=xterm-256color",
-                &format!("TMUX_TMPDIR={}", self.tmpdir),
-                "/usr/bin/tmux",
-                "attach-session",
-                "-E",
-                "-t",
-                "=ghosthub-live",
-            ]
-            .into_iter()
-            .map(OsString::from)
-            .collect(),
-            "ghosthub-live",
-            identity,
-        )
+        attach_plan(&self.tmpdir, identity)
     }
 
     fn client_count(&self) -> usize {
@@ -91,6 +74,14 @@ impl IsolatedServer {
             .expect("UTF-8 client list")
             .lines()
             .count()
+    }
+
+    fn session_environment(&self, name: &str) -> String {
+        let output = self.run_tmux(["show-environment", "-t", "=ghosthub-live", name]);
+        String::from_utf8(output.stdout)
+            .expect("UTF-8 tmux environment")
+            .trim()
+            .to_owned()
     }
 }
 
@@ -117,7 +108,7 @@ impl Drop for IsolatedServer {
 #[test]
 #[ignore = "requires WSL2 and tmux; creates only an isolated TMUX_TMPDIR server"]
 fn attach_detach_and_reattach_preserve_the_exact_session() {
-    let server = IsolatedServer::start();
+    let server = IsolatedServer::start("detach");
     let identity = server.identity();
     let size = GridSize::new(80, 24).expect("valid grid");
 
@@ -143,6 +134,230 @@ fn attach_detach_and_reattach_preserve_the_exact_session() {
     );
 }
 
+#[test]
+#[ignore = "requires WSL2 and tmux; creates only an isolated TMUX_TMPDIR server"]
+fn conpty_attachment_proves_preserve_environment_with_a_positive_control() {
+    let server = IsolatedServer::start("preserve-environment");
+    let identity = server.identity();
+    let size = GridSize::new(80, 24).expect("valid grid");
+    server.run_tmux([
+        "set-option",
+        "-t",
+        "ghosthub-live",
+        "update-environment",
+        "GHOSTHUB_PROBE",
+    ]);
+    server.run_tmux([
+        "set-environment",
+        "-t",
+        "=ghosthub-live",
+        "GHOSTHUB_PROBE",
+        "session",
+    ]);
+
+    let control = TerminalWorker::attach(
+        &attach_plan_with_environment(
+            &server.tmpdir,
+            identity.clone(),
+            false,
+            "GHOSTHUB_PROBE=control-client",
+        ),
+        size,
+    )
+    .expect("attach control client without -E");
+    wait_for_client_count(&server, 1);
+    assert_eq!(
+        server.session_environment("GHOSTHUB_PROBE"),
+        "GHOSTHUB_PROBE=control-client",
+        "the control attachment must prove that update-environment is observable"
+    );
+    drop(control);
+    wait_for_client_count(&server, 0);
+
+    server.run_tmux([
+        "set-environment",
+        "-t",
+        "=ghosthub-live",
+        "GHOSTHUB_PROBE",
+        "session",
+    ]);
+    let preserved = TerminalWorker::attach(
+        &attach_plan_with_environment(
+            &server.tmpdir,
+            identity,
+            true,
+            "GHOSTHUB_PROBE=preserve-client",
+        ),
+        size,
+    )
+    .expect("attach proof client with -E");
+    wait_for_client_count(&server, 1);
+    assert_eq!(
+        server.session_environment("GHOSTHUB_PROBE"),
+        "GHOSTHUB_PROBE=session",
+        "-E must preserve the session environment"
+    );
+    drop(preserved);
+}
+
+#[test]
+#[ignore = "requires WSL2 and tmux; force-terminates an isolated helper process"]
+fn forced_terminal_owner_exit_preserves_the_exact_session() {
+    let server = IsolatedServer::start("force");
+    let identity = server.identity();
+    let (mut helper, ready, release) = spawn_owner_helper(&server, &identity, "force");
+
+    wait_until(
+        Duration::from_secs(10),
+        "helper did not become ready",
+        || ready.exists(),
+    );
+    wait_for_client_count(&server, 1);
+    helper.kill().expect("force-terminate terminal owner");
+    let status = helper.wait().expect("wait for terminated helper");
+    assert!(!status.success(), "forced helper exit must be abnormal");
+
+    wait_for_client_count(&server, 0);
+    assert_eq!(
+        server.identity(),
+        identity,
+        "forced application death must preserve the exact session"
+    );
+
+    let worker = TerminalWorker::attach(
+        &server.attach_plan(identity.clone()),
+        GridSize::new(80, 24).expect("valid grid"),
+    )
+    .expect("reattach after forced terminal-owner exit");
+    wait_for_client_count(&server, 1);
+    send_command(&worker, "echo force-reattached");
+    wait_for_surface_text(&worker, "force-reattached");
+    assert_eq!(server.identity(), identity);
+    let _ignored = fs::remove_file(ready);
+    let _ignored = fs::remove_file(release);
+}
+
+#[test]
+#[ignore = "requires WSL2 and tmux; exits an isolated helper process gracefully"]
+fn graceful_terminal_owner_exit_preserves_the_exact_session() {
+    let server = IsolatedServer::start("graceful");
+    let identity = server.identity();
+    let (mut helper, ready, release) = spawn_owner_helper(&server, &identity, "graceful");
+
+    wait_until(
+        Duration::from_secs(10),
+        "helper did not become ready",
+        || ready.exists(),
+    );
+    wait_for_client_count(&server, 1);
+    fs::write(&release, b"release").expect("release graceful helper");
+    let status = helper.wait().expect("wait for graceful helper");
+    assert!(status.success(), "graceful helper must exit successfully");
+
+    wait_for_client_count(&server, 0);
+    assert_eq!(
+        server.identity(),
+        identity,
+        "graceful application exit must preserve the exact session"
+    );
+    let _ignored = fs::remove_file(ready);
+    let _ignored = fs::remove_file(release);
+}
+
+#[test]
+fn forced_exit_helper() {
+    let Ok(tmpdir) = std::env::var("GHOSTHUB_WSL_FORCE_EXIT_TMPDIR") else {
+        return;
+    };
+    let ready = std::env::var_os("GHOSTHUB_WSL_FORCE_EXIT_READY")
+        .map(std::path::PathBuf::from)
+        .expect("helper ready path");
+    let identity = SessionIdentity::new(
+        required_env_parse("GHOSTHUB_WSL_FORCE_EXIT_SERVER_PID"),
+        std::env::var("GHOSTHUB_WSL_FORCE_EXIT_SESSION_ID").expect("helper session ID"),
+        required_env_parse("GHOSTHUB_WSL_FORCE_EXIT_CREATED_AT"),
+    );
+    let worker = TerminalWorker::attach(
+        &attach_plan(&tmpdir, identity),
+        GridSize::new(80, 24).expect("valid grid"),
+    )
+    .expect("helper attach");
+    fs::write(ready, b"ready").expect("publish helper readiness");
+    let release = std::env::var_os("GHOSTHUB_WSL_FORCE_EXIT_RELEASE")
+        .map(std::path::PathBuf::from)
+        .expect("helper release path");
+    while !release.exists() {
+        std::hint::black_box(&worker);
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn spawn_owner_helper(
+    server: &IsolatedServer,
+    identity: &SessionIdentity,
+    label: &str,
+) -> (Child, std::path::PathBuf, std::path::PathBuf) {
+    let stem = format!("ghosthub-terminal-owner-{label}-{}", std::process::id());
+    let ready = std::env::temp_dir().join(format!("{stem}.ready"));
+    let release = std::env::temp_dir().join(format!("{stem}.release"));
+    let _ignored = fs::remove_file(&ready);
+    let _ignored = fs::remove_file(&release);
+    let child = Command::new(std::env::current_exe().expect("current test executable"))
+        .args(["--exact", "forced_exit_helper", "--nocapture"])
+        .env("GHOSTHUB_WSL_FORCE_EXIT_TMPDIR", &server.tmpdir)
+        .env("GHOSTHUB_WSL_FORCE_EXIT_READY", &ready)
+        .env("GHOSTHUB_WSL_FORCE_EXIT_RELEASE", &release)
+        .env(
+            "GHOSTHUB_WSL_FORCE_EXIT_SERVER_PID",
+            identity.server_pid().to_string(),
+        )
+        .env("GHOSTHUB_WSL_FORCE_EXIT_SESSION_ID", identity.session_id())
+        .env(
+            "GHOSTHUB_WSL_FORCE_EXIT_CREATED_AT",
+            identity.created_at().to_string(),
+        )
+        .spawn()
+        .expect("spawn isolated terminal-owner helper");
+    (child, ready, release)
+}
+
+fn attach_plan(tmpdir: &str, identity: SessionIdentity) -> AttachPlan {
+    attach_plan_with_environment(tmpdir, identity, true, "GHOSTHUB_PROBE=unused")
+}
+
+fn attach_plan_with_environment(
+    tmpdir: &str,
+    identity: SessionIdentity,
+    preserve_environment: bool,
+    environment: &str,
+) -> AttachPlan {
+    let mut arguments = vec![
+        OsString::from("--exec"),
+        OsString::from("/usr/bin/env"),
+        OsString::from("TERM=xterm-256color"),
+        OsString::from(environment),
+        OsString::from(format!("TMUX_TMPDIR={tmpdir}")),
+        OsString::from("/usr/bin/tmux"),
+        OsString::from("attach-session"),
+    ];
+    if preserve_environment {
+        arguments.push(OsString::from("-E"));
+    }
+    arguments.extend([OsString::from("-t"), OsString::from("=ghosthub-live")]);
+    AttachPlan::attach_only("wsl.exe", arguments, "ghosthub-live", identity)
+}
+
+fn required_env_parse<T>(name: &str) -> T
+where
+    T: std::str::FromStr,
+    T::Err: std::fmt::Debug,
+{
+    std::env::var(name)
+        .unwrap_or_else(|_| panic!("missing helper environment {name}"))
+        .parse()
+        .unwrap_or_else(|error| panic!("invalid helper environment {name}: {error:?}"))
+}
+
 fn send_command(worker: &TerminalWorker, command: &str) {
     worker
         .send_key(KeyInput::text(command, Modifiers::default()))
@@ -153,15 +368,17 @@ fn send_command(worker: &TerminalWorker, command: &str) {
 }
 
 fn wait_for_client_count(server: &IsolatedServer, expected: usize) {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        if server.client_count() == expected {
-            return;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "tmux client count did not reach {expected}"
-        );
+    wait_until(
+        Duration::from_secs(5),
+        &format!("tmux client count did not reach {expected}"),
+        || server.client_count() == expected,
+    );
+}
+
+fn wait_until(timeout: Duration, message: &str, mut condition: impl FnMut() -> bool) {
+    let deadline = Instant::now() + timeout;
+    while !condition() {
+        assert!(Instant::now() < deadline, "{message}");
         thread::sleep(Duration::from_millis(25));
     }
 }
@@ -170,11 +387,7 @@ fn wait_for_surface_text(worker: &TerminalWorker, expected: &str) {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let surface = worker.surface().load();
-        let text = surface
-            .cells()
-            .iter()
-            .map(surface::Cell::text)
-            .collect::<String>();
+        let text = surface.cells().map(surface::Cell::text).collect::<String>();
         if text.contains(expected) {
             return;
         }
