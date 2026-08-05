@@ -9,6 +9,7 @@ members = [
     "model",
     "session",
     "surface",
+    "terminal",
     "ui",
 ]
 resolver = "2"
@@ -20,6 +21,7 @@ publish = false
 rust-version = "1.96"
 
 [workspace.dependencies]
+alacritty_terminal = { version = "=0.26.0", default-features = false }
 cargo_metadata = "=0.23.0"
 ghosthub-contracts = { path = "contracts", version = "=0.0.0" }
 ghosthub-config = { path = "config", version = "=0.0.0" }
@@ -28,6 +30,7 @@ ghosthub-input = { path = "input", version = "=0.0.0" }
 ghosthub-model = { path = "model", version = "=0.0.0" }
 ghosthub-session = { path = "session", version = "=0.0.0" }
 ghosthub-surface = { path = "surface", version = "=0.0.0" }
+ghosthub-terminal = { path = "terminal", version = "=0.0.0" }
 ghosthub-ui = { path = "ui", version = "=0.0.0" }
 gpui = { version = "=0.2.2", default-features = false }
 serde = { version = "=1.0.229", features = ["derive"] }
