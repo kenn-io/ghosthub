@@ -1,10 +1,122 @@
 //! Verified mux identities and capabilities.
 
+use std::ffi::{OsStr, OsString};
 use std::fmt;
 
 use serde::Deserialize;
 
 pub mod probe;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionIdentity {
+    server_pid: u32,
+    session_id: String,
+    created_at: u64,
+}
+
+impl SessionIdentity {
+    #[must_use]
+    pub fn new(server_pid: u32, session_id: impl Into<String>, created_at: u64) -> Self {
+        Self {
+            server_pid,
+            session_id: session_id.into(),
+            created_at,
+        }
+    }
+
+    #[must_use]
+    pub const fn server_pid(&self) -> u32 {
+        self.server_pid
+    }
+
+    #[must_use]
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    #[must_use]
+    pub const fn created_at(&self) -> u64 {
+        self.created_at
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiscoveredSession {
+    name: String,
+    identity: SessionIdentity,
+    attached_clients: u32,
+}
+
+impl DiscoveredSession {
+    #[must_use]
+    pub fn new(name: impl Into<String>, identity: SessionIdentity, attached_clients: u32) -> Self {
+        Self {
+            name: name.into(),
+            identity,
+            attached_clients,
+        }
+    }
+
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    #[must_use]
+    pub const fn identity(&self) -> &SessionIdentity {
+        &self.identity
+    }
+
+    #[must_use]
+    pub const fn attached_clients(&self) -> u32 {
+        self.attached_clients
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AttachPlan {
+    program: OsString,
+    args: Vec<OsString>,
+    target_name: String,
+    identity: SessionIdentity,
+}
+
+impl AttachPlan {
+    #[must_use]
+    pub fn attach_only(
+        program: impl Into<OsString>,
+        args: Vec<OsString>,
+        target_name: impl Into<String>,
+        identity: SessionIdentity,
+    ) -> Self {
+        Self {
+            program: program.into(),
+            args,
+            target_name: target_name.into(),
+            identity,
+        }
+    }
+
+    #[must_use]
+    pub fn program(&self) -> &OsStr {
+        &self.program
+    }
+
+    #[must_use]
+    pub fn args(&self) -> &[OsString] {
+        &self.args
+    }
+
+    #[must_use]
+    pub fn target_name(&self) -> &str {
+        &self.target_name
+    }
+
+    #[must_use]
+    pub const fn identity(&self) -> &SessionIdentity {
+        &self.identity
+    }
+}
 
 const REQUIRED_CAPABILITIES: [&str; 7] = [
     "atomic-create-or-attach",

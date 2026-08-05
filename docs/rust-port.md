@@ -425,7 +425,7 @@ The dependency constraints are:
 app
 ├── ui ─────────→ workspace, model, surface
 ├── workspace ──→ host, terminal, store, session, config, model, surface, input
-├── host ───────→ session, config, model
+├── host ───────→ session, config, model, contracts (development only)
 ├── terminal ───→ session, config, model, surface, input
 ├── store ──────→ model
 ├── session ────→ model
