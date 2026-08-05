@@ -6,6 +6,103 @@ use cargo_metadata::Metadata;
 
 pub type Graph = BTreeMap<String, BTreeSet<String>>;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DependencyViolation {
+    UnrecognizedPackage(String),
+    UnexpectedDependency { package: String, dependency: String },
+}
+
+#[must_use]
+pub fn locked_dependency_policy() -> Graph {
+    [
+        (
+            "ghosthub-app",
+            &[
+                "ghosthub-config",
+                "ghosthub-host",
+                "ghosthub-model",
+                "ghosthub-session",
+                "ghosthub-store",
+                "ghosthub-surface",
+                "ghosthub-terminal",
+                "ghosthub-ui",
+                "ghosthub-workspace",
+            ][..],
+        ),
+        ("ghosthub-architecture", &[][..]),
+        (
+            "ghosthub-config",
+            &["ghosthub-contracts", "ghosthub-model"][..],
+        ),
+        ("ghosthub-contracts", &[][..]),
+        (
+            "ghosthub-host",
+            &["ghosthub-config", "ghosthub-model", "ghosthub-session"][..],
+        ),
+        ("ghosthub-model", &[][..]),
+        ("ghosthub-session", &["ghosthub-model"][..]),
+        ("ghosthub-store", &["ghosthub-model"][..]),
+        ("ghosthub-surface", &[][..]),
+        (
+            "ghosthub-terminal",
+            &[
+                "ghosthub-config",
+                "ghosthub-model",
+                "ghosthub-session",
+                "ghosthub-surface",
+            ][..],
+        ),
+        (
+            "ghosthub-ui",
+            &["ghosthub-model", "ghosthub-surface", "ghosthub-workspace"][..],
+        ),
+        (
+            "ghosthub-workspace",
+            &[
+                "ghosthub-config",
+                "ghosthub-host",
+                "ghosthub-model",
+                "ghosthub-session",
+                "ghosthub-store",
+                "ghosthub-surface",
+                "ghosthub-terminal",
+            ][..],
+        ),
+    ]
+    .into_iter()
+    .map(|(package, dependencies)| {
+        (
+            package.to_owned(),
+            dependencies
+                .iter()
+                .map(|dependency| (*dependency).to_owned())
+                .collect(),
+        )
+    })
+    .collect()
+}
+
+#[must_use]
+pub fn dependency_policy_violations(actual: &Graph, policy: &Graph) -> Vec<DependencyViolation> {
+    let mut violations = Vec::new();
+
+    for (package, dependencies) in actual {
+        let Some(allowed) = policy.get(package) else {
+            violations.push(DependencyViolation::UnrecognizedPackage(package.clone()));
+            continue;
+        };
+
+        violations.extend(dependencies.difference(allowed).map(|dependency| {
+            DependencyViolation::UnexpectedDependency {
+                package: package.clone(),
+                dependency: dependency.clone(),
+            }
+        }));
+    }
+
+    violations
+}
+
 #[must_use]
 pub fn internal_graph(metadata: &Metadata) -> Graph {
     metadata
