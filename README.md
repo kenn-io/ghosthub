@@ -101,14 +101,21 @@ Experimental native Windows hosts require Windows 11 build 22523 or newer,
 OpenSSH, Windows PowerShell 5.1 or newer, and psmux with its `tmux.exe`
 compatibility alias available.
 
-1. Download the latest notarized
-   [Ghosthub DMG](https://github.com/kenn-io/ghosthub/releases).
-2. Drag **Ghosthub** to **Applications** and launch it.
-3. Install tmux locally if needed:
+Install Ghosthub from the Kenn Homebrew tap:
 
-   ```sh
-   brew install tmux
-   ```
+```sh
+brew install kenn-io/tap/ghosthub
+```
+
+Launch **Ghosthub** from **Applications**. As a manual alternative, download
+the latest notarized [Ghosthub DMG](https://github.com/kenn-io/ghosthub/releases)
+and drag **Ghosthub** to **Applications**.
+
+Install tmux locally if needed:
+
+```sh
+brew install tmux
+```
 
 Remote macOS and Linux hosts need tmux. Every remote host needs
 non-interactive SSH authentication backed by a key or SSH agent; password-only

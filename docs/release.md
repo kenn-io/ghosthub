@@ -300,6 +300,36 @@ If Apple rejects the submission, the workflow prints the notary response and
 fetches the detailed notarization log before failing. It never publishes an
 unsigned or unnotarized fallback artifact.
 
+### Homebrew tap
+
+The public release is consumed downstream by
+[`kenn-io/homebrew-tap`](https://github.com/kenn-io/homebrew-tap). Its hourly
+Linux job only checks the latest stable release metadata and exits when the
+cask is current. A newer version starts the Apple Silicon macOS 26 validation
+job; routine polling does not consume a macOS runner.
+
+Before the tap can propose a cask update, the exact versioned DMG must pass all
+of these gates:
+
+- its computed SHA-256 matches the digest reported by GitHub's release API;
+- `stapler` validates the ticket attached to the DMG;
+- Gatekeeper accepts the DMG as `Notarized Developer ID`;
+- the mounted `Ghosthub.app` passes deep, strict code-signature verification;
+- Gatekeeper accepts the app as `Notarized Developer ID`;
+- the app has bundle identifier `com.ghosthub` and Developer ID Team Identifier
+  `2YMZH84KR8`; and
+- Homebrew style, strict online audit, livecheck, install, installed-app
+  verification, and uninstall all succeed against the same checksum-pinned
+  artifact.
+
+Any failure leaves the existing cask untouched and creates no pull request.
+Successful update pull requests use the tap repository's workflow-scoped
+`GITHUB_TOKEN`. GitHub may leave their ordinary pull-request CI waiting for
+maintainer approval, so the successful pre-PR macOS validation is the
+authoritative test evidence. This boundary deliberately avoids a personal
+access token, separate GitHub App, or credential in Ghosthub's release
+environment.
+
 ## Local packaging
 
 Both debug and release app bundles require the local kwt binary and complete
