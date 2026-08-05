@@ -1,6 +1,5 @@
 //! Terminal engine and PTY client ownership.
 
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{Arc, Mutex};
 
 use alacritty_terminal::event::{Event, EventListener};
@@ -9,9 +8,10 @@ use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::{ClipboardType, Config, Osc52, Term, TermDamage, TermMode};
 use alacritty_terminal::vte::ansi::{Color, NamedColor, Processor};
-use input::TerminalModes;
+use input::{MouseTracking, TerminalModes};
 use surface::{
-    Cell as SurfaceCell, CellStyle, Cursor, Damage, GridSize, Rgb, SurfaceFrame, SurfaceStore,
+    Cell as SurfaceCell, CellStyle, Cursor, Damage, GridSize, PixelSize, Rgb, SurfaceFrame,
+    SurfaceStore,
 };
 
 mod windows_job;
@@ -141,6 +141,8 @@ pub struct TerminalEngine {
     surface: Arc<SurfaceStore>,
     size: GridSize,
     generation: u64,
+    resize_sequence: u64,
+    pixel_size: PixelSize,
     clipboard_policy: ClipboardPolicy,
 }
 
@@ -152,10 +154,20 @@ impl TerminalEngine {
 
     #[must_use]
     pub fn with_clipboard_policy(size: GridSize, clipboard_policy: ClipboardPolicy) -> Self {
+        Self::with_geometry(size, 0, PixelSize::default(), clipboard_policy)
+    }
+
+    #[must_use]
+    pub fn with_geometry(
+        size: GridSize,
+        resize_sequence: u64,
+        pixel_size: PixelSize,
+        clipboard_policy: ClipboardPolicy,
+    ) -> Self {
         let events = EventCollector::default();
         let config = Config {
             scrolling_history: 0,
-            kitty_keyboard: true,
+            kitty_keyboard: false,
             osc52: Osc52::CopyPaste,
             ..Config::default()
         };
@@ -168,6 +180,8 @@ impl TerminalEngine {
             surface,
             size,
             generation: 0,
+            resize_sequence,
+            pixel_size,
             clipboard_policy,
         };
         engine.publish_full();
@@ -200,20 +214,41 @@ impl TerminalEngine {
         TerminalModes {
             application_cursor: mode.contains(TermMode::APP_CURSOR),
             bracketed_paste: mode.contains(TermMode::BRACKETED_PASTE),
+            mouse_tracking: if mode.contains(TermMode::MOUSE_MOTION) {
+                MouseTracking::Motion
+            } else if mode.contains(TermMode::MOUSE_DRAG) {
+                MouseTracking::Drag
+            } else if mode.contains(TermMode::MOUSE_REPORT_CLICK) {
+                MouseTracking::Click
+            } else {
+                MouseTracking::None
+            },
             sgr_mouse: mode.contains(TermMode::SGR_MOUSE),
         }
     }
 
     pub fn resize(&mut self, size: GridSize) {
+        self.resize_sequence = self.resize_sequence.saturating_add(1);
+        self.resize_with_metadata(size, self.resize_sequence, PixelSize::default());
+    }
+
+    pub fn resize_with_metadata(
+        &mut self,
+        size: GridSize,
+        resize_sequence: u64,
+        pixel_size: PixelSize,
+    ) {
         self.term.resize(DimensionsValue(size));
         self.size = size;
+        self.resize_sequence = resize_sequence;
+        self.pixel_size = pixel_size;
         self.publish_full();
         self.term.reset_damage();
     }
 
     fn publish_full(&mut self) {
         let rows = 0..self.size.rows();
-        self.publish_rows(vec![Damage::Full], rows);
+        self.publish_rows(&[Damage::Full], rows);
     }
 
     fn publish_damage(&mut self, scroll: Option<ScrollObservation>) {
@@ -241,10 +276,10 @@ impl TerminalEngine {
         if damage.is_empty() {
             return;
         }
-        self.publish_rows(damage, rows);
+        self.publish_rows(&damage, rows);
     }
 
-    fn publish_rows(&mut self, damage: Vec<Damage>, rows: impl IntoIterator<Item = usize>) {
+    fn publish_rows(&mut self, damage: &[Damage], rows: impl IntoIterator<Item = usize>) {
         let columns = self.size.columns();
         let grid = self.term.grid();
         let patches: Vec<_> = rows
@@ -263,15 +298,18 @@ impl TerminalEngine {
             column: renderable.cursor.point.column.0,
             visible: renderable.mode.contains(TermMode::SHOW_CURSOR),
         };
+        let resize_sequence = self.resize_sequence;
+        let pixel_size = self.pixel_size;
 
         self.generation += 1;
         let _published = self
             .surface
             .update(self.generation, self.size, damage, move |frame| {
-                for (index, cell) in patches {
-                    frame.cells_mut()[index] = cell;
+                for (index, cell) in &patches {
+                    *frame.cell_mut(*index) = cell.clone();
                 }
                 frame.set_cursor(Some(cursor));
+                frame.set_resize_metadata(resize_sequence, pixel_size);
             });
     }
 
@@ -313,7 +351,6 @@ impl TerminalEngine {
 
 struct GridObservation {
     row_identities: Vec<usize>,
-    row_fingerprints: Vec<u64>,
 }
 
 struct ScrollObservation {
@@ -326,36 +363,14 @@ struct ScrollObservation {
 fn capture_grid(term: &Term<EventCollector>, size: GridSize) -> GridObservation {
     let grid = term.grid();
     let mut row_identities = Vec::with_capacity(size.rows());
-    let mut row_fingerprints = Vec::with_capacity(size.rows());
 
     for row in 0..size.rows() {
         let line = i32::try_from(row).expect("terminal row fits an i32");
         let grid_row = &grid[Line(line)];
         row_identities.push(std::ptr::from_ref(grid_row).addr());
-
-        let mut hasher = DefaultHasher::new();
-        for column in 0..size.columns() {
-            let cell = &grid_row[Column(column)];
-            cell.c.hash(&mut hasher);
-            cell.flags.bits().hash(&mut hasher);
-            cell.zerowidth().hash(&mut hasher);
-            hash_color(cell.fg, true, &mut hasher);
-            hash_color(cell.bg, false, &mut hasher);
-        }
-        row_fingerprints.push(hasher.finish());
     }
 
-    GridObservation {
-        row_identities,
-        row_fingerprints,
-    }
-}
-
-fn hash_color(color: Color, foreground: bool, hasher: &mut impl Hasher) {
-    let color = convert_color(color, foreground);
-    color.red.hash(hasher);
-    color.green.hash(hasher);
-    color.blue.hash(hasher);
+    GridObservation { row_identities }
 }
 
 fn detect_scroll(before: &GridObservation, after: &GridObservation) -> Option<ScrollObservation> {
@@ -407,21 +422,11 @@ fn detect_scroll(before: &GridObservation, after: &GridObservation) -> Option<Sc
         return None;
     }
 
-    let dirty_rows = (0..row_count)
-        .filter(|&new_row| {
-            let old_row = if (top..bottom).contains(&new_row) {
-                i32::try_from(new_row).expect("terminal row fits an i32") - delta
-            } else {
-                i32::try_from(new_row).expect("terminal row fits an i32")
-            };
-            usize::try_from(old_row)
-                .ok()
-                .filter(|old_row| *old_row < row_count)
-                .is_none_or(|old_row| {
-                    before.row_fingerprints[old_row] != after.row_fingerprints[new_row]
-                })
-        })
-        .collect();
+    let dirty_rows = if delta < 0 {
+        (bottom - distance..bottom).collect()
+    } else {
+        (top..top + distance).collect()
+    };
 
     Some(ScrollObservation {
         top,
@@ -489,6 +494,15 @@ fn convert_cell(cell: &alacritty_terminal::term::cell::Cell) -> SurfaceCell {
     }
     if cell.flags.contains(Flags::WIDE_CHAR) {
         converted.style.insert(CellStyle::WIDE);
+    }
+    if cell.flags.contains(Flags::DIM) {
+        converted.style.insert(CellStyle::DIM);
+    }
+    if cell.flags.contains(Flags::HIDDEN) {
+        converted.style.insert(CellStyle::HIDDEN);
+    }
+    if cell.flags.contains(Flags::STRIKEOUT) {
+        converted.style.insert(CellStyle::STRIKE);
     }
     converted
 }

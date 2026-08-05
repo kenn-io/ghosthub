@@ -1,4 +1,5 @@
-use surface::{CellStyle, Damage, GridSize, Rgb};
+use input::MouseTracking;
+use surface::{CellStyle, Damage, GridSize, PixelSize, Rgb};
 use terminal::{ClipboardPolicy, ClipboardTarget, TerminalEngine};
 
 #[test]
@@ -10,10 +11,10 @@ fn processes_bytes_into_an_owned_surface() {
 
     assert!(output.pty_writes().is_empty());
     let surface = engine.surface().load();
-    assert_eq!(surface.cells()[0].text(), "h");
-    assert_eq!(surface.cells()[1].text(), "i");
-    assert_eq!(surface.cells()[2].text(), "!");
-    assert_eq!(surface.cells()[2].foreground, Rgb::new(0xcc, 0x66, 0x66));
+    assert_eq!(surface.cell(0).text(), "h");
+    assert_eq!(surface.cell(1).text(), "i");
+    assert_eq!(surface.cell(2).text(), "!");
+    assert_eq!(surface.cell(2).foreground, Rgb::new(0xcc, 0x66, 0x66));
 }
 
 #[test]
@@ -21,11 +22,12 @@ fn exposes_modes_that_control_input_encoding() {
     let size = GridSize::new(4, 2).expect("valid grid");
     let mut engine = TerminalEngine::new(size);
 
-    let _output = engine.process(b"\x1b[?1h\x1b[?2004h\x1b[?1006h");
+    let _output = engine.process(b"\x1b[?1h\x1b[?2004h\x1b[?1002h\x1b[?1006h");
 
     let modes = engine.modes();
     assert!(modes.application_cursor);
     assert!(modes.bracketed_paste);
+    assert_eq!(modes.mouse_tracking, MouseTracking::Drag);
     assert!(modes.sgr_mouse);
 }
 
@@ -37,9 +39,22 @@ fn preserves_wide_cells_without_copying_ffi_state() {
     let _output = engine.process("界".as_bytes());
 
     let surface = engine.surface().load();
-    assert_eq!(surface.cells()[0].text(), "界");
-    assert!(surface.cells()[0].style.contains(CellStyle::WIDE));
-    assert_eq!(surface.cells()[1].text(), "");
+    assert_eq!(surface.cell(0).text(), "界");
+    assert!(surface.cell(0).style.contains(CellStyle::WIDE));
+    assert_eq!(surface.cell(1).text(), "");
+}
+
+#[test]
+fn preserves_conceal_dim_and_strike_attributes() {
+    let size = GridSize::new(4, 2).expect("valid grid");
+    let mut engine = TerminalEngine::new(size);
+
+    let _output = engine.process(b"\x1b[2ma\x1b[8mb\x1b[9mc");
+
+    let surface = engine.surface().load();
+    assert!(surface.cell(0).style.contains(CellStyle::DIM));
+    assert!(surface.cell(1).style.contains(CellStyle::HIDDEN));
+    assert!(surface.cell(2).style.contains(CellStyle::STRIKE));
 }
 
 #[test]
@@ -52,8 +67,22 @@ fn resize_publishes_a_self_describing_full_frame() {
 
     let surface = engine.surface().load();
     assert_eq!(surface.size(), resized);
-    assert_eq!(surface.cells().len(), 18);
+    assert_eq!(surface.cells().count(), 18);
     assert_eq!(surface.damage(), &[Damage::Full]);
+}
+
+#[test]
+fn resize_publication_carries_order_and_pixel_dimensions() {
+    let initial = GridSize::new(8, 2).expect("valid grid");
+    let resized = GridSize::new(12, 4).expect("valid grid");
+    let mut engine = TerminalEngine::new(initial);
+
+    engine.resize_with_metadata(resized, 17, PixelSize::new(960, 640));
+
+    let frame = engine.surface().load();
+    assert_eq!(frame.size(), resized);
+    assert_eq!(frame.resize_sequence(), 17);
+    assert_eq!(frame.pixel_size(), PixelSize::new(960, 640));
 }
 
 #[test]
@@ -118,7 +147,7 @@ fn sustained_output_reports_scroll_motion_and_only_the_exposed_row() {
             Damage::Rows { start: 2, end: 3 },
         ]
     );
-    assert_eq!(surface.cells()[0].text(), "b");
-    assert_eq!(surface.cells()[3].text(), "c");
-    assert_eq!(surface.cells()[6].text(), "d");
+    assert_eq!(surface.cell(0).text(), "b");
+    assert_eq!(surface.cell(3).text(), "c");
+    assert_eq!(surface.cell(6).text(), "d");
 }
