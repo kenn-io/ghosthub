@@ -24,6 +24,7 @@ hosts_hex="$(printf '%s' "$hosts_json" | xxd -p | tr -d '\n')"
 # shellcheck source=SCRIPTDIR/process.sh
 source "$demo_root/process.sh"
 pid_record="$scratch/app.pid"
+demo_stop_retained_launches "$scratch" "$bin"
 demo_stop_recorded_process "$pid_record" "$bin"
 launch_dir="$(mktemp -d "$scratch/.launch.XXXXXX")"
 launch_record="$launch_dir/app.pid"

@@ -19,6 +19,8 @@ demo_scratch_guard "$scratch"
 
 # shellcheck source=SCRIPTDIR/process.sh
 source "$demo_root/process.sh"
+demo_stop_retained_launches \
+  "$scratch" "$scratch/app/Ghosthub.app/Contents/MacOS/Ghosthub"
 demo_stop_recorded_process \
   "$scratch/app.pid" "$scratch/app/Ghosthub.app/Contents/MacOS/Ghosthub"
 # Kill only via the explicit socket path: tmux silently falls back to the

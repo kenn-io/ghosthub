@@ -105,3 +105,21 @@ demo_stop_recorded_process() {
   echo "error: demo process $pid did not exit; preserving PID record and scratch" >&2
   return 1
 }
+
+demo_stop_retained_launches() {
+  local scratch="$1" expected="$2" launch_dir record
+  local launch_dirs=("$scratch"/.launch.*)
+  for launch_dir in "${launch_dirs[@]}"; do
+    [[ -e "$launch_dir" || -L "$launch_dir" ]] || continue
+    if [[ ! -d "$launch_dir" || -L "$launch_dir" ]]; then
+      echo "error: invalid retained launch directory: $launch_dir" >&2
+      return 1
+    fi
+    record="$launch_dir/app.pid"
+    demo_stop_recorded_process "$record" "$expected" || return 1
+    if ! rmdir "$launch_dir"; then
+      echo "error: retained launch state remains in $launch_dir; preserving scratch" >&2
+      return 1
+    fi
+  done
+}

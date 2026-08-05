@@ -5,6 +5,7 @@ import os
 import plistlib
 import pwd
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -460,6 +461,73 @@ def test_teardown_preserves_scratch_when_docker_cleanup_fails(tmp_path: Path) ->
     assert result.returncode != 0
     assert scratch.is_dir()
     assert (scratch / "remote.cid").is_file()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="demo scripts target macOS")
+def test_teardown_recovers_retained_live_launch(tmp_path: Path) -> None:
+    scratch = tmp_path / "scratch"
+    executable = scratch / "app/Ghosthub.app/Contents/MacOS/Ghosthub"
+    executable.parent.mkdir(parents=True)
+    scratch.chmod(0o700)
+    (scratch / ".ghosthub-demo-scratch").touch()
+    state = scratch / "retained-pid"
+    source = tmp_path / "retained.c"
+    source.write_text(
+        "#include <stdio.h>\n"
+        "#include <stdlib.h>\n"
+        "#include <unistd.h>\n"
+        "int main(int argc, char **argv) {\n"
+        "  int ready[2];\n"
+        "  if (argc != 2 || pipe(ready) != 0) return 1;\n"
+        "  pid_t pid = fork();\n"
+        "  if (pid < 0) return 1;\n"
+        "  if (pid > 0) {\n"
+        "    char byte;\n"
+        "    close(ready[1]);\n"
+        "    int result = read(ready[0], &byte, 1) == 1 ? 0 : 1;\n"
+        "    close(ready[0]);\n"
+        "    return result;\n"
+        "  }\n"
+        "  close(ready[0]);\n"
+        "  if (setsid() < 0) _exit(1);\n"
+        "  FILE *f = fopen(argv[1], \"w\");\n"
+        "  if (!f) _exit(1);\n"
+        "  fprintf(f, \"%d\\n\", getpid());\n"
+        "  fclose(f);\n"
+        "  if (write(ready[1], \"x\", 1) != 1) _exit(1);\n"
+        "  close(ready[1]);\n"
+        "  sleep(120);\n"
+        "  return 0;\n"
+        "}\n"
+    )
+    subprocess.run(["cc", "-o", str(executable), str(source)], check=True)
+    subprocess.run([str(executable), str(state)], check=True)
+    child_pid = int(state.read_text().strip())
+    launch_dir = scratch / ".launch.retained"
+    launch_dir.mkdir()
+    (launch_dir / "app.pid").write_text(f"{child_pid}\n")
+
+    try:
+        result = subprocess.run(
+            ["bash", str(DEMO / "teardown.sh")],
+            cwd=ROOT,
+            env={**os.environ, "GHOSTHUB_DEMO_SCRATCH": str(scratch)},
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert not scratch.exists()
+        with pytest.raises(ProcessLookupError):
+            os.kill(child_pid, 0)
+    finally:
+        try:
+            os.kill(child_pid, 0)
+        except ProcessLookupError:
+            pass
+        else:
+            os.kill(child_pid, signal.SIGKILL)
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="demo scripts target macOS")

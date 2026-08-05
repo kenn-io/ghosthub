@@ -53,6 +53,8 @@ touch "$sentinel"
 # so teardown can still recover through the original executable and socket.
 # shellcheck source=SCRIPTDIR/process.sh
 source "$demo_root/process.sh"
+demo_stop_retained_launches \
+  "$scratch" "$scratch/app/Ghosthub.app/Contents/MacOS/Ghosthub"
 demo_stop_recorded_process \
   "$scratch/app.pid" "$scratch/app/Ghosthub.app/Contents/MacOS/Ghosthub"
 # The staged bundle uses this demo-only defaults domain. Clear it between
