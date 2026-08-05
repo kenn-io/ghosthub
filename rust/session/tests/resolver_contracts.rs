@@ -8,6 +8,7 @@ use session::{ExecutablePlatform, ProbeObservation, resolve_tmux_binary};
 #[serde(deny_unknown_fields)]
 struct Fixture {
     schema_version: u32,
+    required_capabilities: Vec<String>,
     cases: Vec<Case>,
 }
 
@@ -83,5 +84,29 @@ fn resolves_every_psmux_contract() {
             _ => panic!("{} must define exactly one outcome", case.id),
         }
     }
+
+    for missing in &fixture.required_capabilities {
+        let observations = fixture
+            .required_capabilities
+            .iter()
+            .filter(|capability| *capability != missing)
+            .map(|capability| ProbeObservation {
+                name: capability.clone(),
+                exit_code: 0,
+                stdout: "supported".to_owned(),
+                stderr: String::new(),
+            })
+            .collect::<Vec<_>>();
+        let actual = resolve_tmux_binary(
+            ExecutablePlatform::Windows,
+            r"C:\Tools\psmux.exe",
+            "tmux 3.3.7\npsmux 3.3.7 (05cc5d4 2026-07-20)",
+            &observations,
+        )
+        .expect_err(missing);
+        assert_eq!(actual.kind(), session::ResolveErrorKind::MissingCapability);
+        assert_eq!(actual.subject(), missing);
+    }
+
     run.finish().expect("consume all mux resolver fixtures");
 }
