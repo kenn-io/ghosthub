@@ -31,10 +31,10 @@ const hasSecondary = Astro.slots.has('secondary');
     </a>
     {
       hasSecondary && (
-        <>
+        <span class="secondary-action">
           <span class="separator" aria-hidden="true">&middot;</span>
           <slot name="secondary" />
-        </>
+        </span>
       )
     }
   </div>
@@ -147,6 +147,12 @@ const hasSecondary = Astro.slots.has('secondary');
     color: var(--text-faint);
     font-family: var(--font-mono);
     font-size: 0.72rem;
+  }
+
+  .secondary-action {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.55rem;
   }
 
   @media (max-width: 390px) {
