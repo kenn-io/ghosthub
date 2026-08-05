@@ -1976,6 +1976,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ghosthub-config"
+version = "0.0.0"
+dependencies = [
+ "ghosthub-contracts",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "ghosthub-contracts"
 version = "0.0.0"
 dependencies = [
