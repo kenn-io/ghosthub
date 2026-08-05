@@ -1,5 +1,5 @@
 [workspace]
-members = ["app", "model", "ui"]
+members = ["app", "contracts", "model", "ui"]
 resolver = "2"
 
 [workspace.package]
@@ -12,6 +12,8 @@ rust-version = "1.96"
 ghosthub-model = { path = "model", version = "=0.0.0" }
 ghosthub-ui = { path = "ui", version = "=0.0.0" }
 gpui = { version = "=0.2.2", default-features = false }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
