@@ -175,7 +175,7 @@ jobs:
         run: make test-essential-workflows
 
       - name: Remove isolated macOS test state
-        if: always()
+        if: ${{ always() && runner.environment == 'self-hosted' }}
         shell: bash
         run: |
           case "${GHOSTHUB_CI_STATE_ROOT:-}" in
