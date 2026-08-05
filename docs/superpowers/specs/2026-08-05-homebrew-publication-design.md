@@ -125,6 +125,17 @@ validation, or installation produces no pull request. The updater uses only
 the tap repository's scoped `GITHUB_TOKEN`; Ghosthub's release environment
 does not receive a cross-repository token.
 
+GitHub does not automatically execute ordinary pull-request CI for a pull
+request created with the repository's workflow-scoped `GITHUB_TOKEN`; current
+GitHub behavior may instead leave those runs waiting for maintainer approval.
+The updater's successful pre-PR validation is therefore the authoritative test
+evidence for automated cask PRs. Tap branch protection must not make an
+automatically started `pull_request` check a prerequisite for merging those
+automation PRs. A maintainer may approve a queued redundant CI run, but the
+update path does not depend on that approval. A PAT or separate GitHub App
+token would remove this limitation but is deliberately excluded to preserve
+the no-extra-credentials boundary.
+
 The updater will have focused fixture-based tests for release selection,
 version comparison, asset URL and name checks, SHA-256 handling, and failure
 behavior. Tests will exercise meaningful orchestration contracts rather than
