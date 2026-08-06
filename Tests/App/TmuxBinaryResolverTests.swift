@@ -551,6 +551,57 @@ struct TmuxBinaryResolverTests {
         #expect(try resolver.discoverSessions().get().isEmpty)
     }
 
+    @Test("a missing tmux socket confirms session absence")
+    func missingSocketIsAbsence() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ghosthub-tmux-absence-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let tmux = directory.appendingPathComponent("tmux")
+        try """
+        #!/bin/sh
+        if [ "$1" = "-V" ]; then
+          printf 'tmux 3.3a\n'
+          exit 0
+        fi
+        printf 'error connecting to /tmp/tmux-501/default (No such file or directory)\n' >&2
+        exit 1
+        """.write(to: tmux, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: tmux.path
+        )
+
+        let host = SSHHostInfo(
+            user: "wesm",
+            hostname: "build-box",
+            port: nil
+        )
+        let resolver = TmuxBinaryResolver(
+            remoteProcessRunner: { _, command in
+                return TmuxBinaryResolver.runProcess(
+                    executable: "/bin/sh",
+                    arguments: ["-c", command],
+                    timeout: 5,
+                    environmentOverrides: [
+                        "PATH": "\(directory.path):/usr/bin:/bin",
+                    ]
+                )
+            }
+        )
+
+        #expect(try resolver.discoverSessions(on: host).get().isEmpty)
+        #expect(try !resolver.sessionExists(
+            name: "pr-32",
+            socketName: "kwt-pr-0123456789abcdef",
+            on: host
+        ).get())
+    }
+
     @Test("a reachable default server error is not confirmed absence")
     func defaultServerErrorIsNotAbsence() {
         let host = SSHHostInfo(

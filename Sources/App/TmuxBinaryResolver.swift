@@ -285,7 +285,8 @@ struct TmuxBinaryResolver: Sendable {
         + "printf '%s\\n' \"$ghosthub_tmux_output\" >&2; "
         + "case \"$ghosthub_tmux_output\" in "
         + "*\"no server running on \"*|"
-        + "*\"failed to connect to server: No such file or directory\"*) "
+        + "*\"failed to connect to server: No such file or directory\"*|"
+        + "*\"error connecting to \"*\" (No such file or directory)\"*) "
         + "exit 0 ;; *) exit \"$ghosthub_tmux_status\" ;; esac; fi"
 
     private static func probeCommand(
@@ -360,7 +361,8 @@ struct TmuxBinaryResolver: Sendable {
                 + "else printf '%s\\n' \"$ghosthub_probe_error\" >&2; "
                 + "case \"$ghosthub_probe_error\" in "
                 + "*\"can't find session:\"*|*\"no server running on \"*|"
-                + "*\"failed to connect to server: No such file or directory\"*) "
+                + "*\"failed to connect to server: No such file or directory\"*|"
+                + "*\"error connecting to \"*\" (No such file or directory)\"*) "
                 + "printf '\(sessionAbsentMarker)\\n' ;; "
                 + "*) exit \"$ghosthub_probe_status\" ;; esac; fi"
         case .windows:
