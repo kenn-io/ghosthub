@@ -937,6 +937,12 @@ public struct RootView: View {
                             host.id,
                             inventoryWarning: tmuxRecoveryWarning(
                                 for: host.id
+                            ),
+                            tmuxRecoveryRequestID:
+                            tmuxRecoveryRequestRouter.recoveryRequestID(
+                                for: host.id,
+                                activeRequest:
+                                display.tmuxConnectionRecoveryRequest
                             )
                         )
                     }

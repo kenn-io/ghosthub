@@ -205,6 +205,17 @@ struct TmuxConnectionRecoveryRequestRouter {
         return request
     }
 
+    func recoveryRequestID(
+        for hostID: UUID,
+        activeRequest: TmuxConnectionRecoveryRequest?
+    ) -> UUID? {
+        guard let activeRequest,
+              activeRequest.id == reviewedRequestID,
+              activeRequest.hostID == hostID
+        else { return nil }
+        return activeRequest.id
+    }
+
     func recoveryHostIDToResume(
         reviewedHostID: UUID?,
         reviewRequestID: UUID?,
@@ -212,10 +223,10 @@ struct TmuxConnectionRecoveryRequestRouter {
     ) -> UUID? {
         guard let reviewedHostID,
               let reviewRequestID,
-              let activeRequest,
-              reviewRequestID == reviewedRequestID,
-              activeRequest.id == reviewRequestID,
-              activeRequest.hostID == reviewedHostID
+              recoveryRequestID(
+                  for: reviewedHostID,
+                  activeRequest: activeRequest
+              ) == reviewRequestID
         else { return nil }
         return reviewedHostID
     }

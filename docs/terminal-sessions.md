@@ -246,7 +246,9 @@ inventory. Only the recovery flow opened for that active tmux request may
 resume it; authentication started from ordinary host inventory never reopens a
 session. Dismissing it leaves an honest
 **Connection needs attention** presentation with **Review Connection** when
-native review is available and **Host Settings** otherwise. A changed known-host
+native review is available; reopening that review retains the active recovery
+request and can resume its supervisor after success. **Host Settings** remains
+the fallback otherwise. A changed known-host
 identity still requires the explicit known-hosts remediation described by that
 flow; Ghosthub never silently accepts it.
 

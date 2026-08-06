@@ -153,6 +153,29 @@ struct TmuxSessionPresentationLifecycleTests {
         )
     }
 
+    @Test("successful manual review resumes the active tmux recovery")
+    func successfulManualReviewResumesActiveTmuxRecovery() {
+        let hostID = UUID()
+        let request = TmuxConnectionRecoveryRequest(
+            hostID: hostID,
+            message: "SSH authentication is required."
+        )
+        var router = TmuxConnectionRecoveryRequestRouter()
+        _ = router.take(request, whileReviewIsPresented: false)
+        let manualReviewRequestID = router.recoveryRequestID(
+            for: hostID,
+            activeRequest: request
+        )
+
+        #expect(
+            router.recoveryHostIDToResume(
+                reviewedHostID: hostID,
+                reviewRequestID: manualReviewRequestID,
+                activeRequest: request
+            ) == hostID
+        )
+    }
+
     @Test("endpoint invalidation removes the active tmux presentation")
     func endpointInvalidationRemovesActivePresentation() {
         let hostID = UUID()

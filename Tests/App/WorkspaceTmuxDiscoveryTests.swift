@@ -444,6 +444,25 @@ struct WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("reopening an ended worktree restores establishment mode")
+    func endedWorktreeRetryRestoresEstablishmentMode() {
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: UUID(),
+            name: "kwt-ghosthub-main",
+            worktreeID: UUID(),
+            worktreePath: "/srv/ghosthub"
+        )
+
+        #expect(
+            WorkspaceSceneModel.retryLaunchMode(
+                for: selection,
+                current: .attachOnly,
+                sessionConfirmedEnded: true
+            ) == .attach
+        )
+    }
+
+    @MainActor
     @Test("explicit reselection attaches a replaced worktree's session")
     func explicitReselectionAttachesReplacedSession() throws {
         let environment = try setupStandardEnvironment()

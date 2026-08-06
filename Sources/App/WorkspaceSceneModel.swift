@@ -4316,14 +4316,19 @@ final class WorkspaceSceneModel: ObservableObject {
         _ selection: WorkspaceTmuxSessionSelection
     ) {
         guard activeBorrowedTmuxSelection == selection else { return }
+        let sessionConfirmedEnded = activeBorrowedTmuxHandle.map {
+            confirmedEndedTmuxSessionHandles.contains($0.id)
+        } == true
         let recreateEndedNamedSession =
-            selection.socketName == nil
+            sessionConfirmedEnded
+                && selection.socketName == nil
                 && selection.worktreeID == nil
                 && selection.worktreePath == nil
-                && activeBorrowedTmuxHandle.map {
-                    confirmedEndedTmuxSessionHandles.contains($0.id)
-                } == true
-        let launchMode = activeBorrowedTmuxLaunchMode ?? .attach
+        let launchMode = Self.retryLaunchMode(
+            for: selection,
+            current: activeBorrowedTmuxLaunchMode,
+            sessionConfirmedEnded: sessionConfirmedEnded
+        )
         closeBorrowedTmuxSession(selection)
         if recreateEndedNamedSession {
             guard let handle = presentTmuxSession(
@@ -4340,6 +4345,17 @@ final class WorkspaceSceneModel: ObservableObject {
         case .attach, .attachOnly:
             presentTmuxSession(selection, launchMode: launchMode)
         }
+    }
+
+    static func retryLaunchMode(
+        for selection: WorkspaceTmuxSessionSelection,
+        current: TmuxAttachmentLaunchMode?,
+        sessionConfirmedEnded: Bool
+    ) -> TmuxAttachmentLaunchMode {
+        if sessionConfirmedEnded, selection.worktreePath != nil {
+            return .attach
+        }
+        return current ?? .attach
     }
 
     private var isApplicationActiveForResourceMonitoring: Bool {
