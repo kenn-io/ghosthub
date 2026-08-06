@@ -274,13 +274,12 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
             }
             let recordedCommand: String
             if let remoteExitStatusPath, !remoteExitStatusPath.isEmpty {
-                recordedCommand = "GHOSTHUB_SSH_EXIT_STATUS_PATH="
-                    + shellQuotedCommandArgument(remoteExitStatusPath)
-                    + "; export GHOSTHUB_SSH_EXIT_STATUS_PATH; "
-                    + command
+                recordedCommand = shellCommand([
+                    "/bin/sh", "-c", Self.remoteExitStatusScript,
+                    "ghosthub-ssh-status", remoteExitStatusPath, command,
+                ])
             } else {
-                recordedCommand = "unset GHOSTHUB_SSH_EXIT_STATUS_PATH; "
-                    + command
+                recordedCommand = command
             }
             return surfaceAccountLoginShellCommand(recordedCommand)
         }
@@ -846,17 +845,17 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
     exec /bin/sh -c "$1"
     """
 
-    /// Runs one OpenSSH attachment attempt and records its exact status before
-    /// returning it. Libghostty's macOS login wrapper can otherwise report a
-    /// successful child exit for a failed nested command.
-    static let sshAttachScript = """
-    ghosthub_status_path=${GHOSTHUB_SSH_EXIT_STATUS_PATH-}
-    unset GHOSTHUB_SSH_EXIT_STATUS_PATH
-    "$@"
+    /// Records the final status of the complete remote establishment or
+    /// attachment command before libghostty's macOS login wrapper can obscure
+    /// a failed nested OpenSSH process.
+    static let remoteExitStatusScript = """
+    /bin/sh -c "$2"
     ghosthub_status=$?
-    if [ -n "$ghosthub_status_path" ]; then
-        printf '%s\n' "$ghosthub_status" > "$ghosthub_status_path"
-    fi
+    printf '%s\n' "$ghosthub_status" > "$1"
     exit "$ghosthub_status"
     """
+
+    /// Runs one OpenSSH attachment attempt and returns its exact status to its
+    /// immediate one-shot command owner.
+    static let sshAttachScript = "exec \"$@\""
 }

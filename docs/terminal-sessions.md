@@ -215,10 +215,11 @@ the app lifetime, so an app crash terminates the SSH master and a later launch
 cannot reuse its socket.
 Remote attachment and establishment shell commands are one-shot: they contain
 no retry timing and never print reconnect status into the terminal buffer.
-Each local OpenSSH wrapper records its exact exit status in an app-owned,
-per-attachment temporary file before it exits. The native coordinator consumes
-that status instead of relying on libghostty's outer macOS login process, whose
-reported status may be zero even when nested OpenSSH exited 255.
+The local wrapper around each complete remote command records its final status
+in an app-owned, per-attachment temporary file before it exits. The native
+coordinator consumes that status instead of relying on libghostty's outer macOS
+login process, whose reported status may be zero even when nested OpenSSH
+exited 255.
 After a confirmed attachment exits with OpenSSH's transport/setup status 255,
 the scene's native supervisor probes the real SSH and tmux path at attempt-start
 intervals of 1, 2, 4, 8, 16, and then 30 seconds. Each probe has a 15-second

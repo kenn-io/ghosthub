@@ -1110,6 +1110,49 @@ struct TmuxAttachmentInfoTests {
         #expect(try String(contentsOf: counter, encoding: .utf8) == "x")
     }
 
+    @Test("remote worktree records an SSH establishment failure")
+    func remoteWorktreeRecordsSSHFailure() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let status = directory.appendingPathComponent("ssh-status")
+        let command = TmuxAttachmentInfo(
+            sessionName: "fixture-session",
+            host: .ssh(SSHHostInfo(
+                user: "test-user",
+                hostname: "test-host.invalid",
+                port: nil
+            )),
+            workspacePath: "/srv/project"
+        ).attachCommand(
+            tmuxPath: "/usr/bin/tmux",
+            remoteKwtCommandPrelude: "ghosthub_kwt_path=/usr/bin/kwt; ",
+            sshConnectionArguments: [
+                "-o", "ProxyCommand=/usr/bin/false",
+            ],
+            remoteExitStatusPath: status.path
+        )
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = [
+            "--noprofile", "--norc", "-c", "exec -l " + command,
+        ]
+        process.environment = ProcessInfo.processInfo.environment.merging([
+            "SHELL": "/bin/sh",
+        ]) { _, new in new }
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+
+        try process.run()
+        process.waitUntilExit()
+
+        #expect(process.terminationStatus == 255)
+        #expect(try String(contentsOf: status, encoding: .utf8) == "255\n")
+    }
+
     @Test("Windows named creation runs once before psmux attachment")
     func windowsRemoteCreationIsOneShot() throws {
         let command = TmuxAttachmentInfo(
@@ -1233,7 +1276,6 @@ struct TmuxAttachmentInfoTests {
         )
         defer { try? FileManager.default.removeItem(at: directory) }
         let counter = directory.appendingPathComponent("count")
-        let status = directory.appendingPathComponent("status")
         let fake = directory.appendingPathComponent("fake-ssh")
         try """
         #!/bin/sh
@@ -1252,7 +1294,6 @@ struct TmuxAttachmentInfoTests {
         ]
         process.environment = ProcessInfo.processInfo.environment.merging([
             "GHOSTHUB_TEST_COUNTER": counter.path,
-            "GHOSTHUB_SSH_EXIT_STATUS_PATH": status.path,
         ]) { _, new in new }
         let output = Pipe()
         process.standardOutput = output
@@ -1262,7 +1303,6 @@ struct TmuxAttachmentInfoTests {
 
         #expect(process.terminationStatus == 255)
         #expect(try String(contentsOf: counter, encoding: .utf8) == "x")
-        #expect(try String(contentsOf: status, encoding: .utf8) == "255\n")
         #expect(!String(
             decoding: output.fileHandleForReading.readDataToEndOfFile(),
             as: UTF8.self
