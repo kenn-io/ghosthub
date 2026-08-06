@@ -132,7 +132,7 @@ struct BorrowedTmuxSessionView: View {
     }
 
     var primaryRecoveryActionTitle: String? {
-        showsReconnectProgress ? "Reconnect Now" : nil
+        recoveryState?.allowsReconnectNow == true ? "Reconnect Now" : nil
     }
 
     var showsReviewConnection: Bool {

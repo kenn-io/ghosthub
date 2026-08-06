@@ -69,6 +69,15 @@ enum BorrowedTmuxRecoveryState: Equatable {
         }
         return false
     }
+
+    var allowsReconnectNow: Bool {
+        switch self {
+        case .reconnecting:
+            true
+        case let .needsAttention(_, canReviewConnection):
+            !canReviewConnection
+        }
+    }
 }
 
 @MainActor
@@ -3895,7 +3904,17 @@ final class WorkspaceSceneModel: ObservableObject {
     }
 
     func reconnectActiveTmuxSessionNow() {
-        tmuxReconnectSupervisor.reconnectNow()
+        guard let recoveryState = activeBorrowedTmuxRecoveryState,
+              recoveryState.allowsReconnectNow
+        else { return }
+        if recoveryState.isReconnecting {
+            tmuxReconnectSupervisor.reconnectNow()
+            return
+        }
+        guard let context = activeTmuxReconnectContext,
+              activeBorrowedTmuxHandle?.id == context.handleID
+        else { return }
+        startTmuxReconnect(context)
     }
 
     func resumeTmuxReconnectAfterSSHRecovery(hostID: UUID) {

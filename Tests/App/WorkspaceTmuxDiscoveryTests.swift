@@ -2374,12 +2374,23 @@ struct WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
-    @Test("changed host key pauses with manual remediation")
+    @Test("changed host key can reconnect after manual remediation")
     func changedHostKeyRequiresManualRemediation() async throws {
         let classification = SSHConnectionFailure.classify(
             status: 255,
             output: "REMOTE HOST IDENTIFICATION HAS CHANGED!"
         )
+        let discoveries = TmuxDiscoveryResultQueue([
+            .failure(.sshConnectionFailed(
+                host: "build-box", classification: classification
+            )),
+            .success([
+                DiscoveredTmuxSession(
+                    name: "release-work", windowCount: 1,
+                    createdAt: nil, managed: false
+                ),
+            ]),
+        ])
         let environment = try setupRemoteTmuxEnvironment()
         let surfaceStore = SceneTmuxSurfaceStoreStub()
         let model = try makeModel(
@@ -2388,11 +2399,7 @@ struct WorkspaceTmuxDiscoveryTests {
             snapshot: environment.snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
             remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
-            tmuxSessionDiscovery: { _ in
-                .failure(.sshConnectionFailed(
-                    host: "build-box", classification: classification
-                ))
-            },
+            tmuxSessionDiscovery: { _ in discoveries.removeFirst() },
             tmuxReconnectIntervals: [.milliseconds(1)]
         )
         let selection = WorkspaceTmuxSessionSelection(
@@ -2416,6 +2423,14 @@ struct WorkspaceTmuxDiscoveryTests {
         }
         #expect(message.contains("known-hosts"))
         #expect(model.tmuxConnectionRecoveryRequest == nil)
+
+        model.reconnectActiveTmuxSessionNow()
+
+        await waitUntilMainActor {
+            surfaceStore.requestCount == 2
+                && model.activeBorrowedTmuxSessionIsConnected
+        }
+        #expect(discoveries.count == 2)
         await model.shutdown()
     }
 

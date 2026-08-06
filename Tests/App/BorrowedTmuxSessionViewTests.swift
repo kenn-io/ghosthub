@@ -48,6 +48,7 @@ struct BorrowedTmuxSessionViewTests {
         )
 
         #expect(!view.showsReviewConnection)
+        #expect(view.primaryRecoveryActionTitle == "Reconnect Now")
         #expect(view.showsHostSettingsAction)
     }
 
