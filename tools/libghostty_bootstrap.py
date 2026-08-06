@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-GHOSTHUB_BOOTSTRAP_VERSION = 26
+GHOSTHUB_BOOTSTRAP_VERSION = 27
 GHOSTHUB_GHOSTTY_BUNDLE_ID = "com.ghosthub"
 GHOSTHUB_TERM_PROGRAM = "ghosthub"
 LIBXEV_URL = (
@@ -330,6 +330,9 @@ def apply_ghosthub_source_patches(paths: BootstrapPaths) -> None:
     patch_child_write_embedded(paths.source_checkout_root / "src" / "apprt" / "embedded.zig")
     patch_child_write_termio(paths.source_checkout_root / "src" / "termio" / "Termio.zig")
     patch_external_io_backend(paths.source_checkout_root)
+    patch_ios_metal_layer_lifecycle(
+        paths.source_checkout_root / "src" / "renderer" / "Metal.zig"
+    )
     patch_macos_login_quiet(paths.source_checkout_root / "src" / "termio" / "Exec.zig")
     patch_term_program_env(paths.source_checkout_root / "src" / "termio" / "Exec.zig")
     patch_libintl_i18n_guard(
@@ -1008,6 +1011,13 @@ def patch_child_write_termio(path: Path) -> None:
 ) !void {
     try self.backend.queueWrite(self.alloc, td, data, linefeed);
 
+    // External I/O forwards the transformed payload itself so that it can
+    // preserve ordering and apply the same CRLF behavior as the PTY backend.
+    switch (self.backend) {
+        .external => return,
+        .exec => {},
+    }
+
     // Mirror everything written toward the child to the host. Control-mode
     // (tmux) surfaces run a silent child that discards these bytes, so the
     // host forwards them (mouse reports, query responses) on to tmux. The
@@ -1185,7 +1195,9 @@ def patch_external_io_backend(source_root: Path) -> None:
         """//! External implements terminal I/O without a child process or PTY.
 const External = @This();
 
-const Allocator = @import("std").mem.Allocator;
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+const apprt = @import("../apprt.zig");
 const renderer = @import("../renderer.zig");
 const terminal = @import("../terminal/main.zig");
 const termio = @import("../termio.zig");
@@ -1252,10 +1264,29 @@ pub fn queueWrite(
     linefeed: bool,
 ) !void {
     _ = self;
-    _ = alloc;
-    _ = td;
-    _ = data;
-    _ = linefeed;
+
+    var transformed: ?[]u8 = null;
+    defer if (transformed) |buf| alloc.free(buf);
+    const payload: []const u8 = if (linefeed) payload: {
+        const carriage_returns = std.mem.count(u8, data, "\\r");
+        const buf = try alloc.alloc(u8, data.len + carriage_returns);
+        transformed = buf;
+        var output_index: usize = 0;
+        for (data) |byte| {
+            buf[output_index] = byte;
+            output_index += 1;
+            if (byte == '\\r') {
+                buf[output_index] = '\\n';
+                output_index += 1;
+            }
+        }
+        break :payload buf;
+    } else data;
+
+    const req = try apprt.surface.Message.WriteReq.init(alloc, payload);
+    if (td.surface_mailbox.push(.{ .child_write = req }, .{ .forever = {} }) == 0) {
+        req.deinit();
+    }
 }
 
 pub fn childExitedAbnormally(
@@ -1483,6 +1514,46 @@ pub const ThreadData = struct {
 """,
         already_applied="        .external => &.{},",
         description="Ghostty external-I/O abnormal-exit command",
+    )
+
+
+def patch_ios_metal_layer_lifecycle(path: Path) -> None:
+    patch_source_file(
+        path,
+        original="""        .ios => {
+            const view_layer = objc.Object.fromId(info.view.getProperty(?*anyopaque, "layer"));
+            view_layer.msgSend(void, objc.sel("addSublayer:"), .{layer.layer.value});
+        },
+""",
+        replacement="""        .ios => {
+            const view_layer = objc.Object.fromId(info.view.getProperty(?*anyopaque, "layer"));
+            layer.layer.setProperty("frame", view_layer.getProperty(graphics.Rect, "bounds"));
+            view_layer.msgSend(void, objc.sel("addSublayer:"), .{layer.layer.value});
+        },
+""",
+        already_applied='layer.layer.setProperty("frame", view_layer.getProperty(graphics.Rect, "bounds"));',
+        description="Ghostty iOS Metal layer initial frame",
+    )
+    patch_source_file(
+        path,
+        original="""pub fn deinit(self: *Metal) void {
+    self.queue.release();
+    self.device.release();
+    self.layer.release();
+}
+""",
+        replacement="""pub fn deinit(self: *Metal) void {
+    if (comptime builtin.os.tag == .ios) {
+        self.layer.setDisplayCallback(null, null);
+        self.layer.layer.msgSend(void, objc.sel("removeFromSuperlayer"), .{});
+    }
+    self.queue.release();
+    self.device.release();
+    self.layer.release();
+}
+""",
+        already_applied='self.layer.layer.msgSend(void, objc.sel("removeFromSuperlayer"), .{});',
+        description="Ghostty iOS Metal layer teardown",
     )
 
 

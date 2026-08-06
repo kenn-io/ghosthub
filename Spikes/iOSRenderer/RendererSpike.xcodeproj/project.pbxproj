@@ -36,9 +36,9 @@
 		A00000000000000000000001 /* RendererSpikeApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RendererSpikeApp.swift; sourceTree = "<group>"; };
 		A00000000000000000000002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		A00000000000000000000003 /* RendererRuntimeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RendererRuntimeTests.swift; sourceTree = "<group>"; };
-		A00000000000000000000004 /* GhosttyKit.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = GhosttyKit.xcframework; path = ../../.build/ios-spike/libghostty/GhosttyKit.xcframework; sourceTree = SOURCE_ROOT; };
-		A00000000000000000000005 /* ghostty */ = {isa = PBXFileReference; lastKnownFileType = folder; name = ghostty; path = ../../.build/ios-spike/libghostty/source/zig-out/share/ghostty; sourceTree = SOURCE_ROOT; };
-		A00000000000000000000006 /* terminfo */ = {isa = PBXFileReference; lastKnownFileType = folder; name = terminfo; path = ../../.build/ios-spike/libghostty/source/zig-out/share/terminfo; sourceTree = SOURCE_ROOT; };
+		A00000000000000000000004 /* GhosttyKit.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = GhosttyKit.xcframework; path = "$(IOS_RENDERER_LIBGHOSTTY_ROOT)/GhosttyKit.xcframework"; sourceTree = "<absolute>"; };
+		A00000000000000000000005 /* ghostty */ = {isa = PBXFileReference; lastKnownFileType = folder; name = ghostty; path = "$(IOS_RENDERER_LIBGHOSTTY_ROOT)/source/zig-out/share/ghostty"; sourceTree = "<absolute>"; };
+		A00000000000000000000006 /* terminfo */ = {isa = PBXFileReference; lastKnownFileType = folder; name = terminfo; path = "$(IOS_RENDERER_LIBGHOSTTY_ROOT)/source/zig-out/share/terminfo"; sourceTree = "<absolute>"; };
 		A00000000000000000000007 /* RendererSpike.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = RendererSpike.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A00000000000000000000008 /* RendererSpikeTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = RendererSpikeTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A00000000000000000000009 /* RendererStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RendererStatus.swift; sourceTree = "<group>"; };
@@ -263,6 +263,7 @@
 				ENABLE_TESTABILITY = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				IOS_RENDERER_LIBGHOSTTY_ROOT = "$(SOURCE_ROOT)/../../.build/ios-spike/libghostty";
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = iphoneos;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
@@ -280,6 +281,7 @@
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				IOS_RENDERER_LIBGHOSTTY_ROOT = "$(SOURCE_ROOT)/../../.build/ios-spike/libghostty";
 				SDKROOT = iphoneos;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";

@@ -30,6 +30,15 @@ struct IOSKeyboardMapperTests {
             (.keyboardRightArrow, UInt32(0x7C)),
             (.keyboardDownArrow, UInt32(0x7D)),
             (.keyboardUpArrow, UInt32(0x7E)),
+            (.keyboardF1, UInt32(0x7A)),
+            (.keyboardF12, UInt32(0x6F)),
+            (.keyboardInsert, UInt32(0x72)),
+            (.keyboardHome, UInt32(0x73)),
+            (.keyboardPageUp, UInt32(0x74)),
+            (.keyboardDeleteForward, UInt32(0x75)),
+            (.keyboardEnd, UInt32(0x77)),
+            (.keyboardPageDown, UInt32(0x79)),
+            (.keypadEnter, UInt32(0x4C)),
         ]
     )
     func virtualKeycode(usage: UIKeyboardHIDUsage, expected: UInt32) {
@@ -38,7 +47,7 @@ struct IOSKeyboardMapperTests {
 
     @Test("unknown HID usages are not guessed")
     func unknownUsage() {
-        #expect(IOSKeyboardMapper.virtualKeycode(for: .keyboardF1) == nil)
+        #expect(IOSKeyboardMapper.virtualKeycode(for: .keyboardMute) == nil)
     }
 
     @Test("UIKit modifiers map to libghostty modifiers")
@@ -131,5 +140,23 @@ struct IOSKeyboardMapperTests {
         #expect(key.keycode == 0x33)
         #expect(key.text == nil)
         #expect(key.unshiftedCodepoint == 0x08)
+    }
+
+    @Test("repeated hardware presses use repeat actions until release")
+    func repeatedPresses() {
+        var tracker = IOSPressTracker()
+        let press = NSObject()
+
+        let initial = tracker.begin(press)
+        let repeated = tracker.begin(press)
+        let ended = tracker.end(press)
+        let endedAgain = tracker.end(press)
+        let restarted = tracker.begin(press)
+
+        #expect(initial == GHOSTTY_ACTION_PRESS)
+        #expect(repeated == GHOSTTY_ACTION_REPEAT)
+        #expect(ended)
+        #expect(!endedAgain)
+        #expect(restarted == GHOSTTY_ACTION_PRESS)
     }
 }

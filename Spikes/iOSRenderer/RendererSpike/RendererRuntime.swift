@@ -56,6 +56,7 @@ final class RendererRuntime: ObservableObject {
 
     private nonisolated let handles = RendererHandles()
     private let callbackContext = RendererCallbackContext()
+    private var surfaces: [UInt: ghostty_surface_t] = [:]
 
     init() {
         callbackContext.runtime = self
@@ -154,7 +155,18 @@ final class RendererRuntime: ObservableObject {
             throw RendererRuntimeError.surfaceCreation
         }
         status = .surfaceReady
+        surfaces[UInt(bitPattern: surface)] = surface
         return surface
+    }
+
+    func destroySurface(_ surface: ghostty_surface_t) {
+        let key = UInt(bitPattern: surface)
+        guard surfaces.removeValue(forKey: key) != nil else { return }
+        ghostty_surface_free(surface)
+    }
+
+    func ownsSurface(_ surface: ghostty_surface_t) -> Bool {
+        surfaces[UInt(bitPattern: surface)] != nil
     }
 
     func markRendered() {
@@ -178,6 +190,10 @@ final class RendererRuntime: ObservableObject {
     }
 
     func shutdown() {
+        for surface in surfaces.values {
+            ghostty_surface_free(surface)
+        }
+        surfaces.removeAll()
         handles.shutdown()
         lastChildWrite = []
         status = .idle

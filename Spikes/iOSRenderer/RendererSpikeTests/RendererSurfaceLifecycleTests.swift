@@ -27,13 +27,57 @@ struct RendererSurfaceLifecycleTests {
         }
         try await waitForBytes([0x1B, 0x5B, 0x44], from: runtime)
 
+        let functionKey = IOSKeyboardMapper.pressRoute(
+            usage: .keyboardF1,
+            characters: "",
+            charactersIgnoringModifiers: "",
+            modifiers: []
+        )
+        if let functionKey {
+            surface.send(functionKey)
+        }
+        try await waitForBytes([0x1B, 0x4F, 0x50], from: runtime)
+
+        let home = IOSKeyboardMapper.pressRoute(
+            usage: .keyboardHome,
+            characters: "",
+            charactersIgnoringModifiers: "",
+            modifiers: []
+        )
+        if let home {
+            surface.send(home)
+        }
+        try await waitForBytes([0x1B, 0x5B, 0x48], from: runtime)
+
+        let controlA = IOSKeyboardMapper.pressRoute(
+            usage: .keyboardA,
+            characters: "\u{01}",
+            charactersIgnoringModifiers: "a",
+            modifiers: .control
+        )
+        if let controlA {
+            surface.send(controlA)
+        }
+        try await waitForBytes([0x01], from: runtime)
+
+        let optionD = IOSKeyboardMapper.pressRoute(
+            usage: .keyboardD,
+            characters: "∂",
+            charactersIgnoringModifiers: "d",
+            modifiers: .alternate
+        )
+        if let optionD {
+            surface.send(optionD)
+        }
+        try await waitForBytes(Array("∂".utf8), from: runtime)
+
         surface.destroySurface()
         runtime.shutdown()
     }
 
     @Test("live surface renders, resizes, and resets repeatedly")
     @MainActor
-    func liveSurfaceLifecycle() {
+    func liveSurfaceLifecycle() async throws {
         let runtime = RendererRuntime()
         runtime.start()
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 1024, height: 768))
@@ -44,13 +88,16 @@ struct RendererSurfaceLifecycleTests {
         window.makeKeyAndVisible()
 
         surface.ensureSurface()
-        #expect(runtime.status == .rendered)
+        try await waitForRendered(runtime)
+        let rendererSublayerCount = surface.rendererSublayerCount
+        #expect(rendererSublayerCount > 0)
 
         for width in [900.0, 700.0, 1100.0] {
             surface.frame.size = CGSize(width: width, height: 600)
             surface.layoutIfNeeded()
             surface.resetSurface()
-            #expect(runtime.status == .rendered)
+            try await waitForRendered(runtime)
+            #expect(surface.rendererSublayerCount == rendererSublayerCount)
         }
 
         surface.destroySurface()
@@ -88,6 +135,21 @@ struct RendererSurfaceLifecycleTests {
         #expect(destroyed == [7])
     }
 
+    @Test("runtime shutdown frees live surfaces before the application")
+    @MainActor
+    func runtimeShutdownBeforeViewTeardown() {
+        let runtime = RendererRuntime()
+        runtime.start()
+        let surface = RendererSurfaceView(runtime: runtime)
+        surface.ensureSurface()
+
+        runtime.shutdown()
+        surface.destroySurface()
+
+        #expect(runtime.status == .idle)
+        #expect(surface.rendererSublayerCount == 0)
+    }
+
     @MainActor
     private func waitForBytes(
         _ expected: [UInt8],
@@ -102,5 +164,16 @@ struct RendererSurfaceLifecycleTests {
         Issue.record(
             "Expected child-write bytes \(expected), got \(runtime.lastChildWrite)"
         )
+    }
+
+    @MainActor
+    private func waitForRendered(_ runtime: RendererRuntime) async throws {
+        for _ in 0 ..< 500 {
+            if runtime.status == .rendered {
+                return
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        Issue.record("Expected a presented Metal frame, got \(runtime.status)")
     }
 }

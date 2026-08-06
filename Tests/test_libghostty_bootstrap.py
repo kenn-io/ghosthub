@@ -587,6 +587,7 @@ void ghostty_surface_complete_clipboard_request(ghostty_surface_t,
             backend_zig = paths.source_checkout_root / "src" / "termio" / "backend.zig"
             external_zig = paths.source_checkout_root / "src" / "termio" / "External.zig"
             termio_zig = paths.source_checkout_root / "src" / "termio" / "Termio.zig"
+            metal_zig = paths.source_checkout_root / "src" / "renderer" / "Metal.zig"
             xcframework_enum = paths.source_checkout_root / "src" / "build" / "xcframework.zig"
             ghostty_xcframework = (
                 paths.source_checkout_root / "src" / "build" / "GhosttyXCFramework.zig"
@@ -606,6 +607,7 @@ void ghostty_surface_complete_clipboard_request(ghostty_surface_t,
             core_surface.parent.mkdir(parents=True, exist_ok=True)
             exec_zig.parent.mkdir(parents=True, exist_ok=True)
             termio_zig.parent.mkdir(parents=True, exist_ok=True)
+            metal_zig.parent.mkdir(parents=True, exist_ok=True)
             xcframework_enum.parent.mkdir(parents=True, exist_ok=True)
 
             build_config.write_text(
@@ -1004,6 +1006,19 @@ pub fn init() void {
         }
 '''
             )
+            metal_zig.write_text(
+                '''        .ios => {
+            const view_layer = objc.Object.fromId(info.view.getProperty(?*anyopaque, "layer"));
+            view_layer.msgSend(void, objc.sel("addSublayer:"), .{layer.layer.value});
+        },
+
+pub fn deinit(self: *Metal) void {
+    self.queue.release();
+    self.device.release();
+    self.layer.release();
+}
+'''
+            )
 
             bootstrap.apply_ghosthub_source_patches(paths)
 
@@ -1020,6 +1035,12 @@ pub fn init() void {
                 "if (rt_surface.external_io)",
                 core_surface.read_text(),
             )
+            self.assertIn(".{ .forever = {} }", external_zig.read_text())
+            self.assertIn("std.mem.count(u8, data, \"\\r\")", external_zig.read_text())
+            self.assertIn("switch (self.backend)", termio_zig.read_text())
+            self.assertIn(".external => return", termio_zig.read_text())
+            self.assertIn('layer.layer.setProperty("frame"', metal_zig.read_text())
+            self.assertIn('objc.sel("removeFromSuperlayer")', metal_zig.read_text())
 
             bootstrap.apply_ghosthub_source_patches(paths)
             self.assertEqual(
@@ -1403,9 +1424,35 @@ pub fn init() void {
                 "self.surface_mailbox.push(.{ .child_write = req }, .{ .instant = {} }) == 0",
                 contents,
             )
+            self.assertIn(".external => return", contents)
             bootstrap.patch_child_write_termio(termio)
             self.assertEqual(termio.read_text().count(".child_write = req"), 1)
             self.assertEqual(termio.read_text().count("req.deinit();"), 1)
+
+    def test_patch_ios_metal_layer_lifecycle_sizes_and_detaches_layer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            metal = Path(tmp) / "Metal.zig"
+            metal.write_text(
+                '''        .ios => {
+            const view_layer = objc.Object.fromId(info.view.getProperty(?*anyopaque, "layer"));
+            view_layer.msgSend(void, objc.sel("addSublayer:"), .{layer.layer.value});
+        },
+
+pub fn deinit(self: *Metal) void {
+    self.queue.release();
+    self.device.release();
+    self.layer.release();
+}
+'''
+            )
+
+            bootstrap.patch_ios_metal_layer_lifecycle(metal)
+            bootstrap.patch_ios_metal_layer_lifecycle(metal)
+
+            contents = metal.read_text()
+            self.assertEqual(contents.count('layer.layer.setProperty("frame"'), 1)
+            self.assertEqual(contents.count('objc.sel("removeFromSuperlayer")'), 1)
+            self.assertIn("self.layer.setDisplayCallback(null, null);", contents)
 
     def test_patch_apple_silicon_xcframework_target_adds_arm64_only_option(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

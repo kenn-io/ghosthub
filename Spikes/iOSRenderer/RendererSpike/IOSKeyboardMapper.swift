@@ -37,6 +37,25 @@ enum IOSKeyboardMapper {
         case .keyboardRightArrow: 0x7C
         case .keyboardDownArrow: 0x7D
         case .keyboardUpArrow: 0x7E
+        case .keyboardF1: 0x7A
+        case .keyboardF2: 0x78
+        case .keyboardF3: 0x63
+        case .keyboardF4: 0x76
+        case .keyboardF5: 0x60
+        case .keyboardF6: 0x61
+        case .keyboardF7: 0x62
+        case .keyboardF8: 0x64
+        case .keyboardF9: 0x65
+        case .keyboardF10: 0x6D
+        case .keyboardF11: 0x67
+        case .keyboardF12: 0x6F
+        case .keyboardInsert: 0x72
+        case .keyboardHome: 0x73
+        case .keyboardPageUp: 0x74
+        case .keyboardDeleteForward: 0x75
+        case .keyboardEnd: 0x77
+        case .keyboardPageDown: 0x79
+        case .keypadEnter: 0x4C
         default: nil
         }
     }
@@ -114,11 +133,48 @@ enum IOSKeyboardMapper {
         .keyboardRightArrow,
         .keyboardDownArrow,
         .keyboardUpArrow,
+        .keyboardF1,
+        .keyboardF2,
+        .keyboardF3,
+        .keyboardF4,
+        .keyboardF5,
+        .keyboardF6,
+        .keyboardF7,
+        .keyboardF8,
+        .keyboardF9,
+        .keyboardF10,
+        .keyboardF11,
+        .keyboardF12,
+        .keyboardInsert,
+        .keyboardHome,
+        .keyboardPageUp,
+        .keyboardDeleteForward,
+        .keyboardEnd,
+        .keyboardPageDown,
+        .keypadEnter,
     ]
 
     private static func singleCodepoint(in text: String) -> UInt32 {
         let scalars = text.unicodeScalars
         guard scalars.count == 1, let scalar = scalars.first else { return 0 }
         return scalar.value
+    }
+}
+
+struct IOSPressTracker {
+    private var active: Set<ObjectIdentifier> = []
+
+    mutating func begin(_ press: AnyObject) -> ghostty_input_action_e {
+        active.insert(ObjectIdentifier(press)).inserted
+            ? GHOSTTY_ACTION_PRESS
+            : GHOSTTY_ACTION_REPEAT
+    }
+
+    mutating func end(_ press: AnyObject) -> Bool {
+        active.remove(ObjectIdentifier(press)) != nil
+    }
+
+    mutating func removeAll() {
+        active.removeAll()
     }
 }

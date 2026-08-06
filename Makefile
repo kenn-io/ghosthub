@@ -287,6 +287,7 @@ build-ios-renderer: bootstrap-ios-renderer-libghostty
 		-scheme "$(IOS_RENDERER_SCHEME)" \
 		-destination "$(IOS_RENDERER_DESTINATION)" \
 		-derivedDataPath "$(IOS_RENDERER_DERIVED_DATA)" \
+		IOS_RENDERER_LIBGHOSTTY_ROOT="$(IOS_RENDERER_LIBGHOSTTY_ROOT)" \
 		CODE_SIGNING_ALLOWED=NO \
 		build
 
@@ -296,6 +297,7 @@ test-ios-renderer: bootstrap-ios-renderer-libghostty
 		-scheme "$(IOS_RENDERER_SCHEME)" \
 		-destination "$(IOS_RENDERER_DESTINATION)" \
 		-derivedDataPath "$(IOS_RENDERER_DERIVED_DATA)" \
+		IOS_RENDERER_LIBGHOSTTY_ROOT="$(IOS_RENDERER_LIBGHOSTTY_ROOT)" \
 		CODE_SIGNING_ALLOWED=NO \
 		test
 

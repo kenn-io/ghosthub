@@ -22,7 +22,7 @@ final class SurfaceHandleOwner: @unchecked Sendable {
     private(set) var handle: ghostty_surface_t?
     private let destroy: (ghostty_surface_t) -> Void
 
-    init(destroy: @escaping (ghostty_surface_t) -> Void = ghostty_surface_free) {
+    init(destroy: @escaping (ghostty_surface_t) -> Void) {
         self.destroy = destroy
     }
 
@@ -62,12 +62,15 @@ final class RendererSurfaceBridge: ObservableObject {
 @MainActor
 final class RendererSurfaceView: UIView, UIKeyInput {
     private let runtime: RendererRuntime
-    private let surface = SurfaceHandleOwner()
+    private let surface: SurfaceHandleOwner
     private var callbackContext: RendererSurfaceCallbackContext?
-    private var handledPresses: Set<ObjectIdentifier> = []
+    private var rendererLayer: CALayer?
+    private var renderObservationTask: Task<Void, Never>?
+    private var pressTracker = IOSPressTracker()
 
     init(runtime: RendererRuntime) {
         self.runtime = runtime
+        surface = SurfaceHandleOwner(destroy: runtime.destroySurface)
         super.init(frame: CGRect(x: 0, y: 0, width: 800, height: 600))
         backgroundColor = .black
         isOpaque = true
@@ -86,6 +89,18 @@ final class RendererSurfaceView: UIView, UIKeyInput {
         true
     }
 
+    override func becomeFirstResponder() -> Bool {
+        let becameFirstResponder = super.becomeFirstResponder()
+        syncSurfaceFocus()
+        return becameFirstResponder
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let resignedFirstResponder = super.resignFirstResponder()
+        syncSurfaceFocus()
+        return resignedFirstResponder
+    }
+
     var hasText: Bool {
         true
     }
@@ -98,12 +113,12 @@ final class RendererSurfaceView: UIView, UIKeyInput {
     override func didMoveToWindow() {
         super.didMoveToWindow()
         updateSurfaceGeometry()
-        if let handle = surface.handle {
-            ghostty_surface_set_focus(handle, window != nil)
-        }
         if window != nil {
-            becomeFirstResponder()
+            _ = becomeFirstResponder()
+        } else {
+            _ = resignFirstResponder()
         }
+        syncSurfaceFocus()
     }
 
     func insertText(_ text: String) {
@@ -118,7 +133,7 @@ final class RendererSurfaceView: UIView, UIKeyInput {
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-        becomeFirstResponder()
+        _ = becomeFirstResponder()
         super.touchesBegan(touches, with: event)
     }
 
@@ -127,9 +142,9 @@ final class RendererSurfaceView: UIView, UIKeyInput {
         for press in presses {
             guard let route = route(for: press) else { continue }
             guard route != .deferToTextInput else { continue }
-            handledPresses.insert(ObjectIdentifier(press))
+            let action = pressTracker.begin(press)
             forwarded.remove(press)
-            send(route)
+            send(route, action: action)
         }
         if !forwarded.isEmpty {
             super.pressesBegan(forwarded, with: event)
@@ -157,9 +172,13 @@ final class RendererSurfaceView: UIView, UIKeyInput {
 
     func destroySurface() {
         guard surface.handle != nil else { return }
+        renderObservationTask?.cancel()
+        renderObservationTask = nil
+        rendererLayer?.removeFromSuperlayer()
+        rendererLayer = nil
         surface.clear()
         callbackContext = nil
-        handledPresses.removeAll()
+        pressTracker.removeAll()
         runtime.surfaceDidClose()
     }
 
@@ -167,7 +186,7 @@ final class RendererSurfaceView: UIView, UIKeyInput {
         _ route: IOSKeyboardRoute,
         action: ghostty_input_action_e = GHOSTTY_ACTION_PRESS
     ) {
-        guard let handle = surface.handle else { return }
+        guard let handle = surface.handle, runtime.ownsSurface(handle) else { return }
         switch route {
         case .deferToTextInput:
             return
@@ -208,7 +227,10 @@ final class RendererSurfaceView: UIView, UIKeyInput {
         _ data: Data,
         from context: RendererSurfaceCallbackContext
     ) {
-        guard callbackContext === context, let handle = surface.handle else { return }
+        guard callbackContext === context,
+              let handle = surface.handle,
+              runtime.ownsSurface(handle)
+        else { return }
         runtime.recordChildWrite(data)
         data.withUnsafeBytes { buffer in
             guard let baseAddress = buffer.baseAddress else { return }
@@ -221,6 +243,7 @@ final class RendererSurfaceView: UIView, UIKeyInput {
     }
 
     private func createSurface() {
+        let previousLayers = Set((layer.sublayers ?? []).map(ObjectIdentifier.init))
         let context = RendererSurfaceCallbackContext(view: self)
         callbackContext = context
         var config = ghostty_surface_config_new()
@@ -237,9 +260,13 @@ final class RendererSurfaceView: UIView, UIKeyInput {
         do {
             let handle = try runtime.createSurface(configuration: &config)
             surface.replace(with: handle)
+            rendererLayer = layer.sublayers?.first {
+                !previousLayers.contains(ObjectIdentifier($0))
+            }
             updateSurfaceGeometry()
+            syncSurfaceFocus()
             injectReferenceTranscript(into: handle)
-            runtime.markRendered()
+            observeFirstRenderedFrame(for: handle)
         } catch {
             callbackContext = nil
             runtime.reportSurfaceFailure(error)
@@ -262,7 +289,7 @@ final class RendererSurfaceView: UIView, UIKeyInput {
         cancelled: Bool
     ) {
         var forwarded = presses
-        for press in presses where handledPresses.remove(ObjectIdentifier(press)) != nil {
+        for press in presses where pressTracker.end(press) {
             forwarded.remove(press)
             if let route = route(for: press) {
                 send(route, action: GHOSTTY_ACTION_RELEASE)
@@ -277,16 +304,53 @@ final class RendererSurfaceView: UIView, UIKeyInput {
     }
 
     private func updateSurfaceGeometry() {
-        guard let handle = surface.handle else { return }
         let scale = displayScale
         contentScaleFactor = scale
         layer.contentsScale = scale
+        rendererLayer?.frame = bounds
+        rendererLayer?.contentsScale = scale
+        guard let handle = surface.handle, runtime.ownsSurface(handle) else { return }
         ghostty_surface_set_content_scale(handle, Double(scale), Double(scale))
         ghostty_surface_set_size(
             handle,
             UInt32(max(1, (bounds.width * scale).rounded())),
             UInt32(max(1, (bounds.height * scale).rounded()))
         )
+    }
+
+    private func syncSurfaceFocus() {
+        guard let handle = surface.handle, runtime.ownsSurface(handle) else { return }
+        ghostty_surface_set_focus(handle, window != nil && isFirstResponder)
+    }
+
+    private func observeFirstRenderedFrame(for handle: ghostty_surface_t) {
+        renderObservationTask?.cancel()
+        guard let rendererLayer else {
+            runtime.reportSurfaceFailure(RendererSurfaceError.rendererLayerUnavailable)
+            return
+        }
+        renderObservationTask = Task { @MainActor [weak self, weak rendererLayer] in
+            for _ in 0 ..< 500 {
+                guard !Task.isCancelled,
+                      let self,
+                      let rendererLayer,
+                      self.rendererLayer === rendererLayer,
+                      surface.handle == handle,
+                      runtime.ownsSurface(handle)
+                else { return }
+                if rendererLayer.contents != nil {
+                    runtime.markRendered()
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(10))
+            }
+            guard !Task.isCancelled else { return }
+            self?.runtime.reportSurfaceFailure(RendererSurfaceError.renderTimeout)
+        }
+    }
+
+    var rendererSublayerCount: Int {
+        layer.sublayers?.count ?? 0
     }
 
     private func injectReferenceTranscript(into handle: ghostty_surface_t) {
@@ -302,6 +366,20 @@ final class RendererSurfaceView: UIView, UIKeyInput {
 
     private var displayScale: CGFloat {
         window?.screen.scale ?? traitCollection.displayScale
+    }
+}
+
+private enum RendererSurfaceError: LocalizedError {
+    case rendererLayerUnavailable
+    case renderTimeout
+
+    var errorDescription: String? {
+        switch self {
+        case .rendererLayerUnavailable:
+            "libghostty did not attach its renderer layer."
+        case .renderTimeout:
+            "libghostty did not present a Metal frame within five seconds."
+        }
     }
 }
 
