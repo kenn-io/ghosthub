@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-GHOSTHUB_BOOTSTRAP_VERSION = 22
+GHOSTHUB_BOOTSTRAP_VERSION = 23
 GHOSTHUB_GHOSTTY_BUNDLE_ID = "com.ghosthub"
 GHOSTHUB_TERM_PROGRAM = "ghosthub"
 
@@ -68,8 +68,9 @@ class ArtifactPaths:
 
 def resolve_staged_build_root(repo_root: Path, requested_root: Path | None) -> Path:
     build_root = repo_root.resolve() / ".build"
+    canonical_root = build_root / "libghostty"
     if requested_root is None:
-        return build_root / "libghostty"
+        return canonical_root
 
     if requested_root.is_absolute():
         resolved_root = requested_root.resolve()
@@ -86,6 +87,18 @@ def resolve_staged_build_root(repo_root: Path, requested_root: Path | None) -> P
         raise BootstrapError(
             f"libghostty staging root must be a child of {build_root}."
         )
+    if resolved_root == canonical_root:
+        return resolved_root
+
+    reserved_roots = (canonical_root, build_root / "libghostty-variants")
+    for reserved_root in reserved_roots:
+        if resolved_root.is_relative_to(reserved_root) or reserved_root.is_relative_to(
+            resolved_root
+        ):
+            raise BootstrapError(
+                "libghostty staging root must not overlap reserved libghostty "
+                f"artifacts at {reserved_root}."
+            )
     return resolved_root
 
 
@@ -311,6 +324,7 @@ def apply_ghosthub_source_patches(paths: BootstrapPaths) -> None:
     patch_clipboard_write_origin(paths.source_checkout_root / "src" / "Surface.zig")
     patch_child_write_embedded(paths.source_checkout_root / "src" / "apprt" / "embedded.zig")
     patch_child_write_termio(paths.source_checkout_root / "src" / "termio" / "Termio.zig")
+    patch_external_io_backend(paths.source_checkout_root)
     patch_macos_login_quiet(paths.source_checkout_root / "src" / "termio" / "Exec.zig")
     patch_term_program_env(paths.source_checkout_root / "src" / "termio" / "Exec.zig")
     patch_libintl_i18n_guard(
@@ -940,6 +954,465 @@ def patch_child_write_termio(path: Path) -> None:
     )
 
 
+def write_patched_source_file(path: Path, contents: str, *, description: str) -> None:
+    if path.exists():
+        if path.read_text() == contents:
+            return
+        raise BootstrapError(
+            f"Failed to apply {description} to {path}. "
+            "The pinned Ghostty source layout changed and the bootstrap patch must be updated."
+        )
+    path.write_text(contents)
+
+
+def patch_external_io_backend(source_root: Path) -> None:
+    termio_module = source_root / "src" / "termio.zig"
+    backend_path = source_root / "src" / "termio" / "backend.zig"
+    external_path = source_root / "src" / "termio" / "External.zig"
+    embedded_path = source_root / "src" / "apprt" / "embedded.zig"
+    header_path = source_root / "include" / "ghostty.h"
+    surface_path = source_root / "src" / "Surface.zig"
+
+    patch_source_file(
+        termio_module,
+        original='pub const Exec = @import("termio/Exec.zig");\n',
+        replacement=(
+            'pub const Exec = @import("termio/Exec.zig");\n'
+            'pub const External = @import("termio/External.zig");\n'
+        ),
+        already_applied='pub const External = @import("termio/External.zig");',
+        description="Ghostty external-I/O termio export",
+    )
+
+    patch_source_file(
+        backend_path,
+        original="pub const Kind = enum { exec };",
+        replacement="pub const Kind = enum { exec, external };",
+        already_applied="pub const Kind = enum { exec, external };",
+        description="Ghostty external-I/O backend kind",
+    )
+    patch_source_file(
+        backend_path,
+        original="    exec: termio.Exec.Config,\n};",
+        replacement="    exec: termio.Exec.Config,\n    external: termio.External.Config,\n};",
+        already_applied="    external: termio.External.Config,",
+        description="Ghostty external-I/O backend config",
+    )
+    patch_source_file(
+        backend_path,
+        original="    exec: termio.Exec,\n\n    pub fn deinit",
+        replacement="    exec: termio.Exec,\n    external: termio.External,\n\n    pub fn deinit",
+        already_applied="    external: termio.External,",
+        description="Ghostty external-I/O backend union",
+    )
+    for original, replacement, marker, description in (
+        (
+            "            .exec => |*exec| exec.deinit(),\n",
+            "            .exec => |*exec| exec.deinit(),\n"
+            "            .external => |*external| external.deinit(),\n",
+            "            .external => |*external| external.deinit(),",
+            "Ghostty external-I/O backend deinit",
+        ),
+        (
+            "            .exec => |*exec| exec.initTerminal(t),\n",
+            "            .exec => |*exec| exec.initTerminal(t),\n"
+            "            .external => |*external| external.initTerminal(t),\n",
+            "            .external => |*external| external.initTerminal(t),",
+            "Ghostty external-I/O terminal initialization",
+        ),
+        (
+            "            .exec => |*exec| try exec.threadEnter(alloc, io, td),\n",
+            "            .exec => |*exec| try exec.threadEnter(alloc, io, td),\n"
+            "            .external => |*external| try external.threadEnter(alloc, io, td),\n",
+            "            .external => |*external| try external.threadEnter(alloc, io, td),",
+            "Ghostty external-I/O thread entry",
+        ),
+        (
+            "            .exec => |*exec| exec.threadExit(td),\n",
+            "            .exec => |*exec| exec.threadExit(td),\n"
+            "            .external => |*external| external.threadExit(td),\n",
+            "            .external => |*external| external.threadExit(td),",
+            "Ghostty external-I/O thread exit",
+        ),
+        (
+            "            .exec => |*exec| try exec.focusGained(td, focused),\n",
+            "            .exec => |*exec| try exec.focusGained(td, focused),\n"
+            "            .external => |*external| try external.focusGained(td, focused),\n",
+            "            .external => |*external| try external.focusGained(td, focused),",
+            "Ghostty external-I/O focus handling",
+        ),
+        (
+            "            .exec => |*exec| try exec.resize(grid_size, screen_size),\n",
+            "            .exec => |*exec| try exec.resize(grid_size, screen_size),\n"
+            "            .external => |*external| try external.resize(grid_size, screen_size),\n",
+            "            .external => |*external| try external.resize(grid_size, screen_size),",
+            "Ghostty external-I/O resize handling",
+        ),
+        (
+            "            .exec => |*exec| try exec.queueWrite(alloc, td, data, linefeed),\n",
+            "            .exec => |*exec| try exec.queueWrite(alloc, td, data, linefeed),\n"
+            "            .external => |*external| try external.queueWrite(alloc, td, data, linefeed),\n",
+            "            .external => |*external| try external.queueWrite(alloc, td, data, linefeed),",
+            "Ghostty external-I/O write handling",
+        ),
+        (
+            "            .exec => |*exec| exec.deinit(alloc),\n",
+            "            .exec => |*exec| exec.deinit(alloc),\n"
+            "            .external => |*external| external.deinit(alloc),\n",
+            "            .external => |*external| external.deinit(alloc),",
+            "Ghostty external-I/O thread-data deinit",
+        ),
+    ):
+        patch_source_file(
+            backend_path,
+            original=original,
+            replacement=replacement,
+            already_applied=marker,
+            description=description,
+        )
+    patch_source_file(
+        backend_path,
+        original="""            .exec => |*exec| try exec.childExitedAbnormally(
+                gpa,
+                t,
+                exit_code,
+                runtime_ms,
+            ),
+""",
+        replacement="""            .exec => |*exec| try exec.childExitedAbnormally(
+                gpa,
+                t,
+                exit_code,
+                runtime_ms,
+            ),
+            .external => |*external| try external.childExitedAbnormally(
+                gpa,
+                t,
+                exit_code,
+                runtime_ms,
+            ),
+""",
+        already_applied="            .external => |*external| try external.childExitedAbnormally(",
+        description="Ghostty external-I/O abnormal-exit handling",
+    )
+    patch_source_file(
+        backend_path,
+        original="    exec: termio.Exec.ThreadData,\n\n    pub fn deinit",
+        replacement=(
+            "    exec: termio.Exec.ThreadData,\n"
+            "    external: termio.External.ThreadData,\n\n"
+            "    pub fn deinit"
+        ),
+        already_applied="    external: termio.External.ThreadData,",
+        description="Ghostty external-I/O thread-data union",
+    )
+
+    write_patched_source_file(
+        external_path,
+        """//! External implements terminal I/O without a child process or PTY.
+const External = @This();
+
+const Allocator = @import("std").mem.Allocator;
+const renderer = @import("../renderer.zig");
+const terminal = @import("../terminal/main.zig");
+const termio = @import("../termio.zig");
+
+pub const Config = struct {};
+
+pub fn init(alloc: Allocator, config: Config) !External {
+    _ = alloc;
+    _ = config;
+    return .{};
+}
+
+pub fn deinit(self: *External) void {
+    _ = self;
+}
+
+pub fn initTerminal(self: *External, value: *terminal.Terminal) void {
+    _ = self;
+    _ = value;
+}
+
+pub fn threadEnter(
+    self: *External,
+    alloc: Allocator,
+    io: *termio.Termio,
+    td: *termio.Termio.ThreadData,
+) !void {
+    _ = self;
+    _ = alloc;
+    _ = io;
+    td.backend = .{ .external = .{} };
+}
+
+pub fn threadExit(self: *External, td: *termio.Termio.ThreadData) void {
+    _ = self;
+    _ = td;
+}
+
+pub fn focusGained(
+    self: *External,
+    td: *termio.Termio.ThreadData,
+    focused: bool,
+) !void {
+    _ = self;
+    _ = td;
+    _ = focused;
+}
+
+pub fn resize(
+    self: *External,
+    grid_size: renderer.GridSize,
+    screen_size: renderer.ScreenSize,
+) !void {
+    _ = self;
+    _ = grid_size;
+    _ = screen_size;
+}
+
+pub fn queueWrite(
+    self: *External,
+    alloc: Allocator,
+    td: *termio.Termio.ThreadData,
+    data: []const u8,
+    linefeed: bool,
+) !void {
+    _ = self;
+    _ = alloc;
+    _ = td;
+    _ = data;
+    _ = linefeed;
+}
+
+pub fn childExitedAbnormally(
+    self: *External,
+    gpa: Allocator,
+    value: *terminal.Terminal,
+    exit_code: u32,
+    runtime_ms: u64,
+) !void {
+    _ = self;
+    _ = gpa;
+    _ = value;
+    _ = exit_code;
+    _ = runtime_ms;
+}
+
+pub const ThreadData = struct {
+    pub fn deinit(self: *ThreadData, alloc: Allocator) void {
+        _ = self;
+        _ = alloc;
+    }
+};
+""",
+        description="Ghostty external-I/O backend source",
+    )
+
+    patch_source_file(
+        embedded_path,
+        original="""pub const Surface = struct {
+    app: *App,
+    platform: Platform,
+    userdata: ?*anyopaque = null,
+    core_surface: CoreSurface,
+""",
+        replacement="""pub const Surface = struct {
+    app: *App,
+    platform: Platform,
+    userdata: ?*anyopaque = null,
+    external_io: bool = false,
+    core_surface: CoreSurface,
+""",
+        already_applied="    external_io: bool = false,\n    core_surface: CoreSurface,",
+        description="Ghostty embedded external-I/O surface state",
+    )
+    patch_source_file(
+        embedded_path,
+        original="""        /// Context for the new surface
+        context: apprt.surface.NewSurfaceContext = .window,
+    };
+""",
+        replacement="""        /// Context for the new surface
+        context: apprt.surface.NewSurfaceContext = .window,
+
+        /// Use terminal parsing and rendering without spawning a child process.
+        external_io: bool = false,
+    };
+""",
+        already_applied="        external_io: bool = false,\n    };",
+        description="Ghostty embedded external-I/O surface option",
+    )
+    patch_source_file(
+        embedded_path,
+        original="""            .platform = try .init(opts.platform_tag, opts.platform),
+            .userdata = opts.userdata,
+            .core_surface = undefined,
+""",
+        replacement="""            .platform = try .init(opts.platform_tag, opts.platform),
+            .userdata = opts.userdata,
+            .external_io = opts.external_io,
+            .core_surface = undefined,
+""",
+        already_applied="            .external_io = opts.external_io,",
+        description="Ghostty embedded external-I/O surface initialization",
+    )
+    patch_source_file(
+        embedded_path,
+        original="""                const pid = command.pid orelse break :blk 0;
+                break :blk @intCast(pid);
+            },
+        };
+    }
+""",
+        replacement="""                const pid = command.pid orelse break :blk 0;
+                break :blk @intCast(pid);
+            },
+            .external => 0,
+        };
+    }
+""",
+        already_applied="            .external => 0,",
+        description="Ghostty external-I/O child-pid result",
+    )
+
+    patch_source_file(
+        header_path,
+        original="""  bool wait_after_command;
+  ghostty_surface_context_e context;
+} ghostty_surface_config_s;
+""",
+        replacement="""  bool wait_after_command;
+  ghostty_surface_context_e context;
+  bool external_io;
+} ghostty_surface_config_s;
+""",
+        already_applied="  bool external_io;\n} ghostty_surface_config_s;",
+        description="Ghostty external-I/O C surface option",
+    )
+
+    patch_source_file(
+        surface_path,
+        original="""    // Start our IO implementation
+    // This separate block ({}) is important because our errdefers must
+    // be scoped here to be valid.
+    {
+        var env = rt_surface.defaultTermioEnv() catch |err| env: {
+            // If an error occurs, we don't want to block surface startup.
+            log.warn("error getting env map for surface err={}", .{err});
+            break :env internal_os.getEnvMap(alloc) catch
+                std.process.EnvMap.init(alloc);
+        };
+        errdefer env.deinit();
+
+        // don't leak GHOSTTY_LOG to any subprocesses
+        env.remove("GHOSTTY_LOG");
+
+        // Initialize our IO backend
+        var io_exec = try termio.Exec.init(alloc, .{
+            .command = command,
+            .env = env,
+            .env_override = config.env,
+            .shell_integration = config.@"shell-integration",
+            .shell_integration_features = config.@"shell-integration-features",
+            .cursor_blink = config.@"cursor-style-blink",
+            .working_directory = if (config.@"working-directory") |wd| wd.value() else null,
+            .resources_dir = global_state.resources_dir.host(),
+            .term = config.term,
+            .rt_pre_exec_info = .init(config),
+            .rt_post_fork_info = .init(config),
+        });
+        errdefer io_exec.deinit();
+
+        // Initialize our IO mailbox
+        var io_mailbox = try termio.Mailbox.initSPSC(alloc);
+        errdefer io_mailbox.deinit(alloc);
+
+        try termio.Termio.init(&self.io, alloc, .{
+            .size = size,
+            .full_config = config,
+            .config = try termio.Termio.DerivedConfig.init(alloc, config),
+            .backend = .{ .exec = io_exec },
+            .mailbox = io_mailbox,
+            .renderer_state = &self.renderer_state,
+            .renderer_wakeup = render_thread.wakeup,
+            .renderer_mailbox = render_thread.mailbox,
+            .surface_mailbox = .{ .surface = self, .app = app_mailbox },
+        });
+    }
+""",
+        replacement="""    // Start our IO implementation
+    // This separate block ({}) is important because our errdefers must
+    // be scoped here to be valid.
+    {
+        var io_backend: termio.Backend = if (rt_surface.external_io)
+            .{ .external = try termio.External.init(alloc, .{}) }
+        else backend: {
+            var env = rt_surface.defaultTermioEnv() catch |err| env: {
+                // If an error occurs, we don't want to block surface startup.
+                log.warn("error getting env map for surface err={}", .{err});
+                break :env internal_os.getEnvMap(alloc) catch
+                    std.process.EnvMap.init(alloc);
+            };
+            errdefer env.deinit();
+
+            // don't leak GHOSTTY_LOG to any subprocesses
+            env.remove("GHOSTTY_LOG");
+
+            var io_exec = try termio.Exec.init(alloc, .{
+                .command = command,
+                .env = env,
+                .env_override = config.env,
+                .shell_integration = config.@"shell-integration",
+                .shell_integration_features = config.@"shell-integration-features",
+                .cursor_blink = config.@"cursor-style-blink",
+                .working_directory = if (config.@"working-directory") |wd| wd.value() else null,
+                .resources_dir = global_state.resources_dir.host(),
+                .term = config.term,
+                .rt_pre_exec_info = .init(config),
+                .rt_post_fork_info = .init(config),
+            });
+            errdefer io_exec.deinit();
+            break :backend .{ .exec = io_exec };
+        };
+        errdefer io_backend.deinit();
+
+        // Initialize our IO mailbox
+        var io_mailbox = try termio.Mailbox.initSPSC(alloc);
+        errdefer io_mailbox.deinit(alloc);
+
+        try termio.Termio.init(&self.io, alloc, .{
+            .size = size,
+            .full_config = config,
+            .config = try termio.Termio.DerivedConfig.init(alloc, config),
+            .backend = io_backend,
+            .mailbox = io_mailbox,
+            .renderer_state = &self.renderer_state,
+            .renderer_wakeup = render_thread.wakeup,
+            .renderer_mailbox = render_thread.mailbox,
+            .surface_mailbox = .{ .surface = self, .app = app_mailbox },
+        });
+    }
+""",
+        already_applied="        var io_backend: termio.Backend = if (rt_surface.external_io)",
+        description="Ghostty external-I/O surface backend selection",
+    )
+    patch_source_file(
+        surface_path,
+        original="""switch (self.io.backend) {
+        .exec => |*exec| exec.subprocess.args,
+    });
+""",
+        replacement="""switch (self.io.backend) {
+        .exec => |*exec| exec.subprocess.args,
+        .external => &.{},
+    });
+""",
+        already_applied="        .external => &.{},",
+        description="Ghostty external-I/O abnormal-exit command",
+    )
+
+
 def patch_macos_login_quiet(path: Path) -> None:
     contents = path.read_text()
 
@@ -1440,6 +1913,11 @@ def artifact_state_message(
             "libghostty artifacts were built with different Ghosthub isolation settings. "
             "Re-run `python3 tools/bootstrap_libghostty.py`."
         )
+    if manifest.get("externalIOBackend") is not True:
+        return (
+            "libghostty artifacts were built with different Ghosthub isolation settings. "
+            "Re-run `python3 tools/bootstrap_libghostty.py`."
+        )
     if manifest.get("i18nEnabled") is not False:
         return (
             "libghostty artifacts were built with different Ghosthub isolation settings. "
@@ -1634,6 +2112,7 @@ def write_manifest(
         "ghosttyConfigLoadExport": True,
         "surfaceInjectOutputExport": True,
         "childWriteCallback": True,
+        "externalIOBackend": True,
         "embeddedEnvIsolation": True,
         "macosLoginQuiet": True,
         "termProgram": GHOSTHUB_TERM_PROGRAM,

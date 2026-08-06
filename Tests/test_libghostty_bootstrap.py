@@ -193,6 +193,35 @@ class LibghosttyBootstrapTests(unittest.TestCase):
                         result.stdout + result.stderr,
                     )
 
+    def test_resolve_staged_build_root_rejects_reserved_overlaps(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir) / "repo"
+            reserved_overlaps = (
+                repo_root / ".build" / "libghostty" / "ios",
+                repo_root / ".build" / "libghostty-variants",
+                repo_root / ".build" / "libghostty-variants" / "ios",
+            )
+
+            for staged_root in reserved_overlaps:
+                with self.subTest(staged_root=staged_root):
+                    with self.assertRaisesRegex(
+                        bootstrap.BootstrapError,
+                        "staging root must not overlap reserved libghostty artifacts",
+                    ):
+                        bootstrap.resolve_staged_build_root(repo_root, staged_root)
+
+    def test_resolve_staged_build_root_allows_explicit_canonical_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir) / "repo"
+            canonical_root = repo_root / ".build" / "libghostty"
+
+            resolved_root = bootstrap.resolve_staged_build_root(
+                repo_root,
+                canonical_root,
+            )
+
+            self.assertEqual(resolved_root, canonical_root.resolve())
+
     def test_public_header_patch_upgrades_old_config_load_signature(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             header = Path(tmpdir) / "ghostty.h"
@@ -379,6 +408,7 @@ void ghostty_surface_complete_clipboard_request(ghostty_surface_t,
                         "ghosttyConfigLoadExport": True,
                         "surfaceInjectOutputExport": True,
                         "childWriteCallback": True,
+                        "externalIOBackend": True,
                         "embeddedEnvIsolation": True,
                         "termProgram":
                             bootstrap.GHOSTHUB_TERM_PROGRAM,
@@ -464,6 +494,9 @@ void ghostty_surface_complete_clipboard_request(ghostty_surface_t,
             apprt_surface = paths.source_checkout_root / "src" / "apprt" / "surface.zig"
             core_surface = paths.source_checkout_root / "src" / "Surface.zig"
             exec_zig = paths.source_checkout_root / "src" / "termio" / "Exec.zig"
+            termio_module = paths.source_checkout_root / "src" / "termio.zig"
+            backend_zig = paths.source_checkout_root / "src" / "termio" / "backend.zig"
+            external_zig = paths.source_checkout_root / "src" / "termio" / "External.zig"
             termio_zig = paths.source_checkout_root / "src" / "termio" / "Termio.zig"
             xcframework_enum = paths.source_checkout_root / "src" / "build" / "xcframework.zig"
             ghostty_xcframework = (
@@ -519,10 +552,44 @@ typedef void (*ghostty_runtime_close_surface_cb)(void*, bool);
 typedef struct {
   ghostty_runtime_close_surface_cb close_surface_cb;
 } ghostty_runtime_config_s;
+typedef struct {
+  ghostty_platform_e platform_tag;
+  ghostty_platform_u platform;
+  void* userdata;
+  double scale_factor;
+  float font_size;
+  const char* working_directory;
+  const char* command;
+  ghostty_env_var_s* env_vars;
+  size_t env_var_count;
+  const char* initial_input;
+  bool wait_after_command;
+  ghostty_surface_context_e context;
+} ghostty_surface_config_s;
 """
             )
             embedded.write_text(
-                """    pub fn defaultTermioEnv(self: *const Surface) !std.process.EnvMap {
+                """pub const Surface = struct {
+    app: *App,
+    platform: Platform,
+    userdata: ?*anyopaque = null,
+    core_surface: CoreSurface,
+
+    pub const Options = extern struct {
+        /// Context for the new surface
+        context: apprt.surface.NewSurfaceContext = .window,
+    };
+
+    pub fn init(self: *Surface, app: *App, opts: Options) !void {
+        self.* = .{
+            .app = app,
+            .platform = try .init(opts.platform_tag, opts.platform),
+            .userdata = opts.userdata,
+            .core_surface = undefined,
+        };
+    }
+
+    pub fn defaultTermioEnv(self: *const Surface) !std.process.EnvMap {
         const alloc = self.app.core_app.alloc;
         var env = try internal_os.getEnvMap(alloc);
         errdefer env.deinit();
@@ -613,6 +680,58 @@ typedef struct {
                 "            .mime = \"text/plain\",\n"
                 "            .data = data,\n"
                 "        }}, !confirmed),\n"
+                "\n"
+                "    // Start our IO implementation\n"
+                "    // This separate block ({}) is important because our errdefers must\n"
+                "    // be scoped here to be valid.\n"
+                "    {\n"
+                "        var env = rt_surface.defaultTermioEnv() catch |err| env: {\n"
+                "            // If an error occurs, we don't want to block surface startup.\n"
+                "            log.warn(\"error getting env map for surface err={}\", .{err});\n"
+                "            break :env internal_os.getEnvMap(alloc) catch\n"
+                "                std.process.EnvMap.init(alloc);\n"
+                "        };\n"
+                "        errdefer env.deinit();\n"
+                "\n"
+                "        // don't leak GHOSTTY_LOG to any subprocesses\n"
+                "        env.remove(\"GHOSTTY_LOG\");\n"
+                "\n"
+                "        // Initialize our IO backend\n"
+                "        var io_exec = try termio.Exec.init(alloc, .{\n"
+                "            .command = command,\n"
+                "            .env = env,\n"
+                "            .env_override = config.env,\n"
+                "            .shell_integration = config.@\"shell-integration\",\n"
+                "            .shell_integration_features = config.@\"shell-integration-features\",\n"
+                "            .cursor_blink = config.@\"cursor-style-blink\",\n"
+                "            .working_directory = if (config.@\"working-directory\") |wd| wd.value() else null,\n"
+                "            .resources_dir = global_state.resources_dir.host(),\n"
+                "            .term = config.term,\n"
+                "            .rt_pre_exec_info = .init(config),\n"
+                "            .rt_post_fork_info = .init(config),\n"
+                "        });\n"
+                "        errdefer io_exec.deinit();\n"
+                "\n"
+                "        // Initialize our IO mailbox\n"
+                "        var io_mailbox = try termio.Mailbox.initSPSC(alloc);\n"
+                "        errdefer io_mailbox.deinit(alloc);\n"
+                "\n"
+                "        try termio.Termio.init(&self.io, alloc, .{\n"
+                "            .size = size,\n"
+                "            .full_config = config,\n"
+                "            .config = try termio.Termio.DerivedConfig.init(alloc, config),\n"
+                "            .backend = .{ .exec = io_exec },\n"
+                "            .mailbox = io_mailbox,\n"
+                "            .renderer_state = &self.renderer_state,\n"
+                "            .renderer_wakeup = render_thread.wakeup,\n"
+                "            .renderer_mailbox = render_thread.mailbox,\n"
+                "            .surface_mailbox = .{ .surface = self, .app = app_mailbox },\n"
+                "        });\n"
+                "    }\n"
+                "\n"
+                "    const command_text = try std.mem.join(alloc, \" \", switch (self.io.backend) {\n"
+                "        .exec => |*exec| exec.subprocess.args,\n"
+                "    });\n"
             )
             exec_zig.write_text(
                 """        const hush = if (passwd.home) |home| hush: {
@@ -646,6 +765,95 @@ typedef struct {
                 ") !void {\n"
                 "    try self.backend.queueWrite(self.alloc, td, data, linefeed);\n"
                 "}\n"
+            )
+            termio_module.write_text(
+                'pub const Exec = @import("termio/Exec.zig");\n'
+            )
+            backend_zig.write_text(
+                """const std = @import("std");
+const Allocator = std.mem.Allocator;
+const renderer = @import("../renderer.zig");
+const terminal = @import("../terminal/main.zig");
+const termio = @import("../termio.zig");
+
+pub const Kind = enum { exec };
+
+pub const Config = union(Kind) {
+    exec: termio.Exec.Config,
+};
+
+pub const Backend = union(Kind) {
+    exec: termio.Exec,
+
+    pub fn deinit(self: *Backend) void {
+        switch (self.*) {
+            .exec => |*exec| exec.deinit(),
+        }
+    }
+
+    pub fn initTerminal(self: *Backend, t: *terminal.Terminal) void {
+        switch (self.*) {
+            .exec => |*exec| exec.initTerminal(t),
+        }
+    }
+
+    pub fn threadEnter(self: *Backend, alloc: Allocator, io: *termio.Termio, td: *termio.Termio.ThreadData) !void {
+        switch (self.*) {
+            .exec => |*exec| try exec.threadEnter(alloc, io, td),
+        }
+    }
+
+    pub fn threadExit(self: *Backend, td: *termio.Termio.ThreadData) void {
+        switch (self.*) {
+            .exec => |*exec| exec.threadExit(td),
+        }
+    }
+
+    pub fn focusGained(self: *Backend, td: *termio.Termio.ThreadData, focused: bool) !void {
+        switch (self.*) {
+            .exec => |*exec| try exec.focusGained(td, focused),
+        }
+    }
+
+    pub fn resize(self: *Backend, grid_size: renderer.GridSize, screen_size: renderer.ScreenSize) !void {
+        switch (self.*) {
+            .exec => |*exec| try exec.resize(grid_size, screen_size),
+        }
+    }
+
+    pub fn queueWrite(self: *Backend, alloc: Allocator, td: *termio.Termio.ThreadData, data: []const u8, linefeed: bool) !void {
+        switch (self.*) {
+            .exec => |*exec| try exec.queueWrite(alloc, td, data, linefeed),
+        }
+    }
+
+    pub fn childExitedAbnormally(self: *Backend, gpa: Allocator, t: *terminal.Terminal, exit_code: u32, runtime_ms: u64) !void {
+        switch (self.*) {
+            .exec => |*exec| try exec.childExitedAbnormally(
+                gpa,
+                t,
+                exit_code,
+                runtime_ms,
+            ),
+        }
+    }
+};
+
+pub const ThreadData = union(Kind) {
+    exec: termio.Exec.ThreadData,
+
+    pub fn deinit(self: *ThreadData, alloc: Allocator) void {
+        switch (self.*) {
+            .exec => |*exec| exec.deinit(alloc),
+        }
+    }
+
+    pub fn changeConfig(self: *ThreadData, config: *termio.DerivedConfig) void {
+        _ = self;
+        _ = config;
+    }
+};
+"""
             )
             xcframework_enum.write_text(
                 "pub const Target = enum { native, universal };\n"
@@ -709,6 +917,26 @@ pub fn init() void {
             )
 
             bootstrap.apply_ghosthub_source_patches(paths)
+
+            self.assertTrue(external_zig.exists())
+            self.assertIn(
+                "pub const External = @import(\"termio/External.zig\");",
+                termio_module.read_text(),
+            )
+            self.assertIn("external", backend_zig.read_text())
+            self.assertIn("external_io: bool = false", embedded.read_text())
+            self.assertIn("            .external => 0,", embedded.read_text())
+            self.assertIn("bool external_io;", header.read_text())
+            self.assertIn(
+                "if (rt_surface.external_io)",
+                core_surface.read_text(),
+            )
+
+            bootstrap.apply_ghosthub_source_patches(paths)
+            self.assertEqual(
+                termio_module.read_text().count('pub const External = @import("termio/External.zig");'),
+                1,
+            )
 
             self.assertIn(
                 f'pub const bundle_id = "{bootstrap.GHOSTHUB_GHOSTTY_BUNDLE_ID}";',
@@ -1906,6 +2134,28 @@ pub fn init() void {
                 "libghostty artifacts were built with different Ghosthub isolation settings. Re-run `python3 tools/bootstrap_libghostty.py`.",
             )
 
+    def test_artifact_state_reports_stale_manifest_when_external_io_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir)
+            metadata = self._create_repo_layout(repo_root)
+            paths = self._paths(repo_root)
+            self._write_ready_artifacts(paths.cached_artifacts, metadata)
+            manifest = json.loads(paths.cached_artifacts.manifest_path.read_text())
+            manifest["externalIOBackend"] = False
+            paths.cached_artifacts.manifest_path.write_text(json.dumps(manifest))
+
+            message = bootstrap.artifact_state_message(
+                paths.cached_artifacts,
+                metadata,
+                "native",
+                "Debug",
+            )
+
+            self.assertEqual(
+                message,
+                "libghostty artifacts were built with different Ghosthub isolation settings. Re-run `python3 tools/bootstrap_libghostty.py`.",
+            )
+
     def test_main_quiet_noop_suppresses_already_ready_output(self) -> None:
         paths = mock.Mock()
         paths.vendor_metadata_path = Path("/tmp/ghostty.version.json")
@@ -2012,6 +2262,7 @@ pub fn init() void {
             '  "ghosttyConfigLoadExport": true,\n'
             '  "surfaceInjectOutputExport": true,\n'
             '  "childWriteCallback": true,\n'
+            '  "externalIOBackend": true,\n'
             f'  "ghosttyCommit": "{metadata.commit}",\n'
             f'  "termProgram": "{bootstrap.GHOSTHUB_TERM_PROGRAM}",\n'
             f'  "requiredZigVersion": "{metadata.required_zig_version}",\n'
