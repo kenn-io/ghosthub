@@ -446,6 +446,9 @@ authentication or host-key failures pause it and route through native SSH
 recovery. Exact absence ends an established presentation, while reachable
 non-transport failures become an unable-to-attach state. Navigation, endpoint
 changes, replacement presentations, and scene shutdown cancel stale work.
+OpenSSH attachment wrappers record their exact exit status through an app-owned
+per-launch temporary file because libghostty's outer macOS login process does
+not reliably preserve a nested command's status.
 
 ## State Ownership
 

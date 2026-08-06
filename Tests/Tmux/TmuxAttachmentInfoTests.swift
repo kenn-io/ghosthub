@@ -1017,6 +1017,7 @@ struct TmuxAttachmentInfoTests {
         )
         defer { try? FileManager.default.removeItem(at: directory) }
         let marker = directory.appendingPathComponent("account-shell-ready")
+        let status = directory.appendingPathComponent("ssh-status")
         let shell = directory.appendingPathComponent("account-shell")
         try """
         #!/bin/sh
@@ -1041,7 +1042,8 @@ struct TmuxAttachmentInfoTests {
             ))
         ).attachCommand(
             tmuxPath: "/usr/bin/true",
-            sshConnectionArguments: ["-V"]
+            sshConnectionArguments: ["-V"],
+            remoteExitStatusPath: status.path
         )
         let process = Process()
         let output = Pipe()
@@ -1069,6 +1071,7 @@ struct TmuxAttachmentInfoTests {
             Comment(rawValue: text)
         )
         #expect(FileManager.default.fileExists(atPath: marker.path))
+        #expect(try String(contentsOf: status, encoding: .utf8) == "0\n")
     }
 
     @Test("remote worktree returns the first establishment outcome")
@@ -1230,6 +1233,7 @@ struct TmuxAttachmentInfoTests {
         )
         defer { try? FileManager.default.removeItem(at: directory) }
         let counter = directory.appendingPathComponent("count")
+        let status = directory.appendingPathComponent("status")
         let fake = directory.appendingPathComponent("fake-ssh")
         try """
         #!/bin/sh
@@ -1248,6 +1252,7 @@ struct TmuxAttachmentInfoTests {
         ]
         process.environment = ProcessInfo.processInfo.environment.merging([
             "GHOSTHUB_TEST_COUNTER": counter.path,
+            "GHOSTHUB_SSH_EXIT_STATUS_PATH": status.path,
         ]) { _, new in new }
         let output = Pipe()
         process.standardOutput = output
@@ -1257,6 +1262,7 @@ struct TmuxAttachmentInfoTests {
 
         #expect(process.terminationStatus == 255)
         #expect(try String(contentsOf: counter, encoding: .utf8) == "x")
+        #expect(try String(contentsOf: status, encoding: .utf8) == "255\n")
         #expect(!String(
             decoding: output.fileHandleForReading.readDataToEndOfFile(),
             as: UTF8.self

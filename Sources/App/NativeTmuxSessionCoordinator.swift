@@ -103,6 +103,7 @@ private struct NativeTmuxAttachment {
     var workingDirectory: String?
     var openWorkspace: Bool
     var sshConnectionArguments: [String]
+    var remoteExitStatusURL: URL?
 }
 
 /// Hosts ordinary tmux clients for kwt workspaces and unbound sessions.
@@ -123,6 +124,7 @@ final class NativeTmuxSessionCoordinator {
     private let presentationStyleProvider: () -> TmuxPresentationStyle?
     private let appliesPresentationStyleToExistingSessionsProvider:
         () -> Bool
+    private let remoteExitStatusDirectory: URL
     private var handlesByKey: [NativeTmuxSessionKey: BorrowedTmuxSessionHandle] = [:]
     private var targetHostsByHandle: [UUID: TmuxHost] = [:]
     private var attachments: [UUID: NativeTmuxAttachment] = [:]
@@ -170,7 +172,12 @@ final class NativeTmuxSessionCoordinator {
                 + SSHConfigurationResolver.noninteractiveHostKeyArguments(
                     for: $0
                 )
-        }
+        },
+        remoteExitStatusDirectory: URL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "ghosthub-tmux-exit-\(UUID().uuidString)",
+                isDirectory: true
+            )
     ) {
         self.terminalCoordinator = terminalCoordinator
         self.tmuxPathProvider = tmuxPathProvider
@@ -185,6 +192,7 @@ final class NativeTmuxSessionCoordinator {
         self.remoteTmuxPathProvider = remoteTmuxPathProvider
         self.sshConnectionArgumentsProvider =
             sshConnectionArgumentsProvider
+        self.remoteExitStatusDirectory = remoteExitStatusDirectory
     }
 
     func attach(
@@ -309,7 +317,10 @@ final class NativeTmuxSessionCoordinator {
                 launchMode: launchMode,
                 workingDirectory: workingDirectory,
                 openWorkspace: openWorkspace,
-                sshConnectionArguments: sshConnectionArguments
+                sshConnectionArguments: sshConnectionArguments,
+                remoteExitStatusURL: host.isRemote
+                    ? prepareRemoteExitStatusFile()
+                    : nil
             )
             onSurfaceReady?(handle)
         case let .failure(error):
@@ -352,7 +363,7 @@ final class NativeTmuxSessionCoordinator {
         provisioningTasks.removeValue(forKey: handle.id)?.cancel()
         provisioningHandles.remove(handle.id)
         targetHostsByHandle.removeValue(forKey: handle.id)
-        attachments.removeValue(forKey: handle.id)
+        removeRemoteExitStatusFile(attachments.removeValue(forKey: handle.id))
         attachmentClosures.removeValue(forKey: handle.id)
         launchedHandles.remove(handle.id)
         reportedConnectedAttachmentIDs.removeValue(forKey: handle.id)
@@ -429,7 +440,9 @@ final class NativeTmuxSessionCoordinator {
                     attachment.windowsKwtRelativePath,
                     workingDirectory: attachment.workingDirectory,
                     sshConnectionArguments: tmuxSSHConnectionArguments()
-                        + attachment.sshConnectionArguments
+                        + attachment.sshConnectionArguments,
+                    remoteExitStatusPath:
+                    attachment.remoteExitStatusURL?.path
                 )
             )
         )
@@ -476,7 +489,7 @@ final class NativeTmuxSessionCoordinator {
         reason: String
     ) {
         attachmentClosures[handle.id] = .launchFailed
-        attachments.removeValue(forKey: handle.id)
+        removeRemoteExitStatusFile(attachments.removeValue(forKey: handle.id))
         reportedConnectedAttachmentIDs.removeValue(forKey: handle.id)
         deferredPresentationStyleHandles.remove(handle.id)
         terminalCoordinator.removeSurface(for: surfaceKey(handle))
@@ -516,10 +529,17 @@ final class NativeTmuxSessionCoordinator {
     ) {
         let key = sessionKey(handle)
         guard handlesByKey[key] == handle else { return }
-        attachmentClosures[handle.id] = processAlive || childExitCode == 0
-            ? .detached
-            : .processExited(code: childExitCode)
-        attachments.removeValue(forKey: handle.id)
+        let attachment = attachments.removeValue(forKey: handle.id)
+        let recordedExitCode = consumeRemoteExitStatus(attachment)
+        if let recordedExitCode {
+            attachmentClosures[handle.id] = recordedExitCode == 0
+                ? .detached
+                : .processExited(code: recordedExitCode)
+        } else {
+            attachmentClosures[handle.id] = processAlive || childExitCode == 0
+                ? .detached
+                : .processExited(code: childExitCode)
+        }
         reportedConnectedAttachmentIDs.removeValue(forKey: handle.id)
         deferredPresentationStyleHandles.remove(handle.id)
         terminalCoordinator.removeSurface(for: surfaceKey(handle))
@@ -539,6 +559,7 @@ final class NativeTmuxSessionCoordinator {
         provisioningHandles.removeAll()
         handlesByKey.removeAll()
         targetHostsByHandle.removeAll()
+        attachments.values.forEach(removeRemoteExitStatusFile)
         attachments.removeAll()
         attachmentClosures.removeAll()
         launchedHandles.removeAll()
@@ -547,6 +568,46 @@ final class NativeTmuxSessionCoordinator {
         for handle in handles {
             terminalCoordinator.removeSurface(for: surfaceKey(handle))
         }
+    }
+
+    private func prepareRemoteExitStatusFile() -> URL? {
+        do {
+            try FileManager.default.createDirectory(
+                at: remoteExitStatusDirectory,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+            let url = remoteExitStatusDirectory.appendingPathComponent(
+                UUID().uuidString,
+                isDirectory: false
+            )
+            guard FileManager.default.createFile(
+                atPath: url.path,
+                contents: Data(),
+                attributes: [.posixPermissions: 0o600]
+            ) else { return nil }
+            return url
+        } catch {
+            return nil
+        }
+    }
+
+    private func consumeRemoteExitStatus(
+        _ attachment: NativeTmuxAttachment?
+    ) -> UInt32? {
+        guard let url = attachment?.remoteExitStatusURL else { return nil }
+        defer { try? FileManager.default.removeItem(at: url) }
+        guard let value = try? String(contentsOf: url, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        else { return nil }
+        return UInt32(value)
+    }
+
+    private func removeRemoteExitStatusFile(
+        _ attachment: NativeTmuxAttachment?
+    ) {
+        guard let url = attachment?.remoteExitStatusURL else { return }
+        try? FileManager.default.removeItem(at: url)
     }
 
     private func surfaceKey(_ handle: BorrowedTmuxSessionHandle) -> SurfaceKey {

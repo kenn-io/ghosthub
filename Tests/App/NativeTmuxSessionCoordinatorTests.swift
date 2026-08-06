@@ -498,13 +498,17 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(coordinator.attachmentClosure(handle) == .detached)
     }
 
-    @Test("SSH transport exit remains distinguishable from clean detach")
+    @Test("recorded SSH transport status overrides libghostty exit status")
     func recordsTransportExitCode() async throws {
+        let statusDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: statusDirectory) }
         let store = RecordingTmuxSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
             tmuxPathProvider: { .success("/usr/bin/tmux") },
-            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") }
+            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            remoteExitStatusDirectory: statusDirectory
         )
         var isSurfaceReady = false
         coordinator.onSurfaceReady = { _ in isSurfaceReady = true }
@@ -520,8 +524,18 @@ struct NativeTmuxSessionCoordinatorTests {
         await waitUntilMainActor { isSurfaceReady }
         _ = coordinator.surface(handle: handle)
 
+        let statusFile = try #require(
+            FileManager.default.contentsOfDirectory(
+                at: statusDirectory,
+                includingPropertiesForKeys: nil
+            ).first
+        )
+        try "255\n".write(
+            to: statusFile, atomically: true, encoding: .utf8
+        )
+
         let close = try #require(store.surface.closeObservers[handle.id])
-        close(false, 255)
+        close(false, 0)
 
         #expect(coordinator.hasClosedAttachment(handle))
         #expect(
