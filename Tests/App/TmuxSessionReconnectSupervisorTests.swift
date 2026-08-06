@@ -93,7 +93,9 @@ struct TmuxSessionReconnectSupervisorTests {
             return count == 3 ? .stop : .retry
         }
 
-        await waitUntilMainActor { attempts.count == 3 }
+        await waitUntilMainActor {
+            attempts.count == 3 && !supervisor.isRunning
+        }
 
         #expect(!supervisor.isRunning)
     }
@@ -116,7 +118,7 @@ struct TmuxSessionReconnectSupervisorTests {
 
         supervisor.reconnectNow()
         await waitUntilMainActor(timeout: .milliseconds(250)) {
-            attempts.count == 2
+            attempts.count == 2 && !supervisor.isRunning
         }
 
         #expect(!supervisor.isRunning)
