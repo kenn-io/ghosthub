@@ -3332,6 +3332,10 @@ final class WorkspaceSceneModel: ObservableObject {
             && selection.socketName == nil
             && selection.worktreePath != nil
             && (!sessionIsDiscovered || !managedKwtUnavailable)
+        let protectedSessionNeedsEstablishment = intent == .userInitiated
+            && effectiveLaunchMode == .attach
+            && selection.socketName != nil
+            && selection.worktreePath != nil
         let handle = nativeTmuxSessionCoordinator.attach(
             hostID: selection.hostID,
             name: selection.name,
@@ -3350,7 +3354,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 selection: selection,
                 handleID: handle.id,
                 host: attachmentHost,
-                phase: openWorkspace
+                phase: openWorkspace || protectedSessionNeedsEstablishment
                     ? .establishingWorkspace
                     : .attachOnly,
                 surfaceExitCode: nil

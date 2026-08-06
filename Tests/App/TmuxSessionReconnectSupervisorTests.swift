@@ -196,7 +196,9 @@ struct TmuxSessionReconnectSupervisorTests {
             return .retry
         }
 
-        await waitUntilMainActor { attempts.count == 2 }
+        await waitUntilMainActor {
+            attempts.count == 2 && !supervisor.isRunning
+        }
 
         #expect(attempts.cancellations == 1)
         #expect(attempts.maximumActive == 1)

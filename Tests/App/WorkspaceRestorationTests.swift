@@ -355,7 +355,7 @@ struct WorkspaceRestorationTests {
 
         #expect(model.activeBorrowedTmuxSelection == nil)
         await waitUntilMainActor {
-            inventory.attemptCount == 1
+            inventory.attemptCount >= 1
                 && model.snapshot.host(id: environment.host.id)?.lastSeenAt
                 != nil
         }

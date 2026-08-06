@@ -2247,6 +2247,48 @@ struct WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("protected kwt interruption retries establishment")
+    func protectedKwtInterruptionRetriesEstablishment() async throws {
+        let environment = try setupRemoteTmuxEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let probes = TmuxExactProbeResultQueue([
+            .success(false),
+            .success(false),
+            .success(false),
+        ])
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.localHostID,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            tmuxExactSessionProbe: { _ in probes.removeFirst() },
+            createdSessionDiscoveryDelays: [.seconds(10)],
+            tmuxReconnectIntervals: [.milliseconds(1)]
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.remoteHost.id,
+            name: "protected-work",
+            worktreePath: "/srv/ghosthub-pr-42",
+            socketName: "kwt-pr-0123456789abcdef"
+        )
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        await waitUntilMainActor {
+            model.activeBorrowedTmuxSessionIsConnected
+        }
+
+        surfaceStore.surface.closeObservers.values.first?(false, 255)
+        await waitUntilMainActor {
+            surfaceStore.requestCount == 2
+                && model.activeBorrowedTmuxSessionIsConnected
+        }
+
+        #expect(!model.activeBorrowedTmuxSessionIsConfirmedEnded)
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("protected recovery stays direct and attach-only")
     func protectedRecoveryUsesAttachOnly() async throws {
         let environment = try setupRemoteTmuxEnvironment()
