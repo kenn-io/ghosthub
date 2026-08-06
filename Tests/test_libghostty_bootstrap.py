@@ -136,6 +136,63 @@ class LibghosttyBootstrapTests(unittest.TestCase):
                 print_mock.call_args.args[0],
             )
 
+    def test_main_checks_artifacts_from_a_custom_staging_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir)
+            metadata = self._create_repo_layout(repo_root)
+            staged_root = repo_root / ".build" / "ios-spike" / "libghostty"
+            self._write_ready_artifacts(
+                bootstrap.ArtifactPaths.from_root(staged_root),
+                metadata,
+                xcframework_target="universal",
+            )
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(TOOLS_DIR / "bootstrap_libghostty.py"),
+                    "--repo-root",
+                    str(repo_root),
+                    "--staged-build-root",
+                    str(staged_root),
+                    "--xcframework-target",
+                    "universal",
+                    "--check",
+                ],
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn(str(staged_root), result.stdout)
+
+    def test_main_rejects_unsafe_custom_staging_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir) / "repo"
+            self._create_repo_layout(repo_root)
+
+            for staged_root in (repo_root / ".build", repo_root.parent / "outside"):
+                with self.subTest(staged_root=staged_root):
+                    result = subprocess.run(
+                        [
+                            sys.executable,
+                            str(TOOLS_DIR / "bootstrap_libghostty.py"),
+                            "--repo-root",
+                            str(repo_root),
+                            "--staged-build-root",
+                            str(staged_root),
+                            "--check",
+                        ],
+                        capture_output=True,
+                        text=True,
+                    )
+
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn(
+                        "staging root must be a child of",
+                        result.stdout + result.stderr,
+                    )
+
     def test_public_header_patch_upgrades_old_config_load_signature(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             header = Path(tmpdir) / "ghostty.h"
@@ -1436,6 +1493,25 @@ pub fn init() void {
             bootstrap.refresh_swiftpm_manifest(paths)
 
             self.assertGreater(package_manifest.stat().st_mtime_ns, original_mtime)
+
+    def test_refresh_swiftpm_manifest_skips_custom_staging_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir)
+            self._create_repo_layout(repo_root)
+            package_manifest = repo_root / "Package.swift"
+            package_manifest.write_text("// package manifest\n")
+            paths = bootstrap.BootstrapPaths.from_repo_root(
+                repo_root,
+                xcframework_target="universal",
+                optimize="Debug",
+                staged_build_root=repo_root / ".build" / "ios-spike" / "libghostty",
+            )
+            original_mtime = package_manifest.stat().st_mtime_ns
+
+            time.sleep(0.01)
+            bootstrap.refresh_swiftpm_manifest(paths)
+
+            self.assertEqual(package_manifest.stat().st_mtime_ns, original_mtime)
 
     def test_artifact_state_reports_missing_bootstrap_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

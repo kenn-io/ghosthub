@@ -13,6 +13,8 @@ LIBGHOSTTY_GIT ?=
 LIBGHOSTTY_XCRUN ?=
 LIBGHOSTTY_XCFRAMEWORK_TARGET ?= aarch64
 LIBGHOSTTY_OPTIMIZE ?= Debug
+LIBGHOSTTY_STAGED_BUILD_ROOT ?=
+IOS_RENDERER_LIBGHOSTTY_ROOT ?= $(abspath .build/ios-spike/libghostty)
 DIST_ROOT ?= dist
 DEBUG_ROOT ?= $(DIST_ROOT)/debug
 RELEASE_ROOT ?= $(DIST_ROOT)/release
@@ -56,7 +58,7 @@ KWT_SOURCE_REVISION ?= unpinned
 endif
 SWIFT_TEST_FILTER ?=
 
-.PHONY: help bootstrap-kwt bootstrap-kwt-variants ensure-kwt ensure-kwt-variants bootstrap-libghostty bootstrap-libghostty-release check-libghostty check-libghostty-release test-libghostty-bootstrap test-terminal-fallback test-stage-release-app-bundles test-assemble-app-bundle test-essential-workflows test-ssh-authentication-live build swift-warning-check build-release debug-app release-app release-dmg release-appcast run-release-app run-app swift-test test-tmux-attach purge-test-tmux python-test test smoke-test docs-build docs-serve site-deploy reset-app-state install-hooks format format-check
+.PHONY: help bootstrap-kwt bootstrap-kwt-variants ensure-kwt ensure-kwt-variants bootstrap-libghostty bootstrap-ios-renderer-libghostty bootstrap-libghostty-release check-libghostty check-ios-renderer-libghostty check-libghostty-release test-libghostty-bootstrap test-terminal-fallback test-stage-release-app-bundles test-assemble-app-bundle test-essential-workflows test-ssh-authentication-live build swift-warning-check build-release debug-app release-app release-dmg release-appcast run-release-app run-app swift-test test-tmux-attach purge-test-tmux python-test test smoke-test docs-build docs-serve site-deploy reset-app-state install-hooks format format-check
 
 help:
 	@printf '%s\n' \
@@ -71,6 +73,10 @@ help:
 		'      Fetch the pinned Ghostty source, build libghostty, and stage the local artifacts.' \
 		'  make check-libghostty' \
 		'      Verify that the staged libghostty artifacts match the pinned Ghostty revision.' \
+		'  make bootstrap-ios-renderer-libghostty' \
+		'      Build and stage an isolated universal GhosttyKit XCFramework for the iOS renderer spike.' \
+		'  make check-ios-renderer-libghostty' \
+		'      Verify the isolated iOS renderer GhosttyKit artifacts.' \
 		'  make test-libghostty-bootstrap' \
 		'      Run the bootstrap Python tests via uv-managed pytest.' \
 		'  make test-terminal-fallback' \
@@ -127,6 +133,8 @@ help:
 		'  LIBGHOSTTY_XCRUN=/usr/bin/xcrun' \
 		'  LIBGHOSTTY_XCFRAMEWORK_TARGET=aarch64' \
 		'  LIBGHOSTTY_OPTIMIZE=ReleaseFast' \
+		'  LIBGHOSTTY_STAGED_BUILD_ROOT=/absolute/path/under/.build' \
+		'  IOS_RENDERER_LIBGHOSTTY_ROOT=$(IOS_RENDERER_LIBGHOSTTY_ROOT)' \
 		'  RELEASE_ROOT=dist/release' \
 		'  DEVELOPMENT_APP_VERSION=X.Y.Z' \
 		'  DEVELOPMENT_VERSION_DESCRIPTION=X.Y.Z-N-gHASH' \
@@ -206,6 +214,9 @@ bootstrap-libghostty:
 	if [[ -n "$(LIBGHOSTTY_XCFRAMEWORK_TARGET)" ]]; then \
 		cmd+=(--xcframework-target "$(LIBGHOSTTY_XCFRAMEWORK_TARGET)"); \
 	fi; \
+	if [[ -n "$(LIBGHOSTTY_STAGED_BUILD_ROOT)" ]]; then \
+		cmd+=(--staged-build-root "$(LIBGHOSTTY_STAGED_BUILD_ROOT)"); \
+	fi; \
 	if [[ -n "$(LIBGHOSTTY_QUIET_NOOP)" ]]; then \
 		cmd+=(--quiet-noop); \
 	else \
@@ -243,10 +254,23 @@ check-libghostty:
 	if [[ -n "$(LIBGHOSTTY_XCFRAMEWORK_TARGET)" ]]; then \
 		cmd+=(--xcframework-target "$(LIBGHOSTTY_XCFRAMEWORK_TARGET)"); \
 	fi; \
+	if [[ -n "$(LIBGHOSTTY_STAGED_BUILD_ROOT)" ]]; then \
+		cmd+=(--staged-build-root "$(LIBGHOSTTY_STAGED_BUILD_ROOT)"); \
+	fi; \
 	printf 'Running:'; \
 	printf ' %q' "$${cmd[@]}"; \
 	printf '\n'; \
 	"$${cmd[@]}"
+
+bootstrap-ios-renderer-libghostty:
+	@$(MAKE) --no-print-directory bootstrap-libghostty \
+		LIBGHOSTTY_XCFRAMEWORK_TARGET=universal \
+		LIBGHOSTTY_STAGED_BUILD_ROOT="$(IOS_RENDERER_LIBGHOSTTY_ROOT)"
+
+check-ios-renderer-libghostty:
+	@$(MAKE) --no-print-directory check-libghostty \
+		LIBGHOSTTY_XCFRAMEWORK_TARGET=universal \
+		LIBGHOSTTY_STAGED_BUILD_ROOT="$(IOS_RENDERER_LIBGHOSTTY_ROOT)"
 
 test-libghostty-bootstrap:
 	@$(UV) run --frozen --group dev pytest Tests/test_libghostty_bootstrap.py

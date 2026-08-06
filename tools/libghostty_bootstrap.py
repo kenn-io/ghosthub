@@ -66,6 +66,29 @@ class ArtifactPaths:
         )
 
 
+def resolve_staged_build_root(repo_root: Path, requested_root: Path | None) -> Path:
+    build_root = repo_root.resolve() / ".build"
+    if requested_root is None:
+        return build_root / "libghostty"
+
+    if requested_root.is_absolute():
+        resolved_root = requested_root.resolve()
+    else:
+        resolved_root = (repo_root / requested_root).resolve()
+
+    try:
+        relative_root = resolved_root.relative_to(build_root)
+    except ValueError as error:
+        raise BootstrapError(
+            f"libghostty staging root must be a child of {build_root}."
+        ) from error
+    if relative_root == Path("."):
+        raise BootstrapError(
+            f"libghostty staging root must be a child of {build_root}."
+        )
+    return resolved_root
+
+
 @dataclass(frozen=True)
 class BootstrapPaths:
     repo_root: Path
@@ -82,9 +105,13 @@ class BootstrapPaths:
         *,
         xcframework_target: str,
         optimize: str,
+        staged_build_root: Path | None = None,
     ) -> "BootstrapPaths":
         resolved_root = repo_root.resolve()
-        staged_build_root = resolved_root / ".build" / "libghostty"
+        resolved_staged_build_root = resolve_staged_build_root(
+            resolved_root,
+            staged_build_root,
+        )
         cached_build_root = (
             resolved_root / ".build" / "libghostty-variants" / f"{xcframework_target}-{optimize}"
         )
@@ -92,7 +119,7 @@ class BootstrapPaths:
             repo_root=resolved_root,
             package_manifest_path=resolved_root / "Package.swift",
             vendor_metadata_path=resolved_root / "Vendor" / "ghostty.version.json",
-            staged_artifacts=ArtifactPaths.from_root(staged_build_root),
+            staged_artifacts=ArtifactPaths.from_root(resolved_staged_build_root),
             cached_artifacts=ArtifactPaths.from_root(cached_build_root),
             source_checkout_root=cached_build_root / "source",
         )
@@ -1623,7 +1650,13 @@ def write_manifest(
     )
 
 
+def should_refresh_swiftpm_manifest(paths: BootstrapPaths) -> bool:
+    return paths.staged_artifacts.root == resolve_staged_build_root(paths.repo_root, None)
+
+
 def refresh_swiftpm_manifest(paths: BootstrapPaths) -> None:
+    if not should_refresh_swiftpm_manifest(paths):
+        return
     if not paths.package_manifest_path.exists():
         return
     paths.package_manifest_path.touch()
@@ -1698,6 +1731,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Path to the Ghosthub repository root.",
     )
     parser.add_argument(
+        "--staged-build-root",
+        type=Path,
+        help="Artifact staging root under the repository's .build directory.",
+    )
+    parser.add_argument(
         "--git",
         default="git",
         help="Path to the git executable used to fetch the pinned Ghostty source revision.",
@@ -1750,6 +1788,7 @@ def main(argv: list[str] | None = None) -> int:
         args.repo_root,
         xcframework_target=args.xcframework_target,
         optimize=args.optimize,
+        staged_build_root=args.staged_build_root,
     )
     metadata = VendorMetadata.load(paths.vendor_metadata_path)
 
