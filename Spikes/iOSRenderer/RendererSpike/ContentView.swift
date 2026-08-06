@@ -26,6 +26,13 @@ struct ContentView: View {
                 .background(.black)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
 
+            if !runtime.lastChildWrite.isEmpty {
+                Text("child_write: \(runtime.lastChildWriteDescription)")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
             Button("Reset Surface") {
                 surfaceBridge.reset()
             }

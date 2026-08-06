@@ -50,6 +50,7 @@ private final class RendererCallbackContext {
 @MainActor
 final class RendererRuntime: ObservableObject {
     @Published private(set) var status: RendererStatus = .idle
+    @Published private(set) var lastChildWrite: [UInt8] = []
 
     private static var didInitializeLibrary = false
 
@@ -62,6 +63,11 @@ final class RendererRuntime: ObservableObject {
 
     var isApplicationReady: Bool {
         handles.app != nil
+    }
+
+    var lastChildWriteDescription: String {
+        lastChildWrite.map { String(format: "%02X", $0) }
+            .joined(separator: " ")
     }
 
     func start(resourceRoot: URL? = Bundle.main.resourceURL) {
@@ -167,8 +173,13 @@ final class RendererRuntime: ObservableObject {
         )
     }
 
+    func recordChildWrite(_ data: Data) {
+        lastChildWrite = Array(data)
+    }
+
     func shutdown() {
         handles.shutdown()
+        lastChildWrite = []
         status = .idle
     }
 
@@ -233,7 +244,16 @@ private func rendererSpikeCloseSurface(
 ) {}
 
 private func rendererSpikeChildWrite(
-    _: UnsafeMutableRawPointer?,
-    _: UnsafePointer<CChar>?,
-    _: UInt
-) {}
+    _ userdata: UnsafeMutableRawPointer?,
+    _ bytes: UnsafePointer<CChar>?,
+    _ length: UInt
+) {
+    guard let userdata, let bytes, length > 0, length <= UInt(Int.max) else {
+        return
+    }
+    let data = Data(bytes: bytes, count: Int(length))
+    let context = Unmanaged<RendererSurfaceCallbackContext>
+        .fromOpaque(userdata)
+        .takeUnretainedValue()
+    context.receive(data)
+}

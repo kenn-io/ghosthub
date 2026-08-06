@@ -18,6 +18,8 @@
 		A00000000000000000000019 /* RendererSurfaceLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000000B /* RendererSurfaceLifecycleTests.swift */; };
 		A0000000000000000000001A /* RendererSurfaceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000000C /* RendererSurfaceView.swift */; };
 		A0000000000000000000001B /* ReferenceTranscript.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000000D /* ReferenceTranscript.swift */; };
+		A0000000000000000000001C /* IOSKeyboardMapperTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000000E /* IOSKeyboardMapperTests.swift */; };
+		A0000000000000000000001D /* IOSKeyboardMapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000000F /* IOSKeyboardMapper.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -44,6 +46,8 @@
 		A0000000000000000000000B /* RendererSurfaceLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RendererSurfaceLifecycleTests.swift; sourceTree = "<group>"; };
 		A0000000000000000000000C /* RendererSurfaceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RendererSurfaceView.swift; sourceTree = "<group>"; };
 		A0000000000000000000000D /* ReferenceTranscript.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReferenceTranscript.swift; sourceTree = "<group>"; };
+		A0000000000000000000000E /* IOSKeyboardMapperTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSKeyboardMapperTests.swift; sourceTree = "<group>"; };
+		A0000000000000000000000F /* IOSKeyboardMapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSKeyboardMapper.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -85,6 +89,7 @@
 				A0000000000000000000000A /* RendererRuntime.swift */,
 				A0000000000000000000000C /* RendererSurfaceView.swift */,
 				A0000000000000000000000D /* ReferenceTranscript.swift */,
+				A0000000000000000000000F /* IOSKeyboardMapper.swift */,
 			);
 			path = RendererSpike;
 			sourceTree = "<group>";
@@ -94,6 +99,7 @@
 			children = (
 				A00000000000000000000003 /* RendererRuntimeTests.swift */,
 				A0000000000000000000000B /* RendererSurfaceLifecycleTests.swift */,
+				A0000000000000000000000E /* IOSKeyboardMapperTests.swift */,
 			);
 			path = RendererSpikeTests;
 			sourceTree = "<group>";
@@ -222,6 +228,7 @@
 				A00000000000000000000018 /* RendererRuntime.swift in Sources */,
 				A0000000000000000000001A /* RendererSurfaceView.swift in Sources */,
 				A0000000000000000000001B /* ReferenceTranscript.swift in Sources */,
+				A0000000000000000000001D /* IOSKeyboardMapper.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -231,6 +238,7 @@
 			files = (
 				A00000000000000000000013 /* RendererRuntimeTests.swift in Sources */,
 				A00000000000000000000019 /* RendererSurfaceLifecycleTests.swift in Sources */,
+				A0000000000000000000001C /* IOSKeyboardMapperTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
