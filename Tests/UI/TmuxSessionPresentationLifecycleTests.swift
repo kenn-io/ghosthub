@@ -115,6 +115,25 @@ struct TmuxSessionPresentationLifecycleTests {
         )
     }
 
+    @Test("retrying resolved tmux recovery resumes the paused host")
+    func resolvedTmuxRecoveryRetryResumesPausedHost() {
+        let hostID = UUID()
+        let request = TmuxConnectionRecoveryRequest(
+            hostID: hostID,
+            message: "SSH authentication is required."
+        )
+        var router = TmuxConnectionRecoveryRequestRouter()
+        _ = router.take(request, whileReviewIsPresented: false)
+
+        #expect(
+            router.recoveryHostIDToResume(
+                reviewedHostID: hostID,
+                presentation: .inventoryIssue,
+                activeRequest: request
+            ) == hostID
+        )
+    }
+
     @Test("endpoint invalidation removes the active tmux presentation")
     func endpointInvalidationRemovesActivePresentation() {
         let hostID = UUID()

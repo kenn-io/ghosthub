@@ -204,6 +204,20 @@ struct TmuxConnectionRecoveryRequestRouter {
         reviewedRequestID = request.id
         return request
     }
+
+    func recoveryHostIDToResume(
+        reviewedHostID: UUID?,
+        presentation: SSHConnectionRecoveryPresentation,
+        activeRequest: TmuxConnectionRecoveryRequest?
+    ) -> UUID? {
+        guard presentation == .inventoryIssue,
+              let reviewedHostID,
+              let activeRequest,
+              activeRequest.id == reviewedRequestID,
+              activeRequest.hostID == reviewedHostID
+        else { return nil }
+        return reviewedHostID
+    }
 }
 
 public struct InteractionHandlers {

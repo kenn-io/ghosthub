@@ -240,7 +240,9 @@ than retried indefinitely. A clean detach does not start recovery.
 Transport failures continue retrying automatically, with no more than 30
 seconds between attempt starts. Authentication and host-key review failures
 pause automatic retry and open the existing native recovery flow. Successful
-recovery resumes the same supervisor. Dismissing it leaves an honest
+recovery resumes the same supervisor. If SSH is already reachable when that
+flow checks again, **Retry** resumes the supervisor as well as refreshing host
+inventory. Dismissing it leaves an honest
 **Connection needs attention** presentation with **Review Connection** when
 native review is available and **Host Settings** otherwise. A changed known-host
 identity still requires the explicit known-hosts remediation described by that

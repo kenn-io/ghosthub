@@ -555,8 +555,17 @@ public struct RootView: View {
     }
 
     private func retrySSHRecovery() {
+        let recoveryHostID =
+            tmuxRecoveryRequestRouter.recoveryHostIDToResume(
+                reviewedHostID: sshHostKeyReview.hostID,
+                presentation: sshHostKeyReview.presentation,
+                activeRequest: display.tmuxConnectionRecoveryRequest
+            )
         cancelSSHAuthenticationIfNeeded()
         sshHostKeyReview.dismiss()
+        if let recoveryHostID {
+            handlers.resumeTmuxReconnectAfterSSHRecovery?(recoveryHostID)
+        }
         handlers.refreshWorkspaceInventory?()
     }
 
