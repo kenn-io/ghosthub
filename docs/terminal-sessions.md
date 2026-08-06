@@ -242,7 +242,9 @@ seconds between attempt starts. Authentication and host-key review failures
 pause automatic retry and open the existing native recovery flow. Successful
 recovery resumes the same supervisor. If SSH is already reachable when that
 flow checks again, **Retry** resumes the supervisor as well as refreshing host
-inventory. Dismissing it leaves an honest
+inventory. Only the recovery flow opened for that active tmux request may
+resume it; authentication started from ordinary host inventory never reopens a
+session. Dismissing it leaves an honest
 **Connection needs attention** presentation with **Review Connection** when
 native review is available and **Host Settings** otherwise. A changed known-host
 identity still requires the explicit known-hosts remediation described by that

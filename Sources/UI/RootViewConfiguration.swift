@@ -207,13 +207,14 @@ struct TmuxConnectionRecoveryRequestRouter {
 
     func recoveryHostIDToResume(
         reviewedHostID: UUID?,
-        presentation: SSHConnectionRecoveryPresentation,
+        reviewRequestID: UUID?,
         activeRequest: TmuxConnectionRecoveryRequest?
     ) -> UUID? {
-        guard presentation == .inventoryIssue,
-              let reviewedHostID,
+        guard let reviewedHostID,
+              let reviewRequestID,
               let activeRequest,
-              activeRequest.id == reviewedRequestID,
+              reviewRequestID == reviewedRequestID,
+              activeRequest.id == reviewRequestID,
               activeRequest.hostID == reviewedHostID
         else { return nil }
         return reviewedHostID

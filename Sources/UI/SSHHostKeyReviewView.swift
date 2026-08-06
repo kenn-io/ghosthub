@@ -13,6 +13,7 @@ enum SSHConnectionRecoveryPresentation: Equatable {
 @MainActor
 final class WorkspaceSSHHostKeyReviewModel: ObservableObject {
     @Published private(set) var hostID: UUID?
+    @Published private(set) var tmuxRecoveryRequestID: UUID?
     @Published private(set) var hostName = ""
     @Published private(set) var confirmation: SSHHostKeyConfirmation?
     @Published private(set) var errorMessage: String?
@@ -35,11 +36,13 @@ final class WorkspaceSSHHostKeyReviewModel: ObservableObject {
     func review(
         hostID: UUID,
         hostName: String,
+        tmuxRecoveryRequestID: UUID? = nil,
         using load: () async -> SSHConnectionRecoveryResult
     ) async {
         let generation = UUID()
         self.generation = generation
         self.hostID = hostID
+        self.tmuxRecoveryRequestID = tmuxRecoveryRequestID
         self.hostName = hostName
         confirmation = nil
         errorMessage = nil
@@ -100,6 +103,7 @@ final class WorkspaceSSHHostKeyReviewModel: ObservableObject {
         guard !isTrusting else { return }
         generation = UUID()
         hostID = nil
+        tmuxRecoveryRequestID = nil
     }
 
     func authenticationSucceeded(onConnected: () -> Void = {}) {

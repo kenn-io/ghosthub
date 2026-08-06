@@ -512,7 +512,8 @@ public struct RootView: View {
 
     private func reviewSSHHostKey(
         _ hostID: UUID,
-        inventoryWarning: String
+        inventoryWarning: String,
+        tmuxRecoveryRequestID: UUID? = nil
     ) {
         guard let review = handlers.reviewSSHHostKey,
               let host = snapshot.host(id: hostID) else {
@@ -523,6 +524,7 @@ public struct RootView: View {
             await sshHostKeyReview.review(
                 hostID: hostID,
                 hostName: host.name,
+                tmuxRecoveryRequestID: tmuxRecoveryRequestID,
                 using: {
                     await review(hostID, inventoryWarning)
                 }
@@ -549,18 +551,22 @@ public struct RootView: View {
             else { return }
             reviewSSHHostKey(
                 request.hostID,
-                inventoryWarning: request.message
+                inventoryWarning: request.message,
+                tmuxRecoveryRequestID: request.id
             )
         }
     }
 
     private func retrySSHRecovery() {
         let recoveryHostID =
-            tmuxRecoveryRequestRouter.recoveryHostIDToResume(
-                reviewedHostID: sshHostKeyReview.hostID,
-                presentation: sshHostKeyReview.presentation,
-                activeRequest: display.tmuxConnectionRecoveryRequest
-            )
+            sshHostKeyReview.presentation == .inventoryIssue
+                ? tmuxRecoveryRequestRouter.recoveryHostIDToResume(
+                    reviewedHostID: sshHostKeyReview.hostID,
+                    reviewRequestID:
+                    sshHostKeyReview.tmuxRecoveryRequestID,
+                    activeRequest: display.tmuxConnectionRecoveryRequest
+                )
+                : nil
         cancelSSHAuthenticationIfNeeded()
         sshHostKeyReview.dismiss()
         if let recoveryHostID {
@@ -612,13 +618,27 @@ public struct RootView: View {
                     hostID,
                     inventoryWarning:
                     display.workspaceInventoryWarningsByHost[hostID]
-                        ?? "Remote inventory is unavailable."
+                        ?? "Remote inventory is unavailable.",
+                    tmuxRecoveryRequestID:
+                    sshHostKeyReview.tmuxRecoveryRequestID
                 )
                 return
             case .connected:
+                let recoveryHostID =
+                    tmuxRecoveryRequestRouter.recoveryHostIDToResume(
+                        reviewedHostID: hostID,
+                        reviewRequestID:
+                        sshHostKeyReview.tmuxRecoveryRequestID,
+                        activeRequest:
+                        display.tmuxConnectionRecoveryRequest
+                    )
                 handlers.cancelSSHAuthentication?(hostID)
                 sshHostKeyReview.authenticationSucceeded {
-                    handlers.resumeTmuxReconnectAfterSSHRecovery?(hostID)
+                    if let recoveryHostID {
+                        handlers.resumeTmuxReconnectAfterSSHRecovery?(
+                            recoveryHostID
+                        )
+                    }
                 }
                 handlers.refreshWorkspaceInventory?()
                 return

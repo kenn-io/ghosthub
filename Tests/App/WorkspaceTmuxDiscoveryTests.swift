@@ -2424,6 +2424,16 @@ struct WorkspaceTmuxDiscoveryTests {
         #expect(message.contains("known-hosts"))
         #expect(model.tmuxConnectionRecoveryRequest == nil)
 
+        model.resumeTmuxReconnectAfterSSHRecovery(
+            hostID: environment.remoteHost.id
+        )
+        #expect(
+            model.activeBorrowedTmuxRecoveryState == .needsAttention(
+                message: message,
+                canReviewConnection: false
+            )
+        )
+
         model.reconnectActiveTmuxSessionNow()
 
         await waitUntilMainActor {

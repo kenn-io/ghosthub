@@ -128,9 +128,28 @@ struct TmuxSessionPresentationLifecycleTests {
         #expect(
             router.recoveryHostIDToResume(
                 reviewedHostID: hostID,
-                presentation: .inventoryIssue,
+                reviewRequestID: request.id,
                 activeRequest: request
             ) == hostID
+        )
+    }
+
+    @Test("unrelated SSH authentication cannot resume tmux recovery")
+    func unrelatedSSHAuthenticationCannotResumeTmuxRecovery() {
+        let hostID = UUID()
+        let request = TmuxConnectionRecoveryRequest(
+            hostID: hostID,
+            message: "SSH authentication is required."
+        )
+        var router = TmuxConnectionRecoveryRequestRouter()
+        _ = router.take(request, whileReviewIsPresented: false)
+
+        #expect(
+            router.recoveryHostIDToResume(
+                reviewedHostID: hostID,
+                reviewRequestID: nil,
+                activeRequest: request
+            ) == nil
         )
     }
 

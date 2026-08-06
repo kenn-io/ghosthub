@@ -3918,7 +3918,10 @@ final class WorkspaceSceneModel: ObservableObject {
     }
 
     func resumeTmuxReconnectAfterSSHRecovery(hostID: UUID) {
-        guard var context = activeTmuxReconnectContext,
+        guard case .needsAttention(_, true) = activeBorrowedTmuxRecoveryState,
+              let request = tmuxConnectionRecoveryRequest,
+              request.hostID == hostID,
+              var context = activeTmuxReconnectContext,
               context.selection.hostID == hostID,
               activeBorrowedTmuxHandle?.id == context.handleID
         else { return }
