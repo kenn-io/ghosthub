@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-GHOSTHUB_BOOTSTRAP_VERSION = 23
+GHOSTHUB_BOOTSTRAP_VERSION = 24
 GHOSTHUB_GHOSTTY_BUNDLE_ID = "com.ghosthub"
 GHOSTHUB_TERM_PROGRAM = "ghosthub"
 
@@ -1941,6 +1941,9 @@ def artifact_state_message(
 
 FAT_ARCHIVE_NAME = "libghostty-fat.a"
 GHOSTTY_SENTINEL_SYMBOL = "_ghostty_app_new"
+MACHO_PLATFORM_MACOS = 1
+MACHO_PLATFORM_IOS = 2
+MACHO_PLATFORM_IOS_SIMULATOR = 7
 
 
 def archive_defines_symbol(archive: Path, symbol: str) -> bool:
@@ -1969,24 +1972,48 @@ def archive_archs(archive: Path) -> list[str]:
     return result.stdout.split()
 
 
+def archive_platforms(archive: Path) -> set[int]:
+    result = subprocess.run(
+        ["otool", "-l", str(archive)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return set()
+
+    platforms: set[int] = set()
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if len(fields) == 2 and fields[0] == "platform":
+            try:
+                platforms.add(int(fields[1]))
+            except ValueError:
+                continue
+    return platforms
+
+
 def component_archives(
     cache_root: Path,
     allowed_archs: list[str] | None = None,
+    allowed_platform: int | None = None,
 ) -> list[Path]:
     archives = sorted(
         path
         for path in cache_root.rglob("*.a")
         if path.name != FAT_ARCHIVE_NAME
     )
-    if allowed_archs is None:
-        return archives
-
-    allowed = set(allowed_archs)
-    return [
-        archive
-        for archive in archives
-        if (archs := set(archive_archs(archive))) and archs.issubset(allowed)
-    ]
+    selected: list[Path] = []
+    allowed = set(allowed_archs) if allowed_archs is not None else None
+    for archive in archives:
+        if allowed is not None:
+            archs = set(archive_archs(archive))
+            if not archs or not archs.issubset(allowed):
+                continue
+        if allowed_platform is not None:
+            if archive_platforms(archive) != {allowed_platform}:
+                continue
+        selected.append(archive)
+    return selected
 
 
 def xcframework_slice_archs(fat_path: Path) -> list[str]:
@@ -1999,6 +2026,17 @@ def xcframework_slice_archs(fat_path: Path) -> list[str]:
         return []
     arch_segment = name.split("-", 1)[1].split("-", 1)[0]
     return [arch for arch in arch_segment.split("_") if arch]
+
+
+def xcframework_slice_platform(fat_path: Path) -> int | None:
+    identifier = fat_path.parent.name
+    if identifier.startswith("macos-"):
+        return MACHO_PLATFORM_MACOS
+    if identifier.startswith("ios-") and identifier.endswith("-simulator"):
+        return MACHO_PLATFORM_IOS_SIMULATOR
+    if identifier.startswith("ios-"):
+        return MACHO_PLATFORM_IOS
+    return None
 
 
 def rebuild_fat_archive(fat_path: Path, components: list[Path]) -> None:
@@ -2038,9 +2076,11 @@ def repair_fat_archives(paths: BootstrapPaths) -> None:
     source_root = paths.source_checkout_root
     xcframework = source_root / "macos" / "GhosttyKit.xcframework"
     for fat_path in sorted(xcframework.rglob(FAT_ARCHIVE_NAME)):
+        platform = xcframework_slice_platform(fat_path)
         components = component_archives(
             source_root / ".zig-cache",
             allowed_archs=xcframework_slice_archs(fat_path),
+            allowed_platform=platform,
         )
         if not components:
             raise BootstrapError(
@@ -2052,6 +2092,11 @@ def repair_fat_archives(paths: BootstrapPaths) -> None:
             raise BootstrapError(
                 f"{fat_path} still lacks {GHOSTTY_SENTINEL_SYMBOL} after "
                 "realignment repair; the Ghostty build output is broken."
+            )
+        if platform is not None and archive_platforms(fat_path) != {platform}:
+            raise BootstrapError(
+                f"{fat_path} contains objects for the wrong Apple platform "
+                "after realignment repair."
             )
 
 

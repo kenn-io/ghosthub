@@ -1,0 +1,383 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A00000000000000000000011 /* RendererSpikeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000001 /* RendererSpikeApp.swift */; };
+		A00000000000000000000012 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000002 /* ContentView.swift */; };
+		A00000000000000000000013 /* RendererRuntimeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000003 /* RendererRuntimeTests.swift */; };
+		A00000000000000000000014 /* GhosttyKit.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = A00000000000000000000004 /* GhosttyKit.xcframework */; };
+		A00000000000000000000015 /* ghostty in Resources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000005 /* ghostty */; };
+		A00000000000000000000016 /* terminfo in Resources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000006 /* terminfo */; };
+		A00000000000000000000017 /* RendererStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000009 /* RendererStatus.swift */; };
+		A00000000000000000000018 /* RendererRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000000A /* RendererRuntime.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		B00000000000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = C00000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D00000000000000000000001;
+			remoteInfo = RendererSpike;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		A00000000000000000000001 /* RendererSpikeApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RendererSpikeApp.swift; sourceTree = "<group>"; };
+		A00000000000000000000002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		A00000000000000000000003 /* RendererRuntimeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RendererRuntimeTests.swift; sourceTree = "<group>"; };
+		A00000000000000000000004 /* GhosttyKit.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = GhosttyKit.xcframework; path = ../../.build/ios-spike/libghostty/GhosttyKit.xcframework; sourceTree = SOURCE_ROOT; };
+		A00000000000000000000005 /* ghostty */ = {isa = PBXFileReference; lastKnownFileType = folder; name = ghostty; path = ../../.build/ios-spike/libghostty/source/zig-out/share/ghostty; sourceTree = SOURCE_ROOT; };
+		A00000000000000000000006 /* terminfo */ = {isa = PBXFileReference; lastKnownFileType = folder; name = terminfo; path = ../../.build/ios-spike/libghostty/source/zig-out/share/terminfo; sourceTree = SOURCE_ROOT; };
+		A00000000000000000000007 /* RendererSpike.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = RendererSpike.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A00000000000000000000008 /* RendererSpikeTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = RendererSpikeTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A00000000000000000000009 /* RendererStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RendererStatus.swift; sourceTree = "<group>"; };
+		A0000000000000000000000A /* RendererRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RendererRuntime.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		E00000000000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A00000000000000000000014 /* GhosttyKit.xcframework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E00000000000000000000002 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		F00000000000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				F00000000000000000000002 /* RendererSpike */,
+				F00000000000000000000003 /* RendererSpikeTests */,
+				F00000000000000000000004 /* Frameworks */,
+				F00000000000000000000005 /* Resources */,
+				F00000000000000000000006 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		F00000000000000000000002 /* RendererSpike */ = {
+			isa = PBXGroup;
+			children = (
+				A00000000000000000000001 /* RendererSpikeApp.swift */,
+				A00000000000000000000002 /* ContentView.swift */,
+				A00000000000000000000009 /* RendererStatus.swift */,
+				A0000000000000000000000A /* RendererRuntime.swift */,
+			);
+			path = RendererSpike;
+			sourceTree = "<group>";
+		};
+		F00000000000000000000003 /* RendererSpikeTests */ = {
+			isa = PBXGroup;
+			children = (
+				A00000000000000000000003 /* RendererRuntimeTests.swift */,
+			);
+			path = RendererSpikeTests;
+			sourceTree = "<group>";
+		};
+		F00000000000000000000004 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				A00000000000000000000004 /* GhosttyKit.xcframework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		F00000000000000000000005 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				A00000000000000000000005 /* ghostty */,
+				A00000000000000000000006 /* terminfo */,
+			);
+			name = Resources;
+			sourceTree = "<group>";
+		};
+		F00000000000000000000006 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A00000000000000000000007 /* RendererSpike.app */,
+				A00000000000000000000008 /* RendererSpikeTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		D00000000000000000000001 /* RendererSpike */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = G00000000000000000000002 /* Build configuration list for PBXNativeTarget "RendererSpike" */;
+			buildPhases = (
+				H00000000000000000000001 /* Sources */,
+				E00000000000000000000001 /* Frameworks */,
+				I00000000000000000000001 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = RendererSpike;
+			productName = RendererSpike;
+			productReference = A00000000000000000000007 /* RendererSpike.app */;
+			productType = "com.apple.product-type.application";
+		};
+		D00000000000000000000002 /* RendererSpikeTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = G00000000000000000000003 /* Build configuration list for PBXNativeTarget "RendererSpikeTests" */;
+			buildPhases = (
+				H00000000000000000000002 /* Sources */,
+				E00000000000000000000002 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				B00000000000000000000002 /* PBXTargetDependency */,
+			);
+			name = RendererSpikeTests;
+			productName = RendererSpikeTests;
+			productReference = A00000000000000000000008 /* RendererSpikeTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		C00000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2660;
+				LastUpgradeCheck = 2660;
+				TargetAttributes = {
+					D00000000000000000000001 = {
+						CreatedOnToolsVersion = 26.0;
+					};
+					D00000000000000000000002 = {
+						CreatedOnToolsVersion = 26.0;
+						TestTargetID = D00000000000000000000001;
+					};
+				};
+			};
+			buildConfigurationList = G00000000000000000000001 /* Build configuration list for PBXProject "RendererSpike" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = F00000000000000000000001;
+			productRefGroup = F00000000000000000000006 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				D00000000000000000000001 /* RendererSpike */,
+				D00000000000000000000002 /* RendererSpikeTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		I00000000000000000000001 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A00000000000000000000015 /* ghostty in Resources */,
+				A00000000000000000000016 /* terminfo in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		H00000000000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A00000000000000000000011 /* RendererSpikeApp.swift in Sources */,
+				A00000000000000000000012 /* ContentView.swift in Sources */,
+				A00000000000000000000017 /* RendererStatus.swift in Sources */,
+				A00000000000000000000018 /* RendererRuntime.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		H00000000000000000000002 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A00000000000000000000013 /* RendererRuntimeTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		B00000000000000000000002 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = D00000000000000000000001 /* RendererSpike */;
+			targetProxy = B00000000000000000000001 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		J00000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		J00000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		J00000000000000000000003 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Renderer Spike";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+				MARKETING_VERSION = 0.1;
+				OTHER_LDFLAGS = "$(inherited) -lc++";
+				PRODUCT_BUNDLE_IDENTIFIER = io.kenn.RendererSpike;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = 2;
+			};
+			name = Debug;
+		};
+		J00000000000000000000004 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Renderer Spike";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+				MARKETING_VERSION = 0.1;
+				OTHER_LDFLAGS = "$(inherited) -lc++";
+				PRODUCT_BUNDLE_IDENTIFIER = io.kenn.RendererSpike;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = 2;
+			};
+			name = Release;
+		};
+		J00000000000000000000005 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				PRODUCT_BUNDLE_IDENTIFIER = io.kenn.RendererSpikeTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				TARGETED_DEVICE_FAMILY = 2;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/RendererSpike.app/RendererSpike";
+			};
+			name = Debug;
+		};
+		J00000000000000000000006 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				PRODUCT_BUNDLE_IDENTIFIER = io.kenn.RendererSpikeTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				TARGETED_DEVICE_FAMILY = 2;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/RendererSpike.app/RendererSpike";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		G00000000000000000000001 /* Build configuration list for PBXProject "RendererSpike" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				J00000000000000000000001 /* Debug */,
+				J00000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		G00000000000000000000002 /* Build configuration list for PBXNativeTarget "RendererSpike" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				J00000000000000000000003 /* Debug */,
+				J00000000000000000000004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		G00000000000000000000003 /* Build configuration list for PBXNativeTarget "RendererSpikeTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				J00000000000000000000005 /* Debug */,
+				J00000000000000000000006 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = C00000000000000000000001 /* Project object */;
+}

@@ -453,6 +453,56 @@ void ghostty_surface_complete_clipboard_request(ghostty_surface_t,
             names = [p.name for p in found]
             self.assertEqual(names, ["libdep.a", "libghostty.a"])
 
+    def test_component_archives_selects_the_xcframework_slice_platform(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_root = Path(tmpdir) / ".zig-cache"
+            macos = cache_root / "macos" / "libdependency.a"
+            ios = cache_root / "ios" / "libdependency.a"
+            simulator = cache_root / "simulator" / "libdependency.a"
+            for archive in (macos, ios, simulator):
+                archive.parent.mkdir(parents=True, exist_ok=True)
+                archive.write_bytes(b"!<arch>\n")
+
+            platforms = {
+                macos: {bootstrap.MACHO_PLATFORM_MACOS},
+                ios: {bootstrap.MACHO_PLATFORM_IOS},
+                simulator: {bootstrap.MACHO_PLATFORM_IOS_SIMULATOR},
+            }
+            with (
+                mock.patch.object(
+                    bootstrap,
+                    "archive_archs",
+                    return_value=["arm64"],
+                ),
+                mock.patch.object(
+                    bootstrap,
+                    "archive_platforms",
+                    side_effect=lambda archive: platforms[archive],
+                ),
+            ):
+                found = bootstrap.component_archives(
+                    cache_root,
+                    allowed_archs=["arm64"],
+                    allowed_platform=bootstrap.MACHO_PLATFORM_IOS_SIMULATOR,
+                )
+
+            self.assertEqual(found, [simulator])
+
+    def test_xcframework_slice_platform_matches_apple_library_identifier(self) -> None:
+        slice_platforms = {
+            "macos-arm64_x86_64": bootstrap.MACHO_PLATFORM_MACOS,
+            "ios-arm64": bootstrap.MACHO_PLATFORM_IOS,
+            "ios-arm64-simulator": bootstrap.MACHO_PLATFORM_IOS_SIMULATOR,
+        }
+
+        for identifier, expected in slice_platforms.items():
+            with self.subTest(identifier=identifier):
+                fat_path = Path(identifier) / bootstrap.FAT_ARCHIVE_NAME
+                self.assertEqual(
+                    bootstrap.xcframework_slice_platform(fat_path),
+                    expected,
+                )
+
     def test_clipboard_write_patch_marks_both_osc52_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             surface = Path(tmpdir) / "Surface.zig"
