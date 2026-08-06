@@ -22,6 +22,7 @@ Vendor/ghostty/
 # Local test and task state
 test-results/
 .kata.local.toml
+.worktrees/
 
 # roborev snapshots
 /.roborev/
