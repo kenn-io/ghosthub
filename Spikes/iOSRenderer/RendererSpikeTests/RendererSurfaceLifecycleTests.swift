@@ -10,7 +10,10 @@ struct RendererSurfaceLifecycleTests {
     func liveInputLoopback() async throws {
         let runtime = RendererRuntime()
         runtime.start()
-        let surface = RendererSurfaceView(runtime: runtime)
+        let surface = RendererSurfaceView(
+            runtime: runtime,
+            bridge: RendererSurfaceBridge()
+        )
         surface.ensureSurface()
 
         surface.send(.text("loopback"))
@@ -82,7 +85,10 @@ struct RendererSurfaceLifecycleTests {
         runtime.start()
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 1024, height: 768))
         let viewController = UIViewController()
-        let surface = RendererSurfaceView(runtime: runtime)
+        let surface = RendererSurfaceView(
+            runtime: runtime,
+            bridge: RendererSurfaceBridge()
+        )
         viewController.view = surface
         window.rootViewController = viewController
         window.makeKeyAndVisible()
@@ -140,7 +146,10 @@ struct RendererSurfaceLifecycleTests {
     func runtimeShutdownBeforeViewTeardown() {
         let runtime = RendererRuntime()
         runtime.start()
-        let surface = RendererSurfaceView(runtime: runtime)
+        let surface = RendererSurfaceView(
+            runtime: runtime,
+            bridge: RendererSurfaceBridge()
+        )
         surface.ensureSurface()
 
         runtime.shutdown()

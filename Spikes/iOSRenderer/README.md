@@ -1,8 +1,10 @@
-# iPad renderer spike
+# iPad renderer and remote tmux spike
 
-This standalone iPadOS 17+ app answers one question: can Ghosthub's pinned
-libghostty parse, render, encode input, and run without owning a subprocess or
-PTY? It deliberately excludes SSH, tmux, kwt, persistence, and production
+This standalone iPadOS 17+ app first proved that Ghosthub's pinned libghostty
+can parse, render, encode input, and run without owning a subprocess or PTY. It
+now spikes a second boundary: attaching that external-I/O surface to one exact,
+existing remote tmux session through an in-process SSH client. It deliberately
+excludes kwt, persistence, session creation or destruction, and production
 Ghosthub navigation.
 
 The spike stages its own universal GhosttyKit artifact below
@@ -38,6 +40,10 @@ make python-test
 swift test
 make build
 ```
+
+SwiftNIO SSH and SwiftNIO are resolved only by the standalone Xcode project;
+their exact transitive revisions are recorded beside the project in
+`project.xcworkspace/xcshareddata/swiftpm/Package.resolved`.
 
 ## Launch in Simulator
 
@@ -86,6 +92,35 @@ Surface** several times. The transcript should remain rendered and responsive.
 Initialization errors appear with the exact failed stage and message above the
 surface.
 
+## Attach to a remote tmux session
+
+The transport spike currently requires a POSIX SSH host with password
+authentication enabled and an already-running tmux session. Nothing entered in
+the connection form is persisted. The SSH password stays in process memory and
+is discarded when the app exits.
+
+Enter the host, port, username, password, and exact tmux session name. For
+**Host key**, paste a trusted Ed25519 or ECDSA OpenSSH public-key line. A line
+copied from an existing, independently trusted `known_hosts` file is accepted,
+including its leading hostname. For example, inspect an existing entry on the
+Mac with:
+
+```sh
+ssh-keygen -F host.example.com -f ~/.ssh/known_hosts
+```
+
+For a non-default port, look up `[host.example.com]:2222`. Do not establish
+trust from an unverified `ssh-keyscan` result: the spike intentionally has no
+accept-any-host-key path.
+
+Press **Connect** to request an `xterm-256color` PTY and execute an exact-target
+`tmux attach-session -E` command through the account login shell. Keyboard bytes
+then flow from libghostty to SSH, while SSH stdout and stderr flow back into the
+surface. Grid changes generate SSH window-change requests. **Disconnect** closes
+only the SSH presentation; it does not kill the tmux session. Once a connection
+has reached the attached state, an unexpected stream closure retries after two
+seconds using the in-memory configuration.
+
 ## Result
 
 The 2026-08-05 spike is positive for the renderer/input substrate. On an iPad
@@ -105,7 +140,9 @@ backend and a Darwin-wide libxev Mach-port completion guard. Both are applied
 hermetically to Ghosthub's revision-pinned source during bootstrap, while the
 existing macOS backend remains the default.
 
-This establishes technical viability, not a product architecture. A real iPad
-Ghosthub would still need transport, remote lifecycle, credentials and host
-trust UX, scene/navigation design, background/reconnect behavior, packaging,
-and device testing.
+This establishes renderer technical viability, not a product architecture.
+The in-process SSH/tmux path builds and has focused configuration tests, but its
+2026-08-06 transport result remains pending a live remote-session run. A real
+iPad Ghosthub would still need durable Keychain-backed credentials, first-class
+host trust UX, host/session discovery, remote lifecycle, scene/navigation
+design, background behavior, packaging, and device testing.

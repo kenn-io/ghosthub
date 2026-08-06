@@ -45,9 +45,27 @@ final class SurfaceHandleOwner: @unchecked Sendable {
 @MainActor
 final class RendererSurfaceBridge: ObservableObject {
     private weak var view: RendererSurfaceView?
+    private var inputHandler: ((Data) -> Void)?
+    private var resizeHandler: ((TerminalGeometry) -> Void)?
 
     func connect(_ view: RendererSurfaceView) {
         self.view = view
+    }
+
+    func configure(
+        inputHandler: @escaping (Data) -> Void,
+        resizeHandler: @escaping (TerminalGeometry) -> Void
+    ) {
+        self.inputHandler = inputHandler
+        self.resizeHandler = resizeHandler
+    }
+
+    func inject(_ data: Data) {
+        view?.injectOutput(data)
+    }
+
+    func clearForRemoteSession() {
+        inject(Data("\u{1B}c\u{1B}[2J\u{1B}[H".utf8))
     }
 
     func reset() {
@@ -57,19 +75,31 @@ final class RendererSurfaceBridge: ObservableObject {
     func destroy() {
         view?.destroySurface()
     }
+
+    fileprivate func forwardInput(_ data: Data) -> Bool {
+        guard let inputHandler else { return false }
+        inputHandler(data)
+        return true
+    }
+
+    fileprivate func reportResize(_ geometry: TerminalGeometry) {
+        resizeHandler?(geometry)
+    }
 }
 
 @MainActor
 final class RendererSurfaceView: UIView, UIKeyInput {
     private let runtime: RendererRuntime
+    private let bridge: RendererSurfaceBridge
     private let surface: SurfaceHandleOwner
     private var callbackContext: RendererSurfaceCallbackContext?
     private var rendererLayer: CALayer?
     private var renderObservationTask: Task<Void, Never>?
     private var pressTracker = IOSPressTracker()
 
-    init(runtime: RendererRuntime) {
+    init(runtime: RendererRuntime, bridge: RendererSurfaceBridge) {
         self.runtime = runtime
+        self.bridge = bridge
         surface = SurfaceHandleOwner(destroy: runtime.destroySurface)
         super.init(frame: CGRect(x: 0, y: 0, width: 800, height: 600))
         backgroundColor = .black
@@ -232,6 +262,12 @@ final class RendererSurfaceView: UIView, UIKeyInput {
               runtime.ownsSurface(handle)
         else { return }
         runtime.recordChildWrite(data)
+        guard !bridge.forwardInput(data) else { return }
+        injectOutput(data)
+    }
+
+    func injectOutput(_ data: Data) {
+        guard let handle = surface.handle, runtime.ownsSurface(handle) else { return }
         data.withUnsafeBytes { buffer in
             guard let baseAddress = buffer.baseAddress else { return }
             ghostty_surface_inject_output(
@@ -316,6 +352,15 @@ final class RendererSurfaceView: UIView, UIKeyInput {
             UInt32(max(1, (bounds.width * scale).rounded())),
             UInt32(max(1, (bounds.height * scale).rounded()))
         )
+        let size = ghostty_surface_size(handle)
+        bridge.reportResize(
+            TerminalGeometry(
+                columns: Int(size.columns),
+                rows: Int(size.rows),
+                pixelWidth: Int(size.width_px),
+                pixelHeight: Int(size.height_px)
+            )
+        )
     }
 
     private func syncSurfaceFocus() {
@@ -388,7 +433,7 @@ struct RendererSurfaceHost: UIViewRepresentable {
     let bridge: RendererSurfaceBridge
 
     func makeUIView(context _: Context) -> RendererSurfaceView {
-        let view = RendererSurfaceView(runtime: runtime)
+        let view = RendererSurfaceView(runtime: runtime, bridge: bridge)
         bridge.connect(view)
         view.ensureSurface()
         return view

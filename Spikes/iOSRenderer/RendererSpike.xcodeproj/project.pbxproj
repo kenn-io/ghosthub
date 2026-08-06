@@ -20,6 +20,12 @@
 		A0000000000000000000001B /* ReferenceTranscript.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000000D /* ReferenceTranscript.swift */; };
 		A0000000000000000000001C /* IOSKeyboardMapperTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000000E /* IOSKeyboardMapperTests.swift */; };
 		A0000000000000000000001D /* IOSKeyboardMapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000000F /* IOSKeyboardMapper.swift */; };
+		A0000000000000000000001E /* RemoteTmuxConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = N00000000000000000000001 /* RemoteTmuxConfiguration.swift */; };
+		A0000000000000000000001F /* RemoteTmuxTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = N00000000000000000000002 /* RemoteTmuxTransport.swift */; };
+		A00000000000000000000020 /* RemoteTmuxConfigurationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = N00000000000000000000003 /* RemoteTmuxConfigurationTests.swift */; };
+		A00000000000000000000021 /* NIOSSH in Frameworks */ = {isa = PBXBuildFile; productRef = M00000000000000000000001 /* NIOSSH */; };
+		A00000000000000000000022 /* NIOCore in Frameworks */ = {isa = PBXBuildFile; productRef = M00000000000000000000002 /* NIOCore */; };
+		A00000000000000000000023 /* NIOPosix in Frameworks */ = {isa = PBXBuildFile; productRef = M00000000000000000000003 /* NIOPosix */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -48,6 +54,9 @@
 		A0000000000000000000000D /* ReferenceTranscript.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReferenceTranscript.swift; sourceTree = "<group>"; };
 		A0000000000000000000000E /* IOSKeyboardMapperTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSKeyboardMapperTests.swift; sourceTree = "<group>"; };
 		A0000000000000000000000F /* IOSKeyboardMapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSKeyboardMapper.swift; sourceTree = "<group>"; };
+		N00000000000000000000001 /* RemoteTmuxConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteTmuxConfiguration.swift; sourceTree = "<group>"; };
+		N00000000000000000000002 /* RemoteTmuxTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteTmuxTransport.swift; sourceTree = "<group>"; };
+		N00000000000000000000003 /* RemoteTmuxConfigurationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteTmuxConfigurationTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -56,6 +65,9 @@
 			buildActionMask = 2147483647;
 			files = (
 				A00000000000000000000014 /* GhosttyKit.xcframework in Frameworks */,
+				A00000000000000000000021 /* NIOSSH in Frameworks */,
+				A00000000000000000000022 /* NIOCore in Frameworks */,
+				A00000000000000000000023 /* NIOPosix in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -90,6 +102,8 @@
 				A0000000000000000000000C /* RendererSurfaceView.swift */,
 				A0000000000000000000000D /* ReferenceTranscript.swift */,
 				A0000000000000000000000F /* IOSKeyboardMapper.swift */,
+				N00000000000000000000001 /* RemoteTmuxConfiguration.swift */,
+				N00000000000000000000002 /* RemoteTmuxTransport.swift */,
 			);
 			path = RendererSpike;
 			sourceTree = "<group>";
@@ -100,6 +114,7 @@
 				A00000000000000000000003 /* RendererRuntimeTests.swift */,
 				A0000000000000000000000B /* RendererSurfaceLifecycleTests.swift */,
 				A0000000000000000000000E /* IOSKeyboardMapperTests.swift */,
+				N00000000000000000000003 /* RemoteTmuxConfigurationTests.swift */,
 			);
 			path = RendererSpikeTests;
 			sourceTree = "<group>";
@@ -147,6 +162,11 @@
 			);
 			name = RendererSpike;
 			productName = RendererSpike;
+			packageProductDependencies = (
+				M00000000000000000000001 /* NIOSSH */,
+				M00000000000000000000002 /* NIOCore */,
+				M00000000000000000000003 /* NIOPosix */,
+			);
 			productReference = A00000000000000000000007 /* RendererSpike.app */;
 			productType = "com.apple.product-type.application";
 		};
@@ -195,6 +215,10 @@
 				Base,
 			);
 			mainGroup = F00000000000000000000001;
+			packageReferences = (
+				K00000000000000000000001 /* XCRemoteSwiftPackageReference "swift-nio-ssh" */,
+				K00000000000000000000002 /* XCRemoteSwiftPackageReference "swift-nio" */,
+			);
 			productRefGroup = F00000000000000000000006 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -229,6 +253,8 @@
 				A0000000000000000000001A /* RendererSurfaceView.swift in Sources */,
 				A0000000000000000000001B /* ReferenceTranscript.swift in Sources */,
 				A0000000000000000000001D /* IOSKeyboardMapper.swift in Sources */,
+				A0000000000000000000001E /* RemoteTmuxConfiguration.swift in Sources */,
+				A0000000000000000000001F /* RemoteTmuxTransport.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -239,6 +265,7 @@
 				A00000000000000000000013 /* RendererRuntimeTests.swift in Sources */,
 				A00000000000000000000019 /* RendererSurfaceLifecycleTests.swift in Sources */,
 				A0000000000000000000001C /* IOSKeyboardMapperTests.swift in Sources */,
+				A00000000000000000000020 /* RemoteTmuxConfigurationTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -297,6 +324,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "Renderer Spike";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Connect to SSH hosts you configure for the Ghosthub iPad transport spike.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -322,6 +350,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "Renderer Spike";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Connect to SSH hosts you configure for the Ghosthub iPad transport spike.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -400,6 +429,43 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		K00000000000000000000001 /* XCRemoteSwiftPackageReference "swift-nio-ssh" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/apple/swift-nio-ssh.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.15.0;
+			};
+		};
+		K00000000000000000000002 /* XCRemoteSwiftPackageReference "swift-nio" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/apple/swift-nio.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.81.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		M00000000000000000000001 /* NIOSSH */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = K00000000000000000000001 /* XCRemoteSwiftPackageReference "swift-nio-ssh" */;
+			productName = NIOSSH;
+		};
+		M00000000000000000000002 /* NIOCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = K00000000000000000000002 /* XCRemoteSwiftPackageReference "swift-nio" */;
+			productName = NIOCore;
+		};
+		M00000000000000000000003 /* NIOPosix */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = K00000000000000000000002 /* XCRemoteSwiftPackageReference "swift-nio" */;
+			productName = NIOPosix;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = C00000000000000000000001 /* Project object */;
 }
