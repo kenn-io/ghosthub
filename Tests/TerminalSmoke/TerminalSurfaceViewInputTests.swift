@@ -392,7 +392,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
                 activeTmuxSession: activeTmuxSession
             ),
             content: ContentBuilders(
-                tmuxSessionContentBuilder: { _, _, _ in
+                tmuxSessionContentBuilder: { _, _, _, _ in
                     tmuxContentBuilder()
                 }
             ),
@@ -1569,7 +1569,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
                         activeTmuxSession: model.activeTmuxSession
                     ),
                     content: ContentBuilders(
-                        tmuxSessionContentBuilder: { _, sessionName, _ in
+                        tmuxSessionContentBuilder: { _, sessionName, _, _ in
                             guard let surfaceView =
                                 surfacesBySession[sessionName]
                             else { return nil }

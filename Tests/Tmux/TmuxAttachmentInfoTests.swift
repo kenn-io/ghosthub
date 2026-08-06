@@ -478,7 +478,7 @@ struct TmuxAttachmentInfoTests {
         ))
     }
 
-    @Test("remote attachment adds keepalives and transport-only retry")
+    @Test("remote attachment adds keepalives to one SSH attempt")
     func remoteAttachCommand() {
         let info = TmuxAttachmentInfo(
             sessionName: "docbank",
@@ -497,10 +497,9 @@ struct TmuxAttachmentInfoTests {
         #expect(command.contains("'ServerAliveInterval=15'"))
         #expect(command.contains("'ServerAliveCountMax=3'"))
         #expect(command.contains("'TCPKeepAlive=yes'"))
-        #expect(command.contains("'PermitLocalCommand=yes'"))
-        #expect(command.contains("GHOSTHUB_SSH_CONNECTION_MARKER"))
-        #expect(command.contains("-O"))
-        #expect(command.contains("check"))
+        #expect(!command.contains("'PermitLocalCommand=yes'"))
+        #expect(!command.contains("GHOSTHUB_SSH_CONNECTION_MARKER"))
+        #expect(!command.contains("reconnecting in"))
         #expect(command.contains("'wesm@build-box'"))
         #expect(command.contains("'attach-session'"))
         #expect(command.contains("'-E'"))
@@ -590,7 +589,7 @@ struct TmuxAttachmentInfoTests {
         #expect(!script.contains("‘"))
     }
 
-    @Test("Windows worktrees open through kwt before psmux reconnect")
+    @Test("Windows worktrees run one kwt establishment attempt")
     func windowsRemoteWorkspaceAttachCommand() throws {
         let command = TmuxAttachmentInfo(
             sessionName: "release work",
@@ -608,41 +607,22 @@ struct TmuxAttachmentInfoTests {
         )
 
         #expect(command.contains("ghosthub-ssh-kwt-attach"))
-        #expect(command.contains("ghosthub-ssh-kwt-probe"))
+        #expect(!command.contains("ghosthub-ssh-kwt-probe"))
         let decoded = try Self.decodedPowerShellScripts(from: command)
-        let scripts = try #require(decoded.count == 3 ? decoded : nil)
-        #expect(scripts[0].contains(
+        let script = try #require(decoded.count == 1 ? decoded[0] : nil)
+        #expect(script.contains(
             powerShellEncodedArgument(
                 #".ghosthub\helpers\kwt\0123456789012345678901234567890123456789\kwt.exe"#
             )
         ))
-        #expect(!scripts[0].contains("Get-Command kwt.exe"))
-        #expect(scripts[0].contains(
+        #expect(!script.contains("Get-Command kwt.exe"))
+        #expect(script.contains(
             "& $ghosthubKwt 'open' "
                 + powerShellEncodedArgument(#"C:\code\release work"#)
         ))
-        #expect(scripts[1].contains(
-            "& " + [
-                #"C:\Program Files\psmux\tmux.exe"#,
-                "has-session",
-                "-t",
-                "=release work",
-            ]
-            .map(powerShellEncodedArgument)
-            .joined(separator: " ")
-        ))
-        #expect(scripts[2].contains(
-            "& " + [
-                #"C:\Program Files\psmux\tmux.exe"#,
-                "attach-session",
-                "-E",
-                "-t",
-                "=release work",
-            ]
-            .map(powerShellEncodedArgument)
-            .joined(separator: " ")
-        ))
-        #expect(!scripts.joined().contains("exec /bin/sh"))
+        #expect(!script.contains("has-session"))
+        #expect(!script.contains("attach-session"))
+        #expect(!script.contains("exec /bin/sh"))
     }
 
     @Test("isolated remote attachment targets the returned tmux socket")
@@ -683,6 +663,62 @@ struct TmuxAttachmentInfoTests {
         if let kwtPosition, let stylePosition {
             #expect(kwtPosition < stylePosition)
         }
+    }
+
+    @Test("confirmed protected POSIX session reattaches through tmux only")
+    func protectedPOSIXAttachOnlyCommand() {
+        let command = TmuxAttachmentInfo(
+            sessionName: "pr-32",
+            host: .ssh(SSHHostInfo(
+                user: "wesm", hostname: "build-box", port: nil
+            )),
+            socketName: "kwt-pr-0123456789abcdef",
+            protectedWorkspacePath: "/worktrees/pr-32",
+            launchMode: .attachOnly
+        ).attachCommand(
+            tmuxPath: "/usr/bin/tmux",
+            remoteKwtCommandPrelude:
+            "ghosthub_kwt_path=\"$HOME/.ghosthub/kwt\"; "
+        )
+
+        #expect(command.contains("kwt-pr-0123456789abcdef"))
+        #expect(command.contains("attach-session"))
+        #expect(command.contains("=pr-32"))
+        #expect(!command.contains("ghosthub_kwt_path"))
+        #expect(!command.contains("/worktrees/pr-32"))
+    }
+
+    @Test("confirmed protected Windows session reattaches through psmux only")
+    func protectedWindowsAttachOnlyCommand() throws {
+        let command = TmuxAttachmentInfo(
+            sessionName: "pr-32",
+            host: .ssh(SSHHostInfo(
+                user: "wesm",
+                hostname: "arm-builder",
+                port: nil,
+                platform: .windows
+            )),
+            socketName: "kwt-pr-0123456789abcdef",
+            protectedWorkspacePath: #"C:\worktrees\pr-32"#,
+            launchMode: .attachOnly
+        ).attachCommand(
+            tmuxPath: #"C:\Tools\psmux\tmux.exe"#,
+            windowsKwtRelativePath: #"helpers\kwt.exe"#
+        )
+        let script = try Self.decodedPowerShellScript(from: command)
+
+        for argument in [
+            "-L",
+            "kwt-pr-0123456789abcdef",
+            "attach-session",
+            "-E",
+            "-t",
+            "=pr-32",
+        ] {
+            #expect(script.contains(powerShellEncodedArgument(argument)))
+        }
+        #expect(!script.contains("ghosthubKwt"))
+        #expect(!script.contains(#"C:\worktrees\pr-32"#))
     }
 
     @Test("normal SSH arguments preserve OpenSSH connection sharing")
@@ -746,8 +782,8 @@ struct TmuxAttachmentInfoTests {
         )
     }
 
-    @Test("remote creation presents before its reconnect loop")
-    func remoteCreationPresentsBeforeReconnectLoop() {
+    @Test("remote creation presents before its attachment attempt")
+    func remoteCreationPresentsBeforeAttachment() {
         let info = TmuxAttachmentInfo(
             sessionName: "release-work",
             host: .ssh(SSHHostInfo(
@@ -774,26 +810,20 @@ struct TmuxAttachmentInfoTests {
         #expect(
             command.components(separatedBy: "new-session").count == 2
         )
-        #expect(
-            command.components(
-                separatedBy: "SSH disconnected; reconnecting"
-            ).count == 2
-        )
+        #expect(!command.contains("SSH disconnected; reconnecting"))
         let presentationPosition = command.range(
             of: "while IFS= read -r ghosthub_window"
         )?.lowerBound
-        let reconnectPosition = command.range(
-            of: "SSH disconnected; reconnecting"
-        )?.lowerBound
+        let attachPosition = command.range(of: "attach-session")?.lowerBound
         #expect(presentationPosition != nil)
-        #expect(reconnectPosition != nil)
+        #expect(attachPosition != nil)
         #expect(
             command.components(
                 separatedBy: "while IFS= read -r ghosthub_window"
             ).count - 1 == 1
         )
-        if let presentationPosition, let reconnectPosition {
-            #expect(presentationPosition < reconnectPosition)
+        if let presentationPosition, let attachPosition {
+            #expect(presentationPosition < attachPosition)
         }
         // The escape depth of "$?" varies with the surrounding quoting
         // layers, so match any depth rather than a hardcoded count.
@@ -883,12 +913,12 @@ struct TmuxAttachmentInfoTests {
         #expect(command.contains("'-tt'"))
         #expect(command.contains("/srv/widget feature"))
         #expect(!command.contains("--start-session"))
-        #expect(command.contains("ghosthub-ssh-kwt-probe"))
-        #expect(command.contains("has-session"))
+        #expect(!command.contains("ghosthub-ssh-kwt-probe"))
+        #expect(!command.contains("has-session"))
         #expect(
             command.components(
                 separatedBy: "${SHELL:-/bin/sh}"
-            ).count - 1 == 4
+            ).count - 1 == 2
         )
     }
 
@@ -987,6 +1017,7 @@ struct TmuxAttachmentInfoTests {
         )
         defer { try? FileManager.default.removeItem(at: directory) }
         let marker = directory.appendingPathComponent("account-shell-ready")
+        let status = directory.appendingPathComponent("ssh-status")
         let shell = directory.appendingPathComponent("account-shell")
         try """
         #!/bin/sh
@@ -1011,7 +1042,8 @@ struct TmuxAttachmentInfoTests {
             ))
         ).attachCommand(
             tmuxPath: "/usr/bin/true",
-            sshConnectionArguments: ["-V"]
+            sshConnectionArguments: ["-V"],
+            remoteExitStatusPath: status.path
         )
         let process = Process()
         let output = Pipe()
@@ -1039,119 +1071,86 @@ struct TmuxAttachmentInfoTests {
             Comment(rawValue: text)
         )
         #expect(FileManager.default.fileExists(atPath: marker.path))
+        #expect(try String(contentsOf: status, encoding: .utf8) == "0\n")
     }
 
-    @Test("remote worktree switches to tmux only after transport loss")
-    func remoteWorktreeReconnectsAfterTransportLoss() throws {
+    @Test("remote worktree returns the first establishment outcome")
+    func remoteWorktreeEstablishmentIsOneShot() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(
             at: directory, withIntermediateDirectories: true
         )
         defer { try? FileManager.default.removeItem(at: directory) }
+        let counter = directory.appendingPathComponent("initial-count")
         let initial = directory.appendingPathComponent("initial")
-        let probe = directory.appendingPathComponent("probe")
-        let reconnect = directory.appendingPathComponent("reconnect")
-        try "#!/bin/sh\nexit 255\n".write(
-            to: initial, atomically: true, encoding: .utf8
-        )
-        try "#!/bin/sh\nexit 0\n".write(
-            to: probe, atomically: true, encoding: .utf8
-        )
-        try """
-        #!/bin/sh
-        : > "$GHOSTHUB_RECONNECT_MARKER"
-        """.write(to: reconnect, atomically: true, encoding: .utf8)
-        for executable in [initial, probe, reconnect] {
-            try FileManager.default.setAttributes(
-                [.posixPermissions: 0o755], ofItemAtPath: executable.path
-            )
-        }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = [
-            "-c", TmuxAttachmentInfo.remoteWorkspaceAttachScript,
-            "ghosthub-test", initial.path, probe.path, reconnect.path,
-        ]
-        process.environment = ProcessInfo.processInfo.environment.merging([
-            "GHOSTHUB_RECONNECT_MARKER": reconnect.path + ".ran",
-        ]) { _, new in new }
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        try process.run()
-        process.waitUntilExit()
-
-        #expect(process.terminationStatus == 0)
-        #expect(FileManager.default.fileExists(
-            atPath: reconnect.path + ".ran"
-        ))
-    }
-
-    @Test("remote worktree retries kwt when transport fails before creation")
-    func remoteWorktreeRetriesKwtWhenSessionIsAbsent() throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(
-            at: directory, withIntermediateDirectories: true
-        )
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let initialCounter = directory.appendingPathComponent("initial-count")
-        let sleepCounter = directory.appendingPathComponent("sleep-count")
-        let initial = directory.appendingPathComponent("initial")
-        let probe = directory.appendingPathComponent("probe")
-        let reconnect = directory.appendingPathComponent("reconnect")
-        let sleep = directory.appendingPathComponent("sleep")
         try """
         #!/bin/sh
         printf x >> "$GHOSTHUB_INITIAL_COUNTER"
-        [ "$(wc -c < "$GHOSTHUB_INITIAL_COUNTER")" -gt 1 ] && exit 0
         exit 255
         """.write(to: initial, atomically: true, encoding: .utf8)
-        try "#!/bin/sh\nexit 1\n".write(
-            to: probe, atomically: true, encoding: .utf8
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755], ofItemAtPath: initial.path
         )
-        try """
-        #!/bin/sh
-        : > "$GHOSTHUB_RECONNECT_MARKER"
-        """.write(to: reconnect, atomically: true, encoding: .utf8)
-        try """
-        #!/bin/sh
-        printf '%s\n' "$1" >> "$GHOSTHUB_SLEEP_COUNTER"
-        """.write(to: sleep, atomically: true, encoding: .utf8)
-        for executable in [initial, probe, reconnect, sleep] {
-            try FileManager.default.setAttributes(
-                [.posixPermissions: 0o755], ofItemAtPath: executable.path
-            )
-        }
-
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = [
             "-c", TmuxAttachmentInfo.remoteWorkspaceAttachScript,
-            "ghosthub-test", initial.path, probe.path, reconnect.path,
+            "ghosthub-test", initial.path,
         ]
         process.environment = ProcessInfo.processInfo.environment.merging([
-            "GHOSTHUB_INITIAL_COUNTER": initialCounter.path,
-            "GHOSTHUB_RECONNECT_MARKER": reconnect.path + ".ran",
-            "GHOSTHUB_SLEEP_COUNTER": sleepCounter.path,
-            "PATH": directory.path + ":"
-                + ProcessInfo.processInfo.environment["PATH", default: ""],
+            "GHOSTHUB_INITIAL_COUNTER": counter.path,
         ]) { _, new in new }
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         try process.run()
         process.waitUntilExit()
 
-        #expect(process.terminationStatus == 0)
-        #expect(
-            try String(contentsOf: initialCounter, encoding: .utf8) == "xx"
+        #expect(process.terminationStatus == 255)
+        #expect(try String(contentsOf: counter, encoding: .utf8) == "x")
+    }
+
+    @Test("remote worktree records an SSH establishment failure")
+    func remoteWorktreeRecordsSSHFailure() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true
         )
-        #expect(
-            try String(contentsOf: sleepCounter, encoding: .utf8) == "1\n"
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let status = directory.appendingPathComponent("ssh-status")
+        let command = TmuxAttachmentInfo(
+            sessionName: "fixture-session",
+            host: .ssh(SSHHostInfo(
+                user: "test-user",
+                hostname: "test-host.invalid",
+                port: nil
+            )),
+            workspacePath: "/srv/project"
+        ).attachCommand(
+            tmuxPath: "/usr/bin/tmux",
+            remoteKwtCommandPrelude: "ghosthub_kwt_path=/usr/bin/kwt; ",
+            sshConnectionArguments: [
+                "-o", "ProxyCommand=/usr/bin/false",
+            ],
+            remoteExitStatusPath: status.path
         )
-        #expect(!FileManager.default.fileExists(
-            atPath: reconnect.path + ".ran"
-        ))
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = [
+            "--noprofile", "--norc", "-c", "exec -l " + command,
+        ]
+        process.environment = ProcessInfo.processInfo.environment.merging([
+            "SHELL": "/bin/sh",
+        ]) { _, new in new }
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+
+        try process.run()
+        process.waitUntilExit()
+
+        #expect(process.terminationStatus == 255)
+        #expect(try String(contentsOf: status, encoding: .utf8) == "255\n")
     }
 
     @Test("Windows named creation runs once before psmux attachment")
@@ -1208,8 +1207,8 @@ struct TmuxAttachmentInfoTests {
         ))
     }
 
-    @Test("attach retries never rerun the completed create phase")
-    func reconnectDoesNotRepeatCreation() throws {
+    @Test("named creation runs once before one attachment attempt")
+    func remoteCreationAndAttachmentAreOneShot() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(
@@ -1240,8 +1239,8 @@ struct TmuxAttachmentInfoTests {
         }
         let createCommand = shellQuotedCommandArgument(fakeCreate.path)
         let attachCommand = [
-            "/bin/sh", "-c", TmuxAttachmentInfo.sshReconnectScript,
-            "ghosthub-test", "", fakeAttach.path,
+            "/bin/sh", "-c", TmuxAttachmentInfo.sshAttachScript,
+            "ghosthub-test", fakeAttach.path,
         ].map(shellQuotedCommandArgument).joined(separator: " ")
 
         let process = Process()
@@ -1259,58 +1258,17 @@ struct TmuxAttachmentInfoTests {
         try process.run()
         process.waitUntilExit()
 
-        #expect(process.terminationStatus == 0)
+        #expect(process.terminationStatus == 255)
         #expect(
             try String(contentsOf: createCounter, encoding: .utf8) == "x"
         )
         #expect(
-            try String(contentsOf: attachCounter, encoding: .utf8) == "xx"
+            try String(contentsOf: attachCounter, encoding: .utf8) == "x"
         )
     }
 
-    @Test("SSH status 255 retries, then clean tmux exit stops")
-    func reconnectsOnlyTransportFailure() throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(
-            at: directory, withIntermediateDirectories: true
-        )
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let counter = directory.appendingPathComponent("count")
-        let fake = directory.appendingPathComponent("fake-ssh")
-        try """
-        #!/bin/sh
-        count=0
-        [ ! -f "$GHOSTHUB_TEST_COUNTER" ] || count=$(cat "$GHOSTHUB_TEST_COUNTER")
-        count=$((count + 1))
-        printf '%s' "$count" > "$GHOSTHUB_TEST_COUNTER"
-        [ "$count" -gt 1 ] && exit 0
-        exit 255
-        """.write(to: fake, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o755], ofItemAtPath: fake.path
-        )
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = [
-            "-c", TmuxAttachmentInfo.sshReconnectScript,
-            "ghosthub-test", "", fake.path,
-        ]
-        process.environment = ProcessInfo.processInfo.environment.merging([
-            "GHOSTHUB_TEST_COUNTER": counter.path,
-        ]) { _, new in new }
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        try process.run()
-        process.waitUntilExit()
-
-        #expect(process.terminationStatus == 0)
-        #expect(try String(contentsOf: counter, encoding: .utf8) == "2")
-    }
-
-    @Test("persistent SSH failure returns control to native recovery")
-    func persistentSSHFailureStopsReconnect() throws {
+    @Test("remote attach returns the first SSH transport failure")
+    func remoteAttachIsOneShot() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(
@@ -1331,139 +1289,24 @@ struct TmuxAttachmentInfoTests {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = [
-            "-c", TmuxAttachmentInfo.sshReconnectScript,
-            "ghosthub-test", "", fake.path,
+            "-c", TmuxAttachmentInfo.sshAttachScript,
+            "ghosthub-test", fake.path,
         ]
         process.environment = ProcessInfo.processInfo.environment.merging([
             "GHOSTHUB_TEST_COUNTER": counter.path,
         ]) { _, new in new }
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = output
         try process.run()
         process.waitUntilExit()
 
         #expect(process.terminationStatus == 255)
-        #expect(try String(contentsOf: counter, encoding: .utf8) == "xxx")
-    }
-
-    @Test("slow SSH failures still return control to native recovery")
-    func slowPersistentSSHFailureStopsReconnect() throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(
-            at: directory, withIntermediateDirectories: true
-        )
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let counter = directory.appendingPathComponent("count")
-        let clock = directory.appendingPathComponent("clock")
-        let fakeSSH = directory.appendingPathComponent("fake-ssh")
-        let fakeDate = directory.appendingPathComponent("date")
-        let fakeSleep = directory.appendingPathComponent("sleep")
-        try """
-        #!/bin/sh
-        printf x >> "$GHOSTHUB_TEST_COUNTER"
-        [ "$(wc -c < "$GHOSTHUB_TEST_COUNTER")" -gt 4 ] && exit 0
-        exit 255
-        """.write(to: fakeSSH, atomically: true, encoding: .utf8)
-        try """
-        #!/bin/sh
-        count=0
-        [ ! -f "$GHOSTHUB_TEST_CLOCK" ] || count=$(cat "$GHOSTHUB_TEST_CLOCK")
-        count=$((count + 1))
-        printf '%s' "$count" > "$GHOSTHUB_TEST_CLOCK"
-        if [ $((count % 2)) -eq 1 ]; then printf '0\n'; else printf '31\n'; fi
-        """.write(to: fakeDate, atomically: true, encoding: .utf8)
-        try "#!/bin/sh\nexit 0\n".write(
-            to: fakeSleep, atomically: true, encoding: .utf8
-        )
-        for executable in [fakeSSH, fakeDate, fakeSleep] {
-            try FileManager.default.setAttributes(
-                [.posixPermissions: 0o755], ofItemAtPath: executable.path
-            )
-        }
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = [
-            "-c", TmuxAttachmentInfo.sshReconnectScript,
-            "ghosthub-test", "", fakeSSH.path,
-        ]
-        process.environment = ProcessInfo.processInfo.environment.merging([
-            "GHOSTHUB_TEST_COUNTER": counter.path,
-            "GHOSTHUB_TEST_CLOCK": clock.path,
-            "PATH": directory.path + ":"
-                + ProcessInfo.processInfo.environment["PATH", default: ""],
-        ]) { _, new in new }
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        try process.run()
-        process.waitUntilExit()
-
-        #expect(process.terminationStatus == 255)
-        #expect(try String(contentsOf: counter, encoding: .utf8) == "xxx")
-    }
-
-    @Test("multiplexed attachment evidence resets the reconnect budget")
-    func multiplexedAttachmentEvidenceResetsReconnectBudget() throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(
-            at: directory, withIntermediateDirectories: true
-        )
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let counter = directory.appendingPathComponent("count")
-        let clock = directory.appendingPathComponent("clock")
-        let fakeSSH = directory.appendingPathComponent("fake-ssh")
-        let fakeCheck = directory.appendingPathComponent("fake-check")
-        let fakeDate = directory.appendingPathComponent("date")
-        let fakeSleep = directory.appendingPathComponent("sleep")
-        try """
-        #!/bin/sh
-        printf x >> "$GHOSTHUB_TEST_COUNTER"
-        count=$(wc -c < "$GHOSTHUB_TEST_COUNTER")
-        [ "$count" -gt 5 ] && exit 0
-        exit 255
-        """.write(to: fakeSSH, atomically: true, encoding: .utf8)
-        try """
-        #!/bin/sh
-        [ "$(wc -c < "$GHOSTHUB_TEST_COUNTER")" -eq 3 ]
-        """.write(to: fakeCheck, atomically: true, encoding: .utf8)
-        try """
-        #!/bin/sh
-        count=0
-        [ ! -f "$GHOSTHUB_TEST_CLOCK" ] || count=$(cat "$GHOSTHUB_TEST_CLOCK")
-        count=$((count + 1))
-        printf '%s' "$count" > "$GHOSTHUB_TEST_CLOCK"
-        if [ $((count % 2)) -eq 1 ]; then printf '0\n'; else printf '31\n'; fi
-        """.write(to: fakeDate, atomically: true, encoding: .utf8)
-        try "#!/bin/sh\nexit 0\n".write(
-            to: fakeSleep, atomically: true, encoding: .utf8
-        )
-        for executable in [fakeSSH, fakeCheck, fakeDate, fakeSleep] {
-            try FileManager.default.setAttributes(
-                [.posixPermissions: 0o755], ofItemAtPath: executable.path
-            )
-        }
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = [
-            "-c", TmuxAttachmentInfo.sshReconnectScript,
-            "ghosthub-test", fakeCheck.path, fakeSSH.path,
-        ]
-        process.environment = ProcessInfo.processInfo.environment.merging([
-            "GHOSTHUB_TEST_COUNTER": counter.path,
-            "GHOSTHUB_TEST_CLOCK": clock.path,
-            "PATH": directory.path + ":"
-                + ProcessInfo.processInfo.environment["PATH", default: ""],
-        ]) { _, new in new }
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        try process.run()
-        process.waitUntilExit()
-
-        #expect(process.terminationStatus == 255)
-        #expect(try String(contentsOf: counter, encoding: .utf8) == "xxxxx")
+        #expect(try String(contentsOf: counter, encoding: .utf8) == "x")
+        #expect(!String(
+            decoding: output.fileHandleForReading.readDataToEndOfFile(),
+            as: UTF8.self
+        ).contains("reconnecting in"))
     }
 
     @Test("ordinary remote-command failure does not reconnect")
@@ -1488,8 +1331,8 @@ struct TmuxAttachmentInfoTests {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = [
-            "-c", TmuxAttachmentInfo.sshReconnectScript,
-            "ghosthub-test", "", fake.path,
+            "-c", TmuxAttachmentInfo.sshAttachScript,
+            "ghosthub-test", fake.path,
         ]
         process.environment = ProcessInfo.processInfo.environment.merging([
             "GHOSTHUB_TEST_COUNTER": counter.path,

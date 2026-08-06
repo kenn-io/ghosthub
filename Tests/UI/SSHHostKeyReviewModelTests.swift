@@ -108,6 +108,38 @@ struct SSHHostKeyReviewModelTests {
         #expect(model.presentation == .authenticationSucceeded)
     }
 
+    @Test("successful authentication resumes the paused connection")
+    func successfulAuthenticationResumesConnection() async {
+        let model = WorkspaceSSHHostKeyReviewModel()
+        var resumeCount = 0
+
+        await model.review(hostID: UUID(), hostName: "Build Node") {
+            .authenticationRequired
+        }
+        model.authenticationSucceeded {
+            resumeCount += 1
+        }
+
+        #expect(resumeCount == 1)
+        #expect(model.presentation == .authenticationSucceeded)
+    }
+
+    @Test("non-authentication presentation cannot resume connection")
+    func nonAuthenticationDoesNotResumeConnection() async {
+        let model = WorkspaceSSHHostKeyReviewModel()
+        var resumeCount = 0
+
+        await model.review(hostID: UUID(), hostName: "Build Node") {
+            .connectionIssue("Still offline.")
+        }
+        model.authenticationSucceeded {
+            resumeCount += 1
+        }
+
+        #expect(resumeCount == 0)
+        #expect(model.presentation == .connectionIssue)
+    }
+
     @Test("dismissal retains success throughout the sheet closing animation")
     func dismissalRetainsSuccessfulPresentation() async {
         let model = WorkspaceSSHHostKeyReviewModel()

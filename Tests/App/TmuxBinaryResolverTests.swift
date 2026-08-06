@@ -171,7 +171,8 @@ struct TmuxBinaryResolverTests {
             #expect(command.contains("command -v tmux"))
             return (
                 status: 0,
-                stdout: "welcome\n/usr/local/bin/tmux\ntmux 3.2a\n"
+                stdout: "welcome\n/usr/local/bin/tmux\ntmux 3.2a\n",
+                stderr: ""
             )
         })
 
@@ -181,22 +182,172 @@ struct TmuxBinaryResolverTests {
         )
     }
 
-    @Test("SSH transport failure is not reported as a login shell failure")
+    @Test("SSH stderr is preserved for native recovery classification")
     func reportsRemoteSSHFailure() {
         let host = SSHHostInfo(
             user: "wesm", hostname: "untrusted-host", port: nil
         )
         let resolver = TmuxBinaryResolver(
             remoteProcessRunner: { _, _ in
-                (status: 255, stdout: "")
+                (
+                    status: 255,
+                    stdout: "",
+                    stderr: "Permission denied (publickey,password)."
+                )
             }
         )
         let expected = TmuxBinaryError.sshConnectionFailed(
-            host: host.displayName
+            host: host.displayName,
+            classification: SSHConnectionFailure.classify(
+                status: 255,
+                output: "Permission denied (publickey,password)."
+            )
         )
 
         #expect(resolver.resolveTmuxPath(on: host) == .failure(expected))
         #expect(resolver.discoverSessions(on: host) == .failure(expected))
+    }
+
+    @Test("protected POSIX probe uses exact socket and session targets")
+    func probesProtectedPOSIXSession() throws {
+        let host = SSHHostInfo(
+            user: "wesm",
+            hostname: "build-box",
+            port: nil
+        )
+        let resolver = TmuxBinaryResolver(
+            remoteProcessRunner: { _, command in
+                #expect(command.contains("-L"))
+                #expect(command.contains("kwt-pr-0123456789abcdef"))
+                #expect(command.contains("has-session"))
+                #expect(command.contains("=pr-32"))
+                return (
+                    status: 0,
+                    stdout: "/usr/bin/tmux\ntmux 3.4\n"
+                        + "GHOSTHUB_TMUX_SESSION_PRESENT\n",
+                    stderr: ""
+                )
+            }
+        )
+
+        #expect(try resolver.sessionExists(
+            name: "pr-32",
+            socketName: "kwt-pr-0123456789abcdef",
+            on: host
+        ).get())
+    }
+
+    @Test("exact probe recognizes an absent session")
+    func probesAbsentSession() throws {
+        let host = SSHHostInfo(
+            user: "wesm",
+            hostname: "build-box",
+            port: nil
+        )
+        let resolver = TmuxBinaryResolver(
+            remoteProcessRunner: { _, _ in
+                (
+                    status: 0,
+                    stdout: "/usr/bin/tmux\ntmux 3.4\n"
+                        + "GHOSTHUB_TMUX_SESSION_ABSENT\n",
+                    stderr: ""
+                )
+            }
+        )
+
+        #expect(try !resolver.sessionExists(
+            name: "pr-32",
+            socketName: nil,
+            on: host
+        ).get())
+    }
+
+    @Test("exact probe rejects an unsupported tmux version")
+    func exactProbeRejectsOldVersion() {
+        let host = SSHHostInfo(
+            user: "wesm",
+            hostname: "build-box",
+            port: nil
+        )
+        let resolver = TmuxBinaryResolver(
+            remoteProcessRunner: { _, _ in
+                (
+                    status: 0,
+                    stdout: "/usr/bin/tmux\ntmux 3.1c\n"
+                        + "GHOSTHUB_TMUX_SESSION_PRESENT\n",
+                    stderr: ""
+                )
+            }
+        )
+
+        #expect(resolver.sessionExists(
+            name: "pr-32",
+            socketName: "kwt-pr-0123456789abcdef",
+            on: host
+        ) == .failure(.unsupportedVersion(found: "tmux 3.1c")))
+    }
+
+    @Test("exact probe does not treat generic tmux failure as absence")
+    func exactProbePreservesGenericFailure() {
+        let host = SSHHostInfo(
+            user: "wesm",
+            hostname: "build-box",
+            port: nil
+        )
+        let resolver = TmuxBinaryResolver(
+            remoteProcessRunner: { _, _ in
+                (
+                    status: 1,
+                    stdout: "/usr/bin/tmux\ntmux 3.4\n",
+                    stderr: "error connecting to /tmp/tmux: Permission denied"
+                )
+            }
+        )
+
+        #expect(resolver.sessionExists(
+            name: "pr-32",
+            socketName: "kwt-pr-0123456789abcdef",
+            on: host
+        ) == .failure(.shellFailed(status: 1)))
+    }
+
+    @Test("protected Windows probe uses exact socket and session targets")
+    func probesProtectedWindowsSession() throws {
+        let host = SSHHostInfo(
+            user: "wesm",
+            hostname: "arm-builder",
+            port: nil,
+            platform: .windows
+        )
+        let resolver = TmuxBinaryResolver(
+            remoteProcessRunner: { _, command in
+                for argument in [
+                    "-L",
+                    "kwt-pr-0123456789abcdef",
+                    "has-session",
+                    "-t",
+                    "=pr-32",
+                ] {
+                    #expect(command.contains(
+                        Data(argument.utf8).base64EncodedString()
+                    ))
+                }
+                #expect(!command.contains("kwt-pr-0123456789abcdef"))
+                #expect(!command.contains("=pr-32"))
+                return (
+                    status: 0,
+                    stdout: "C:\\Tools\\tmux.exe\r\ntmux 3.4\r\n"
+                        + "GHOSTHUB_TMUX_SESSION_PRESENT\r\n",
+                    stderr: ""
+                )
+            }
+        )
+
+        #expect(try resolver.sessionExists(
+            name: "pr-32",
+            socketName: "kwt-pr-0123456789abcdef",
+            on: host
+        ).get())
     }
 
     @Test("Windows resolution discovers the psmux tmux alias")
@@ -217,7 +368,8 @@ struct TmuxBinaryResolverTests {
                     status: 0,
                     stdout:
                     #"C:\Users\wesm\scoop\apps\psmux\current\tmux.exe"#
-                        + "\ntmux 3.3.7\n"
+                        + "\ntmux 3.3.7\n",
+                    stderr: ""
                 )
             }
         )
@@ -332,7 +484,9 @@ struct TmuxBinaryResolverTests {
                     tmux 3.4
                     GHOSTHUB_TMUX_SESSION\t3\t202\t$7\t99\t\tremote-work
 
-                    """
+                    """,
+
+                    stderr: ""
                 )
             }
         )
@@ -369,7 +523,8 @@ struct TmuxBinaryResolverTests {
                     stdout: "C:\\Tools\\psmux\\tmux.exe\r\n"
                         + "tmux 3.3.7\r\n"
                         + "GHOSTHUB_TMUX_SESSION\t2\t202\t$7"
-                        + "\t1783344091\t\twindows-work\r\n"
+                        + "\t1783344091\t\twindows-work\r\n",
+                    stderr: ""
                 )
             }
         )
@@ -394,6 +549,127 @@ struct TmuxBinaryResolverTests {
         })
 
         #expect(try resolver.discoverSessions().get().isEmpty)
+    }
+
+    @Test("a missing tmux socket confirms session absence")
+    func missingSocketIsAbsence() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ghosthub-tmux-absence-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let tmux = directory.appendingPathComponent("tmux")
+        try """
+        #!/bin/sh
+        if [ "$1" = "-V" ]; then
+          printf 'tmux 3.3a\n'
+          exit 0
+        fi
+        printf 'error connecting to /tmp/tmux-501/default (No such file or directory)\n' >&2
+        exit 1
+        """.write(to: tmux, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: tmux.path
+        )
+
+        let host = SSHHostInfo(
+            user: "wesm",
+            hostname: "build-box",
+            port: nil
+        )
+        let resolver = TmuxBinaryResolver(
+            remoteProcessRunner: { _, command in
+                return TmuxBinaryResolver.runProcess(
+                    executable: "/bin/sh",
+                    arguments: ["-c", command],
+                    timeout: 5,
+                    environmentOverrides: [
+                        "PATH": "\(directory.path):/usr/bin:/bin",
+                    ]
+                )
+            }
+        )
+
+        #expect(try resolver.discoverSessions(on: host).get().isEmpty)
+        #expect(try !resolver.sessionExists(
+            name: "pr-32",
+            socketName: "kwt-pr-0123456789abcdef",
+            on: host
+        ).get())
+    }
+
+    @Test("a reachable default server error is not confirmed absence")
+    func defaultServerErrorIsNotAbsence() {
+        let host = SSHHostInfo(
+            user: "wesm",
+            hostname: "build-box",
+            port: nil
+        )
+        let resolver = TmuxBinaryResolver(
+            remoteProcessRunner: { _, _ in
+                (
+                    status: 1,
+                    stdout: "/usr/bin/tmux\ntmux 3.3a\n",
+                    stderr: "error connecting to /tmp/tmux-501/default (Permission denied)\n"
+                )
+            }
+        )
+
+        #expect(
+            resolver.discoverSessions(on: host)
+                == .failure(.shellFailed(status: 1))
+        )
+    }
+
+    @Test("default discovery preserves a generic tmux status one failure")
+    func discoveryCommandPreservesGenericFailure() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ghosthub-tmux-discovery-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let tmux = directory.appendingPathComponent("tmux")
+        try """
+        #!/bin/sh
+        if [ "$1" = "-V" ]; then
+          printf 'tmux 3.3a\n'
+          exit 0
+        fi
+        printf 'error connecting to tmux server (Permission denied)\n' >&2
+        exit 1
+        """.write(to: tmux, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: tmux.path
+        )
+
+        let shell = directory.appendingPathComponent("account-shell")
+        try """
+        #!/bin/sh
+        PATH=\(shellQuotedCommandArgument(directory.path)):/usr/bin:/bin
+        export PATH
+        exec /bin/sh -c "$2"
+        """.write(to: shell, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: shell.path
+        )
+
+        let resolver = TmuxBinaryResolver(
+            loginShellProvider: { shell.path }
+        )
+
+        #expect(
+            resolver.discoverSessions()
+                == .failure(.shellFailed(status: 1))
+        )
     }
 
     @Test("nonzero exit maps to notFound")

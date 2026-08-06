@@ -44,7 +44,13 @@ final class RestorationInventoryState: @unchecked Sendable {
         let published = isPublished
         lock.unlock()
         guard reachable else {
-            return .failure(.sshConnectionFailed(host: host.displayName))
+            return .failure(.sshConnectionFailed(
+                host: host.displayName,
+                classification: SSHConnectionFailure.classify(
+                    status: 255,
+                    output: ""
+                )
+            ))
         }
         return .success(published ? [
             DiscoveredTmuxSession(
@@ -348,6 +354,11 @@ struct WorkspaceRestorationTests {
         ))
 
         #expect(model.activeBorrowedTmuxSelection == nil)
+        await waitUntilMainActor(timeout: .seconds(15)) {
+            inventory.attemptCount >= 1
+                && model.snapshot.host(id: environment.host.id)?.lastSeenAt
+                != nil
+        }
         inventory.publishExactSession()
         model.refreshTmuxSessionDiscovery()
         await waitUntilMainActor {

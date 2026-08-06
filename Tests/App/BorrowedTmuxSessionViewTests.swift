@@ -7,6 +7,51 @@ import Testing
 
 @MainActor
 struct BorrowedTmuxSessionViewTests {
+    @Test("reconnecting presentation promises automatic recovery")
+    func reconnectingPresentation() {
+        let view = makeView(
+            recoveryState: .reconnecting(
+                message:
+                "Waiting for build-box. Ghosthub will reconnect automatically."
+            )
+        )
+
+        #expect(view.recoveryTitle == "Connection interrupted")
+        #expect(view.showsReconnectProgress)
+        #expect(view.primaryRecoveryActionTitle == "Reconnect Now")
+        #expect(!view.showsReviewConnection)
+        #expect(view.showsHostSettingsAction)
+    }
+
+    @Test("attention presentation stops promising automatic recovery")
+    func attentionPresentation() {
+        let view = makeView(
+            recoveryState: .needsAttention(
+                message: "SSH authentication is required.",
+                canReviewConnection: true
+            )
+        )
+
+        #expect(view.recoveryTitle == "Connection needs attention")
+        #expect(!view.showsReconnectProgress)
+        #expect(view.showsReviewConnection)
+        #expect(view.showsHostSettingsAction)
+    }
+
+    @Test("changed host identity does not offer ineffective native review")
+    func changedHostIdentityPresentation() {
+        let view = makeView(
+            recoveryState: .needsAttention(
+                message: "Verify the host and update its known-hosts entry.",
+                canReviewConnection: false
+            )
+        )
+
+        #expect(!view.showsReviewConnection)
+        #expect(view.primaryRecoveryActionTitle == "Reconnect Now")
+        #expect(view.showsHostSettingsAction)
+    }
+
     @Test("a failed borrowed attachment shows its reason and retries")
     func failureShowsReasonAndRetry() {
         var retryCount = 0
@@ -86,7 +131,7 @@ struct BorrowedTmuxSessionViewTests {
             hostName: "build-box",
             isRemoteHost: true,
             connectionState: .disconnected(reason: "SSH connection failed"),
-            attachmentClosure: .processExited,
+            attachmentClosure: .processExited(code: 1),
             surface: { nil },
             onCloseRequest: {},
             onRetryRequest: {},
@@ -114,5 +159,25 @@ struct BorrowedTmuxSessionViewTests {
         )
 
         #expect(!view.showsHostSettingsAction)
+    }
+
+    private func makeView(
+        recoveryState: BorrowedTmuxRecoveryState?
+    ) -> BorrowedTmuxSessionView {
+        BorrowedTmuxSessionView(
+            handle: BorrowedTmuxSessionHandle(
+                id: UUID(), hostID: UUID(), name: "editor", surfaceID: UUID()
+            ),
+            hostName: "build-box",
+            isRemoteHost: true,
+            connectionState: .disconnected(reason: nil),
+            recoveryState: recoveryState,
+            surface: { nil },
+            onCloseRequest: {},
+            onRetryRequest: {},
+            onReconnectNow: {},
+            onReviewConnection: {},
+            onHostSettingsRequest: {}
+        )
     }
 }

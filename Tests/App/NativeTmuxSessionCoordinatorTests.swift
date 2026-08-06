@@ -50,6 +50,52 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(!command.contains("status-style"))
     }
 
+    @Test("surface reports connected once per attachment generation")
+    func surfaceReportsConnectedOncePerAttachmentGeneration() async throws {
+        let store = RecordingTmuxSurfaceStore()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { .success("/usr/bin/tmux") }
+        )
+        let hostID = UUID()
+        var states: [ConnectionState] = []
+        var readyCount = 0
+        coordinator.onStateChanged = { _, state in states.append(state) }
+        coordinator.onSurfaceReady = { _ in readyCount += 1 }
+        let handle = coordinator.attach(
+            hostID: hostID,
+            name: "release-work",
+            host: .local
+        )
+
+        await waitUntilMainActor { readyCount == 1 }
+        _ = coordinator.surface(handle: handle)
+        await waitUntilMainActor {
+            states.filter { $0 == .connected }.count == 1
+        }
+
+        _ = coordinator.surface(handle: handle)
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(states.filter { $0 == .connected }.count == 1)
+        #expect(coordinator.hasLaunched(handle))
+
+        let close = try #require(store.surface.closeObservers[handle.id])
+        close(false, 255)
+        let reattached = coordinator.attach(
+            hostID: hostID,
+            name: "release-work",
+            host: .local
+        )
+        #expect(reattached == handle)
+        await waitUntilMainActor { readyCount == 2 }
+        _ = coordinator.surface(handle: reattached)
+        await waitUntilMainActor {
+            states.filter { $0 == .connected }.count == 2
+        }
+
+        #expect(coordinator.hasLaunched(handle))
+    }
+
     @Test("new session launch reads the current terminal presentation style")
     func newSessionLaunchReadsCurrentPresentationStyle() async throws {
         let store = RecordingTmuxSurfaceStore()
@@ -364,6 +410,40 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(store.removedKeys.count == 1)
     }
 
+    @Test("a missing terminal surface is a launch failure")
+    func missingSurfaceDoesNotLaunch() async {
+        let store = MissingTmuxSurfaceStore()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { .success("/usr/bin/tmux") }
+        )
+        var states: [ConnectionState] = []
+        var isSurfaceReady = false
+        coordinator.onStateChanged = { _, state in states.append(state) }
+        coordinator.onSurfaceReady = { _ in isSurfaceReady = true }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "release-work",
+            host: .local
+        )
+
+        await waitUntilMainActor { isSurfaceReady }
+        _ = coordinator.surface(handle: handle)
+        await waitUntilMainActor {
+            states.contains {
+                if case .disconnected = $0 {
+                    return true
+                }
+                return false
+            }
+        }
+
+        #expect(!states.contains(.connected))
+        #expect(!coordinator.hasLaunched(handle))
+        #expect(coordinator.attachmentClosure(handle) == .launchFailed)
+        #expect(store.removedKeyCount == 1)
+    }
+
     @Test("a detached live client records a closed attachment")
     func detachedLiveClientClosesAttachment() async throws {
         let store = RecordingTmuxSurfaceStore()
@@ -418,13 +498,17 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(coordinator.attachmentClosure(handle) == .detached)
     }
 
-    @Test("an exited attachment process is recorded as a failure outcome")
-    func exitedProcessRecordsFailureOutcome() async throws {
+    @Test("recorded SSH transport status overrides libghostty exit status")
+    func recordsTransportExitCode() async throws {
+        let statusDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: statusDirectory) }
         let store = RecordingTmuxSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
             tmuxPathProvider: { .success("/usr/bin/tmux") },
-            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") }
+            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            remoteExitStatusDirectory: statusDirectory
         )
         var isSurfaceReady = false
         coordinator.onSurfaceReady = { _ in isSurfaceReady = true }
@@ -440,11 +524,24 @@ struct NativeTmuxSessionCoordinatorTests {
         await waitUntilMainActor { isSurfaceReady }
         _ = coordinator.surface(handle: handle)
 
+        let statusFile = try #require(
+            FileManager.default.contentsOfDirectory(
+                at: statusDirectory,
+                includingPropertiesForKeys: nil
+            ).first
+        )
+        try "255\n".write(
+            to: statusFile, atomically: true, encoding: .utf8
+        )
+
         let close = try #require(store.surface.closeObservers[handle.id])
-        close(false, 1)
+        close(false, 0)
 
         #expect(coordinator.hasClosedAttachment(handle))
-        #expect(coordinator.attachmentClosure(handle) == .processExited)
+        #expect(
+            coordinator.attachmentClosure(handle)
+                == .processExited(code: 255)
+        )
     }
 }
 
@@ -452,4 +549,20 @@ private enum SurfaceLaunchTestError: LocalizedError {
     case rejected
 
     var errorDescription: String? { "Surface launch rejected" }
+}
+
+@MainActor
+private final class MissingTmuxSurfaceStore: TmuxSurfaceStoring {
+    private(set) var removedKeyCount = 0
+
+    func paneSurface(
+        for key: SurfaceKey,
+        configuration: TerminalSurfaceConfiguration
+    ) -> (any TmuxPaneSurfacing)? {
+        nil
+    }
+
+    func removeSurface(for key: SurfaceKey) {
+        removedKeyCount += 1
+    }
 }

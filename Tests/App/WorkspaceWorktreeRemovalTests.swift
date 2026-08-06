@@ -216,8 +216,8 @@ struct WorkspaceWorktreeRemovalTests {
         secondModel.startKwtInventory()
         secondModel.startTmuxSessionDiscovery()
         await waitUntilMainActor {
-            secondLoads.load() == 1
-                && secondDiscoveries.load() == 1
+            secondLoads.load() >= 1
+                && secondDiscoveries.load() >= 1
         }
 
         let request = try await firstModel.prepareWorktreeRemoval(removable.id)

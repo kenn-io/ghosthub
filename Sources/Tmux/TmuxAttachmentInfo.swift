@@ -172,6 +172,7 @@ public enum TmuxHost: Codable, Hashable, Sendable {
 
 public enum TmuxAttachmentLaunchMode: String, Codable, Equatable, Sendable {
     case attach
+    case attachOnly
     case create
 }
 
@@ -210,7 +211,8 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         remoteKwtCommandPrelude: String? = nil,
         windowsKwtRelativePath: String? = nil,
         workingDirectory: String? = nil,
-        sshConnectionArguments: [String] = tmuxSSHConnectionArguments()
+        sshConnectionArguments: [String] = tmuxSSHConnectionArguments(),
+        remoteExitStatusPath: String? = nil
     ) -> String {
         switch host {
         case .local:
@@ -229,7 +231,8 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                         workingDirectory: workingDirectory,
                         sshConnectionArguments: sshConnectionArguments
                     )
-                } else if protectedWorkspacePath == nil,
+                } else if launchMode != .attachOnly,
+                          protectedWorkspacePath == nil,
                           workspacePath != nil {
                     command = windowsRemoteWorkspaceAttachCommand(
                         info: info,
@@ -252,7 +255,9 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                     workingDirectory: workingDirectory,
                     sshConnectionArguments: sshConnectionArguments
                 )
-            } else if protectedWorkspacePath == nil, workspacePath != nil {
+            } else if launchMode != .attachOnly,
+                      protectedWorkspacePath == nil,
+                      workspacePath != nil {
                 command = remoteWorkspaceAttachCommand(
                     info: info,
                     tmuxPath: tmuxPath,
@@ -267,7 +272,16 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                     sshConnectionArguments: sshConnectionArguments
                 )
             }
-            return surfaceAccountLoginShellCommand(command)
+            let recordedCommand: String
+            if let remoteExitStatusPath, !remoteExitStatusPath.isEmpty {
+                recordedCommand = shellCommand([
+                    "/bin/sh", "-c", Self.remoteExitStatusScript,
+                    "ghosthub-ssh-status", remoteExitStatusPath, command,
+                ])
+            } else {
+                recordedCommand = command
+            }
+            return surfaceAccountLoginShellCommand(recordedCommand)
         }
     }
 
@@ -347,6 +361,13 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                     commands.append("exec \(attach)")
                 }
             }
+        case .attachOnly:
+            commands.append(
+                presentationCommand?.bestEffortCommand(
+                    tmuxPath: tmuxPath
+                ) ?? ":"
+            )
+            commands.append("exec \(attach)")
         case .create:
             let createAndAttach = localCreateAndAttachCommand(
                 tmuxPath: tmuxPath,
@@ -444,7 +465,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
             )
         }
         let attach: String
-        if let protectedWorkspacePath {
+        if let protectedWorkspacePath, launchMode != .attachOnly {
             let protectedAttach: String
             if let remoteKwtCommandPrelude {
                 let kwtAttach = remoteKwtCommandPrelude
@@ -468,7 +489,8 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
             attach = "exec \(tmuxAttach)"
         }
         var remoteAttachCommands = ["unset TMUX TMUX_PANE"]
-        if protectedWorkspacePath == nil, includesPresentation {
+        if includesPresentation,
+           protectedWorkspacePath == nil || launchMode == .attachOnly {
             remoteAttachCommands.append(
                 presentationCommand?.bestEffortCommand(
                     tmuxPath: tmuxPath
@@ -482,7 +504,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         let remoteAttach = accountLoginShellCommand(
             remoteAttachCommands.joined(separator: "; ")
         )
-        return sshReconnectCommand(
+        return sshAttachCommand(
             label: "ghosthub-ssh-tmux",
             info: info,
             allocateTTY: true,
@@ -531,29 +553,10 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                 sshConnectionArguments: sshConnectionArguments
             )
         )
-        let reconnectAttach = remoteAttachCommand(
-            info: info,
-            tmuxPath: tmuxPath,
-            remoteKwtCommandPrelude: nil,
-            sshConnectionArguments: sshConnectionArguments
-        )
-        let hasSession = tmuxArguments(
-            tmuxPath,
-            "has-session", "-t", "=\(sessionName)"
-        ).map(shellQuotedCommandArgument).joined(separator: " ")
-        let remoteProbe = "unset TMUX TMUX_PANE; "
-            + "exec \(hasSession) >/dev/null 2>&1"
-        let sessionProbe = sshReconnectCommand(
-            label: "ghosthub-ssh-kwt-probe",
-            info: info,
-            allocateTTY: false,
-            remoteCommand: accountLoginShellCommand(remoteProbe),
-            sshConnectionArguments: sshConnectionArguments
-        )
         return shellCommand([
             "/bin/sh", "-c", Self.remoteWorkspaceAttachScript,
             "ghosthub-ssh-kwt-attach",
-            initialAttach, sessionProbe, reconnectAttach,
+            initialAttach,
         ])
     }
 
@@ -590,33 +593,10 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                 sshConnectionArguments: sshConnectionArguments
             )
         )
-        let probeScript = """
-        $ErrorActionPreference = 'Stop'
-        [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-        Remove-Item Env:TMUX, Env:TMUX_PANE -ErrorAction SilentlyContinue
-        \(windowsMuxCommand(
-            tmuxPath: tmuxPath,
-            arguments: ["has-session", "-t", "=\(sessionName)"]
-        )) *> $null
-        exit $LASTEXITCODE
-        """
-        let sessionProbe = sshReconnectCommand(
-            label: "ghosthub-ssh-kwt-probe",
-            info: info,
-            allocateTTY: false,
-            remoteCommand: powerShellEncodedCommand(probeScript),
-            sshConnectionArguments: sshConnectionArguments
-        )
-        let reconnectAttach = windowsRemoteAttachCommand(
-            info: info,
-            tmuxPath: tmuxPath,
-            windowsKwtRelativePath: windowsKwtRelativePath,
-            sshConnectionArguments: sshConnectionArguments
-        )
         return shellCommand([
             "/bin/sh", "-c", Self.remoteWorkspaceAttachScript,
             "ghosthub-ssh-kwt-attach",
-            initialAttach, sessionProbe, reconnectAttach,
+            initialAttach,
         ])
     }
 
@@ -627,7 +607,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         sshConnectionArguments: [String]
     ) -> String {
         let attach: String
-        if let protectedWorkspacePath {
+        if let protectedWorkspacePath, launchMode != .attachOnly {
             attach = """
             \(powerShellKwtResolutionPrelude(
                 managedRelativePath: windowsKwtRelativePath
@@ -650,7 +630,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         exit $LASTEXITCODE
         """
         let remoteCommand = powerShellEncodedCommand(script)
-        return sshReconnectCommand(
+        return sshAttachCommand(
             label: "ghosthub-ssh-psmux",
             info: info,
             allocateTTY: true,
@@ -659,54 +639,24 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         )
     }
 
-    private func sshReconnectCommand(
+    private func sshAttachCommand(
         label: String,
         info: SSHHostInfo,
         allocateTTY: Bool,
         remoteCommand: String,
         sshConnectionArguments: [String]
     ) -> String {
-        let evidenceArguments = [
-            "-o", "PermitLocalCommand=yes",
-            "-o",
-            "LocalCommand=/usr/bin/touch \"$GHOSTHUB_SSH_CONNECTION_MARKER\"",
-        ]
         return shellCommand(
             [
-                "/bin/sh", "-c", Self.sshReconnectScript,
+                "/bin/sh", "-c", Self.sshAttachScript,
                 label,
-                shellCommand(sshControlCheckArguments(
-                    info: info,
-                    sshConnectionArguments: sshConnectionArguments
-                )),
             ] + sshArguments(
                 info: info,
                 allocateTTY: allocateTTY,
                 remoteCommand: remoteCommand,
                 sshConnectionArguments: sshConnectionArguments
-                    + evidenceArguments
             )
         )
-    }
-
-    private func sshControlCheckArguments(
-        info: SSHHostInfo,
-        sshConnectionArguments: [String]
-    ) -> [String] {
-        var arguments = [
-            "/usr/bin/ssh", "-O", "check",
-            "-o", "BatchMode=yes",
-            "-o", "ControlMaster=no",
-            "-o", "ControlPersist=no",
-        ]
-        arguments.append(contentsOf: sshConnectionArguments)
-        if let port = info.port {
-            arguments.append(contentsOf: ["-p", "\(port)"])
-        }
-        let destination = info.user.map { "\($0)@\(info.hostname)" }
-            ?? info.hostname
-        arguments.append(contentsOf: ["--", destination])
-        return arguments
     }
 
     private func remoteCreateThenAttachCommand(
@@ -880,8 +830,8 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         return directory.isEmpty || directory == "/" ? nil : directory
     }
 
-    /// Runs creation once and, after success, permanently switches this
-    /// terminal process to the attach-only reconnect command.
+    /// Runs creation once and, after success, switches this terminal process
+    /// to one attach-only command.
     static let remoteCreateThenAttachScript = """
     /bin/sh -c "$1"
     status=$?
@@ -889,77 +839,23 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
     exec /bin/sh -c "$2"
     """
 
-    /// The first kwt client stays attached while it creates the workspace. An
-    /// SSH transport loss probes the exact session through the ordinary retry
-    /// loop: confirmed presence advances to attach-only reconnect, while
-    /// confirmed absence retries kwt because the original SSH connection may
-    /// have failed before the remote command ran. Absent-session retries use
-    /// the same bounded backoff as ordinary SSH reconnects.
+    /// Runs one workspace establishment attempt. Native recovery probes the
+    /// exact session before deciding whether establishment may run again.
     static let remoteWorkspaceAttachScript = """
-    delay=1
-    while :; do
-        started=$(date +%s)
-        /bin/sh -c "$1"
-        status=$?
-        [ "$status" -eq 255 ] || exit "$status"
-        /bin/sh -c "$2"
-        status=$?
-        case "$status" in
-            0) exec /bin/sh -c "$3" ;;
-            1)
-                now=$(date +%s)
-                if [ $((now - started)) -ge 30 ]; then delay=1; fi
-                printf '\r\n[Ghosthub: workspace session absent; retrying in %ss]\r\n' "$delay"
-                sleep "$delay"
-                if [ "$delay" -lt 30 ]; then
-                    delay=$((delay * 2))
-                    [ "$delay" -le 30 ] || delay=30
-                fi
-                ;;
-            *) exit "$status" ;;
-        esac
-    done
+    exec /bin/sh -c "$1"
     """
 
-    /// OpenSSH reserves status 255 for transport/setup failure. Brief transport
-    /// interruptions retry, while persistent failures exit so Ghosthub can
-    /// recover authentication natively. Clean detach and ordinary tmux failures
-    /// pass through unchanged.
-    static let sshReconnectScript = """
-    control_check=$1
-    shift
-    umask 077
-    connection_marker=$(/usr/bin/mktemp /tmp/ghosthub-ssh.XXXXXX) || exit 255
-    /bin/rm -f "$connection_marker"
-    export GHOSTHUB_SSH_CONNECTION_MARKER="$connection_marker"
-    trap '/bin/rm -f "$connection_marker"' EXIT
-    delay=1
-    failures=0
-    while :; do
-        /bin/rm -f "$connection_marker"
-        started=$(date +%s)
-        "$@"
-        status=$?
-        [ "$status" -eq 255 ] || exit "$status"
-        # A slow 255 can still be proxy, authentication, or transport setup
-        # failure. Elapsed time alone must never make it a successful attach.
-        now=$(date +%s)
-        if [ -e "$connection_marker" ] || {
-            [ -n "$control_check" ] &&
-            [ $((now - started)) -ge 30 ] &&
-            /bin/sh -c "$control_check" >/dev/null 2>&1
-        }; then
-            delay=1
-            failures=0
-        fi
-        failures=$((failures + 1))
-        [ "$failures" -lt 3 ] || exit "$status"
-        printf '\r\n[Ghosthub: SSH disconnected; reconnecting in %ss]\r\n' "$delay"
-        sleep "$delay"
-        if [ "$delay" -lt 30 ]; then
-            delay=$((delay * 2))
-            [ "$delay" -le 30 ] || delay=30
-        fi
-    done
+    /// Records the final status of the complete remote establishment or
+    /// attachment command before libghostty's macOS login wrapper can obscure
+    /// a failed nested OpenSSH process.
+    static let remoteExitStatusScript = """
+    /bin/sh -c "$2"
+    ghosthub_status=$?
+    printf '%s\n' "$ghosthub_status" > "$1"
+    exit "$ghosthub_status"
     """
+
+    /// Runs one OpenSSH attachment attempt and returns its exact status to its
+    /// immediate one-shot command owner.
+    static let sshAttachScript = "exec \"$@\""
 }

@@ -38,7 +38,10 @@ private final class TmuxProbeOutputCollector: @unchecked Sendable {
 enum TmuxBinaryError: Error, Equatable, LocalizedError, Sendable {
     case notFound(shell: String)
     case shellFailed(status: Int32)
-    case sshConnectionFailed(host: String)
+    case sshConnectionFailed(
+        host: String,
+        classification: SSHConnectionFailure.Classification
+    )
     case probeTimedOut(shell: String)
     case probeCancelled(shell: String)
     case probeOutputExceeded(shell: String)
@@ -55,10 +58,9 @@ enum TmuxBinaryError: Error, Equatable, LocalizedError, Sendable {
         case let .shellFailed(status):
             return "The login shell exited with status \(status) while"
                 + " locating tmux. Check your shell startup files."
-        case let .sshConnectionFailed(host):
-            return "SSH could not connect to \(host). Open Host Settings and"
-                + " run Test Connection to review an unseen host key or"
-                + " diagnose authentication and network access."
+        case let .sshConnectionFailed(host, classification):
+            return "\(classification.diagnostic.summary) Host: \(host). "
+                + classification.diagnostic.recoverySuggestion
         case let .probeTimedOut(shell):
             return "Timed out while locating tmux through \(shell). Check"
                 + " for commands that block in your shell startup files."
@@ -117,7 +119,7 @@ struct TmuxBinaryResolver: Sendable {
         -> (status: Int32, stdout: String)
     typealias RemoteProcessRunner = @Sendable (
         _ host: SSHHostInfo, _ command: String
-    ) -> (status: Int32, stdout: String)
+    ) -> (status: Int32, stdout: String, stderr: String)
 
     private let processRunner: ProcessRunner
     private let remoteProcessRunner: RemoteProcessRunner
@@ -135,7 +137,7 @@ struct TmuxBinaryResolver: Sendable {
             )
         }
         self.remoteProcessRunner = remoteProcessRunner ?? { host, command in
-            Self.runRemoteLoginShell(
+            Self.runRemoteLoginShellSeparatingStandardError(
                 host: host,
                 command: command,
                 timeout: processTimeout,
@@ -157,9 +159,18 @@ struct TmuxBinaryResolver: Sendable {
             Self.probeCommand(for: host.platform)
         )
         if result.status == 255 {
-            return .failure(.sshConnectionFailed(host: host.displayName))
+            return .failure(.sshConnectionFailed(
+                host: host.displayName,
+                classification: SSHConnectionFailure.classify(
+                    status: result.status,
+                    output: result.stderr
+                )
+            ))
         }
-        return Self.parseProbe(result, shell: host.displayName)
+        return Self.parseProbe(
+            (status: result.status, stdout: result.stdout),
+            shell: host.displayName
+        )
     }
 
     func discoverSessions() -> Result<[DiscoveredTmuxSession], TmuxBinaryError> {
@@ -178,30 +189,105 @@ struct TmuxBinaryResolver: Sendable {
             Self.discoveryCommand(for: host.platform)
         )
         if result.status == 255 {
-            return .failure(.sshConnectionFailed(host: host.displayName))
+            return .failure(.sshConnectionFailed(
+                host: host.displayName,
+                classification: SSHConnectionFailure.classify(
+                    status: result.status,
+                    output: result.stderr
+                )
+            ))
         }
         return Self.parseDiscovery(
-            result,
+            (status: result.status, stdout: result.stdout),
             shell: host.displayName
         )
+    }
+
+    func sessionExists(
+        name: String,
+        socketName: String?,
+        on host: SSHHostInfo
+    ) -> Result<Bool, TmuxBinaryError> {
+        let result = remoteProcessRunner(
+            host,
+            Self.sessionProbeCommand(
+                name: name,
+                socketName: socketName,
+                platform: host.platform
+            )
+        )
+        if result.status == 255 {
+            return .failure(.sshConnectionFailed(
+                host: host.displayName,
+                classification: SSHConnectionFailure.classify(
+                    status: result.status,
+                    output: result.stderr
+                )
+            ))
+        }
+        guard result.status == 0 else {
+            switch result.status {
+            case Self.timedOutStatus:
+                return .failure(.probeTimedOut(shell: host.displayName))
+            case Self.cancelledStatus:
+                return .failure(.probeCancelled(shell: host.displayName))
+            case Self.outputExceededStatus:
+                return .failure(.probeOutputExceeded(shell: host.displayName))
+            default:
+                return .failure(.shellFailed(status: result.status))
+            }
+        }
+        switch Self.parseProbe(
+            (status: result.status, stdout: result.stdout),
+            shell: host.displayName
+        ) {
+        case let .failure(error):
+            return .failure(error)
+        case .success:
+            break
+        }
+
+        let outcomes = result.stdout
+            .split(whereSeparator: \.isNewline)
+            .compactMap { line -> Bool? in
+                switch line {
+                case Substring(Self.sessionPresentMarker): true
+                case Substring(Self.sessionAbsentMarker): false
+                default: nil
+                }
+            }
+        guard outcomes.count == 1, let exists = outcomes.first else {
+            return .failure(.shellFailed(status: result.status))
+        }
+        return .success(exists)
     }
 
     private static let probeCommand =
         "ghosthub_tmux_path=$(command -v tmux) || exit $?; "
             + "printf '%s\\n' \"$ghosthub_tmux_path\"; "
-            + "\"$ghosthub_tmux_path\" -V"
+            + "\"$ghosthub_tmux_path\" -V || exit $?"
 
     private static let discoveryPrefix = "GHOSTHUB_TMUX_SESSION"
+    private static let sessionPresentMarker =
+        "GHOSTHUB_TMUX_SESSION_PRESENT"
+    private static let sessionAbsentMarker =
+        "GHOSTHUB_TMUX_SESSION_ABSENT"
     private static let discoveryFormat = discoveryPrefix
         + "\t#{session_windows}\t#{pid}\t#{session_id}\t#{session_created}"
         + "\t#{@ghosthub_owner}\t#{session_name}"
     private static let discoveryCommand = probeCommand
-        + "; ghosthub_tmux_status=0; "
+        + "; ghosthub_tmux_output=$("
         + "\"$ghosthub_tmux_path\" list-sessions -F "
         + shellQuotedCommandArgument(discoveryFormat)
-        + " 2>/dev/null || ghosthub_tmux_status=$?; "
-        + "[ \"$ghosthub_tmux_status\" -eq 0 ]"
-        + " || [ \"$ghosthub_tmux_status\" -eq 1 ]"
+        + " 2>&1); ghosthub_tmux_status=$?; "
+        + "if [ \"$ghosthub_tmux_status\" -eq 0 ]; then "
+        + "printf '%s\\n' \"$ghosthub_tmux_output\"; else "
+        + "printf '%s\\n' \"$ghosthub_tmux_output\" >&2; "
+        + "case \"$ghosthub_tmux_output\" in "
+        + "*\"no server running on \"*|"
+        + "*\"failed to connect to server: No such file or directory\"*|"
+        + "*\"error connecting to \"*\" (No such file or directory)\"*) "
+        + "exit 0 ;; *) exit \"$ghosthub_tmux_status\" ;; esac; fi"
 
     private static func probeCommand(
         for platform: SSHHostInfo.Platform
@@ -233,12 +319,82 @@ struct TmuxBinaryResolver: Sendable {
             if ($LASTEXITCODE -ne 0) {
                 exit $LASTEXITCODE
             }
-            & $ghosthubMux 'list-sessions' '-F' \(powerShellEncodedArgument(discoveryFormat))
+            $ghosthubMuxOutput = (& $ghosthubMux 'list-sessions' '-F' \(
+                powerShellEncodedArgument(discoveryFormat)
+            ) 2>&1 | Out-String)
             $ghosthubMuxStatus = $LASTEXITCODE
-            if (($ghosthubMuxStatus -eq 0) -or ($ghosthubMuxStatus -eq 1)) {
+            if ($ghosthubMuxStatus -eq 0) {
+                Write-Output $ghosthubMuxOutput
+                exit 0
+            }
+            [Console]::Error.Write($ghosthubMuxOutput)
+            if ($ghosthubMuxOutput -match 'no server running on ' -or
+                $ghosthubMuxOutput -match 'failed to connect to server: No such file or directory') {
                 exit 0
             }
             exit $ghosthubMuxStatus
+            """
+        }
+    }
+
+    private static func sessionProbeCommand(
+        name: String,
+        socketName: String?,
+        platform: SSHHostInfo.Platform
+    ) -> String {
+        switch platform {
+        case .posix:
+            var arguments = [String]()
+            if let socketName {
+                arguments.append(contentsOf: ["-L", socketName])
+            }
+            arguments.append(contentsOf: ["has-session", "-t", "=\(name)"])
+            let command = arguments
+                .map(shellQuotedCommandArgument)
+                .joined(separator: " ")
+            return probeCommand
+                + "; ghosthub_probe_error=$("
+                + "\"$ghosthub_tmux_path\" \(command) 2>&1); "
+                + "ghosthub_probe_status=$?; "
+                + "if [ \"$ghosthub_probe_status\" -eq 0 ]; then "
+                + "printf '\(sessionPresentMarker)\\n'; "
+                + "else printf '%s\\n' \"$ghosthub_probe_error\" >&2; "
+                + "case \"$ghosthub_probe_error\" in "
+                + "*\"can't find session:\"*|*\"no server running on \"*|"
+                + "*\"failed to connect to server: No such file or directory\"*|"
+                + "*\"error connecting to \"*\" (No such file or directory)\"*) "
+                + "printf '\(sessionAbsentMarker)\\n' ;; "
+                + "*) exit \"$ghosthub_probe_status\" ;; esac; fi"
+        case .windows:
+            var arguments = [String]()
+            if let socketName {
+                arguments.append(contentsOf: ["-L", socketName])
+            }
+            arguments.append(contentsOf: ["has-session", "-t", "=\(name)"])
+            let command = arguments
+                .map(powerShellEncodedArgument)
+                .joined(separator: " ")
+            return windowsProbePrelude + """
+
+            Write-Output $ghosthubMux
+            & $ghosthubMux '-V'
+            if ($LASTEXITCODE -ne 0) {
+                exit $LASTEXITCODE
+            }
+            $ghosthubProbeError = (& $ghosthubMux \(command) 2>&1 | Out-String)
+            $ghosthubProbeStatus = $LASTEXITCODE
+            if ($ghosthubProbeStatus -eq 0) {
+                Write-Output '\(sessionPresentMarker)'
+                exit 0
+            }
+            [Console]::Error.Write($ghosthubProbeError)
+            if ($ghosthubProbeError -match "can't find session:" -or
+                $ghosthubProbeError -match 'no server running on ' -or
+                $ghosthubProbeError -match 'failed to connect to server: No such file or directory') {
+                Write-Output '\(sessionAbsentMarker)'
+                exit 0
+            }
+            exit $ghosthubProbeStatus
             """
         }
     }
@@ -303,6 +459,21 @@ struct TmuxBinaryResolver: Sendable {
         _ result: (status: Int32, stdout: String),
         shell: String
     ) -> Result<[DiscoveredTmuxSession], TmuxBinaryError> {
+        if result.status != 0 {
+            switch result.status {
+            case timedOutStatus, cancelledStatus, outputExceededStatus:
+                if case let .failure(error) = parseProbe(result, shell: shell) {
+                    return .failure(error)
+                }
+            default:
+                if case .success = parseProbe(
+                    (status: 0, stdout: result.stdout),
+                    shell: shell
+                ) {
+                    return .failure(.shellFailed(status: result.status))
+                }
+            }
+        }
         switch parseProbe(result, shell: shell) {
         case let .failure(error):
             return .failure(error)

@@ -66,6 +66,116 @@ struct TmuxSessionPresentationLifecycleTests {
         #expect(!didDetach)
     }
 
+    @Test("a stable tmux recovery request auto-opens only once")
+    func stableTmuxRecoveryRequestOpensOnce() {
+        let request = TmuxConnectionRecoveryRequest(
+            hostID: UUID(),
+            message: "SSH authentication is required."
+        )
+        var router = TmuxConnectionRecoveryRequestRouter()
+
+        #expect(
+            router.take(request, whileReviewIsPresented: false) == request
+        )
+        #expect(router.take(request, whileReviewIsPresented: false) == nil)
+    }
+
+    @Test("a new tmux recovery request can open after dismissal")
+    func newTmuxRecoveryRequestCanReopen() {
+        let hostID = UUID()
+        let first = TmuxConnectionRecoveryRequest(
+            hostID: hostID,
+            message: "SSH authentication is required."
+        )
+        let second = TmuxConnectionRecoveryRequest(
+            hostID: hostID,
+            message: "The SSH host key needs review."
+        )
+        var router = TmuxConnectionRecoveryRequestRouter()
+
+        #expect(router.take(first, whileReviewIsPresented: false) == first)
+        #expect(router.take(nil, whileReviewIsPresented: false) == nil)
+        #expect(router.take(first, whileReviewIsPresented: false) == nil)
+        #expect(router.take(second, whileReviewIsPresented: false) == second)
+    }
+
+    @Test("tmux recovery waits for an existing SSH review to dismiss")
+    func tmuxRecoveryWaitsForExistingReview() {
+        let request = TmuxConnectionRecoveryRequest(
+            hostID: UUID(),
+            message: "SSH authentication is required."
+        )
+        var router = TmuxConnectionRecoveryRequestRouter()
+
+        #expect(
+            router.take(request, whileReviewIsPresented: true) == nil
+        )
+        #expect(
+            router.take(request, whileReviewIsPresented: false) == request
+        )
+    }
+
+    @Test("retrying resolved tmux recovery resumes the paused host")
+    func resolvedTmuxRecoveryRetryResumesPausedHost() {
+        let hostID = UUID()
+        let request = TmuxConnectionRecoveryRequest(
+            hostID: hostID,
+            message: "SSH authentication is required."
+        )
+        var router = TmuxConnectionRecoveryRequestRouter()
+        _ = router.take(request, whileReviewIsPresented: false)
+
+        #expect(
+            router.recoveryHostIDToResume(
+                reviewedHostID: hostID,
+                reviewRequestID: request.id,
+                activeRequest: request
+            ) == hostID
+        )
+    }
+
+    @Test("unrelated SSH authentication cannot resume tmux recovery")
+    func unrelatedSSHAuthenticationCannotResumeTmuxRecovery() {
+        let hostID = UUID()
+        let request = TmuxConnectionRecoveryRequest(
+            hostID: hostID,
+            message: "SSH authentication is required."
+        )
+        var router = TmuxConnectionRecoveryRequestRouter()
+        _ = router.take(request, whileReviewIsPresented: false)
+
+        #expect(
+            router.recoveryHostIDToResume(
+                reviewedHostID: hostID,
+                reviewRequestID: nil,
+                activeRequest: request
+            ) == nil
+        )
+    }
+
+    @Test("successful manual review resumes the active tmux recovery")
+    func successfulManualReviewResumesActiveTmuxRecovery() {
+        let hostID = UUID()
+        let request = TmuxConnectionRecoveryRequest(
+            hostID: hostID,
+            message: "SSH authentication is required."
+        )
+        var router = TmuxConnectionRecoveryRequestRouter()
+        _ = router.take(request, whileReviewIsPresented: false)
+        let manualReviewRequestID = router.recoveryRequestID(
+            for: hostID,
+            activeRequest: request
+        )
+
+        #expect(
+            router.recoveryHostIDToResume(
+                reviewedHostID: hostID,
+                reviewRequestID: manualReviewRequestID,
+                activeRequest: request
+            ) == hostID
+        )
+    }
+
     @Test("endpoint invalidation removes the active tmux presentation")
     func endpointInvalidationRemovesActivePresentation() {
         let hostID = UUID()
@@ -361,7 +471,7 @@ private struct EndpointChangePresentationHarness: View {
         RootView(
             display: model.display,
             content: ContentBuilders(
-                tmuxSessionContentBuilder: { _, _, _ in
+                tmuxSessionContentBuilder: { _, _, _, _ in
                     AnyView(
                         ActiveTmuxPresentationMarker()
                     )

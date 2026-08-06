@@ -643,15 +643,20 @@ struct WorkspaceWindow: View {
                 activeTmuxSessionIsConnected:
                 sceneModel.activeBorrowedTmuxSessionIsConnected,
                 activeTmuxSessionCanApplyTheme:
-                sceneModel.canApplyThemeToActiveTmuxSession
+                sceneModel.canApplyThemeToActiveTmuxSession,
+                tmuxConnectionRecoveryRequest:
+                sceneModel.tmuxConnectionRecoveryRequest
             ),
             content: ContentBuilders(
                 tmuxSessionContentBuilder: {
-                    [sceneModel] host, sessionName, defersTerminalResize in
+                    [sceneModel]
+                    host, sessionName, defersTerminalResize, actions in
                     sceneModel.borrowedTmuxSessionView(
                         host: host,
                         sessionName: sessionName,
-                        defersTerminalResize: defersTerminalResize
+                        defersTerminalResize: defersTerminalResize,
+                        onReconnectNow: actions.reconnectNow,
+                        onReviewConnection: actions.reviewConnection
                     )
                 },
                 settingsSheetBuilder: { settingsStore in
@@ -779,6 +784,15 @@ struct WorkspaceWindow: View {
                 },
                 refreshWorkspaceInventory: { [sceneModel] in
                     sceneModel.refreshKwtInventory()
+                },
+                reconnectActiveTmuxSessionNow: { [sceneModel] in
+                    sceneModel.reconnectActiveTmuxSessionNow()
+                },
+                resumeTmuxReconnectAfterSSHRecovery: {
+                    [sceneModel] hostID in
+                    sceneModel.resumeTmuxReconnectAfterSSHRecovery(
+                        hostID: hostID
+                    )
                 },
                 reviewSSHHostKey: { [sceneModel] hostID, inventoryWarning in
                     await sceneModel.sshConnectionRecovery(

@@ -195,10 +195,21 @@ const imageAlt = {
           <aside class="reconnect">
             <span aria-hidden="true">↻</span>
             <p>
-              <strong>Lose your connection?</strong> Ghosthub retries SSH with
-              keepalives and bounded backoff. When connectivity returns, it
-              automatically reattaches to the same exact tmux session, with
-              the server-side process state still intact.
+              <strong>Lose your connection?</strong> Ghosthub shows a calm
+              connection-interrupted screen and keeps trying automatically,
+              with no more than 30 seconds between attempts. Choose
+              <strong>Reconnect Now</strong> to try immediately. When
+              connectivity returns, Ghosthub reattaches to the same exact tmux
+              session with the server-side process state still intact. If SSH
+              needs authentication or host-key review, the screen changes to
+              <strong>Connection needs attention</strong> and opens the native
+              recovery flow. If the connection has recovered before that check
+              finishes, <strong>Retry</strong> resumes the same automatic
+              reconnect supervisor immediately. Authentication opened from an
+              ordinary host inventory warning only refreshes that inventory;
+              it never reopens a tmux session. If you dismiss a session’s
+              recovery sheet, <strong>Review Connection</strong> reopens the
+              same recovery request so successful review can resume it.
             </p>
           </aside>
         </div>
