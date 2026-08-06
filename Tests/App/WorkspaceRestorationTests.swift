@@ -354,6 +354,11 @@ struct WorkspaceRestorationTests {
         ))
 
         #expect(model.activeBorrowedTmuxSelection == nil)
+        await waitUntilMainActor {
+            inventory.attemptCount == 1
+                && model.snapshot.host(id: environment.host.id)?.lastSeenAt
+                != nil
+        }
         inventory.publishExactSession()
         model.refreshTmuxSessionDiscovery()
         await waitUntilMainActor {

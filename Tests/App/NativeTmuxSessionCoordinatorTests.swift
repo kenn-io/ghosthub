@@ -50,6 +50,52 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(!command.contains("status-style"))
     }
 
+    @Test("surface reports connected once per attachment generation")
+    func surfaceReportsConnectedOncePerAttachmentGeneration() async throws {
+        let store = RecordingTmuxSurfaceStore()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { .success("/usr/bin/tmux") }
+        )
+        let hostID = UUID()
+        var states: [ConnectionState] = []
+        var readyCount = 0
+        coordinator.onStateChanged = { _, state in states.append(state) }
+        coordinator.onSurfaceReady = { _ in readyCount += 1 }
+        let handle = coordinator.attach(
+            hostID: hostID,
+            name: "release-work",
+            host: .local
+        )
+
+        await waitUntilMainActor { readyCount == 1 }
+        _ = coordinator.surface(handle: handle)
+        await waitUntilMainActor {
+            states.filter { $0 == .connected }.count == 1
+        }
+
+        _ = coordinator.surface(handle: handle)
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(states.filter { $0 == .connected }.count == 1)
+        #expect(coordinator.hasLaunched(handle))
+
+        let close = try #require(store.surface.closeObservers[handle.id])
+        close(false, 255)
+        let reattached = coordinator.attach(
+            hostID: hostID,
+            name: "release-work",
+            host: .local
+        )
+        #expect(reattached == handle)
+        await waitUntilMainActor { readyCount == 2 }
+        _ = coordinator.surface(handle: reattached)
+        await waitUntilMainActor {
+            states.filter { $0 == .connected }.count == 2
+        }
+
+        #expect(coordinator.hasLaunched(handle))
+    }
+
     @Test("new session launch reads the current terminal presentation style")
     func newSessionLaunchReadsCurrentPresentationStyle() async throws {
         let store = RecordingTmuxSurfaceStore()

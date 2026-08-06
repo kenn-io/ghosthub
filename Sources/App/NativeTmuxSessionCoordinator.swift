@@ -91,6 +91,7 @@ private struct NativeTmuxSessionKey: Hashable {
 }
 
 private struct NativeTmuxAttachment {
+    var id: UUID
     var host: TmuxHost
     var tmuxPath: String
     var kwtPath: String?
@@ -127,6 +128,7 @@ final class NativeTmuxSessionCoordinator {
     private var attachments: [UUID: NativeTmuxAttachment] = [:]
     private var attachmentClosures: [UUID: BorrowedTmuxAttachmentClosure] = [:]
     private var launchedHandles: Set<UUID> = []
+    private var reportedConnectedAttachmentIDs: [UUID: UUID] = [:]
     private var tmuxPathsByHost: [TmuxHost: String] = [:]
     private var provisioningHandles: Set<UUID> = []
     private var provisioningTasks: [UUID: Task<Void, Never>] = [:]
@@ -292,6 +294,7 @@ final class NativeTmuxSessionCoordinator {
                 ? nil
                 : workingDirectory
             attachments[handle.id] = NativeTmuxAttachment(
+                id: UUID(),
                 host: host,
                 tmuxPath: path,
                 kwtPath: host.isRemote ? nil : localKwtPathProvider(),
@@ -352,6 +355,7 @@ final class NativeTmuxSessionCoordinator {
         attachments.removeValue(forKey: handle.id)
         attachmentClosures.removeValue(forKey: handle.id)
         launchedHandles.remove(handle.id)
+        reportedConnectedAttachmentIDs.removeValue(forKey: handle.id)
         deferredPresentationStyleHandles.remove(handle.id)
         terminalCoordinator.removeSurface(for: surfaceKey(handle))
     }
@@ -456,11 +460,14 @@ final class NativeTmuxSessionCoordinator {
             }
         )
         launchedHandles.insert(handle.id)
-        reportSurfaceStateLater(
-            handle,
-            state: .connected,
-            requiresLiveSurface: true
-        )
+        if reportedConnectedAttachmentIDs[handle.id] != attachment.id {
+            reportedConnectedAttachmentIDs[handle.id] = attachment.id
+            reportSurfaceStateLater(
+                handle,
+                state: .connected,
+                requiredAttachmentID: attachment.id
+            )
+        }
         return surface as? TerminalSurfaceView
     }
 
@@ -470,6 +477,7 @@ final class NativeTmuxSessionCoordinator {
     ) {
         attachmentClosures[handle.id] = .launchFailed
         attachments.removeValue(forKey: handle.id)
+        reportedConnectedAttachmentIDs.removeValue(forKey: handle.id)
         deferredPresentationStyleHandles.remove(handle.id)
         terminalCoordinator.removeSurface(for: surfaceKey(handle))
         reportSurfaceStateLater(
@@ -485,14 +493,15 @@ final class NativeTmuxSessionCoordinator {
     private func reportSurfaceStateLater(
         _ handle: BorrowedTmuxSessionHandle,
         state: ConnectionState,
-        requiresLiveSurface: Bool = false
+        requiredAttachmentID: UUID? = nil
     ) {
         Task { [weak self] in
             guard let self, !isShuttingDown else { return }
             let key = sessionKey(handle)
             guard handlesByKey[key] == handle else { return }
-            if requiresLiveSurface {
-                guard launchedHandles.contains(handle.id),
+            if let requiredAttachmentID {
+                guard attachments[handle.id]?.id == requiredAttachmentID,
+                      launchedHandles.contains(handle.id),
                       attachmentClosures[handle.id] == nil
                 else { return }
             }
@@ -511,6 +520,7 @@ final class NativeTmuxSessionCoordinator {
             ? .detached
             : .processExited(code: childExitCode)
         attachments.removeValue(forKey: handle.id)
+        reportedConnectedAttachmentIDs.removeValue(forKey: handle.id)
         deferredPresentationStyleHandles.remove(handle.id)
         terminalCoordinator.removeSurface(for: surfaceKey(handle))
         onStateChanged?(
@@ -532,6 +542,7 @@ final class NativeTmuxSessionCoordinator {
         attachments.removeAll()
         attachmentClosures.removeAll()
         launchedHandles.removeAll()
+        reportedConnectedAttachmentIDs.removeAll()
         deferredPresentationStyleHandles.removeAll()
         for handle in handles {
             terminalCoordinator.removeSurface(for: surfaceKey(handle))

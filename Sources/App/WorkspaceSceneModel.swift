@@ -3346,15 +3346,11 @@ final class WorkspaceSceneModel: ObservableObject {
         activeBorrowedTmuxLaunchMode = effectiveLaunchMode
         borrowedTmuxConnectionStates[handle.id] = .connecting
         if attachmentHost.isRemote {
-            let establishingWorkspace = intent == .userInitiated
-                && effectiveLaunchMode == .attach
-                && selection.worktreePath != nil
-                && (selection.socketName != nil || !sessionIsDiscovered)
             activeTmuxReconnectContext = ActiveTmuxReconnectContext(
                 selection: selection,
                 handleID: handle.id,
                 host: attachmentHost,
-                phase: establishingWorkspace
+                phase: openWorkspace
                     ? .establishingWorkspace
                     : .attachOnly,
                 surfaceExitCode: nil
@@ -3823,7 +3819,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 intent: .userInitiated
             )
             return .stop
-        case .failure(.probeCancelled):
+        case .failure(.probeCancelled), .failure(.probeTimedOut):
             return .retry
         case let .failure(.sshConnectionFailed(_, classification)):
             switch classification.kind {
