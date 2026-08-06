@@ -24,7 +24,11 @@ const heroAlt =
       keepalives and automatic reconnect.
     </p>
     <div class="install-action">
-      <InstallCommand />
+      <InstallCommand>
+        <a href="/guide/" slot="secondary">
+          Learn More
+        </a>
+      </InstallCommand>
     </div>
     <p class="meta">
       <span data-version></span>macOS 26+ &middot; Apple Silicon
@@ -92,7 +96,7 @@ const heroAlt =
   .sub {
     color: var(--text-dim);
     max-width: 60ch;
-    margin: 0.9rem auto 1.6rem;
+    margin: 0.9rem auto 1.35rem;
   }
 
   .install-action {
@@ -119,7 +123,7 @@ const heroAlt =
   }
 
   .window {
-    margin: 3.5rem auto 0;
+    margin: 2.5rem auto 0;
     max-width: 960px;
     border: 1px solid var(--line);
     border-radius: 14px;
