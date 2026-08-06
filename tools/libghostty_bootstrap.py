@@ -13,9 +13,14 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-GHOSTHUB_BOOTSTRAP_VERSION = 24
+GHOSTHUB_BOOTSTRAP_VERSION = 26
 GHOSTHUB_GHOSTTY_BUNDLE_ID = "com.ghosthub"
 GHOSTHUB_TERM_PROGRAM = "ghosthub"
+LIBXEV_URL = (
+    "https://deps.files.ghostty.org/"
+    "libxev-34fa50878aec6e5fa8f532867001ab3c36fae23e.tar.gz"
+)
+LIBXEV_HASH = "libxev-0.0.0-86vtc4IcEwCqEYxEYoN_3KXmc6A9VLcm22aVImfvecYs"
 
 
 class BootstrapError(RuntimeError):
@@ -334,6 +339,74 @@ def apply_ghosthub_source_patches(paths: BootstrapPaths) -> None:
         paths.source_checkout_root / "src" / "build" / "xcframework.zig",
         paths.source_checkout_root / "src" / "build" / "GhosttyXCFramework.zig",
         paths.source_checkout_root / "src" / "build" / "GhosttyXcodebuild.zig",
+    )
+
+
+def zig_global_cache_dir(zig_path: str) -> Path:
+    output = read_tool_output([zig_path, "env"])
+    match = re.search(r'^\s*\.global_cache_dir\s*=\s*"([^"]+)"', output, re.MULTILINE)
+    if match is not None:
+        return Path(match.group(1))
+    try:
+        value = json.loads(output)["global_cache_dir"]
+    except (json.JSONDecodeError, KeyError, TypeError) as error:
+        raise BootstrapError(
+            "Could not determine the global Zig cache for the pinned libxev dependency."
+        ) from error
+    return Path(value)
+
+
+def vendor_patched_libxev(source_root: Path, zig_path: str) -> None:
+    """Vendor the pinned libxev and enable its existing Mach-port path on iOS."""
+    cache_root = zig_global_cache_dir(zig_path)
+    cached_source = cache_root / "p" / LIBXEV_HASH
+    if not cached_source.is_dir():
+        fetched_hash = read_tool_output([zig_path, "fetch", LIBXEV_URL])
+        if fetched_hash != LIBXEV_HASH:
+            raise BootstrapError(
+                "The fetched libxev dependency does not match Ghostty's pinned hash."
+            )
+    if not cached_source.is_dir():
+        raise BootstrapError(
+            f"Zig fetched libxev but did not stage {cached_source}."
+        )
+
+    vendored = source_root / "pkg" / "libxev-ghosthub"
+    if not vendored.exists():
+        shutil.copytree(cached_source, vendored)
+
+    patch_source_file(
+        vendored / "src" / "backend" / "kqueue.zig",
+        original=(
+            "            .machport => if (comptime builtin.os.tag != .macos) "
+            "return null else kevent: {\n"
+        ),
+        replacement=(
+            "            .machport => if (comptime !builtin.os.tag.isDarwin()) "
+            "return null else kevent: {\n"
+        ),
+        already_applied=(
+            "            .machport => if (comptime !builtin.os.tag.isDarwin()) "
+            "return null else kevent: {\n"
+        ),
+        description="libxev iOS Mach-port kqueue completion",
+    )
+    patch_source_file(
+        source_root / "build.zig.zon",
+        original=f'''        .libxev = .{{
+            // mitchellh/libxev
+            .url = "{LIBXEV_URL}",
+            .hash = "{LIBXEV_HASH}",
+            .lazy = true,
+        }},
+''',
+        replacement='''        .libxev = .{
+            .path = "./pkg/libxev-ghosthub",
+            .lazy = true,
+        },
+''',
+        already_applied='            .path = "./pkg/libxev-ghosthub",\n',
+        description="Ghostty vendored libxev dependency",
     )
 
 
@@ -2199,9 +2272,10 @@ def bootstrap(
     rebuilt_variant = False
     if artifact_state_message(paths.cached_artifacts, metadata, xcframework_target, optimize) is not None:
         ensure_source_checkout(paths, metadata, git=git)
-        apply_ghosthub_source_patches(paths)
-
         zig_path = resolve_tool(zig)
+        apply_ghosthub_source_patches(paths)
+        vendor_patched_libxev(paths.source_checkout_root, zig_path)
+
         _ = resolve_tool(xcodebuild)
         xcrun_path = resolve_tool(xcrun)
         zig_version = read_tool_output([zig_path, "version"])

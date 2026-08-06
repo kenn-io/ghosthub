@@ -18,6 +18,45 @@ import libghostty_bootstrap as bootstrap  # noqa: E402
 
 
 class LibghosttyBootstrapTests(unittest.TestCase):
+    def test_vendor_patched_libxev_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source = root / "source"
+            cached = root / "zig-cache" / "p" / bootstrap.LIBXEV_HASH
+            kqueue = cached / "src" / "backend" / "kqueue.zig"
+            kqueue.parent.mkdir(parents=True)
+            kqueue.write_text(
+                "            .machport => if (comptime builtin.os.tag != .macos) "
+                "return null else kevent: {\n"
+            )
+            source.mkdir()
+            (source / "build.zig.zon").write_text(
+                f'''        .libxev = .{{
+            // mitchellh/libxev
+            .url = "{bootstrap.LIBXEV_URL}",
+            .hash = "{bootstrap.LIBXEV_HASH}",
+            .lazy = true,
+        }},
+'''
+            )
+
+            zig_env = f'.{{\n    .global_cache_dir = "{root / "zig-cache"}",\n}}'
+            with mock.patch.object(
+                bootstrap,
+                "read_tool_output",
+                return_value=zig_env,
+            ):
+                bootstrap.vendor_patched_libxev(source, "/opt/zig")
+                bootstrap.vendor_patched_libxev(source, "/opt/zig")
+
+            vendored = source / "pkg" / "libxev-ghosthub"
+            self.assertIn(
+                "!builtin.os.tag.isDarwin()",
+                (vendored / "src" / "backend" / "kqueue.zig").read_text(),
+            )
+            manifest = (source / "build.zig.zon").read_text()
+            self.assertEqual(manifest.count("./pkg/libxev-ghosthub"), 1)
+
     def test_render_build_command_uses_repo_bootstrap_flags(self) -> None:
         # Shield the baseline from a caller's real
         # LIBGHOSTTY_ZIG_BUILD_ARGS (a supported override).
@@ -1628,6 +1667,7 @@ pub fn init() void {
             with (
                 mock.patch.object(bootstrap, "ensure_source_checkout"),
                 mock.patch.object(bootstrap, "apply_ghosthub_source_patches"),
+                mock.patch.object(bootstrap, "vendor_patched_libxev"),
                 mock.patch.object(bootstrap, "resolve_tool", side_effect=lambda tool: f"/usr/bin/{tool}"),
                 mock.patch.object(bootstrap, "read_tool_output", return_value="0.15.2"),
                 mock.patch.object(bootstrap, "ensure_metal_toolchain"),

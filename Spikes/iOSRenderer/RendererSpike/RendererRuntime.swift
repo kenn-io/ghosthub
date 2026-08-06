@@ -60,6 +60,10 @@ final class RendererRuntime: ObservableObject {
         callbackContext.runtime = self
     }
 
+    var isApplicationReady: Bool {
+        handles.app != nil
+    }
+
     func start(resourceRoot: URL? = Bundle.main.resourceURL) {
         guard handles.app == nil, status == .idle else { return }
 
@@ -110,6 +114,12 @@ final class RendererRuntime: ObservableObject {
         runtimeConfig.userdata = Unmanaged.passUnretained(callbackContext)
             .toOpaque()
         runtimeConfig.wakeup_cb = rendererSpikeWakeup
+        runtimeConfig.action_cb = rendererSpikeAction
+        runtimeConfig.read_clipboard_cb = rendererSpikeReadClipboard
+        runtimeConfig.confirm_read_clipboard_cb = rendererSpikeConfirmReadClipboard
+        runtimeConfig.write_clipboard_cb = rendererSpikeWriteClipboard
+        runtimeConfig.close_surface_cb = rendererSpikeCloseSurface
+        runtimeConfig.child_write_cb = rendererSpikeChildWrite
 
         guard let app = ghostty_app_new(&runtimeConfig, config) else {
             ghostty_config_free(config)
@@ -145,6 +155,18 @@ final class RendererRuntime: ObservableObject {
         status = .rendered
     }
 
+    func surfaceDidClose() {
+        guard handles.app != nil else { return }
+        status = .appReady
+    }
+
+    func reportSurfaceFailure(_ error: Error) {
+        status = .failed(
+            stage: .surfaceReady,
+            message: error.localizedDescription
+        )
+    }
+
     func shutdown() {
         handles.shutdown()
         status = .idle
@@ -173,3 +195,45 @@ private func rendererSpikeWakeup(_ userdata: UnsafeMutableRawPointer?) {
         .takeUnretainedValue()
     context.scheduleTick()
 }
+
+private func rendererSpikeAction(
+    _: ghostty_app_t?,
+    _: ghostty_target_s,
+    _: ghostty_action_s
+) -> Bool {
+    false
+}
+
+private func rendererSpikeReadClipboard(
+    _: UnsafeMutableRawPointer?,
+    _: ghostty_clipboard_e,
+    _: UnsafeMutableRawPointer?
+) -> Bool {
+    false
+}
+
+private func rendererSpikeConfirmReadClipboard(
+    _: UnsafeMutableRawPointer?,
+    _: UnsafePointer<CChar>?,
+    _: UnsafeMutableRawPointer?,
+    _: ghostty_clipboard_request_e
+) {}
+
+private func rendererSpikeWriteClipboard(
+    _: UnsafeMutableRawPointer?,
+    _: ghostty_clipboard_e,
+    _: UnsafePointer<ghostty_clipboard_content_s>?,
+    _: Int,
+    _: Bool
+) {}
+
+private func rendererSpikeCloseSurface(
+    _: UnsafeMutableRawPointer?,
+    _: Bool
+) {}
+
+private func rendererSpikeChildWrite(
+    _: UnsafeMutableRawPointer?,
+    _: UnsafePointer<CChar>?,
+    _: UInt
+) {}
