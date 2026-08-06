@@ -25,6 +25,8 @@ public struct WorkspaceDisplayState {
     public let activeTmuxSession: WorkspaceTmuxSessionSelection?
     public let activeTmuxSessionIsConnected: Bool
     public let activeTmuxSessionCanApplyTheme: Bool
+    public let tmuxConnectionRecoveryRequest:
+        TmuxConnectionRecoveryRequest?
 
     public init(
         snapshot: WorkspaceSnapshot,
@@ -46,7 +48,9 @@ public struct WorkspaceDisplayState {
         suppressesAutomaticWorktreeSessionOpen: Bool = false,
         activeTmuxSession: WorkspaceTmuxSessionSelection? = nil,
         activeTmuxSessionIsConnected: Bool = false,
-        activeTmuxSessionCanApplyTheme: Bool = false
+        activeTmuxSessionCanApplyTheme: Bool = false,
+        tmuxConnectionRecoveryRequest:
+        TmuxConnectionRecoveryRequest? = nil
     ) {
         self.snapshot = snapshot
         self.workspaceResourceSummary = workspaceResourceSummary
@@ -74,20 +78,35 @@ public struct WorkspaceDisplayState {
             activeTmuxSessionIsConnected
         self.activeTmuxSessionCanApplyTheme =
             activeTmuxSessionCanApplyTheme
+        self.tmuxConnectionRecoveryRequest =
+            tmuxConnectionRecoveryRequest
+    }
+}
+
+public struct TmuxSessionContentActions {
+    public let reconnectNow: () -> Void
+    public let reviewConnection: () -> Void
+
+    public init(
+        reconnectNow: @escaping () -> Void,
+        reviewConnection: @escaping () -> Void
+    ) {
+        self.reconnectNow = reconnectNow
+        self.reviewConnection = reviewConnection
     }
 }
 
 /// View factory closures and providers consumed by RootView.
 public struct ContentBuilders {
     public let tmuxSessionContentBuilder:
-        ((HostSummary, String, Bool) -> AnyView?)?
+        ((HostSummary, String, Bool, TmuxSessionContentActions) -> AnyView?)?
     public let settingsSheetBuilder: ((SettingsStore) -> AnyView)?
     public let logViewerBuilder: (() -> AnyView?)?
     public let sshAuthenticationBuilder: ((UUID) -> AnyView?)?
 
     public init(
         tmuxSessionContentBuilder:
-        ((HostSummary, String, Bool) -> AnyView?)? = nil,
+        ((HostSummary, String, Bool, TmuxSessionContentActions) -> AnyView?)? = nil,
         settingsSheetBuilder: ((SettingsStore) -> AnyView)? = nil,
         logViewerBuilder: (() -> AnyView?)? = nil,
         sshAuthenticationBuilder: ((UUID) -> AnyView?)? = nil
@@ -160,6 +179,33 @@ public enum SSHHostKeyReviewRequirement: Equatable, Sendable {
     case authenticationRequired
 }
 
+public struct TmuxConnectionRecoveryRequest:
+    Identifiable, Equatable, Sendable {
+    public let id: UUID
+    public let hostID: UUID
+    public let message: String
+
+    public init(id: UUID = UUID(), hostID: UUID, message: String) {
+        self.id = id
+        self.hostID = hostID
+        self.message = message
+    }
+}
+
+struct TmuxConnectionRecoveryRequestRouter {
+    private(set) var reviewedRequestID: UUID?
+
+    mutating func take(
+        _ request: TmuxConnectionRecoveryRequest?,
+        whileReviewIsPresented: Bool
+    ) -> TmuxConnectionRecoveryRequest? {
+        guard let request, reviewedRequestID != request.id else { return nil }
+        guard !whileReviewIsPresented else { return nil }
+        reviewedRequestID = request.id
+        return request
+    }
+}
+
 public struct InteractionHandlers {
     public let closeWindow: (() -> Void)?
     public let dismissLogViewer: (() -> Void)?
@@ -176,6 +222,8 @@ public struct InteractionHandlers {
         ((WorkspaceTmuxSessionSelection) async throws -> Void)?
     public let createTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)?
     public let refreshWorkspaceInventory: (() -> Void)?
+    public let reconnectActiveTmuxSessionNow: (() -> Void)?
+    public let resumeTmuxReconnectAfterSSHRecovery: ((UUID) -> Void)?
     public let reviewSSHHostKey:
         ((UUID, String) async -> SSHConnectionRecoveryResult)?
     public let trustSSHHostKey:
@@ -216,6 +264,8 @@ public struct InteractionHandlers {
         ((WorkspaceTmuxSessionSelection) async throws -> Void)? = nil,
         createTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)? = nil,
         refreshWorkspaceInventory: (() -> Void)? = nil,
+        reconnectActiveTmuxSessionNow: (() -> Void)? = nil,
+        resumeTmuxReconnectAfterSSHRecovery: ((UUID) -> Void)? = nil,
         reviewSSHHostKey:
         ((UUID, String) async -> SSHConnectionRecoveryResult)? = nil,
         trustSSHHostKey:
@@ -251,6 +301,9 @@ public struct InteractionHandlers {
         self.applyTmuxSessionTheme = applyTmuxSessionTheme
         self.createTmuxSession = createTmuxSession
         self.refreshWorkspaceInventory = refreshWorkspaceInventory
+        self.reconnectActiveTmuxSessionNow = reconnectActiveTmuxSessionNow
+        self.resumeTmuxReconnectAfterSSHRecovery =
+            resumeTmuxReconnectAfterSSHRecovery
         self.reviewSSHHostKey = reviewSSHHostKey
         self.trustSSHHostKey = trustSSHHostKey
         self.isSSHAuthenticationReady = isSSHAuthenticationReady

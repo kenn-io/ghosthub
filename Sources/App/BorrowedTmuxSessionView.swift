@@ -8,12 +8,15 @@ struct BorrowedTmuxSessionView: View {
     var isRemoteHost: Bool
     var displayTitle: String?
     var connectionState: ConnectionState?
+    var recoveryState: BorrowedTmuxRecoveryState?
     var attachmentClosure: BorrowedTmuxAttachmentClosure?
     var sessionClosed: Bool
     var defersTerminalResize: Bool
     var surface: () -> TerminalSurfaceView?
     var onCloseRequest: () -> Void
     var onRetryRequest: () -> Void
+    var onReconnectNow: () -> Void
+    var onReviewConnection: () -> Void
     var onHostSettingsRequest: () -> Void
 
     init(
@@ -22,12 +25,15 @@ struct BorrowedTmuxSessionView: View {
         isRemoteHost: Bool,
         displayTitle: String? = nil,
         connectionState: ConnectionState?,
+        recoveryState: BorrowedTmuxRecoveryState? = nil,
         attachmentClosure: BorrowedTmuxAttachmentClosure? = nil,
         sessionClosed: Bool = false,
         defersTerminalResize: Bool = false,
         surface: @escaping () -> TerminalSurfaceView?,
         onCloseRequest: @escaping () -> Void,
         onRetryRequest: @escaping () -> Void,
+        onReconnectNow: @escaping () -> Void = {},
+        onReviewConnection: @escaping () -> Void = {},
         onHostSettingsRequest: @escaping () -> Void
     ) {
         self.handle = handle
@@ -35,12 +41,15 @@ struct BorrowedTmuxSessionView: View {
         self.isRemoteHost = isRemoteHost
         self.displayTitle = displayTitle
         self.connectionState = connectionState
+        self.recoveryState = recoveryState
         self.attachmentClosure = attachmentClosure
         self.sessionClosed = sessionClosed
         self.defersTerminalResize = defersTerminalResize
         self.surface = surface
         self.onCloseRequest = onCloseRequest
         self.onRetryRequest = onRetryRequest
+        self.onReconnectNow = onReconnectNow
+        self.onReviewConnection = onReviewConnection
         self.onHostSettingsRequest = onHostSettingsRequest
     }
 
@@ -51,6 +60,29 @@ struct BorrowedTmuxSessionView: View {
                 defersTerminalResize: defersTerminalResize,
                 onCloseRequest: onCloseRequest
             )
+        } else if recoveryState != nil {
+            ContentUnavailableView {
+                Label(recoveryTitle, systemImage: "network.slash")
+            } description: {
+                VStack(spacing: 10) {
+                    if showsReconnectProgress {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                    Text(recoveryMessage)
+                        .multilineTextAlignment(.center)
+                }
+            } actions: {
+                if primaryRecoveryActionTitle != nil {
+                    Button("Reconnect Now", action: onReconnectNow)
+                }
+                if showsReviewConnection {
+                    Button("Review Connection", action: onReviewConnection)
+                }
+                if showsHostSettingsAction {
+                    Button("Host Settings", action: onHostSettingsRequest)
+                }
+            }
         } else if let disconnectionReason {
             ContentUnavailableView {
                 Label(
@@ -73,6 +105,40 @@ struct BorrowedTmuxSessionView: View {
             ProgressView("Opening \(displayTitle ?? handle.name)…")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+
+    var recoveryTitle: String {
+        switch recoveryState {
+        case .reconnecting:
+            "Connection interrupted"
+        case .needsAttention:
+            "Connection needs attention"
+        case nil:
+            disconnectionTitle
+        }
+    }
+
+    var recoveryMessage: String {
+        switch recoveryState {
+        case let .reconnecting(message), let .needsAttention(message, _):
+            message
+        case nil:
+            disconnectionReason ?? "The tmux session disconnected."
+        }
+    }
+
+    var showsReconnectProgress: Bool {
+        recoveryState?.isReconnecting == true
+    }
+
+    var primaryRecoveryActionTitle: String? {
+        showsReconnectProgress ? "Reconnect Now" : nil
+    }
+
+    var showsReviewConnection: Bool {
+        guard case let .needsAttention(_, canReviewConnection) = recoveryState
+        else { return false }
+        return canReviewConnection
     }
 
     var disconnectionReason: String? {

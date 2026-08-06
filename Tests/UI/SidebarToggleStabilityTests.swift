@@ -373,7 +373,7 @@ private struct StabilityTestHarness: View {
             ),
             content: ContentBuilders(
                 tmuxSessionContentBuilder: {
-                    _, sessionName, defersTerminalResize in
+                    _, sessionName, defersTerminalResize, _ in
                     model.recordTerminalResizeDeferral(
                         defersTerminalResize
                     )

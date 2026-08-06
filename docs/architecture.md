@@ -380,9 +380,10 @@ operation can fail. After success, Ghosthub closes the matching current active
 selection and navigates away only when the killed target is active at
 completion time, so switching sessions during the command is preserved. The
 action terminates all of that session's windows, panes, and processes. For SSH,
-Ghosthub supplies keepalives and retries
-transport status 255. Tmux owns all windows, panes, history, input, rendering,
-and server-side lifetime.
+Ghosthub supplies keepalives. Remote shell commands are one-shot; the active
+scene owns transport-status-255 recovery, probe scheduling, authentication and
+host-key escalation, and attach-only client replacement. Tmux owns all windows,
+panes, history, input, rendering, and server-side lifetime.
 
 Ghosthub applies the selected Tmux Theme when it creates a new bare session.
 Built-in themes provide fixed colors; Follow ghostty.conf uses the effective
@@ -414,15 +415,18 @@ presentation uses one atomic
 `new-session -A` create-or-attach invocation so `destroy-unattached` cannot
 remove a newly created session before the client arrives. Remote presentation
 performs one idempotent, detached create-if-absent phase before ordinary
-attachment, then permanently enters the attach-only SSH reconnect loop.
+attachment. Once established, its native reconnect supervisor permanently
+limits all later replacements to attach-only clients.
 Before opening an ordinary worktree, Ghosthub asks kwt to establish or repair
 that exact path's canonical session without attaching. Kwt inventory includes
 worktrees whose sessions are not currently running, so inventory membership is
 not evidence that attach-only will succeed. Kwt owns any required layout and
 environment bootstrap; Ghosthub then presents an ordinary tmux client. The
-remote establishment phase runs once, and transport reconnects remain
-attach-only. Discovered sessions that are not bound to worktrees are always
-attach-only.
+remote establishment phase runs once after its attachment is confirmed, and
+transport reconnects remain attach-only. If transport interrupts an
+unconfirmed kwt establishment, authoritative exact-session absence may rerun
+that establishment because the remote command may never have executed.
+Discovered sessions that are not bound to worktrees are always attach-only.
 
 Ghosthub publishes the requested name optimistically. Reconciliation starts
 only after the terminal runtime accepts the command, then checks direct tmux
@@ -431,6 +435,17 @@ is still running; only an authoritative empty inventory after both retry
 exhaustion and command termination may retire it. Confirmation permanently
 demotes later retries to attach-only. Host endpoint changes and scene shutdown
 cancel pending probes.
+
+Each active remote tmux presentation owns at most one native reconnect
+supervisor. It uses the host's shared in-flight default-socket inventory probe,
+or an exact headless `has-session` probe for a protected socket. Attempt starts
+follow 1, 2, 4, 8, 16, and 30-second intervals, include probe runtime, and are
+bounded by a 15-second probe deadline. Transport failures continue
+automatically and **Reconnect Now** advances the existing schedule;
+authentication or host-key failures pause it and route through native SSH
+recovery. Exact absence ends an established presentation, while reachable
+non-transport failures become an unable-to-attach state. Navigation, endpoint
+changes, replacement presentations, and scene shutdown cancel stale work.
 
 ## State Ownership
 

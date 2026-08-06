@@ -44,7 +44,13 @@ final class RestorationInventoryState: @unchecked Sendable {
         let published = isPublished
         lock.unlock()
         guard reachable else {
-            return .failure(.sshConnectionFailed(host: host.displayName))
+            return .failure(.sshConnectionFailed(
+                host: host.displayName,
+                classification: SSHConnectionFailure.classify(
+                    status: 255,
+                    output: ""
+                )
+            ))
         }
         return .success(published ? [
             DiscoveredTmuxSession(

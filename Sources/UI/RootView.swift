@@ -32,6 +32,8 @@ public struct RootView: View {
     @State private var newTmuxSessionHost: HostSummary?
     @State private var addProjectHost: HostSummary?
     @State private var workspaceAlert: WorkspaceAlert?
+    @State private var tmuxRecoveryRequestRouter =
+        TmuxConnectionRecoveryRequestRouter()
     @StateObject private var sshHostKeyReview =
         WorkspaceSSHHostKeyReviewModel()
     @AppStorage(WorkspaceSidebarOrderStorage.worktreeKey)
@@ -78,6 +80,18 @@ public struct RootView: View {
     }
     public var body: some View {
         contentWithNotifications
+            .onAppear {
+                reviewTmuxConnectionRequestIfNeeded()
+            }
+            .onChange(
+                of: display.tmuxConnectionRecoveryRequest?.id
+            ) { _, _ in
+                reviewTmuxConnectionRequestIfNeeded()
+            }
+            .onChange(of: sshHostKeyReview.isPresented) { wasPresented, isPresented in
+                guard wasPresented, !isPresented else { return }
+                reviewTmuxConnectionRequestIfNeeded()
+            }
             .sheet(isPresented: $isCommandPalettePresented) {
                 CommandPaletteView(
                     commands: paletteCommands,
@@ -516,6 +530,30 @@ public struct RootView: View {
         }
     }
 
+    private func tmuxRecoveryWarning(for hostID: UUID) -> String {
+        if let request = display.tmuxConnectionRecoveryRequest,
+           request.hostID == hostID {
+            return request.message
+        }
+        return display.workspaceInventoryWarningsByHost[hostID]
+            ?? "The remote tmux connection needs attention."
+    }
+
+    private func reviewTmuxConnectionRequestIfNeeded() {
+        Task { @MainActor in
+            await Task.yield()
+            guard let request = tmuxRecoveryRequestRouter.take(
+                display.tmuxConnectionRecoveryRequest,
+                whileReviewIsPresented: sshHostKeyReview.isPresented
+            )
+            else { return }
+            reviewSSHHostKey(
+                request.hostID,
+                inventoryWarning: request.message
+            )
+        }
+    }
+
     private func retrySSHRecovery() {
         cancelSSHAuthenticationIfNeeded()
         sshHostKeyReview.dismiss()
@@ -570,7 +608,9 @@ public struct RootView: View {
                 return
             case .connected:
                 handlers.cancelSSHAuthentication?(hostID)
-                sshHostKeyReview.authenticationSucceeded()
+                sshHostKeyReview.authenticationSucceeded {
+                    handlers.resumeTmuxReconnectAfterSSHRecovery?(hostID)
+                }
                 handlers.refreshWorkspaceInventory?()
                 return
             }
@@ -858,7 +898,20 @@ public struct RootView: View {
             let view = content.tmuxSessionContentBuilder?(
                 host,
                 presentedSession.name,
-                isSidebarTransitioning
+                isSidebarTransitioning,
+                TmuxSessionContentActions(
+                    reconnectNow: {
+                        handlers.reconnectActiveTmuxSessionNow?()
+                    },
+                    reviewConnection: {
+                        reviewSSHHostKey(
+                            host.id,
+                            inventoryWarning: tmuxRecoveryWarning(
+                                for: host.id
+                            )
+                        )
+                    }
+                )
             ) {
             view
         } else if display.suppressesAutomaticWorktreeSessionOpen,

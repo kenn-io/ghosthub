@@ -5,6 +5,56 @@ import Testing
 @Suite("SSH connection failure classification")
 struct SSHConnectionFailureTests {
     @Test(
+        "classifies SSH failures for native recovery",
+        arguments: [
+            (
+                "Permission denied (publickey,password).",
+                SSHConnectionFailure.Classification.Kind.authenticationRequired
+            ),
+            (
+                "Host key verification failed.",
+                SSHConnectionFailure.Classification.Kind.hostKeyReviewRequired
+            ),
+            (
+                "WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!",
+                SSHConnectionFailure.Classification.Kind.hostKeyChanged
+            ),
+            (
+                "Offending ED25519 key in /Users/example/.ssh/known_hosts:4",
+                SSHConnectionFailure.Classification.Kind.hostKeyChanged
+            ),
+            (
+                "ssh: connect to host example.test port 22: Network is unreachable",
+                SSHConnectionFailure.Classification.Kind.transport
+            ),
+        ]
+    )
+    func classifiesRecovery(
+        output: String,
+        expected: SSHConnectionFailure.Classification.Kind
+    ) {
+        let classification = SSHConnectionFailure.classify(
+            status: 255,
+            output: output
+        )
+
+        #expect(classification.kind == expected)
+    }
+
+    @Test("changed host keys require manual known-hosts remediation")
+    func diagnosesChangedHostKey() {
+        let classification = SSHConnectionFailure.classify(
+            status: 255,
+            output: "WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!"
+        )
+
+        #expect(classification.kind == .hostKeyChanged)
+        #expect(classification.diagnostic.recoverySuggestion.contains(
+            "known-hosts"
+        ))
+    }
+
+    @Test(
         "only authentication failures request secure entry",
         arguments: [
             ("Permission denied (publickey,password).", true),

@@ -171,6 +171,42 @@ struct RemoteEnvironment {
     let snapshot: WorkspaceSnapshot
 }
 
+struct RemoteTmuxTestEnvironment {
+    let database: WorkspaceDatabase
+    let snapshot: WorkspaceSnapshot
+    let localHostID: UUID
+    let remoteHost: HostSummary
+}
+
+func setupRemoteTmuxEnvironment() throws -> RemoteTmuxTestEnvironment {
+    let standard = try setupStandardEnvironment()
+    let remoteHost = HostSummary(
+        id: UUID(),
+        configKey: "build-box",
+        name: "Build Box",
+        kind: .remote,
+        platform: .linux,
+        sshDestination: "wesm@build-box",
+        preferredTransport: .ssh,
+        lastKnownReachable: true,
+        tmuxSessions: [
+            TmuxSessionSummary(
+                name: "release-work",
+                managed: false,
+                windows: []
+            ),
+        ]
+    )
+    var snapshot = standard.snapshot
+    snapshot.hosts.append(remoteHost)
+    return RemoteTmuxTestEnvironment(
+        database: standard.database,
+        snapshot: snapshot,
+        localHostID: standard.host.id,
+        remoteHost: remoteHost
+    )
+}
+
 func setupRemoteEnvironment() throws -> RemoteEnvironment {
     let database = try WorkspaceDatabase.inMemory()
     let hostID = UUID()
@@ -318,6 +354,8 @@ func makeModel(
     },
     tmuxSessionDiscovery: @escaping
     WorkspaceSceneModel.TmuxSessionDiscovery = { _ in .success([]) },
+    tmuxExactSessionProbe: @escaping
+    WorkspaceSceneModel.TmuxSessionExactProbe = { _ in .success(false) },
     tmuxSessionKiller: @escaping
     WorkspaceSceneModel.TmuxSessionKilling = {
         selection, identity, host in
@@ -360,6 +398,12 @@ func makeModel(
         .milliseconds(250), .milliseconds(500), .seconds(1), .seconds(2),
         .seconds(4), .seconds(8),
     ],
+    tmuxReconnectIntervals: [Duration] = [
+        .seconds(1), .seconds(2), .seconds(4), .seconds(8),
+        .seconds(16), .seconds(30),
+    ],
+    tmuxReconnectProbeDeadline: Duration =
+        TmuxSessionReconnectSupervisor.defaultProbeDeadline,
     startServices: Bool = false
 ) throws -> WorkspaceSceneModel {
     return try WorkspaceSceneModel(
@@ -381,6 +425,7 @@ func makeModel(
         kwtPullRequestImporter: kwtPullRequestImporter,
         kwtProjectRegistration: kwtProjectRegistration,
         tmuxSessionDiscovery: tmuxSessionDiscovery,
+        tmuxExactSessionProbe: tmuxExactSessionProbe,
         tmuxSessionKiller: tmuxSessionKiller,
         tmuxSessionIdentityReader: tmuxSessionIdentityReader,
         tmuxSessionStyler: tmuxSessionStyler,
@@ -394,6 +439,8 @@ func makeModel(
         createdSessionDiscoveryDelays: createdSessionDiscoveryDelays,
         deferredTmuxPresentationRetryDelays:
         deferredTmuxPresentationRetryDelays,
+        tmuxReconnectIntervals: tmuxReconnectIntervals,
+        tmuxReconnectProbeDeadline: tmuxReconnectProbeDeadline,
         startServices: startServices
     )
 }

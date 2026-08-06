@@ -118,8 +118,9 @@ scene; native scene restoration still supplies geometry and tab grouping when
 available. Once assigned, the scene model's complete logical descriptor replaces
 any delayed same-ID native payload with stale navigation or tmux data.
 An ordinary local session must be present in direct discovery before Ghosthub
-runs the exact `attach-session` path. Remote sessions use that same rule and the
-existing SSH keepalive and transport-reconnect loop.
+runs the exact `attach-session` path. Remote sessions use that same rule and,
+after a confirmed attachment, Ghosthub's native reconnect supervisor owns any
+transport recovery.
 Offline or otherwise unavailable targets remain pending and retry when normal
 inventory refreshes publish new state. Navigating the window elsewhere cancels
 the pending target. If a scene was captured without an active tmux
@@ -145,8 +146,9 @@ Explicit local creation uses one atomic `new-session -A` create-or-attach
 client invocation. This closes the detached-session race when the user's tmux
 server has `destroy-unattached` enabled. Explicit remote creation performs a
 one-shot `has-session`/detached `new-session` phase before ordinary attachment.
-The remote process then enters the attach-only SSH reconnect loop, so a later
-transport reconnect can never rerun creation. The session name is validated
+The remote process then performs one ordinary attachment. If that client later
+loses its transport, the native reconnect supervisor can only launch another
+attach-only client; it can never rerun creation. The session name is validated
 before launch and passed as one shell-quoted argument. If the exact name
 already exists, it is attached without creating or structurally changing panes
 or windows.
@@ -161,16 +163,16 @@ discovery contains the canonical name, because the session may have exited
 since the sample. If the managed helper is explicitly unavailable, a cached
 discovered session remains usable through ordinary `tmux attach-session`. On a
 remote host, only an SSH transport loss can hand a kwt-opened session to
-Ghosthub's attach-only reconnect loop. Ghosthub first retries SSH to probe the
-exact session: confirmed presence advances to ordinary attachment, while
-confirmed absence reruns `kwt open` because the failed SSH connection may never
-have executed it. On POSIX hosts, every remote tmux phase (creation,
+Ghosthub's native recovery supervisor. Ghosthub first probes the exact session:
+confirmed presence advances to ordinary attachment, while confirmed absence
+reruns `kwt open` only if the interrupted establishment was never confirmed.
+Once attachment is confirmed, every later recovery remains attach-only. On
+POSIX hosts, every remote tmux phase (creation,
 attachment, open, and probe, styled or not) runs through the account login
 shell so settings such as `TMUX_TMPDIR` resolve the same tmux server as later
 styling and identity commands. On Windows, those phases use encoded
-PowerShell commands
-within the same OpenSSH account environment. Confirmed absence retries use
-bounded exponential backoff. Unbound discovered sessions remain attach-only.
+PowerShell commands within the same OpenSSH account environment. Unbound
+discovered sessions remain attach-only.
 Ghosthub does not expose rename, split, resize, window, or pane operations.
 Kill Session is exposed separately from presentation only for a session known
 to be running and always requires confirmation.
@@ -211,19 +213,40 @@ connection and remain noninteractive. Every control connection is named for
 one app launch and supervised by a parent-held descriptor that stays open for
 the app lifetime, so an app crash terminates the SSH master and a later launch
 cannot reuse its socket.
-Exit status 255, OpenSSH's transport/setup failure status, reconnects with
-bounded exponential backoff. A direct connection's OpenSSH `LocalCommand`
-writes a private marker after transport and authentication succeed. For a
-multiplexed client, a sufficiently long attachment resets its retry budget only
-when the supervised control master is still healthy afterward. Attempts without
-either signal exit after two retries regardless of how long setup took, so
-Ghosthub's native recovery flow can reauthenticate. Other statuses pass through
-unchanged, so a normal tmux detach or a missing session does not create a
-reconnect loop. Host
-verification emits a marker only after the remote command begins. Status 255
-and local wrapper failures such as an unconfirmed timeout leave the host
-offline; a nonzero login-shell or probe-command status is reachable and
-degraded only when that marker proves the remote account executed the probe.
+Remote attachment and establishment shell commands are one-shot: they contain
+no retry timing and never print reconnect status into the terminal buffer.
+After a confirmed attachment exits with OpenSSH's transport/setup status 255,
+the scene's native supervisor probes the real SSH and tmux path at attempt-start
+intervals of 1, 2, 4, 8, 16, and then 30 seconds. Each probe has a 15-second
+end-to-end deadline; its runtime counts against the interval, and an overrun
+clamps the next delay to zero. Attempts never overlap. **Reconnect Now** wakes
+the same supervisor immediately instead of starting a parallel path.
+
+Default-socket recovery shares the host's in-flight `list-sessions` probe with
+inventory discovery. Protected sockets use a headless
+`tmux -L <socket> has-session -t =<name>` probe so an unsuccessful attempt never
+creates or flashes a terminal surface. Confirmed presence launches one new
+attach-only client. Confirmed absence ends a default-socket or protected-socket
+presentation only when that exact session had already been established; an
+unconfirmed interrupted kwt establishment may rerun its one-shot creation path.
+A reachable non-transport tmux failure is presented as unable to attach rather
+than retried indefinitely. A clean detach does not start recovery.
+
+Transport failures continue retrying automatically, with no more than 30
+seconds between attempt starts. Authentication and host-key review failures
+pause automatic retry and open the existing native recovery flow. Successful
+recovery resumes the same supervisor. Dismissing it leaves an honest
+**Connection needs attention** presentation with **Review Connection** when
+native review is available and **Host Settings** otherwise. A changed known-host
+identity still requires the explicit known-hosts remediation described by that
+flow; Ghosthub never silently accepts it.
+
+A direct connection's OpenSSH `LocalCommand` writes a private marker after
+transport and authentication succeed. Host verification emits a marker only
+after the remote command begins. Status 255 and local wrapper failures such as
+an unconfirmed timeout leave the host offline; a nonzero login-shell or
+probe-command status is reachable and degraded only when that marker proves the
+remote account executed the probe.
 
 The initial psmux path allocates an ordinary SSH PTY and targets Windows 11
 build 22523 or newer. Older ConPTY builds preserve keyboard input but consume

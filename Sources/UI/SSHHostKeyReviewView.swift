@@ -102,8 +102,9 @@ final class WorkspaceSSHHostKeyReviewModel: ObservableObject {
         hostID = nil
     }
 
-    func authenticationSucceeded() {
+    func authenticationSucceeded(onConnected: () -> Void = {}) {
         guard presentation == .authentication else { return }
+        onConnected()
         resolvedPresentation = .authenticationSucceeded
     }
 }

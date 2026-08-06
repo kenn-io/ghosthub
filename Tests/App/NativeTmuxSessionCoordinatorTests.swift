@@ -364,6 +364,40 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(store.removedKeys.count == 1)
     }
 
+    @Test("a missing terminal surface is a launch failure")
+    func missingSurfaceDoesNotLaunch() async {
+        let store = MissingTmuxSurfaceStore()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { .success("/usr/bin/tmux") }
+        )
+        var states: [ConnectionState] = []
+        var isSurfaceReady = false
+        coordinator.onStateChanged = { _, state in states.append(state) }
+        coordinator.onSurfaceReady = { _ in isSurfaceReady = true }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "release-work",
+            host: .local
+        )
+
+        await waitUntilMainActor { isSurfaceReady }
+        _ = coordinator.surface(handle: handle)
+        await waitUntilMainActor {
+            states.contains {
+                if case .disconnected = $0 {
+                    return true
+                }
+                return false
+            }
+        }
+
+        #expect(!states.contains(.connected))
+        #expect(!coordinator.hasLaunched(handle))
+        #expect(coordinator.attachmentClosure(handle) == .launchFailed)
+        #expect(store.removedKeyCount == 1)
+    }
+
     @Test("a detached live client records a closed attachment")
     func detachedLiveClientClosesAttachment() async throws {
         let store = RecordingTmuxSurfaceStore()
@@ -418,8 +452,8 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(coordinator.attachmentClosure(handle) == .detached)
     }
 
-    @Test("an exited attachment process is recorded as a failure outcome")
-    func exitedProcessRecordsFailureOutcome() async throws {
+    @Test("SSH transport exit remains distinguishable from clean detach")
+    func recordsTransportExitCode() async throws {
         let store = RecordingTmuxSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
@@ -441,10 +475,13 @@ struct NativeTmuxSessionCoordinatorTests {
         _ = coordinator.surface(handle: handle)
 
         let close = try #require(store.surface.closeObservers[handle.id])
-        close(false, 1)
+        close(false, 255)
 
         #expect(coordinator.hasClosedAttachment(handle))
-        #expect(coordinator.attachmentClosure(handle) == .processExited)
+        #expect(
+            coordinator.attachmentClosure(handle)
+                == .processExited(code: 255)
+        )
     }
 }
 
@@ -452,4 +489,20 @@ private enum SurfaceLaunchTestError: LocalizedError {
     case rejected
 
     var errorDescription: String? { "Surface launch rejected" }
+}
+
+@MainActor
+private final class MissingTmuxSurfaceStore: TmuxSurfaceStoring {
+    private(set) var removedKeyCount = 0
+
+    func paneSurface(
+        for key: SurfaceKey,
+        configuration: TerminalSurfaceConfiguration
+    ) -> (any TmuxPaneSurfacing)? {
+        nil
+    }
+
+    func removeSurface(for key: SurfaceKey) {
+        removedKeyCount += 1
+    }
 }

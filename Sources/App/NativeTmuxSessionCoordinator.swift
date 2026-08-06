@@ -80,7 +80,7 @@ struct BorrowedTmuxSessionHandle: Equatable, Sendable {
 
 enum BorrowedTmuxAttachmentClosure: Equatable {
     case detached
-    case processExited
+    case processExited(code: UInt32?)
     case launchFailed
 }
 
@@ -430,18 +430,14 @@ final class NativeTmuxSessionCoordinator {
             )
         )
         guard let surface else {
-            deferredPresentationStyleHandles.remove(handle.id)
+            failSurfaceLaunch(
+                handle,
+                reason: "Ghosthub could not create the terminal surface."
+            )
             return nil
         }
         if let error = surface.launchError {
-            attachmentClosures[handle.id] = .launchFailed
-            attachments.removeValue(forKey: handle.id)
-            deferredPresentationStyleHandles.remove(handle.id)
-            terminalCoordinator.removeSurface(for: surfaceKey(handle))
-            reportSurfaceStateLater(
-                handle,
-                state: .disconnected(reason: error.localizedDescription)
-            )
+            failSurfaceLaunch(handle, reason: error.localizedDescription)
             return nil
         }
         if isFirstLaunch, appliesPresentationStyle,
@@ -459,14 +455,27 @@ final class NativeTmuxSessionCoordinator {
                 )
             }
         )
-        if launchedHandles.insert(handle.id).inserted {
-            reportSurfaceStateLater(
-                handle,
-                state: .connected,
-                requiresLiveSurface: true
-            )
-        }
+        launchedHandles.insert(handle.id)
+        reportSurfaceStateLater(
+            handle,
+            state: .connected,
+            requiresLiveSurface: true
+        )
         return surface as? TerminalSurfaceView
+    }
+
+    private func failSurfaceLaunch(
+        _ handle: BorrowedTmuxSessionHandle,
+        reason: String
+    ) {
+        attachmentClosures[handle.id] = .launchFailed
+        attachments.removeValue(forKey: handle.id)
+        deferredPresentationStyleHandles.remove(handle.id)
+        terminalCoordinator.removeSurface(for: surfaceKey(handle))
+        reportSurfaceStateLater(
+            handle,
+            state: .disconnected(reason: reason)
+        )
     }
 
     func surfaceIdentity(handle: BorrowedTmuxSessionHandle) -> UInt? {
@@ -500,7 +509,7 @@ final class NativeTmuxSessionCoordinator {
         guard handlesByKey[key] == handle else { return }
         attachmentClosures[handle.id] = processAlive || childExitCode == 0
             ? .detached
-            : .processExited
+            : .processExited(code: childExitCode)
         attachments.removeValue(forKey: handle.id)
         deferredPresentationStyleHandles.remove(handle.id)
         terminalCoordinator.removeSurface(for: surfaceKey(handle))
