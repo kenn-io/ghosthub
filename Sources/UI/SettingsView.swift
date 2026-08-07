@@ -39,7 +39,8 @@ public struct SettingsActions {
         (ExeAccount) async -> ExeAccountConnectionProbeResult = { _ in
             .failed("exe.dev connection probing is unavailable.")
         }
-    var refreshExeAccounts: ([ExeAccount]) -> UUID? = { _ in nil }
+    var refreshExeAccounts:
+        ([ExeAccount], [String: [ExeVMRecord]]) -> UUID? = { _, _ in nil }
     var cancelExeAccountRefresh: (UUID) -> Void = { _ in }
     var invalidateExeAccountRefresh: (UUID, [ExeAccount]) -> Void = { _, _ in }
     var installRemoteKwt:
@@ -96,7 +97,10 @@ public struct SettingsActions {
         ) async -> ExeAccountConnectionProbeResult = { _ in
             .failed("exe.dev connection probing is unavailable.")
         },
-        refreshExeAccounts: @escaping ([ExeAccount]) -> UUID? = { _ in nil },
+        refreshExeAccounts: @escaping (
+            [ExeAccount],
+            [String: [ExeVMRecord]]
+        ) -> UUID? = { _, _ in nil },
         cancelExeAccountRefresh: @escaping (UUID) -> Void = { _ in },
         invalidateExeAccountRefresh: @escaping (
             UUID,

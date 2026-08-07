@@ -4,27 +4,6 @@ import GhosthubSettings
 import GhosthubTmux
 import GhosthubWorkspace
 
-struct ExeVMRecord: Decodable, Equatable, Sendable {
-    var vmName: String
-    var sshDestination: String
-    var status: String
-    var region: String?
-    var regionDisplayName: String?
-    var httpsURL: String?
-
-    private enum CodingKeys: String, CodingKey {
-        case vmName = "vm_name"
-        case sshDestination = "ssh_dest"
-        case status, region
-        case regionDisplayName = "region_display"
-        case httpsURL = "https_url"
-    }
-
-    var isRunning: Bool {
-        status.caseInsensitiveCompare("running") == .orderedSame
-    }
-}
-
 private struct ExeVMListResponse: Decodable {
     var vms: [ExeVMRecord]
 }
@@ -102,8 +81,7 @@ struct ExeVMClient: Sendable {
         for account: ExeAccount
     ) -> ExeAccountConnectionProbeResult {
         do {
-            _ = try listVMs(for: account)
-            return .connected
+            return .connected(try listVMs(for: account))
         } catch let error as ExeVMInventoryError {
             if case let .commandFailed(_, status, message) = error,
                SSHConnectionFailure.diagnostic(
@@ -246,7 +224,8 @@ final class ExeVMInventoryStore: ObservableObject {
     @discardableResult
     func refresh(
         accounts: [ExeAccount],
-        persistedAccounts: [ExeAccount]
+        persistedAccounts: [ExeAccount],
+        prefetchedVMs: [String: [ExeVMRecord]] = [:]
     ) -> UUID {
         let enabled = ExeAccountSanitizer.discoverableAccounts(accounts)
             .filter(\.isEnabled)
@@ -316,16 +295,31 @@ final class ExeVMInventoryStore: ObservableObject {
             publishInventory()
             return refreshID
         }
+        var accountsToQuery: [ExeAccount] = []
         for account in enabled {
-            statusesByAccount[account.configKey] = .loading
+            if let vms = prefetchedVMs[account.configKey] {
+                applyInventory(
+                    vms,
+                    for: account,
+                    accountName: enabledNames[account.configKey] ?? account.name
+                )
+                refreshState?.completedAccountKeys.insert(account.configKey)
+            } else {
+                statusesByAccount[account.configKey] = .loading
+                accountsToQuery.append(account)
+            }
         }
         publishInventory()
+        guard !accountsToQuery.isEmpty else {
+            refreshState?.isComplete = true
+            return refreshID
+        }
         let client = client
         refreshTask = Task { [weak self] in
             await withTaskGroup(
                 of: (ExeAccount, Result<[ExeVMRecord], Error>).self
             ) { group in
-                for account in enabled {
+                for account in accountsToQuery {
                     group.addTask {
                         do {
                             return (
@@ -350,24 +344,13 @@ final class ExeVMInventoryStore: ObservableObject {
                         ?? account.name
                     switch result {
                     case let .success(vms):
-                        let running = vms.filter(\.isRunning)
-                        self.hostsByAccount[account.configKey] =
-                            ExeAccountHostCache(
-                                sshDestination: account.sshDestination,
-                                hosts: running.map {
-                                    Self.configuredHost(
-                                        $0,
-                                        account: account,
-                                        accountName: accountName
-                                    )
-                                }
-                            )
+                        self.applyInventory(
+                            vms,
+                            for: account,
+                            accountName: accountName
+                        )
                         self.refreshState?.completedAccountKeys.insert(
                             account.configKey
-                        )
-                        self.statusesByAccount[account.configKey] = .loaded(
-                            totalVMs: vms.count,
-                            runningVMs: running.count
                         )
                     case let .failure(error):
                         self.refreshState?.completedAccountKeys.insert(
@@ -589,6 +572,28 @@ final class ExeVMInventoryStore: ObservableObject {
             }
         } while needsInventoryPublish
         isPublishingInventory = false
+    }
+
+    private func applyInventory(
+        _ vms: [ExeVMRecord],
+        for account: ExeAccount,
+        accountName: String
+    ) {
+        let running = vms.filter(\.isRunning)
+        hostsByAccount[account.configKey] = ExeAccountHostCache(
+            sshDestination: account.sshDestination,
+            hosts: running.map {
+                Self.configuredHost(
+                    $0,
+                    account: account,
+                    accountName: accountName
+                )
+            }
+        )
+        statusesByAccount[account.configKey] = .loaded(
+            totalVMs: vms.count,
+            runningVMs: running.count
+        )
     }
 
     private static func configuredHost(

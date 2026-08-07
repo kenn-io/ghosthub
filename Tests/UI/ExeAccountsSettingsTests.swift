@@ -93,7 +93,17 @@ struct ExeAccountsSettingsTests {
             name: "Probe failure",
             sshDestination: "probe.exe.dev"
         )
+        let connectedAccount = ExeAccount(
+            configKey: "connected",
+            name: "Connected",
+            sshDestination: "connected.exe.dev"
+        )
         var probedAccounts: [String] = []
+        let inventory = [ExeVMRecord(
+            vmName: "build",
+            sshDestination: "vm+build@exe.dev",
+            status: "running"
+        )]
         let runner = ExeAccountConnectionRunner(
             pendingTrust: { account in
                 if account == trustFailure {
@@ -103,22 +113,26 @@ struct ExeAccountsSettingsTests {
             },
             probe: { account in
                 probedAccounts.append(account.id)
-                return .failed("Probe failed")
+                if account == probeFailure {
+                    return .failed("Probe failed")
+                }
+                return .connected(inventory)
             }
         )
         let operation = ExeAccountConnectionOperation(
-            accounts: [trustFailure, probeFailure]
+            accounts: [trustFailure, probeFailure, connectedAccount]
         )
 
         let result = await runner.run(operation, isCurrent: { true })
-        guard case let .refresh(accounts, messages) = result else {
+        guard case let .refresh(accounts, prefetchedVMs, messages) = result else {
             Issue.record("Expected eligible accounts to refresh")
             return
         }
 
-        #expect(accounts == [trustFailure, probeFailure])
+        #expect(accounts == [connectedAccount])
         #expect(messages[trustFailure.id] == "Trust failed")
         #expect(messages[probeFailure.id] == "Probe failed")
-        #expect(probedAccounts == [probeFailure.id])
+        #expect(prefetchedVMs[connectedAccount.configKey] == inventory)
+        #expect(probedAccounts == [probeFailure.id, connectedAccount.id])
     }
 }

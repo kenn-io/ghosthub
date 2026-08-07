@@ -27,8 +27,45 @@ public enum ExeAccountStatus: Equatable, Sendable {
     case failed(String)
 }
 
+public struct ExeVMRecord: Decodable, Equatable, Sendable {
+    public var vmName: String
+    public var sshDestination: String
+    public var status: String
+    public var region: String?
+    public var regionDisplayName: String?
+    public var httpsURL: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case vmName = "vm_name"
+        case sshDestination = "ssh_dest"
+        case status, region
+        case regionDisplayName = "region_display"
+        case httpsURL = "https_url"
+    }
+
+    public init(
+        vmName: String,
+        sshDestination: String,
+        status: String,
+        region: String? = nil,
+        regionDisplayName: String? = nil,
+        httpsURL: String? = nil
+    ) {
+        self.vmName = vmName
+        self.sshDestination = sshDestination
+        self.status = status
+        self.region = region
+        self.regionDisplayName = regionDisplayName
+        self.httpsURL = httpsURL
+    }
+
+    public var isRunning: Bool {
+        status.caseInsensitiveCompare("running") == .orderedSame
+    }
+}
+
 public enum ExeAccountConnectionProbeResult: Equatable, Sendable {
-    case connected
+    case connected([ExeVMRecord])
     case authenticationRequired
     case failed(String)
 }

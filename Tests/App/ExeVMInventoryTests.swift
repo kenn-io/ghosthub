@@ -244,9 +244,8 @@ struct ExeVMInventoryTests {
                 return
             }
         }
-        let persistedRefreshID = store.refresh(accounts: [persisted])
+        store.refresh(accounts: [persisted])
         await loaded.value
-        store.cancelRefresh(persistedRefreshID, retaining: [persisted])
 
         let edited = ExeAccount(
             configKey: "personal",
@@ -277,7 +276,30 @@ struct ExeVMInventoryTests {
             totalVMs: 1,
             runningVMs: 1
         ))
-        store.cancelRefresh(editedRefreshID, retaining: [persisted])
+
+        let movedAgain = ExeAccount(
+            configKey: "personal",
+            name: "Moved again",
+            sshDestination: "newer.exe.dev"
+        )
+        loaded = Task { @MainActor in
+            for await hosts in store.$hosts.values
+                where hosts.first?.sshHost.sshDestination
+                == "vm+newer@exe.dev" {
+                return
+            }
+        }
+        let movedAgainRefreshID = store.refresh(
+            accounts: [movedAgain],
+            persistedAccounts: [persisted]
+        )
+        await loaded.value
+        store.invalidateRefresh(
+            movedAgainRefreshID,
+            currentAccounts: [persisted]
+        )
+        #expect(store.hosts.first?.sshHost.sshDestination == "vm+old@exe.dev")
+        store.cancelRefresh(movedAgainRefreshID, retaining: [persisted])
 
         let added = ExeAccount(
             configKey: "work",
@@ -302,6 +324,41 @@ struct ExeVMInventoryTests {
         #expect(store.hosts.map(\.metadata.accountConfigKey) == ["personal"])
         #expect(store.statuses["work"] == nil)
         store.cancelRefresh(addedRefreshID, retaining: [persisted])
+    }
+
+    @MainActor
+    @Test("prefetched connection inventory is published without another query")
+    func prefetchedInventoryAvoidsAnotherQuery() throws {
+        let queryCount = LockedValue(0)
+        let store = ExeVMInventoryStore(client: ExeVMClient { _, _, _ in
+            queryCount.withLock { $0 += 1 }
+            return (255, "", "Unexpected query")
+        })
+        let account = ExeAccount(
+            configKey: "personal",
+            name: "Personal",
+            sshDestination: "exe.dev"
+        )
+
+        store.refresh(
+            accounts: [account],
+            persistedAccounts: [],
+            prefetchedVMs: [
+                account.configKey: [ExeVMRecord(
+                    vmName: "build",
+                    sshDestination: "vm+build@exe.dev",
+                    status: "running"
+                )],
+            ]
+        )
+
+        #expect(queryCount.load() == 0)
+        #expect(try #require(store.hosts.first).sshHost.sshDestination
+            == "vm+build@exe.dev")
+        #expect(store.statuses[account.configKey] == .loaded(
+            totalVMs: 1,
+            runningVMs: 1
+        ))
     }
 
     @MainActor

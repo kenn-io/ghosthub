@@ -60,13 +60,13 @@ enum ExeAccountTrustAction {
 
 enum ExeAccountConnectionAction {
     case authenticate
-    case refresh
+    case refresh([ExeVMRecord])
     case fail(String)
 
     static func resolve(_ result: ExeAccountConnectionProbeResult) -> Self {
         switch result {
-        case .connected:
-            return .refresh
+        case let .connected(vms):
+            return .refresh(vms)
         case .authenticationRequired:
             return .authenticate
         case let .failed(message):
@@ -105,7 +105,11 @@ enum ExeAccountConnectionRunResult {
         messages: [String: String]
     )
     case authenticate(account: ExeAccount, messages: [String: String])
-    case refresh(accounts: [ExeAccount], messages: [String: String])
+    case refresh(
+        accounts: [ExeAccount],
+        prefetchedVMs: [String: [ExeVMRecord]],
+        messages: [String: String]
+    )
 }
 
 @MainActor
@@ -122,6 +126,8 @@ struct ExeAccountConnectionRunner {
         isCurrent: () -> Bool
     ) async -> ExeAccountConnectionRunResult {
         var messages: [String: String] = [:]
+        var connectedAccounts: [ExeAccount] = []
+        var prefetchedVMs: [String: [ExeVMRecord]] = [:]
         for account in operation.accounts {
             let trustResult = await pendingTrust(account)
             guard !Task.isCancelled, isCurrent() else {
@@ -150,7 +156,9 @@ struct ExeAccountConnectionRunner {
             switch ExeAccountConnectionAction.resolve(probeResult) {
             case .authenticate:
                 return .authenticate(account: account, messages: messages)
-            case .refresh:
+            case let .refresh(vms):
+                connectedAccounts.append(account)
+                prefetchedVMs[account.configKey] = vms
                 continue
             case let .fail(message):
                 messages[account.id] = message
@@ -160,7 +168,11 @@ struct ExeAccountConnectionRunner {
         guard !Task.isCancelled, isCurrent() else {
             return .cancelled
         }
-        return .refresh(accounts: operation.accounts, messages: messages)
+        return .refresh(
+            accounts: connectedAccounts,
+            prefetchedVMs: prefetchedVMs,
+            messages: messages
+        )
     }
 }
 
@@ -184,7 +196,7 @@ struct ExeAccountsSettingsView: View {
     let cancelSSHAuthentication: (UUID) -> Void
     let probeConnection:
         (ExeAccount) async -> ExeAccountConnectionProbeResult
-    let refresh: ([ExeAccount]) -> UUID?
+    let refresh: ([ExeAccount], [String: [ExeVMRecord]]) -> UUID?
     let cancelRefresh: (UUID) -> Void
     let invalidateRefresh: (UUID, [ExeAccount]) -> Void
 
@@ -259,13 +271,22 @@ struct ExeAccountsSettingsView: View {
                     systemImage: "person.crop.circle"
                 )
                 .font(.system(size: 13, weight: .semibold))
+                .accessibilityLabel(
+                    "Account details for \(accessibilityName(for: account))"
+                )
                 Spacer()
                 Toggle("Enabled", isOn: binding.isEnabled)
                     .toggleStyle(.checkbox)
+                    .accessibilityLabel(
+                        "Enabled for \(accessibilityName(for: account))"
+                    )
                 Button("Remove", role: .destructive) {
                     removeAccount(account.id)
                 }
                 .help("Remove exe.dev account")
+                .accessibilityLabel(
+                    "Remove \(accessibilityName(for: account))"
+                )
             }
 
             HStack(alignment: .top, spacing: 12) {
@@ -296,6 +317,11 @@ struct ExeAccountsSettingsView: View {
             RoundedRectangle(cornerRadius: 8)
                 .fill(.secondary.opacity(0.07))
         )
+    }
+
+    private func accessibilityName(for account: ExeAccount) -> String {
+        let name = account.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? account.configKey : name
     }
 
     private func accountField(
@@ -446,9 +472,13 @@ struct ExeAccountsSettingsView: View {
             case let .authenticate(account, operationMessages):
                 messages = operationMessages
                 beginAuthentication(account)
-            case let .refresh(refreshAccounts, operationMessages):
+            case let .refresh(
+                refreshAccounts,
+                prefetchedVMs,
+                operationMessages
+            ):
                 messages = operationMessages
-                inventoryRefreshID = refresh(refreshAccounts)
+                inventoryRefreshID = refresh(refreshAccounts, prefetchedVMs)
             }
         }
     }
