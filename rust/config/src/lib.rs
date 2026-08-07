@@ -319,7 +319,7 @@ impl Default for TerminalAppearance {
     fn default() -> Self {
         Self {
             font_family: "Cascadia Mono".to_owned(),
-            font_size: 13,
+            font_size: 14,
             background: 0x0c_0f_14,
             foreground: 0xd8_de_e9,
             allow_remote_clipboard_write: true,

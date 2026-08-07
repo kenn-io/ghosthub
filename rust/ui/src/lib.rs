@@ -23,10 +23,8 @@ const TERMINAL_HEADER_HEIGHT: f32 = 40.0;
 const TERMINAL_PADDING: f32 = 12.0;
 const TERMINAL_STAGE_INSET: f32 = 8.0;
 const TERMINAL_STAGE_BORDER: f32 = 1.0;
-const HOST_SIDEBAR_WIDTH: f32 = 196.0;
-const SESSION_SIDEBAR_WIDTH: f32 = 252.0;
-const APP_NAVIGATION_WIDTH: f32 = HOST_SIDEBAR_WIDTH + SESSION_SIDEBAR_WIDTH;
-const CELL_LINE_GAP: f32 = 2.0;
+const APP_NAVIGATION_WIDTH: f32 = 280.0;
+const CELL_LINE_GAP: f32 = 4.0;
 const UI_INPUT_CAPACITY: usize = 512;
 const MOUSE_RELEASE_RESERVE: usize = 3;
 const MAX_WHEEL_EVENTS_PER_CALLBACK: usize = 64;
@@ -1468,71 +1466,10 @@ impl RootView {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let hosts = snapshot.hosts();
-        let sidebar = div()
-            .w(px(HOST_SIDEBAR_WIDTH))
-            .h_full()
-            .flex_none()
-            .flex()
-            .flex_col()
-            .p_3()
-            .bg(rgb(0x10_12_17))
-            .border_r_1()
-            .border_color(rgb(0x25_2932))
-            .child(
-                div()
-                    .h(px(38.0))
-                    .flex()
-                    .items_center()
-                    .px_2()
-                    .text_sm()
-                    .text_color(rgb(0x8f_96_a3))
-                    .child("HOSTS"),
-            )
-            .children(hosts.iter().enumerate().map(|(index, host)| {
-                let status_color = match host.connection() {
-                    HostConnectionState::Ready => 0x62_c0_7a,
-                    HostConnectionState::Connecting => 0xd3_a4_4a,
-                    HostConnectionState::Disconnected => 0x8f_96_a3,
-                    HostConnectionState::Unavailable => 0xd0_65_65,
-                };
-                div()
-                    .id(("host", index))
-                    .px_3()
-                    .py_2()
-                    .rounded_md()
-                    .bg(rgb(if snapshot.selected_host() == Some(host.id()) {
-                        0x24_2832
-                    } else {
-                        0x10_12_17
-                    }))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(div().text_color(rgb(status_color)).child("●"))
-                            .child(host.name().to_owned()),
-                    )
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(rgb(0x8f_96_a3))
-                            .child(host.endpoint().to_owned()),
-                    )
-            }));
-
         let selected = snapshot
             .selected_host()
             .and_then(|id| hosts.iter().find(|host| host.id() == id));
-        let session_sidebar = selected.map_or_else(
-            || {
-                div()
-                    .w(px(SESSION_SIDEBAR_WIDTH))
-                    .h_full()
-                    .into_any_element()
-            },
-            |host| Self::session_sidebar(host, snapshot.content(), cx),
-        );
+        let navigator = Self::workspace_tree(snapshot, cx);
         let main = match snapshot.content() {
             WorkspaceContent::Terminal {
                 endpoint,
@@ -1555,131 +1492,200 @@ impl RootView {
         div()
             .size_full()
             .flex()
-            .child(sidebar)
-            .child(session_sidebar)
+            .child(navigator)
             .child(div().flex_1().h_full().child(main))
             .into_any_element()
     }
 
-    fn session_sidebar(
-        host: &HostItem,
-        content: &WorkspaceContent,
+    fn workspace_tree(
+        snapshot: &workspace::WorkspaceSnapshot,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let active = active_session_name(content);
-        let mut sidebar = div()
-            .w(px(SESSION_SIDEBAR_WIDTH))
+        let mut tree = div()
+            .w(px(APP_NAVIGATION_WIDTH))
             .h_full()
             .flex_none()
             .flex()
             .flex_col()
-            .bg(rgb(0x15_17_1d))
+            .bg(rgb(0x0f_1116))
             .border_r_1()
             .border_color(rgb(0x25_2932))
             .child(
                 div()
-                    .h(px(62.0))
+                    .h(px(44.0))
+                    .flex_none()
                     .flex()
                     .items_center()
-                    .justify_between()
-                    .px_4()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(rgb(0x8f_96_a3))
-                                    .child("SESSIONS"),
-                            )
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(rgb(0xc9_cd_d6))
-                                    .child(host.endpoint().to_owned()),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .id("refresh-session-sidebar")
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .cursor_pointer()
-                            .text_color(rgb(0xb7_bc_c6))
-                            .hover(|style| style.bg(rgb(0x2a_2f_3a)))
-                            .child("Refresh")
-                            .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
-                    ),
+                    .px_3()
+                    .border_b_1()
+                    .border_color(rgb(0x1d_2028))
+                    .text_xs()
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(rgb(0xa5_ac_b8))
+                    .child("WORKSPACES"),
             );
 
-        match host.connection() {
-            HostConnectionState::Ready if host.sessions().is_empty() => {
-                sidebar = sidebar.child(
-                    div()
-                        .p_4()
-                        .text_sm()
-                        .text_color(rgb(0x8f_96_a3))
-                        .child(empty_inventory_text(host)),
-                );
-            }
-            HostConnectionState::Ready => {
-                for (index, session) in host.sessions().iter().enumerate() {
-                    let is_active = active == Some(session.name());
-                    sidebar = sidebar.child(Self::session_row(index, session, is_active, cx));
-                }
-            }
-            HostConnectionState::Connecting => {
-                sidebar = sidebar.child(
-                    div()
-                        .p_4()
-                        .text_sm()
-                        .text_color(rgb(0x8f_96_a3))
-                        .child("Discovering sessions…"),
-                );
-            }
-            HostConnectionState::Disconnected | HostConnectionState::Unavailable => {}
+        for (host_index, host) in snapshot.hosts().iter().enumerate() {
+            tree = tree.child(Self::host_tree(
+                host_index,
+                host,
+                snapshot.selected_host() == Some(host.id()),
+                snapshot.content(),
+                cx,
+            ));
         }
-        sidebar.into_any_element()
+        tree.into_any_element()
     }
 
-    fn session_row(
+    fn host_tree(
+        host_index: usize,
+        host: &HostItem,
+        is_selected: bool,
+        content: &WorkspaceContent,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let status_color = match host.connection() {
+            HostConnectionState::Ready => 0x62_c0_7a,
+            HostConnectionState::Connecting => 0xd3_a4_4a,
+            HostConnectionState::Disconnected => 0x8f_96_a3,
+            HostConnectionState::Unavailable => 0xd0_65_65,
+        };
+        let mut host_tree = div().flex().flex_col().child(
+            div()
+                .id(("host", host_index))
+                .h(px(46.0))
+                .flex()
+                .items_center()
+                .gap_2()
+                .px_3()
+                .bg(rgb(if is_selected { 0x16_1920 } else { 0x0f_1116 }))
+                .child(div().text_color(rgb(0x6f_7682)).child("▾"))
+                .child(div().text_color(rgb(status_color)).child("●"))
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .truncate()
+                                .text_sm()
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(rgb(0xd2_d7_df))
+                                .child(host.name().to_owned()),
+                        )
+                        .child(
+                            div()
+                                .truncate()
+                                .text_xs()
+                                .text_color(rgb(0x71_7885))
+                                .child(host.endpoint().to_owned()),
+                        ),
+                )
+                .child(
+                    div()
+                        .id(("refresh-host", host_index))
+                        .flex_none()
+                        .px_2()
+                        .py_1()
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .text_xs()
+                        .text_color(rgb(0x8f_96_a3))
+                        .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xd2_d7_df)))
+                        .child("Refresh")
+                        .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
+                ),
+        );
+
+        if host.connection() == HostConnectionState::Ready {
+            host_tree = host_tree.child(
+                div()
+                    .h(px(28.0))
+                    .flex()
+                    .items_center()
+                    .pl(px(35.0))
+                    .text_xs()
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(rgb(0x73_7a87))
+                    .child("TMUX SESSIONS"),
+            );
+            if host.sessions().is_empty() {
+                host_tree = host_tree.child(
+                    div()
+                        .px_3()
+                        .pl(px(51.0))
+                        .py_2()
+                        .text_xs()
+                        .text_color(rgb(0x73_7a87))
+                        .child("No sessions"),
+                );
+            } else {
+                let active = active_session_name(content);
+                for (session_index, session) in host.sessions().iter().enumerate() {
+                    host_tree = host_tree.child(Self::tree_session_row(
+                        host_index,
+                        session_index,
+                        session,
+                        active == Some(session.name()),
+                        cx,
+                    ));
+                }
+            }
+        }
+        host_tree.into_any_element()
+    }
+
+    fn tree_session_row(
+        host_index: usize,
         index: usize,
         session: &workspace::SessionItem,
         is_active: bool,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let name = session.name().to_owned();
-        let detail = if is_active {
-            "OPEN".to_owned()
-        } else if session.attached_clients() == 0 {
+        let detail = if session.attached_clients() == 0 {
             "detached".to_owned()
+        } else if session.attached_clients() == 1 {
+            "1 client".to_owned()
         } else {
-            format!("{} client(s)", session.attached_clients())
+            format!("{} clients", session.attached_clients())
         };
         div()
-            .id(("sidebar-session", index))
+            .id((
+                gpui::ElementId::named_usize("tree-session-host", host_index),
+                index.to_string(),
+            ))
             .mx_2()
-            .mb_1()
-            .px_3()
-            .py_2()
-            .rounded_md()
+            .h(px(40.0))
+            .flex()
+            .items_center()
+            .gap_2()
+            .pl(px(27.0))
+            .pr_2()
+            .rounded_sm()
             .cursor_pointer()
-            .bg(rgb(if is_active { 0x2a_3442 } else { 0x15_17_1d }))
-            .hover(|style| style.bg(rgb(0x25_2a34)))
+            .bg(rgb(if is_active { 0x13_3d6a } else { 0x0f_1116 }))
+            .hover(|style| style.bg(rgb(if is_active { 0x17_477a } else { 0x1b_1f27 })))
+            .child(div().flex_none().text_color(rgb(0x7f_8794)).child("›_"))
             .child(
                 div()
+                    .min_w_0()
+                    .flex_1()
                     .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .child(div().flex_1().min_w_0().truncate().child(name.clone()))
+                    .flex_col()
                     .child(
                         div()
-                            .flex_none()
+                            .truncate()
+                            .text_sm()
+                            .text_color(rgb(if is_active { 0xe5_ed_f7 } else { 0xc4_c9_d2 }))
+                            .child(name.clone()),
+                    )
+                    .child(
+                        div()
                             .text_xs()
-                            .text_color(rgb(if is_active { 0x72_c9_a5 } else { 0x8f_96_a3 }))
+                            .text_color(rgb(if is_active { 0xa9_c9_ea } else { 0x6f_7682 }))
                             .child(detail),
                     ),
             )
@@ -2224,11 +2230,11 @@ fn measure_terminal_metrics(
             |_| f32::from(text_system.bounding_box(font_id, font_size).size.width),
             |advance| f32::from(advance.width),
         ));
-    let line_height = (f32::from(text_system.ascent(font_id, font_size))
-        + f32::from(text_system.descent(font_id, font_size))
-        + CELL_LINE_GAP)
-        .ceil()
-        .max(1.0);
+    let line_height = terminal_line_height(
+        f32::from(font_size),
+        f32::from(text_system.ascent(font_id, font_size)),
+        f32::from(text_system.descent(font_id, font_size)),
+    );
     TerminalMetrics {
         cell_width,
         line_height,
@@ -2237,6 +2243,13 @@ fn measure_terminal_metrics(
 
 fn normalize_cell_width(measured: f32) -> f32 {
     measured.max(1.0)
+}
+
+fn terminal_line_height(font_size: f32, ascent: f32, descent: f32) -> f32 {
+    (ascent + descent + CELL_LINE_GAP)
+        .max(font_size * 1.3)
+        .ceil()
+        .max(1.0)
 }
 
 #[must_use]
@@ -2303,7 +2316,7 @@ mod tests {
         clears_after_input_delivery, clears_when_input_queue_is_empty, coalesce_last_resize,
         coalesce_last_wheel, input_queue_has_capacity, named_key, normalize_cell_width,
         queued_input_matches_presentation, terminal_cell_at_with_offset, terminal_key_input,
-        terminal_wheel_steps, transitioned_presentation,
+        terminal_line_height, terminal_wheel_steps, transitioned_presentation,
     };
     use std::sync::Arc;
     use surface::{GridSize, SurfaceFrame, SurfaceStore};
@@ -2713,6 +2726,12 @@ mod tests {
     fn measured_fractional_cell_width_is_not_rounded() {
         assert!((normalize_cell_width(8.25) - 8.25).abs() < f32::EPSILON);
         assert!((normalize_cell_width(0.5) - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn terminal_line_height_keeps_readable_leading() {
+        assert!((terminal_line_height(14.0, 10.0, 3.0) - 19.0).abs() < f32::EPSILON);
+        assert!((terminal_line_height(14.0, 12.0, 4.0) - 20.0).abs() < f32::EPSILON);
     }
 
     #[test]
