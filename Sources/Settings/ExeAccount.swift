@@ -132,21 +132,56 @@ public enum ExeAccountSanitizer {
         _ drafts: [ExeAccount],
         previous: [ExeAccount]
     ) -> [ExeAccount] {
-        let sanitized = discoverableAccounts(drafts)
-        guard sanitized.count != drafts.count else { return sanitized }
-
+        let previousByKey = Dictionary(uniqueKeysWithValues: previous.map {
+            ($0.configKey, $0)
+        })
         let draftsByKey = Dictionary(grouping: drafts) {
             $0.configKey.trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        return previous.compactMap { account in
-            let matches = draftsByKey[account.configKey] ?? []
-            guard !matches.isEmpty else { return nil }
-            guard matches.count == 1, !matches[0].isEnabled else {
-                return account
+        let duplicateDestinations = duplicateEnabledDestinations(drafts)
+        var emittedKeys = Set<String>()
+        var reconciled: [ExeAccount] = []
+
+        for draft in drafts {
+            let configKey = draft.configKey.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            guard !configKey.isEmpty,
+                  emittedKeys.insert(configKey).inserted
+            else { continue }
+            let previousAccount = previousByKey[configKey]
+            guard draftsByKey[configKey]?.count == 1 else {
+                if let previousAccount {
+                    reconciled.append(previousAccount)
+                }
+                continue
             }
-            var disabled = account
-            disabled.isEnabled = false
-            return disabled
+
+            let name = draft.name.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            let destination = draft.sshDestination.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            let isAmbiguous = draft.isEnabled
+                && duplicateDestinations.contains(destination)
+            guard !name.isEmpty, !destination.isEmpty, !isAmbiguous else {
+                if var previousAccount {
+                    if !draft.isEnabled {
+                        previousAccount.isEnabled = false
+                    }
+                    reconciled.append(previousAccount)
+                }
+                continue
+            }
+
+            reconciled.append(ExeAccount(
+                configKey: configKey,
+                name: name,
+                sshDestination: destination,
+                isEnabled: draft.isEnabled
+            ))
         }
+        return reconciled
     }
 }

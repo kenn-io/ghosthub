@@ -73,4 +73,66 @@ struct ExeAccountTests {
             ),
         ]) == ["exe.dev"])
     }
+
+    @Test("persistence reconciles invalid accounts independently")
+    func reconcilesPersistenceByAccount() {
+        let personal = ExeAccount(
+            configKey: "personal",
+            name: "Personal",
+            sshDestination: "exe.dev"
+        )
+        let work = ExeAccount(
+            configKey: "work",
+            name: "Work",
+            sshDestination: "work-exe"
+        )
+        let removed = ExeAccount(
+            configKey: "removed",
+            name: "Removed",
+            sshDestination: "removed-exe"
+        )
+        let added = ExeAccount(
+            configKey: "added",
+            name: "Added",
+            sshDestination: "added-exe"
+        )
+
+        #expect(ExeAccountSanitizer.accountsForPersistence(
+            [
+                ExeAccount(
+                    configKey: "personal",
+                    name: "Renamed",
+                    sshDestination: "exe.dev"
+                ),
+                ExeAccount(
+                    configKey: "work",
+                    name: "",
+                    sshDestination: "work-exe"
+                ),
+                added,
+            ],
+            previous: [personal, work, removed]
+        ) == [
+            ExeAccount(
+                configKey: "personal",
+                name: "Renamed",
+                sshDestination: "exe.dev"
+            ),
+            work,
+            added,
+        ])
+
+        #expect(ExeAccountSanitizer.accountsForPersistence(
+            [
+                personal,
+                ExeAccount(
+                    configKey: "work",
+                    name: "Work",
+                    sshDestination: "exe.dev"
+                ),
+                added,
+            ],
+            previous: [personal, work]
+        ) == [personal, work, added])
+    }
 }
