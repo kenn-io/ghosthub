@@ -5,6 +5,7 @@ pub enum DiagnosticKind {
     ExecutableNotFound,
     MalformedOutput,
     PermissionDenied,
+    Timeout,
     Transport,
     UnsupportedEnvironment,
 }
