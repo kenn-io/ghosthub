@@ -1678,7 +1678,7 @@ fn run_attach(inner: &Inner, request: &AttachRequest, term: AttachTerm, generati
                 },
             ) {
                 attachment.clear_if_current(generation);
-                publish_attachment_failure(inner, error);
+                publish_attachment_failure(inner, request.inventory_generation, error);
                 return;
             }
             set_terminal_notice(inner, term);
@@ -1702,7 +1702,9 @@ fn run_attach(inner: &Inner, request: &AttachRequest, term: AttachTerm, generati
                 return;
             }
             match error {
-                AttachFreshError::Host(error) => publish_attachment_failure(inner, error),
+                AttachFreshError::Host(error) => {
+                    publish_attachment_failure(inner, request.inventory_generation, error);
+                }
                 AttachFreshError::SessionChanged { error, snapshot } => {
                     publish_stale_attachment_failure(inner, request, snapshot, &error);
                 }
@@ -1712,20 +1714,24 @@ fn run_attach(inner: &Inner, request: &AttachRequest, term: AttachTerm, generati
 }
 
 fn publish_attach_inventory(inner: &Inner, request: &AttachRequest, snapshot: HostSnapshot) {
-    let inventory_state = ready_content(&snapshot);
     publish_refresh(inner, request.inventory_generation, || {
-        *inner
-            .host
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Published::new(
-            HostContext {
-                host: request.host.clone(),
-                snapshot,
-            },
-            request.inventory_generation,
-        ));
-        set_inventory_state(inner, inventory_state);
+        set_attach_inventory(inner, request, snapshot);
     });
+}
+
+fn set_attach_inventory(inner: &Inner, request: &AttachRequest, snapshot: HostSnapshot) {
+    let inventory_state = ready_content(&snapshot);
+    *inner
+        .host
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Published::new(
+        HostContext {
+            host: request.host.clone(),
+            snapshot,
+        },
+        request.inventory_generation,
+    ));
+    set_inventory_state(inner, inventory_state);
 }
 
 fn publish_stale_attachment_failure(
@@ -1734,21 +1740,25 @@ fn publish_stale_attachment_failure(
     snapshot: HostSnapshot,
     error: &WorkspaceError,
 ) {
-    clear_pending_paste(inner);
-    set_inner_state(inner, WorkspaceContent::Shell);
-    set_local_notice(inner, error.to_string());
-    publish_attach_inventory(inner, request, snapshot);
+    publish_refresh(inner, request.inventory_generation, || {
+        clear_pending_paste(inner);
+        set_inner_state(inner, WorkspaceContent::Shell);
+        set_local_notice(inner, error.to_string());
+        set_attach_inventory(inner, request, snapshot);
+    });
 }
 
-fn publish_attachment_failure(inner: &Inner, error: impl fmt::Display) {
-    clear_pending_paste(inner);
+fn publish_attachment_failure(inner: &Inner, inventory_generation: u64, error: impl fmt::Display) {
     let message = error.to_string();
-    if inner.host_scoped_inventory {
-        set_inner_state(inner, WorkspaceContent::Shell);
-        set_wsl_host_unavailable(inner, DiagnosticKind::Transport, message);
-    } else {
-        set_inner_state(inner, WorkspaceContent::Error { message });
-    }
+    publish_refresh(inner, inventory_generation, || {
+        clear_pending_paste(inner);
+        if inner.host_scoped_inventory {
+            set_inner_state(inner, WorkspaceContent::Shell);
+            set_wsl_host_unavailable(inner, DiagnosticKind::Transport, message);
+        } else {
+            set_inner_state(inner, WorkspaceContent::Error { message });
+        }
+    });
 }
 
 fn attach_fresh(
@@ -2191,6 +2201,7 @@ mod tests {
 
         publish_attachment_failure(
             &workspace.inner,
+            0,
             WorkspaceError::new("attachment launch failed"),
         );
 
@@ -2202,6 +2213,29 @@ mod tests {
             host.diagnostic().map(HostDiagnostic::message),
             Some("attachment launch failed")
         );
+    }
+
+    #[test]
+    fn stale_attachment_failure_cannot_overwrite_a_newer_host_refresh() {
+        let spec = WslHostSpec::available(
+            WslConfig::with_distro("Ubuntu").expect("valid config"),
+            WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
+                .expect("absolute WSL path"),
+        );
+        let workspace = Workspace::application(TerminalAppearance::default(), Some(spec));
+        let newer_generation = begin_refresh(&workspace.inner, &CancellationToken::new());
+
+        publish_attachment_failure(
+            &workspace.inner,
+            newer_generation - 1,
+            WorkspaceError::new("stale attachment failure"),
+        );
+
+        let snapshot = workspace.snapshot();
+        assert!(matches!(snapshot.content(), WorkspaceContent::Shell));
+        let host = &snapshot.hosts()[0];
+        assert_eq!(host.connection(), HostConnectionState::Connecting);
+        assert_eq!(host.diagnostic(), None);
     }
 
     #[test]
@@ -2283,6 +2317,7 @@ mod tests {
 
         publish_attachment_failure(
             &workspace.inner,
+            0,
             WorkspaceError::new("legacy attachment failed"),
         );
 

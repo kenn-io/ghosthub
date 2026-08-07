@@ -293,6 +293,7 @@ pub struct RootView {
 
 #[derive(Clone, Copy)]
 struct WheelTarget {
+    presentation_id: u64,
     cell: (usize, usize),
     modifiers: gpui::Modifiers,
 }
@@ -394,6 +395,7 @@ enum PendingUiInput {
 }
 
 struct QueuedUiInput {
+    presentation_id: u64,
     input: PendingUiInput,
     bytes: usize,
     accepted_after_refusal: Option<u64>,
@@ -603,6 +605,11 @@ impl RootView {
         true
     }
 
+    fn presentation_accepts_input(&mut self, presentation_id: u64) -> bool {
+        let _scope_changed = self.sync_terminal_scope();
+        terminal_presentation_id(self.workspace.snapshot().content()) == Some(presentation_id)
+    }
+
     fn clear_terminal_input(&mut self) {
         clear_terminal_input_state(
             &mut self.paste_confirmation,
@@ -639,9 +646,14 @@ impl RootView {
                         .read_from_clipboard()
                         .and_then(|clipboard| clipboard.text())
                         .unwrap_or_default();
-                    self.enqueue_input(PendingUiInput::ClipboardResponse(
-                        request.respond(&contents),
-                    ));
+                    if let Some(presentation_id) =
+                        terminal_presentation_id(self.workspace.snapshot().content())
+                    {
+                        self.enqueue_input(
+                            presentation_id,
+                            PendingUiInput::ClipboardResponse(request.respond(&contents)),
+                        );
+                    }
                 }
                 WorkspaceEvent::ConfirmPaste => self.paste_confirmation = true,
                 WorkspaceEvent::Error(error) => self.diagnostic = Some(error),
@@ -663,13 +675,22 @@ impl RootView {
             || surface.load().generation() != self.observed_surface_generation
     }
 
-    fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_key_down(
+        &mut self,
+        presentation_id: u64,
+        event: &KeyDownEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.presentation_accepts_input(presentation_id) {
+            return;
+        }
         let keystroke = &event.keystroke;
         if is_paste_shortcut(keystroke) {
             if !event.is_held
                 && let Some(text) = cx.read_from_clipboard().and_then(|item| item.text())
             {
-                self.send_key(KeyInput::paste(text));
+                self.send_key(presentation_id, KeyInput::paste(text));
             }
             cx.stop_propagation();
             return;
@@ -683,12 +704,21 @@ impl RootView {
         let input = terminal_key_input(keystroke, event)
             .or_else(|| self.keyboard.input_for(&keystroke.key, event));
         if let Some(input) = input {
-            self.send_key_event(input, &keystroke.key, event);
+            self.send_key_event(presentation_id, input, &keystroke.key, event);
             cx.stop_propagation();
         }
     }
 
-    fn on_key_up(&mut self, event: &KeyUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_key_up(
+        &mut self,
+        presentation_id: u64,
+        event: &KeyUpEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.presentation_accepts_input(presentation_id) {
+            return;
+        }
         if is_paste_shortcut(&event.keystroke) {
             cx.stop_propagation();
             return;
@@ -697,22 +727,36 @@ impl RootView {
             .keyboard
             .input_for(&event.keystroke.key, InputKeyEvent::Release)
         {
-            self.send_key_event(input, &event.keystroke.key, InputKeyEvent::Release);
+            self.send_key_event(
+                presentation_id,
+                input,
+                &event.keystroke.key,
+                InputKeyEvent::Release,
+            );
             cx.stop_propagation();
         }
     }
 
     fn on_mouse_down(
         &mut self,
+        presentation_id: u64,
         event: &MouseDownEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.presentation_accepts_input(presentation_id) {
+            return;
+        }
         window.focus(&self.focus);
         if let Some(button) = terminal_mouse_button(event.button) {
             let cell = self.terminal_cell_at(event.position.x.into(), event.position.y.into());
             if let Some(cell) = cell
-                && self.send_mouse_at_cell(MouseAction::Press(button), cell, event.modifiers)
+                && self.send_mouse_at_cell(
+                    presentation_id,
+                    MouseAction::Press(button),
+                    cell,
+                    event.modifiers,
+                )
             {
                 self.pointer.press(button, cell);
             }
@@ -720,12 +764,25 @@ impl RootView {
         }
     }
 
-    fn on_mouse_up(&mut self, event: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        let _scope_changed = self.sync_terminal_scope();
+    fn on_mouse_up(
+        &mut self,
+        presentation_id: u64,
+        event: &MouseUpEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.presentation_accepts_input(presentation_id) {
+            return;
+        }
         if let Some(button) = terminal_mouse_button(event.button) {
             let cell = self.terminal_cell_at(event.position.x.into(), event.position.y.into());
             if let Some(cell) = self.pointer.release_cell(button, cell)
-                && self.send_mouse_at_cell(MouseAction::Release(button), cell, event.modifiers)
+                && self.send_mouse_at_cell(
+                    presentation_id,
+                    MouseAction::Release(button),
+                    cell,
+                    event.modifiers,
+                )
             {
                 self.pointer.finish_release(button);
             }
@@ -735,25 +792,37 @@ impl RootView {
 
     fn on_mouse_move(
         &mut self,
+        presentation_id: u64,
         event: &MouseMoveEvent,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.presentation_accepts_input(presentation_id) {
+            return;
+        }
         let button = event.pressed_button.and_then(terminal_mouse_button);
         let cell = self.terminal_cell_at(event.position.x.into(), event.position.y.into());
         if let Some(cell) = self.pointer.observe(cell) {
-            self.send_mouse_at_cell(MouseAction::Move(button), cell, event.modifiers);
+            self.send_mouse_at_cell(
+                presentation_id,
+                MouseAction::Move(button),
+                cell,
+                event.modifiers,
+            );
         }
         cx.stop_propagation();
     }
 
     fn on_scroll_wheel(
         &mut self,
+        presentation_id: u64,
         event: &ScrollWheelEvent,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let _scope_changed = self.sync_terminal_scope();
+        if !self.presentation_accepts_input(presentation_id) {
+            return;
+        }
         let delta = event
             .delta
             .pixel_delta(px(self.terminal_metrics.line_height));
@@ -766,6 +835,7 @@ impl RootView {
         {
             if self.wheel_target.is_none() || self.wheel_remainder.abs() < 1.0 {
                 self.wheel_target = Some(WheelTarget {
+                    presentation_id,
                     cell,
                     modifiers: event.modifiers,
                 });
@@ -786,7 +856,12 @@ impl RootView {
         };
         let mut delivered = 0;
         for _ in 0..steps.unsigned_abs() {
-            if !self.send_mouse_at_cell(action, target.cell, target.modifiers) {
+            if !self.send_mouse_at_cell(
+                target.presentation_id,
+                action,
+                target.cell,
+                target.modifiers,
+            ) {
                 break;
             }
             delivered += 1;
@@ -815,6 +890,7 @@ impl RootView {
 
     fn send_mouse_at_cell(
         &mut self,
+        presentation_id: u64,
         action: MouseAction,
         (column, row): (usize, usize),
         modifiers: gpui::Modifiers,
@@ -825,15 +901,23 @@ impl RootView {
             row,
             modifiers: input_modifiers(modifiers),
         };
-        self.enqueue_input(PendingUiInput::Mouse(input))
+        self.enqueue_input(presentation_id, PendingUiInput::Mouse(input))
     }
 
-    fn send_key(&mut self, input: KeyInput) {
-        self.enqueue_input(PendingUiInput::Key(input));
+    fn send_key(&mut self, presentation_id: u64, input: KeyInput) {
+        self.enqueue_input(presentation_id, PendingUiInput::Key(input));
     }
 
-    fn send_key_event(&mut self, input: KeyInput, key: &str, event: InputKeyEvent) {
-        let _scope_changed = self.sync_terminal_scope();
+    fn send_key_event(
+        &mut self,
+        presentation_id: u64,
+        input: KeyInput,
+        key: &str,
+        event: InputKeyEvent,
+    ) {
+        if !self.presentation_accepts_input(presentation_id) {
+            return;
+        }
         if !self.keyboard.accepts(key, event) {
             return;
         }
@@ -842,21 +926,28 @@ impl RootView {
             InputKeyEvent::Repeat | InputKeyEvent::Release => self.keyboard.reserved_releases(),
         };
         let pressed_input = (event == InputKeyEvent::Press).then(|| input.clone());
-        if self.enqueue_input_with_reserve(PendingUiInput::Key(input), reserved_key_releases) {
+        if self.enqueue_input_with_reserve(
+            presentation_id,
+            PendingUiInput::Key(input),
+            reserved_key_releases,
+        ) {
             self.keyboard.finish_accepted(key, pressed_input, event);
         }
     }
 
-    fn enqueue_input(&mut self, input: PendingUiInput) -> bool {
-        self.enqueue_input_with_reserve(input, self.keyboard.reserved_releases())
+    fn enqueue_input(&mut self, presentation_id: u64, input: PendingUiInput) -> bool {
+        self.enqueue_input_with_reserve(presentation_id, input, self.keyboard.reserved_releases())
     }
 
     fn enqueue_input_with_reserve(
         &mut self,
+        presentation_id: u64,
         input: PendingUiInput,
         reserved_key_releases: usize,
     ) -> bool {
-        let _scope_changed = self.sync_terminal_scope();
+        if !self.presentation_accepts_input(presentation_id) {
+            return false;
+        }
         if matches!(
             &input,
             PendingUiInput::Mouse(MouseInput {
@@ -864,6 +955,7 @@ impl RootView {
                 ..
             })
         ) && let Some(last) = self.pending_input.back_mut()
+            && last.presentation_id == presentation_id
             && matches!(
                 last.input,
                 PendingUiInput::Mouse(MouseInput {
@@ -892,6 +984,7 @@ impl RootView {
         let accepted_after_refusal = self.input_refusal.acceptance_marker();
         self.pending_input_bytes += bytes;
         self.pending_input.push_back(QueuedUiInput {
+            presentation_id,
             input,
             bytes,
             accepted_after_refusal,
@@ -913,6 +1006,13 @@ impl RootView {
                 }
                 return changed;
             };
+            let active_presentation = terminal_presentation_id(self.workspace.snapshot().content());
+            if !queued_input_matches_presentation(input, active_presentation) {
+                let stale = self.pending_input.pop_front().expect("front input exists");
+                self.pending_input_bytes = self.pending_input_bytes.saturating_sub(stale.bytes);
+                changed = true;
+                continue;
+            }
             let result = match &input.input {
                 PendingUiInput::Key(input) => self.workspace.send_key(input.clone()),
                 PendingUiInput::Mouse(input) => self.workspace.send_mouse(*input),
@@ -983,7 +1083,10 @@ impl RootView {
         }
     }
 
-    fn approve_paste(&mut self, cx: &mut Context<Self>) {
+    fn approve_paste(&mut self, presentation_id: u64, cx: &mut Context<Self>) {
+        if !self.presentation_accepts_input(presentation_id) {
+            return;
+        }
         if let Err(error) = self.workspace.approve_paste() {
             self.diagnostic = Some(error.to_string());
         }
@@ -992,7 +1095,10 @@ impl RootView {
         cx.notify();
     }
 
-    fn cancel_paste(&mut self, cx: &mut Context<Self>) {
+    fn cancel_paste(&mut self, presentation_id: u64, cx: &mut Context<Self>) {
+        if !self.presentation_accepts_input(presentation_id) {
+            return;
+        }
         self.workspace.cancel_paste();
         self.paste_confirmation = false;
         let _changed = self.flush_pending_input();
@@ -1003,6 +1109,7 @@ impl RootView {
         &mut self,
         endpoint: &str,
         session: &str,
+        presentation_id: u64,
         surface: &Arc<SurfaceStore>,
         snapshot: &workspace::WorkspaceSnapshot,
         cx: &mut Context<Self>,
@@ -1037,7 +1144,24 @@ impl RootView {
                 .on_click(cx.listener(|this, _, _, cx| this.detach(cx))),
         );
 
-        let terminal = div()
+        let terminal = self.terminal_surface_element(presentation_id, appearance, rows, cx);
+
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(header)
+            .child(terminal)
+    }
+
+    fn terminal_surface_element(
+        &self,
+        presentation_id: u64,
+        appearance: &workspace::Appearance,
+        rows: Vec<Arc<Vec<PaintRun>>>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        div()
             .id("terminal-surface")
             .track_focus(&self.focus)
             .flex()
@@ -1050,19 +1174,72 @@ impl RootView {
             .font_family(appearance.font_family().to_owned())
             .text_size(px(f32::from(appearance.font_size())))
             .line_height(px(self.terminal_metrics.line_height))
-            .on_key_down(cx.listener(Self::on_key_down))
-            .on_key_up(cx.listener(Self::on_key_up))
-            .on_mouse_down(GpuiMouseButton::Left, cx.listener(Self::on_mouse_down))
-            .on_mouse_down(GpuiMouseButton::Middle, cx.listener(Self::on_mouse_down))
-            .on_mouse_down(GpuiMouseButton::Right, cx.listener(Self::on_mouse_down))
-            .on_mouse_up(GpuiMouseButton::Left, cx.listener(Self::on_mouse_up))
-            .on_mouse_up(GpuiMouseButton::Middle, cx.listener(Self::on_mouse_up))
-            .on_mouse_up(GpuiMouseButton::Right, cx.listener(Self::on_mouse_up))
-            .on_mouse_up_out(GpuiMouseButton::Left, cx.listener(Self::on_mouse_up))
-            .on_mouse_up_out(GpuiMouseButton::Middle, cx.listener(Self::on_mouse_up))
-            .on_mouse_up_out(GpuiMouseButton::Right, cx.listener(Self::on_mouse_up))
-            .on_mouse_move(cx.listener(Self::on_mouse_move))
-            .on_scroll_wheel(cx.listener(Self::on_scroll_wheel))
+            .on_key_down(cx.listener(move |this, event, window, cx| {
+                this.on_key_down(presentation_id, event, window, cx);
+            }))
+            .on_key_up(cx.listener(move |this, event, window, cx| {
+                this.on_key_up(presentation_id, event, window, cx);
+            }))
+            .on_mouse_down(
+                GpuiMouseButton::Left,
+                cx.listener(move |this, event, window, cx| {
+                    this.on_mouse_down(presentation_id, event, window, cx);
+                }),
+            )
+            .on_mouse_down(
+                GpuiMouseButton::Middle,
+                cx.listener(move |this, event, window, cx| {
+                    this.on_mouse_down(presentation_id, event, window, cx);
+                }),
+            )
+            .on_mouse_down(
+                GpuiMouseButton::Right,
+                cx.listener(move |this, event, window, cx| {
+                    this.on_mouse_down(presentation_id, event, window, cx);
+                }),
+            )
+            .on_mouse_up(
+                GpuiMouseButton::Left,
+                cx.listener(move |this, event, window, cx| {
+                    this.on_mouse_up(presentation_id, event, window, cx);
+                }),
+            )
+            .on_mouse_up(
+                GpuiMouseButton::Middle,
+                cx.listener(move |this, event, window, cx| {
+                    this.on_mouse_up(presentation_id, event, window, cx);
+                }),
+            )
+            .on_mouse_up(
+                GpuiMouseButton::Right,
+                cx.listener(move |this, event, window, cx| {
+                    this.on_mouse_up(presentation_id, event, window, cx);
+                }),
+            )
+            .on_mouse_up_out(
+                GpuiMouseButton::Left,
+                cx.listener(move |this, event, window, cx| {
+                    this.on_mouse_up(presentation_id, event, window, cx);
+                }),
+            )
+            .on_mouse_up_out(
+                GpuiMouseButton::Middle,
+                cx.listener(move |this, event, window, cx| {
+                    this.on_mouse_up(presentation_id, event, window, cx);
+                }),
+            )
+            .on_mouse_up_out(
+                GpuiMouseButton::Right,
+                cx.listener(move |this, event, window, cx| {
+                    this.on_mouse_up(presentation_id, event, window, cx);
+                }),
+            )
+            .on_mouse_move(cx.listener(move |this, event, window, cx| {
+                this.on_mouse_move(presentation_id, event, window, cx);
+            }))
+            .on_scroll_wheel(cx.listener(move |this, event, window, cx| {
+                this.on_scroll_wheel(presentation_id, event, window, cx);
+            }))
             .children(rows.into_iter().map(|row| {
                 div()
                     .flex()
@@ -1075,14 +1252,7 @@ impl RootView {
                             .map(|run| paint_run_element(run, self.terminal_metrics.cell_width)),
                     )
                     .into_any_element()
-            }));
-
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .child(header)
-            .child(terminal)
+            }))
     }
 
     fn content_element(
@@ -1123,10 +1293,10 @@ impl RootView {
             WorkspaceContent::Terminal {
                 endpoint,
                 session,
+                presentation_id,
                 surface,
-                ..
             } => self
-                .terminal_element(endpoint, session, surface, snapshot, cx)
+                .terminal_element(endpoint, session, *presentation_id, surface, snapshot, cx)
                 .into_any_element(),
         }
     }
@@ -1366,6 +1536,13 @@ fn transitioned_presentation(observed: &mut Option<u64>, current: Option<u64>) -
     }
 }
 
+fn queued_input_matches_presentation(
+    input: &QueuedUiInput,
+    active_presentation: Option<u64>,
+) -> bool {
+    active_presentation == Some(input.presentation_id)
+}
+
 fn clear_terminal_input_state(
     paste_confirmation: &mut bool,
     pending_input: &mut VecDeque<QueuedUiInput>,
@@ -1430,7 +1607,9 @@ impl Render for RootView {
                     .child(diagnostic.clone()),
             );
         }
-        if self.paste_confirmation {
+        if self.paste_confirmation
+            && let Some(presentation_id) = terminal_presentation_id(snapshot.content())
+        {
             root = root.child(
                 div()
                     .absolute()
@@ -1455,7 +1634,9 @@ impl Render for RootView {
                                     .py_1()
                                     .cursor_pointer()
                                     .child("Cancel")
-                                    .on_click(cx.listener(|this, _, _, cx| this.cancel_paste(cx))),
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.cancel_paste(presentation_id, cx);
+                                    })),
                             )
                             .child(
                                 div()
@@ -1466,7 +1647,9 @@ impl Render for RootView {
                                     .cursor_pointer()
                                     .bg(rgb(0x8a_62_2a))
                                     .child("Paste")
-                                    .on_click(cx.listener(|this, _, _, cx| this.approve_paste(cx))),
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.approve_paste(presentation_id, cx);
+                                    })),
                             ),
                     ),
             );
@@ -1727,8 +1910,8 @@ mod tests {
         QueuedUiInput, TerminalKeyboard, TerminalPointer, UI_INPUT_BYTE_CAPACITY,
         UI_INPUT_CAPACITY, clear_terminal_input_state, clears_after_input_delivery,
         clears_when_input_queue_is_empty, input_queue_has_capacity, named_key,
-        normalize_cell_width, restore_undelivered_wheel_steps, terminal_key_input,
-        terminal_wheel_steps, transitioned_presentation,
+        normalize_cell_width, queued_input_matches_presentation, restore_undelivered_wheel_steps,
+        terminal_key_input, terminal_wheel_steps, transitioned_presentation,
     };
     use workspace::{
         KeyEvent, KeyInput, Modifiers, MouseAction, MouseButton, MouseInput, NamedKey,
@@ -1982,6 +2165,7 @@ mod tests {
         let mut observed = Some(7);
         let mut paste_confirmation = true;
         let mut pending_input = VecDeque::from([QueuedUiInput {
+            presentation_id: 7,
             input: PendingUiInput::Key(KeyInput::Named {
                 key: NamedKey::Enter,
                 modifiers: Modifiers::default(),
@@ -2010,6 +2194,7 @@ mod tests {
 
         paste_confirmation = true;
         pending_input.push_back(QueuedUiInput {
+            presentation_id: 7,
             input: PendingUiInput::Key(KeyInput::Named {
                 key: NamedKey::Enter,
                 modifiers: Modifiers::default(),
@@ -2034,5 +2219,19 @@ mod tests {
         assert_eq!(pending_input_bytes, 0);
         assert!(!refusal.is_pending());
         assert!(!transitioned_presentation(&mut observed, Some(8)));
+    }
+
+    #[test]
+    fn queued_terminal_input_is_bound_to_its_originating_presentation() {
+        let input = QueuedUiInput {
+            presentation_id: 7,
+            input: PendingUiInput::Key(KeyInput::named(NamedKey::Enter, Modifiers::default())),
+            bytes: 0,
+            accepted_after_refusal: None,
+        };
+
+        assert!(queued_input_matches_presentation(&input, Some(7)));
+        assert!(!queued_input_matches_presentation(&input, Some(8)));
+        assert!(!queued_input_matches_presentation(&input, None));
     }
 }
