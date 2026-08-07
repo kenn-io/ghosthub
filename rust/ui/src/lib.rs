@@ -19,10 +19,6 @@ use workspace::{
 };
 
 pub const WINDOW_TITLE: &str = "Ghosthub";
-const TERMINAL_HEADER_HEIGHT: f32 = 40.0;
-const TERMINAL_PADDING: f32 = 12.0;
-const TERMINAL_STAGE_INSET: f32 = 8.0;
-const TERMINAL_STAGE_BORDER: f32 = 1.0;
 const APP_NAVIGATION_WIDTH: f32 = 280.0;
 const CELL_LINE_GAP: f32 = 4.0;
 const UI_INPUT_CAPACITY: usize = 512;
@@ -928,11 +924,11 @@ impl RootView {
             x,
             y,
             if snapshot.hosts().is_empty() {
-                TERMINAL_STAGE_INSET + TERMINAL_STAGE_BORDER
+                0.0
             } else {
-                APP_NAVIGATION_WIDTH + TERMINAL_STAGE_INSET + TERMINAL_STAGE_BORDER
+                APP_NAVIGATION_WIDTH
             },
-            TERMINAL_STAGE_INSET + TERMINAL_STAGE_BORDER,
+            0.0,
             self.terminal_metrics.cell_width,
             self.terminal_metrics.line_height,
             size,
@@ -1170,18 +1166,16 @@ impl RootView {
                 0.0
             } else {
                 APP_NAVIGATION_WIDTH
-            }
-            - (TERMINAL_STAGE_INSET + TERMINAL_STAGE_BORDER) * 2.0;
-        let height =
-            f32::from(bounds.size.height) - (TERMINAL_STAGE_INSET + TERMINAL_STAGE_BORDER) * 2.0;
+            };
+        let height = f32::from(bounds.size.height);
         let (columns, rows) = terminal_grid_size(
             width,
             height,
             self.terminal_metrics.cell_width,
             self.terminal_metrics.line_height,
         );
-        let content_width = (width - TERMINAL_PADDING * 2.0).max(1.0);
-        let content_height = (height - TERMINAL_HEADER_HEIGHT - TERMINAL_PADDING * 2.0).max(1.0);
+        let content_width = width.max(1.0);
+        let content_height = height.max(1.0);
         let pixel_width = content_width.min(f32::from(u16::MAX)) as u16;
         let pixel_height = content_height.min(f32::from(u16::MAX)) as u16;
         let resize = TerminalResize {
@@ -1226,8 +1220,6 @@ impl RootView {
 
     fn terminal_element(
         &mut self,
-        endpoint: &str,
-        session: &str,
         presentation_id: u64,
         surface: &Arc<SurfaceStore>,
         snapshot: &workspace::WorkspaceSnapshot,
@@ -1242,71 +1234,15 @@ impl RootView {
         self.observed_surface_identity = Some(identity);
         self.observed_surface_generation = frame.generation();
         let appearance = snapshot.appearance();
-        let header = div()
-            .h(px(TERMINAL_HEADER_HEIGHT))
-            .flex_none()
-            .flex()
-            .items_center()
-            .justify_between()
-            .px_3()
-            .bg(rgb(0x15_18_1f))
-            .border_b_1()
-            .border_color(rgb(0x2a_2e_38))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(div().size(px(7.0)).rounded_full().bg(rgb(0x62_c0_7a)))
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(rgb(0x8f_96_a3))
-                            .child(endpoint.to_owned()),
-                    )
-                    .child(div().text_color(rgb(0x55_5c_69)).child("/"))
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(rgb(0xe4_e8_ef))
-                            .child(session.to_owned()),
-                    ),
-            )
-            .child(
-                div()
-                    .id("detach-terminal")
-                    .px_3()
-                    .py_1()
-                    .rounded_md()
-                    .cursor_pointer()
-                    .border_1()
-                    .border_color(rgb(0x35_3a_46))
-                    .text_sm()
-                    .text_color(rgb(0xa8_af_bb))
-                    .hover(|style| style.bg(rgb(0x26_2b_35)).text_color(rgb(0xee_f0_f4)))
-                    .child("Detach")
-                    .on_click(cx.listener(|this, _, _, cx| this.detach(cx))),
-            );
-
         let terminal = self.terminal_surface_element(presentation_id, appearance, rows, cx);
 
         div()
             .size_full()
-            .p(px(TERMINAL_STAGE_INSET))
-            .bg(rgb(0x0d_0f_13))
-            .child(
-                div()
-                    .size_full()
-                    .flex()
-                    .flex_col()
-                    .overflow_hidden()
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(rgb(0x2a_2e_38))
-                    .bg(rgb(appearance.background()))
-                    .child(header)
-                    .child(terminal),
-            )
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .bg(rgb(appearance.background()))
+            .child(terminal)
     }
 
     fn terminal_surface_element(
@@ -1323,7 +1259,6 @@ impl RootView {
             .flex_col()
             .flex_1()
             .overflow_hidden()
-            .p_3()
             .bg(rgb(appearance.background()))
             .text_color(rgb(appearance.foreground()))
             .font_family(appearance.font_family().to_owned())
@@ -1450,12 +1385,12 @@ impl RootView {
                 Self::ready_element(endpoint, sessions, None, cx)
             }
             WorkspaceContent::Terminal {
-                endpoint,
-                session,
+                endpoint: _,
+                session: _,
                 presentation_id,
                 surface,
             } => self
-                .terminal_element(endpoint, session, *presentation_id, surface, snapshot, cx)
+                .terminal_element(*presentation_id, surface, snapshot, cx)
                 .into_any_element(),
         }
     }
@@ -1472,12 +1407,12 @@ impl RootView {
         let navigator = Self::workspace_tree(snapshot, cx);
         let main = match snapshot.content() {
             WorkspaceContent::Terminal {
-                endpoint,
-                session,
+                endpoint: _,
+                session: _,
                 presentation_id,
                 surface,
             } => self
-                .terminal_element(endpoint, session, *presentation_id, surface, snapshot, cx)
+                .terminal_element(*presentation_id, surface, snapshot, cx)
                 .into_any_element(),
             WorkspaceContent::Attaching { endpoint, session } => {
                 centered(format!("Attaching to {endpoint} · {session}…"))
@@ -1645,14 +1580,16 @@ impl RootView {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let name = session.name().to_owned();
-        let detail = if session.attached_clients() == 0 {
+        let detail = if is_active {
+            "open".to_owned()
+        } else if session.attached_clients() == 0 {
             "detached".to_owned()
         } else if session.attached_clients() == 1 {
             "1 client".to_owned()
         } else {
             format!("{} clients", session.attached_clients())
         };
-        div()
+        let mut row = div()
             .id((
                 gpui::ElementId::named_usize("tree-session-host", host_index),
                 index.to_string(),
@@ -1688,11 +1625,30 @@ impl RootView {
                             .text_color(rgb(if is_active { 0xa9_c9_ea } else { 0x6f_7682 }))
                             .child(detail),
                     ),
-            )
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.select_session(&name, window, cx);
-            }))
-            .into_any_element()
+            );
+        if is_active {
+            row = row.child(
+                div()
+                    .id("detach-terminal")
+                    .flex_none()
+                    .size(px(24.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_sm()
+                    .text_color(rgb(0xa9_c9_ea))
+                    .hover(|style| style.bg(rgb(0x25_527f)).text_color(rgb(0xff_ff_ff)))
+                    .child("×")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.detach(cx);
+                        cx.stop_propagation();
+                    })),
+            );
+        }
+        row.on_click(cx.listener(move |this, _, window, cx| {
+            this.select_session(&name, window, cx);
+        }))
+        .into_any_element()
     }
 
     fn host_landing_element(host: &HostItem, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -1885,6 +1841,19 @@ fn active_session_name(content: &WorkspaceContent) -> Option<&str> {
     }
 }
 
+fn workspace_window_title(content: &WorkspaceContent) -> String {
+    match content {
+        WorkspaceContent::Attaching { endpoint, session }
+        | WorkspaceContent::Terminal {
+            endpoint, session, ..
+        } => format!("{session} — {endpoint} — {WINDOW_TITLE}"),
+        WorkspaceContent::Ready { endpoint, .. } => format!("{endpoint} — {WINDOW_TITLE}"),
+        WorkspaceContent::Shell | WorkspaceContent::Loading | WorkspaceContent::Error { .. } => {
+            WINDOW_TITLE.to_owned()
+        }
+    }
+}
+
 fn transitioned_presentation(observed: &mut Option<u64>, current: Option<u64>) -> bool {
     if *observed == current {
         false
@@ -1955,10 +1924,11 @@ impl Focusable for RootView {
 }
 
 impl Render for RootView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _scope_changed = self.sync_terminal_scope();
         let _handled = self.handle_events(cx);
         let snapshot = self.workspace.snapshot();
+        window.set_window_title(&workspace_window_title(snapshot.content()));
         self.observed_revision = snapshot.revision();
         if !matches!(snapshot.content(), WorkspaceContent::Terminal { .. }) {
             self.observed_surface_identity = None;
@@ -2190,8 +2160,8 @@ fn terminal_cell_at_with_offset(
     line_height: f32,
     size: surface::GridSize,
 ) -> Option<(usize, usize)> {
-    let content_x = x - x_offset - TERMINAL_PADDING;
-    let content_y = y - y_offset - TERMINAL_HEADER_HEIGHT - TERMINAL_PADDING;
+    let content_x = x - x_offset;
+    let content_y = y - y_offset;
     if content_x < 0.0 || content_y < 0.0 {
         return None;
     }
@@ -2210,8 +2180,8 @@ pub fn terminal_grid_size(
     cell_width: f32,
     line_height: f32,
 ) -> (usize, usize) {
-    let content_width = (width - TERMINAL_PADDING * 2.0).max(1.0);
-    let content_height = (height - TERMINAL_HEADER_HEIGHT - TERMINAL_PADDING * 2.0).max(1.0);
+    let content_width = width.max(1.0);
+    let content_height = height.max(1.0);
     (
         (content_width / cell_width).floor().max(1.0) as usize,
         (content_height / line_height).floor().max(1.0) as usize,
@@ -2310,13 +2280,13 @@ mod tests {
 
     use super::{
         APP_NAVIGATION_WIDTH, INPUT_BUFFER_FULL_DIAGNOSTIC, INPUT_BUFFERED_DIAGNOSTIC,
-        InputRefusal, PendingUiInput, QueuedUiInput, TERMINAL_STAGE_BORDER, TERMINAL_STAGE_INSET,
-        TerminalKeyboard, TerminalPointer, TerminalResize, UI_INPUT_BYTE_CAPACITY,
-        UI_INPUT_CAPACITY, WheelBatch, active_session_name, clear_terminal_input_state,
-        clears_after_input_delivery, clears_when_input_queue_is_empty, coalesce_last_resize,
-        coalesce_last_wheel, input_queue_has_capacity, named_key, normalize_cell_width,
-        queued_input_matches_presentation, terminal_cell_at_with_offset, terminal_key_input,
-        terminal_line_height, terminal_wheel_steps, transitioned_presentation,
+        InputRefusal, PendingUiInput, QueuedUiInput, TerminalKeyboard, TerminalPointer,
+        TerminalResize, UI_INPUT_BYTE_CAPACITY, UI_INPUT_CAPACITY, WheelBatch, active_session_name,
+        clear_terminal_input_state, clears_after_input_delivery, clears_when_input_queue_is_empty,
+        coalesce_last_resize, coalesce_last_wheel, input_queue_has_capacity, named_key,
+        normalize_cell_width, queued_input_matches_presentation, terminal_cell_at_with_offset,
+        terminal_key_input, terminal_line_height, terminal_wheel_steps, transitioned_presentation,
+        workspace_window_title,
     };
     use std::sync::Arc;
     use surface::{GridSize, SurfaceFrame, SurfaceStore};
@@ -2382,15 +2352,40 @@ mod tests {
     }
 
     #[test]
+    fn active_terminal_context_moves_into_the_native_window_title() {
+        let size = GridSize::new(80, 24).expect("valid grid");
+        let terminal = WorkspaceContent::Terminal {
+            endpoint: "Ubuntu".to_owned(),
+            session: "demo".to_owned(),
+            presentation_id: 1,
+            surface: Arc::new(SurfaceStore::new(SurfaceFrame::blank(1, size))),
+        };
+        let attaching = WorkspaceContent::Attaching {
+            endpoint: "Ubuntu".to_owned(),
+            session: "demo".to_owned(),
+        };
+
+        assert_eq!(
+            workspace_window_title(&terminal),
+            "demo — Ubuntu — Ghosthub"
+        );
+        assert_eq!(
+            workspace_window_title(&attaching),
+            "demo — Ubuntu — Ghosthub"
+        );
+        assert_eq!(workspace_window_title(&WorkspaceContent::Shell), "Ghosthub");
+    }
+
+    #[test]
     fn terminal_hit_testing_accounts_for_persistent_navigation() {
         let size = GridSize::new(80, 24).expect("valid grid");
 
         assert_eq!(
             terminal_cell_at_with_offset(
-                APP_NAVIGATION_WIDTH + TERMINAL_STAGE_INSET + TERMINAL_STAGE_BORDER + 20.0,
-                66.0,
-                APP_NAVIGATION_WIDTH + TERMINAL_STAGE_INSET + TERMINAL_STAGE_BORDER,
-                TERMINAL_STAGE_INSET + TERMINAL_STAGE_BORDER,
+                APP_NAVIGATION_WIDTH + 12.0,
+                8.0,
+                APP_NAVIGATION_WIDTH,
+                0.0,
                 8.0,
                 16.0,
                 size
@@ -2399,10 +2394,10 @@ mod tests {
         );
         assert_eq!(
             terminal_cell_at_with_offset(
+                APP_NAVIGATION_WIDTH - 1.0,
+                8.0,
                 APP_NAVIGATION_WIDTH,
-                66.0,
-                APP_NAVIGATION_WIDTH + TERMINAL_STAGE_INSET + TERMINAL_STAGE_BORDER,
-                TERMINAL_STAGE_INSET + TERMINAL_STAGE_BORDER,
+                0.0,
                 8.0,
                 16.0,
                 size
