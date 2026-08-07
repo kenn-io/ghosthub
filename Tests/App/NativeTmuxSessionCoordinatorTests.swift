@@ -8,6 +8,48 @@ import Testing
 @Suite("Native tmux connection identity", .serialized)
 @MainActor
 struct NativeTmuxSessionCoordinatorTests {
+    @Test("creation carries a launch command but attachment drops it")
+    func launchCommandIsCreationOnly() async throws {
+        let store = RecordingTmuxSurfaceStore()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { .success("/opt/homebrew/bin/tmux") }
+        )
+        var readyHandles = Set<UUID>()
+        coordinator.onSurfaceReady = { readyHandles.insert($0.id) }
+        let hostID = UUID()
+        let created = coordinator.attach(
+            hostID: hostID,
+            name: "created",
+            host: .local,
+            launchMode: .create,
+            initialCommand: "exec codex"
+        )
+        let attached = coordinator.attach(
+            hostID: hostID,
+            name: "attached",
+            host: .local,
+            launchMode: .attach,
+            initialCommand: "never-run-this"
+        )
+
+        await waitUntilMainActor {
+            readyHandles == Set([created.id, attached.id])
+        }
+        _ = coordinator.surface(handle: created)
+        let createCommand = try #require(
+            store.requestedConfigurations.last?.command
+        )
+        _ = coordinator.surface(handle: attached)
+        let attachCommand = try #require(
+            store.requestedConfigurations.last?.command
+        )
+
+        #expect(createCommand.contains("exec codex"))
+        #expect(!attachCommand.contains("never-run-this"))
+        #expect(attachCommand.contains("attach-session"))
+    }
+
     @Test("new named sessions use tmux create-or-attach mode")
     func namedSessionUsesCreateMode() async throws {
         let store = RecordingTmuxSurfaceStore()

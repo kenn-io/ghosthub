@@ -12,12 +12,16 @@ struct BorrowedTmuxSessionView: View {
     var attachmentClosure: BorrowedTmuxAttachmentClosure?
     var sessionClosed: Bool
     var defersTerminalResize: Bool
+    var retryRequiresConfirmation: Bool
+    var retryCommand: String?
     var surface: () -> TerminalSurfaceView?
     var onCloseRequest: () -> Void
     var onRetryRequest: () -> Void
+    var onConfirmedRetryRequest: () -> Void
     var onReconnectNow: () -> Void
     var onReviewConnection: () -> Void
     var onHostSettingsRequest: () -> Void
+    @State private var isRetryConfirmationPresented = false
 
     init(
         handle: BorrowedTmuxSessionHandle,
@@ -29,9 +33,12 @@ struct BorrowedTmuxSessionView: View {
         attachmentClosure: BorrowedTmuxAttachmentClosure? = nil,
         sessionClosed: Bool = false,
         defersTerminalResize: Bool = false,
+        retryRequiresConfirmation: Bool = false,
+        retryCommand: String? = nil,
         surface: @escaping () -> TerminalSurfaceView?,
         onCloseRequest: @escaping () -> Void,
         onRetryRequest: @escaping () -> Void,
+        onConfirmedRetryRequest: @escaping () -> Void = {},
         onReconnectNow: @escaping () -> Void = {},
         onReviewConnection: @escaping () -> Void = {},
         onHostSettingsRequest: @escaping () -> Void
@@ -45,65 +52,99 @@ struct BorrowedTmuxSessionView: View {
         self.attachmentClosure = attachmentClosure
         self.sessionClosed = sessionClosed
         self.defersTerminalResize = defersTerminalResize
+        self.retryRequiresConfirmation = retryRequiresConfirmation
+        self.retryCommand = retryCommand
         self.surface = surface
         self.onCloseRequest = onCloseRequest
         self.onRetryRequest = onRetryRequest
+        self.onConfirmedRetryRequest = onConfirmedRetryRequest
         self.onReconnectNow = onReconnectNow
         self.onReviewConnection = onReviewConnection
         self.onHostSettingsRequest = onHostSettingsRequest
     }
 
     var body: some View {
-        if let surfaceView = surface() {
-            NativeTmuxTerminalView(
-                surfaceView: surfaceView,
-                defersTerminalResize: defersTerminalResize,
-                onCloseRequest: onCloseRequest
-            )
-        } else if recoveryState != nil {
-            ContentUnavailableView {
-                Label(recoveryTitle, systemImage: "network.slash")
-            } description: {
-                VStack(spacing: 10) {
-                    if showsReconnectProgress {
-                        ProgressView()
-                            .controlSize(.small)
-                    }
-                    Text(recoveryMessage)
-                        .multilineTextAlignment(.center)
-                }
-            } actions: {
-                if primaryRecoveryActionTitle != nil {
-                    Button("Reconnect Now", action: onReconnectNow)
-                }
-                if showsReviewConnection {
-                    Button("Review Connection", action: onReviewConnection)
-                }
-                if showsHostSettingsAction {
-                    Button("Host Settings", action: onHostSettingsRequest)
-                }
-            }
-        } else if let disconnectionReason {
-            ContentUnavailableView {
-                Label(
-                    disconnectionTitle,
-                    systemImage: sessionClosed
-                        ? "rectangle.portrait.and.arrow.right"
-                        : attachmentClosure == .detached
-                        ? "rectangle.portrait.and.arrow.right"
-                        : "network.slash"
+        Group {
+            if let surfaceView = surface() {
+                NativeTmuxTerminalView(
+                    surfaceView: surfaceView,
+                    defersTerminalResize: defersTerminalResize,
+                    onCloseRequest: onCloseRequest
                 )
-            } description: {
-                Text(disconnectionReason)
-            } actions: {
-                Button(recoveryActionTitle, action: onRetryRequest)
-                if showsHostSettingsAction {
-                    Button("Host Settings", action: onHostSettingsRequest)
+            } else if recoveryState != nil {
+                ContentUnavailableView {
+                    Label(recoveryTitle, systemImage: "network.slash")
+                } description: {
+                    VStack(spacing: 10) {
+                        if showsReconnectProgress {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                        Text(recoveryMessage)
+                            .multilineTextAlignment(.center)
+                    }
+                } actions: {
+                    if primaryRecoveryActionTitle != nil {
+                        Button("Reconnect Now", action: onReconnectNow)
+                    }
+                    if showsReviewConnection {
+                        Button("Review Connection", action: onReviewConnection)
+                    }
+                    if showsHostSettingsAction {
+                        Button("Host Settings", action: onHostSettingsRequest)
+                    }
+                }
+            } else if let disconnectionReason {
+                ContentUnavailableView {
+                    Label(
+                        disconnectionTitle,
+                        systemImage: sessionClosed
+                            ? "rectangle.portrait.and.arrow.right"
+                            : attachmentClosure == .detached
+                            ? "rectangle.portrait.and.arrow.right"
+                            : "network.slash"
+                    )
+                } description: {
+                    Text(disconnectionReason)
+                } actions: {
+                    Button(recoveryActionTitle) {
+                        if retryRequiresConfirmation {
+                            isRetryConfirmationPresented = true
+                        } else {
+                            onRetryRequest()
+                        }
+                    }
+                    if showsHostSettingsAction {
+                        Button("Host Settings", action: onHostSettingsRequest)
+                    }
+                }
+            } else {
+                ProgressView("Opening \(displayTitle ?? handle.name)…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .confirmationDialog(
+            "Run the launch command again?",
+            isPresented: $isRetryConfirmationPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Run Command Again", role: .destructive) {
+                onConfirmedRetryRequest()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(
+                    "The command may have started before the connection "
+                        + "dropped. Running it again could repeat its side "
+                        + "effects."
+                )
+                if let retryConfirmationCommand {
+                    Text(retryConfirmationCommand)
+                        .font(.system(.body, design: .monospaced))
+                        .textSelection(.enabled)
                 }
             }
-        } else {
-            ProgressView("Opening \(displayTitle ?? handle.name)…")
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
@@ -165,7 +206,14 @@ struct BorrowedTmuxSessionView: View {
         if sessionClosed {
             return "Reopen"
         }
+        if retryRequiresConfirmation {
+            return "Retry Command"
+        }
         return attachmentClosure == .detached ? "Reconnect" : "Retry"
+    }
+
+    var retryConfirmationCommand: String? {
+        retryRequiresConfirmation ? retryCommand : nil
     }
 
     var showsHostSettingsAction: Bool {

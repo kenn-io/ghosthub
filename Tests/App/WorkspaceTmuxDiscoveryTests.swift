@@ -656,6 +656,71 @@ struct WorkspaceTmuxDiscoveryTests {
         }
     }
 
+    private final class ProfileReconciliationDiscoveryState:
+        @unchecked Sendable {
+        private let lock = NSLock()
+        private let sessionName: String
+        private var calls = 0
+        private var firstStarted = false
+        private var firstCancelled = false
+
+        init(sessionName: String) {
+            self.sessionName = sessionName
+        }
+
+        func discover(
+            _ host: TmuxHost
+        ) -> Result<[DiscoveredTmuxSession], TmuxBinaryError> {
+            lock.lock()
+            calls += 1
+            let call = calls
+            if call == 1 {
+                firstStarted = true
+            }
+            lock.unlock()
+
+            switch call {
+            case 1:
+                while !Task.isCancelled {
+                    Thread.sleep(forTimeInterval: 0.001)
+                }
+                lock.lock()
+                firstCancelled = true
+                lock.unlock()
+                return .failure(.probeCancelled(shell: host.displayName))
+            case 2:
+                return .success([
+                    DiscoveredTmuxSession(
+                        name: sessionName,
+                        windowCount: 1,
+                        createdAt: "1721552400",
+                        managed: false
+                    ),
+                ])
+            default:
+                return .success([])
+            }
+        }
+
+        var count: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return calls
+        }
+
+        var didStartFirst: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return firstStarted
+        }
+
+        var didCancelFirst: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return firstCancelled
+        }
+    }
+
     @MainActor
     @Test("created sessions publish into host inventory immediately")
     func createdSessionPublishesImmediately() throws {
@@ -1733,7 +1798,10 @@ struct WorkspaceTmuxDiscoveryTests {
             name: "release-work"
         )
 
-        model.createTmuxSession(selection)
+        model.createTmuxSession(WorkspaceTmuxSessionCreationRequest(
+            selection: selection,
+            initialCommand: "never-run-this"
+        ))
         await launchActiveTmuxSurface(model, store: surfaceStore)
 
         #expect(model.activeBorrowedTmuxLaunchMode == .attach)
@@ -1741,6 +1809,78 @@ struct WorkspaceTmuxDiscoveryTests {
         let command = try #require(surfaceStore.lastConfiguration?.command)
         #expect(command.contains("attach-session"))
         #expect(!command.contains("new-session"))
+        #expect(!command.contains("never-run-this"))
+    }
+
+    @MainActor
+    @Test("new named creation carries its launch profile command")
+    func profileCreationCarriesInitialCommand() async throws {
+        let environment = try setupStandardEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            createdSessionDiscoveryDelays: [.seconds(10)]
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "codex"
+        )
+
+        model.createTmuxSession(WorkspaceTmuxSessionCreationRequest(
+            selection: selection,
+            initialCommand: "exec codex"
+        ))
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+
+        #expect(model.activeBorrowedTmuxLaunchMode == .create)
+        #expect(model.pendingCreatedTmuxSessionCount == 1)
+        let command = try #require(surfaceStore.lastConfiguration?.command)
+        #expect(command.contains("new-session"))
+        #expect(command.contains("exec codex"))
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("explicit close abandons an unlaunched profile creation")
+    func explicitCloseAbandonsUnlaunchedProfileCreation() async throws {
+        let environment = try setupStandardEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: { .success("/opt/homebrew/bin/tmux") },
+            createdSessionDiscoveryDelays: [.seconds(10)]
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "codex"
+        )
+        model.createTmuxSession(WorkspaceTmuxSessionCreationRequest(
+            selection: selection,
+            initialCommand: "exec codex"
+        ))
+
+        #expect(surfaceStore.requestCount == 0)
+        #expect(model.pendingCreatedTmuxSessionCount == 1)
+        #expect(
+            model.snapshot.host(id: environment.host.id)?
+                .tmuxSessions.map(\.name) == [selection.name]
+        )
+
+        model.closeBorrowedTmuxSession(selection)
+
+        #expect(model.pendingCreatedTmuxSessionCount == 0)
+        #expect(
+            model.snapshot.host(id: environment.host.id)?
+                .tmuxSessions.isEmpty == true
+        )
+        #expect(model.retainedBorrowedTmuxHandle(for: selection) == nil)
+        #expect(!model.activeBorrowedTmuxRetryRequiresConfirmation)
+        await model.shutdown()
     }
 
     @MainActor
@@ -2538,6 +2678,286 @@ struct WorkspaceTmuxDiscoveryTests {
         model.prepareActiveBorrowedTmuxSurface()
         #expect(model.activeBorrowedTmuxSessionIsConnected)
         #expect(surfaceStore.requestCount == 3)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("interrupted profile creation never replays its command automatically")
+    func interruptedProfileCreationRequiresExplicitRetry() async throws {
+        let environment = try setupRemoteTmuxEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.localHostID,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            tmuxSessionDiscovery: { _ in .success([]) },
+            createdSessionDiscoveryDelays: [.seconds(10)],
+            tmuxReconnectIntervals: [.milliseconds(1)]
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.remoteHost.id,
+            name: "codex"
+        )
+        model.createTmuxSession(WorkspaceTmuxSessionCreationRequest(
+            selection: selection,
+            initialCommand: "exec codex"
+        ))
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+
+        surfaceStore.surface.closeObservers.values.first?(false, 255)
+        await waitUntilMainActor {
+            model.activeBorrowedTmuxRecoveryState?.isReconnecting == true
+        }
+        await waitUntilMainActor {
+            model.activeBorrowedTmuxRecoveryState == nil
+        }
+
+        #expect(model.activeBorrowedTmuxLaunchMode == .create)
+        #expect(model.pendingCreatedTmuxSessionCount == 1)
+        #expect(surfaceStore.requestCount == 1)
+        #expect(!model.activeBorrowedTmuxSessionIsConnected)
+        #expect(model.activeBorrowedTmuxRetryRequiresConfirmation)
+        #expect(model.activeBorrowedTmuxRetryCommand == "exec codex")
+
+        model.retryBorrowedTmuxSession(selection)
+        for _ in 0 ..< 20 {
+            model.prepareActiveBorrowedTmuxSurface()
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+
+        #expect(surfaceStore.requestCount == 1)
+
+        model.retryBorrowedTmuxSessionAfterProfileCommandConfirmation(
+            selection
+        )
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedTmuxSurface()
+            return surfaceStore.requestCount == 2
+        }
+
+        #expect(!model.activeBorrowedTmuxRetryRequiresConfirmation)
+        let command = try #require(surfaceStore.lastConfiguration?.command)
+        #expect(command.contains("new-session"))
+        #expect(command.contains("exec codex"))
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("returning to interrupted profile creation preserves confirmation")
+    func returningToInterruptedProfileCreationPreservesConfirmation()
+        async throws {
+        let environment = try setupRemoteTmuxEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.localHostID,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            tmuxSessionDiscovery: { _ in .success([]) },
+            createdSessionDiscoveryDelays: [
+                .milliseconds(10),
+                .milliseconds(20),
+            ],
+            tmuxReconnectIntervals: [.milliseconds(1)]
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.remoteHost.id,
+            name: "codex"
+        )
+        model.createTmuxSession(WorkspaceTmuxSessionCreationRequest(
+            selection: selection,
+            initialCommand: "exec codex"
+        ))
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        let interruptedHandle = try #require(
+            model.retainedBorrowedTmuxHandle(for: selection)
+        )
+
+        surfaceStore.surface.closeObservers.values.first?(false, 255)
+        await waitUntilMainActor {
+            model.activeBorrowedTmuxRecoveryState?.isReconnecting == true
+        }
+        await waitUntilMainActor {
+            model.activeBorrowedTmuxRecoveryState == nil
+        }
+        #expect(model.activeBorrowedTmuxRetryRequiresConfirmation)
+
+        let replacement = WorkspaceTmuxSessionSelection(
+            hostID: environment.remoteHost.id,
+            name: "release-work"
+        )
+        model.openBorrowedTmuxSession(replacement)
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedTmuxSurface()
+            return surfaceStore.requestCount == 2
+        }
+
+        model.openBorrowedTmuxSession(selection)
+        #expect(model.activeBorrowedTmuxSelection == selection)
+        #expect(model.activeBorrowedTmuxLaunchMode == .create)
+        #expect(
+            model.retainedBorrowedTmuxHandle(for: selection)
+                == interruptedHandle
+        )
+        #expect(model.pendingCreatedTmuxSessionCount == 1)
+        model.prepareActiveBorrowedTmuxSurface()
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(surfaceStore.requestCount == 2)
+        #expect(model.pendingCreatedTmuxSessionCount == 1)
+        #expect(model.activeBorrowedTmuxRetryRequiresConfirmation)
+        #expect(model.activeBorrowedTmuxRetryCommand == "exec codex")
+
+        model.retryBorrowedTmuxSessionAfterProfileCommandConfirmation(
+            selection
+        )
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedTmuxSurface()
+            return surfaceStore.requestCount == 3
+        }
+        let command = try #require(surfaceStore.lastConfiguration?.command)
+        #expect(command.contains("new-session"))
+        #expect(command.contains("exec codex"))
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("a pre-launch failure preserves a safe profile command retry")
+    func preLaunchFailurePreservesProfileCommand() async throws {
+        let environment = try setupStandardEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        surfaceStore.returnsSurface = false
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: { .success("/opt/homebrew/bin/tmux") },
+            createdSessionDiscoveryDelays: [.seconds(10)]
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "codex"
+        )
+        model.createTmuxSession(WorkspaceTmuxSessionCreationRequest(
+            selection: selection,
+            initialCommand: "exec codex"
+        ))
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        try await Task.sleep(for: .milliseconds(30))
+
+        #expect(model.pendingCreatedTmuxSessionCount == 1)
+        #expect(!model.activeBorrowedTmuxRetryRequiresConfirmation)
+
+        surfaceStore.returnsSurface = true
+        model.retryBorrowedTmuxSession(selection)
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedTmuxSurface()
+            return surfaceStore.requestCount == 2
+        }
+
+        let command = try #require(surfaceStore.lastConfiguration?.command)
+        #expect(command.contains("new-session"))
+        #expect(command.contains("exec codex"))
+        #expect(!model.activeBorrowedTmuxRetryRequiresConfirmation)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("reconciled profile creation never reruns its command")
+    func reconciledProfileCreationDoesNotRerunCommand() async throws {
+        let environment = try setupRemoteTmuxEnvironment()
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.remoteHost.id,
+            name: "profile-work"
+        )
+        let discovery = ProfileReconciliationDiscoveryState(
+            sessionName: selection.name
+        )
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.localHostID,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            tmuxSessionDiscovery: discovery.discover,
+            createdSessionDiscoveryDelays: [.milliseconds(20)],
+            tmuxReconnectIntervals: [.milliseconds(1)]
+        )
+        model.createTmuxSession(WorkspaceTmuxSessionCreationRequest(
+            selection: selection,
+            initialCommand: "printf ready"
+        ))
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        await waitUntilMainActor { discovery.didStartFirst }
+        await waitUntilMainActor {
+            discovery.didCancelFirst
+                && model.pendingCreatedTmuxSessionCount == 0
+        }
+
+        #expect(model.activeBorrowedTmuxLaunchMode == .attach)
+        #expect(surfaceStore.requestCount == 1)
+        surfaceStore.surface.closeObservers.values.first?(false, 255)
+        await waitUntilMainActor {
+            discovery.count == 3
+                && (model.activeBorrowedTmuxSessionIsConfirmedEnded
+                    || surfaceStore.requestCount > 1)
+        }
+
+        #expect(discovery.count == 3)
+        #expect(surfaceStore.requestCount == 1)
+        #expect(model.activeBorrowedTmuxLaunchMode == .attach)
+        #expect(model.activeBorrowedTmuxSessionIsConfirmedEnded)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("interrupted profile creation attaches when its session is present")
+    func interruptedProfileCreationAttachesWhenPresent() async throws {
+        let environment = try setupRemoteTmuxEnvironment()
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.remoteHost.id,
+            name: "profile-work"
+        )
+        let discovery = ProfileReconciliationDiscoveryState(
+            sessionName: selection.name
+        )
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.localHostID,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            tmuxSessionDiscovery: discovery.discover,
+            createdSessionDiscoveryDelays: [.seconds(10)],
+            tmuxReconnectIntervals: [.milliseconds(1)]
+        )
+        model.createTmuxSession(WorkspaceTmuxSessionCreationRequest(
+            selection: selection,
+            initialCommand: "printf ready"
+        ))
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        await waitUntilMainActor { discovery.didStartFirst }
+
+        surfaceStore.surface.closeObservers.values.first?(false, 255)
+        await waitUntilMainActor {
+            surfaceStore.requestCount == 2
+                && model.activeBorrowedTmuxSessionIsConnected
+        }
+
+        #expect(discovery.didCancelFirst)
+        #expect(model.pendingCreatedTmuxSessionCount == 0)
+        #expect(model.activeBorrowedTmuxLaunchMode == .attachOnly)
+        #expect(surfaceStore.requestCount == 2)
+        #expect(model.activeBorrowedTmuxSessionIsConnected)
+        let command = try #require(surfaceStore.lastConfiguration?.command)
+        #expect(command.contains("attach-session"))
+        #expect(!command.contains("new-session"))
+        #expect(!command.contains("printf ready"))
         await model.shutdown()
     }
 
@@ -4341,10 +4761,10 @@ struct WorkspaceTmuxDiscoveryTests {
         )
 
         let result = await model.probeSSHHost(SSHHost(
-            configKey: "spark",
-            name: "DGX Spark",
+            configKey: "host-a",
+            name: "Host A",
             platform: .linux,
-            sshDestination: "wesm@dgx-spark"
+            sshDestination: "user-a@host-a.example"
         ), protocolNonce: Self.probeNonce)
         let summary = try result.get()
 
@@ -4728,12 +5148,14 @@ private final class SceneTmuxPaneSurfaceStub: TmuxPaneSurfacing {
     var launchError: Error?
     var childExitCode: UInt32?
     private(set) var closeObservers: [UUID: (Bool, UInt32?) -> Void] = [:]
+    private(set) var lastObserverID: UUID?
 
     func registerSurfaceCloseObserver(
         id: UUID,
         onSurfaceClosed: @escaping (Bool, UInt32?) -> Void
     ) {
         closeObservers[id] = onSurfaceClosed
+        lastObserverID = id
     }
 }
 
@@ -4748,6 +5170,7 @@ private enum SceneSurfaceLaunchError: LocalizedError {
 @MainActor
 private final class SceneTmuxSurfaceStoreStub: TmuxSurfaceStoring {
     let surface = SceneTmuxPaneSurfaceStub()
+    var returnsSurface = true
     private(set) var requestCount = 0
     private(set) var lastConfiguration: TerminalSurfaceConfiguration?
     private(set) var requestedKeys: [SurfaceKey] = []
@@ -4763,7 +5186,7 @@ private final class SceneTmuxSurfaceStoreStub: TmuxSurfaceStoring {
         requestCount += 1
         lastConfiguration = configuration
         requestedKeys.append(key)
-        return surface
+        return returnsSurface ? surface : nil
     }
 
     func removeSurface(for key: SurfaceKey) {

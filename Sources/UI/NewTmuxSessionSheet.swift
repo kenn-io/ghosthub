@@ -1,3 +1,5 @@
+import Foundation
+import GhosthubSettings
 import GhosthubWorkspace
 import SwiftUI
 
@@ -17,23 +19,90 @@ enum TmuxSessionName {
     }
 }
 
+struct NewTmuxSessionLaunchSelection: Equatable, Sendable {
+    private(set) var hostConfigKey: String
+    private(set) var hostKind: HostKind
+    private(set) var selectedProfileID: UUID?
+
+    init(
+        hostConfigKey: String,
+        hostKind: HostKind,
+        selectedProfileID: UUID? = nil
+    ) {
+        self.hostConfigKey = hostConfigKey
+        self.hostKind = hostKind
+        self.selectedProfileID = selectedProfileID
+    }
+
+    mutating func selectHost(configKey: String, kind: HostKind) {
+        guard configKey != hostConfigKey || kind != hostKind else { return }
+        hostConfigKey = configKey
+        hostKind = kind
+        selectedProfileID = nil
+    }
+
+    mutating func selectProfile(_ id: UUID?) {
+        selectedProfileID = id
+    }
+
+    func availableProfiles(
+        in configuredHosts: [SSHHost]
+    ) -> [TmuxLaunchProfile] {
+        // Configured SSH hosts describe remote machines, so the local host
+        // never resolves profiles, even against a colliding config key.
+        guard hostKind == .remote, let host = configuredHosts.first(where: {
+            $0.configKey == hostConfigKey
+        }), host.platform != .windows else {
+            return []
+        }
+        return host.launchProfiles
+    }
+
+    func selectedCommand(in configuredHosts: [SSHHost]) -> String? {
+        selectedProfile(in: configuredHosts)?.command
+    }
+
+    func selectedProfileName(in configuredHosts: [SSHHost]) -> String? {
+        selectedProfile(in: configuredHosts)?.name
+    }
+
+    private func selectedProfile(
+        in configuredHosts: [SSHHost]
+    ) -> TmuxLaunchProfile? {
+        guard let selectedProfileID else { return nil }
+        return availableProfiles(in: configuredHosts).first {
+            $0.id == selectedProfileID
+        }
+    }
+}
+
 struct NewTmuxSessionSheet: View {
     let hosts: [HostSummary]
-    let onCreate: (HostSummary, String) -> Void
+    let configuredHosts: [SSHHost]
+    let onCreate: (HostSummary, String, String?) -> Void
     let onCancel: () -> Void
 
     @State private var selectedHost: HostSummary
+    @State private var launchSelection: NewTmuxSessionLaunchSelection
     @State private var sessionName = ""
     @FocusState private var isNameFieldFocused: Bool
 
     init(
         host: HostSummary,
         hosts: [HostSummary],
-        onCreate: @escaping (HostSummary, String) -> Void,
+        configuredHosts: [SSHHost],
+        selectedProfileID: UUID? = nil,
+        onCreate: @escaping (HostSummary, String, String?) -> Void,
         onCancel: @escaping () -> Void
     ) {
         _selectedHost = State(initialValue: host)
+        _launchSelection = State(initialValue: NewTmuxSessionLaunchSelection(
+            hostConfigKey: host.configKey,
+            hostKind: host.kind,
+            selectedProfileID: selectedProfileID
+        ))
         self.hosts = hosts
+        self.configuredHosts = configuredHosts
         self.onCreate = onCreate
         self.onCancel = onCancel
     }
@@ -62,6 +131,10 @@ struct NewTmuxSessionSheet: View {
                         hosts.map { host in
                             NativePopupMenuAction(host.sidebarTitle) {
                                 selectedHost = host
+                                launchSelection.selectHost(
+                                    configKey: host.configKey,
+                                    kind: host.kind
+                                )
                             }
                         },
                     ]
@@ -93,6 +166,31 @@ struct NewTmuxSessionSheet: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 13)
+
+            if !availableProfiles.isEmpty {
+                Divider()
+
+                HStack(spacing: 12) {
+                    Text("Start with")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Picker(
+                        "Start with",
+                        selection: selectedProfileBinding
+                    ) {
+                        Text("Login shell").tag(nil as UUID?)
+                        ForEach(availableProfiles) { profile in
+                            Text(profile.name).tag(profile.id as UUID?)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .accessibilityIdentifier("tmux-session-launch-profile")
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 11)
+            }
 
             Text(validationMessage)
                 .font(.caption)
@@ -133,6 +231,11 @@ struct NewTmuxSessionSheet: View {
         if !TmuxSessionName.isValid(normalizedName) {
             return "Use 1–100 characters without periods, colons, or line breaks."
         }
+        if let profileName = launchSelection.selectedProfileName(
+            in: configuredHosts
+        ) {
+            return "Create and attach on \(selectedHost.sidebarTitle) with \(profileName)."
+        }
         return "Create and attach on \(selectedHost.sidebarTitle)."
     }
 
@@ -142,6 +245,21 @@ struct NewTmuxSessionSheet: View {
 
     private func create() {
         guard canCreate else { return }
-        onCreate(selectedHost, normalizedName)
+        onCreate(
+            selectedHost,
+            normalizedName,
+            launchSelection.selectedCommand(in: configuredHosts)
+        )
+    }
+
+    private var availableProfiles: [TmuxLaunchProfile] {
+        launchSelection.availableProfiles(in: configuredHosts)
+    }
+
+    private var selectedProfileBinding: Binding<UUID?> {
+        Binding(
+            get: { launchSelection.selectedProfileID },
+            set: { launchSelection.selectProfile($0) }
+        )
     }
 }

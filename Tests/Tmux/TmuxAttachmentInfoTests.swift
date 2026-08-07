@@ -782,6 +782,100 @@ struct TmuxAttachmentInfoTests {
         )
     }
 
+    @Test("local profile command is one argument before presentation options")
+    func localProfileCommandPrecedesPresentation() {
+        let initialCommand = "printf 'ready'\nexec codex --dangerously-skip"
+        let command = TmuxAttachmentInfo(
+            sessionName: "codex",
+            host: .local,
+            presentationStyle: TmuxPresentationStyle(
+                foreground: "#3B4851",
+                background: "#FFFFFF"
+            ),
+            launchMode: .create,
+            initialCommand: initialCommand
+        ).attachCommand(
+            tmuxPath: "/opt/bin/tmux",
+            workingDirectory: "/code/vault"
+        )
+
+        #expect(command.contains("printf"))
+        #expect(command.contains("exec codex"))
+        #expect(command.contains("/code/vault"))
+        #expect(command.components(separatedBy: "exec codex").count == 2)
+        let commandPosition = command.range(of: "exec codex")?.lowerBound
+        let presentationPosition = command.range(of: "set-option")?.lowerBound
+        #expect(commandPosition != nil)
+        #expect(presentationPosition != nil)
+        if let commandPosition, let presentationPosition {
+            #expect(commandPosition < presentationPosition)
+        }
+    }
+
+    @Test("remote profile creation allocates a TTY before running its command")
+    func remoteProfileCreationUsesInitialTTY() {
+        let command = TmuxAttachmentInfo(
+            sessionName: "codex",
+            host: .ssh(SSHHostInfo(
+                user: "codex", hostname: "build-box", port: nil
+            )),
+            launchMode: .create,
+            initialCommand: "sudo docker exec -it codex codex"
+        ).attachCommand(tmuxPath: "/opt/bin/tmux")
+
+        #expect(command.contains("sudo docker exec -it codex codex"))
+        #expect(command.components(
+            separatedBy: "sudo docker exec -it codex codex"
+        ).count == 2)
+        #expect(command.contains("'-tt'"))
+        #expect(command.contains("new-session"))
+        #expect(command.contains("'-A'"))
+        #expect(!command.contains("has-session"))
+        #expect(!command.contains("attach-session"))
+        #expect(!command.contains("reconnecting"))
+        #expect(!command.contains("'new-session' '-d'"))
+    }
+
+    @Test("existing attachment never executes a supplied profile command")
+    func attachModeDropsProfileCommand() {
+        let command = TmuxAttachmentInfo(
+            sessionName: "codex",
+            host: .ssh(SSHHostInfo(
+                user: "codex", hostname: "build-box", port: nil
+            )),
+            launchMode: .attach,
+            initialCommand: "never-run-this"
+        ).attachCommand(tmuxPath: "/opt/bin/tmux")
+
+        #expect(command.contains("attach-session"))
+        #expect(!command.contains("never-run-this"))
+        #expect(!command.contains("new-session"))
+    }
+
+    @Test("Windows creation ignores POSIX launch profile commands")
+    func windowsCreationDropsProfileCommand() {
+        let host = TmuxHost.ssh(SSHHostInfo(
+            user: "codex",
+            hostname: "build-box",
+            port: nil,
+            platform: .windows
+        ))
+        let command = TmuxAttachmentInfo(
+            sessionName: "codex",
+            host: host,
+            launchMode: .create,
+            initialCommand: "never-run-this"
+        ).attachCommand(tmuxPath: #"C:\Tools\psmux\tmux.exe"#)
+        let commandWithoutProfile = TmuxAttachmentInfo(
+            sessionName: "codex",
+            host: host,
+            launchMode: .create
+        ).attachCommand(tmuxPath: #"C:\Tools\psmux\tmux.exe"#)
+
+        #expect(command == commandWithoutProfile)
+        #expect(!command.contains("never-run-this"))
+    }
+
     @Test("remote creation presents before its attachment attempt")
     func remoteCreationPresentsBeforeAttachment() {
         let info = TmuxAttachmentInfo(

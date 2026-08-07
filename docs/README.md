@@ -11,6 +11,7 @@ publication at [ghosthub.ai/docs](https://ghosthub.ai/docs/).
 
 - [`index.md`](index.md) - internal engineering overview
 - [`quickstart.md`](quickstart.md) - prerequisites and first build
+- [`launch-profiles.md`](launch-profiles.md) - configure and use saved tmux launch commands
 - [`architecture.md`](architecture.md) - product and architecture source of truth
 - [`threat-model.md`](threat-model.md) - security boundaries and trusted-peer assumptions
 - [`terminal-sessions.md`](terminal-sessions.md) - terminal ownership, shell startup, and restart semantics

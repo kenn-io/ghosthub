@@ -7,19 +7,22 @@ public struct SSHHostDraft: Identifiable, Equatable, Sendable {
     public var name: String
     public var platform: HostPlatform
     public var sshDestination: String
+    public var launchProfiles: [TmuxLaunchProfile]
 
     public init(
         id: UUID = UUID(),
         configKey: String,
         name: String,
         platform: HostPlatform,
-        sshDestination: String
+        sshDestination: String,
+        launchProfiles: [TmuxLaunchProfile] = []
     ) {
         self.id = id
         self.configKey = configKey
         self.name = name
         self.platform = platform
         self.sshDestination = sshDestination
+        self.launchProfiles = launchProfiles
     }
 
     public init(_ host: SSHHost) {
@@ -27,7 +30,8 @@ public struct SSHHostDraft: Identifiable, Equatable, Sendable {
             configKey: host.configKey,
             name: host.name,
             platform: host.platform,
-            sshDestination: host.sshDestination
+            sshDestination: host.sshDestination,
+            launchProfiles: host.launchProfiles
         )
     }
 
@@ -36,7 +40,8 @@ public struct SSHHostDraft: Identifiable, Equatable, Sendable {
             configKey: configKey,
             name: name,
             platform: platform,
-            sshDestination: sshDestination
+            sshDestination: sshDestination,
+            launchProfiles: launchProfiles
         )
     }
 

@@ -319,8 +319,20 @@ final class WorkspaceSceneModel: ObservableObject {
     @Published var preferredActiveSurfaceTarget: WorkspaceTerminalSurfaceTarget?
     @Published private var borrowedTmuxConnectionStates:
         [UUID: ConnectionState] = [:]
+    private struct PendingTmuxSessionCreation: Equatable {
+        var request: WorkspaceTmuxSessionCreationRequest
+        var commandReplayAuthorized: Bool
+
+        var selection: WorkspaceTmuxSessionSelection {
+            request.selection
+        }
+
+        var initialCommand: String? {
+            request.initialCommand
+        }
+    }
     private var pendingCreatedTmuxSessions:
-        [UUID: WorkspaceTmuxSessionSelection] = [:]
+        [UUID: PendingTmuxSessionCreation] = [:]
     var pendingCreatedTmuxSessionCount: Int {
         pendingCreatedTmuxSessions.count
     }
@@ -338,6 +350,7 @@ final class WorkspaceSceneModel: ObservableObject {
         TmuxConnectionRecoveryRequest?
     private enum RemoteTmuxEstablishmentPhase: Equatable {
         case establishingWorkspace
+        case establishingProfile(initialCommand: String)
         case attachOnly
     }
     private struct TmuxReconnectContext: Equatable {
@@ -443,6 +456,34 @@ final class WorkspaceSceneModel: ObservableObject {
     var activeBorrowedTmuxSessionIsConfirmedEnded: Bool {
         guard let handle = activeBorrowedTmuxHandle else { return false }
         return confirmedEndedTmuxSessionHandles.contains(handle.id)
+    }
+    var activeBorrowedTmuxRetryRequiresConfirmation: Bool {
+        guard let handle = activeBorrowedTmuxHandle,
+              case .disconnected = borrowedTmuxConnectionStates[handle.id],
+              let pending = activePendingTmuxCreation?.pending,
+              pending.initialCommand != nil,
+              !pending.commandReplayAuthorized
+        else { return false }
+        return true
+    }
+
+    var activeBorrowedTmuxRetryCommand: String? {
+        guard activeBorrowedTmuxRetryRequiresConfirmation else { return nil }
+        return activePendingTmuxCreation?.pending.initialCommand
+    }
+
+    private var activePendingTmuxCreation:
+        (handleID: UUID, pending: PendingTmuxSessionCreation)? {
+        guard let selection = activeBorrowedTmuxSelection else { return nil }
+        if let handle = activeBorrowedTmuxHandle,
+           let pending = pendingCreatedTmuxSessions[handle.id] {
+            return (handle.id, pending)
+        }
+        return pendingCreatedTmuxSessions.first {
+            Self.sameTmuxSession($0.value.selection, selection)
+        }.map {
+            ($0.key, $0.value)
+        }
     }
 
     var activityReferenceDate: Date {
@@ -2787,7 +2828,7 @@ final class WorkspaceSceneModel: ObservableObject {
             pendingRemovalPresentationRestorations.removeValue(forKey: scope)
         }
         let pendingForInvalidatedHosts = pendingCreatedTmuxSessions.filter {
-            hostIDs.contains($0.value.hostID)
+            hostIDs.contains($0.value.selection.hostID)
         }
         for (handleID, pending) in pendingForInvalidatedHosts {
             createdSessionDiscoveryTasks.removeValue(
@@ -2797,7 +2838,7 @@ final class WorkspaceSceneModel: ObservableObject {
             endedCreatedTmuxSessionHandles.remove(handleID)
             pendingCreatedTmuxSessions.removeValue(forKey: handleID)
             borrowedTmuxConnectionStates.removeValue(forKey: handleID)
-            removeOptimisticTmuxSession(pending)
+            removeOptimisticTmuxSession(pending.selection)
         }
         for hostID in hostIDs {
             let handles = nativeTmuxSessionCoordinator.detachAll(
@@ -3589,6 +3630,9 @@ final class WorkspaceSceneModel: ObservableObject {
                 sessionClosed:
                 confirmedEndedTmuxSessionHandles.contains(handle.id),
                 defersTerminalResize: defersTerminalResize,
+                retryRequiresConfirmation:
+                activeBorrowedTmuxRetryRequiresConfirmation,
+                retryCommand: activeBorrowedTmuxRetryCommand,
                 surface: { [weak self] in
                     self?.nativeTmuxSessionCoordinator.surface(handle: handle)
                 },
@@ -3599,6 +3643,12 @@ final class WorkspaceSceneModel: ObservableObject {
                 },
                 onRetryRequest: { [weak self] in
                     self?.retryBorrowedTmuxSession(selection)
+                },
+                onConfirmedRetryRequest: { [weak self] in
+                    self?
+                        .retryBorrowedTmuxSessionAfterProfileCommandConfirmation(
+                            selection
+                        )
                 },
                 onReconnectNow: onReconnectNow,
                 onReviewConnection: onReviewConnection,
@@ -3624,25 +3674,54 @@ final class WorkspaceSceneModel: ObservableObject {
         if let worktreeID = selection.worktreeID {
             explicitlyDismissedWorktreePresentationIDs.remove(worktreeID)
         }
-        let hasPendingCreation = pendingCreatedTmuxSessions.values.contains {
-            Self.sameTmuxSession($0, selection)
+        let pendingCreation = pendingCreatedTmuxSessions.values.first {
+            Self.sameTmuxSession($0.selection, selection)
+        }
+        if pendingCreation?.initialCommand != nil,
+           pendingCreation?.commandReplayAuthorized != true {
+            presentTmuxSession(selection, launchMode: .attachOnly)
+            return
         }
         presentTmuxSession(
             selection,
-            launchMode: selection.socketName == nil && hasPendingCreation
+            launchMode: selection.socketName == nil && pendingCreation != nil
                 ? .create
-                : .attach
+                : .attach,
+            initialCommand: pendingCreation?.initialCommand,
+            commandReplayAuthorized:
+            pendingCreation?.commandReplayAuthorized == true
         )
     }
 
     func createTmuxSession(_ selection: WorkspaceTmuxSessionSelection) {
+        createTmuxSession(WorkspaceTmuxSessionCreationRequest(
+            selection: selection
+        ))
+    }
+
+    func createTmuxSession(_ request: WorkspaceTmuxSessionCreationRequest) {
+        let isPendingCommandReplay = request.initialCommand != nil
+            && pendingCreatedTmuxSessions.values.contains {
+                Self.sameTmuxSession($0.selection, request.selection)
+            }
+        createTmuxSession(
+            request,
+            commandReplayAuthorized: !isPendingCommandReplay
+        )
+    }
+
+    private func createTmuxSession(
+        _ request: WorkspaceTmuxSessionCreationRequest,
+        commandReplayAuthorized: Bool
+    ) {
         cancelPendingRestoration()
+        let selection = request.selection
         userNavigationRevision &+= 1
         if let worktreeID = selection.worktreeID {
             explicitlyDismissedWorktreePresentationIDs.remove(worktreeID)
         }
         let hasPendingCreation = pendingCreatedTmuxSessions.values.contains {
-            Self.sameTmuxSession($0, selection)
+            Self.sameTmuxSession($0.selection, selection)
         }
         let knownSessions = tmuxSessionsByHost[selection.hostID]
             ?? snapshot.host(id: selection.hostID)?.tmuxSessions
@@ -3659,10 +3738,18 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         guard let handle = presentTmuxSession(
             selection,
-            launchMode: launchMode
+            launchMode: launchMode,
+            initialCommand: launchMode == .create
+                ? request.initialCommand
+                : nil,
+            commandReplayAuthorized: commandReplayAuthorized
         ) else { return }
         if launchMode == .create {
-            pendingCreatedTmuxSessions[handle.id] = selection
+            pendingCreatedTmuxSessions[handle.id] =
+                PendingTmuxSessionCreation(
+                    request: request,
+                    commandReplayAuthorized: false
+                )
             _ = publishCreatedTmuxSession(selection)
         }
     }
@@ -3676,6 +3763,8 @@ final class WorkspaceSceneModel: ObservableObject {
     private func presentTmuxSession(
         _ selection: WorkspaceTmuxSessionSelection,
         launchMode: TmuxAttachmentLaunchMode,
+        initialCommand: String? = nil,
+        commandReplayAuthorized: Bool = false,
         intent: TmuxPresentationIntent = .userInitiated,
         activatesPresentation: Bool = true
     ) -> BorrowedTmuxSessionHandle? {
@@ -3691,6 +3780,10 @@ final class WorkspaceSceneModel: ObservableObject {
             selection.socketName != nil && launchMode == .create
                 ? .attach
                 : launchMode
+        guard effectiveLaunchMode != .create
+            || initialCommand == nil
+            || commandReplayAuthorized
+        else { return nil }
         if let worktreeID = selection.worktreeID {
             let replacedSelections: [WorkspaceTmuxSessionSelection] =
                 retainedTmuxPresentations.values.compactMap { presentation in
@@ -3769,9 +3862,22 @@ final class WorkspaceSceneModel: ObservableObject {
             host: attachmentHost,
             socketName: selection.socketName,
             launchMode: effectiveLaunchMode,
+            initialCommand: effectiveLaunchMode == .create
+                ? initialCommand
+                : nil,
             workingDirectory: selection.worktreePath,
             openWorkspace: openWorkspace
         )
+        let phase: RemoteTmuxEstablishmentPhase
+        if openWorkspace || protectedSessionNeedsEstablishment {
+            phase = .establishingWorkspace
+        } else if effectiveLaunchMode == .create,
+                  let initialCommand,
+                  !initialCommand.isEmpty {
+            phase = .establishingProfile(initialCommand: initialCommand)
+        } else {
+            phase = .attachOnly
+        }
         let reconnectContext = attachmentHost.isRemote
             || openWorkspace
             || protectedSessionNeedsEstablishment
@@ -3779,9 +3885,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 selection: selection,
                 handleID: handle.id,
                 host: attachmentHost,
-                phase: openWorkspace || protectedSessionNeedsEstablishment
-                    ? .establishingWorkspace
-                    : .attachOnly,
+                phase: phase,
                 surfaceExitCode: nil
             )
             : nil
@@ -3802,7 +3906,16 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         borrowedTmuxConnectionStates[handle.id] = .connecting
         if effectiveLaunchMode == .create {
-            transferPendingCreation(for: selection, to: handle)
+            transferPendingCreation(
+                for: PendingTmuxSessionCreation(
+                    request: WorkspaceTmuxSessionCreationRequest(
+                        selection: selection,
+                        initialCommand: initialCommand
+                    ),
+                    commandReplayAuthorized: false
+                ),
+                to: handle
+            )
         }
         return handle
     }
@@ -3974,15 +4087,22 @@ final class WorkspaceSceneModel: ObservableObject {
     }
 
     private func transferPendingCreation(
-        for selection: WorkspaceTmuxSessionSelection,
+        for pendingCreation: PendingTmuxSessionCreation,
         to handle: BorrowedTmuxSessionHandle
     ) {
+        let request = pendingCreation.request
         let previousHandleIDs = pendingCreatedTmuxSessions.compactMap {
             handleID, pending in
-            Self.sameTmuxSession(pending, selection) ? handleID : nil
+            Self.sameTmuxSession(pending.selection, request.selection)
+                ? handleID
+                : nil
         }
         guard !previousHandleIDs.isEmpty,
               !previousHandleIDs.contains(handle.id) else { return }
+        let retainedCommand = request.initialCommand
+            ?? previousHandleIDs.lazy.compactMap {
+                self.pendingCreatedTmuxSessions[$0]?.initialCommand
+            }.first
         for handleID in previousHandleIDs {
             createdSessionDiscoveryTasks.removeValue(
                 forKey: handleID
@@ -3992,7 +4112,15 @@ final class WorkspaceSceneModel: ObservableObject {
             pendingCreatedTmuxSessions.removeValue(forKey: handleID)
             borrowedTmuxConnectionStates.removeValue(forKey: handleID)
         }
-        pendingCreatedTmuxSessions[handle.id] = selection
+        pendingCreatedTmuxSessions[handle.id] =
+            PendingTmuxSessionCreation(
+                request: WorkspaceTmuxSessionCreationRequest(
+                    selection: request.selection,
+                    initialCommand: retainedCommand
+                ),
+                commandReplayAuthorized:
+                pendingCreation.commandReplayAuthorized
+            )
     }
 
     func closeBorrowedTmuxSession(_ selection: WorkspaceTmuxSessionSelection) {
@@ -4031,15 +4159,19 @@ final class WorkspaceSceneModel: ObservableObject {
         cancelTmuxPresentationTasks(handleID: handle.id)
         confirmedEndedTmuxSessionHandles.remove(handle.id)
         borrowedTmuxConnectionStates.removeValue(forKey: handle.id)
-        if pendingCreatedTmuxSessions[handle.id] != nil,
-           nativeTmuxSessionCoordinator.hasLaunched(handle) {
-            endedCreatedTmuxSessionHandles.insert(handle.id)
-            reconcileCreatedTmuxSession(
-                handleID: handle.id,
-                immediately: true
-            )
-        } else if pendingCreatedTmuxSessions[handle.id] != nil {
-            discardPendingTmuxSession(handleID: handle.id)
+        if var pending = pendingCreatedTmuxSessions[handle.id] {
+            if nativeTmuxSessionCoordinator.hasLaunched(handle) {
+                pending.commandReplayAuthorized = false
+                pendingCreatedTmuxSessions[handle.id] = pending
+                endedCreatedTmuxSessionHandles.insert(handle.id)
+                reconcileCreatedTmuxSession(
+                    handleID: handle.id,
+                    immediately: true
+                )
+            } else if recordsExplicitDismissal
+                || pending.initialCommand == nil {
+                discardPendingTmuxSession(handleID: handle.id)
+            }
         }
         if activeBorrowedTmuxHandle == handle {
             activeBorrowedTmuxSelection = nil
@@ -4307,7 +4439,7 @@ final class WorkspaceSceneModel: ObservableObject {
             }
             scheduleTmuxSessionDiscovery()
         }
-        guard pendingCreatedTmuxSessions[handle.id] != nil else {
+        guard var pending = pendingCreatedTmuxSessions[handle.id] else {
             return
         }
         switch state {
@@ -4315,9 +4447,16 @@ final class WorkspaceSceneModel: ObservableObject {
             reconcileCreatedTmuxSession(handleID: handle.id)
         case .disconnected:
             guard nativeTmuxSessionCoordinator.hasLaunched(handle) else {
-                discardPendingTmuxSession(handleID: handle.id)
+                if pending.initialCommand != nil {
+                    pending.commandReplayAuthorized = true
+                    pendingCreatedTmuxSessions[handle.id] = pending
+                } else {
+                    discardPendingTmuxSession(handleID: handle.id)
+                }
                 return
             }
+            pending.commandReplayAuthorized = false
+            pendingCreatedTmuxSessions[handle.id] = pending
             endedCreatedTmuxSessionHandles.insert(handle.id)
             reconcileCreatedTmuxSession(
                 handleID: handle.id,
@@ -4370,14 +4509,14 @@ final class WorkspaceSceneModel: ObservableObject {
         guard let currentContext = presentation.reconnectContext else {
             return .stop
         }
-        let confirmedEstablishment =
-            context.phase == .establishingWorkspace
+        let advancedToAttachOnly =
+            context.phase != .attachOnly
                 && currentContext.phase == .attachOnly
                 && currentContext.selection == context.selection
                 && currentContext.handleID == context.handleID
                 && currentContext.host == context.host
                 && currentContext.surfaceExitCode == context.surfaceExitCode
-        guard currentContext == context || confirmedEstablishment,
+        guard currentContext == context || advancedToAttachOnly,
               presentation.handle.id == context.handleID,
               retainedTmuxPresentation(for: presentation.handle)
               === presentation
@@ -4468,7 +4607,7 @@ final class WorkspaceSceneModel: ObservableObject {
             )
             return .stop
         case .absent:
-            guard context.phase == .establishingWorkspace else {
+            guard context.phase != .attachOnly else {
                 confirmedEndedTmuxSessionHandles.insert(context.handleID)
                 presentation.recoveryState = nil
                 presentation.recoveryRequest = nil
@@ -4482,11 +4621,23 @@ final class WorkspaceSceneModel: ObservableObject {
                 )
                 return .stop
             }
-            relaunchTmuxSession(
-                presentation,
-                launchMode: .attach,
-                intent: .userInitiated
-            )
+            switch context.phase {
+            case .establishingWorkspace:
+                relaunchTmuxSession(
+                    presentation,
+                    launchMode: .attach,
+                    intent: .userInitiated
+                )
+            case .establishingProfile:
+                stopTmuxReconnectWithUnableToAttach(
+                    presentation,
+                    "The session was not found after the connection dropped. "
+                        + "The launch command may have already run. Review the"
+                        + " command before trying it again."
+                )
+            case .attachOnly:
+                break
+            }
             return .stop
         case .failure(.probeCancelled), .failure(.probeTimedOut):
             return .retry
@@ -4537,6 +4688,7 @@ final class WorkspaceSceneModel: ObservableObject {
     private func relaunchTmuxSession(
         _ presentation: RetainedTmuxPresentation,
         launchMode: TmuxAttachmentLaunchMode,
+        initialCommand: String? = nil,
         intent: TmuxPresentationIntent
     ) {
         let selection = presentation.selection
@@ -4572,6 +4724,7 @@ final class WorkspaceSceneModel: ObservableObject {
             host: attachmentHost,
             socketName: selection.socketName,
             launchMode: launchMode,
+            initialCommand: launchMode == .create ? initialCommand : nil,
             workingDirectory: selection.worktreePath,
             openWorkspace: openWorkspace
         )
@@ -4584,13 +4737,21 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         presentation.handle = handle
         presentation.launchMode = launchMode
+        let phase: RemoteTmuxEstablishmentPhase
+        if openWorkspace || protectedSessionNeedsEstablishment {
+            phase = .establishingWorkspace
+        } else if launchMode == .create,
+                  let initialCommand,
+                  !initialCommand.isEmpty {
+            phase = .establishingProfile(initialCommand: initialCommand)
+        } else {
+            phase = .attachOnly
+        }
         presentation.reconnectContext = TmuxReconnectContext(
             selection: selection,
             handleID: handle.id,
             host: attachmentHost,
-            phase: openWorkspace || protectedSessionNeedsEstablishment
-                ? .establishingWorkspace
-                : .attachOnly,
+            phase: phase,
             surfaceExitCode: nil
         )
         borrowedTmuxConnectionStates[handle.id] = .connecting
@@ -4671,7 +4832,7 @@ final class WorkspaceSceneModel: ObservableObject {
         let handle = presentation.handle
         guard let context = presentation.reconnectContext,
               context.handleID == handle.id,
-              context.phase == .establishingWorkspace
+              context.phase != .attachOnly
         else { return }
         presentation.establishmentConfirmationTask?.cancel()
         let delays = [.zero] + createdSessionDiscoveryDelays
@@ -4710,14 +4871,14 @@ final class WorkspaceSceneModel: ObservableObject {
     }
 
     private func discardPendingTmuxSession(handleID: UUID) {
-        guard let selection = pendingCreatedTmuxSessions[handleID] else {
+        guard let request = pendingCreatedTmuxSessions[handleID] else {
             return
         }
         createdSessionDiscoveryTasks.removeValue(forKey: handleID)?.cancel()
         pendingCreatedTmuxSessions.removeValue(forKey: handleID)
         exhaustedCreatedTmuxSessionHandles.remove(handleID)
         endedCreatedTmuxSessionHandles.remove(handleID)
-        removeOptimisticTmuxSession(selection)
+        removeOptimisticTmuxSession(request.selection)
     }
 
     /// True once no deferred or draining styling work remains. Tests wait on
@@ -4878,8 +5039,8 @@ final class WorkspaceSceneModel: ObservableObject {
         immediately: Bool = false
     ) {
         guard let pending = pendingCreatedTmuxSessions[handleID],
-              let host = inventoryHosts[pending.hostID]
-              ?? snapshot.host(id: pending.hostID).flatMap(
+              let host = inventoryHosts[pending.selection.hostID]
+              ?? snapshot.host(id: pending.selection.hostID).flatMap(
                   TmuxHostResolver.resolve
               )
         else { return }
@@ -4916,10 +5077,10 @@ final class WorkspaceSceneModel: ObservableObject {
                 case let .success(discovered):
                     fenceTmuxDiscoveryForCreationReconciliation(host: host)
                     tmuxDiscoveryFailuresByHost.removeValue(
-                        forKey: pending.hostID
+                        forKey: pending.selection.hostID
                     )
                     let found = discovered.contains {
-                        $0.name == pending.name
+                        $0.name == pending.selection.name
                     }
                     let isLastAttempt = index == delays.indices.last
                     if !found, isLastAttempt {
@@ -4927,10 +5088,10 @@ final class WorkspaceSceneModel: ObservableObject {
                             handleID
                         )
                     }
-                    tmuxSessionsByHost[pending.hostID] =
+                    tmuxSessionsByHost[pending.selection.hostID] =
                         reconciledTmuxSessions(
                             discovered,
-                            hostID: pending.hostID
+                            hostID: pending.selection.hostID
                         )
                     applyInventoryOverlayIfNeeded()
                     updateWorkspaceInventoryState()
@@ -4945,9 +5106,9 @@ final class WorkspaceSceneModel: ObservableObject {
                     }
                 case let .failure(error):
                     let hostName = snapshot.host(
-                        id: pending.hostID
+                        id: pending.selection.hostID
                     )?.name ?? "Unknown host"
-                    tmuxDiscoveryFailuresByHost[pending.hostID] =
+                    tmuxDiscoveryFailuresByHost[pending.selection.hostID] =
                         "\(hostName): \(error.localizedDescription)"
                     updateWorkspaceInventoryState()
                 }
@@ -4983,14 +5144,24 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         let discoveredNames = Set(summaries.map(\.name))
         let pendingForHost = pendingCreatedTmuxSessions.filter {
-            $0.value.hostID == hostID
+            $0.value.selection.hostID == hostID
         }
         for (handleID, pending) in pendingForHost {
-            if discoveredNames.contains(pending.name) {
+            if discoveredNames.contains(pending.selection.name) {
                 if let key = retainedTmuxPresentationKeysByHandle[handleID],
                    let presentation = retainedTmuxPresentations[key],
-                   Self.sameTmuxSession(presentation.selection, pending) {
+                   Self.sameTmuxSession(
+                       presentation.selection,
+                       pending.selection
+                   ) {
                     presentation.launchMode = .attach
+                    if let context = presentation.reconnectContext,
+                       context.handleID == handleID,
+                       case .establishingProfile = context.phase {
+                        presentation.reconnectContext?.phase = .attachOnly
+                        presentation.establishmentConfirmationTask?.cancel()
+                        presentation.establishmentConfirmationTask = nil
+                    }
                     publishActiveState(for: presentation)
                 }
                 pendingCreatedTmuxSessions.removeValue(forKey: handleID)
@@ -4999,7 +5170,8 @@ final class WorkspaceSceneModel: ObservableObject {
                 )?.cancel()
                 exhaustedCreatedTmuxSessionHandles.remove(handleID)
                 endedCreatedTmuxSessionHandles.remove(handleID)
-            } else if exhaustedCreatedTmuxSessionHandles.contains(handleID),
+            } else if pending.initialCommand == nil,
+                      exhaustedCreatedTmuxSessionHandles.contains(handleID),
                       endedCreatedTmuxSessionHandles.contains(handleID) {
                 pendingCreatedTmuxSessions.removeValue(forKey: handleID)
                 createdSessionDiscoveryTasks.removeValue(
@@ -5009,7 +5181,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 endedCreatedTmuxSessionHandles.remove(handleID)
             } else {
                 summaries.append(TmuxSessionSummary(
-                    name: pending.name,
+                    name: pending.selection.name,
                     managed: false,
                     windows: []
                 ))
@@ -5056,33 +5228,97 @@ final class WorkspaceSceneModel: ObservableObject {
     func retryBorrowedTmuxSession(
         _ selection: WorkspaceTmuxSessionSelection
     ) {
+        guard !activeBorrowedTmuxRetryRequiresConfirmation else { return }
+        retryBorrowedTmuxSession(
+            selection,
+            confirmedPendingCreation: nil
+        )
+    }
+
+    func retryBorrowedTmuxSessionAfterProfileCommandConfirmation(
+        _ selection: WorkspaceTmuxSessionSelection
+    ) {
+        guard activeBorrowedTmuxRetryRequiresConfirmation,
+              let activePending = activePendingTmuxCreation,
+              Self.sameTmuxSession(
+                  activePending.pending.selection,
+                  selection
+              )
+        else { return }
+        var pendingCreation = activePending.pending
+        pendingCreation.commandReplayAuthorized = true
+        pendingCreatedTmuxSessions[activePending.handleID] = pendingCreation
+        retryBorrowedTmuxSession(
+            selection,
+            confirmedPendingCreation: pendingCreation
+        )
+    }
+
+    private func retryBorrowedTmuxSession(
+        _ selection: WorkspaceTmuxSessionSelection,
+        confirmedPendingCreation: PendingTmuxSessionCreation?
+    ) {
         guard activeBorrowedTmuxSelection == selection else { return }
+        if let confirmedPendingCreation,
+           let activePending = activePendingTmuxCreation,
+           activePending.pending == confirmedPendingCreation {
+            var consumedPendingCreation = confirmedPendingCreation
+            consumedPendingCreation.commandReplayAuthorized = false
+            pendingCreatedTmuxSessions[activePending.handleID] =
+                consumedPendingCreation
+        }
         let sessionConfirmedEnded = activeBorrowedTmuxHandle.map {
             confirmedEndedTmuxSessionHandles.contains($0.id)
         } == true
+        let pendingCreation = confirmedPendingCreation
+            ?? activeBorrowedTmuxHandle.flatMap {
+                pendingCreatedTmuxSessions[$0.id]
+            } ?? pendingCreatedTmuxSessions.values.first {
+                Self.sameTmuxSession($0.selection, selection)
+            }
         let recreateEndedNamedSession =
             sessionConfirmedEnded
                 && selection.socketName == nil
                 && selection.worktreeID == nil
                 && selection.worktreePath == nil
-        let launchMode = Self.retryLaunchMode(
-            for: selection,
-            current: activeBorrowedTmuxLaunchMode,
-            sessionConfirmedEnded: sessionConfirmedEnded
-        )
+        let launchMode: TmuxAttachmentLaunchMode =
+            confirmedPendingCreation == nil
+                ? Self.retryLaunchMode(
+                    for: selection,
+                    current: activeBorrowedTmuxLaunchMode,
+                    sessionConfirmedEnded: sessionConfirmedEnded
+                )
+                : .create
         invalidateBorrowedTmuxSession(selection)
         if recreateEndedNamedSession {
             guard let handle = presentTmuxSession(
                 selection,
-                launchMode: .create
+                launchMode: .create,
+                initialCommand: pendingCreation?.initialCommand,
+                commandReplayAuthorized:
+                pendingCreation?.commandReplayAuthorized == true
             ) else { return }
-            pendingCreatedTmuxSessions[handle.id] = selection
+            pendingCreatedTmuxSessions[handle.id] =
+                PendingTmuxSessionCreation(
+                    request: pendingCreation?.request
+                        ?? WorkspaceTmuxSessionCreationRequest(
+                            selection: selection
+                        ),
+                    commandReplayAuthorized: false
+                )
             _ = publishCreatedTmuxSession(selection)
             return
         }
         switch launchMode {
         case .create:
-            createTmuxSession(selection)
+            createTmuxSession(
+                pendingCreation?.request
+                    ?? WorkspaceTmuxSessionCreationRequest(
+                        selection: selection
+                    ),
+                commandReplayAuthorized:
+                pendingCreation?.commandReplayAuthorized == true
+            )
         case .attach, .attachOnly:
             presentTmuxSession(selection, launchMode: launchMode)
         }

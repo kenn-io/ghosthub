@@ -100,6 +100,7 @@ private struct NativeTmuxAttachment {
     var socketName: String?
     var protectedWorkspacePath: String?
     var launchMode: TmuxAttachmentLaunchMode
+    var initialCommand: String?
     var workingDirectory: String?
     var openWorkspace: Bool
     var sshConnectionArguments: [String]
@@ -201,6 +202,7 @@ final class NativeTmuxSessionCoordinator {
         host: TmuxHost,
         socketName: String? = nil,
         launchMode: TmuxAttachmentLaunchMode = .attach,
+        initialCommand: String? = nil,
         workingDirectory: String? = nil,
         openWorkspace: Bool = false
     ) -> BorrowedTmuxSessionHandle {
@@ -270,6 +272,7 @@ final class NativeTmuxSessionCoordinator {
                 host: host,
                 socketName: socketName,
                 launchMode: launchMode,
+                initialCommand: launchMode == .create ? initialCommand : nil,
                 workingDirectory: workingDirectory,
                 openWorkspace: openWorkspace,
                 sshConnectionArguments: sshConnectionArguments,
@@ -284,6 +287,7 @@ final class NativeTmuxSessionCoordinator {
         host: TmuxHost,
         socketName: String?,
         launchMode: TmuxAttachmentLaunchMode,
+        initialCommand: String?,
         workingDirectory: String?,
         openWorkspace: Bool,
         sshConnectionArguments: [String],
@@ -315,6 +319,7 @@ final class NativeTmuxSessionCoordinator {
                 socketName: socketName,
                 protectedWorkspacePath: protectedWorkspacePath,
                 launchMode: launchMode,
+                initialCommand: launchMode == .create ? initialCommand : nil,
                 workingDirectory: workingDirectory,
                 openWorkspace: openWorkspace,
                 sshConnectionArguments: sshConnectionArguments,
@@ -425,7 +430,8 @@ final class NativeTmuxSessionCoordinator {
                 : nil,
             protectedWorkspacePath: attachment.protectedWorkspacePath,
             presentationStyle: presentationStyle,
-            launchMode: attachment.launchMode
+            launchMode: attachment.launchMode,
+            initialCommand: attachment.initialCommand
         )
         let surface = terminalCoordinator.paneSurface(
             for: surfaceKey(handle),
