@@ -14,7 +14,7 @@ import { RELEASES_URL } from '../config';
 
 const title = 'How to use Ghosthub';
 const description =
-  'A visual guide to connected tmux sessions, automatic SSH reconnect, '
+  'A visual tour of connected tmux sessions, automatic SSH reconnect, '
   + 'worktrees, the Command Palette, native tabs and windows, and terminal configuration.';
 
 const imageWidths = [640, 960, 1280, 1600];
@@ -45,6 +45,10 @@ const imageAlt = {
         SSH hosts, with no Git setup required. It also manages worktree-bound
         sessions created from branches and GitHub pull requests. If SSH drops,
         it retries and reattaches to the same exact session automatically.
+      </p>
+      <p class="docs-callout">
+        Looking for detailed setup and reference material? Visit the{' '}
+        <a href="/docs/">Ghosthub Docs</a>.
       </p>
       <p class="promise" aria-label="Automatic SSH reconnect plus tmux reattach">
         <span class="promise-icon" aria-hidden="true">↻</span>
@@ -88,28 +92,9 @@ const imageAlt = {
             plus commands to open any discovered session.
           </p>
           <p>
-            To keep tool-owned standalone sessions out of navigation, open{' '}
-            <strong>Settings → Worktrees</strong> and add hidden tmux session
-            patterns, one per line. Patterns are case-sensitive and support{' '}
-            <code>*</code> for any number of characters and <code>?</code> for
-            one character. Ghosthub stores them in{' '}
-            <code>~/.config/ghosthub/config.toml</code>; matching kwt workspaces
-            remain visible under their projects.
-          </p>
-          <p>
-            Closing the Ghosthub window only detaches. Your work keeps running
-            in tmux. To end a standalone session Ghosthub knows is running,
-            hover its row and click the subtle <strong>×</strong>. A
-            worktree-backed session keeps <strong>Kill Session…</strong> in
-            its action menu, beside the separate worktree-removal control.
-            Ghosthub confirms the host and exact tmux instance before
-            terminating its windows, panes, and processes. It cancels the
-            action if that host’s connection changes or if the session
-            disappears and is replaced under the same name, and keeps an
-            active attachment open if the kill fails. Switching to another
-            session while the command completes does not navigate away from
-            the new selection. The same command is available in the command
-            palette.
+            Closing a Ghosthub presentation only detaches; your work keeps
+            running in tmux. See <a href="/docs/sessions/">Sessions</a> for
+            session lifecycle, hiding, and confirmed kill controls.
           </p>
         </div>
       </div>
@@ -134,63 +119,15 @@ const imageAlt = {
           <p>
             Open <strong>Settings → Hosts</strong> and add any destination
             accepted by your SSH configuration, such as{' '}
-            <code>devbox</code> or <code>alice@build-server</code>.
-            Importing from Tailscale uses the user resolved by your OpenSSH
-            configuration (falling back to your local username) and preserves
-            each host’s full MagicDNS name.
+            <code>devbox</code> or <code>alice@build-server</code>. Ghosthub
+            follows OpenSSH configuration for users, ports, keys, and routing.
           </p>
           <p>
-            Remote hosts need tmux. Ghosthub follows your OpenSSH configuration
-            for users, ports, keys, and routing. If OpenSSH encounters an unseen
-            key under an interactive trust policy, Ghosthub shows the exact
-            destination and fingerprint for approval. Passwords and other
-            interactive challenges use a native secure-entry sheet that names
-            the host requesting the response. Responses are kept only for the
-            app session, and <strong>Continue</strong> can deliberately send an
-            empty response when a challenge requires one.
-          </p>
-          <p>
-            ProxyJump routes are handled one host at a time, with every trust
-            and credential prompt naming the hop that controls it. Ghosthub
-            refuses opaque ProxyCommand routes and jump hosts that themselves
-            use another proxy because it cannot safely review those intermediate
-            policies. An unreachable machine never blocks the rest of your
-            fleet.
-          </p>
-          <p>
-            Native Windows support is experimental. Choose{' '}
-            <strong>Windows (psmux)</strong> for a Windows OpenSSH host with
-            PowerShell and <a href="https://github.com/marlocarlo/psmux">psmux</a>{' '}
-            installed, including its <code>tmux.exe</code> alias. After
-            testing the connection, <strong>Install Bundled kwt</strong>{' '}
-            uploads Ghosthub’s matching AMD64 or ARM64 helper for that user.
-            The Windows helper is currently unsigned, so this path is intended
-            for development machines and power users until Authenticode
-            signing is available.
-          </p>
-          <p>
-            To add project and worktree context without installing{' '}
-            <a href="https://kwt.sh">kwt, a Git worktree manager</a>,
-            system-wide, test the connection and choose{' '}
-            <strong>Install kwt Worktree Helper</strong>. Ghosthub asks through that
-            explicit action, then copies its pinned build for the host’s OS and
-            CPU, verifies it, and keeps it under <code>~/.ghosthub/</code>.
-            On a fresh macOS or Linux host, open the <strong>+</strong> menu
-            beside it, choose <strong>Add Project</strong>, and enter each
-            existing checkout’s absolute path. Ghosthub delegates registration
-            to kwt and refreshes inventory without scanning the machine.
-            Project registration is not yet available for Windows hosts. If the
-            host’s SSH address changes while Add Project is open, close the
-            sheet and try again against the updated host. Tmux-only hosts do not
-            need either step.
-          </p>
-          <p>
-            If a host shows a caution icon, click it to review trust,
-            authenticate, or retry the connection. Ghosthub confirms success
-            before dismissing the sheet and retries inventory automatically.
-            Reachable hosts keep any separate inventory diagnostic visible so
-            you can retry it without repeating SSH setup. An expanded host with
-            no projects or tmux sessions says so in the sidebar.
+            Trust and credential prompts name the exact host or jump hop that
+            controls them. Tmux-only hosts need no helper; project context can
+            use Ghosthub’s managed kwt helper. Native Windows support through
+            psmux is experimental. See <a href="/docs/remote-hosts/">Remote Hosts</a>{' '}
+            for requirements, trust, authentication, Tailscale, and helper setup.
           </p>
           <aside class="reconnect">
             <span aria-hidden="true">↻</span>
@@ -200,16 +137,7 @@ const imageAlt = {
               with no more than 30 seconds between attempts. Choose
               <strong>Reconnect Now</strong> to try immediately. When
               connectivity returns, Ghosthub reattaches to the same exact tmux
-              session with the server-side process state still intact. If SSH
-              needs authentication or host-key review, the screen changes to
-              <strong>Connection needs attention</strong> and opens the native
-              recovery flow. If the connection has recovered before that check
-              finishes, <strong>Retry</strong> resumes the same automatic
-              reconnect supervisor immediately. Authentication opened from an
-              ordinary host inventory warning only refreshes that inventory;
-              it never reopens a tmux session. If you dismiss a session’s
-              recovery sheet, <strong>Review Connection</strong> reopens the
-              same recovery request so successful review can resume it.
+              session with the server-side process state still intact.
             </p>
           </aside>
         </div>
@@ -237,41 +165,15 @@ const imageAlt = {
             the absolute path to an existing checkout. Ghosthub registers that
             repository through its bundled or managed{' '}
             <a href="https://kwt.sh">kwt</a> helper without scanning the machine.
-            Windows project registration is not yet supported.
-          </p>
-          <p>
-            Pull-request import requires the{' '}
-            <a href="https://cli.github.com/">GitHub CLI (<code>gh</code>)</a>{' '}
-            on the host containing the project: your Mac for a local project
-            or the SSH machine for a remote one. Install it there and run{' '}
-            <code>gh auth login</code> on that same host before importing. For
-            an HTTPS Git remote, ordinary Git authentication must also work on
-            that host; <code>gh auth setup-git</code> configures GitHub CLI as
-            a Git credential helper.
           </p>
           <p>
             Select a project and press <kbd>⌘⇧N</kbd>. Use
             <strong>Branch</strong> to search local and remote branches that
-            are not already checked out. Pick one to create its worktree,
-            including a local tracking branch when the source is remote, or
-            type a new branch name. Use
+            are not already checked out, or type a new branch name. Use
             <strong>Pull Request</strong> to find and import an open GitHub
-            pull request. You do not need to install or run kwt separately.
-            Selecting a listed worktree creates or repairs its canonical tmux
-            session when needed, then attaches an ordinary tmux client.
-            Kwt remains optional if you only want a local and remote tmux
-            session switcher. Remote tmux copy-mode can write copied text to
-            the Mac clipboard through OSC 52, while paste follows the
-            configured terminal shortcut and libghostty’s safe paste path.
-          </p>
-          <p>
-            To remove a non-primary worktree, hover its sidebar row and click
-            the <strong>×</strong>. After confirmation, Ghosthub terminates
-            that worktree’s live tmux session if necessary and asks kwt to
-            remove the checkout. If the checkout is already gone, Ghosthub
-            skips the redundant kwt removal but still reconciles the exact
-            live tmux session covered by the confirmation. The Git branch is
-            kept.
+            pull request. See <a href="/docs/projects-worktrees/">Projects and
+              Worktrees</a> for host-side GitHub CLI setup, branch behavior,
+            and safe worktree removal.
           </p>
         </div>
       </div>
@@ -295,9 +197,9 @@ const imageAlt = {
           <p>
             Press <kbd>⌘⇧P</kbd> for the Command Palette. Search across hosts,
             projects, worktrees, appearance, settings, and common actions,
-            then press Return to go. When an attached tmux session is active,
-            <strong>Apply Theme to Current Session</strong> rethemes it without
-            detaching or enabling the persistent shared-session override.
+            then press Return to go. The{' '}
+            <a href="/docs/keyboard-shortcuts/">keyboard shortcut reference</a>{' '}
+            covers the rest of the app.
           </p>
           <div class="shortcuts" aria-label="Useful keyboard shortcuts">
             <span><kbd>⌘B</kbd> Hide/show sidebar</span>
@@ -342,11 +244,9 @@ const imageAlt = {
           </div>
           <p>
             Press <kbd>⌘B</kbd> in any window to hide its sidebar and give
-            the terminal the full frame. Press it again whenever you need
-            fleet navigation back. Drag worktrees within a project or standalone
-            tmux sessions within a host to arrange them; the insertion line
-            previews the destination. Ghosthub remembers these display orders
-            without changing anything in kwt, git, or tmux.
+            the terminal the full frame. See{' '}
+            <a href="/docs/windows-navigation/">Windows and Navigation</a> for
+            restoration, detachment, and display ordering.
           </p>
         </div>
       </div>
@@ -383,28 +283,13 @@ const imageAlt = {
             <code>~/.config/ghosthub/ghostty.conf</code>.
           </p>
           <p>
-            Quit confirmation is on by default. Change it at{' '}
-            <strong>Settings → Terminal → Confirm before quitting Ghosthub</strong>.
-            Closing the final workspace leaves Ghosthub running; use Command-Q to
-            quit. Quitting or closing windows only detaches and leaves every tmux
-            session running.
-          </p>
-          <p>
-            The file uses{' '}<a href="https://ghostty.org/docs/config/reference">Ghostty’s
-              configuration format</a>, but is isolated from Ghostty.app.
+            The file uses Ghostty’s configuration format but is isolated from
+            Ghostty.app.{' '}
             The Tmux Theme picker supplies colors for new sessions created by
             Ghosthub. Existing sessions keep their own appearance by default;
-            Ghosthub does not place a local palette over them. An explicit
-            <strong>Apply theme to shared tmux sessions</strong> opt-in applies
-            the selected colors before future attachments. Follow ghostty.conf
-            uses the effective foreground and background for the current light
-            or dark appearance, just like the built-in themes. To update only
-            the connected active session immediately, choose{' '}
-            <strong>Session → Apply Theme to Current Session</strong> or the
-            matching Command Palette action. Both choices update the session’s
-            existing windows and chrome for every attached terminal; they do
-            not target the Console Panel and are unavailable for native Windows
-            sessions. Ghosthub reloads terminal configuration when it changes.
+            shared-session styling is explicit. See{' '}
+            <a href="/docs/terminal-configuration/">Terminal Configuration</a>{' '}
+            for shell startup, themes, clipboard behavior, and quit settings.
           </p>
         </div>
       </div>
@@ -433,6 +318,8 @@ const imageAlt = {
         PostHog person profiles and GeoIP enrichment are disabled. Turn
         reporting off at any time in{' '}
         <strong>Settings → Privacy → Share anonymous usage data</strong>.
+        The <a href="/docs/privacy/">Privacy docs</a> also describe local and
+        remote state.
       </p>
     </div>
   </section>
@@ -445,11 +332,7 @@ const imageAlt = {
         Ghosthub never replaces tmux windows, panes, history, or plugins.
         Quit the app or install an update and the sessions remain where you
         left them. Ghosthub restores each exact session it can confirm and
-        keeps retrying offline SSH hosts as inventory refreshes. During an
-        update relaunch, it also recreates your saved windows if macOS does not
-        return them. A window that had no terminal attached restores its
-        navigation without creating a worktree session; select the worktree
-        when you want to attach again.
+        keeps retrying offline SSH hosts as inventory refreshes.
       </p>
       <a data-download href={RELEASES_URL}>Download Ghosthub <span aria-hidden="true">&rarr;</span></a>
     </div>
@@ -496,6 +379,15 @@ const imageAlt = {
     margin: 1rem auto 0;
     max-width: 64ch;
     text-wrap: balance;
+  }
+
+  .docs-callout {
+    color: var(--text-dim);
+    margin: 1rem 0 0;
+  }
+
+  .docs-callout a {
+    color: var(--accent);
   }
 
   .promise {

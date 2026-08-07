@@ -1,0 +1,16 @@
+:root {
+  --md-primary-fg-color: #00a884;
+  --md-accent-fg-color: #00cfa3;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-default-bg-color: #0b1012;
+  --md-default-fg-color: #e8f0ee;
+  --md-primary-fg-color: #00cfa3;
+  --md-accent-fg-color: #44dfbd;
+}
+
+.md-header__topic:first-child {
+  font-family: "JetBrains Mono", monospace;
+  font-weight: 700;
+}

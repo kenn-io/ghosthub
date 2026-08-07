@@ -6,6 +6,7 @@
 website/node_modules
 website/dist
 website/.astro
+website/.cache
 website/.env*
 website/**/.env*
 website/.vercel
