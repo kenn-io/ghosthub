@@ -251,6 +251,11 @@ struct WorkspaceWorktreeRemovalTests {
         removable.tmuxSessionName = "kwt-ghosthub-feature"
         var snapshot = environment.snapshot
         snapshot.worktrees.append(removable)
+        var staleSnapshot = snapshot
+        let staleIndex = try #require(
+            staleSnapshot.worktrees.firstIndex { $0.id == removable.id }
+        )
+        staleSnapshot.worktrees[staleIndex].generation = nil
 
         let beforeRemoval = inventory(environment, including: removable)
         let afterRemoval = inventory(environment)
@@ -300,7 +305,7 @@ struct WorkspaceWorktreeRemovalTests {
         let secondModel = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
-            snapshot: snapshot,
+            snapshot: staleSnapshot,
             nativeTmuxSurfaceStore: secondSurfaces,
             nativeTmuxPathProvider: resolveTmuxPath,
             kwtInventoryLoader: { _ in beforeRemoval },
@@ -309,13 +314,18 @@ struct WorkspaceWorktreeRemovalTests {
         let selection = try #require(
             WorkspaceSidebarModel.tmuxSessionSelection(for: removable)
         )
+        let staleSelection = try #require(
+            staleSnapshot.worktree(id: removable.id).flatMap(
+                WorkspaceSidebarModel.tmuxSessionSelection(for:)
+            )
+        )
         var navigation = firstModel.selection
         navigation.select(.worktree(removable.id), in: firstModel.snapshot)
         firstModel.selectFromUser(navigation)
         secondModel.selectFromUser(navigation)
 
         firstModel.openBorrowedTmuxSession(selection)
-        secondModel.openBorrowedTmuxSession(selection)
+        secondModel.openBorrowedTmuxSession(staleSelection)
         await waitUntilMainActor { pathResolutions.load() == 2 }
         #expect(firstModel.retainedBorrowedTmuxPresentationCount == 1)
         #expect(secondModel.retainedBorrowedTmuxPresentationCount == 1)
@@ -338,7 +348,7 @@ struct WorkspaceWorktreeRemovalTests {
         #expect(secondModel.suppressesSelectedWorktreeSessionOpen)
 
         firstModel.openBorrowedTmuxSession(selection)
-        secondModel.openBorrowedTmuxSession(selection)
+        secondModel.openBorrowedTmuxSession(staleSelection)
         for _ in 0 ..< 10 {
             await Task.yield()
         }

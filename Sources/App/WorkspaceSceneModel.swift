@@ -2181,9 +2181,11 @@ final class WorkspaceSceneModel: ObservableObject {
         hostID: UUID
     ) {
         let matches: (String, String?) -> Bool = { path, generation in
-            tombstones.contains {
-                $0.path == path && $0.generation == generation
-            }
+            Self.removalTombstones(
+                tombstones,
+                matchPath: path,
+                generation: generation
+            )
         }
         if var inventory = kwtInventoriesByHost[hostID] {
             for index in inventory.projects.indices {
@@ -2220,13 +2222,25 @@ final class WorkspaceSceneModel: ObservableObject {
     ) -> Set<UUID> {
         Set(snapshot.worktrees.compactMap { worktree in
             guard worktree.hostID == hostID,
-                  tombstones.contains(where: {
-                      $0.path == worktree.path
-                          && $0.generation == worktree.generation
-                  })
+                  Self.removalTombstones(
+                      tombstones,
+                      matchPath: worktree.path,
+                      generation: worktree.generation
+                  )
             else { return nil }
             return worktree.id
         })
+    }
+
+    private static func removalTombstones(
+        _ tombstones: Set<WorktreeMutationCoordinator.RemovalTombstone>,
+        matchPath path: String,
+        generation: String?
+    ) -> Bool {
+        tombstones.contains { tombstone in
+            tombstone.path == path
+                && generation.map { tombstone.generation == $0 } ?? true
+        }
     }
 
     private func activeRemovalTombstones(
@@ -2250,8 +2264,11 @@ final class WorkspaceSceneModel: ObservableObject {
                     return true
                 }
                 return project.worktrees.contains {
-                    $0.path == tombstone.path
-                        && $0.generation == tombstone.generation
+                    Self.removalTombstones(
+                        [tombstone],
+                        matchPath: $0.path,
+                        generation: $0.generation
+                    )
                 }
             }
             if active.isEmpty {
@@ -3593,17 +3610,13 @@ final class WorkspaceSceneModel: ObservableObject {
     private func worktreeRemovalIsPending(
         for selection: WorkspaceTmuxSessionSelection
     ) -> Bool {
-        guard selection.worktreeID != nil,
-              let path = selection.worktreePath,
-              let generation = selection.worktreeGeneration
-        else { return false }
+        guard let path = selection.worktreePath else { return false }
         return pendingWorktreeRemovals.contains { scope, tombstones in
             scope.hostID == selection.hostID
-                && tombstones.contains(
-                    WorktreeMutationCoordinator.RemovalTombstone(
-                        path: path,
-                        generation: generation
-                    )
+                && Self.removalTombstones(
+                    tombstones,
+                    matchPath: path,
+                    generation: selection.worktreeGeneration
                 )
         }
     }
@@ -3630,8 +3643,12 @@ final class WorkspaceSceneModel: ObservableObject {
                 }
                 return nil
             }
-        for selection in invalidSelections {
-            invalidateBorrowedTmuxSession(selection)
+        for invalidSelection in invalidSelections {
+            if let worktreeID = invalidSelection.worktreeID,
+               selection.selectedWorktreeID == worktreeID {
+                explicitlyDismissedWorktreePresentationIDs.insert(worktreeID)
+            }
+            invalidateBorrowedTmuxSession(invalidSelection)
         }
         explicitlyDismissedWorktreePresentationIDs.formIntersection(
             Set(snapshot.worktrees.map(\.id))

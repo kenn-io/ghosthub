@@ -130,6 +130,119 @@ struct WorkspaceTmuxDiscoveryTests {
         await model.shutdown()
     }
 
+    @MainActor
+    @Test(
+        "authoritative replacement waits for explicit reselection",
+        arguments: [
+            (
+                "kwt-ghosthub-replacement",
+                "0123456789abcdef0123456789abcdef"
+            ),
+            (
+                "kwt-ghosthub-main",
+                "fedcba9876543210fedcba9876543210"
+            ),
+        ]
+    )
+    func authoritativeReplacementWaitsForExplicitReselection(
+        replacementName: String,
+        replacementGeneration: String
+    ) async throws {
+        let environment = try setupStandardEnvironment()
+        let originalGeneration = "0123456789abcdef0123456789abcdef"
+        let replacementActive = LockedValue(false)
+        var snapshot = environment.snapshot
+        snapshot.worktrees[0].generation = originalGeneration
+        snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-main"
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            kwtInventoryLoader: { _ in
+                KwtHostInventory(projects: [
+                    KwtProjectInventory(
+                        project: KwtProjectRecord(
+                            repository: environment.project.scopedKey,
+                            name: environment.project.name,
+                            path: environment.project.rootPath,
+                            lastTouched: nil
+                        ),
+                        worktrees: [
+                            KwtWorktreeRecord(
+                                path: environment.worktree.path,
+                                branch: environment.worktree.branch,
+                                commitHash: "",
+                                isMain: true,
+                                createdAt: nil,
+                                generation: replacementActive.load()
+                                    ? replacementGeneration
+                                    : originalGeneration,
+                                repository: environment.project.scopedKey,
+                                sessionName: replacementActive.load()
+                                    ? replacementName
+                                    : "kwt-ghosthub-main",
+                                tmuxSocketName: nil
+                            ),
+                        ],
+                        warning: nil
+                    ),
+                ])
+            },
+            tmuxSessionDiscovery: { _ in .success([]) },
+            startServices: true
+        )
+        await waitUntilMainActor {
+            model.isWorkspaceInventoryRefreshComplete
+                && model.snapshot.worktrees.count == 1
+        }
+        var userSelection = model.selection
+        userSelection.select(
+            .worktree(environment.worktree.id),
+            in: model.snapshot
+        )
+        model.selectFromUser(userSelection)
+        let original = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(
+                for: userSelection,
+                in: model.snapshot
+            )
+        )
+        model.openBorrowedTmuxSession(original)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+
+        replacementActive.withLock { $0 = true }
+        model.refreshKwtInventory()
+        await waitUntilMainActor {
+            guard let worktree = model.snapshot.worktree(
+                id: environment.worktree.id
+            ) else { return false }
+            return worktree.tmuxSessionName == replacementName
+                && worktree.generation == replacementGeneration
+                && model.retainedBorrowedTmuxPresentationCount == 0
+        }
+
+        #expect(model.suppressesSelectedWorktreeSessionOpen)
+        #expect(surfaceStore.requestCount == 1)
+
+        model.selectFromUser(userSelection)
+        #expect(!model.suppressesSelectedWorktreeSessionOpen)
+        let replacement = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(
+                for: userSelection,
+                in: model.snapshot
+            )
+        )
+        model.openBorrowedTmuxSession(replacement)
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedTmuxSurface()
+            return surfaceStore.requestCount == 2
+        }
+        await model.shutdown()
+    }
+
     private enum CreationKwtFailurePhase: CaseIterable, Sendable {
         case command
         case inventoryRefresh
@@ -388,17 +501,14 @@ struct WorkspaceTmuxDiscoveryTests {
                 firstGate.wait()
                 return .success([])
             }
-            if call == 2 {
-                return .success([
-                    DiscoveredTmuxSession(
-                        name: "release-work",
-                        windowCount: 1,
-                        createdAt: "1721552400",
-                        managed: false
-                    ),
-                ])
-            }
-            return .failure(.shellFailed(status: 255))
+            return .success([
+                DiscoveredTmuxSession(
+                    name: "release-work",
+                    windowCount: 1,
+                    createdAt: "1721552400",
+                    managed: false
+                ),
+            ])
         }
 
         var firstStarted: Bool {
