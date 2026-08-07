@@ -377,6 +377,92 @@ struct WorkspaceWorktreeRemovalTests {
     }
 
     @MainActor
+    @Test("failed removal restores the canonical endpoint in a stale scene")
+    func failedRemovalRestoresCanonicalEndpointAcrossScenes() async throws {
+        let environment = try setupStandardEnvironment()
+        var stale = WorktreeSummary.fixture(
+            hostID: environment.host.id,
+            projectID: environment.project.id,
+            scopedKey: "/tmp/ghosthub-feature",
+            name: "feature/remove",
+            path: "/tmp/ghosthub-feature",
+            branch: "feature/remove",
+            generation: stableWorktreeGeneration
+        )
+        stale.tmuxSessionName = "kwt-ghosthub-stale"
+        var canonical = stale
+        canonical.tmuxSessionName = "kwt-ghosthub-canonical"
+        var currentSnapshot = environment.snapshot
+        currentSnapshot.worktrees.append(canonical)
+        var staleSnapshot = environment.snapshot
+        staleSnapshot.worktrees.append(stale)
+        let currentInventory = inventory(
+            environment,
+            including: canonical
+        )
+        let coordinator = WorktreeMutationCoordinator()
+        let staleSurfaces = RecordingTmuxSurfaceStore()
+        let currentModel = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: currentSnapshot,
+            kwtInventoryLoader: { _ in currentInventory },
+            kwtWorktreeRemover: { _, _, _, _ in
+                throw KwtWorktreeError.removalFailed(
+                    host: "Local",
+                    status: 1
+                )
+            },
+            worktreeMutationCoordinator: coordinator,
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+        let staleModel = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: staleSnapshot,
+            nativeTmuxSurfaceStore: staleSurfaces,
+            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            worktreeMutationCoordinator: coordinator
+        )
+        let staleSelection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: stale)
+        )
+        let canonicalSelection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: canonical)
+        )
+        staleModel.openBorrowedTmuxSession(staleSelection)
+        await waitUntilMainActor {
+            staleSurfaces.requestedConfigurations.count == 1
+        }
+
+        let request = try await currentModel.prepareWorktreeRemoval(
+            canonical.id
+        )
+        await #expect(throws: KwtWorktreeError.self) {
+            try await currentModel.removeWorktree(request)
+        }
+        await waitUntilMainActor {
+            staleSurfaces.requestedConfigurations.count == 2
+        }
+
+        #expect(
+            staleModel.retainedBorrowedTmuxHandle(for: staleSelection) == nil
+        )
+        #expect(
+            staleModel.retainedBorrowedTmuxHandle(for: canonicalSelection)
+                != nil
+        )
+        #expect(staleModel.activeBorrowedTmuxSelection == canonicalSelection)
+        await currentModel.shutdown()
+        await staleModel.shutdown()
+    }
+
+    @MainActor
     @Test("post-removal refresh ignores a generationless stale record")
     func postRemovalRefreshIgnoresGenerationlessRecord() async throws {
         let environment = try setupStandardEnvironment()
@@ -1445,6 +1531,71 @@ struct WorkspaceWorktreeRemovalTests {
             try await removal.value
         }
         #expect(removals.load() == 0)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("failed removal re-establishes after endpoint changes during kill")
+    func endpointChangeDuringKillReestablishesPresentation() async throws {
+        let environment = try setupRemoteEnvironment()
+        var worktree = try #require(environment.snapshot.worktrees.first)
+        worktree.generation = stableWorktreeGeneration
+        worktree.scopedKey = worktree.path
+        worktree.tmuxSessionName = "kwt-remote-feature"
+        var snapshot = environment.snapshot
+        snapshot.worktrees = [worktree]
+        let beforeRemoval = inventory(environment, including: worktree)
+        let killHold = RemovalPreflightHold()
+        let surfaces = RecordingTmuxSurfaceStore()
+        let removals = LockedValue(0)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaces,
+            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            kwtInventoryLoader: { _ in beforeRemoval },
+            kwtWorktreeRemover: { _, _, _, _ in
+                removals.withLock { $0 += 1 }
+            },
+            tmuxSessionDiscovery: { _ in .success([]) },
+            tmuxSessionKiller: { _, _, _ in
+                _ = await killHold.load(beforeRemoval)
+            },
+            tmuxSessionIdentityReader: { _, _ in
+                TmuxSessionIdentity(
+                    serverPID: "31415",
+                    sessionID: "$8",
+                    createdAt: "1721552400"
+                )
+            },
+            createdSessionDiscoveryDelays: [.seconds(10)]
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: try #require(worktree.tmuxSessionName)
+        )
+        model.openBorrowedTmuxSession(selection)
+        await waitUntilMainActor {
+            surfaces.requestedConfigurations.count == 1
+        }
+        let request = try await model.prepareWorktreeRemoval(worktree.id)
+        let removal = Task { @MainActor in
+            try await model.removeWorktree(request)
+        }
+        await waitUntilMainActor { await killHold.started }
+
+        model.snapshot.hosts[0].sshDestination = "replacement.example.com"
+        await killHold.release()
+        await #expect(throws: KwtWorktreeError.removalTargetChanged) {
+            try await removal.value
+        }
+        await waitUntilMainActor {
+            surfaces.requestedConfigurations.count == 2
+        }
+
+        #expect(removals.load() == 0)
+        #expect(surfaces.lastCommand?.contains("'open'") == true)
         await model.shutdown()
     }
 

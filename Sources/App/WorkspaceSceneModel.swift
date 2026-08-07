@@ -1583,6 +1583,7 @@ final class WorkspaceSceneModel: ObservableObject {
             if let sessionKillRequest = request.sessionKillRequest {
                 try await killTmuxSession(sessionKillRequest)
                 terminatedSession = true
+                requiresWorkspaceReestablishment = true
             }
             guard removalHostEndpointMatches(request) else {
                 throw KwtWorktreeError.removalTargetChanged
@@ -2257,8 +2258,18 @@ final class WorkspaceSceneModel: ObservableObject {
                         generation: selection.worktreeGeneration
                     )
                 } == true
-                guard pathMatches || endpointTarget != nil else { return nil }
-                return (presentation, endpointTarget ?? selection)
+                if pathMatches {
+                    guard let path = selection.worktreePath,
+                          let pathTarget = event.removalPresentationTargets
+                          .first(where: {
+                              $0.hostID == selection.hostID
+                                  && $0.worktreePath == path
+                          })
+                    else { return nil }
+                    return (presentation, pathTarget)
+                }
+                guard let endpointTarget else { return nil }
+                return (presentation, endpointTarget)
             }
         for (presentation, restorationSelection) in presentations {
             let key = TmuxPresentationKey(presentation.selection)
@@ -4274,14 +4285,24 @@ final class WorkspaceSceneModel: ObservableObject {
             context: context
         )
         guard !Task.isCancelled else { return .retry }
-        guard presentation.reconnectContext == context,
+        guard let currentContext = presentation.reconnectContext else {
+            return .stop
+        }
+        let confirmedEstablishment =
+            context.phase == .establishingWorkspace
+                && currentContext.phase == .attachOnly
+                && currentContext.selection == context.selection
+                && currentContext.handleID == context.handleID
+                && currentContext.host == context.host
+                && currentContext.surfaceExitCode == context.surfaceExitCode
+        guard currentContext == context || confirmedEstablishment,
               presentation.handle.id == context.handleID,
               retainedTmuxPresentation(for: presentation.handle)
               === presentation
         else { return .stop }
         return reconnectDecision(
             for: presentation,
-            context: context,
+            context: currentContext,
             outcome: outcome
         )
     }

@@ -2991,6 +2991,62 @@ struct WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("recovery continues when discovery confirms establishment")
+    func discoveryConfirmationContinuesEstablishmentRecovery() async throws {
+        let environment = try setupRemoteEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let sessionName = "kwt-ghosthub-main"
+        let discoveries = TmuxDiscoveryResultQueue([
+            .success([]),
+            .success([
+                DiscoveredTmuxSession(
+                    name: sessionName,
+                    windowCount: 1,
+                    createdAt: nil,
+                    managed: true
+                ),
+            ]),
+        ])
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            tmuxSessionDiscovery: { _ in discoveries.removeFirst() },
+            createdSessionDiscoveryDelays: [.seconds(10)],
+            tmuxReconnectIntervals: [.milliseconds(1)]
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: sessionName,
+            worktreeID: environment.worktree.id,
+            worktreePath: environment.worktree.path
+        )
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        await waitUntilMainActor { discoveries.count == 1 }
+
+        surfaceStore.surface.closeObservers.values.first?(false, 255)
+        await waitUntilMainActor {
+            discoveries.count == 2
+                && surfaceStore.requestCount == 2
+                && model.activeBorrowedTmuxSessionIsConnected
+        }
+
+        #expect(model.activeBorrowedTmuxRecoveryState == nil)
+        #expect(
+            surfaceStore.lastConfiguration?.command?
+                .contains("attach-session") == true
+        )
+        #expect(
+            surfaceStore.lastConfiguration?.command?.contains("'open'")
+                == false
+        )
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("a failed replacement stops promising automatic recovery")
     func failedReplacementStopsAutomaticRecovery() async throws {
         let environment = try setupRemoteTmuxEnvironment()
