@@ -387,6 +387,9 @@ func makeModel(
     configuredSSHHostsProvider: @escaping () -> [SSHHost] = { [] },
     configuredSSHHostsPublisher: AnyPublisher<[SSHHost], Never> =
         Empty(completeImmediately: false).eraseToAnyPublisher(),
+    configuredExeHostsProvider: @escaping () -> [ExeConfiguredHost] = { [] },
+    configuredExeHostsPublisher: AnyPublisher<[ExeConfiguredHost], Never> =
+        Empty(completeImmediately: false).eraseToAnyPublisher(),
     refreshExeHosts: @escaping () -> Void = {},
     terminalColorsPublisher:
     AnyPublisher<[UInt: TerminalResolvedColors], Never>? = nil,
@@ -436,6 +439,8 @@ func makeModel(
         sshHostProbeRunner: sshHostProbeRunner,
         configuredSSHHostsProvider: configuredSSHHostsProvider,
         configuredSSHHostsPublisher: configuredSSHHostsPublisher,
+        configuredExeHostsProvider: configuredExeHostsProvider,
+        configuredExeHostsPublisher: configuredExeHostsPublisher,
         refreshExeHosts: refreshExeHosts,
         terminalColorsPublisher: terminalColorsPublisher,
         sceneSettings: sceneSettings,

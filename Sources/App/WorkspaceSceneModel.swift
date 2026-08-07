@@ -1989,7 +1989,9 @@ final class WorkspaceSceneModel: ObservableObject {
             !fencedHostIDs.contains($0.key)
         }
         let configuredHosts = Dictionary(
-            configuredSSHHostsProvider().map { ($0.configKey, $0) },
+            (configuredSSHHostsProvider()
+                + configuredExeHostsProvider().map(\.sshHost))
+                .map { ($0.configKey, $0) },
             uniquingKeysWith: { first, _ in first }
         )
         let automaticProvisioningHosts: [UUID: SSHHost] = Dictionary(
