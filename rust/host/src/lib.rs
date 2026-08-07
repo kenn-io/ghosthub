@@ -45,6 +45,11 @@ impl CancellationToken {
     }
 
     pub fn cancel(&self) {
+        let _guard = self
+            .0
+            .mutex
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.0.cancelled.store(true, Ordering::Release);
         self.0.wake.notify_all();
     }
@@ -411,5 +416,33 @@ mod tests {
                 .expect("wait wakes promptly")
         );
         thread.join().expect("wait thread exits");
+    }
+
+    #[test]
+    fn cancellation_uses_the_waiter_mutex_for_notification() {
+        let cancellation = CancellationToken::new();
+        let guard = cancellation.0.mutex.lock().expect("cancellation mutex");
+        let cancelling = cancellation.clone();
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let child_barrier = Arc::clone(&barrier);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let thread = thread::spawn(move || {
+            child_barrier.wait();
+            cancelling.cancel();
+            sender.send(()).expect("receiver remains live");
+        });
+
+        barrier.wait();
+        assert!(
+            receiver.recv_timeout(Duration::from_millis(50)).is_err(),
+            "cancel must synchronize with the condition-variable mutex"
+        );
+        drop(guard);
+
+        receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("cancel proceeds after the waiter mutex is released");
+        assert!(cancellation.is_cancelled());
+        thread.join().expect("cancel thread exits");
     }
 }

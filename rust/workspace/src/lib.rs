@@ -1671,13 +1671,7 @@ fn run_attach(inner: &Inner, request: &AttachRequest, term: AttachTerm, generati
                 },
             ) {
                 attachment.clear_if_current(generation);
-                clear_pending_paste(inner);
-                set_inner_state(
-                    inner,
-                    WorkspaceContent::Error {
-                        message: error.to_string(),
-                    },
-                );
+                publish_attachment_failure(inner, error);
                 return;
             }
             set_terminal_notice(inner, term);
@@ -1700,14 +1694,19 @@ fn run_attach(inner: &Inner, request: &AttachRequest, term: AttachTerm, generati
             if !attachment.clear_if_current(generation) {
                 return;
             }
-            clear_pending_paste(inner);
-            set_inner_state(
-                inner,
-                WorkspaceContent::Error {
-                    message: error.to_string(),
-                },
-            );
+            publish_attachment_failure(inner, error);
         }
+    }
+}
+
+fn publish_attachment_failure(inner: &Inner, error: impl fmt::Display) {
+    clear_pending_paste(inner);
+    let message = error.to_string();
+    if inner.host_scoped_inventory {
+        set_inner_state(inner, WorkspaceContent::Shell);
+        set_wsl_host_unavailable(inner, DiagnosticKind::Transport, message);
+    } else {
+        set_inner_state(inner, WorkspaceContent::Error { message });
     }
 }
 
@@ -2105,6 +2104,56 @@ mod tests {
             diagnostic.as_deref(),
             Some("session identity changed immediately before attachment; refresh and try again")
         );
+    }
+
+    #[test]
+    fn application_attachment_failure_stays_on_the_wsl_host() {
+        let spec = WslHostSpec::available(
+            WslConfig::with_distro("Ubuntu").expect("valid config"),
+            WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
+                .expect("absolute WSL path"),
+        );
+        let workspace = Workspace::application(TerminalAppearance::default(), Some(spec));
+        set_inner_state(
+            &workspace.inner,
+            WorkspaceContent::Attaching {
+                endpoint: "Ubuntu".to_owned(),
+                session: "work".to_owned(),
+            },
+        );
+
+        publish_attachment_failure(
+            &workspace.inner,
+            WorkspaceError::new("attachment launch failed"),
+        );
+
+        let snapshot = workspace.snapshot();
+        assert!(matches!(snapshot.content(), WorkspaceContent::Shell));
+        let host = &snapshot.hosts()[0];
+        assert_eq!(host.connection(), HostConnectionState::Unavailable);
+        assert_eq!(
+            host.diagnostic().map(HostDiagnostic::message),
+            Some("attachment launch failed")
+        );
+    }
+
+    #[test]
+    fn legacy_attachment_failure_remains_top_level() {
+        let workspace = Workspace::preview(WorkspaceSnapshot::ready(
+            Appearance::default(),
+            "Ubuntu",
+            Vec::new(),
+        ));
+
+        publish_attachment_failure(
+            &workspace.inner,
+            WorkspaceError::new("legacy attachment failed"),
+        );
+
+        assert!(matches!(
+            workspace.snapshot().content(),
+            WorkspaceContent::Error { message } if message == "legacy attachment failed"
+        ));
     }
 
     #[test]
