@@ -20,6 +20,12 @@ demo_scratch_guard "$scratch"
 hosts_json='[{"configKey":"gpu-01","name":"gpu-01","platform":"linux",'
 hosts_json+='"sshDestination":"ghosthub-demo-remote"}]'
 hosts_hex="$(printf '%s' "$hosts_json" | xxd -p | tr -d '\n')"
+exe_accounts_json='[]'
+if [[ "${GHOSTHUB_DEMO_EXE_ACCOUNTS:-}" == "1" ]]; then
+  exe_accounts_json='[{"configKey":"personal","name":"Studio",'
+  exe_accounts_json+='"sshDestination":"exe.dev","isEnabled":true}]'
+fi
+exe_accounts_hex="$(printf '%s' "$exe_accounts_json" | xxd -p | tr -d '\n')"
 
 # shellcheck source=SCRIPTDIR/process.sh
 source "$demo_root/process.sh"
@@ -56,6 +62,7 @@ demo_acquire_process_record_lock "$pid_record"
 publication_lock_held=1
 /usr/bin/swift "$demo_root/launch.swift" \
   "$app" "$bin" "$launch_record" "$pid_record" "$hosts_hex" \
+  "$exe_accounts_hex" \
   "$demo_root" "$scratch" "${SSH_AUTH_SOCK:-}"
 demo_release_process_record_lock "$pid_record"
 publication_lock_held=""

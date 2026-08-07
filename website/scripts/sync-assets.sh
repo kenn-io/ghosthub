@@ -18,6 +18,7 @@ assets=(
   hero.png
   guide-sessions.png
   guide-hosts.png
+  guide-exe-dev.png
   guide-worktree.png
   guide-quick-launch.png
   guide-terminal.png
@@ -118,9 +119,11 @@ publish_assets() {
   # the old marker before the first replacement, then publish the new marker
   # with one rename only after every asset has landed.
   rm -f "$generation_manifest" "$placeholder_manifest"
+  mkdir -p docs/content/assets
   for asset in "${assets[@]}"; do
     path="src/assets/$asset"
     mv -f "$source/$asset" "$path"
+    cp -f "$path" "docs/content/assets/$asset"
     echo "synced $path from $label"
   done
   if [[ -n "$placeholders" ]]; then

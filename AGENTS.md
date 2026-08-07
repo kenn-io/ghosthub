@@ -82,8 +82,13 @@ layer, as subject to direct iteration.
   accepted change materially alters visuals shown in those screenshots; copy,
   accessibility, and non-visual behavior changes do not require new captures.
   Do not capture or publish screenshots while a feature is still in
-  development. Publish required refreshed binaries to the orphan
-  `website-assets` branch so ghosthub.ai does not ship stale product views.
+  development. User-facing workflow documentation must include a current
+  screenshot of the UI it tells users to operate. Prefer deterministic demo
+  fixtures with realistic synthetic data; use a manual capture only when the
+  accepted workflow cannot be represented by the demo, and never expose real
+  account, host, project, or session data. Publish required refreshed binaries
+  to the orphan `website-assets` branch so ghosthub.ai does not ship stale
+  product views.
 - Pull request descriptions should be concise, rationale-first prose. Do not add boilerplate or navel-gazing sections like "Changes", "Tests", or "Verification"; mention validation only when it is genuinely useful reviewer context.
 - The canonical repository is `https://github.com/kenn-io/ghosthub`. Only push
   or open pull requests when the user explicitly asks.

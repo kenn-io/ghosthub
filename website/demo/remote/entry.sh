@@ -51,6 +51,21 @@ case "${1:-}" in
 esac
 EOF
 chmod +x /usr/local/bin/kwt
+
+# The isolated exe.dev control alias uses the documented `ls --json` command.
+# Keep its response deterministic and point discovered VMs back to SSH aliases
+# in the same demo-only configuration.
+cat > /usr/local/bin/ls <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "--json" && "$#" -eq 1 ]]; then
+  cat <<'JSON'
+{"vms":[{"vm_name":"gpu-lab","ssh_dest":"exe-gpu-east","status":"running","region":"ord","region_display":"Chicago, US","https_url":"https://gpu-lab.example.test"},{"vm_name":"docs-preview","ssh_dest":"exe-builder","status":"running","region":"iad","region_display":"Virginia, US","https_url":"https://docs-preview.example.test"},{"vm_name":"overnight-batch","ssh_dest":"exe-builder","status":"stopped","region":"iad","region_display":"Virginia, US"}]}
+JSON
+  exit 0
+fi
+exec /bin/ls "$@"
+EOF
+chmod +x /usr/local/bin/ls
 chown -R demo:demo /var/log/demo
 
 su - demo -c '

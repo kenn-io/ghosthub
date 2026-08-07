@@ -216,6 +216,15 @@ EOF
   mv -f "$temporary" "$destination"
 }
 
+if [[ "${GHOSTHUB_DEMO_EXE_ONLY:-}" == "1" ]]; then
+  echo "==> guide: exe.dev integration settings"
+  palette "Open Integrations Settings" true sheet
+  sleep 2
+  capture_state guide-exe-dev.png
+  echo "captured exe.dev website asset -> $out_dir"
+  exit 0
+fi
+
 echo "==> controller: unmatched palette commands fail validation"
 unmatched_command="__ghosthub_missing_command__"
 unmatched_error="$scratch/unmatched-command.error"
