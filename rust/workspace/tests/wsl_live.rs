@@ -155,7 +155,7 @@ fn discovers_attaches_renders_and_detaches_through_workspace() {
 
     server.run_tmux(["set-buffer", "-w", "Hello"]);
     wait_until(|| {
-        workspace.drain_events().into_iter().any(|event| {
+        workspace.drain_events().0.into_iter().any(|event| {
             matches!(
                 event,
                 WorkspaceEvent::ClipboardWrite { text, primary: false } if text == "Hello"

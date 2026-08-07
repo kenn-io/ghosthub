@@ -608,8 +608,12 @@ impl RootView {
     }
 
     fn handle_events(&mut self, cx: &mut Context<Self>) -> bool {
-        let mut handled = false;
-        for event in self.workspace.drain_events() {
+        let (events, may_have_more) = self.workspace.drain_events();
+        if may_have_more {
+            cx.notify();
+        }
+        let mut handled = may_have_more;
+        for event in events {
             handled = true;
             match event {
                 WorkspaceEvent::ClipboardWrite { text, .. } => {

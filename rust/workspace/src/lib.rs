@@ -311,6 +311,8 @@ pub enum WorkspaceEvent {
     Error(String),
 }
 
+const MAX_EVENTS_PER_DRAIN: usize = 32;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkspaceError {
     message: String,
@@ -1200,7 +1202,7 @@ impl Workspace {
     }
 
     #[must_use]
-    pub fn drain_events(&self) -> Vec<WorkspaceEvent> {
+    pub fn drain_events(&self) -> (Vec<WorkspaceEvent>, bool) {
         let _drain = self
             .inner
             .event_drain
@@ -1212,7 +1214,8 @@ impl Workspace {
         let mut exited_worker_generation = None;
         let mut exit_error = None;
         let mut retry_term = false;
-        loop {
+        let mut processed = 0;
+        for _ in 0..MAX_EVENTS_PER_DRAIN {
             let (event, source_worker_generation, client_confirmed_live) = {
                 let worker = self
                     .inner
@@ -1226,15 +1229,18 @@ impl Workspace {
             };
             match event {
                 Ok(Some(TerminalEvent::ClipboardWrite(write))) => {
+                    processed += 1;
                     emitted.push(WorkspaceEvent::ClipboardWrite {
                         text: write.text,
                         primary: write.target == ClipboardTarget::Selection,
                     });
                 }
                 Ok(Some(TerminalEvent::ClipboardRead(read))) => {
+                    processed += 1;
                     emitted.push(WorkspaceEvent::ClipboardRead(ClipboardRead { inner: read }));
                 }
                 Ok(Some(TerminalEvent::ConfirmPaste(paste))) => {
+                    processed += 1;
                     let mut pending = self
                         .inner
                         .pending_paste
@@ -1249,6 +1255,7 @@ impl Workspace {
                     }
                 }
                 Ok(Some(TerminalEvent::Exited { code, output_tail })) => {
+                    processed += 1;
                     let Some((request, term, generation)) =
                         self.attachment_for_worker(source_worker_generation)
                     else {
@@ -1266,6 +1273,7 @@ impl Workspace {
                     break;
                 }
                 Ok(Some(TerminalEvent::Error(error))) => {
+                    processed += 1;
                     emitted.push(WorkspaceEvent::Error(error));
                 }
                 Ok(None) => break,
@@ -1292,7 +1300,7 @@ impl Workspace {
                 &mut emitted,
             );
         }
-        emitted
+        (emitted, event_drain_may_have_more(processed, exited))
     }
 
     fn attachment_for_worker(
@@ -1495,6 +1503,10 @@ impl Workspace {
     fn set_state(&self, state: WorkspaceContent) {
         set_inner_state(&self.inner, state);
     }
+}
+
+const fn event_drain_may_have_more(processed: usize, exited: bool) -> bool {
+    !exited && processed == MAX_EVENTS_PER_DRAIN
 }
 
 fn capture_attach_request(
@@ -2073,6 +2085,13 @@ mod tests {
                 snapshot: self.snapshot.clone(),
             })
         }
+    }
+
+    #[test]
+    fn terminal_event_drain_requests_continuation_only_after_exhausting_its_budget() {
+        assert!(!event_drain_may_have_more(MAX_EVENTS_PER_DRAIN - 1, false));
+        assert!(event_drain_may_have_more(MAX_EVENTS_PER_DRAIN, false));
+        assert!(!event_drain_may_have_more(MAX_EVENTS_PER_DRAIN, true));
     }
 
     #[test]

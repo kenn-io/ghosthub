@@ -20,8 +20,9 @@ const ATTACHMENT_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const CLEANUP_COMMAND_TIMEOUT: Duration = Duration::from_millis(500);
 const UNCERTAIN_CLEANUP_DELAY: Duration = Duration::from_millis(50);
 const UNCERTAIN_CLEANUP_SETTLE: Duration = Duration::from_secs(2);
-// tmux's `n:` modifier reports the UTF-8 byte length, so names containing
-// delimiters remain unambiguous without adding another process crossing.
+// tmux 3.2 already implements `n:` with strlen, and admission exercises this
+// same framing before inventory. Delimiters in names therefore stay unambiguous
+// without adding another process crossing.
 const INVENTORY_FORMAT: &str = "#{pid}\t#{session_id}\t#{session_created}\t#{session_attached}\t#{n:session_name}\t#{session_name}";
 const ADMISSION_IDENTITY_FORMAT: &str = "#{pid}\t#{session_id}\t#{n:session_name}\t#{session_name}";
 static ADMISSION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
