@@ -951,8 +951,13 @@ fn take_coalesced_work(
                 (state.resize.take(), CoalescedInput::Disconnected, false)
             }
         }
-    } else {
+    } else if commands.is_empty() {
         (state.resize.take(), CoalescedInput::None, false)
+    } else {
+        // The queued commands predate this coalesced resize. Leave the resize
+        // pending until write capacity lets those commands cross the worker;
+        // applying it now would invert terminal input and geometry ordering.
+        (None, CoalescedInput::None, false)
     };
     CoalescedWork {
         resize,
@@ -1432,6 +1437,51 @@ mod tests {
                 .is_some(),
             "mouse motion remains coalesced until writes can accept UI input"
         );
+    }
+
+    #[test]
+    fn saturated_writer_does_not_move_resize_ahead_of_queued_input() {
+        let mut pending = PendingWrites::default();
+        pending
+            .enqueue(vec![0; WRITE_HIGH_WATER], WriteSource::Ui)
+            .expect("fill pending writes to the UI throttle");
+        assert!(!pending.accepts_ui_sources());
+
+        let (sender, receiver) = bounded(COMMAND_CAPACITY);
+        let ingress = Mutex::new(IngressState::default());
+        try_send_ordered(
+            &sender,
+            &ingress,
+            Command::Input(b"older input".to_vec()),
+            "queue input before resize",
+        )
+        .expect("queue older input");
+        let expected = GridSize::new(132, 43).expect("valid grid");
+        ingress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .resize = Some(ResizeCommand {
+            size: expected,
+            sequence: 7,
+            pixel_size: PixelSize::new(1_320, 860),
+        });
+
+        let blocked = take_coalesced_work(&receiver, &ingress, pending.accepts_ui_sources());
+        assert!(blocked.resize.is_none());
+        assert!(matches!(blocked.input, CoalescedInput::None));
+        assert_eq!(receiver.len(), 1, "older input remains queued");
+
+        let input = take_coalesced_work(&receiver, &ingress, true);
+        assert!(input.resize.is_none());
+        assert!(matches!(input.input, CoalescedInput::Command(_)));
+        assert!(input.wake_again, "the pending resize schedules more work");
+
+        let resize = take_coalesced_work(&receiver, &ingress, true);
+        assert_eq!(
+            resize.resize.expect("newer resize remains pending").size,
+            expected
+        );
+        assert!(matches!(resize.input, CoalescedInput::None));
     }
 
     #[test]
