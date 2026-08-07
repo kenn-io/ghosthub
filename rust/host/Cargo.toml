@@ -10,9 +10,26 @@ rust-version.workspace = true
 name = "host"
 path = "src/lib.rs"
 
+[features]
+test-support = []
+
 [dependencies]
 ghosthub-model.workspace = true
 ghosthub-session.workspace = true
+getrandom.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_JobObjects",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 ghosthub-contracts.workspace = true

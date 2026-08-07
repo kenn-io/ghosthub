@@ -91,6 +91,27 @@ Copy may similarly write the user's chosen terminal selection. Those
 intentional interactions necessarily disclose their selected contents to the
 attached pane.
 
+### Windows WSL host
+
+An installed WSL environment and the selected distro are local trusted-peer
+state under the user's account. Ghosthub resolves only the system-owned
+`wsl.exe`; it does not trust the current directory or launcher `PATH` to select
+that executable. Presence alone does not authorize execution during initial
+window construction. After the first frame, automatic discovery deliberately
+may boot the WSL2 utility VM and configured or default distro and may create
+and clean short-lived tmux capability-probe sessions in isolated socket
+namespaces. Those probes must never use or mutate the user's default tmux
+server.
+
+Automatic discovery is bounded and cancellable. WSL absence omits the
+synthetic host, while inspection, startup, timeout, admission, and protocol
+failures remain classified on that host and do not become authority to restart
+or terminate WSL, choose another distro or socket, or weaken mux admission.
+The WSL distro and processes attached through it have the same terminal and
+clipboard trust limits as configured SSH hosts: OSC 52 writes follow policy,
+OSC 52 reads receive no clipboard contents, and only a genuine paste action
+may acquire clipboard data for PTY input.
+
 ### Network
 
 The network between Ghosthub and a configured host is untrusted. Passive

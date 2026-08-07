@@ -136,6 +136,30 @@ unchanged.
 
 ### Windows WSL command boundary
 
+WSL is enabled automatically when the system-owned `wsl.exe` exists, but it is
+not required to open or use the application shell. The composition root checks
+the absolute Windows system path without executing WSL or searching `PATH`.
+Absence publishes no WSL host; an inspection failure publishes an unavailable
+synthetic WSL host with its classified diagnostic. Linux publishes no WSL host.
+
+GPUI paints the application shell and disconnected synthetic host first, then
+asks workspace to connect enabled hosts on the next frame. Discovery may cold
+start WSL, but Connecting, Ready, empty inventory, Timeout, and other failures
+remain scoped to that host. The initial total refresh budget is 45 seconds and
+later attempts receive 30 seconds; each command retains its 15-second bound.
+Expiry cancels the active generation and discards late publication. Retry
+supersedes the earlier generation without changing the configured distro,
+binary, socket directory, or identity rules.
+
+Each host command runs in a disposable descendant container: a kill-on-close
+Job Object on Windows and a dedicated process group on Unix. Stdout and stderr
+travel through a bounded fixed-chunk channel into capped capture buffers. On
+exit, timeout, cancellation, or capture failure, Ghosthub terminates the whole
+container before a bounded output drain, so a descendant retaining an inherited
+pipe cannot strand discovery or accumulate refresh threads. Windows children
+start suspended, join the Job Object, and only then execute user code, closing
+the post-spawn assignment race.
+
 Host owns the concrete WSL transport and all WSL-shaped knowledge. It resolves
 the configured distro or invokes the default distro directly to read
 `WSL_DISTRO_NAME`, then pins every later command to that exact name. It does
@@ -151,13 +175,18 @@ transport:
 ~~~text
 wsl.exe --distribution <distro> --exec /usr/bin/env \
   TERM=xterm-256color [TMUX_TMPDIR=<configured absolute POSIX path>] \
-  <configured absolute POSIX tmux path> attach-session -E -t =<exact name>
+  <configured absolute POSIX tmux path> if-shell -F -t =<session-id>: \
+  <server-pid/session-id/creation-time condition> \
+  "attach-session -E -t =<session-id>" \
+  "display-message -p <identity-mismatch marker>"
 ~~~
 
-Every value is a separate argv entry; no shell command is composed. Defaults
-are `/usr/bin/tmux` and tmux's own socket resolution. Optional read-only
-configuration supplies a different absolute binary or socket directory.
-Ghosthub does not source login or interactive shell files, so a
+Every outer value is a separate argv entry and no operating-system shell is
+invoked. The final two argv entries are tmux command strings required by
+`if-shell`; they contain only validated live identity values and fixed command
+tokens. Defaults are `/usr/bin/tmux` and tmux's own socket resolution. Optional
+read-only configuration supplies a different absolute binary or socket
+directory. Ghosthub does not source login or interactive shell files, so a
 shell-configured `TMUX_TMPDIR` must be repeated in Ghosthub configuration.
 
 Discovery uses one `list-sessions -F` crossing whose format carries the server
@@ -166,8 +195,11 @@ transport process per discovered session.
 
 The first attach classifies tmux's missing-or-unsuitable-terminal diagnostic.
 It retries the same exact attach once with `TERM=xterm` and displays a
-reduced-color notice rather than requiring `infocmp`, `tput`, or
-`ncurses-bin`. Other local client exits do not loop.
+persisted reduced-color notice for the lifetime of that presentation rather
+than requiring `infocmp`, `tput`, or `ncurses-bin`. Other local client exits do
+not loop. Each published terminal worker receives a distinct presentation ID.
+The fallback first unpublishes the failed worker and clears pending paste and
+UI input state, so no input can cross into the replacement client.
 
 Host publishes classified diagnostics rather than flattening command failures:
 
@@ -206,7 +238,10 @@ decision.
 Input fixtures take both the platform event and terminal mode state. They
 cover Kitty levels, modifyOtherKeys, cursor/keypad application modes,
 bracketed paste, AltGr as distinct from ordinary Ctrl+Alt, dead keys, and IME
-composition.
+composition. The input vocabulary preserves the logical unmodified key, the
+produced text, and press, repeat, or release event type independently so Kitty
+alternate-key and event reporting never has to reconstruct them from terminal
+bytes.
 
 Clipboard behavior follows the shipped Swift contract. Local and remote tmux
 surfaces may write the system clipboard through OSC 52 when `clipboard-write`
@@ -231,9 +266,16 @@ The first implementation therefore uses:
 
 The invariant is bounded non-lossy delivery with no UI blocking, not the
 absence of a byte channel. PTY bytes are never dropped or placed in an
-unbounded queue. UI-to-worker input and resize remain ordered. Worker-to-UI
-paint publication is latest-value, while non-coalescible semantic effects use
-a reliable low-volume path.
+unbounded queue. Non-coalescible UI input uses an ordered queue bounded by both
+command count and total payload bytes. GPUI retains backpressured input in its
+own smaller bounded retry buffer and stops accepting more with a visible busy
+diagnostic only when that buffer is also full. Paste approval and cancellation
+use a separate bounded control lane so confirmation cannot be trapped behind
+suspended input. Resize and mouse motion use bounded latest-value slots; a
+button, key, paste, or protocol-response command first flushes earlier motion
+into the ordered lane so coalescing cannot cross an ordering barrier.
+Worker-to-UI paint publication is latest-value, while non-coalescible semantic
+effects use a reliable low-volume path.
 
 ### Surface buffers and damage
 
@@ -256,9 +298,12 @@ copy, or repaint fails the selection gate.
 
 ### Resize authority
 
-GPUI derives grid dimensions from element geometry and font metrics, then sends
-one ordered resize containing sequence, grid, and pixel sizes. The worker
-updates terminal state and PTY winsize as one logical operation.
+GPUI measures the selected font's glyph advance, ascent, and descent through
+its text system. The measured cell width and line height are the single source
+for rendering, grid dimensions, wheel scaling, and mouse hit testing. GPUI
+publishes the latest resize containing sequence, grid, and pixel sizes; the
+worker coalesces obsolete pending resizes and updates terminal state and PTY
+winsize as one logical operation.
 
 Every published surface frame carries its generation, resize sequence, grid,
 and pixel dimensions. GPUI letterboxes a stale frame rather than stretching an
@@ -296,8 +341,11 @@ still requires an isolated end-to-end psmux verification; the Rust rejection
 does not make that shipped path dead code or establish that it reports false
 success.
 
-The Windows MVP instead verifies POSIX tmux inside WSL2. Host constructs a
-fully resolved invocation whose Windows launcher is `wsl.exe`, whose prefix is
+The Windows MVP instead verifies POSIX tmux inside WSL2. Host resolves
+`wsl.exe` from the Windows system directory with `GetSystemDirectoryW`, never
+through the current directory or launcher `PATH`, and carries that absolute
+path through every command and attachment plan. Host constructs a fully
+resolved invocation whose prefix is
 `--distribution <name> --exec`, and whose absolute mux path and null config are
 POSIX values such as `/usr/bin/tmux` and `/dev/null`. The invocation carries
 `ExecutablePlatform::Posix`; the contract platform remains Windows because the
@@ -306,15 +354,30 @@ ID and shape with an explicit executable-platform field. The existing psmux
 fixture schema is unchanged.
 
 All seven mux capabilities remain required even though the attach-only MVP
-does not create sessions. Six are established on an isolated WSL tmux server.
-The genuine ConPTY lifetime gate supplies the seventh
-`attach-preserve-environment` observation. The isolated session first adds a
-sentinel name to `update-environment`. A control attachment without `-E`
-presents a conflicting client value and must change the session environment;
-after the sentinel is reset, the same attachment with `-E` must leave the
-session value unchanged. This positive control prevents a broken attachment
-or irrelevant variable from looking like proof. No `VerifiedTmuxBinary`
-exists until that live observation succeeds.
+does not expose session creation. Host establishes command-only evidence on an
+isolated WSL tmux server, then workspace supplies the real ConPTY admission
+clients through `TerminalWorker`; terminal still receives only resolved argv
+and never learns that WSL exists. The second `new-session -A`, the environment
+positive control, and the `attach-session -E` proof therefore all run as
+ordinary PTY clients rather than captured or control-mode processes. The
+isolated session first adds a sentinel name to `update-environment`. A control
+attachment without `-E` presents a conflicting client value and must change
+the session environment; after the sentinel is reset, the same attachment
+with `-E` must leave the session value unchanged. This positive control
+prevents a broken attachment or irrelevant variable from looking like proof.
+No `VerifiedTmuxBinary` exists until all live observations succeed; a failed
+client fully unwinds the isolated server and leaves admission retryable.
+Before the first probe session exists, host chooses a random private
+`TMUX_TMPDIR`, installs its RAII cleanup guard, and creates the directory with
+mode 0700; every command and ordinary admission client uses that socket root
+in addition to `-L`. Installing the guard first makes cancellation cleanup
+deterministic even when the WSL command completes without returning output.
+Because terminating the Windows relay does not prove the Linux command has
+stopped, uncertain creation repeatedly removes the path through a two-second
+monotonic settle deadline, then performs a final removal and absence check;
+ordinary settled cleanup removes it once.
+Discovery, admission, and product attachment all execute through
+`env -u TMUX -u TMUX_PANE` so launcher state cannot redirect socket selection.
 
 VerifiedKwtHelper requires the exact revision, verified SHA-256, and
 revision-scoped managed path.
@@ -377,10 +440,11 @@ relay suspended, so a bounded spawn-to-assignment race remains accepted; a
 presentation becomes active only after membership is proven.
 
 The workspace changes `unsafe_code` from `forbid` to `deny` and adds
-`unsafe_op_in_unsafe_fn = "deny"`. One Windows-only terminal module may use a
-narrowly scoped `allow` to wrap `CreateJobObjectW`,
+`unsafe_op_in_unsafe_fn = "deny"`. Two Windows-only modules may use narrowly
+scoped `allow` attributes: terminal wraps `CreateJobObjectW`,
 `SetInformationJobObject`, `AssignProcessToJobObject`, and `IsProcessInJob`
-behind a safe RAII API. Every other crate retains the workspace denial. The
+behind a safe RAII API, while host wraps `GetSystemDirectoryW` to resolve the
+trusted WSL launcher. Every other module retains the workspace denial. The
 architecture harness verifies that every `ghosthub-*` workspace member opts
 into workspace lints so a new crate cannot silently escape that policy.
 
@@ -608,16 +672,20 @@ not expose provisional backend-specific APIs.
 
 ### Slice 1: local attach only
 
-The first executable milestone discovers and attaches to an existing tmux
-session in one resolved WSL2 distro from a native Windows GPUI window, then
-detaches without destroying it. It contains a minimal discovered-session
-sidebar, one terminal presentation, a visible cancellable WSL startup state,
-and retryable diagnostics.
+The first executable milestone opens a native Windows GPUI shell independently
+of WSL, then discovers and attaches to an existing tmux session in one resolved
+WSL2 distro when the system WSL launcher is present. It detaches without
+destroying the session. The shell contains a synthetic host list, a minimal
+discovered-session view, one terminal presentation, a visible cancellable WSL
+startup state, and host-scoped retryable diagnostics.
 
 The flow resolves and verifies the exact mux binary, discovers live identity,
-reserves the presentation, launches an AttachPlan, promotes the reservation,
-renders through surface, disconnects on close, and reattaches to the surviving
-identity from a fresh process.
+reserves the presentation, and launches an AttachPlan whose single tmux
+`if-shell -F` command atomically compares server PID, session ID, and creation
+time before its matching branch executes `attach-session -E`. It then promotes
+the reservation, renders through surface, disconnects on close, and reattaches
+to the surviving identity from a fresh process. An identity mismatch exits
+without attaching and becomes a classified refresh diagnostic.
 
 Slice 1 reads font family, font size, and theme through:
 
@@ -634,6 +702,28 @@ does not source interactive or login shell files in this slice. Users whose
 sessions use another binary or socket directory must configure it explicitly;
 the empty state names the resolved distro and whether the default or configured
 socket environment was queried.
+
+The Rust app reads `<resolved config root>/config.toml` once at startup. A
+missing file uses defaults; malformed TOML, unknown fields, relative WSL
+paths, empty names, zero font size, and non-`#RRGGBB` colors produce a visible
+startup diagnostic rather than silent fallback. The read-only schema is:
+
+~~~toml
+[wsl]
+distro = "Ubuntu"
+tmux-binary = "/usr/bin/tmux"
+socket-directory = "/run/user/1000/tmux"
+
+[terminal]
+font-family = "Cascadia Mono"
+font-size = 14
+background = "#111318"
+foreground = "#eef0f4"
+clipboard-write = true
+~~~
+
+Every field is optional. `clipboard-write` governs remote OSC 52 writes;
+remote OSC 52 reads remain denied regardless of configuration.
 
 Windows manual acceptance requires WSL2, tmux, and an existing session started
 outside Ghosthub. Setup is documented as deterministic commands rather than an
