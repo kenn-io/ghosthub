@@ -392,6 +392,15 @@ enum PendingUiInput {
     Key(KeyInput),
     Mouse(MouseInput),
     ClipboardResponse(Vec<u8>),
+    Resize(TerminalResize),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TerminalResize {
+    columns: usize,
+    rows: usize,
+    pixel_width: u16,
+    pixel_height: u16,
 }
 
 struct QueuedUiInput {
@@ -440,8 +449,12 @@ impl PendingUiInput {
         match self {
             Self::Key(KeyInput::Text { text, .. } | KeyInput::Paste(text)) => text.len(),
             Self::ClipboardResponse(bytes) => bytes.len(),
-            Self::Key(KeyInput::Named { .. }) | Self::Mouse(_) => 0,
+            Self::Key(KeyInput::Named { .. }) | Self::Mouse(_) | Self::Resize(_) => 0,
         }
+    }
+
+    const fn counts_toward_input_capacity(&self) -> bool {
+        !matches!(self, Self::Resize(_))
     }
 
     fn is_balancing_release(&self) -> bool {
@@ -470,6 +483,9 @@ fn input_queue_has_capacity(
     input_bytes: usize,
     reserved_key_releases: usize,
 ) -> bool {
+    if !input.counts_toward_input_capacity() {
+        return true;
+    }
     let balancing_release = input.is_balancing_release();
     let item_capacity = if balancing_release {
         UI_INPUT_CAPACITY
@@ -948,6 +964,11 @@ impl RootView {
         if !self.presentation_accepts_input(presentation_id) {
             return false;
         }
+        if let PendingUiInput::Resize(resize) = &input
+            && coalesce_last_resize(&mut self.pending_input, presentation_id, *resize)
+        {
+            return true;
+        }
         if matches!(
             &input,
             PendingUiInput::Mouse(MouseInput {
@@ -972,7 +993,10 @@ impl RootView {
         let bytes = input.byte_len();
         if !input_queue_has_capacity(
             &input,
-            self.pending_input.len(),
+            self.pending_input
+                .iter()
+                .filter(|queued| queued.input.counts_toward_input_capacity())
+                .count(),
             self.pending_input_bytes,
             bytes,
             reserved_key_releases,
@@ -981,7 +1005,10 @@ impl RootView {
             self.diagnostic = Some(INPUT_BUFFER_FULL_DIAGNOSTIC.to_owned());
             return false;
         }
-        let accepted_after_refusal = self.input_refusal.acceptance_marker();
+        let accepted_after_refusal = input
+            .counts_toward_input_capacity()
+            .then(|| self.input_refusal.acceptance_marker())
+            .flatten();
         self.pending_input_bytes += bytes;
         self.pending_input.push_back(QueuedUiInput {
             presentation_id,
@@ -1019,6 +1046,12 @@ impl RootView {
                 PendingUiInput::ClipboardResponse(bytes) => {
                     self.workspace.send_clipboard_response(bytes.clone())
                 }
+                PendingUiInput::Resize(resize) => self.workspace.resize_with_pixels(
+                    resize.columns,
+                    resize.rows,
+                    resize.pixel_width,
+                    resize.pixel_height,
+                ),
             };
             match result {
                 Ok(()) => {
@@ -1075,10 +1108,21 @@ impl RootView {
         let content_height = (height - TERMINAL_HEADER_HEIGHT - TERMINAL_PADDING * 2.0).max(1.0);
         let pixel_width = content_width.min(f32::from(u16::MAX)) as u16;
         let pixel_height = content_height.min(f32::from(u16::MAX)) as u16;
-        if let Err(error) =
-            self.workspace
-                .resize_with_pixels(columns, rows, pixel_width, pixel_height)
+        let resize = TerminalResize {
+            columns,
+            rows,
+            pixel_width,
+            pixel_height,
+        };
+        if let Some(presentation_id) = terminal_presentation_id(self.workspace.snapshot().content())
         {
+            let _accepted = self.enqueue_input(presentation_id, PendingUiInput::Resize(resize));
+        } else if let Err(error) = self.workspace.resize_with_pixels(
+            resize.columns,
+            resize.rows,
+            resize.pixel_width,
+            resize.pixel_height,
+        ) {
             self.diagnostic = Some(error.to_string());
         }
     }
@@ -1543,6 +1587,21 @@ fn queued_input_matches_presentation(
     active_presentation == Some(input.presentation_id)
 }
 
+fn coalesce_last_resize(
+    pending: &mut VecDeque<QueuedUiInput>,
+    presentation_id: u64,
+    resize: TerminalResize,
+) -> bool {
+    let Some(last) = pending.back_mut() else {
+        return false;
+    };
+    if last.presentation_id != presentation_id || !matches!(last.input, PendingUiInput::Resize(_)) {
+        return false;
+    }
+    last.input = PendingUiInput::Resize(resize);
+    true
+}
+
 fn clear_terminal_input_state(
     paste_confirmation: &mut bool,
     pending_input: &mut VecDeque<QueuedUiInput>,
@@ -1907,11 +1966,12 @@ mod tests {
 
     use super::{
         INPUT_BUFFER_FULL_DIAGNOSTIC, INPUT_BUFFERED_DIAGNOSTIC, InputRefusal, PendingUiInput,
-        QueuedUiInput, TerminalKeyboard, TerminalPointer, UI_INPUT_BYTE_CAPACITY,
+        QueuedUiInput, TerminalKeyboard, TerminalPointer, TerminalResize, UI_INPUT_BYTE_CAPACITY,
         UI_INPUT_CAPACITY, clear_terminal_input_state, clears_after_input_delivery,
-        clears_when_input_queue_is_empty, input_queue_has_capacity, named_key,
-        normalize_cell_width, queued_input_matches_presentation, restore_undelivered_wheel_steps,
-        terminal_key_input, terminal_wheel_steps, transitioned_presentation,
+        clears_when_input_queue_is_empty, coalesce_last_resize, input_queue_has_capacity,
+        named_key, normalize_cell_width, queued_input_matches_presentation,
+        restore_undelivered_wheel_steps, terminal_key_input, terminal_wheel_steps,
+        transitioned_presentation,
     };
     use workspace::{
         KeyEvent, KeyInput, Modifiers, MouseAction, MouseButton, MouseInput, NamedKey,
@@ -2113,6 +2173,46 @@ mod tests {
             0,
             0,
             1,
+        ));
+    }
+
+    #[test]
+    fn resize_stays_behind_older_input_and_coalesces_in_place() {
+        let mut pending = VecDeque::from([QueuedUiInput {
+            presentation_id: 7,
+            input: PendingUiInput::Key(KeyInput::named(NamedKey::Enter, Modifiers::default())),
+            bytes: 0,
+            accepted_after_refusal: None,
+        }]);
+        let first = TerminalResize {
+            columns: 80,
+            rows: 24,
+            pixel_width: 800,
+            pixel_height: 480,
+        };
+        let latest = TerminalResize {
+            columns: 120,
+            rows: 40,
+            pixel_width: 1_200,
+            pixel_height: 800,
+        };
+
+        assert!(!coalesce_last_resize(&mut pending, 7, first));
+        pending.push_back(QueuedUiInput {
+            presentation_id: 7,
+            input: PendingUiInput::Resize(first),
+            bytes: 0,
+            accepted_after_refusal: None,
+        });
+        assert!(coalesce_last_resize(&mut pending, 7, latest));
+        assert!(matches!(pending[0].input, PendingUiInput::Key(_)));
+        assert!(matches!(pending[1].input, PendingUiInput::Resize(value) if value == latest));
+        assert!(input_queue_has_capacity(
+            &PendingUiInput::Resize(latest),
+            UI_INPUT_CAPACITY,
+            UI_INPUT_BYTE_CAPACITY,
+            0,
+            0,
         ));
     }
 

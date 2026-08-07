@@ -210,8 +210,21 @@ impl CommandRunner for StdCommandRunner {
                 );
                 return Err(io::Error::new(io::ErrorKind::TimedOut, "command timed out"));
             }
-            if let Some(status) = child.try_wait()? {
-                break status;
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) => {}
+                Err(error) => {
+                    terminate_command(&mut child, &mut containment);
+                    finish_or_detach_readers(
+                        &receiver,
+                        &mut captured,
+                        &CancellationToken::new(),
+                        Instant::now() + OUTPUT_DRAIN_TIMEOUT,
+                        stdout,
+                        stderr,
+                    );
+                    return Err(error);
+                }
             }
             thread::sleep(Duration::from_millis(10));
         };
