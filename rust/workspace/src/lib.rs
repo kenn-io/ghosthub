@@ -975,6 +975,37 @@ impl Workspace {
         }
         let request = capture_attach_request(&self.inner, session_name)?;
 
+        self.start_attachment(request)
+    }
+
+    /// Detach the active ordinary client and attach to another discovered session.
+    ///
+    /// The target is captured before the current presentation is detached, so an
+    /// invalid selection cannot close the working terminal. The fresh identity
+    /// check still runs immediately before the replacement client launches.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the requested session is absent from the latest
+    /// inventory or the replacement attachment cannot be started.
+    pub fn switch_session(&self, session_name: &str) -> Result<(), WorkspaceError> {
+        if matches!(
+            self.inner
+                .state
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone(),
+            WorkspaceContent::Terminal { session, .. } if session == session_name
+        ) {
+            return Ok(());
+        }
+
+        let request = capture_attach_request(&self.inner, session_name)?;
+        self.detach();
+        self.start_attachment(request)
+    }
+
+    fn start_attachment(&self, request: AttachRequest) -> Result<(), WorkspaceError> {
         let generation;
         {
             let mut attachment = self
@@ -2947,6 +2978,59 @@ mod tests {
             workspace.snapshot().content(),
             WorkspaceContent::Ready { sessions, .. }
                 if sessions.len() == 1 && sessions[0].name() == "other"
+        ));
+    }
+
+    #[test]
+    fn switching_to_the_active_session_is_a_no_op() {
+        let workspace = Workspace::preview(WorkspaceSnapshot::ready(
+            Appearance::default(),
+            "Ubuntu",
+            Vec::new(),
+        ));
+        let size = GridSize::new(80, 24).expect("valid grid");
+        set_inner_state(
+            &workspace.inner,
+            WorkspaceContent::Terminal {
+                endpoint: "Ubuntu".to_owned(),
+                session: "work".to_owned(),
+                presentation_id: 1,
+                surface: Arc::new(SurfaceStore::new(surface::SurfaceFrame::blank(1, size))),
+            },
+        );
+
+        workspace
+            .switch_session("work")
+            .expect("active session remains selected");
+
+        assert!(matches!(
+            workspace.snapshot().content(),
+            WorkspaceContent::Terminal { session, .. } if session == "work"
+        ));
+    }
+
+    #[test]
+    fn invalid_switch_target_does_not_detach_the_active_session() {
+        let workspace = Workspace::preview(WorkspaceSnapshot::ready(
+            Appearance::default(),
+            "Ubuntu",
+            Vec::new(),
+        ));
+        let size = GridSize::new(80, 24).expect("valid grid");
+        set_inner_state(
+            &workspace.inner,
+            WorkspaceContent::Terminal {
+                endpoint: "Ubuntu".to_owned(),
+                session: "work".to_owned(),
+                presentation_id: 1,
+                surface: Arc::new(SurfaceStore::new(surface::SurfaceFrame::blank(1, size))),
+            },
+        );
+
+        assert!(workspace.switch_session("missing").is_err());
+        assert!(matches!(
+            workspace.snapshot().content(),
+            WorkspaceContent::Terminal { session, .. } if session == "work"
         ));
     }
 

@@ -679,6 +679,15 @@ destroying the session. The shell contains a synthetic host list, a minimal
 discovered-session view, one terminal presentation, a visible cancellable WSL
 startup state, and host-scoped retryable diagnostics.
 
+The Windows application shell keeps host and session navigation mounted while
+a terminal presentation is active. Selecting a different discovered session
+captures that target from the current inventory, detaches the existing
+ordinary client, and performs the normal fresh-identity attachment check for
+the replacement. Selecting the active session focuses its existing
+presentation. Navigation never sends a mux kill command. The chrome is shaped
+for additional admitted local mux hosts, but Slice 1 exposes only WSL tmux;
+psmux remains rejection evidence until it satisfies the same capability bar.
+
 The flow resolves and verifies the exact mux binary, discovers live identity,
 reserves the presentation, and launches an AttachPlan whose single tmux
 `if-shell -F` command atomically compares server PID, session ID, and creation
