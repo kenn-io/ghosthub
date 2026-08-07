@@ -1740,9 +1740,9 @@ fn publish_stale_attachment_failure(
     snapshot: HostSnapshot,
     error: &WorkspaceError,
 ) {
+    clear_pending_paste(inner);
+    restore_presentation_inventory(inner);
     publish_refresh(inner, request.inventory_generation, || {
-        clear_pending_paste(inner);
-        set_inner_state(inner, WorkspaceContent::Shell);
         set_local_notice(inner, error.to_string());
         set_attach_inventory(inner, request, snapshot);
     });
@@ -1750,15 +1750,24 @@ fn publish_stale_attachment_failure(
 
 fn publish_attachment_failure(inner: &Inner, inventory_generation: u64, error: impl fmt::Display) {
     let message = error.to_string();
+    clear_pending_paste(inner);
+    restore_presentation_inventory(inner);
     publish_refresh(inner, inventory_generation, || {
-        clear_pending_paste(inner);
         if inner.host_scoped_inventory {
-            set_inner_state(inner, WorkspaceContent::Shell);
             set_wsl_host_unavailable(inner, DiagnosticKind::Transport, message);
         } else {
             set_inner_state(inner, WorkspaceContent::Error { message });
         }
     });
+}
+
+fn restore_presentation_inventory(inner: &Inner) {
+    let state = inner
+        .inventory_state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    set_inner_state(inner, state);
 }
 
 fn attach_fresh(
@@ -2224,6 +2233,13 @@ mod tests {
         );
         let workspace = Workspace::application(TerminalAppearance::default(), Some(spec));
         let newer_generation = begin_refresh(&workspace.inner, &CancellationToken::new());
+        set_inner_state(
+            &workspace.inner,
+            WorkspaceContent::Attaching {
+                endpoint: "Ubuntu".to_owned(),
+                session: "stale".to_owned(),
+            },
+        );
 
         publish_attachment_failure(
             &workspace.inner,
