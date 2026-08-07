@@ -4,12 +4,24 @@ Marketing site for Ghosthub. Astro static site, deployed through Vercel's
 CLI. `.github/workflows/website.yml` is CI only (check, lint, test, build); it
 does not deploy.
 
+The public, task-oriented Zensical documentation lives in `docs/` and is
+published under `/docs/` by the same build. Each documentation page is also
+published as Markdown at its sibling `.md` URL, and `docs/llms.txt` becomes
+`/llms.txt`. The repository-root `docs/` directory remains internal engineering
+documentation and has a separate build.
+
     pnpm install
     pnpm dev        # local dev server
     pnpm check      # type-check templates
     pnpm lint       # oxlint
     pnpm test       # vitest unit tests
     pnpm build      # production build to dist/
+
+The website build uses `uv` for Zensical. CI installs it directly; other clean
+build environments use the checksum-pinned bootstrap in `scripts/run-uv.sh`.
+To preview only the public docs:
+
+    uv run --project docs zensical serve --config-file zensical.toml
 
 Constants (repo slug, Discord invite) live in `src/config.ts`.
 

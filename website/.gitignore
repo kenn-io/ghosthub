@@ -1,6 +1,10 @@
 node_modules/
 dist/
 .astro/
+.cache/
+public/docs/
+public/docs.md
+public/llms.txt
 # Synced from the orphan website-assets branch by scripts/sync-assets.sh
 src/assets/*.png
 src/assets/*.png.placeholder

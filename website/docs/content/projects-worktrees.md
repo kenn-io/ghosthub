@@ -1,0 +1,90 @@
+---
+description: Register Git projects and create, import, use, and remove worktrees.
+icon: lucide/git-branch
+---
+
+# Projects and worktrees
+
+Projects and worktrees add Git context to Ghosthub's ordinary tmux workflow.
+They are optional.
+
+Ghosthub delegates repository and worktree identity to
+[kwt](https://kwt.sh). Packaged builds use their revision-pinned bundled kwt
+locally and a matching managed helper on remote macOS or Linux hosts.
+
+## Register a project
+
+Start with an existing Git checkout on the target host.
+
+1. Open the **+** menu beside the local Mac or a remote macOS or Linux host.
+2. Choose **Add Project**.
+3. Enter the checkout's absolute path on that host.
+4. Confirm the registration.
+
+Ghosthub registers that one path through kwt and refreshes inventory. It does
+not scan the machine or edit kwt configuration itself.
+
+Remote hosts need the [managed kwt helper](remote-hosts.md#install-the-managed-kwt-helper)
+first. Project registration is not yet available for native Windows hosts.
+
+If the SSH destination changes while the Add Project sheet is open, close the
+sheet and start again so the confirmation applies to the current host.
+
+## Open a project checkout
+
+Select the project's primary checkout or any linked worktree in the sidebar.
+Kwt supplies the exact canonical tmux session name. Ghosthub creates or repairs
+that session when necessary and then attaches an ordinary tmux client.
+
+## Create a worktree from a branch
+
+1. Select the project.
+2. Press ++shift+cmd+n++ or choose the new-worktree action.
+3. Select **Branch**.
+4. Search local and remote branches that are not already checked out, or type a
+   new branch name.
+5. Confirm the worktree.
+
+Selecting a remote source creates a local tracking branch when needed. The
+picker distinguishes same-named sources. Input that does not match an existing
+branch creates a new branch.
+
+## Import a GitHub pull request
+
+Pull-request import requires the [GitHub CLI](https://cli.github.com/) on the
+host that contains the project—not merely on the Mac running Ghosthub.
+
+On that host:
+
+```sh
+gh auth login
+```
+
+For an HTTPS Git remote, Git authentication must also work there. GitHub CLI
+can configure itself as the credential helper:
+
+```sh
+gh auth setup-git
+```
+
+Then select the project, press ++shift+cmd+n++, choose **Pull Request**, and
+search for an open pull request. Ghosthub asks kwt to import it and selects the
+resulting worktree session.
+
+## Remove a worktree
+
+Hover over a non-primary worktree in the sidebar and choose **×**. After you
+confirm the exact worktree and host, Ghosthub:
+
+1. ends that worktree's verified live tmux session when necessary; and
+2. asks kwt to remove the checkout.
+
+The Git branch is kept. If the checkout is already absent, Ghosthub skips the
+redundant filesystem removal but still reconciles the exact live session
+covered by the confirmation.
+
+## Rearrange worktrees
+
+Drag worktrees within a project to set their display order. The insertion line
+shows the destination. This changes Ghosthub's navigation only; it does not
+rename or reorder anything in Git, kwt, or tmux.

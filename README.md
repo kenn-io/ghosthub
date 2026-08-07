@@ -28,6 +28,8 @@
   ·
   <a href="https://ghosthub.ai/guide/"><strong>Guide</strong></a>
   ·
+  <a href="https://ghosthub.ai/docs/"><strong>Docs</strong></a>
+  ·
   <a href="CHANGELOG.md"><strong>Changelog</strong></a>
   ·
   <a href="https://discord.gg/nEB7VaAnU9"><strong>Discord</strong></a>
