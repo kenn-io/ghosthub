@@ -9,6 +9,7 @@ enum WorkspaceSceneBootstrap {
         let database: WorkspaceDatabase
         let workspaceConfiguration: WorkspaceConfiguration
         let notificationService: NotificationService
+        let tmuxSessionActivityController: TmuxSessionActivityController
         let localHostID: UUID
     }
 
@@ -38,6 +39,8 @@ enum WorkspaceSceneBootstrap {
                 existing.workspaceConfiguration,
                 notificationService:
                 existing.notificationService,
+                tmuxSessionActivityController:
+                existing.tmuxSessionActivityController,
                 localHostID: existing.localHostID
             )
         }
@@ -63,6 +66,8 @@ enum WorkspaceSceneBootstrap {
             database: database,
             workspaceConfiguration: workspaceConfiguration,
             notificationService: notificationService,
+            tmuxSessionActivityController:
+            TmuxSessionActivityController(),
             localHostID: fallbackLocalHostID
         )
         sharedResources = result

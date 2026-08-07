@@ -33,6 +33,25 @@ tab or window detaches every presentation it owns, and quitting Ghosthub
 detaches them all. None of these actions ends a tmux session; tmux keeps the
 session and its processes alive.
 
+## Activity indicators
+
+After a session connects, Ghosthub remembers it for the rest of the app
+launch. A small accent indicator appears beside its worktree or standalone
+session row when Ghosthub observes recent tmux scrollback progress, then
+clears about thirty seconds after output stops.
+
+![Ghosthub sidebar showing an accent activity indicator beside a standalone session that is producing output while another session is selected](assets/guide-session-activity.png)
+
+Only genuine output counts. Switching panes, resizing the window, or a
+full-screen tool redrawing its prompt, spinner, or status display does not
+light the indicator. Closing the window still only detaches; the warm session
+stays visible across your other Ghosthub windows.
+
+This activity state resets when Ghosthub quits. Ghosthub never scans sessions
+you have not opened, and terminal text never leaves the host: the probe
+returns only a checksum and size counters. On native Windows hosts, activity
+indicators require psmux 3.3.4 or newer.
+
 ## Reopen an exited standalone session
 
 If a standalone session exits while its presentation is still open, Ghosthub

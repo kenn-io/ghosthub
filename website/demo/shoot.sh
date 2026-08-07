@@ -338,4 +338,21 @@ prepare_command_tab "release-watch"
 prepare_command_tab "test-matrix"
 capture_state guide-native-tabs.png
 
+echo "==> guide: passive session activity indicator"
+# Every session above is warm from its earlier attachment. Drive fresh
+# scrollback into the unselected scratch session on the demo socket only,
+# then wait out one quiet-interval resample (20s) so its sidebar row shows
+# the accent activity indicator while add-session-filters stays selected.
+demo_input new-window
+sleep 2
+demo_input frame
+sleep 1
+palette "add-session-filters"
+sleep 3
+demo_tmux_socket="$scratch/tmux/tmux-$(id -u)/default"
+tmux -S "$demo_tmux_socket" send-keys -t '=scratch:' \
+  'clear; for f in vault index threads search; do printf "compacting %s… done\n" "$f"; done; seq 1 40 | sed "s/^/segment /"' Enter
+sleep 24
+capture_state guide-session-activity.png
+
 echo "captured website asset set -> $out_dir"

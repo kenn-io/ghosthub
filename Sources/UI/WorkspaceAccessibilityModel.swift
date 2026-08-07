@@ -36,7 +36,8 @@ enum WorkspaceAccessibilityModel {
 
     static func descriptor(
         for row: WorkspaceSidebarRow,
-        isSelected: Bool
+        isSelected: Bool,
+        hasRecentTmuxOutput: Bool = false
     ) -> WorkspaceAccessibilityDescriptor {
         var values: [String] = []
         if let subtitle = row.subtitle, !subtitle.isEmpty {
@@ -44,6 +45,9 @@ enum WorkspaceAccessibilityModel {
         }
         if let status = row.worktreeStatus {
             values.append(contentsOf: worktreeStatusValues(status))
+        }
+        if hasRecentTmuxOutput {
+            values.append("Recent tmux output")
         }
         if isSelected {
             values.append("Selected")

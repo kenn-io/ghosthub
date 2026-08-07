@@ -1475,6 +1475,290 @@ struct WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("connected attachment keeps retrying activity enrollment")
+    func connectedAttachmentKeepsRetryingActivityEnrollment() async throws {
+        let environment = try setupStandardEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let identityReads = Counter()
+        let activitySamples = Counter()
+        let activityController = TmuxSessionActivityController(
+            sampler: { _, _, _ in
+                let sample = activitySamples.increment()
+                return .sample(
+                    paneID: "%2",
+                    dimensions: "120x30",
+                    fingerprint: sample == 1 ? "baseline" : "changed"
+                )
+            },
+            automaticallyPolls: false
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            tmuxSessionIdentityReader: { selection, host in
+                guard identityReads.increment() > 2 else {
+                    throw TmuxSessionKillError.sessionNotRunning(
+                        host: host.displayName,
+                        session: selection.name
+                    )
+                }
+                return TmuxSessionIdentity(
+                    serverPID: "31415",
+                    sessionID: "$42",
+                    createdAt: "1721552400"
+                )
+            },
+            tmuxSessionActivityController: activityController,
+            createdSessionDiscoveryDelays: [.milliseconds(1)]
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "kwt-ghosthub-main",
+            socketName: "protected"
+        )
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+
+        await waitUntilMainActor(timeout: .milliseconds(250)) {
+            identityReads.count == 3
+        }
+        let start = Date.now
+        await activityController.sampleWarmSessions(at: start)
+        await activityController.sampleWarmSessions(
+            at: start.addingTimeInterval(20)
+        )
+
+        #expect(model.workingTmuxSessionIDs == [selection.id])
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("connected attachment validates stale discovered activity identity")
+    func connectedAttachmentValidatesStaleActivityIdentity() async throws {
+        let environment = try setupStandardEnvironment()
+        var snapshot = environment.snapshot
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "build"
+        )
+        snapshot.hosts[0].tmuxSessions = [
+            TmuxSessionSummary(
+                name: selection.name,
+                managed: false,
+                windows: [],
+                serverPID: "1111",
+                sessionID: "$1",
+                createdAt: "1721552300"
+            ),
+        ]
+        let liveIdentity = TmuxSessionIdentity(
+            serverPID: "31415",
+            sessionID: "$42",
+            createdAt: "1721552400"
+        )
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let identityReads = Counter()
+        let sampledIdentities = LockedValue<[TmuxSessionIdentity]>([])
+        let activityController = TmuxSessionActivityController(
+            sampler: { _, identity, _ in
+                sampledIdentities.withLock { $0.append(identity) }
+                return identity == liveIdentity
+                    ? .sample(
+                        paneID: "%2",
+                        dimensions: "120x30",
+                        fingerprint: "baseline"
+                    )
+                    : .ended
+            },
+            automaticallyPolls: false
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            tmuxSessionIdentityReader: { _, _ in
+                _ = identityReads.increment()
+                return liveIdentity
+            },
+            tmuxSessionActivityController: activityController,
+            createdSessionDiscoveryDelays: [.milliseconds(1)]
+        )
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+
+        await waitUntilMainActor(timeout: .milliseconds(250)) {
+            identityReads.count == 1
+        }
+        await activityController.sampleWarmSessions()
+
+        #expect(identityReads.count == 1)
+        #expect(sampledIdentities.load() == [liveIdentity])
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("closing one attachment preserves shared warm activity")
+    func closingOneAttachmentPreservesSharedWarmActivity() async throws {
+        let environment = try setupStandardEnvironment()
+        let firstSurfaceStore = SceneTmuxSurfaceStoreStub()
+        let secondSurfaceStore = SceneTmuxSurfaceStoreStub()
+        let identityReads = Counter()
+        let activitySamples = Counter()
+        let activityController = TmuxSessionActivityController(
+            sampler: { _, _, _ in
+                let sample = activitySamples.increment()
+                return .sample(
+                    paneID: "%2",
+                    dimensions: "120x30",
+                    fingerprint: sample == 1 ? "baseline" : "changed"
+                )
+            },
+            automaticallyPolls: false
+        )
+        let firstModel = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: firstSurfaceStore,
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            tmuxSessionIdentityReader: { _, _ in
+                _ = identityReads.increment()
+                return TmuxSessionIdentity(
+                    serverPID: "31415",
+                    sessionID: "$42",
+                    createdAt: "1721552400"
+                )
+            },
+            tmuxSessionActivityController: activityController
+        )
+        let secondModel = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: secondSurfaceStore,
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            tmuxSessionIdentityReader: { _, _ in
+                _ = identityReads.increment()
+                return TmuxSessionIdentity(
+                    serverPID: "31415",
+                    sessionID: "$42",
+                    createdAt: "1721552400"
+                )
+            },
+            tmuxSessionActivityController: activityController
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "build"
+        )
+        firstModel.openBorrowedTmuxSession(selection)
+        secondModel.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(
+            firstModel,
+            store: firstSurfaceStore
+        )
+        await launchActiveTmuxSurface(
+            secondModel,
+            store: secondSurfaceStore
+        )
+        await waitUntilMainActor { identityReads.count == 2 }
+        let start = Date.now
+        await activityController.sampleWarmSessions(at: start)
+        await activityController.sampleWarmSessions(
+            at: start.addingTimeInterval(20)
+        )
+        #expect(firstModel.workingTmuxSessionIDs == [selection.id])
+        #expect(secondModel.workingTmuxSessionIDs == [selection.id])
+
+        let close = try #require(
+            firstSurfaceStore.surface.closeObservers.values.first
+        )
+        close(false, 1)
+        await activityController.sampleWarmSessions(
+            at: start.addingTimeInterval(25)
+        )
+
+        #expect(firstModel.workingTmuxSessionIDs == [selection.id])
+        #expect(secondModel.workingTmuxSessionIDs == [selection.id])
+        #expect(activitySamples.count == 3)
+        await firstModel.shutdown()
+        await secondModel.shutdown()
+    }
+
+    @MainActor
+    @Test("reopening an attachment preserves its warm activity baseline")
+    func reopeningAttachmentPreservesWarmActivityBaseline() async throws {
+        let environment = try setupStandardEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let identityReads = Counter()
+        let activitySamples = Counter()
+        let activityController = TmuxSessionActivityController(
+            sampler: { _, _, _ in
+                let sample = activitySamples.increment()
+                return .sample(
+                    paneID: "%2",
+                    dimensions: "120x30",
+                    fingerprint: sample == 1 ? "baseline" : "changed"
+                )
+            },
+            automaticallyPolls: false
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            tmuxSessionIdentityReader: { _, _ in
+                _ = identityReads.increment()
+                return TmuxSessionIdentity(
+                    serverPID: "31415",
+                    sessionID: "$42",
+                    createdAt: "1721552400"
+                )
+            },
+            tmuxSessionActivityController: activityController
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "build"
+        )
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        await waitUntilMainActor { identityReads.count == 1 }
+        let start = Date.now
+        await activityController.sampleWarmSessions(at: start)
+        await activityController.sampleWarmSessions(
+            at: start.addingTimeInterval(20)
+        )
+        #expect(model.workingTmuxSessionIDs == [selection.id])
+
+        let close = try #require(
+            surfaceStore.surface.closeObservers.values.first
+        )
+        close(false, 1)
+        model.closeBorrowedTmuxSession(selection)
+        model.openBorrowedTmuxSession(selection)
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedTmuxSurface()
+            return surfaceStore.requestCount == 2
+        }
+        await waitUntilMainActor { identityReads.count == 2 }
+        await activityController.sampleWarmSessions(
+            at: start.addingTimeInterval(25)
+        )
+
+        #expect(model.workingTmuxSessionIDs == [selection.id])
+        #expect(activitySamples.count == 3)
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("protected kill availability survives a generation change")
     func protectedKillSurvivesGenerationChange() async throws {
         let environment = try setupStandardEnvironment()
@@ -2461,6 +2745,158 @@ struct WorkspaceTmuxDiscoveryTests {
         #expect(model.retainedBorrowedTmuxPresentationCount == 1)
         #expect(surfaceStore.removedKeys.count == 1)
         await model.shutdown()
+    }
+
+    @MainActor
+    @Test("endpoint changes retire warm activity on the former host")
+    func endpointChangeRetiresWarmActivity() async throws {
+        let environment = try setupStandardEnvironment()
+        let configuredHosts = CurrentValueSubject<[SSHHost], Never>([
+            SSHHost(
+                configKey: "laptop",
+                name: "Laptop",
+                platform: .macOS,
+                sshDestination: "wesm@old.example.com"
+            ),
+        ])
+        let activitySamples = Counter()
+        let activityController = TmuxSessionActivityController(
+            sampler: { _, _, _ in
+                let sample = activitySamples.increment()
+                return .sample(
+                    paneID: "%2",
+                    dimensions: "120x30",
+                    fingerprint: sample == 1 ? "baseline" : "changed"
+                )
+            },
+            automaticallyPolls: false
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            configuredSSHHostsProvider: { configuredHosts.value },
+            tmuxSessionActivityController: activityController
+        )
+        model.refreshHosts()
+        let remoteHost = try #require(
+            model.snapshot.hosts.first { $0.configKey == "laptop" }
+        )
+        let oldEndpoint = try #require(TmuxHostResolver.resolve(remoteHost))
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: remoteHost.id,
+            name: "build"
+        )
+        let start = Date(timeIntervalSince1970: 1_720_000_000)
+        activityController.warm(
+            selection,
+            identity: TmuxSessionIdentity(
+                serverPID: "31415",
+                sessionID: "$42",
+                createdAt: "1721552400"
+            ),
+            on: oldEndpoint,
+            at: start
+        )
+        await activityController.sampleWarmSessions(at: start)
+        await activityController.sampleWarmSessions(
+            at: start.addingTimeInterval(20)
+        )
+        #expect(model.workingTmuxSessionIDs == [selection.id])
+
+        configuredHosts.value = [
+            SSHHost(
+                configKey: "laptop",
+                name: "Laptop",
+                platform: .macOS,
+                sshDestination: "wesm@new.example.com"
+            ),
+        ]
+        model.refreshHosts()
+        await activityController.sampleWarmSessions(
+            at: start.addingTimeInterval(40)
+        )
+
+        #expect(model.workingTmuxSessionIDs.isEmpty)
+        #expect(activitySamples.count == 2)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("a new scene retires warm activity for reconfigured endpoints")
+    func newSceneRetiresWarmActivityForReconfiguredEndpoints() async throws {
+        let environment = try setupStandardEnvironment()
+        let configuredHosts = CurrentValueSubject<[SSHHost], Never>([
+            SSHHost(
+                configKey: "laptop",
+                name: "Laptop",
+                platform: .macOS,
+                sshDestination: "wesm@old.example.com"
+            ),
+        ])
+        let activitySamples = Counter()
+        let activityController = TmuxSessionActivityController(
+            sampler: { _, _, _ in
+                _ = activitySamples.increment()
+                return .sample(
+                    paneID: "%2",
+                    dimensions: "120x30",
+                    fingerprint: "baseline"
+                )
+            },
+            automaticallyPolls: false
+        )
+        let firstScene = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            configuredSSHHostsProvider: { configuredHosts.value },
+            tmuxSessionActivityController: activityController
+        )
+        firstScene.refreshHosts()
+        let remoteHost = try #require(
+            firstScene.snapshot.hosts.first { $0.configKey == "laptop" }
+        )
+        let oldEndpoint = try #require(TmuxHostResolver.resolve(remoteHost))
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: remoteHost.id,
+            name: "build"
+        )
+        let start = Date(timeIntervalSince1970: 1_720_000_000)
+        activityController.warm(
+            selection,
+            identity: TmuxSessionIdentity(
+                serverPID: "31415",
+                sessionID: "$42",
+                createdAt: "1721552400"
+            ),
+            on: oldEndpoint,
+            at: start
+        )
+        await activityController.sampleWarmSessions(at: start)
+        #expect(activitySamples.count == 1)
+        await firstScene.shutdown()
+
+        configuredHosts.value = [
+            SSHHost(
+                configKey: "laptop",
+                name: "Laptop",
+                platform: .macOS,
+                sshDestination: "wesm@new.example.com"
+            ),
+        ]
+        let secondScene = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            kwtInventoryLoader: { _ in KwtHostInventory(projects: []) },
+            configuredSSHHostsProvider: { configuredHosts.value },
+            tmuxSessionActivityController: activityController,
+            startServices: true
+        )
+        await activityController.sampleWarmSessions(
+            at: start.addingTimeInterval(40)
+        )
+
+        #expect(activitySamples.count == 1)
+        await secondScene.shutdown()
     }
 
     @MainActor

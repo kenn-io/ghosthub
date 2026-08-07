@@ -356,6 +356,47 @@ sidebar and command palette. Settings → Worktrees edits the same list, one
 pattern per line. Filtering occurs after discovery and never suppresses a kwt
 worktree, its running state, duplicate-name checks, or session identity.
 
+Tmux activity indicators do not extend inventory polling. Once an ordinary
+client has connected during the current app launch, Ghosthub samples only that
+exact session as a warm target. Active warm sessions are sampled every five
+seconds, quiet targets every twenty seconds, and unavailable targets back off
+to thirty seconds. Each probe captures at most the active pane's latest 160
+scrollback lines, excluding its visible screen, and computes a checksum on the
+local or remote host without discarding trailing blank output, so terminal
+text is not returned to Ghosthub. The fingerprint also carries the pane's
+scrollback line count so blank or repeated output records progression until
+the pane's history limit is reached. Once history is full, output that leaves
+the bounded tail byte-identical reads as quiet: tmux exposes no cumulative
+output counter, and its activity timestamps also advance on redraws, so this
+keeps the deliberate bias toward quiet false negatives over misleading
+attention signals.
+The probe verifies the expected server PID, session ID, and creation time on
+the host before any capture runs, targets the scrollback and capture reads at
+the exact pane ID from that verified read, and re-evaluates the identity
+predicate inside the same tmux server dispatch as each read, so a same-named
+replacement session is never read even when it races the probe. Identity,
+pane, and pane-dimension reads before and after the capture must also match.
+Native Windows sampling verifies at runtime that psmux supports the format
+predicate and if-shell contract, then uses the same atomic reads; when the
+capability probe fails, the sample is refused rather than taken without the
+predicate. The first sample after a pane switch or a pane resize establishes a
+quiet baseline; later scrollback progression on that pane at unchanged
+dimensions marks the session active for thirty seconds. In-place prompt,
+spinner, and status redraws do not count as activity, and neither do client
+resizes, which reflow scrollback without representing new work.
+Windows activity sampling requires psmux 3.3.4 or newer because earlier
+versions do not expose negative scrollback ranges. Older supported psmux
+versions remain available for discovery and attachment but publish no passive
+activity state.
+Closing a presentation does not remove warm state, while app termination,
+session disappearance, or identity replacement does. Every host refresh and
+every new scene reconciles warm entries against the currently configured
+endpoints, so a reconfigured or removed host stops being sampled even when the
+change happened while no window observed it. Retiring a warm entry cancels its
+in-flight probe; a probe cancelled after its host command launched drains
+within the probe's ten-second timeout and its result is discarded. This state
+is not saved to the database.
+
 Pull-request imports are the one alternate-socket case. Kwt returns the named
 socket reserved for the workspace-specific server, and Ghosthub carries that
 identity with the worktree selection. Import does not start tmux or execute a

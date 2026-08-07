@@ -655,7 +655,9 @@ struct WorkspaceWindow: View {
                 activeTmuxSessionCanApplyTheme:
                 sceneModel.canApplyThemeToActiveTmuxSession,
                 tmuxConnectionRecoveryRequest:
-                sceneModel.tmuxConnectionRecoveryRequest
+                sceneModel.tmuxConnectionRecoveryRequest,
+                workingTmuxSessionIDs:
+                sceneModel.workingTmuxSessionIDs
             ),
             content: ContentBuilders(
                 tmuxSessionContentBuilder: {
