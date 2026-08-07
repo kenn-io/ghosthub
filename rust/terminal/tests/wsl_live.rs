@@ -3,8 +3,9 @@
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::process::{Child, Command, Output};
+use std::sync::Mutex;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use input::{KeyInput, Modifiers, NamedKey};
 use session::{AttachPlan, SessionIdentity};
@@ -15,12 +16,38 @@ struct IsolatedServer {
     tmpdir: String,
 }
 
+static WSL_LIVE: Mutex<()> = Mutex::new(());
+
+#[test]
+fn isolated_namespace_includes_a_cross_process_nonce() {
+    assert_eq!(isolated_tmpdir("detach", 42, 100), "/tmp/ght-2a-64-detach");
+}
+
 impl IsolatedServer {
     fn start(label: &str) -> Self {
-        let tmpdir = format!("/tmp/ghosthub-terminal-test-{}-{label}", std::process::id());
-        assert!(tmpdir.starts_with("/tmp/ghosthub-terminal-test-"));
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        let tmpdir = isolated_tmpdir(label, std::process::id(), nonce);
+        assert!(tmpdir.starts_with("/tmp/ght-"));
+        let mkdir = Command::new("wsl.exe")
+            .args(["--exec", "/usr/bin/mkdir", "-p", "--", &tmpdir])
+            .output()
+            .expect("create isolated tmux directory");
+        assert!(
+            mkdir.status.success(),
+            "create isolated tmux directory: {}",
+            String::from_utf8_lossy(&mkdir.stderr)
+        );
         let server = Self { tmpdir };
         server.run_tmux(["new-session", "-d", "-s", "ghosthub-live"]);
+        let socket = server.run_tmux(["display-message", "-p", "#{socket_path}"]);
+        let socket = String::from_utf8(socket.stdout).expect("UTF-8 tmux socket path");
+        assert!(
+            socket.trim().starts_with(&format!("{}/", server.tmpdir)),
+            "test tmux escaped its isolated directory: {socket:?}"
+        );
         server
     }
 
@@ -85,8 +112,15 @@ impl IsolatedServer {
     }
 }
 
+fn isolated_tmpdir(label: &str, process_id: u32, nonce: u128) -> String {
+    format!("/tmp/ght-{process_id:x}-{nonce:x}-{label}")
+}
+
 impl Drop for IsolatedServer {
     fn drop(&mut self) {
+        if !self.tmpdir.starts_with("/tmp/ght-") {
+            return;
+        }
         let _ignored = Command::new("wsl.exe")
             .args([
                 "--exec",
@@ -98,7 +132,6 @@ impl Drop for IsolatedServer {
                 "kill-server",
             ])
             .output();
-        assert!(self.tmpdir.starts_with("/tmp/ghosthub-terminal-test-"));
         let _ignored = Command::new("wsl.exe")
             .args(["--exec", "/usr/bin/rm", "-rf", "--", &self.tmpdir])
             .output();
@@ -108,6 +141,9 @@ impl Drop for IsolatedServer {
 #[test]
 #[ignore = "requires WSL2 and tmux; creates only an isolated TMUX_TMPDIR server"]
 fn attach_detach_and_reattach_preserve_the_exact_session() {
+    let _serial = WSL_LIVE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let server = IsolatedServer::start("detach");
     let identity = server.identity();
     let size = GridSize::new(80, 24).expect("valid grid");
@@ -115,6 +151,11 @@ fn attach_detach_and_reattach_preserve_the_exact_session() {
     let plan = server.attach_plan(identity.clone());
     let worker = TerminalWorker::attach(&plan, size).expect("attach ordinary WSL tmux client");
     wait_for_client_count(&server, 1);
+    wait_until(
+        Duration::from_secs(5),
+        "a real tmux attachment did not enter the alternate screen",
+        || worker.is_confirmed_live(),
+    );
     send_command(&worker, "echo relay-ready");
     wait_for_surface_text(&worker, "relay-ready");
     drop(worker);
@@ -137,6 +178,9 @@ fn attach_detach_and_reattach_preserve_the_exact_session() {
 #[test]
 #[ignore = "requires WSL2 and tmux; creates only an isolated TMUX_TMPDIR server"]
 fn conpty_attachment_proves_preserve_environment_with_a_positive_control() {
+    let _serial = WSL_LIVE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let server = IsolatedServer::start("preserve-environment");
     let identity = server.identity();
     let size = GridSize::new(80, 24).expect("valid grid");
@@ -203,6 +247,9 @@ fn conpty_attachment_proves_preserve_environment_with_a_positive_control() {
 #[test]
 #[ignore = "requires WSL2 and tmux; force-terminates an isolated helper process"]
 fn forced_terminal_owner_exit_preserves_the_exact_session() {
+    let _serial = WSL_LIVE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let server = IsolatedServer::start("force");
     let identity = server.identity();
     let (mut helper, ready, release) = spawn_owner_helper(&server, &identity, "force");
@@ -240,6 +287,9 @@ fn forced_terminal_owner_exit_preserves_the_exact_session() {
 #[test]
 #[ignore = "requires WSL2 and tmux; exits an isolated helper process gracefully"]
 fn graceful_terminal_owner_exit_preserves_the_exact_session() {
+    let _serial = WSL_LIVE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let server = IsolatedServer::start("graceful");
     let identity = server.identity();
     let (mut helper, ready, release) = spawn_owner_helper(&server, &identity, "graceful");

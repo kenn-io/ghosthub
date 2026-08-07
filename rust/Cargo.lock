@@ -2079,6 +2079,7 @@ dependencies = [
  "ghosthub-contracts",
  "serde",
  "serde_json",
+ "toml 1.1.4+spec-1.1.0",
 ]
 
 [[package]]
@@ -2093,11 +2094,14 @@ dependencies = [
 name = "ghosthub-host"
 version = "0.0.0"
 dependencies = [
+ "getrandom 0.3.4",
  "ghosthub-contracts",
  "ghosthub-model",
  "ghosthub-session",
+ "libc",
  "serde",
  "serde_json",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

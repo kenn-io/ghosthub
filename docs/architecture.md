@@ -158,6 +158,16 @@ application or embeds a Rust runtime into it. Cross-platform parity is enforced
 through the repository-root contracts corpus rather than a shared process, FFI
 domain model, or live database.
 
+WSL is a terminal substrate, not an application startup dependency. On
+Windows, the composition root checks for the system-owned `wsl.exe` without
+executing it. When present, the first GPUI frame contains one synthetic WSL
+host for the configured or default distro; discovery begins on the following
+frame. Missing WSL omits that host. A slow, failed, or unsupported WSL runtime
+changes only the host entry to an unavailable state with Retry and never
+replaces the application shell. The first refresh has a 45-second total budget
+for cold start; later attempts have 30 seconds, in addition to per-command
+timeouts.
+
 Rust keeps backend and authority boundaries structural: the UI package has
 direct dependencies only on workspace, model, and surface, while persistence
 cannot reach session launch or kill authority through any transitive
@@ -173,14 +183,20 @@ relay and Linux tmux client while leaving the exact server/session identity
 alive. Psmux capability failures are retained as rejection evidence rather
 than weakened into a product path. See
 [Terminal Sessions](terminal-sessions.md) for the normative lifetime contract.
+WSL tmux admission uses an app-created private socket root before testing `-L`,
+and every tmux invocation scrubs inherited `TMUX` and `TMUX_PANE` values.
 
 The Rust composition root injects one presentation registry and per-host
-runtime dependencies. Host reads are concurrent, cancellable, timed, and
+runtime dependencies. Workspace snapshots keep each host's connection state,
+inventory, and classified diagnostic separate from application-wide
+presentation state. Host reads are concurrent, cancellable, timed, and
 generation-ordered; mutations are serialized separately. Persistence uses a
 single asynchronous SQLite WAL writer, coalesces high-frequency UI state, and
 never holds a transaction across an await point. Cold-start reconciliation
 consumes only published inventory generations and may forget application
 records, never probe or kill server state.
+Host command capture is bounded and descendant-contained so inherited output
+pipes cannot outlive a cancelled or completed refresh.
 
 ### Application Updates
 
