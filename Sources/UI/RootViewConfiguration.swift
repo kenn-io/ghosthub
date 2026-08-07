@@ -193,27 +193,36 @@ public struct TmuxConnectionRecoveryRequest:
 }
 
 struct TmuxConnectionRecoveryRequestRouter {
-    private(set) var reviewedRequest: TmuxConnectionRecoveryRequest?
+    private(set) var reviewedRequestIDs: Set<UUID> = []
+    private(set) var currentReviewRequest: TmuxConnectionRecoveryRequest?
 
     mutating func take(
         _ request: TmuxConnectionRecoveryRequest?,
         whileReviewIsPresented: Bool
     ) -> TmuxConnectionRecoveryRequest? {
-        guard let request, reviewedRequest?.id != request.id else { return nil }
+        guard let request, !reviewedRequestIDs.contains(request.id) else {
+            return nil
+        }
         guard !whileReviewIsPresented else { return nil }
-        reviewedRequest = request
+        reviewedRequestIDs.insert(request.id)
+        currentReviewRequest = request
         return request
     }
 
-    func recoveryRequestID(
+    mutating func recoveryRequestID(
         for hostID: UUID,
         activeRequest: TmuxConnectionRecoveryRequest?
     ) -> UUID? {
         guard let activeRequest,
-              activeRequest.id == reviewedRequest?.id,
+              reviewedRequestIDs.contains(activeRequest.id),
               activeRequest.hostID == hostID
         else { return nil }
+        currentReviewRequest = activeRequest
         return activeRequest.id
+    }
+
+    mutating func reviewDidDismiss() {
+        currentReviewRequest = nil
     }
 
     func recoveryRequestToResume(
@@ -222,11 +231,11 @@ struct TmuxConnectionRecoveryRequestRouter {
     ) -> TmuxConnectionRecoveryRequest? {
         guard let reviewedHostID,
               let reviewRequestID,
-              let reviewedRequest,
-              reviewedRequest.hostID == reviewedHostID,
-              reviewedRequest.id == reviewRequestID
+              let currentReviewRequest,
+              currentReviewRequest.hostID == reviewedHostID,
+              currentReviewRequest.id == reviewRequestID
         else { return nil }
-        return reviewedRequest
+        return currentReviewRequest
     }
 }
 

@@ -90,6 +90,7 @@ public struct RootView: View {
             }
             .onChange(of: sshHostKeyReview.isPresented) { wasPresented, isPresented in
                 guard wasPresented, !isPresented else { return }
+                tmuxRecoveryRequestRouter.reviewDidDismiss()
                 reviewTmuxConnectionRequestIfNeeded()
             }
             .sheet(isPresented: $isCommandPalettePresented) {

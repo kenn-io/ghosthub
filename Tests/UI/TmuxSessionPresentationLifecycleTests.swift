@@ -80,23 +80,37 @@ struct TmuxSessionPresentationLifecycleTests {
         #expect(router.take(request, whileReviewIsPresented: false) == nil)
     }
 
-    @Test("a new tmux recovery request can open after dismissal")
-    func newTmuxRecoveryRequestCanReopen() {
-        let hostID = UUID()
+    @Test("alternating dismissed tmux recovery requests stay dismissed")
+    func alternatingDismissedTmuxRecoveryRequestsStayDismissed() {
+        let firstHostID = UUID()
+        let secondHostID = UUID()
         let first = TmuxConnectionRecoveryRequest(
-            hostID: hostID,
+            hostID: firstHostID,
             message: "SSH authentication is required."
         )
         let second = TmuxConnectionRecoveryRequest(
-            hostID: hostID,
+            hostID: secondHostID,
             message: "The SSH host key needs review."
         )
         var router = TmuxConnectionRecoveryRequestRouter()
 
         #expect(router.take(first, whileReviewIsPresented: false) == first)
-        #expect(router.take(nil, whileReviewIsPresented: false) == nil)
-        #expect(router.take(first, whileReviewIsPresented: false) == nil)
+        router.reviewDidDismiss()
         #expect(router.take(second, whileReviewIsPresented: false) == second)
+        router.reviewDidDismiss()
+        #expect(router.take(first, whileReviewIsPresented: false) == nil)
+        #expect(router.take(second, whileReviewIsPresented: false) == nil)
+
+        let manualReviewRequestID = router.recoveryRequestID(
+            for: firstHostID,
+            activeRequest: first
+        )
+        #expect(
+            router.recoveryRequestToResume(
+                reviewedHostID: firstHostID,
+                reviewRequestID: manualReviewRequestID
+            ) == first
+        )
     }
 
     @Test("tmux recovery waits for an existing SSH review to dismiss")
