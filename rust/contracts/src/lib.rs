@@ -10,6 +10,13 @@ use serde::Deserialize;
 
 const SCHEMA_VERSION: u32 = 1;
 const MANIFEST_NAME: &str = "manifest.json";
+const POSIX_AND_WINDOWS: &[PlatformTag] = &[PlatformTag::Posix, PlatformTag::Windows];
+const WINDOWS_ONLY: &[PlatformTag] = &[PlatformTag::Windows];
+const CONSUMER_REGISTRY: &[(&str, &[PlatformTag])] = &[
+    ("paths", POSIX_AND_WINDOWS),
+    ("mux-resolver", WINDOWS_ONLY),
+    ("wsl-host", WINDOWS_ONLY),
+];
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "kebab-case")]
@@ -26,6 +33,7 @@ pub enum ErrorKind {
     InvalidManifest,
     MissingFixture,
     MissingPlatforms,
+    UnregisteredConsumer,
     UnconsumedFixtures,
     UnknownFixture,
     UnsupportedSchema,
@@ -118,6 +126,22 @@ impl Manifest {
             if fixture.platforms.is_empty() {
                 return Err(Error::new(ErrorKind::MissingPlatforms, fixture.id.clone()));
             }
+            let Some(registered_platforms) = registered_platforms(&fixture.suite) else {
+                return Err(Error::new(
+                    ErrorKind::UnregisteredConsumer,
+                    fixture.id.clone(),
+                ));
+            };
+            if !fixture
+                .platforms
+                .iter()
+                .all(|platform| registered_platforms.contains(platform))
+            {
+                return Err(Error::new(
+                    ErrorKind::UnregisteredConsumer,
+                    fixture.id.clone(),
+                ));
+            }
             if !ids.insert(fixture.id.clone()) {
                 return Err(Error::new(ErrorKind::DuplicateId, fixture.id.clone()));
             }
@@ -174,6 +198,12 @@ impl Manifest {
 
         SuiteRun { pending }
     }
+}
+
+fn registered_platforms(suite: &str) -> Option<&'static [PlatformTag]> {
+    CONSUMER_REGISTRY
+        .iter()
+        .find_map(|(registered, platforms)| (*registered == suite).then_some(*platforms))
 }
 
 #[derive(Debug)]
