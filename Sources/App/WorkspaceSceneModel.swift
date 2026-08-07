@@ -4168,7 +4168,8 @@ final class WorkspaceSceneModel: ObservableObject {
                     handleID: handle.id,
                     immediately: true
                 )
-            } else if pending.initialCommand == nil {
+            } else if recordsExplicitDismissal
+                || pending.initialCommand == nil {
                 discardPendingTmuxSession(handleID: handle.id)
             }
         }

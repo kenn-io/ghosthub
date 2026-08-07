@@ -1844,6 +1844,46 @@ struct WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("explicit close abandons an unlaunched profile creation")
+    func explicitCloseAbandonsUnlaunchedProfileCreation() async throws {
+        let environment = try setupStandardEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: { .success("/opt/homebrew/bin/tmux") },
+            createdSessionDiscoveryDelays: [.seconds(10)]
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "codex"
+        )
+        model.createTmuxSession(WorkspaceTmuxSessionCreationRequest(
+            selection: selection,
+            initialCommand: "exec codex"
+        ))
+
+        #expect(surfaceStore.requestCount == 0)
+        #expect(model.pendingCreatedTmuxSessionCount == 1)
+        #expect(
+            model.snapshot.host(id: environment.host.id)?
+                .tmuxSessions.map(\.name) == [selection.name]
+        )
+
+        model.closeBorrowedTmuxSession(selection)
+
+        #expect(model.pendingCreatedTmuxSessionCount == 0)
+        #expect(
+            model.snapshot.host(id: environment.host.id)?
+                .tmuxSessions.isEmpty == true
+        )
+        #expect(model.retainedBorrowedTmuxHandle(for: selection) == nil)
+        #expect(!model.activeBorrowedTmuxRetryRequiresConfirmation)
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("confirmed named creation retries in attach mode")
     func confirmedCreationDemotesToAttachMode() async throws {
         let environment = try setupStandardEnvironment()

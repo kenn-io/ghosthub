@@ -64,7 +64,10 @@ command or its confirmation state.
 Pressing **Command-W** detaches the active presentation. Closing its workspace
 window or quitting Ghosthub detaches every presentation that workspace owns.
 Tmux still owns the session and its processes, so none of these actions stops
-the session or the command running inside it.
+the session or the command running inside it. If **Command-W** closes a pending
+profile-backed creation before its command starts, Ghosthub abandons that
+creation and removes its optimistic session entry; use **New tmux session** to
+start it again.
 
 ## Reproduce the screenshot
 
