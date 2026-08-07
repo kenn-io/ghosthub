@@ -2549,6 +2549,214 @@ struct WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test(
+        "automatic kwt provisioning follows the remote platform policy",
+        arguments: [
+            (HostPlatform.macOS, true),
+            (HostPlatform.linux, true),
+            (HostPlatform.windows, false),
+        ]
+    )
+    func automaticKwtProvisioning(
+        platform: HostPlatform,
+        expected: Bool
+    ) async throws {
+        let environment = try setupStandardEnvironment()
+        let remote = SSHHost(
+            configKey: "remote",
+            name: "Remote",
+            platform: platform,
+            sshDestination: "remote"
+        )
+        let configuredHosts = CurrentValueSubject<[SSHHost], Never>([remote])
+        let provisioningAttempts = Counter()
+        let remoteInventoryLoads = Counter()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            kwtInventoryLoader: { host in
+                if host.isRemote {
+                    _ = remoteInventoryLoads.increment()
+                    #expect((provisioningAttempts.count > 0) == expected)
+                }
+                return KwtHostInventory(projects: [])
+            },
+            kwtRemoteProvisioner: { host in
+                #expect(host.platform == platform)
+                _ = provisioningAttempts.increment()
+            },
+            tmuxSessionDiscovery: { _ in .success([]) },
+            configuredSSHHostsProvider: { configuredHosts.value },
+            configuredSSHHostsPublisher:
+            configuredHosts.eraseToAnyPublisher(),
+            startServices: true
+        )
+
+        await waitUntilMainActor {
+            remoteInventoryLoads.count > 0
+                && model.isWorkspaceInventoryRefreshComplete
+        }
+
+        #expect((provisioningAttempts.count > 0) == expected)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("automatic kwt provisioning includes exe.dev hosts")
+    func automaticKwtProvisioningIncludesExeHosts() async throws {
+        let environment = try setupStandardEnvironment()
+        let exeHost = ExeConfiguredHost(
+            sshHost: SSHHost(
+                configKey: "exe-dev.personal.build",
+                name: "build",
+                platform: .linux,
+                sshDestination: "vm+build@exe.dev"
+            ),
+            metadata: ExeVMMetadata(
+                accountConfigKey: "personal",
+                accountName: "Personal",
+                vmName: "build"
+            )
+        )
+        let provisionedHost = LockedValue<SSHHost?>(nil)
+        let remoteInventoryLoads = Counter()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            kwtInventoryLoader: { host in
+                if host.isRemote {
+                    _ = remoteInventoryLoads.increment()
+                }
+                return KwtHostInventory(projects: [])
+            },
+            kwtRemoteProvisioner: { host in
+                provisionedHost.store(host)
+            },
+            tmuxSessionDiscovery: { _ in .success([]) },
+            configuredExeHostsProvider: { [exeHost] },
+            startServices: true
+        )
+
+        await waitUntilMainActor {
+            remoteInventoryLoads.count > 0
+                && model.isWorkspaceInventoryRefreshComplete
+        }
+
+        #expect(provisionedHost.load() == exeHost.sshHost)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("manual SSH hosts retain kwt provisioning precedence")
+    func manualHostsRetainKwtProvisioningPrecedence() async throws {
+        let environment = try setupStandardEnvironment()
+        let manualHost = SSHHost(
+            configKey: "manual-build",
+            name: "Manual Build",
+            platform: .linux,
+            sshDestination: "build.exe.xyz"
+        )
+        let exeHost = ExeConfiguredHost(
+            sshHost: SSHHost(
+                configKey: "exe-dev.personal.build",
+                name: "build",
+                platform: .linux,
+                sshDestination: manualHost.sshDestination
+            ),
+            metadata: ExeVMMetadata(
+                accountConfigKey: "personal",
+                accountName: "Personal",
+                vmName: "build"
+            )
+        )
+        let provisionedHost = LockedValue<SSHHost?>(nil)
+        let remoteInventoryLoads = Counter()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            kwtInventoryLoader: { host in
+                if host.isRemote {
+                    _ = remoteInventoryLoads.increment()
+                }
+                return KwtHostInventory(projects: [])
+            },
+            kwtRemoteProvisioner: { host in
+                provisionedHost.store(host)
+            },
+            tmuxSessionDiscovery: { _ in .success([]) },
+            configuredSSHHostsProvider: { [manualHost] },
+            configuredExeHostsProvider: { [exeHost] },
+            startServices: true
+        )
+
+        await waitUntilMainActor {
+            remoteInventoryLoads.count > 0
+                && model.isWorkspaceInventoryRefreshComplete
+        }
+
+        #expect(provisionedHost.load() == manualHost)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("kwt provisioning failure leaves remote tmux inventory available")
+    func provisioningFailureDoesNotBlockTmux() async throws {
+        let environment = try setupStandardEnvironment()
+        let remote = SSHHost(
+            configKey: "build-box",
+            name: "Build Box",
+            platform: .linux,
+            sshDestination: "build-box"
+        )
+        let configuredHosts = CurrentValueSubject<[SSHHost], Never>([remote])
+        let remoteInventoryLoads = Counter()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            kwtInventoryLoader: { host in
+                if host.isRemote {
+                    _ = remoteInventoryLoads.increment()
+                }
+                return KwtHostInventory(projects: [])
+            },
+            kwtRemoteProvisioner: { _ in
+                throw KwtRemoteInstallError.bundleIncomplete
+            },
+            tmuxSessionDiscovery: { host in
+                .success(host.isRemote ? [
+                    DiscoveredTmuxSession(
+                        name: "build",
+                        windowCount: 1,
+                        createdAt: "1721552400",
+                        managed: false
+                    ),
+                ] : [])
+            },
+            configuredSSHHostsProvider: { configuredHosts.value },
+            configuredSSHHostsPublisher:
+            configuredHosts.eraseToAnyPublisher(),
+            startServices: true
+        )
+
+        await waitUntilMainActor {
+            model.workspaceInventoryState == .loaded
+                && model.snapshot.hosts.contains {
+                    $0.configKey == remote.configKey
+                        && $0.tmuxSessions.map(\.name) == ["build"]
+                }
+                && !model.workspaceInventoryWarningsByHost.isEmpty
+        }
+
+        #expect(remoteInventoryLoads.count == 0)
+        let remoteSummary = try #require(
+            model.snapshot.hosts.first { $0.configKey == remote.configKey }
+        )
+        #expect(remoteSummary.primaryDiagnostic?.code == .missingKwt)
+        #expect(!remoteSummary.canCreateWorktree)
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("an unreachable SSH host does not block local inventory")
     func unreachableRemoteDoesNotBlockLocalInventory() async throws {
         let environment = try setupStandardEnvironment()

@@ -468,7 +468,12 @@ public enum CommandPaletteModel {
                     )
                 }
             }
-            return discovered + worktrees
+            let worktreeSessionIDs = Set(
+                worktrees.map { $0.session.id }
+            )
+            return worktrees + discovered.filter {
+                !worktreeSessionIDs.contains($0.session.id)
+            }
         }
 
         return sessions.flatMap {

@@ -17,7 +17,11 @@ The sidebar is a host-wide session navigator. It shows registered worktrees and
 directly discovered tmux sessions on each host, including sessions that were
 not created by Ghosthub or kwt. Users may hide matching standalone sessions
 from navigation with case-sensitive wildcard patterns; discovery retains the
-complete inventory so worktree status and session identity remain accurate.
+complete inventory so a kwt-owned session confirmed by current discovery is
+indicated on its worktree row. Cached sessions do not remain live while a host
+is unreachable. Kwt-owned sessions are hidden from the separate tmux session
+group by default, with a Worktrees setting that exposes those duplicate
+entries.
 General tmux sessions are presented as one ordinary native tmux client; tmux
 alone owns and renders their layout.
 
@@ -244,18 +248,23 @@ host-key policy.
 Ghosthub bundles revision-pinned kwt CLI builds for local project and worktree
 operations and for `darwin/{amd64,arm64}`, `linux/{amd64,arm64}`, and
 `windows/{amd64,arm64}` remote hosts. The local helper is signed as app code and invoked by its exact bundle
-path. Remote helpers are sealed resources in the signed app. After the user
-chooses **Install kwt Worktree Helper** for a host, Ghosthub selects the matching
-`uname` target, uploads it, verifies its SHA-256 on the host, and atomically
-installs it under `~/.ghosthub/helpers/kwt/<revision>/kwt`. Packaging verifies
-the six binaries' formats, architectures, and embedded revision; installation
-also requires the uploaded helper's `version` output to report that revision
-before promotion. Every remote kwt operation invokes that exact revisioned
-path; failed upload or installation attempts also best-effort remove their
-unique staged file. Neither local nor remote operations select an unrelated
-kwt from `PATH`. This is a CLI boundary, not a vendored daemon or submodule.
-Kwt's machine-readable CLI provides project identity, worktree metadata, and
-exact tmux session names.
+path. Remote helpers are sealed resources in the signed app. Before loading kwt
+inventory for a configured remote macOS or Linux host, Ghosthub checks the
+exact revisioned helper. If it is missing or stale, Ghosthub selects the
+matching `uname` target, uploads it, verifies its SHA-256 on the host, and
+atomically installs it under `~/.ghosthub/helpers/kwt/<revision>/kwt`.
+Concurrent scenes share one provisioning operation per exact host endpoint.
+When inventory cancellation removes the final caller, Ghosthub cancels that
+operation and rechecks cancellation before upload and helper activation so a
+removed or reconfigured host is not mutated by obsolete work.
+Packaging verifies the six binaries' formats, architectures, and embedded
+revision; installation also requires the uploaded helper's `version` output to
+report that revision before promotion. Every remote kwt operation invokes that
+exact revisioned path; failed upload or installation attempts also best-effort
+remove their unique staged file. Neither local nor remote operations select an
+unrelated kwt from `PATH`. This is a CLI boundary, not a vendored daemon or
+submodule. Kwt's machine-readable CLI provides project identity, worktree
+metadata, and exact tmux session names.
 On a macOS or Linux host with no existing kwt registry, the user adds one
 absolute repository path at a time through **Add Project**. Ghosthub delegates
 registration to `kwt projects add --json`, then refreshes ordinary kwt
@@ -310,13 +319,13 @@ then executes an ordinary client with environment updates disabled. The user
 may explicitly run project commands after attachment. Other workspaces and
 unbound sessions continue to attach directly to the host's normal tmux server.
 
-Remote kwt installation is never implicit. Ordinary inventory and tmux
-attachment remain non-mutating. Connection testing mutates host-key state only
-after the explicit fingerprint approval above, and a remote host without the
-managed helper remains tmux-only. Install and Update are explicit Settings
-actions and never replace a host's system kwt. Versioned directories retain
-older pinned helpers, so installing an older Ghosthub build can select and
-restore its own revision; reinstalling one revision also retains `kwt.previous`.
+Adding a remote macOS or Linux host authorizes Ghosthub to maintain its
+per-user managed kwt helper as part of inventory refresh. Provisioning failure
+disables that host's worktree actions and reports the error without blocking
+ordinary tmux discovery or attachment. The helper never replaces or resolves
+a host's system kwt. Versioned directories retain older pinned helpers, so an
+older Ghosthub build can select and restore its own revision; reinstalling one
+revision also retains `kwt.previous`.
 
 Native Windows installation uses a separate PowerShell boundary. The explicit
 **Install Bundled kwt** action probes the remote process architecture, uploads
@@ -324,8 +333,9 @@ the matching PE helper over OpenSSH, verifies its SHA-256 and exact pinned
 version at a managed staging path, and atomically installs it at
 `%USERPROFILE%\.ghosthub\helpers\kwt\<revision>\kwt.exe` without replacing or
 resolving a system `kwt.exe`. A failed activation restores the prior helper at
-that revision. The Windows helpers remain unsigned experimental payloads until
-the release pipeline adds an approved Authenticode/DigiCert signing step.
+that revision. Automatic Windows provisioning remains disabled while the
+Windows helpers are unsigned experimental payloads; it requires an approved
+Authenticode signing step first.
 
 ### Experimental native Windows hosts
 

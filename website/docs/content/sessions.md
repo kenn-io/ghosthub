@@ -68,6 +68,11 @@ matches one character. Ghosthub stores these patterns in
 The patterns apply only to standalone sessions. A matching kwt workspace stays
 visible under its project.
 
+Kwt-managed sessions are also omitted from the separate **Tmux Sessions** group
+by default because their worktrees remain the canonical entry. You can expose
+those duplicate session rows with the toggle in **Settings → Worktrees**. The
+worktree's status glyph continues to reflect the live tmux session either way.
+
 ## Ownership and safety
 
 Ghosthub does not infer that closing a presentation means ending work. It

@@ -160,6 +160,9 @@ final class WorkspaceSceneModel: ObservableObject {
     typealias KwtInventoryLoader = @Sendable (
         TmuxHost
     ) async throws -> KwtHostInventory
+    typealias KwtRemoteProvisioner = @Sendable (
+        SSHHost
+    ) async throws -> Void
     typealias KwtWorktreeCreator = @Sendable (
         WorktreeCreateRequest, String, TmuxHost
     ) async throws -> Void
@@ -413,6 +416,7 @@ final class WorkspaceSceneModel: ObservableObject {
     let localHostID: UUID
     private let notificationService: NotificationService
     private let kwtInventoryLoader: KwtInventoryLoader
+    private let kwtRemoteProvisioner: KwtRemoteProvisioner
     private let kwtWorktreeCreator: KwtWorktreeCreator
     private let kwtWorktreeRemover: KwtWorktreeRemover
     private let kwtBranchLister: KwtBranchLister
@@ -549,6 +553,10 @@ final class WorkspaceSceneModel: ObservableObject {
         @escaping () -> Bool = { false },
         kwtInventoryLoader: @escaping KwtInventoryLoader = { host in
             try await KwtInventoryClient().load(from: host)
+        },
+        kwtRemoteProvisioner: @escaping KwtRemoteProvisioner = { host in
+            try await KwtRemoteProvisioningCoordinator.shared
+                .ensureInstalled(on: host)
         },
         kwtWorktreeCreator: @escaping KwtWorktreeCreator = {
             request, projectPath, host in
@@ -694,6 +702,7 @@ final class WorkspaceSceneModel: ObservableObject {
         self.sceneSettings = sceneSettings
         self.terminalRuntime = terminalRuntime
         self.kwtInventoryLoader = kwtInventoryLoader
+        self.kwtRemoteProvisioner = kwtRemoteProvisioner
         self.kwtWorktreeCreator = kwtWorktreeCreator
         self.kwtWorktreeRemover = kwtWorktreeRemover
         self.kwtBranchLister = kwtBranchLister
@@ -1979,6 +1988,22 @@ final class WorkspaceSceneModel: ObservableObject {
         let targets = inventoryHosts.filter {
             !fencedHostIDs.contains($0.key)
         }
+        let configuredHosts = Dictionary(
+            (configuredSSHHostsProvider()
+                + configuredExeHostsProvider().map(\.sshHost))
+                .map { ($0.configKey, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let automaticProvisioningHosts: [UUID: SSHHost] = Dictionary(
+            uniqueKeysWithValues: targets.compactMap { hostID, target in
+                guard case .ssh = target,
+                      let summary = snapshot.host(id: hostID),
+                      let host = configuredHosts[summary.configKey],
+                      host.platform == .macOS || host.platform == .linux
+                else { return nil }
+                return (hostID, host)
+            }
+        )
         kwtInventoryGeneration += 1
         let generation = kwtInventoryGeneration
         kwtInventoryTask?.cancel()
@@ -1993,6 +2018,7 @@ final class WorkspaceSceneModel: ObservableObject {
         isKwtInventoryLoading = true
         updateWorkspaceInventoryState()
         let kwtInventoryLoader = kwtInventoryLoader
+        let kwtRemoteProvisioner = kwtRemoteProvisioner
         kwtInventoryTask = Task { [weak self] in
             await withTaskGroup(
                 of: (UUID, Result<KwtHostInventory, Error>).self
@@ -2000,6 +2026,10 @@ final class WorkspaceSceneModel: ObservableObject {
                 for (hostID, host) in targets {
                     group.addTask {
                         do {
+                            if let remoteHost =
+                                automaticProvisioningHosts[hostID] {
+                                try await kwtRemoteProvisioner(remoteHost)
+                            }
                             return await (
                                 hostID,
                                 .success(
@@ -2038,7 +2068,14 @@ final class WorkspaceSceneModel: ObservableObject {
                             forKey: hostID
                         )
                     case let .failure(error):
-                        if self.isRemoteKwtUnavailable(
+                        if error is KwtRemoteInstallError {
+                            // Provisioning failures disable worktree actions
+                            // but remain visible because they require a
+                            // packaging, transport, or remote-host repair.
+                            self.kwtAvailabilityByHost[hostID] = false
+                            self.kwtInventoryFailuresByHost[hostID] =
+                                error.localizedDescription
+                        } else if self.isRemoteKwtUnavailable(
                             error,
                             hostID: hostID
                         ) {

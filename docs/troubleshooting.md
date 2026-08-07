@@ -93,11 +93,12 @@ keeps that OpenSSH control connection for the app session. The response is not
 saved.
 Use **Test Connection** to verify authentication and that `tmux` is on the
 remote login-shell `PATH`.
-Kwt does not need a system installation: follow a successful test with
-**Install kwt Worktree Helper** when project inventory is missing. If the host
-has never used kwt, enter an existing checkout's absolute path under **Add
-Project** from the **+** menu beside that host; repeat for each repository
-Ghosthub should display.
+Kwt does not need a system installation: Ghosthub automatically installs or
+updates its managed helper when it loads inventory for a configured remote
+macOS or Linux host. If provisioning fails, use the host warning to retry or
+open Host Settings. If the host has never used kwt, enter an existing
+checkout's absolute path under **Add Project** from the **+** menu beside that
+host; repeat for each repository Ghosthub should display.
 
 **Test Connection** follows your OpenSSH host-key policy. If the exact full
 destination has an unseen key, Ghosthub presents OpenSSH's fingerprint for

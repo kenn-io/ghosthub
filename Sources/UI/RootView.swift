@@ -1029,7 +1029,9 @@ public struct RootView: View {
     private var tmuxSessionVisibility: TmuxSessionVisibility {
         TmuxSessionVisibility(
             hiddenPatterns: settingsStore.tmuxSessionPreferences
-                .hiddenSessionPatterns
+                .hiddenSessionPatterns,
+            hideKwtManagedSessions: settingsStore.worktreePreferences
+                .hideKwtManagedSessions
         )
     }
 

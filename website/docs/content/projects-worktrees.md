@@ -24,8 +24,10 @@ Start with an existing Git checkout on the target host.
 Ghosthub registers that one path through kwt and refreshes inventory. It does
 not scan the machine or edit kwt configuration itself.
 
-Remote hosts need the [managed kwt helper](remote-hosts.md#install-the-managed-kwt-helper)
-first. Project registration is not yet available for native Windows hosts.
+Ghosthub automatically maintains the
+[managed kwt helper](remote-hosts.md#managed-kwt-helper) on configured remote
+macOS and Linux hosts. Project registration is not yet available for native
+Windows hosts.
 
 If the SSH destination changes while the Add Project sheet is open, close the
 sheet and start again so the confirmation applies to the current host.
@@ -35,6 +37,14 @@ sheet and start again so the confirmation applies to the current host.
 Select the project's primary checkout or any linked worktree in the sidebar.
 Kwt supplies the exact canonical tmux session name. Ghosthub creates or repairs
 that session when necessary and then attaches an ordinary tmux client.
+A status glyph on the worktree row indicates when current discovery confirms
+its tmux session is live, including while Ghosthub is detached. Cached sessions
+do not remain marked live while the host is unreachable.
+
+By default, a live kwt-managed session appears only on its worktree row instead
+of being duplicated under **Tmux Sessions**. Open **Settings → Worktrees** and
+turn off **Hide kwt-managed sessions from Tmux Sessions** if you want both
+entries visible.
 
 ## Create a worktree from a branch
 

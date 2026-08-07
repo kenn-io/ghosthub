@@ -18,6 +18,8 @@ public final class SettingsStore: ObservableObject {
             "ghosthub.settings.application.confirmBeforeQuitting"
         static let hideRootCheckout = "ghosthub.settings.worktrees.hideRootCheckout"
         static let showHiddenWorktreesByDefault = "ghosthub.settings.worktrees.showHiddenWorktreesByDefault"
+        static let hideKwtManagedSessions =
+            "ghosthub.settings.worktrees.hideKwtManagedSessions"
         static let interfaceAppearance = "ghosthub.settings.appearance.interfaceAppearance"
         static let showMacOSNotifications =
             "ghosthub.settings.notifications.showMacOSNotifications"
@@ -67,7 +69,8 @@ public final class SettingsStore: ObservableObject {
 
     public static let defaultWorktreePreferences = WorktreePreferences(
         hideRootCheckout: false,
-        showHiddenWorktreesByDefault: false
+        showHiddenWorktreesByDefault: false,
+        hideKwtManagedSessions: true
     )
 
     public static let defaultTmuxSessionPreferences = TmuxSessionPreferences()
@@ -390,6 +393,13 @@ public final class SettingsStore: ObservableObject {
             preferences.showHiddenWorktreesByDefault = enabled
         }
         userDefaults.set(enabled, forKey: DefaultsKey.showHiddenWorktreesByDefault)
+    }
+
+    public func setHideKwtManagedSessions(_ enabled: Bool) {
+        updateWorktreePreferences { preferences in
+            preferences.hideKwtManagedSessions = enabled
+        }
+        userDefaults.set(enabled, forKey: DefaultsKey.hideKwtManagedSessions)
     }
 
     @discardableResult
@@ -750,7 +760,10 @@ public final class SettingsStore: ObservableObject {
             ) as? Bool ?? defaults.hideRootCheckout,
             showHiddenWorktreesByDefault: userDefaults.object(
                 forKey: DefaultsKey.showHiddenWorktreesByDefault
-            ) as? Bool ?? defaults.showHiddenWorktreesByDefault
+            ) as? Bool ?? defaults.showHiddenWorktreesByDefault,
+            hideKwtManagedSessions: userDefaults.object(
+                forKey: DefaultsKey.hideKwtManagedSessions
+            ) as? Bool ?? defaults.hideKwtManagedSessions
         )
     }
 

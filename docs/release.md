@@ -249,8 +249,10 @@ locally built. Verify at minimum:
 - Local kwt projects and worktrees load without a system kwt on `PATH`.
 - Existing local tmux sessions remain discoverable and attach normally.
 - A configured SSH host discovers and attaches tmux without managed kwt.
-- Install kwt Worktree Helper selects the correct target, enables remote project
-  inventory, and leaves any system `kwt` untouched.
+- A configured macOS or Linux host automatically receives the correct pinned
+  kwt helper during inventory, while any system `kwt` remains untouched.
+- A configured Windows host does not install its unsigned kwt helper
+  automatically.
 - On a fresh macOS or Linux host, Add Project registers an absolute existing
   checkout through managed kwt and makes its worktrees available without a
   filesystem scan.

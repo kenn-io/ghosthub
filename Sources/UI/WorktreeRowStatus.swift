@@ -41,16 +41,19 @@ public struct WorktreeRowStatus: Equatable, Sendable {
     /// - Parameters:
     ///   - w: The worktree summary to derive status from.
     ///   - sessions: The active sessions associated with this worktree.
+    ///   - hasLiveTmuxSession: Whether direct discovery found the worktree's
+    ///     canonical tmux session.
     /// - Returns: A fully derived `WorktreeRowStatus`.
     public static func make(
         for w: WorktreeSummary,
-        sessions: [TerminalSessionSummary]
+        sessions: [TerminalSessionSummary],
+        hasLiveTmuxSession: Bool = false
     ) -> WorktreeRowStatus {
         let added = (w.diffAdded ?? 0) > 0 ? w.diffAdded : nil
         let removed = (w.diffRemoved ?? 0) > 0 ? w.diffRemoved : nil
         let ahead = (w.syncAhead ?? 0) > 0 ? w.syncAhead : nil
         let behind = (w.syncBehind ?? 0) > 0 ? w.syncBehind : nil
-        let running = sessions.contains { $0.isAlive }
+        let running = hasLiveTmuxSession || sessions.contains { $0.isAlive }
         let agentRunning = sessions.contains { $0.isAlive && $0.runtimeKind == .agent }
         let checksGlyph = checksGlyph(from: w.checksStatus)
 

@@ -308,6 +308,8 @@ func makeModel(
         host in
         try await KwtInventoryClient().load(from: host)
     },
+    kwtRemoteProvisioner:
+    @escaping WorkspaceSceneModel.KwtRemoteProvisioner = { _ in },
     kwtWorktreeCreator: @escaping WorkspaceSceneModel.KwtWorktreeCreator = {
         request, projectPath, host in
         try await KwtWorktreeClient().create(
@@ -385,6 +387,9 @@ func makeModel(
     configuredSSHHostsProvider: @escaping () -> [SSHHost] = { [] },
     configuredSSHHostsPublisher: AnyPublisher<[SSHHost], Never> =
         Empty(completeImmediately: false).eraseToAnyPublisher(),
+    configuredExeHostsProvider: @escaping () -> [ExeConfiguredHost] = { [] },
+    configuredExeHostsPublisher: AnyPublisher<[ExeConfiguredHost], Never> =
+        Empty(completeImmediately: false).eraseToAnyPublisher(),
     refreshExeHosts: @escaping () -> Void = {},
     terminalColorsPublisher:
     AnyPublisher<[UInt: TerminalResolvedColors], Never>? = nil,
@@ -419,6 +424,7 @@ func makeModel(
         appliesTmuxPresentationStyleToExistingSessionsProvider:
         appliesTmuxPresentationStyleToExistingSessionsProvider,
         kwtInventoryLoader: kwtInventoryLoader,
+        kwtRemoteProvisioner: kwtRemoteProvisioner,
         kwtWorktreeCreator: kwtWorktreeCreator,
         kwtWorktreeRemover: kwtWorktreeRemover,
         worktreeMutationCoordinator: worktreeMutationCoordinator,
@@ -433,6 +439,8 @@ func makeModel(
         sshHostProbeRunner: sshHostProbeRunner,
         configuredSSHHostsProvider: configuredSSHHostsProvider,
         configuredSSHHostsPublisher: configuredSSHHostsPublisher,
+        configuredExeHostsProvider: configuredExeHostsProvider,
+        configuredExeHostsPublisher: configuredExeHostsPublisher,
         refreshExeHosts: refreshExeHosts,
         terminalColorsPublisher: terminalColorsPublisher,
         sceneSettings: sceneSettings,

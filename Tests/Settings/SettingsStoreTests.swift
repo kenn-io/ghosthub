@@ -158,6 +158,7 @@ final class SettingsStoreTests {
                 .appliesThemeToTmuxSessions
         )
         #expect(!store.worktreePreferences.hideRootCheckout)
+        #expect(store.worktreePreferences.hideKwtManagedSessions)
         #expect(store.tmuxSessionPreferences.hiddenSessionPatterns.isEmpty)
         #expect(store.shareAnonymousUsageData)
     }
@@ -390,6 +391,7 @@ final class SettingsStoreTests {
         store.setShareAnonymousUsageData(false)
         store.setHideRootCheckout(true)
         store.setShowHiddenWorktreesByDefault(true)
+        store.setHideKwtManagedSessions(false)
         store.setShowPaneResourceUsage(false)
         store.setTerminalTheme(.clearDark)
         store.setTerminalThemeAppliesToTmuxSessions(true)
@@ -407,6 +409,7 @@ final class SettingsStoreTests {
         #expect(!reloaded.shareAnonymousUsageData)
         #expect(reloaded.worktreePreferences.hideRootCheckout)
         #expect(reloaded.worktreePreferences.showHiddenWorktreesByDefault)
+        #expect(!reloaded.worktreePreferences.hideKwtManagedSessions)
         #expect(!reloaded.terminalPreferences.showPaneResourceUsage)
         #expect(reloaded.terminalAppearancePreferences.theme == .clearDark)
         #expect(

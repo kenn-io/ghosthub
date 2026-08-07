@@ -89,18 +89,14 @@ If SSH needs authentication or host-key review, the presentation changes to
 same reconnect supervisor. If you dismiss it, choose **Review Connection** to
 open it again.
 
-## Install the managed kwt helper
+## Managed kwt helper
 
 Tmux-only hosts do not need kwt. To show projects and worktrees on a remote
-macOS or Linux host:
-
-1. Test the host connection successfully.
-2. Choose **Install kwt Worktree Helper** in Host Settings.
-3. Confirm the upload.
-
-Ghosthub copies its matching revision-pinned helper for the remote operating
-system and CPU, verifies it, and stores it under `~/.ghosthub/`. It does not
-install or replace a system-wide kwt.
+macOS or Linux host, configure the host normally. Ghosthub automatically copies
+or updates its matching revision-pinned helper during project inventory. It
+verifies the helper, stores it under `~/.ghosthub/`, and does not install or
+replace a system-wide kwt. If provisioning fails, tmux sessions remain usable
+and the host warning offers a retry and a shortcut to Host Settings.
 
 Register individual repositories with the explicit **Add Project** action.
 Ghosthub never scans a remote filesystem. See
@@ -125,6 +121,7 @@ Native Windows support requires:
 Choose **Windows (psmux)** when adding the host. After a successful connection
 test, **Install Bundled kwt** can upload the matching AMD64 or ARM64 helper for
 that user. The Windows helper is currently unsigned, so this path is intended
-for development machines and power users. Adding a new project from Ghosthub is
-not yet supported on Windows, although already registered project inventory can
-be shown.
+for development machines and power users and is never run automatically.
+Automatic provisioning will remain disabled until the kwt executables are
+Authenticode-signed. Adding a new project from Ghosthub is not yet supported on
+Windows, although already registered project inventory can be shown.

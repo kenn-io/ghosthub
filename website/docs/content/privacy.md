@@ -44,8 +44,9 @@ live in:
 ## Remote state
 
 Ghosthub does not scan remote filesystems. **Add Project** delegates only the
-absolute repository path you explicitly provide. When you approve installation
-of a managed kwt helper, Ghosthub stores its matching revision-pinned helper
-under the remote user's `~/.ghosthub/` directory.
+absolute repository path you explicitly provide. For configured remote macOS
+and Linux hosts, Ghosthub automatically stores or updates its matching
+revision-pinned managed kwt helper under the remote user's `~/.ghosthub/`
+directory. Automatic Windows helper installation remains disabled.
 
 Interactive SSH responses are retained only for the running app session.

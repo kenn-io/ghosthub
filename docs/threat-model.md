@@ -108,9 +108,11 @@ state is outside the security model.
 
 Pull-request import is an explicit user mutation delegated to the bundled local
 kwt or Ghosthub's exact managed kwt revision on the selected remote host.
-Installing that remote helper is a separate explicit user action; Ghosthub
-selects a sealed app resource, verifies its SHA-256 after upload, and never
-replaces a system kwt. Adding a remote project is also explicit: Ghosthub
+Configuring a remote macOS or Linux host authorizes Ghosthub to install and
+update that per-user helper during inventory refresh. Ghosthub selects a sealed
+app resource, verifies its SHA-256 after upload, and never replaces a system
+kwt. Automatic provisioning is disabled for Windows until its kwt executables
+are Authenticode-signed. Adding a remote project is still explicit: Ghosthub
 shell-quotes one user-supplied absolute path and delegates registration to the
 managed kwt rather than scanning remote directories or editing configuration.
 Ghosthub passes kwt's opaque candidate identity back

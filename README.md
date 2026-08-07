@@ -141,16 +141,17 @@ Open **Settings → Hosts**, add an SSH address such as `devbox`,
 **Test Connection**. If your OpenSSH policy prompts for a new host key, verify
 the host once with system `ssh` first.
 
-Tmux-only hosts need no other setup. For project and worktree context, choose
-**Install kwt Worktree Helper** in Host Settings. Ghosthub copies the pinned
-helper for that host's operating system and CPU; it does not install or replace
-a system kwt.
+Tmux-only hosts need no other setup. For project and worktree context on remote
+macOS and Linux hosts, Ghosthub automatically installs and updates the pinned
+helper for that host's operating system and CPU. It stores the helper under the
+remote user's `~/.ghosthub/` directory and does not install or replace a system
+kwt.
 
 Native Windows support is experimental. Select **Windows (psmux)** for a
 Windows OpenSSH host with PowerShell and psmux installed. Ghosthub can upload
 its matching AMD64 or ARM64 kwt helper after explicit confirmation, but the
-Windows helper is currently unsigned and project registration is not yet
-available on Windows.
+Windows helper is currently unsigned, so it is not installed automatically;
+project registration is not yet available on Windows.
 
 ### Add projects and worktrees
 
@@ -183,7 +184,9 @@ Press <kbd>⌘</kbd><kbd>⇧</kbd><kbd>P</kbd> to open the **Command Palette** a
 search across hosts, projects, worktrees, sessions, settings, and actions.
 Use **Settings → Worktrees** to hide tool-owned standalone tmux sessions with
 case-sensitive `*` and `?` patterns. Kwt workspaces always remain visible under
-their projects.
+their projects, show a status glyph while their tmux session is live, and hide
+their duplicate entries under **Tmux Sessions** by default. The same settings
+page can expose those duplicate session rows.
 
 | Shortcut | Action |
 | --- | --- |

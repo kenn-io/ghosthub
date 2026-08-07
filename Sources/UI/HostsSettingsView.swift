@@ -826,8 +826,8 @@ public struct HostsSettingsView: View {
             $0.code == .missingKwt
         } == true
         return isMissing
-            ? "Install kwt Worktree Helper"
-            : "Update kwt Worktree Helper"
+            ? "Retry kwt Worktree Helper"
+            : "Reinstall kwt Worktree Helper"
     }
 
     private var isHostActionInProgress: Bool {
