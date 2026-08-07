@@ -19,5 +19,8 @@ ghosthub-session.workspace = true
 ghosthub-surface.workspace = true
 ghosthub-terminal.workspace = true
 
+[dev-dependencies]
+ghosthub-host = { workspace = true, features = ["test-support"] }
+
 [lints]
 workspace = true

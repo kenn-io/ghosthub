@@ -50,6 +50,12 @@ jobs:
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install 1.96.1 --profile minimal --component clippy,rustfmt
 
+      - name: Restore Windows Rust cache
+        if: runner.os == 'Windows'
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: rust
+
       - name: Install GPUI Linux dependencies
         if: runner.os == 'Linux'
         run: |
@@ -78,13 +84,14 @@ jobs:
         if: runner.os == 'Windows'
         shell: cmd
         run: |
-          for /f "usebackq tokens=*" %%i in (`"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath`) do set "VSINSTALL=%%i"
-          call "%VSINSTALL%\Common7\Tools\VsDevCmd.bat" -no_logo -arch=x64 -host_arch=x64
-          cargo fmt --all --check
-          cargo test-contracts --locked
-          cargo test --workspace --locked
-          cargo check --workspace --all-targets --locked
-          cargo clippy --workspace --all-targets --locked -- -D warnings
+          for /f "usebackq tokens=*" %%i in (`"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath`) do set "VSINSTALL=%%i" || exit /b 1
+          if not defined VSINSTALL exit /b 1
+          call "%VSINSTALL%\Common7\Tools\VsDevCmd.bat" -no_logo -arch=x64 -host_arch=x64 || exit /b 1
+          cargo fmt --all --check || exit /b 1
+          cargo test-contracts --locked || exit /b 1
+          cargo test --workspace --locked || exit /b 1
+          cargo check --workspace --all-targets --locked || exit /b 1
+          cargo clippy --workspace --all-targets --locked -- -D warnings || exit /b 1
 
   licenses:
     name: Dependency policy

@@ -122,13 +122,19 @@ mod platform {
     pub struct RelayJob;
 
     impl RelayJob {
+        #[allow(clippy::unnecessary_wraps)]
         pub fn new() -> Result<Self, JobError> {
             Ok(Self)
         }
 
+        #[allow(clippy::unnecessary_wraps, clippy::unused_self)]
         pub fn assign_and_verify(&self, _child: &dyn Child) -> Result<(), JobError> {
             Ok(())
         }
+    }
+
+    impl Drop for RelayJob {
+        fn drop(&mut self) {}
     }
 }
 
