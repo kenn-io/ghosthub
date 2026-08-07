@@ -193,15 +193,15 @@ public struct TmuxConnectionRecoveryRequest:
 }
 
 struct TmuxConnectionRecoveryRequestRouter {
-    private(set) var reviewedRequestID: UUID?
+    private(set) var reviewedRequest: TmuxConnectionRecoveryRequest?
 
     mutating func take(
         _ request: TmuxConnectionRecoveryRequest?,
         whileReviewIsPresented: Bool
     ) -> TmuxConnectionRecoveryRequest? {
-        guard let request, reviewedRequestID != request.id else { return nil }
+        guard let request, reviewedRequest?.id != request.id else { return nil }
         guard !whileReviewIsPresented else { return nil }
-        reviewedRequestID = request.id
+        reviewedRequest = request
         return request
     }
 
@@ -210,25 +210,23 @@ struct TmuxConnectionRecoveryRequestRouter {
         activeRequest: TmuxConnectionRecoveryRequest?
     ) -> UUID? {
         guard let activeRequest,
-              activeRequest.id == reviewedRequestID,
+              activeRequest.id == reviewedRequest?.id,
               activeRequest.hostID == hostID
         else { return nil }
         return activeRequest.id
     }
 
-    func recoveryHostIDToResume(
+    func recoveryRequestToResume(
         reviewedHostID: UUID?,
-        reviewRequestID: UUID?,
-        activeRequest: TmuxConnectionRecoveryRequest?
-    ) -> UUID? {
+        reviewRequestID: UUID?
+    ) -> TmuxConnectionRecoveryRequest? {
         guard let reviewedHostID,
               let reviewRequestID,
-              recoveryRequestID(
-                  for: reviewedHostID,
-                  activeRequest: activeRequest
-              ) == reviewRequestID
+              let reviewedRequest,
+              reviewedRequest.hostID == reviewedHostID,
+              reviewedRequest.id == reviewRequestID
         else { return nil }
-        return reviewedHostID
+        return reviewedRequest
     }
 }
 
@@ -238,6 +236,7 @@ public struct InteractionHandlers {
     public let reloadTerminalConfig: (() -> Void)?
     public let selectWorkspace: ((WorkspaceSelection) -> Void)?
     public let openTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)?
+    public let hideTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)?
     public let closeTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)?
     public let prepareTmuxSessionKill:
         ((WorkspaceTmuxSessionSelection) async throws
@@ -249,7 +248,8 @@ public struct InteractionHandlers {
     public let createTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)?
     public let refreshWorkspaceInventory: (() -> Void)?
     public let reconnectActiveTmuxSessionNow: (() -> Void)?
-    public let resumeTmuxReconnectAfterSSHRecovery: ((UUID) -> Void)?
+    public let resumeTmuxReconnectAfterSSHRecovery:
+        ((TmuxConnectionRecoveryRequest) -> Void)?
     public let reviewSSHHostKey:
         ((UUID, String) async -> SSHConnectionRecoveryResult)?
     public let trustSSHHostKey:
@@ -280,6 +280,7 @@ public struct InteractionHandlers {
         reloadTerminalConfig: (() -> Void)? = nil,
         selectWorkspace: ((WorkspaceSelection) -> Void)? = nil,
         openTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)? = nil,
+        hideTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)? = nil,
         closeTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)? = nil,
         prepareTmuxSessionKill:
         ((WorkspaceTmuxSessionSelection) async throws
@@ -291,7 +292,8 @@ public struct InteractionHandlers {
         createTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)? = nil,
         refreshWorkspaceInventory: (() -> Void)? = nil,
         reconnectActiveTmuxSessionNow: (() -> Void)? = nil,
-        resumeTmuxReconnectAfterSSHRecovery: ((UUID) -> Void)? = nil,
+        resumeTmuxReconnectAfterSSHRecovery:
+        ((TmuxConnectionRecoveryRequest) -> Void)? = nil,
         reviewSSHHostKey:
         ((UUID, String) async -> SSHConnectionRecoveryResult)? = nil,
         trustSSHHostKey:
@@ -321,6 +323,7 @@ public struct InteractionHandlers {
         self.reloadTerminalConfig = reloadTerminalConfig
         self.selectWorkspace = selectWorkspace
         self.openTmuxSession = openTmuxSession
+        self.hideTmuxSession = hideTmuxSession
         self.closeTmuxSession = closeTmuxSession
         self.prepareTmuxSessionKill = prepareTmuxSessionKill
         self.killTmuxSession = killTmuxSession

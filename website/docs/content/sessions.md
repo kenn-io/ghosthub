@@ -24,14 +24,23 @@ Select a session in the sidebar or search for it in the Command Palette with
 ++shift+cmd+p++. Ghosthub opens it through a normal local or SSH tmux
 client.
 
-Closing a tab, closing a window, switching sessions, or quitting Ghosthub only
-detaches the presentation. Tmux keeps the session and its processes alive.
+Switching to another host, worktree, or session hides the previous terminal
+without detaching it. Each workspace keeps every session you explicitly open
+connected, and returning to one reuses the same terminal and tmux client.
+
+Press ++cmd+w++ to detach only the active presentation. Closing a workspace
+tab or window detaches every presentation it owns, and quitting Ghosthub
+detaches them all. None of these actions ends a tmux session; tmux keeps the
+session and its processes alive.
 
 ## Reopen an exited standalone session
 
 If a standalone session exits while its presentation is still open, Ghosthub
 shows a **Reopen** action. Reopening creates a new tmux session with the exact
 previous name. It cannot restore processes from the exited session.
+
+A clean detach or a confirmed ended session stays closed until you explicitly
+open or reopen it.
 
 ## End a session deliberately
 

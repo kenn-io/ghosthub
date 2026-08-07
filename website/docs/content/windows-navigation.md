@@ -5,15 +5,17 @@ icon: lucide/panels-top-left
 
 # Windows and navigation
 
-Each Ghosthub workspace presentation can attach to one tmux session. Native
-macOS tabs group complete Ghosthub workspaces; they do not replace tmux windows
-or panes inside a session.
+Each Ghosthub workspace can keep multiple tmux presentations connected while
+showing one at a time. Native macOS tabs group complete Ghosthub workspaces;
+they do not replace tmux windows or panes inside a session.
 
 ## Use the sidebar
 
 The sidebar groups projects, worktrees, and standalone tmux sessions under each
-host. Select an item to attach. Expand a host to see its current inventory and
-connection diagnostics.
+host. Select an item to attach or return to its retained terminal. Moving to
+another host, worktree, or session hides the previous terminal without
+detaching its local or SSH tmux client. Expand a host to see its current
+inventory and connection diagnostics.
 
 Press ++cmd+b++ to hide or show the sidebar. Hiding it gives the terminal
 the full window while preserving its session attachment.
@@ -40,8 +42,10 @@ tab group.
 
 ## Close a presentation
 
-++cmd+w++ closes the current session presentation. ++shift+cmd+w++
-closes the containing window. Both detach from tmux; neither ends the session.
+++cmd+w++ closes and detaches only the active session presentation. Other
+sessions opened in that workspace remain connected. ++shift+cmd+w++ closes the
+containing workspace window and detaches every presentation it owns. Neither
+action ends a tmux session.
 
 Closing the final workspace leaves Ghosthub running. Use ++cmd+q++ to quit.
 Quit confirmation is enabled by default and can be changed under

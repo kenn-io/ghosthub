@@ -220,7 +220,8 @@ final class WorkspaceSceneModel: ObservableObject {
     private var confirmedEndedTmuxSessionHandles: Set<UUID> = []
     private let createdSessionDiscoveryDelays: [Duration]
     private let tmuxSessionProbeBroker: TmuxSessionProbeBroker
-    private let tmuxReconnectSupervisor: TmuxSessionReconnectSupervisor
+    private let tmuxReconnectIntervals: [Duration]
+    private let tmuxReconnectProbeDeadline: Duration
     @Published private(set) var workspaceInventoryState:
         WorkspaceInventoryState = .loading
     @Published private(set) var workspaceInventoryWarning: String?
@@ -298,15 +299,52 @@ final class WorkspaceSceneModel: ObservableObject {
         case establishingWorkspace
         case attachOnly
     }
-    private struct ActiveTmuxReconnectContext: Equatable {
+    private struct TmuxReconnectContext: Equatable {
         var selection: WorkspaceTmuxSessionSelection
         var handleID: UUID
         var host: TmuxHost
         var phase: RemoteTmuxEstablishmentPhase
         var surfaceExitCode: UInt32?
     }
-    private var activeTmuxReconnectContext: ActiveTmuxReconnectContext?
-    private var establishmentConfirmationTask: Task<Void, Never>?
+    private struct TmuxPresentationKey: Hashable {
+        var hostID: UUID
+        var name: String
+        var socketName: String?
+
+        init(_ selection: WorkspaceTmuxSessionSelection) {
+            hostID = selection.hostID
+            name = selection.name
+            socketName = selection.socketName
+        }
+    }
+    private final class RetainedTmuxPresentation {
+        var selection: WorkspaceTmuxSessionSelection
+        var handle: BorrowedTmuxSessionHandle
+        var launchMode: TmuxAttachmentLaunchMode
+        var reconnectContext: TmuxReconnectContext?
+        var recoveryState: BorrowedTmuxRecoveryState?
+        var recoveryRequest: TmuxConnectionRecoveryRequest?
+        let reconnectSupervisor: TmuxSessionReconnectSupervisor
+        var establishmentConfirmationTask: Task<Void, Never>?
+
+        init(
+            selection: WorkspaceTmuxSessionSelection,
+            handle: BorrowedTmuxSessionHandle,
+            launchMode: TmuxAttachmentLaunchMode,
+            reconnectContext: TmuxReconnectContext?,
+            reconnectSupervisor: TmuxSessionReconnectSupervisor
+        ) {
+            self.selection = selection
+            self.handle = handle
+            self.launchMode = launchMode
+            self.reconnectContext = reconnectContext
+            self.reconnectSupervisor = reconnectSupervisor
+        }
+    }
+    private var retainedTmuxPresentations:
+        [TmuxPresentationKey: RetainedTmuxPresentation] = [:]
+    private var retainedTmuxPresentationKeysByHandle:
+        [UUID: TmuxPresentationKey] = [:]
     @Published private(set) var isWorkspaceRestorationPending = false
     @Published private(set) var suppressesAutomaticWorktreeSessionOpen = false
     private var pendingRestoration: WorkspaceWindowState?
@@ -708,10 +746,8 @@ final class WorkspaceSceneModel: ObservableObject {
                 }
             }
         )
-        tmuxReconnectSupervisor = TmuxSessionReconnectSupervisor(
-            intervals: tmuxReconnectIntervals,
-            probeDeadline: tmuxReconnectProbeDeadline
-        )
+        self.tmuxReconnectIntervals = tmuxReconnectIntervals
+        self.tmuxReconnectProbeDeadline = tmuxReconnectProbeDeadline
         self.tmuxSessionKiller = tmuxSessionKiller
         self.tmuxSessionIdentityReader = tmuxSessionIdentityReader
         self.tmuxSessionStyler = tmuxSessionStyler
@@ -792,10 +828,12 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         nativeTmuxSessionCoordinatorBacking?.onSurfaceReady = {
             [weak self] handle in
-            guard self?.activeBorrowedTmuxHandle == handle else { return }
-            self?.objectWillChange.send()
-            if self?.activeBorrowedTmuxRecoveryState != nil {
-                self?.prepareActiveBorrowedTmuxSurface()
+            guard let self,
+                  retainedTmuxPresentation(for: handle) != nil
+            else { return }
+            _ = nativeTmuxSessionCoordinator.surface(handle: handle)
+            if activeBorrowedTmuxHandle == handle {
+                objectWillChange.send()
             }
         }
         activityControllerBacking = ActivityMonitoringController(
@@ -1031,6 +1069,7 @@ final class WorkspaceSceneModel: ObservableObject {
               ),
               generation != activeGeneration
         else { return }
+        closeBorrowedTmuxSession(active)
         openBorrowedTmuxSession(replacement)
     }
 
@@ -1167,7 +1206,14 @@ final class WorkspaceSceneModel: ObservableObject {
     /// tmux server sessions they attach to. Called by `WorkspaceWindow` before
     /// the scene model leaves the app-level window registry.
     func shutdown() async {
-        cancelTmuxReconnect()
+        for presentation in retainedTmuxPresentations.values {
+            cancelTmuxReconnect(presentation)
+        }
+        retainedTmuxPresentations.removeAll()
+        retainedTmuxPresentationKeysByHandle.removeAll()
+        activeBorrowedTmuxSelection = nil
+        activeBorrowedTmuxHandle = nil
+        activeBorrowedTmuxLaunchMode = nil
         kwtInventoryTask?.cancel()
         tmuxDiscoveryTask?.cancel()
         createdSessionDiscoveryTasks.values.forEach { $0.cancel() }
@@ -2250,25 +2296,25 @@ final class WorkspaceSceneModel: ObservableObject {
         )
         applyInventoryOverlayIfNeeded()
         updateWorkspaceInventoryState()
-        applyDeferredTmuxPresentationIfReady()
+        applyDeferredTmuxPresentationsIfReady()
     }
 
     private func reconcileEndedTmuxSession(
         _ discovered: [DiscoveredTmuxSession],
         hostID: UUID
     ) {
-        guard let selection = activeBorrowedTmuxSelection,
-              selection.hostID == hostID,
-              selection.socketName == nil,
-              let handle = activeBorrowedTmuxHandle,
-              nativeTmuxSessionCoordinator.hasClosedAttachment(handle)
-        else {
-            return
-        }
-        if discovered.contains(where: { $0.name == selection.name }) {
-            confirmedEndedTmuxSessionHandles.remove(handle.id)
-        } else {
-            confirmedEndedTmuxSessionHandles.insert(handle.id)
+        for presentation in retainedTmuxPresentations.values {
+            let selection = presentation.selection
+            let handle = presentation.handle
+            guard selection.hostID == hostID,
+                  selection.socketName == nil,
+                  nativeTmuxSessionCoordinator.hasClosedAttachment(handle)
+            else { continue }
+            if discovered.contains(where: { $0.name == selection.name }) {
+                confirmedEndedTmuxSessionHandles.remove(handle.id)
+            } else {
+                confirmedEndedTmuxSessionHandles.insert(handle.id)
+            }
         }
     }
 
@@ -2449,6 +2495,12 @@ final class WorkspaceSceneModel: ObservableObject {
                 hostID: hostID
             )
             for handle in handles {
+                if let key = retainedTmuxPresentationKeysByHandle
+                    .removeValue(forKey: handle.id),
+                    let presentation = retainedTmuxPresentations
+                    .removeValue(forKey: key) {
+                    cancelTmuxReconnect(presentation)
+                }
                 cancelTmuxPresentationTasks(handleID: handle.id)
                 borrowedTmuxConnectionStates.removeValue(forKey: handle.id)
                 createdSessionDiscoveryTasks.removeValue(
@@ -2460,10 +2512,11 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         guard let active = activeBorrowedTmuxSelection,
               hostIDs.contains(active.hostID) else { return }
-        cancelTmuxReconnect()
         activeBorrowedTmuxSelection = nil
         activeBorrowedTmuxHandle = nil
         activeBorrowedTmuxLaunchMode = nil
+        activeBorrowedTmuxRecoveryState = nil
+        tmuxConnectionRecoveryRequest = nil
     }
 
     func pendingSSHHostKeyConfirmation(
@@ -3318,8 +3371,29 @@ final class WorkspaceSceneModel: ObservableObject {
             selection.socketName != nil && launchMode == .create
                 ? .attach
                 : launchMode
-        if let active = activeBorrowedTmuxSelection, active != selection {
-            closeBorrowedTmuxSession(active)
+        let key = TmuxPresentationKey(selection)
+        if let retained = retainedTmuxPresentations[key] {
+            let generationChanged = if let retainedGeneration =
+                retained.selection.worktreeGeneration,
+                let selectionGeneration = selection.worktreeGeneration {
+                retainedGeneration != selectionGeneration
+            } else {
+                false
+            }
+            let recreatesClosedAttachment = effectiveLaunchMode == .create
+                && nativeTmuxSessionCoordinator.hasClosedAttachment(
+                    retained.handle
+                )
+            if generationChanged || recreatesClosedAttachment {
+                closeBorrowedTmuxSession(retained.selection)
+            } else {
+                if retained.selection.worktreeGeneration == nil,
+                   selection.worktreeGeneration != nil {
+                    retained.selection = selection
+                }
+                activateTmuxPresentation(retained)
+                return retained.handle
+            }
         }
         guard let host = snapshot.host(id: selection.hostID),
               let attachmentHost = TmuxHostResolver.resolve(host)
@@ -3327,6 +3401,8 @@ final class WorkspaceSceneModel: ObservableObject {
             activeBorrowedTmuxSelection = selection
             activeBorrowedTmuxHandle = nil
             activeBorrowedTmuxLaunchMode = effectiveLaunchMode
+            activeBorrowedTmuxRecoveryState = nil
+            tmuxConnectionRecoveryRequest = nil
             return nil
         }
         let knownSessions = tmuxSessionsByHost[selection.hostID]
@@ -3354,12 +3430,8 @@ final class WorkspaceSceneModel: ObservableObject {
             workingDirectory: selection.worktreePath,
             openWorkspace: openWorkspace
         )
-        activeBorrowedTmuxSelection = selection
-        activeBorrowedTmuxHandle = handle
-        activeBorrowedTmuxLaunchMode = effectiveLaunchMode
-        borrowedTmuxConnectionStates[handle.id] = .connecting
-        if attachmentHost.isRemote {
-            activeTmuxReconnectContext = ActiveTmuxReconnectContext(
+        let reconnectContext = attachmentHost.isRemote
+            ? TmuxReconnectContext(
                 selection: selection,
                 handleID: handle.id,
                 host: attachmentHost,
@@ -3368,13 +3440,88 @@ final class WorkspaceSceneModel: ObservableObject {
                     : .attachOnly,
                 surfaceExitCode: nil
             )
-        } else {
-            activeTmuxReconnectContext = nil
-        }
+            : nil
+        let presentation = RetainedTmuxPresentation(
+            selection: selection,
+            handle: handle,
+            launchMode: effectiveLaunchMode,
+            reconnectContext: reconnectContext,
+            reconnectSupervisor: TmuxSessionReconnectSupervisor(
+                intervals: tmuxReconnectIntervals,
+                probeDeadline: tmuxReconnectProbeDeadline
+            )
+        )
+        retainedTmuxPresentations[key] = presentation
+        retainedTmuxPresentationKeysByHandle[handle.id] = key
+        activateTmuxPresentation(presentation)
+        borrowedTmuxConnectionStates[handle.id] = .connecting
         if effectiveLaunchMode == .create {
             transferPendingCreation(for: selection, to: handle)
         }
         return handle
+    }
+
+    private func retainedTmuxPresentation(
+        for handle: BorrowedTmuxSessionHandle
+    ) -> RetainedTmuxPresentation? {
+        retainedTmuxPresentationKeysByHandle[handle.id].flatMap {
+            retainedTmuxPresentations[$0]
+        }
+    }
+
+    private func retainedTmuxPresentation(
+        for selection: WorkspaceTmuxSessionSelection
+    ) -> RetainedTmuxPresentation? {
+        retainedTmuxPresentations[TmuxPresentationKey(selection)]
+    }
+
+    private func activateTmuxPresentation(
+        _ presentation: RetainedTmuxPresentation
+    ) {
+        activeBorrowedTmuxSelection = presentation.selection
+        activeBorrowedTmuxHandle = presentation.handle
+        activeBorrowedTmuxLaunchMode = presentation.launchMode
+        activeBorrowedTmuxRecoveryState = presentation.recoveryState
+        tmuxConnectionRecoveryRequest = presentation.recoveryRequest
+        applyDeferredTmuxPresentationIfReady(presentation)
+    }
+
+    private func publishActiveState(
+        for presentation: RetainedTmuxPresentation
+    ) {
+        guard activeBorrowedTmuxHandle == presentation.handle else { return }
+        activeBorrowedTmuxLaunchMode = presentation.launchMode
+        activeBorrowedTmuxRecoveryState = presentation.recoveryState
+        tmuxConnectionRecoveryRequest = presentation.recoveryRequest
+    }
+
+    func hideBorrowedTmuxSession(
+        _ selection: WorkspaceTmuxSessionSelection
+    ) {
+        guard activeBorrowedTmuxSelection == selection else { return }
+        activeBorrowedTmuxSelection = nil
+        activeBorrowedTmuxHandle = nil
+        activeBorrowedTmuxLaunchMode = nil
+        activeBorrowedTmuxRecoveryState = nil
+        tmuxConnectionRecoveryRequest = nil
+    }
+
+    var retainedBorrowedTmuxPresentationCount: Int {
+        retainedTmuxPresentations.count
+    }
+
+    func retainedBorrowedTmuxHandle(
+        for selection: WorkspaceTmuxSessionSelection
+    ) -> BorrowedTmuxSessionHandle? {
+        retainedTmuxPresentation(for: selection)?.handle
+    }
+
+    func retainedBorrowedTmuxSessionIsConnected(
+        _ selection: WorkspaceTmuxSessionSelection
+    ) -> Bool {
+        guard let handle = retainedTmuxPresentation(for: selection)?.handle
+        else { return false }
+        return borrowedTmuxConnectionStates[handle.id] == .connected
     }
 
     private static func sameTmuxSession(
@@ -3421,30 +3568,45 @@ final class WorkspaceSceneModel: ObservableObject {
 
     func closeBorrowedTmuxSession(_ selection: WorkspaceTmuxSessionSelection) {
         cancelPendingRestoration()
-        guard activeBorrowedTmuxSelection == selection else { return }
-        cancelTmuxReconnect()
-        if let handle = activeBorrowedTmuxHandle {
-            cancelTmuxPresentationTasks(handleID: handle.id)
-            confirmedEndedTmuxSessionHandles.remove(handle.id)
-            borrowedTmuxConnectionStates.removeValue(forKey: handle.id)
-            if pendingCreatedTmuxSessions[handle.id] != nil,
-               nativeTmuxSessionCoordinator.hasLaunched(handle) {
-                endedCreatedTmuxSessionHandles.insert(handle.id)
-                reconcileCreatedTmuxSession(
-                    handleID: handle.id,
-                    immediately: true
-                )
-            } else if pendingCreatedTmuxSessions[handle.id] != nil {
-                discardPendingTmuxSession(handleID: handle.id)
-            }
+        let key = TmuxPresentationKey(selection)
+        guard let presentation = retainedTmuxPresentations.removeValue(
+            forKey: key
+        ) else {
+            guard activeBorrowedTmuxSelection == selection else { return }
+            activeBorrowedTmuxSelection = nil
+            activeBorrowedTmuxHandle = nil
+            activeBorrowedTmuxLaunchMode = nil
+            activeBorrowedTmuxRecoveryState = nil
+            tmuxConnectionRecoveryRequest = nil
+            return
         }
-        activeBorrowedTmuxSelection = nil
-        activeBorrowedTmuxHandle = nil
-        activeBorrowedTmuxLaunchMode = nil
+        let handle = presentation.handle
+        retainedTmuxPresentationKeysByHandle.removeValue(forKey: handle.id)
+        cancelTmuxReconnect(presentation)
+        cancelTmuxPresentationTasks(handleID: handle.id)
+        confirmedEndedTmuxSessionHandles.remove(handle.id)
+        borrowedTmuxConnectionStates.removeValue(forKey: handle.id)
+        if pendingCreatedTmuxSessions[handle.id] != nil,
+           nativeTmuxSessionCoordinator.hasLaunched(handle) {
+            endedCreatedTmuxSessionHandles.insert(handle.id)
+            reconcileCreatedTmuxSession(
+                handleID: handle.id,
+                immediately: true
+            )
+        } else if pendingCreatedTmuxSessions[handle.id] != nil {
+            discardPendingTmuxSession(handleID: handle.id)
+        }
+        if activeBorrowedTmuxHandle == handle {
+            activeBorrowedTmuxSelection = nil
+            activeBorrowedTmuxHandle = nil
+            activeBorrowedTmuxLaunchMode = nil
+            activeBorrowedTmuxRecoveryState = nil
+            tmuxConnectionRecoveryRequest = nil
+        }
         nativeTmuxSessionCoordinator.detach(
-            hostID: selection.hostID,
-            name: selection.name,
-            socketName: selection.socketName
+            hostID: presentation.selection.hostID,
+            name: presentation.selection.name,
+            socketName: presentation.selection.socketName
         )
     }
 
@@ -3520,8 +3682,12 @@ final class WorkspaceSceneModel: ObservableObject {
         let activeTargetAfterKill = activeBorrowedTmuxSelection.flatMap {
             Self.sameTmuxEndpoint($0, tmuxSelection) ? $0 : nil
         }
-        if let activeTargetAfterKill {
-            closeBorrowedTmuxSession(activeTargetAfterKill)
+        if let retainedTarget = retainedTmuxPresentations.values.first(
+            where: {
+                Self.sameTmuxEndpoint($0.selection, tmuxSelection)
+            }
+        )?.selection {
+            closeBorrowedTmuxSession(retainedTarget)
         }
         if tmuxSelection.socketName == nil {
             tmuxSessionsByHost[tmuxSelection.hostID]?.removeAll {
@@ -3656,38 +3822,42 @@ final class WorkspaceSceneModel: ObservableObject {
         state: ConnectionState
     ) {
         borrowedTmuxConnectionStates[handle.id] = state
+        guard let presentation = retainedTmuxPresentation(for: handle) else {
+            return
+        }
         if state == .connected {
             confirmedEndedTmuxSessionHandles.remove(handle.id)
-            activeBorrowedTmuxRecoveryState = nil
-            tmuxConnectionRecoveryRequest = nil
-            if activeTmuxReconnectContext?.handleID == handle.id {
-                activeTmuxReconnectContext?.surfaceExitCode = nil
-                startEstablishmentConfirmationIfNeeded(handle: handle)
+            presentation.recoveryState = nil
+            presentation.recoveryRequest = nil
+            if presentation.reconnectContext?.handleID == handle.id {
+                presentation.reconnectContext?.surfaceExitCode = nil
+                startEstablishmentConfirmationIfNeeded(
+                    presentation: presentation
+                )
             }
-            applyDeferredTmuxPresentationIfReady()
+            publishActiveState(for: presentation)
+            applyDeferredTmuxPresentationIfReady(presentation)
         }
         if case .disconnected = state,
-           activeBorrowedTmuxHandle == handle,
-           activeBorrowedTmuxRecoveryState != nil,
+           presentation.recoveryState != nil,
            nativeTmuxSessionCoordinator.attachmentClosure(handle)
            == .launchFailed {
-            cancelTmuxReconnect()
+            cancelTmuxReconnect(presentation)
             return
         }
         if case .disconnected = state,
            nativeTmuxSessionCoordinator.hasLaunched(handle) {
             cancelTmuxPresentationTasks(handleID: handle.id)
-            if activeBorrowedTmuxHandle == handle,
-               var context = activeTmuxReconnectContext,
+            if var context = presentation.reconnectContext,
                context.handleID == handle.id,
                context.host.isRemote,
                case let .processExited(code) =
                nativeTmuxSessionCoordinator.attachmentClosure(handle) {
-                establishmentConfirmationTask?.cancel()
-                establishmentConfirmationTask = nil
+                presentation.establishmentConfirmationTask?.cancel()
+                presentation.establishmentConfirmationTask = nil
                 context.surfaceExitCode = code
-                activeTmuxReconnectContext = context
-                startTmuxReconnect(context)
+                presentation.reconnectContext = context
+                startTmuxReconnect(presentation, context: context)
                 return
             }
             scheduleTmuxSessionDiscovery()
@@ -3713,37 +3883,60 @@ final class WorkspaceSceneModel: ObservableObject {
         }
     }
 
-    private func startTmuxReconnect(_ context: ActiveTmuxReconnectContext) {
-        guard activeTmuxReconnectContext == context,
-              activeBorrowedTmuxHandle?.id == context.handleID
+    private func startTmuxReconnect(
+        _ presentation: RetainedTmuxPresentation,
+        context: TmuxReconnectContext
+    ) {
+        guard presentation.reconnectContext == context,
+              presentation.handle.id == context.handleID,
+              retainedTmuxPresentation(for: presentation.handle)
+              === presentation
         else { return }
-        activeBorrowedTmuxRecoveryState = .reconnecting(
+        presentation.recoveryState = .reconnecting(
             message: "Waiting for \(hostName(for: context.selection.hostID)). "
                 + "Ghosthub will reconnect automatically."
         )
-        tmuxConnectionRecoveryRequest = nil
-        tmuxReconnectSupervisor.start { [weak self] in
+        presentation.recoveryRequest = nil
+        publishActiveState(for: presentation)
+        presentation.reconnectSupervisor.start { [weak self, weak presentation] in
+            guard let presentation else { return .stop }
             guard let self else { return .stop }
-            return await attemptTmuxReconnect(context)
+            return await attemptTmuxReconnect(
+                presentation,
+                context: context
+            )
         }
     }
 
     private func attemptTmuxReconnect(
-        _ context: ActiveTmuxReconnectContext
+        _ presentation: RetainedTmuxPresentation,
+        context: TmuxReconnectContext
     ) async -> TmuxReconnectDecision {
-        guard activeTmuxReconnectContext == context,
-              activeBorrowedTmuxHandle?.id == context.handleID
+        guard presentation.reconnectContext == context,
+              presentation.handle.id == context.handleID,
+              retainedTmuxPresentation(for: presentation.handle)
+              === presentation
         else { return .stop }
-        let outcome = await tmuxProbeOutcome(for: context)
+        let outcome = await tmuxProbeOutcome(
+            for: presentation,
+            context: context
+        )
         guard !Task.isCancelled else { return .retry }
-        guard activeTmuxReconnectContext == context,
-              activeBorrowedTmuxHandle?.id == context.handleID
+        guard presentation.reconnectContext == context,
+              presentation.handle.id == context.handleID,
+              retainedTmuxPresentation(for: presentation.handle)
+              === presentation
         else { return .stop }
-        return reconnectDecision(for: context, outcome: outcome)
+        return reconnectDecision(
+            for: presentation,
+            context: context,
+            outcome: outcome
+        )
     }
 
     private func tmuxProbeOutcome(
-        for context: ActiveTmuxReconnectContext
+        for presentation: RetainedTmuxPresentation,
+        context: TmuxReconnectContext
     ) async -> TmuxSessionProbeOutcome {
         guard case let .ssh(host) = context.host else {
             return .failure(.sessionContextUnavailable)
@@ -3757,8 +3950,10 @@ final class WorkspaceSceneModel: ObservableObject {
                     shell: context.host.displayName
                 ))
             }
-            guard activeTmuxReconnectContext == context,
-                  activeBorrowedTmuxHandle?.id == context.handleID,
+            guard presentation.reconnectContext == context,
+                  presentation.handle.id == context.handleID,
+                  retainedTmuxPresentation(for: presentation.handle)
+                  === presentation,
                   snapshot.host(id: context.selection.hostID)
                   .flatMap(TmuxHostResolver.resolve) == context.host
             else {
@@ -3791,24 +3986,28 @@ final class WorkspaceSceneModel: ObservableObject {
     }
 
     private func reconnectDecision(
-        for context: ActiveTmuxReconnectContext,
+        for presentation: RetainedTmuxPresentation,
+        context: TmuxReconnectContext,
         outcome: TmuxSessionProbeOutcome
     ) -> TmuxReconnectDecision {
         guard !Task.isCancelled else { return .retry }
-        guard activeTmuxReconnectContext == context,
-              activeBorrowedTmuxHandle?.id == context.handleID
+        guard presentation.reconnectContext == context,
+              presentation.handle.id == context.handleID,
+              retainedTmuxPresentation(for: presentation.handle)
+              === presentation
         else { return .stop }
         switch outcome {
         case .present:
             guard context.surfaceExitCode == 255 else {
                 stopTmuxReconnectWithUnableToAttach(
+                    presentation,
                     "The remote tmux client exited before it could attach."
                 )
                 return .stop
             }
             confirmedEndedTmuxSessionHandles.remove(context.handleID)
             relaunchTmuxSession(
-                context.selection,
+                presentation,
                 launchMode: .attachOnly,
                 intent: .restoreOnly
             )
@@ -3816,18 +4015,20 @@ final class WorkspaceSceneModel: ObservableObject {
         case .absent:
             guard context.phase == .establishingWorkspace else {
                 confirmedEndedTmuxSessionHandles.insert(context.handleID)
-                activeBorrowedTmuxRecoveryState = nil
-                tmuxConnectionRecoveryRequest = nil
+                presentation.recoveryState = nil
+                presentation.recoveryRequest = nil
+                publishActiveState(for: presentation)
                 return .stop
             }
             guard context.surfaceExitCode == 255 else {
                 stopTmuxReconnectWithUnableToAttach(
+                    presentation,
                     "The remote workspace could not be established."
                 )
                 return .stop
             }
             relaunchTmuxSession(
-                context.selection,
+                presentation,
                 launchMode: .attach,
                 intent: .userInitiated
             )
@@ -3837,66 +4038,124 @@ final class WorkspaceSceneModel: ObservableObject {
         case let .failure(.sshConnectionFailed(_, classification)):
             switch classification.kind {
             case .transport:
-                activeBorrowedTmuxRecoveryState = .reconnecting(
+                presentation.recoveryState = .reconnecting(
                     message: classification.diagnostic.summary + " "
                         + "Ghosthub will reconnect automatically."
                 )
+                publishActiveState(for: presentation)
                 return .retry
             case .authenticationRequired, .hostKeyReviewRequired:
                 let message = classification.diagnostic.summary + " "
                     + classification.diagnostic.recoverySuggestion
-                activeBorrowedTmuxRecoveryState = .needsAttention(
+                presentation.recoveryState = .needsAttention(
                     message: message,
                     canReviewConnection: true
                 )
-                if tmuxConnectionRecoveryRequest == nil {
-                    tmuxConnectionRecoveryRequest =
+                if presentation.recoveryRequest == nil {
+                    presentation.recoveryRequest =
                         TmuxConnectionRecoveryRequest(
                             hostID: context.selection.hostID,
                             message: message
                         )
                 }
+                publishActiveState(for: presentation)
                 return .stop
             case .hostKeyChanged:
-                activeBorrowedTmuxRecoveryState = .needsAttention(
+                presentation.recoveryState = .needsAttention(
                     message: classification.diagnostic.summary + " "
                         + classification.diagnostic.recoverySuggestion,
                     canReviewConnection: false
                 )
-                tmuxConnectionRecoveryRequest = nil
+                presentation.recoveryRequest = nil
+                publishActiveState(for: presentation)
                 return .stop
             }
         case let .failure(error):
-            stopTmuxReconnectWithUnableToAttach(error.localizedDescription)
+            stopTmuxReconnectWithUnableToAttach(
+                presentation,
+                error.localizedDescription
+            )
             return .stop
         }
     }
 
     private func relaunchTmuxSession(
-        _ selection: WorkspaceTmuxSessionSelection,
+        _ presentation: RetainedTmuxPresentation,
         launchMode: TmuxAttachmentLaunchMode,
         intent: TmuxPresentationIntent
     ) {
-        guard presentTmuxSession(
-            selection,
-            launchMode: launchMode,
-            intent: intent
-        ) != nil else {
+        let selection = presentation.selection
+        guard let host = snapshot.host(id: selection.hostID),
+              let attachmentHost = TmuxHostResolver.resolve(host)
+        else {
             stopTmuxReconnectWithUnableToAttach(
+                presentation,
                 "The remote host is no longer available."
             )
             return
         }
-        prepareActiveBorrowedTmuxSurface()
+        let knownSessions = tmuxSessionsByHost[selection.hostID]
+            ?? host.tmuxSessions
+        let sessionIsDiscovered = selection.socketName == nil
+            && knownSessions.contains { $0.name == selection.name }
+        let managedKwtUnavailable = host.remoteDiagnostics.contains {
+            $0.code == .missingKwt
+        }
+        let openWorkspace = intent == .userInitiated
+            && launchMode == .attach
+            && selection.socketName == nil
+            && selection.worktreePath != nil
+            && (!sessionIsDiscovered || !managedKwtUnavailable)
+        let protectedSessionNeedsEstablishment = intent == .userInitiated
+            && launchMode == .attach
+            && selection.socketName != nil
+            && selection.worktreePath != nil
+        let previousHandle = presentation.handle
+        let handle = nativeTmuxSessionCoordinator.attach(
+            hostID: selection.hostID,
+            name: selection.name,
+            host: attachmentHost,
+            socketName: selection.socketName,
+            launchMode: launchMode,
+            workingDirectory: selection.worktreePath,
+            openWorkspace: openWorkspace
+        )
+        if handle.id != previousHandle.id {
+            retainedTmuxPresentationKeysByHandle.removeValue(
+                forKey: previousHandle.id
+            )
+            retainedTmuxPresentationKeysByHandle[handle.id] =
+                TmuxPresentationKey(selection)
+        }
+        presentation.handle = handle
+        presentation.launchMode = launchMode
+        presentation.reconnectContext = TmuxReconnectContext(
+            selection: selection,
+            handleID: handle.id,
+            host: attachmentHost,
+            phase: openWorkspace || protectedSessionNeedsEstablishment
+                ? .establishingWorkspace
+                : .attachOnly,
+            surfaceExitCode: nil
+        )
+        borrowedTmuxConnectionStates[handle.id] = .connecting
+        if activeBorrowedTmuxHandle == previousHandle {
+            activeBorrowedTmuxHandle = handle
+            publishActiveState(for: presentation)
+        }
+        _ = nativeTmuxSessionCoordinator.surface(handle: handle)
     }
 
-    private func stopTmuxReconnectWithUnableToAttach(_ reason: String) {
-        activeBorrowedTmuxRecoveryState = nil
-        tmuxConnectionRecoveryRequest = nil
-        guard let handle = activeBorrowedTmuxHandle else { return }
-        borrowedTmuxConnectionStates[handle.id] = .disconnected(
+    private func stopTmuxReconnectWithUnableToAttach(
+        _ presentation: RetainedTmuxPresentation,
+        _ reason: String
+    ) {
+        presentation.recoveryState = nil
+        presentation.recoveryRequest = nil
+        borrowedTmuxConnectionStates[presentation.handle.id] = .disconnected(
             reason: reason
         )
+        publishActiveState(for: presentation)
     }
 
     private func hostName(for hostID: UUID) -> String {
@@ -3904,78 +4163,94 @@ final class WorkspaceSceneModel: ObservableObject {
     }
 
     func reconnectActiveTmuxSessionNow() {
-        guard let recoveryState = activeBorrowedTmuxRecoveryState,
+        guard let handle = activeBorrowedTmuxHandle,
+              let presentation = retainedTmuxPresentation(for: handle),
+              let recoveryState = presentation.recoveryState,
               recoveryState.allowsReconnectNow
         else { return }
         if recoveryState.isReconnecting {
-            tmuxReconnectSupervisor.reconnectNow()
+            presentation.reconnectSupervisor.reconnectNow()
             return
         }
-        guard let context = activeTmuxReconnectContext,
-              activeBorrowedTmuxHandle?.id == context.handleID
+        guard let context = presentation.reconnectContext,
+              handle.id == context.handleID
         else { return }
-        startTmuxReconnect(context)
+        startTmuxReconnect(presentation, context: context)
     }
 
-    func resumeTmuxReconnectAfterSSHRecovery(hostID: UUID) {
-        guard case .needsAttention(_, true) = activeBorrowedTmuxRecoveryState,
-              let request = tmuxConnectionRecoveryRequest,
-              request.hostID == hostID,
-              var context = activeTmuxReconnectContext,
-              context.selection.hostID == hostID,
-              activeBorrowedTmuxHandle?.id == context.handleID
+    func resumeTmuxReconnectAfterSSHRecovery(
+        _ recoveryRequest: TmuxConnectionRecoveryRequest
+    ) {
+        guard let presentation = retainedTmuxPresentations.values.first(
+            where: { $0.recoveryRequest?.id == recoveryRequest.id }
+        ),
+            case .needsAttention(_, true) = presentation.recoveryState,
+            let request = presentation.recoveryRequest,
+            request == recoveryRequest,
+            var context = presentation.reconnectContext,
+            context.selection.hostID == request.hostID,
+            presentation.handle.id == context.handleID
         else { return }
         context.surfaceExitCode = 255
-        activeTmuxReconnectContext = context
-        tmuxConnectionRecoveryRequest = nil
-        startTmuxReconnect(context)
+        presentation.reconnectContext = context
+        presentation.recoveryRequest = nil
+        publishActiveState(for: presentation)
+        startTmuxReconnect(presentation, context: context)
     }
 
-    private func cancelTmuxReconnect() {
-        tmuxReconnectSupervisor.cancel()
-        establishmentConfirmationTask?.cancel()
-        establishmentConfirmationTask = nil
-        activeTmuxReconnectContext = nil
-        activeBorrowedTmuxRecoveryState = nil
-        tmuxConnectionRecoveryRequest = nil
+    private func cancelTmuxReconnect(
+        _ presentation: RetainedTmuxPresentation
+    ) {
+        presentation.reconnectSupervisor.cancel()
+        presentation.establishmentConfirmationTask?.cancel()
+        presentation.establishmentConfirmationTask = nil
+        presentation.reconnectContext = nil
+        presentation.recoveryState = nil
+        presentation.recoveryRequest = nil
+        publishActiveState(for: presentation)
     }
 
     private func startEstablishmentConfirmationIfNeeded(
-        handle: BorrowedTmuxSessionHandle
+        presentation: RetainedTmuxPresentation
     ) {
-        guard let context = activeTmuxReconnectContext,
+        let handle = presentation.handle
+        guard let context = presentation.reconnectContext,
               context.handleID == handle.id,
               context.phase == .establishingWorkspace
         else { return }
-        establishmentConfirmationTask?.cancel()
+        presentation.establishmentConfirmationTask?.cancel()
         let delays = [.zero] + createdSessionDiscoveryDelays
-        establishmentConfirmationTask = Task { [weak self] in
+        presentation.establishmentConfirmationTask = Task {
+            [weak self, weak presentation] in
             for delay in delays {
                 do {
                     try await Task.sleep(for: delay)
                 } catch {
                     return
                 }
-                guard let self,
+                guard let self, let presentation,
                       !Task.isCancelled,
-                      activeTmuxReconnectContext == context,
+                      presentation.reconnectContext == context,
                       borrowedTmuxConnectionStates[handle.id] == .connected
                 else { return }
-                let outcome = await tmuxProbeOutcome(for: context)
+                let outcome = await tmuxProbeOutcome(
+                    for: presentation,
+                    context: context
+                )
                 guard !Task.isCancelled,
-                      activeTmuxReconnectContext == context,
+                      presentation.reconnectContext == context,
                       borrowedTmuxConnectionStates[handle.id] == .connected
                 else { return }
                 if outcome == .present {
-                    activeTmuxReconnectContext?.phase = .attachOnly
-                    establishmentConfirmationTask = nil
+                    presentation.reconnectContext?.phase = .attachOnly
+                    presentation.establishmentConfirmationTask = nil
                     return
                 }
             }
-            guard let self,
-                  activeTmuxReconnectContext == context
+            guard let presentation,
+                  presentation.reconnectContext == context
             else { return }
-            establishmentConfirmationTask = nil
+            presentation.establishmentConfirmationTask = nil
         }
     }
 
@@ -3999,10 +4274,13 @@ final class WorkspaceSceneModel: ObservableObject {
 
     func terminalPresentationStyleDidChange() {
         objectWillChange.send()
-        if let handle = activeBorrowedTmuxHandle {
-            cancelTmuxPresentationTasks(handleID: handle.id)
+        let presentations = Array(retainedTmuxPresentations.values)
+        for presentation in presentations {
+            cancelTmuxPresentationTasks(handleID: presentation.handle.id)
         }
-        applyDeferredTmuxPresentationIfReady()
+        for presentation in presentations {
+            applyDeferredTmuxPresentationIfReady(presentation)
+        }
     }
 
     /// A cancelled ladder keeps draining until its in-flight tmux command
@@ -4036,24 +4314,32 @@ final class WorkspaceSceneModel: ObservableObject {
     /// kwt finishes creating or repairing the session, revalidates the style
     /// policy before every attempt, and otherwise leaves the explicit
     /// Apply Theme action as the recovery path.
-    private func applyDeferredTmuxPresentationIfReady() {
-        guard let handle = activeBorrowedTmuxHandle,
-              nativeTmuxSessionCoordinator.hasDeferredPresentationStyle(
-                  handle
-              ),
-              nativeTmuxSessionCoordinator.shouldApplyPresentationStyle(
-                  handle
-              ),
-              deferredTmuxPresentationTasks[handle.id] == nil,
-              pendingCreatedTmuxSessions[handle.id] == nil,
-              borrowedTmuxConnectionStates[handle.id] == .connected,
-              let selection = activeBorrowedTmuxSelection,
-              let hostSummary = snapshot.host(id: selection.hostID),
-              let host = TmuxHostResolver.resolve(hostSummary),
-              Self.supportsTmuxSessionStyling(host),
-              let surfaceIdentity = nativeTmuxSessionCoordinator
-              .surfaceIdentity(handle: handle),
-              let style = tmuxPresentationStyleProvider(surfaceIdentity)
+    private func applyDeferredTmuxPresentationsIfReady() {
+        for presentation in retainedTmuxPresentations.values {
+            applyDeferredTmuxPresentationIfReady(presentation)
+        }
+    }
+
+    private func applyDeferredTmuxPresentationIfReady(
+        _ presentation: RetainedTmuxPresentation
+    ) {
+        let handle = presentation.handle
+        let selection = presentation.selection
+        guard nativeTmuxSessionCoordinator.hasDeferredPresentationStyle(
+            handle
+        ),
+            nativeTmuxSessionCoordinator.shouldApplyPresentationStyle(
+                handle
+            ),
+            deferredTmuxPresentationTasks[handle.id] == nil,
+            pendingCreatedTmuxSessions[handle.id] == nil,
+            borrowedTmuxConnectionStates[handle.id] == .connected,
+            let hostSummary = snapshot.host(id: selection.hostID),
+            let host = TmuxHostResolver.resolve(hostSummary),
+            Self.supportsTmuxSessionStyling(host),
+            let surfaceIdentity = nativeTmuxSessionCoordinator
+            .surfaceIdentity(handle: handle),
+            let style = tmuxPresentationStyleProvider(surfaceIdentity)
         else { return }
         let capturedIdentity = Self.discoveredTmuxSessionIdentity(
             selection,
@@ -4070,14 +4356,14 @@ final class WorkspaceSceneModel: ObservableObject {
             )
             // Success and exhaustion both consume the deferred marker so a
             // persistently failing session cannot re-run the ladder on every
-            // later trigger. An interrupted ladder (cancellation, switch-away,
-            // disconnect) leaves the marker for the next visit.
+            // later trigger. An interrupted ladder (cancellation or
+            // disconnect) leaves the marker for the next eligible trigger.
             var consumesMarker = false
             var expectedIdentity = capturedIdentity
             for attempt in 0 ... retryDelays.count {
                 guard let self,
                       !Task.isCancelled,
-                      activeBorrowedTmuxHandle == handle,
+                      retainedTmuxPresentation(for: handle) === presentation,
                       borrowedTmuxConnectionStates[handle.id] == .connected,
                       nativeTmuxSessionCoordinator
                       .hasDeferredPresentationStyle(handle),
@@ -4194,7 +4480,7 @@ final class WorkspaceSceneModel: ObservableObject {
                     applyInventoryOverlayIfNeeded()
                     updateWorkspaceInventoryState()
                     if found {
-                        applyDeferredTmuxPresentationIfReady()
+                        applyDeferredTmuxPresentationsIfReady()
                     }
                     if found || isLastAttempt {
                         createdSessionDiscoveryTasks.removeValue(
@@ -4246,11 +4532,11 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         for (handleID, pending) in pendingForHost {
             if discoveredNames.contains(pending.name) {
-                if activeBorrowedTmuxHandle?.id == handleID,
-                   activeBorrowedTmuxSelection.map({
-                       Self.sameTmuxSession($0, pending)
-                   }) == true {
-                    activeBorrowedTmuxLaunchMode = .attach
+                if let key = retainedTmuxPresentationKeysByHandle[handleID],
+                   let presentation = retainedTmuxPresentations[key],
+                   Self.sameTmuxSession(presentation.selection, pending) {
+                    presentation.launchMode = .attach
+                    publishActiveState(for: presentation)
                 }
                 pendingCreatedTmuxSessions.removeValue(forKey: handleID)
                 createdSessionDiscoveryTasks.removeValue(

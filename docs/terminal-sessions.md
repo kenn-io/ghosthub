@@ -39,10 +39,16 @@ map, split-tree projection, or Ghosthub tab bar. Tmux owns:
 - pane processes and session lifetime
 - tmux-native key bindings and mouse behavior
 
-Ghosthub owns only inventory presentation, the disposable terminal client,
-and connection state. Navigating away, pressing Cmd-W, closing a window, or
-quitting Ghosthub detaches the client and never destroys server-side state.
-The separate Kill Session action is the only destructive lifecycle operation.
+Ghosthub owns inventory presentation, terminal clients, and connection state.
+Each workspace window retains every presentation it explicitly opens, keyed by
+the exact host, tmux socket, and session name. Navigating to another host,
+worktree, or session removes the previous surface from the visible hierarchy
+and marks it occluded without freeing the surface or terminating its tmux/SSH
+client. Returning to it reuses the same handle and surface. Cmd-W or a
+pane-originated close request detaches only the active presentation; closing a
+workspace window or quitting Ghosthub detaches every presentation owned by
+that window and never destroys server-side state. The separate Kill Session
+action is the only destructive lifecycle operation.
 It is offered only when direct discovery or a currently connected active
 attachment establishes that the session is running. Before displaying
 confirmation, Ghosthub captures tmux's server PID, `session_id`, and
@@ -99,7 +105,7 @@ by kwt, so removing and recreating a worktree at the same path cannot inherit a
 saved presentation; a missing generation restores only as far as the project.
 Once a worktree presentation has observed a generation, incomplete inventory
 cannot erase it and a different non-nil generation is treated as a replacement;
-explicitly reselecting the worktree detaches the observed presentation and
+explicitly reselecting the worktree invalidates the observed presentation and
 attaches the replacement session.
 For **Install and Relaunch**, Ghosthub also writes a one-shot ordered window
 manifest under `~/.ghosthub/` before Sparkle terminates the app. On the next
@@ -221,10 +227,11 @@ coordinator consumes that status instead of relying on libghostty's outer macOS
 login process, whose reported status may be zero even when nested OpenSSH
 exited 255.
 After a confirmed attachment exits with OpenSSH's transport/setup status 255,
-the scene's native supervisor probes the real SSH and tmux path at attempt-start
-intervals of 1, 2, 4, 8, 16, and then 30 seconds. Each probe has a 15-second
-end-to-end deadline; its runtime counts against the interval, and an overrun
-clamps the next delay to zero. Attempts never overlap. **Reconnect Now** wakes
+that retained presentation's native supervisor probes the real SSH and tmux
+path at attempt-start intervals of 1, 2, 4, 8, 16, and then 30 seconds. Each
+probe has a 15-second end-to-end deadline; its runtime counts against the
+interval, and an overrun clamps the next delay to zero. Attempts never overlap.
+**Reconnect Now** wakes
 the same supervisor immediately instead of starting a parallel path.
 
 Default-socket recovery shares the host's in-flight `list-sessions` probe with
@@ -238,13 +245,14 @@ A reachable non-transport tmux failure is presented as unable to attach rather
 than retried indefinitely. A clean detach does not start recovery.
 
 Transport failures continue retrying automatically, with no more than 30
-seconds between attempt starts. Authentication and host-key review failures
-pause automatic retry and open the existing native recovery flow. Successful
-recovery resumes the same supervisor. If SSH is already reachable when that
-flow checks again, **Retry** resumes the supervisor as well as refreshing host
-inventory. Only the recovery flow opened for that active tmux request may
-resume it; authentication started from ordinary host inventory never reopens a
-session. Dismissing it leaves an honest
+seconds between attempt starts, even while their retained presentation is
+inactive. Authentication and host-key review failures pause that presentation's
+automatic retry and appear in the existing native recovery flow when it is
+active. Successful recovery resumes the same supervisor. If SSH is already
+reachable when that flow checks again, **Retry** resumes the supervisor as well
+as refreshing host inventory. Only the recovery flow opened for that tmux
+request may resume it; authentication started from ordinary host inventory
+never reopens a session. Dismissing it leaves an honest
 **Connection needs attention** presentation with **Review Connection** when
 native review is available; reopening that review retains the active recovery
 request and can resume its supervisor after success. **Host Settings** remains
