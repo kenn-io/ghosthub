@@ -118,14 +118,16 @@ layer, as subject to direct iteration.
   account, host, project, or session data. Publish required refreshed binaries
   to the orphan `website-assets` branch so ghosthub.ai does not ship stale
   product views.
-- Pull request descriptions must be concise and optimized for human scanning:
-  lead with a short rationale, then use bullets for the material behavior,
-  constraints, and reviewer-relevant consequences. Do not add boilerplate or
-  navel-gazing sections such as "Changes", "Validation", "Tests", or
-  "Verification". Mention unusual validation only inline when it is genuinely
-  useful reviewer context.
-- The canonical repository is `https://github.com/kenn-io/ghosthub`. Open pull
-  requests only when the user explicitly asks.
+- Pull request descriptions must use clear, concise bullet points in plain
+  language and be optimized for human scanning. Lead with the user-visible
+  purpose and concrete behavior, then cover material constraints and
+  reviewer-relevant consequences. Do not narrate the development process,
+  review history, or internal deliberation. Avoid boilerplate or navel-gazing
+  sections such as "Changes", "Validation", "Tests", or "Verification";
+  mention unusual validation only inline when it is genuinely useful reviewer
+  context.
+- The canonical repository is `https://github.com/kenn-io/ghosthub`. Only push
+  or open pull requests when the user explicitly asks.
 - The public repository does not accept unsolicited pull requests. Direct bug
   reports and feature requests to GitHub issues. Prospective code contributors
   must coordinate privately with Kenn Software and sign the CLA before their

@@ -31,7 +31,7 @@ fn probe_plan_covers_each_load_bearing_psmux_command() {
         "new-session -A -d -s ghosthub-test-plan-456-main -e GHOSTHUB_PROBE=present",
         "new-session -d -s ghosthub-test-plan-456-main-old",
         "has-session -t =ghosthub-test-plan-456-main",
-        "has-session -t =ghosthub-test-plan-456-main-prefix-miss",
+        "has-session -t =ghosthub-test-plan-456-main-o",
         "show-environment -t =ghosthub-test-plan-456-main GHOSTHUB_PROBE",
         "display-message -p -t =ghosthub-test-plan-456-main #{session_id}",
         "display-message -p -t =ghosthub-test-plan-456-main #{pid}",

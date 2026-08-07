@@ -270,6 +270,26 @@ ConPTY `attach-session -E` behavior. Its probe remains rejection evidence, but
 it is not the Rust Windows substrate. The Windows MVP uses real POSIX tmux in
 WSL2 and never degrades to psmux or an app-lifetime session.
 
+Tmux admission itself uses ordinary ConPTY clients supplied by the workspace
+through the same terminal worker as product attachments. In an isolated
+namespace, a second atomic `new-session -A`, an environment positive control
+without `-E`, and the preservation probe with `-E` all run on real PTYs;
+captured pipes and tmux control mode are not capability evidence. The verified
+binary is cached only after those clients attach, their effects are observed,
+and they detach. Any failure cleans the isolated server and leaves admission
+retryable.
+
+The WSL admission server is isolated before any session creation: Ghosthub
+chooses a random private `TMUX_TMPDIR`, installs its cleanup guard before the
+cancellable mode-0700 directory creation, applies the path to every probe
+command and ordinary client, and removes it when admission ends. `-L`
+capability proof is therefore not trusted to protect the user's default
+server. If the creation command times out or loses its relay, cleanup repeatedly
+removes the path through a two-second monotonic settle deadline because the
+Linux command may finish late, then performs a final removal and verifies
+absence. Discovery, admission, and attachment also unset inherited `TMUX` and
+`TMUX_PANE` before setting the selected socket environment.
+
 That failed proof exercises `kill-session -t =name`. The experimental Swift
 remote-Windows path instead resolves the exact target and fresh identity before
 killing by session ID. Its complete conditional-kill flow remains subject to
@@ -277,7 +297,10 @@ isolated end-to-end psmux verification; the Rust rejection does not by itself
 establish false success in the shipped path or make that path dead code.
 
 The tmux server lives inside WSL2 and cannot inherit a Windows Job Object.
-Ghosthub intentionally puts only the disposable `wsl.exe` ConPTY relay in an
+Ghosthub resolves `wsl.exe` through `GetSystemDirectoryW` and carries its
+absolute system-directory path through discovery and attachment; it never
+uses current-directory or launcher-`PATH` executable search. Ghosthub
+intentionally puts only the disposable `wsl.exe` ConPTY relay in an
 application-owned `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` job and verifies its
 membership with `IsProcessInJob`. This is client containment, not server
 breakaway. If job creation, assignment, or verification fails after spawn,
@@ -296,6 +319,16 @@ The guarantee covers Ghosthub termination, not `wsl --shutdown`, distro
 termination, or a Windows lifecycle event that restarts WSL. Runtime identity
 combines the kernel boot ID with PID 1 start time so a distro-only restart is
 classified even while another distro keeps the shared kernel alive.
+
+After fresh WSL discovery, the ordinary client enters through one tmux
+`if-shell -F` command targeted at the exact session. Its condition compares
+the captured server PID, session ID, and creation time; only the matching
+branch executes `attach-session -E`. The mismatch branch prints a classified
+framed marker and exits without attaching. Ghosthub recognizes it only on a
+clean exit whose normalized pre-attachment output exactly equals that marker,
+so ordinary session output cannot impersonate the result. A server restart and
+reused session ID therefore cannot redirect the client between discovery and
+process launch.
 
 ## Relaunch Restoration
 

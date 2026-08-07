@@ -148,6 +148,32 @@ fn rejects_fixtures_without_a_platform() {
 }
 
 #[test]
+fn rejects_a_suite_without_a_registered_consumer() {
+    let root = ContractRoot::new(
+        &manifest(&[entry("paths.typo.v1", "pathz", "posix", "typo.json")]),
+        &[("typo.json", "{}")],
+    );
+
+    let error = Manifest::load(root.path()).expect_err("unknown suite must fail");
+
+    assert_eq!(error.kind(), ErrorKind::UnregisteredConsumer);
+    assert_eq!(error.subject(), "paths.typo.v1");
+}
+
+#[test]
+fn rejects_a_platform_without_a_registered_consumer() {
+    let root = ContractRoot::new(
+        &manifest(&[entry("mux.posix.v1", "mux-resolver", "posix", "mux.json")]),
+        &[("mux.json", "{}")],
+    );
+
+    let error = Manifest::load(root.path()).expect_err("unsupported platform must fail");
+
+    assert_eq!(error.kind(), ErrorKind::UnregisteredConsumer);
+    assert_eq!(error.subject(), "mux.posix.v1");
+}
+
+#[test]
 fn rejects_fixture_paths_outside_the_contract_root() {
     let parent = ContractRoot::new(r#"{"schema_version":1,"fixtures":[]}"#, &[]);
     let escaped = parent.path().join("escaped.json");
@@ -228,7 +254,7 @@ fn ignores_other_suites_and_platforms() {
         &manifest(&[
             entry("paths.posix.v1", "paths", "posix", "posix.json"),
             entry("paths.windows.v1", "paths", "windows", "windows.json"),
-            entry("host.posix.v1", "host", "posix", "host.json"),
+            entry("host.windows.v1", "wsl-host", "windows", "host.json"),
         ]),
         &[
             ("posix.json", "{}"),
