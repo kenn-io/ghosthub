@@ -70,6 +70,8 @@ visible under its project.
 
 ## Ownership and safety
 
-Ghosthub does not infer that closing a presentation means ending work. It only
-destroys a session after the explicit, confirmed kill action. Sessions created
-outside Ghosthub receive the same protection as sessions created inside it.
+Ghosthub does not infer that closing a presentation means ending work. It
+destroys a session only after an explicit, confirmed **Kill Session** action or
+as part of confirmed worktree removal when that worktree has a verified live
+session. Sessions created outside Ghosthub receive the same protection as
+sessions created inside it.

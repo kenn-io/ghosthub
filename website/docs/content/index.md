@@ -41,7 +41,8 @@ Ghosthub is a tmux client, not a replacement for tmux.
 
 Tmux continues to own windows, panes, layout, history, and running processes.
 Closing a Ghosthub presentation detaches from a session; it does not end the
-session. Only an explicit, confirmed kill action ends one.
+session. A session ends only through an explicit, confirmed **Kill Session**
+action or removal of a worktree whose verified live session must be terminated.
 
 Ghosthub uses an ordinary local or SSH tmux client for every attachment. It
 does not use tmux control mode and it does not reconstruct terminal state in

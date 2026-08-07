@@ -17,10 +17,11 @@ documentation and has a separate build.
     pnpm test       # vitest unit tests
     pnpm build      # production build to dist/
 
-The website build uses the checksum-pinned `uv` bootstrap in
-`scripts/run-uv.sh` in local, CI, and deployment environments. The pinned
-binary is cached under `website/.cache/` after its first verified install. To
-preview only the public docs:
+The website build downloads repository-supported `uv` platform archives with
+repository-pinned archive and executable checksums through `scripts/run-uv.sh`
+in local, CI, and deployment environments. The verified binary is cached under
+`website/.cache/` and rechecked before every use. To preview only the public
+docs:
 
     ./scripts/run-uv.sh run --project docs --frozen zensical serve --config-file zensical.toml
 
