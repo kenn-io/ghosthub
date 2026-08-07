@@ -60,8 +60,8 @@ pub struct Rgb {
 }
 
 impl Rgb {
-    pub const WHITE: Self = Self::new(0xee, 0xf0, 0xf4);
-    pub const BLACK: Self = Self::new(0x11, 0x13, 0x18);
+    pub const WHITE: Self = Self::new(0xd8, 0xde, 0xe9);
+    pub const BLACK: Self = Self::new(0x0c, 0x0f, 0x14);
 
     #[must_use]
     pub const fn new(red: u8, green: u8, blue: u8) -> Self {

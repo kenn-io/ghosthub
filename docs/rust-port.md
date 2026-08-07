@@ -725,9 +725,9 @@ socket-directory = "/run/user/1000/tmux"
 
 [terminal]
 font-family = "Cascadia Mono"
-font-size = 14
-background = "#111318"
-foreground = "#eef0f4"
+font-size = 13
+background = "#0c0f14"
+foreground = "#d8dee9"
 clipboard-write = true
 ~~~
 

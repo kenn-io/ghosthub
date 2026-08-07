@@ -19,8 +19,10 @@ use workspace::{
 };
 
 pub const WINDOW_TITLE: &str = "Ghosthub";
-const TERMINAL_HEADER_HEIGHT: f32 = 42.0;
+const TERMINAL_HEADER_HEIGHT: f32 = 40.0;
 const TERMINAL_PADDING: f32 = 12.0;
+const TERMINAL_STAGE_INSET: f32 = 8.0;
+const TERMINAL_STAGE_BORDER: f32 = 1.0;
 const HOST_SIDEBAR_WIDTH: f32 = 196.0;
 const SESSION_SIDEBAR_WIDTH: f32 = 252.0;
 const APP_NAVIGATION_WIDTH: f32 = HOST_SIDEBAR_WIDTH + SESSION_SIDEBAR_WIDTH;
@@ -928,10 +930,11 @@ impl RootView {
             x,
             y,
             if snapshot.hosts().is_empty() {
-                0.0
+                TERMINAL_STAGE_INSET + TERMINAL_STAGE_BORDER
             } else {
-                APP_NAVIGATION_WIDTH
+                APP_NAVIGATION_WIDTH + TERMINAL_STAGE_INSET + TERMINAL_STAGE_BORDER
             },
+            TERMINAL_STAGE_INSET + TERMINAL_STAGE_BORDER,
             self.terminal_metrics.cell_width,
             self.terminal_metrics.line_height,
             size,
@@ -1169,8 +1172,10 @@ impl RootView {
                 0.0
             } else {
                 APP_NAVIGATION_WIDTH
-            };
-        let height = f32::from(bounds.size.height);
+            }
+            - (TERMINAL_STAGE_INSET + TERMINAL_STAGE_BORDER) * 2.0;
+        let height =
+            f32::from(bounds.size.height) - (TERMINAL_STAGE_INSET + TERMINAL_STAGE_BORDER) * 2.0;
         let (columns, rows) = terminal_grid_size(
             width,
             height,
@@ -1239,35 +1244,71 @@ impl RootView {
         self.observed_surface_identity = Some(identity);
         self.observed_surface_generation = frame.generation();
         let appearance = snapshot.appearance();
-        let mut header = div()
-            .h(px(42.0))
+        let header = div()
+            .h(px(TERMINAL_HEADER_HEIGHT))
+            .flex_none()
             .flex()
             .items_center()
             .justify_between()
-            .px_4()
-            .bg(rgb(0x1a_1d24))
-            .text_color(rgb(0xc9_cd_d6))
-            .child(format!("{endpoint}  ·  {session}"));
-        header = header.child(
-            div()
-                .id("detach-terminal")
-                .px_3()
-                .py_1()
-                .rounded_md()
-                .cursor_pointer()
-                .bg(rgb(0x2a_2f_3a))
-                .child("Detach")
-                .on_click(cx.listener(|this, _, _, cx| this.detach(cx))),
-        );
+            .px_3()
+            .bg(rgb(0x15_18_1f))
+            .border_b_1()
+            .border_color(rgb(0x2a_2e_38))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(div().size(px(7.0)).rounded_full().bg(rgb(0x62_c0_7a)))
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(rgb(0x8f_96_a3))
+                            .child(endpoint.to_owned()),
+                    )
+                    .child(div().text_color(rgb(0x55_5c_69)).child("/"))
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(rgb(0xe4_e8_ef))
+                            .child(session.to_owned()),
+                    ),
+            )
+            .child(
+                div()
+                    .id("detach-terminal")
+                    .px_3()
+                    .py_1()
+                    .rounded_md()
+                    .cursor_pointer()
+                    .border_1()
+                    .border_color(rgb(0x35_3a_46))
+                    .text_sm()
+                    .text_color(rgb(0xa8_af_bb))
+                    .hover(|style| style.bg(rgb(0x26_2b_35)).text_color(rgb(0xee_f0_f4)))
+                    .child("Detach")
+                    .on_click(cx.listener(|this, _, _, cx| this.detach(cx))),
+            );
 
         let terminal = self.terminal_surface_element(presentation_id, appearance, rows, cx);
 
         div()
             .size_full()
-            .flex()
-            .flex_col()
-            .child(header)
-            .child(terminal)
+            .p(px(TERMINAL_STAGE_INSET))
+            .bg(rgb(0x0d_0f_13))
+            .child(
+                div()
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .overflow_hidden()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(rgb(0x2a_2e_38))
+                    .bg(rgb(appearance.background()))
+                    .child(header)
+                    .child(terminal),
+            )
     }
 
     fn terminal_surface_element(
@@ -1290,6 +1331,7 @@ impl RootView {
             .font_family(appearance.font_family().to_owned())
             .text_size(px(f32::from(appearance.font_size())))
             .line_height(px(self.terminal_metrics.line_height))
+            .font_weight(FontWeight::NORMAL)
             .on_key_down(cx.listener(move |this, event, window, cx| {
                 this.on_key_down(presentation_id, event, window, cx);
             }))
@@ -1631,9 +1673,11 @@ impl RootView {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .child(name.clone())
+                    .gap_2()
+                    .child(div().flex_1().min_w_0().truncate().child(name.clone()))
                     .child(
                         div()
+                            .flex_none()
                             .text_xs()
                             .text_color(rgb(if is_active { 0x72_c9_a5 } else { 0x8f_96_a3 }))
                             .child(detail),
@@ -2128,19 +2172,20 @@ pub fn terminal_cell_at(
     line_height: f32,
     size: surface::GridSize,
 ) -> Option<(usize, usize)> {
-    terminal_cell_at_with_offset(x, y, 0.0, cell_width, line_height, size)
+    terminal_cell_at_with_offset(x, y, 0.0, 0.0, cell_width, line_height, size)
 }
 
 fn terminal_cell_at_with_offset(
     x: f32,
     y: f32,
     x_offset: f32,
+    y_offset: f32,
     cell_width: f32,
     line_height: f32,
     size: surface::GridSize,
 ) -> Option<(usize, usize)> {
     let content_x = x - x_offset - TERMINAL_PADDING;
-    let content_y = y - TERMINAL_HEADER_HEIGHT - TERMINAL_PADDING;
+    let content_y = y - y_offset - TERMINAL_HEADER_HEIGHT - TERMINAL_PADDING;
     if content_x < 0.0 || content_y < 0.0 {
         return None;
     }
@@ -2252,12 +2297,13 @@ mod tests {
 
     use super::{
         APP_NAVIGATION_WIDTH, INPUT_BUFFER_FULL_DIAGNOSTIC, INPUT_BUFFERED_DIAGNOSTIC,
-        InputRefusal, PendingUiInput, QueuedUiInput, TerminalKeyboard, TerminalPointer,
-        TerminalResize, UI_INPUT_BYTE_CAPACITY, UI_INPUT_CAPACITY, WheelBatch, active_session_name,
-        clear_terminal_input_state, clears_after_input_delivery, clears_when_input_queue_is_empty,
-        coalesce_last_resize, coalesce_last_wheel, input_queue_has_capacity, named_key,
-        normalize_cell_width, queued_input_matches_presentation, terminal_cell_at_with_offset,
-        terminal_key_input, terminal_wheel_steps, transitioned_presentation,
+        InputRefusal, PendingUiInput, QueuedUiInput, TERMINAL_STAGE_BORDER, TERMINAL_STAGE_INSET,
+        TerminalKeyboard, TerminalPointer, TerminalResize, UI_INPUT_BYTE_CAPACITY,
+        UI_INPUT_CAPACITY, WheelBatch, active_session_name, clear_terminal_input_state,
+        clears_after_input_delivery, clears_when_input_queue_is_empty, coalesce_last_resize,
+        coalesce_last_wheel, input_queue_has_capacity, named_key, normalize_cell_width,
+        queued_input_matches_presentation, terminal_cell_at_with_offset, terminal_key_input,
+        terminal_wheel_steps, transitioned_presentation,
     };
     use std::sync::Arc;
     use surface::{GridSize, SurfaceFrame, SurfaceStore};
@@ -2328,9 +2374,10 @@ mod tests {
 
         assert_eq!(
             terminal_cell_at_with_offset(
-                APP_NAVIGATION_WIDTH + 20.0,
+                APP_NAVIGATION_WIDTH + TERMINAL_STAGE_INSET + TERMINAL_STAGE_BORDER + 20.0,
                 66.0,
-                APP_NAVIGATION_WIDTH,
+                APP_NAVIGATION_WIDTH + TERMINAL_STAGE_INSET + TERMINAL_STAGE_BORDER,
+                TERMINAL_STAGE_INSET + TERMINAL_STAGE_BORDER,
                 8.0,
                 16.0,
                 size
@@ -2339,9 +2386,10 @@ mod tests {
         );
         assert_eq!(
             terminal_cell_at_with_offset(
-                APP_NAVIGATION_WIDTH - 8.0,
-                66.0,
                 APP_NAVIGATION_WIDTH,
+                66.0,
+                APP_NAVIGATION_WIDTH + TERMINAL_STAGE_INSET + TERMINAL_STAGE_BORDER,
+                TERMINAL_STAGE_INSET + TERMINAL_STAGE_BORDER,
                 8.0,
                 16.0,
                 size

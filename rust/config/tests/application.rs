@@ -19,9 +19,9 @@ fn missing_application_config_uses_documented_defaults() {
     assert_eq!(loaded.wsl().tmux_binary(), "/usr/bin/tmux");
     assert_eq!(loaded.wsl().socket_directory(), None);
     assert_eq!(loaded.terminal().font_family(), "Cascadia Mono");
-    assert_eq!(loaded.terminal().font_size(), 14);
-    assert_eq!(loaded.terminal().background(), 0x11_13_18);
-    assert_eq!(loaded.terminal().foreground(), 0xee_f0_f4);
+    assert_eq!(loaded.terminal().font_size(), 13);
+    assert_eq!(loaded.terminal().background(), 0x0c_0f_14);
+    assert_eq!(loaded.terminal().foreground(), 0xd8_de_e9);
     assert!(loaded.terminal().allow_remote_clipboard_write());
 }
 

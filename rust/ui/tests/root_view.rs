@@ -184,8 +184,8 @@ fn paint_cache_does_not_scroll_cursor_highlighting_with_cells() {
     ));
 
     let rows = cache.update(&store.load());
-    assert_eq!(rows[0][0].foreground(), 0xee_f0_f4);
-    assert_eq!(rows[1][0].foreground(), 0x11_13_18);
+    assert_eq!(rows[0][0].foreground(), 0xd8_de_e9);
+    assert_eq!(rows[1][0].foreground(), 0x0c_0f_14);
 }
 
 #[test]
