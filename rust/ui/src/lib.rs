@@ -323,6 +323,10 @@ impl TerminalKeyboard {
         self.pressed.len() + usize::from(!self.pressed.contains(key))
     }
 
+    fn accepts(&self, key: &str, event: InputKeyEvent) -> bool {
+        event == InputKeyEvent::Press || self.pressed.contains(key)
+    }
+
     fn finish_accepted(&mut self, key: &str, event: InputKeyEvent) {
         match event {
             InputKeyEvent::Press => {
@@ -806,6 +810,10 @@ impl RootView {
     }
 
     fn send_key_event(&mut self, input: KeyInput, key: &str, event: InputKeyEvent) {
+        let _scope_changed = self.sync_terminal_scope();
+        if !self.keyboard.accepts(key, event) {
+            return;
+        }
         let reserved_key_releases = match event {
             InputKeyEvent::Press => self.keyboard.reservations_after_press(key),
             InputKeyEvent::Repeat | InputKeyEvent::Release => self.keyboard.reserved_releases(),
@@ -1905,15 +1913,24 @@ mod tests {
     fn accepted_key_press_reserves_capacity_until_release_is_accepted() {
         let mut keyboard = TerminalKeyboard::default();
 
+        assert!(keyboard.accepts("a", KeyEvent::Press));
+        assert!(!keyboard.accepts("a", KeyEvent::Repeat));
+        assert!(!keyboard.accepts("a", KeyEvent::Release));
         assert_eq!(keyboard.reservations_after_press("a"), 1);
         keyboard.finish_accepted("a", KeyEvent::Press);
         assert_eq!(keyboard.reserved_releases(), 1);
         assert_eq!(keyboard.reservations_after_press("a"), 1);
+        assert!(keyboard.accepts("a", KeyEvent::Repeat));
+        assert!(keyboard.accepts("a", KeyEvent::Release));
+        assert!(!keyboard.accepts("b", KeyEvent::Repeat));
+        assert!(!keyboard.accepts("b", KeyEvent::Release));
 
         keyboard.finish_accepted("a", KeyEvent::Repeat);
         assert_eq!(keyboard.reserved_releases(), 1);
         keyboard.finish_accepted("a", KeyEvent::Release);
         assert_eq!(keyboard.reserved_releases(), 0);
+        assert!(!keyboard.accepts("a", KeyEvent::Repeat));
+        assert!(!keyboard.accepts("a", KeyEvent::Release));
     }
 
     #[test]

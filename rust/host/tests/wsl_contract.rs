@@ -511,9 +511,11 @@ fn admission_output(
             output(
                 0,
                 &format!(
-                    "{}\t$1\t{session}\n{}\t$1\t{session}-renamed\n",
+                    "{}\t$1\t{}\t{session}\n{}\t$1\t{}\t{session}-renamed\n",
                     4242 + count,
-                    4242 + count
+                    session.len(),
+                    4242 + count,
+                    session.len() + "-renamed".len(),
                 ),
                 "",
             )
@@ -710,9 +712,9 @@ fn retries_discovery_when_the_distro_restarts_between_crossings() {
     let new = instance_output_with("91d83b4d-2b1a-47b7-bd2d-5d5bb698bdf7", 200);
     let runner = RecordingRunner::new(vec![
         old,
-        output(0, "4242\t$3\t1700000000\tstale\t0\n", ""),
+        output(0, "4242\t$3\t1700000000\t0\t5\tstale\n", ""),
         new.clone(),
-        output(0, "5252\t$4\t1700000001\tfresh\t0\n", ""),
+        output(0, "5252\t$4\t1700000001\t0\t5\tfresh\n", ""),
         new,
     ]);
     let host = test_host(
@@ -760,7 +762,7 @@ fn rejects_malformed_runtime_and_session_identity() {
         WslConfig::with_distro("Ubuntu").expect("valid config"),
         RecordingRunner::new(vec![
             instance_output(),
-            output(0, "4242\tnot-an-id\t1700000000\twork\t0\n", ""),
+            output(0, "4242\tnot-an-id\t1700000000\t0\t4\twork\n", ""),
         ]),
     );
     assert_eq!(
@@ -797,7 +799,7 @@ fn default_distro_with_no_tmux_server_is_empty_inventory() {
 fn discovers_identity_in_one_tmux_crossing() {
     let runner = RecordingRunner::new(vec![
         instance_output(),
-        output(0, "4242\t$3\t1700000000\twork name\t1\n", ""),
+        output(0, "4242\t$3\t1700000000\t1\t9\twork name\n", ""),
         instance_output(),
     ]);
     let host = test_host(
@@ -820,7 +822,7 @@ fn discovers_identity_in_one_tmux_crossing() {
 fn admission_uses_inert_sessions_and_always_cleans_its_namespaces() {
     let runner = RecordingRunner::new(vec![
         instance_output(),
-        output(0, "4242\t$3\t1700000000\twork\t0\n", ""),
+        output(0, "4242\t$3\t1700000000\t0\t4\twork\n", ""),
         instance_output(),
     ]);
     let host = test_host(
@@ -864,6 +866,11 @@ fn admission_uses_inert_sessions_and_always_cleans_its_namespaces() {
             .count(),
         3
     );
+    assert!(admission_calls.iter().all(|(_, args)| {
+        !args.iter().any(|argument| argument == "list-sessions")
+            || argument_after(args, "-F")
+                == Some("#{pid}\t#{session_id}\t#{n:session_name}\t#{session_name}")
+    }));
     assert!(admission_calls.iter().any(|(_, args)| {
         args.iter().any(|argument| argument == "has-session")
             && argument_after(args, "-t").is_some_and(|target| target.ends_with("-old"))
@@ -910,7 +917,7 @@ fn admission_uses_inert_sessions_and_always_cleans_its_namespaces() {
 fn admission_does_not_require_xterm_256color_terminfo() {
     let runner = RecordingRunner::new(vec![
         instance_output(),
-        output(0, "4242\t$3\t1700000000\twork\t0\n", ""),
+        output(0, "4242\t$3\t1700000000\t0\t4\twork\n", ""),
         instance_output(),
     ]);
     let host = test_host(
@@ -1047,7 +1054,7 @@ fn failed_real_client_probe_is_not_cached_as_verified() {
     let runner = RecordingRunner::new(vec![
         instance_output(),
         instance_output(),
-        output(0, "4242\t$3\t1700000000\twork\t0\n", ""),
+        output(0, "4242\t$3\t1700000000\t0\t4\twork\n", ""),
         instance_output(),
     ]);
     let host = test_host(
@@ -1183,12 +1190,12 @@ fn duplicate_creation_failure_never_grants_cleanup_authority() {
 }
 
 #[test]
-fn discovery_decodes_quoted_session_names_without_splitting_records() {
+fn discovery_decodes_length_prefixed_session_names_without_splitting_records() {
     let runner = RecordingRunner::new(vec![
         instance_output(),
         output(
             0,
-            "4242\t$3\t1700000000\twork\\ name\\tand\\nlines\t1\n",
+            "4242\t$3\t1700000000\t1\t19\twork name\tand\nlines\n",
             "",
         ),
         instance_output(),
@@ -1198,16 +1205,23 @@ fn discovery_decodes_quoted_session_names_without_splitting_records() {
         runner,
     );
 
-    let snapshot = discover(&host).expect("discover quoted session name");
+    let snapshot = discover(&host).expect("discover length-prefixed session name");
 
     assert_eq!(snapshot.sessions()[0].name(), "work name\tand\nlines");
+    assert!(host.runner().all_calls().iter().any(|(_, args)| {
+        args.iter().any(|argument| argument == "list-sessions")
+            && argument_after(args, "-F")
+                == Some(
+                    "#{pid}\t#{session_id}\t#{session_created}\t#{session_attached}\t#{n:session_name}\t#{session_name}",
+                )
+    }));
 }
 
 #[test]
 fn attach_plan_targets_the_fresh_stable_session_id() {
     let runner = RecordingRunner::new(vec![
         instance_output(),
-        output(0, "4242\t$3\t1700000000\twork name\t0\n", ""),
+        output(0, "4242\t$3\t1700000000\t0\t9\twork name\n", ""),
         instance_output(),
     ]);
     let host = test_host(
@@ -1266,7 +1280,7 @@ fn configured_socket_directory_is_explicit_environment() {
     .expect("valid config");
     let runner = RecordingRunner::new(vec![
         instance_output(),
-        output(0, "4242\t$3\t1700000000\twork\t0\n", ""),
+        output(0, "4242\t$3\t1700000000\t0\t4\twork\n", ""),
         instance_output(),
     ]);
     let host = test_host(config, runner);
@@ -1292,7 +1306,7 @@ fn configured_socket_directory_is_explicit_environment() {
 fn discovery_scrubs_inherited_tmux_client_environment() {
     let runner = RecordingRunner::new(vec![
         instance_output(),
-        output(0, "4242\t$3\t1700000000\twork\t0\n", ""),
+        output(0, "4242\t$3\t1700000000\t0\t4\twork\n", ""),
         instance_output(),
     ]);
     let host = test_host(

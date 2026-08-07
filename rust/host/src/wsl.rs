@@ -20,8 +20,10 @@ const ATTACHMENT_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const CLEANUP_COMMAND_TIMEOUT: Duration = Duration::from_millis(500);
 const UNCERTAIN_CLEANUP_DELAY: Duration = Duration::from_millis(50);
 const UNCERTAIN_CLEANUP_SETTLE: Duration = Duration::from_secs(2);
-const INVENTORY_FORMAT: &str =
-    "#{pid}\t#{session_id}\t#{session_created}\t#{q:session_name}\t#{session_attached}";
+// tmux's `n:` modifier reports the UTF-8 byte length, so names containing
+// delimiters remain unambiguous without adding another process crossing.
+const INVENTORY_FORMAT: &str = "#{pid}\t#{session_id}\t#{session_created}\t#{session_attached}\t#{n:session_name}\t#{session_name}";
+const ADMISSION_IDENTITY_FORMAT: &str = "#{pid}\t#{session_id}\t#{n:session_name}\t#{session_name}";
 static ADMISSION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub trait AdmissionAttacher {
@@ -1271,23 +1273,21 @@ impl<R: CommandRunner> WslHost<R> {
                 namespace,
                 "list-sessions",
                 "-F",
-                "#{pid}\t#{session_id}\t#{q:session_name}",
+                ADMISSION_IDENTITY_FORMAT,
             ],
             "read isolated tmux identity",
         )?;
-        let output = decode(&output.stdout, "isolated tmux identity")?;
-        for line in output.lines() {
-            let fields = line.splitn(3, '\t').collect::<Vec<_>>();
-            if fields.len() != 3 || decode_tmux_quoted(fields[2])?.as_str() != expected_name {
+        for record in parse_tmux_name_records(&output.stdout, 2, "isolated tmux identity")? {
+            if record.name != expected_name {
                 continue;
             }
-            let server_pid = fields[0].parse::<u32>().map_err(|_| {
+            let server_pid = record.fields[0].parse::<u32>().map_err(|_| {
                 HostError::new(
                     DiagnosticKind::MalformedOutput,
                     "isolated tmux identity has an invalid server PID",
                 )
             })?;
-            if server_pid == 0 || !is_tmux_session_id(fields[1]) {
+            if server_pid == 0 || !is_tmux_session_id(record.fields[1]) {
                 return Err(HostError::new(
                     DiagnosticKind::MalformedOutput,
                     "isolated tmux identity is invalid",
@@ -1295,7 +1295,7 @@ impl<R: CommandRunner> WslHost<R> {
             }
             return Ok(AdmissionIdentity {
                 server_pid,
-                session_id: fields[1].to_owned(),
+                session_id: record.fields[1].to_owned(),
             });
         }
         Err(HostError::new(
@@ -1814,19 +1814,10 @@ fn parse_runtime(bytes: &[u8]) -> Result<WslRuntimeIdentity, HostError> {
 }
 
 fn parse_inventory(bytes: &[u8]) -> Result<Vec<DiscoveredSession>, HostError> {
-    let output = decode(bytes, "tmux inventory")?;
-    output
-        .lines()
-        .filter(|line| !line.is_empty())
-        .map(|line| {
-            let fields = line.splitn(5, '\t').collect::<Vec<_>>();
-            if fields.len() != 5 {
-                return Err(HostError::new(
-                    DiagnosticKind::MalformedOutput,
-                    format!("tmux inventory row has {} fields", fields.len()),
-                ));
-            }
-            let server_pid = fields[0].parse::<u32>().map_err(|_| {
+    parse_tmux_name_records(bytes, 4, "tmux inventory")?
+        .into_iter()
+        .map(|record| {
+            let server_pid = record.fields[0].parse::<u32>().map_err(|_| {
                 HostError::new(DiagnosticKind::MalformedOutput, "invalid tmux server PID")
             })?;
             if server_pid == 0 {
@@ -1835,56 +1826,79 @@ fn parse_inventory(bytes: &[u8]) -> Result<Vec<DiscoveredSession>, HostError> {
                     "invalid tmux server PID",
                 ));
             }
-            if !is_tmux_session_id(fields[1]) {
+            if !is_tmux_session_id(record.fields[1]) {
                 return Err(HostError::new(
                     DiagnosticKind::MalformedOutput,
                     "invalid tmux session ID",
                 ));
             }
-            let created_at = fields[2].parse::<u64>().map_err(|_| {
+            let created_at = record.fields[2].parse::<u64>().map_err(|_| {
                 HostError::new(
                     DiagnosticKind::MalformedOutput,
                     "invalid tmux creation time",
                 )
             })?;
-            let attached_clients = fields[4].parse::<u32>().map_err(|_| {
+            let attached_clients = record.fields[3].parse::<u32>().map_err(|_| {
                 HostError::new(
                     DiagnosticKind::MalformedOutput,
                     "invalid tmux attached-client count",
                 )
             })?;
-            let name = decode_tmux_quoted(fields[3])?;
             Ok(DiscoveredSession::new(
-                name,
-                SessionIdentity::new(server_pid, fields[1], created_at),
+                record.name,
+                SessionIdentity::new(server_pid, record.fields[1], created_at),
                 attached_clients,
             ))
         })
         .collect()
 }
 
-fn decode_tmux_quoted(value: &str) -> Result<String, HostError> {
-    let mut decoded = String::with_capacity(value.len());
-    let mut characters = value.chars();
-    while let Some(character) = characters.next() {
-        if character != '\\' {
-            decoded.push(character);
-            continue;
+struct TmuxNameRecord<'a> {
+    fields: Vec<&'a str>,
+    name: &'a str,
+}
+
+fn parse_tmux_name_records<'a>(
+    bytes: &'a [u8],
+    field_count: usize,
+    subject: &str,
+) -> Result<Vec<TmuxNameRecord<'a>>, HostError> {
+    let mut remaining = decode(bytes, subject)?;
+    let mut records = Vec::new();
+    while !remaining.is_empty() {
+        let mut fields = Vec::with_capacity(field_count);
+        for _ in 0..field_count {
+            fields.push(take_tmux_field(&mut remaining, subject)?);
         }
-        let escaped = characters.next().ok_or_else(|| {
-            HostError::new(
-                DiagnosticKind::MalformedOutput,
-                "tmux quoted session name ends with an escape",
-            )
-        })?;
-        decoded.push(match escaped {
-            'n' => '\n',
-            'r' => '\r',
-            't' => '\t',
-            other => other,
-        });
+        let name_length = take_tmux_field(&mut remaining, subject)?
+            .parse::<usize>()
+            .map_err(|_| malformed_name_record(subject))?;
+        let name = remaining
+            .get(..name_length)
+            .ok_or_else(|| malformed_name_record(subject))?;
+        remaining = remaining
+            .get(name_length..)
+            .and_then(|suffix| suffix.strip_prefix('\n'))
+            .ok_or_else(|| malformed_name_record(subject))?;
+        records.push(TmuxNameRecord { fields, name });
     }
-    Ok(decoded)
+    Ok(records)
+}
+
+fn take_tmux_field<'a>(remaining: &mut &'a str, subject: &str) -> Result<&'a str, HostError> {
+    let delimiter = remaining
+        .find('\t')
+        .ok_or_else(|| malformed_name_record(subject))?;
+    let (field, suffix) = remaining.split_at(delimiter);
+    *remaining = &suffix[1..];
+    Ok(field)
+}
+
+fn malformed_name_record(subject: &str) -> HostError {
+    HostError::new(
+        DiagnosticKind::MalformedOutput,
+        format!("{subject} has an invalid length-prefixed session name"),
+    )
 }
 
 fn observation(name: &str, supported: bool) -> ProbeObservation {
