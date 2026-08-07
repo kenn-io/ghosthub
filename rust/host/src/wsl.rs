@@ -343,7 +343,13 @@ pub struct WslHost<R> {
     config: WslConfig,
     runner: R,
     wsl_executable: WslExecutable,
-    verified_tmux: Arc<Mutex<Option<VerifiedTmuxBinary>>>,
+    verified_tmux: Arc<Mutex<Option<VerifiedAdmission>>>,
+}
+
+#[derive(Debug)]
+struct VerifiedAdmission {
+    runtime: WslRuntimeIdentity,
+    _binary: VerifiedTmuxBinary,
 }
 
 impl<R: CommandRunner> WslHost<R> {
@@ -384,8 +390,8 @@ impl<R: CommandRunner> WslHost<R> {
     ) -> Result<HostSnapshot, HostError> {
         let endpoint = self.resolve_endpoint(cancellation)?;
         let mut runtime = self.resolve_runtime(&endpoint, cancellation)?;
-        self.verify_tmux(&endpoint, attacher, cancellation)?;
         for _attempt in 0..DISCOVERY_ATTEMPTS {
+            self.verify_tmux(&endpoint, &runtime, attacher, cancellation)?;
             let sessions = self.discover_sessions(&endpoint, cancellation)?;
             let observed_runtime = self.resolve_runtime(&endpoint, cancellation)?;
             if runtime == observed_runtime {
@@ -582,6 +588,7 @@ impl<R: CommandRunner> WslHost<R> {
     fn verify_tmux<A: AdmissionAttacher>(
         &self,
         endpoint: &WslEndpoint,
+        runtime: &WslRuntimeIdentity,
         attacher: &A,
         cancellation: &CancellationToken,
     ) -> Result<(), HostError> {
@@ -589,7 +596,8 @@ impl<R: CommandRunner> WslHost<R> {
             .verified_tmux
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .is_some()
+            .as_ref()
+            .is_some_and(|verified| verified.runtime == *runtime)
         {
             return Ok(());
         }
@@ -1126,7 +1134,10 @@ impl<R: CommandRunner> WslHost<R> {
         *self
             .verified_tmux
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(verified);
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(VerifiedAdmission {
+            runtime: runtime.clone(),
+            _binary: verified,
+        });
         Ok(())
     }
 

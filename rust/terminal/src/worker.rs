@@ -93,6 +93,13 @@ enum PasteAction {
     Cancel,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PasteControl {
+    Resume,
+    Error(&'static str),
+    None,
+}
+
 #[derive(Clone, Copy)]
 struct ResizeCommand {
     size: GridSize,
@@ -566,10 +573,27 @@ fn run_worker(
     let mut observed_exit = None;
     let mut output_tail = Vec::new();
     let mut pending_paste = None;
+    let mut approved_paste = None;
     let mut pending_writes = PendingWrites::default();
     let suspended_commands = never();
-    let suspended_paste_actions = never();
     'worker: loop {
+        match paste_actions.try_recv() {
+            Ok(action) => {
+                if !service_paste_action(
+                    action,
+                    &mut pending_paste,
+                    &mut approved_paste,
+                    coalesced_wake_sender,
+                    shutdown,
+                    events,
+                ) {
+                    break;
+                }
+                continue;
+            }
+            Err(TryRecvError::Disconnected) => break,
+            Err(TryRecvError::Empty) => {}
+        }
         match pending_writes.flush_one(writer) {
             WriteFlush::Sent => {
                 let _ignored =
@@ -579,40 +603,41 @@ fn run_worker(
             WriteFlush::Disconnected => break,
             WriteFlush::Empty | WriteFlush::Full => {}
         }
+        if pending_writes.accepts_ui_sources()
+            && let Some(approved) = approved_paste.take()
+        {
+            if !queue_write(
+                &mut pending_writes,
+                WriteSource::Ui,
+                shutdown,
+                events,
+                approved,
+            ) {
+                break;
+            }
+            let _ignored = wake_coalesced(coalesced_wake_sender, "resume terminal input");
+            continue;
+        }
         let accepts_ui_sources = pending_writes.accepts_ui_sources();
-        let active_commands = if pending_paste.is_some() || !accepts_ui_sources {
-            &suspended_commands
-        } else {
-            commands
-        };
-        let active_paste_actions = if accepts_ui_sources {
-            paste_actions
-        } else {
-            &suspended_paste_actions
-        };
+        let active_commands =
+            if pending_paste.is_some() || approved_paste.is_some() || !accepts_ui_sources {
+                &suspended_commands
+            } else {
+                commands
+            };
         select! {
             recv(shutdown) -> _ => break,
-            recv(active_paste_actions) -> message => match message {
-                Ok(PasteAction::Confirm(input)) if pending_paste.as_ref() == Some(&input) => {
-                    let approved = pending_paste.take().expect("matching pending paste").approve();
-                    if !queue_write(&mut pending_writes, WriteSource::Ui, shutdown, events, approved) {
-                        break 'worker;
-                    }
-                    let _ignored = wake_coalesced(coalesced_wake_sender, "resume terminal input");
-                }
-                Ok(PasteAction::Confirm(_)) if pending_paste.is_some() => {
-                    if !emit_event(events, shutdown, TerminalEvent::Error("paste confirmation does not match the pending input".to_owned())) {
-                        break 'worker;
-                    }
-                }
-                Ok(PasteAction::Cancel) if pending_paste.is_some() => {
-                    pending_paste = None;
-                    let _ignored = wake_coalesced(coalesced_wake_sender, "resume terminal input");
-                }
-                Ok(PasteAction::Confirm(_)) => if !emit_event(events, shutdown, TerminalEvent::Error("no paste is awaiting confirmation".to_owned())) {
+            recv(paste_actions) -> message => match message {
+                Ok(action) => if !service_paste_action(
+                    action,
+                    &mut pending_paste,
+                    &mut approved_paste,
+                    coalesced_wake_sender,
+                    shutdown,
+                    events,
+                ) {
                     break 'worker;
                 },
-                Ok(PasteAction::Cancel) => {},
                 Err(_) => break,
             },
             recv(active_commands) -> message => match message {
@@ -638,7 +663,7 @@ fn run_worker(
                 if !process_coalesced(
                     commands,
                     ingress,
-                    pending_paste.is_none() && accepts_ui_sources,
+                    pending_paste.is_none() && approved_paste.is_none() && accepts_ui_sources,
                     coalesced_wake_sender,
                     &mut engine,
                     &*master,
@@ -717,6 +742,48 @@ fn run_worker(
                 output_tail: String::from_utf8_lossy(&output_tail).into_owned(),
             },
         );
+    }
+}
+
+fn process_paste_action(
+    action: PasteAction,
+    pending: &mut Option<EncodedInput>,
+    approved: &mut Option<Vec<u8>>,
+) -> PasteControl {
+    match action {
+        PasteAction::Confirm(input) if pending.as_ref() == Some(&input) => {
+            *approved = pending.take().map(EncodedInput::approve);
+            PasteControl::Resume
+        }
+        PasteAction::Confirm(_) if pending.is_some() => {
+            PasteControl::Error("paste confirmation does not match the pending input")
+        }
+        PasteAction::Cancel if pending.is_some() => {
+            *pending = None;
+            PasteControl::Resume
+        }
+        PasteAction::Confirm(_) => PasteControl::Error("no paste is awaiting confirmation"),
+        PasteAction::Cancel => PasteControl::None,
+    }
+}
+
+fn service_paste_action(
+    action: PasteAction,
+    pending: &mut Option<EncodedInput>,
+    approved: &mut Option<Vec<u8>>,
+    coalesced_wake: &Sender<()>,
+    shutdown: &Receiver<()>,
+    events: &Sender<TerminalEvent>,
+) -> bool {
+    match process_paste_action(action, pending, approved) {
+        PasteControl::Resume => {
+            let _ignored = wake_coalesced(coalesced_wake, "resume terminal input");
+            true
+        }
+        PasteControl::Error(error) => {
+            emit_event(events, shutdown, TerminalEvent::Error(error.to_owned()))
+        }
+        PasteControl::None => true,
     }
 }
 
@@ -1116,7 +1183,7 @@ fn pty_size(size: GridSize, pixel_size: PixelSize) -> Result<PtySize, WorkerErro
 mod tests {
     use std::sync::Arc;
 
-    use input::{Modifiers, MouseAction, MouseButton, MouseInput};
+    use input::{Modifiers, MouseAction, MouseButton, MouseInput, TerminalModes};
 
     use super::*;
 
@@ -1279,6 +1346,50 @@ mod tests {
         assert_eq!(receiver.recv().expect("release writer handoff"), vec![0]);
         assert_eq!(pending.flush_one(&writer), WriteFlush::Sent);
         assert!(pending.bytes < WRITE_MAX_BYTES);
+    }
+
+    #[test]
+    fn saturated_writer_keeps_paste_controls_live_and_defers_approval() {
+        let mut writes = PendingWrites::default();
+        writes
+            .enqueue(vec![0; WRITE_HIGH_WATER], WriteSource::Ui)
+            .expect("saturate UI writes");
+        assert!(!writes.accepts_ui_sources());
+        let encoded = encode_input(
+            &KeyInput::paste("echo approved\necho second"),
+            TerminalModes::default(),
+        );
+        assert!(encoded.requires_confirmation());
+
+        let mut pending = Some(encoded.clone());
+        let mut approved = None;
+        assert_eq!(
+            process_paste_action(
+                PasteAction::Confirm(encoded.clone()),
+                &mut pending,
+                &mut approved
+            ),
+            PasteControl::Resume
+        );
+        assert!(pending.is_none());
+        assert_eq!(approved, Some(encoded.approve()));
+        assert!(
+            !writes.accepts_ui_sources(),
+            "approval does not bypass backpressure"
+        );
+
+        let cancel_input = encode_input(
+            &KeyInput::paste("echo cancelled\necho second"),
+            TerminalModes::default(),
+        );
+        let mut pending = Some(cancel_input);
+        let mut approved = None;
+        assert_eq!(
+            process_paste_action(PasteAction::Cancel, &mut pending, &mut approved),
+            PasteControl::Resume
+        );
+        assert!(pending.is_none());
+        assert!(approved.is_none());
     }
 
     #[test]

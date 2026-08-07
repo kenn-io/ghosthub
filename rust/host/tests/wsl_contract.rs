@@ -725,6 +725,11 @@ fn retries_discovery_when_the_distro_restarts_between_crossings() {
     assert_eq!(snapshot.runtime().init_start_ticks(), 200);
     assert_eq!(snapshot.sessions()[0].name(), "fresh");
     assert_eq!(host.runner().calls().len(), 5);
+    assert_eq!(
+        host.runner().attachment_plans().len(),
+        6,
+        "the replacement runtime must receive its own ordinary-client admission proof"
+    );
 }
 
 #[test]
