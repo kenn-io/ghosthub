@@ -817,8 +817,8 @@ struct WorkspaceWindow: View {
                 applyTmuxSessionTheme: { [sceneModel] selection in
                     try await sceneModel.applyTheme(to: selection)
                 },
-                createTmuxSession: { [sceneModel] selection in
-                    sceneModel.createTmuxSession(selection)
+                createTmuxSession: { [sceneModel] request in
+                    sceneModel.createTmuxSession(request)
                 },
                 refreshWorkspaceInventory: { [sceneModel] in
                     sceneModel.refreshWorkspaceInventory()

@@ -2,6 +2,33 @@ import Foundation
 import GhosthubWorkspace
 
 public enum SSHHostSanitizer {
+    public static func launchProfiles(
+        _ profiles: [TmuxLaunchProfile]
+    ) -> [TmuxLaunchProfile] {
+        var seenNames = Set<String>()
+
+        return profiles.compactMap { profile in
+            let name = profile.name.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            let command = profile.command.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            let normalizedName = name.lowercased()
+            guard !name.isEmpty,
+                  !command.isEmpty,
+                  seenNames.insert(normalizedName).inserted
+            else {
+                return nil
+            }
+            return TmuxLaunchProfile(
+                id: profile.id,
+                name: name,
+                command: command
+            )
+        }
+    }
+
     public static func sshHosts(
         _ hosts: [SSHHost]
     ) -> [SSHHost] {
@@ -29,7 +56,8 @@ public enum SSHHostSanitizer {
                 configKey: configKey,
                 name: name,
                 platform: host.platform,
-                sshDestination: sshDestination
+                sshDestination: sshDestination,
+                launchProfiles: launchProfiles(host.launchProfiles)
             )
         }
     }

@@ -9,6 +9,7 @@ use_directory_urls = true
 nav = [
   {"Overview" = "index.md"},
   {"Quick Start" = "quickstart.md"},
+  {"Launch Profiles" = "launch-profiles.md"},
   {"Architecture" = "architecture.md"},
   {"Threat Model" = "threat-model.md"},
   {"Terminal Sessions" = "terminal-sessions.md"},

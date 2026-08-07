@@ -76,6 +76,35 @@ struct BorrowedTmuxSessionViewTests {
         #expect(settingsCount == 1)
     }
 
+    @Test("a profile command retry requires explicit confirmation")
+    func profileCommandRetryRequiresConfirmation() {
+        var confirmedRetryCount = 0
+        let retainedCommand = "printf '%s\\n' 'retained command' -- --literal"
+        let view = BorrowedTmuxSessionView(
+            handle: BorrowedTmuxSessionHandle(
+                id: UUID(), hostID: UUID(), name: "editor", surfaceID: UUID()
+            ),
+            hostName: "build-box",
+            isRemoteHost: true,
+            connectionState: .disconnected(
+                reason: "The launch command may have already run."
+            ),
+            retryRequiresConfirmation: true,
+            retryCommand: retainedCommand,
+            surface: { nil },
+            onCloseRequest: {},
+            onRetryRequest: {},
+            onConfirmedRetryRequest: { confirmedRetryCount += 1 },
+            onHostSettingsRequest: {}
+        )
+
+        #expect(view.retryRequiresConfirmation)
+        #expect(view.recoveryActionTitle == "Retry Command")
+        #expect(view.retryConfirmationCommand == retainedCommand)
+        view.onConfirmedRetryRequest()
+        #expect(confirmedRetryCount == 1)
+    }
+
     @Test("an exited tmux client is presented as a closed session")
     func endedSessionPresentation() {
         let view = BorrowedTmuxSessionView(

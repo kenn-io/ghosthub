@@ -1,8 +1,34 @@
+import Foundation
 import GhosthubWorkspace
 import Testing
 @testable import GhosthubSettings
 
 struct SSHHostDraftTests {
+    @Test("draft preserves launch profiles through host conversion")
+    func preservesLaunchProfiles() throws {
+        let profileID = try #require(
+            UUID(uuidString: "44444444-4444-4444-4444-444444444444")
+        )
+        let host = SSHHost(
+            configKey: "remote",
+            name: "Remote",
+            platform: .linux,
+            sshDestination: "dev.example",
+            launchProfiles: [
+                TmuxLaunchProfile(
+                    id: profileID,
+                    name: "Codex",
+                    command: "docker exec -it codex codex"
+                ),
+            ]
+        )
+
+        let draft = SSHHostDraft(host)
+
+        #expect(draft.launchProfiles == host.launchProfiles)
+        #expect(draft.sshHost == host)
+    }
+
     @Test("SSH host drafts preserve host identity")
     func preservesHostIdentity() {
         let host = SSHHost(

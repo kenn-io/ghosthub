@@ -1,6 +1,7 @@
-import SwiftUI
+import AppKit
 import GhosthubSettings
 import GhosthubWorkspace
+import SwiftUI
 
 enum HostConnectionField: Hashable {
     case displayName
@@ -59,6 +60,118 @@ struct PendingSSHHostTrust: Identifiable {
             confirmation.algorithm,
             confirmation.fingerprint,
         ].joined(separator: ":")
+    }
+}
+
+private struct ShellCommandEditor: NSViewRepresentable {
+    @Binding var text: String
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(text: $text)
+    }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSTextView.scrollableTextView()
+        guard let textView = scrollView.documentView as? NSTextView else {
+            return scrollView
+        }
+        textView.delegate = context.coordinator
+        textView.string = text
+        textView.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        textView.drawsBackground = false
+        textView.isRichText = false
+        textView.allowsUndo = true
+        configureTextChecking(for: textView)
+        scrollView.drawsBackground = false
+        scrollView.borderType = .noBorder
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        guard let textView = scrollView.documentView as? NSTextView else {
+            return
+        }
+        context.coordinator.text = $text
+        if textView.string != text {
+            textView.string = text
+        }
+        configureTextChecking(for: textView)
+    }
+
+    private func configureTextChecking(for textView: NSTextView) {
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.isAutomaticTextReplacementEnabled = false
+        textView.isAutomaticSpellingCorrectionEnabled = false
+        textView.isContinuousSpellCheckingEnabled = false
+        textView.isGrammarCheckingEnabled = false
+    }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var text: Binding<String>
+
+        init(text: Binding<String>) {
+            self.text = text
+        }
+
+        func textDidChange(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView,
+                  text.wrappedValue != textView.string
+            else {
+                return
+            }
+            text.wrappedValue = textView.string
+        }
+    }
+}
+
+private struct TmuxLaunchProfileEditorRow: View {
+    @Binding var profile: TmuxLaunchProfile
+    let profiles: [TmuxLaunchProfile]
+    let onRemove: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                TextField("Profile name", text: $profile.name)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityIdentifier(
+                        "launch-profile-name-\(profile.id.uuidString)"
+                    )
+                Button(role: .destructive, action: onRemove) {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.borderless)
+                .help("Remove Launch Profile")
+                .accessibilityLabel("Remove \(profile.name) launch profile")
+            }
+
+            ShellCommandEditor(text: $profile.command)
+                .frame(minHeight: 58)
+                .padding(4)
+                .background(.background)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(.separator, lineWidth: 1)
+                }
+                .accessibilityLabel("Command for \(profile.name)")
+                .accessibilityIdentifier(
+                    "launch-profile-command-\(profile.id.uuidString)"
+                )
+
+            if let message = TmuxLaunchProfileValidation.message(
+                for: profile,
+                in: profiles
+            ) {
+                Text(message)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.red)
+            }
+        }
+        .padding(10)
+        .background(.quaternary.opacity(0.35))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
 
@@ -469,6 +582,40 @@ public struct HostsSettingsView: View {
                         }
                     }
 
+                    if draft.platform != .windows,
+                       let profilesBinding = selectedLaunchProfilesBinding() {
+                        settingsSection("Launch Profiles") {
+                            Text(
+                                "Saved commands run as trusted user code only"
+                                    + " when you explicitly create a new tmux"
+                                    + " session with that profile. Commands are"
+                                    + " stored in local Ghosthub settings; do"
+                                    + " not put passwords or other secrets here."
+                            )
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                            ForEach(profilesBinding) { $profile in
+                                TmuxLaunchProfileEditorRow(
+                                    profile: $profile,
+                                    profiles: profilesBinding.wrappedValue,
+                                    onRemove: {
+                                        removeLaunchProfile(profile.id)
+                                    }
+                                )
+                            }
+
+                            Button {
+                                addLaunchProfile()
+                            } label: {
+                                Label("Add Launch Profile", systemImage: "plus")
+                            }
+                            .accessibilityIdentifier("add-launch-profile")
+                        }
+                        .accessibilityIdentifier("launch-profiles-section")
+                    }
+
                     if isRemoteKwtReady, draft.platform != .windows {
                         settingsSection("Projects") {
                             Text(
@@ -659,6 +806,15 @@ public struct HostsSettingsView: View {
         )
     }
 
+    private func selectedLaunchProfilesBinding()
+        -> Binding<[TmuxLaunchProfile]>? {
+        guard let index = selectedSSHHostDraftIndex else { return nil }
+        return Binding(
+            get: { sshHosts[index].launchProfiles },
+            set: { sshHosts[index].launchProfiles = $0 }
+        )
+    }
+
     // MARK: - Actions
 
     private func addSSHHost() {
@@ -671,6 +827,18 @@ public struct HostsSettingsView: View {
         Task { @MainActor in
             focusedConnectionField = .displayName
         }
+    }
+
+    private func addLaunchProfile() {
+        guard let index = selectedSSHHostDraftIndex else { return }
+        sshHosts[index].launchProfiles.append(
+            TmuxLaunchProfile(name: "New Profile", command: "")
+        )
+    }
+
+    private func removeLaunchProfile(_ id: UUID) {
+        guard let index = selectedSSHHostDraftIndex else { return }
+        sshHosts[index].launchProfiles.removeAll { $0.id == id }
     }
 
     private func removeSelectedSSHHost() {

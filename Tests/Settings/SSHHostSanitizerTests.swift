@@ -1,8 +1,46 @@
+import Foundation
 import GhosthubWorkspace
 import Testing
 @testable import GhosthubSettings
 
 struct SSHHostSanitizerTests {
+    @Test("sanitizes launch profiles without changing their order")
+    func sanitizesLaunchProfiles() throws {
+        let firstID = try #require(
+            UUID(uuidString: "11111111-1111-1111-1111-111111111111")
+        )
+        let duplicateID = try #require(
+            UUID(uuidString: "22222222-2222-2222-2222-222222222222")
+        )
+        let secondID = try #require(
+            UUID(uuidString: "33333333-3333-3333-3333-333333333333")
+        )
+        let sanitized = SSHHostSanitizer.launchProfiles([
+            TmuxLaunchProfile(
+                id: firstID,
+                name: " Codex ",
+                command: "\n sudo docker exec -it codex codex \n"
+            ),
+            TmuxLaunchProfile(
+                id: duplicateID,
+                name: "codex",
+                command: "should be dropped"
+            ),
+            TmuxLaunchProfile(name: "Blank command", command: " \n"),
+            TmuxLaunchProfile(name: " \n", command: "echo ignored"),
+            TmuxLaunchProfile(
+                id: secondID,
+                name: " REPL ",
+                command: "printf 'one'\nprintf 'two'"
+            ),
+        ])
+
+        #expect(sanitized.map(\.id) == [firstID, secondID])
+        #expect(sanitized.map(\.name) == ["Codex", "REPL"])
+        #expect(sanitized[0].command == "sudo docker exec -it codex codex")
+        #expect(sanitized[1].command == "printf 'one'\nprintf 'two'")
+    }
+
     @Test("SSH hosts trim required fields")
     func trimsRequiredFields() throws {
         let sanitized = SSHHostSanitizer.sshHosts([

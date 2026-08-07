@@ -174,8 +174,13 @@ public struct RootView: View {
                 NewTmuxSessionSheet(
                     host: host,
                     hosts: snapshot.hosts,
-                    onCreate: { selectedHost, name in
-                        createTmuxSession(on: selectedHost, name: name)
+                    configuredHosts: settingsStore.sshHosts,
+                    onCreate: { selectedHost, name, initialCommand in
+                        createTmuxSession(
+                            on: selectedHost,
+                            name: name,
+                            initialCommand: initialCommand
+                        )
                         newTmuxSessionHost = nil
                     },
                     onCancel: { newTmuxSessionHost = nil }
@@ -678,7 +683,11 @@ public struct RootView: View {
         tmuxSelectionBaseline = selection
     }
 
-    private func createTmuxSession(on host: HostSummary, name: String) {
+    private func createTmuxSession(
+        on host: HostSummary,
+        name: String,
+        initialCommand: String?
+    ) {
         let session = WorkspaceTmuxSessionSelection(
             hostID: host.id,
             name: name
@@ -690,7 +699,10 @@ public struct RootView: View {
             visibility: worktreeVisibility
         ))
         tmuxSelectionBaseline = selection
-        handlers.createTmuxSession?(session)
+        handlers.createTmuxSession?(WorkspaceTmuxSessionCreationRequest(
+            selection: session,
+            initialCommand: initialCommand
+        ))
     }
 
     private func requestSessionKill(

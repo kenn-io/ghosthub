@@ -108,6 +108,38 @@ final class SettingsViewTests: XCTestCase {
         assertStableSize(fittingSize(for: store))
     }
 
+    func testLaunchProfileCommandEditorDisablesAutomaticTextChanges() throws {
+        let command = #"runner --mode "safe""#
+        let store = makeSettingsStore()
+        store.selectedDomain = .hosts
+        store.setSSHHosts([
+            SSHHost(
+                configKey: "host-a",
+                name: "Host A",
+                platform: .linux,
+                sshDestination: "user-a@host-a.example",
+                launchProfiles: [
+                    TmuxLaunchProfile(name: "Runner", command: command),
+                ]
+            ),
+        ])
+        let hostingView = hostView(
+            SettingsView(store: store),
+            size: stableMinimumSize
+        )
+        let editor = try XCTUnwrap(
+            descendants(of: hostingView)
+                .compactMap { $0 as? NSTextView }
+                .first { $0.string == command }
+        )
+
+        XCTAssertFalse(editor.isAutomaticQuoteSubstitutionEnabled)
+        XCTAssertFalse(editor.isAutomaticDashSubstitutionEnabled)
+        XCTAssertFalse(editor.isAutomaticTextReplacementEnabled)
+        XCTAssertFalse(editor.isAutomaticSpellingCorrectionEnabled)
+        XCTAssertFalse(editor.isContinuousSpellCheckingEnabled)
+    }
+
     func testAppearanceDomainUsesStableMinimumSize() {
         let store = makeSettingsStore()
         store.selectedDomain = .appearance

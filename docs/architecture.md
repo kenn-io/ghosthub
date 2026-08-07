@@ -450,6 +450,16 @@ remove a newly created session before the client arrives. Remote presentation
 performs one idempotent, detached create-if-absent phase before ordinary
 attachment. Once established, its native reconnect supervisor permanently
 limits all later replacements to attach-only clients.
+Configured POSIX SSH hosts may also persist ordered launch profiles, each with
+a stable identifier, display name, and trusted user-authored shell command.
+The selected profile becomes an optional field on the creation request; it is
+not part of session identity, discovery, navigation, or restoration. Profile
+creation replaces the detached remote phase with one PTY-backed atomic
+`new-session -A` invocation whose initial pane runs the command. If that SSH
+transport fails, Ghosthub probes the exact session: presence advances to the
+ordinary attach-only loop, absence retries the initial invocation, and every
+other result exits. Existing or discovered same-named sessions always attach
+without the profile command.
 Before opening an ordinary worktree, Ghosthub asks kwt to establish or repair
 that exact path's canonical session without attaching. Kwt inventory includes
 worktrees whose sessions are not currently running, so inventory membership is
@@ -498,6 +508,7 @@ Ghosthub local persistence stores app-owned state:
 - terminal presentation state
 - selected worktree/window state
 - settings that are explicitly native-app concerns
+- configured SSH hosts and their launch profiles
 - the anonymous telemetry installation UUID and last attempted activity day
 
 Do not add database migrations before the first production release. Edit the

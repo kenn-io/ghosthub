@@ -136,6 +136,16 @@ const imageAlt = {
             VMs as SSH hosts. Add your account under{' '}
             <strong>Settings → Integrations</strong> to connect them.
           </p>
+          <p>
+            For a macOS or Linux host, add reusable <strong>Launch Profiles</strong>{' '}
+            in the same settings pane, then choose one under{' '}
+            <strong>Start with</strong> when creating a session. The command runs
+            only for that new session; reconnecting and opening existing sessions
+            are always attach-only. If creation is interrupted and the session is
+            absent, Ghosthub requires confirmation before running the command
+            again. See <a href="/docs/launch-profiles/">Launch Profiles</a>{' '}
+            for setup, lifecycle, and security guidance.
+          </p>
           <aside class="reconnect">
             <span aria-hidden="true">↻</span>
             <p>

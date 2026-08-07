@@ -239,6 +239,19 @@ struct TmuxConnectionRecoveryRequestRouter {
     }
 }
 
+public struct WorkspaceTmuxSessionCreationRequest: Equatable, Sendable {
+    public let selection: WorkspaceTmuxSessionSelection
+    public let initialCommand: String?
+
+    public init(
+        selection: WorkspaceTmuxSessionSelection,
+        initialCommand: String? = nil
+    ) {
+        self.selection = selection
+        self.initialCommand = initialCommand
+    }
+}
+
 public struct InteractionHandlers {
     public let closeWindow: (() -> Void)?
     public let dismissLogViewer: (() -> Void)?
@@ -254,7 +267,8 @@ public struct InteractionHandlers {
         ((TmuxSessionKillRequest) async throws -> Void)?
     public let applyTmuxSessionTheme:
         ((WorkspaceTmuxSessionSelection) async throws -> Void)?
-    public let createTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)?
+    public let createTmuxSession:
+        ((WorkspaceTmuxSessionCreationRequest) -> Void)?
     public let refreshWorkspaceInventory: (() -> Void)?
     public let reconnectActiveTmuxSessionNow: (() -> Void)?
     public let resumeTmuxReconnectAfterSSHRecovery:
@@ -298,7 +312,8 @@ public struct InteractionHandlers {
         ((TmuxSessionKillRequest) async throws -> Void)? = nil,
         applyTmuxSessionTheme:
         ((WorkspaceTmuxSessionSelection) async throws -> Void)? = nil,
-        createTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)? = nil,
+        createTmuxSession:
+        ((WorkspaceTmuxSessionCreationRequest) -> Void)? = nil,
         refreshWorkspaceInventory: (() -> Void)? = nil,
         reconnectActiveTmuxSessionNow: (() -> Void)? = nil,
         resumeTmuxReconnectAfterSSHRecovery:

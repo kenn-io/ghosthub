@@ -186,6 +186,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
     public let protectedWorkspacePath: String?
     public let presentationStyle: TmuxPresentationStyle?
     public var launchMode: TmuxAttachmentLaunchMode
+    public let initialCommand: String?
 
     public init(
         sessionName: String,
@@ -194,7 +195,8 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         workspacePath: String? = nil,
         protectedWorkspacePath: String? = nil,
         presentationStyle: TmuxPresentationStyle? = nil,
-        launchMode: TmuxAttachmentLaunchMode = .attach
+        launchMode: TmuxAttachmentLaunchMode = .attach,
+        initialCommand: String? = nil
     ) {
         self.sessionName = sessionName
         self.host = host
@@ -203,6 +205,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         self.protectedWorkspacePath = protectedWorkspacePath
         self.presentationStyle = presentationStyle
         self.launchMode = launchMode
+        self.initialCommand = initialCommand
     }
 
     public func attachCommand(
@@ -249,12 +252,22 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                     )
                 }
             } else if launchMode == .create {
-                command = remoteCreateThenAttachCommand(
-                    info: info,
-                    tmuxPath: tmuxPath,
-                    workingDirectory: workingDirectory,
-                    sshConnectionArguments: sshConnectionArguments
-                )
+                if let initialCommand, !initialCommand.isEmpty {
+                    command = remoteInitialCommandAttachCommand(
+                        info: info,
+                        tmuxPath: tmuxPath,
+                        workingDirectory: workingDirectory,
+                        initialCommand: initialCommand,
+                        sshConnectionArguments: sshConnectionArguments
+                    )
+                } else {
+                    command = remoteCreateThenAttachCommand(
+                        info: info,
+                        tmuxPath: tmuxPath,
+                        workingDirectory: workingDirectory,
+                        sshConnectionArguments: sshConnectionArguments
+                    )
+                }
             } else if launchMode != .attachOnly,
                       protectedWorkspacePath == nil,
                       workspacePath != nil {
@@ -392,6 +405,9 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
             tmuxPath,
             "new-session", "-A", "-E", "-s", sessionName
         ) + (workingDirectory.map { ["-c", $0] } ?? [])
+        if let initialCommand, !initialCommand.isEmpty {
+            arguments.append(initialCommand)
+        }
         if let presentationCommand {
             arguments = presentationCommand.appendingOptions(to: arguments)
         }
@@ -714,6 +730,41 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
             "/bin/sh", "-c", Self.remoteCreateThenAttachScript,
             "ghosthub-ssh-tmux-create-once", createOnce, attach,
         ])
+    }
+
+    /// Profile-backed creation must allocate the SSH PTY before tmux starts so
+    /// interactive commands such as sudo and docker exec inherit the terminal
+    /// that remains attached to the outer host session. Native recovery probes
+    /// the exact session before deciding whether creation may run again.
+    private func remoteInitialCommandAttachCommand(
+        info: SSHHostInfo,
+        tmuxPath: String,
+        workingDirectory: String?,
+        initialCommand: String,
+        sshConnectionArguments: [String]
+    ) -> String {
+        var createArguments = tmuxArguments(
+            tmuxPath,
+            "new-session", "-A", "-E", "-s", sessionName
+        ) + (workingDirectory.map { ["-c", $0] } ?? [])
+        createArguments.append(initialCommand)
+        if let presentationCommand {
+            createArguments = presentationCommand.appendingOptions(
+                to: createArguments
+            )
+        }
+        let createAndAttach = createArguments
+            .map(shellQuotedCommandArgument)
+            .joined(separator: " ")
+        let initialBody = "unset TMUX TMUX_PANE; exec \(createAndAttach)"
+        return shellCommand(
+            sshArguments(
+                info: info,
+                allocateTTY: true,
+                remoteCommand: accountLoginShellCommand(initialBody),
+                sshConnectionArguments: sshConnectionArguments
+            )
+        )
     }
 
     private func createIfAbsentCommand(

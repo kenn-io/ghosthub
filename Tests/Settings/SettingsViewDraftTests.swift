@@ -203,6 +203,34 @@ struct SettingsViewDraftTests {
         #expect(store.exeAccounts == [disabledAccount])
     }
 
+    @Test("persist sanitizes and writes host launch profiles")
+    func persistWritesLaunchProfiles() {
+        let store = makeStore()
+        var draft = SettingsViewDraft(store: store)
+        draft.sshHosts = [
+            SSHHostDraft(
+                configKey: "remote",
+                name: "Remote",
+                platform: .linux,
+                sshDestination: "dev.example",
+                launchProfiles: [
+                    TmuxLaunchProfile(
+                        name: " Codex ",
+                        command: " docker exec -it codex codex "
+                    ),
+                ]
+            ),
+        ]
+
+        _ = draft.persist(to: store)
+
+        #expect(store.sshHosts[0].launchProfiles[0].name == "Codex")
+        #expect(
+            store.sshHosts[0].launchProfiles[0].command
+                == "docker exec -it codex codex"
+        )
+    }
+
     @Test("host sync preserves selection by stable key")
     func hostSyncPreservesSelection() throws {
         let store = makeStore()
