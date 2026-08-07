@@ -326,11 +326,26 @@ impl TerminalKeyboard {
         event == InputKeyEvent::Press || self.pressed.contains_key(key)
     }
 
-    fn input_for(&self, key: &str, event: InputKeyEvent) -> Option<KeyInput> {
-        self.pressed
-            .get(key)
-            .cloned()
-            .map(|input| input.with_event(event))
+    fn input_for(
+        &self,
+        key: &str,
+        event: InputKeyEvent,
+        modifiers: InputModifiers,
+    ) -> Option<KeyInput> {
+        self.pressed.get(key).cloned().map(|mut input| {
+            match &mut input {
+                KeyInput::Text {
+                    modifiers: input_modifiers,
+                    ..
+                }
+                | KeyInput::Named {
+                    modifiers: input_modifiers,
+                    ..
+                } => *input_modifiers = modifiers,
+                KeyInput::Paste(_) => {}
+            }
+            input.with_event(event)
+        })
     }
 
     fn finish_accepted(
@@ -711,8 +726,10 @@ impl RootView {
         } else {
             InputKeyEvent::Press
         };
-        let input = terminal_key_input(keystroke, event)
-            .or_else(|| self.keyboard.input_for(&keystroke.key, event));
+        let input = terminal_key_input(keystroke, event).or_else(|| {
+            self.keyboard
+                .input_for(&keystroke.key, event, input_modifiers(keystroke.modifiers))
+        });
         if let Some(input) = input {
             self.send_key_event(presentation_id, input, &keystroke.key, event);
             cx.stop_propagation();
@@ -733,10 +750,11 @@ impl RootView {
             cx.stop_propagation();
             return;
         }
-        if let Some(input) = self
-            .keyboard
-            .input_for(&event.keystroke.key, InputKeyEvent::Release)
-        {
+        if let Some(input) = self.keyboard.input_for(
+            &event.keystroke.key,
+            InputKeyEvent::Release,
+            input_modifiers(event.keystroke.modifiers),
+        ) {
             self.send_key_event(
                 presentation_id,
                 input,
@@ -2323,9 +2341,15 @@ mod tests {
         assert!(keyboard.accepts("a", KeyEvent::Release));
         assert!(!keyboard.accepts("b", KeyEvent::Repeat));
         assert!(!keyboard.accepts("b", KeyEvent::Release));
+        let release_modifiers = Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        };
         assert_eq!(
-            keyboard.input_for("a", KeyEvent::Release),
-            Some(press.clone().with_event(KeyEvent::Release))
+            keyboard.input_for("a", KeyEvent::Release, release_modifiers),
+            Some(
+                KeyInput::text_with_key("!", "1", release_modifiers).with_event(KeyEvent::Release)
+            )
         );
         assert_eq!(
             terminal_key_input(&release_without_text, KeyEvent::Release),

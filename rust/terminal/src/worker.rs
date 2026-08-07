@@ -122,10 +122,16 @@ enum ReaderMessage {
     Error(String),
 }
 
+enum WriterMessage {
+    Completed,
+    Error(String),
+}
+
 #[derive(Default)]
 struct PendingWrites {
     queue: VecDeque<Vec<u8>>,
     bytes: usize,
+    in_flight: Option<usize>,
 }
 
 #[derive(Clone, Copy)]
@@ -137,6 +143,10 @@ enum WriteSource {
 impl PendingWrites {
     fn accepts_ui_sources(&self) -> bool {
         self.bytes < WRITE_HIGH_WATER
+    }
+
+    fn is_empty(&self) -> bool {
+        self.bytes == 0
     }
 
     fn enqueue(&mut self, bytes: Vec<u8>, source: WriteSource) -> Result<(), WorkerError> {
@@ -163,13 +173,16 @@ impl PendingWrites {
     }
 
     fn flush_one(&mut self, writer: &Sender<Vec<u8>>) -> WriteFlush {
+        if self.in_flight.is_some() {
+            return WriteFlush::Full;
+        }
         let Some(bytes) = self.queue.pop_front() else {
             return WriteFlush::Empty;
         };
         let length = bytes.len();
         match writer.try_send(bytes) {
             Ok(()) => {
-                self.bytes -= length;
+                self.in_flight = Some(length);
                 WriteFlush::Sent
             }
             Err(TrySendError::Full(bytes)) => {
@@ -178,6 +191,14 @@ impl PendingWrites {
             }
             Err(TrySendError::Disconnected(_)) => WriteFlush::Disconnected,
         }
+    }
+
+    fn complete_write(&mut self) -> bool {
+        let Some(length) = self.in_flight.take() else {
+            return false;
+        };
+        self.bytes = self.bytes.saturating_sub(length);
+        true
     }
 }
 
@@ -321,13 +342,15 @@ impl TerminalWorker {
         let (events_sender, events) = bounded(EVENT_CAPACITY);
         let (reader_sender, reader_receiver) = bounded(1);
         let (write_sender, write_receiver) = bounded(1);
+        let (write_complete_sender, write_complete_receiver) = bounded(1);
         let confirmed_live = Arc::new(AtomicBool::new(false));
         let worker_confirmed_live = Arc::clone(&confirmed_live);
 
-        let writer_errors = reader_sender.clone();
         thread::Builder::new()
             .name("ghosthub-pty-writer".to_owned())
-            .spawn(move || write_pty(writer, &write_receiver, &writer_errors))
+            .spawn(move || {
+                write_pty(writer, &write_receiver, &write_complete_sender);
+            })
             .map_err(|error| WorkerError::new("spawn PTY writer", error))?;
         thread::Builder::new()
             .name("ghosthub-pty-reader".to_owned())
@@ -350,6 +373,7 @@ impl TerminalWorker {
                     &shutdown_receiver,
                     &reader_receiver,
                     &write_sender,
+                    &write_complete_receiver,
                     &events_sender,
                     &worker_confirmed_live,
                 );
@@ -541,11 +565,14 @@ fn read_pty(reader: &mut dyn Read, sender: &Sender<ReaderMessage>) {
 fn write_pty(
     mut writer: Box<dyn Write + Send>,
     receiver: &Receiver<Vec<u8>>,
-    errors: &Sender<ReaderMessage>,
+    completions: &Sender<WriterMessage>,
 ) {
     while let Ok(bytes) = receiver.recv() {
         if let Err(error) = writer.write_all(&bytes).and_then(|()| writer.flush()) {
-            let _ignored = errors.send(ReaderMessage::Error(error.to_string()));
+            let _ignored = completions.try_send(WriterMessage::Error(error.to_string()));
+            return;
+        }
+        if completions.try_send(WriterMessage::Completed).is_err() {
             return;
         }
     }
@@ -569,6 +596,7 @@ fn run_worker(
     shutdown: &Receiver<()>,
     reader: &Receiver<ReaderMessage>,
     writer: &Sender<Vec<u8>>,
+    write_completions: &Receiver<WriterMessage>,
     events: &Sender<TerminalEvent>,
     confirmed_live: &AtomicBool,
 ) {
@@ -638,12 +666,16 @@ fn run_worker(
             continue;
         }
         let accepts_ui_sources = pending_writes.accepts_ui_sources();
-        let active_commands =
-            if pending_paste.is_some() || approved_paste.is_some() || !accepts_ui_sources {
-                &suspended_commands
-            } else {
-                commands
-            };
+        let ordered_work_ready = pending_writes.is_empty();
+        let active_commands = if pending_paste.is_some()
+            || approved_paste.is_some()
+            || !accepts_ui_sources
+            || !ordered_work_ready
+        {
+            &suspended_commands
+        } else {
+            commands
+        };
         select! {
             recv(shutdown) -> _ => break,
             recv(paste_actions) -> message => match message {
@@ -658,6 +690,36 @@ fn run_worker(
                     break 'worker;
                 },
                 Err(_) => break,
+            },
+            recv(write_completions) -> message => match message {
+                Ok(WriterMessage::Completed) if pending_writes.complete_write() => {
+                    let _ignored = wake_coalesced(
+                        coalesced_wake_sender,
+                        "resume ordered terminal work",
+                    );
+                }
+                Ok(WriterMessage::Completed) => {
+                    let _ignored = emit_event(
+                        events,
+                        shutdown,
+                        TerminalEvent::Error("unexpected PTY write completion".to_owned()),
+                    );
+                    break 'worker;
+                }
+                Ok(WriterMessage::Error(error)) => {
+                    let _ignored = emit_event(events, shutdown, TerminalEvent::Error(error));
+                    report_exit = true;
+                    break 'worker;
+                }
+                Err(_) => {
+                    let _ignored = emit_event(
+                        events,
+                        shutdown,
+                        TerminalEvent::Error("PTY writer stopped".to_owned()),
+                    );
+                    report_exit = true;
+                    break 'worker;
+                }
             },
             recv(active_commands) -> message => match message {
                 Ok(queued) => {
@@ -682,7 +744,10 @@ fn run_worker(
                 if !process_coalesced(
                     commands,
                     ingress,
-                    pending_paste.is_none() && approved_paste.is_none() && accepts_ui_sources,
+                    pending_paste.is_none()
+                        && approved_paste.is_none()
+                        && accepts_ui_sources
+                        && ordered_work_ready,
                     coalesced_wake_sender,
                     &mut engine,
                     &*master,
@@ -979,12 +1044,10 @@ fn take_coalesced_work(
                 (state.resize.take(), CoalescedInput::Disconnected, false)
             }
         }
-    } else if commands.is_empty() {
-        (state.resize.take(), CoalescedInput::None, false)
     } else {
-        // The queued commands predate this coalesced resize. Leave the resize
-        // pending until write capacity lets those commands cross the worker;
-        // applying it now would invert terminal input and geometry ordering.
+        // Outstanding writes and queued commands predate this coalesced work.
+        // Leave both resize and motion pending until the writer acknowledges
+        // completion; channel acceptance alone is not a PTY ordering boundary.
         (None, CoalescedInput::None, false)
     };
     CoalescedWork {
@@ -1250,6 +1313,20 @@ mod tests {
         }
     }
 
+    struct RecordingWriter(Arc<Mutex<Vec<&'static str>>>);
+
+    impl Write for RecordingWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("event log").push("write");
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.0.lock().expect("event log").push("flush");
+            Ok(())
+        }
+    }
+
     #[test]
     fn reported_exit_is_reaped_before_the_lifetime_guard_closes() {
         let events = Arc::new(Mutex::new(Vec::new()));
@@ -1403,6 +1480,31 @@ mod tests {
     }
 
     #[test]
+    fn writer_acknowledges_only_after_flushing_the_pty() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let (write_sender, write_receiver) = bounded(1);
+        let (completion_sender, completion_receiver) = bounded(1);
+        let writer_events = Arc::clone(&events);
+        let writer = thread::spawn(move || {
+            write_pty(
+                Box::new(RecordingWriter(writer_events)),
+                &write_receiver,
+                &completion_sender,
+            );
+        });
+
+        write_sender.send(vec![1, 2, 3]).expect("send PTY write");
+        assert!(matches!(
+            completion_receiver.recv().expect("write completion"),
+            WriterMessage::Completed
+        ));
+        assert_eq!(*events.lock().expect("event log"), ["write", "flush"]);
+
+        drop(write_sender);
+        writer.join().expect("join writer");
+    }
+
+    #[test]
     fn stalled_writer_throttles_ui_and_reserves_parser_reply_capacity() {
         let (writer, receiver) = bounded(1);
         writer.send(vec![0]).expect("fill writer handoff");
@@ -1434,7 +1536,19 @@ mod tests {
 
         assert_eq!(receiver.recv().expect("release writer handoff"), vec![0]);
         assert_eq!(pending.flush_one(&writer), WriteFlush::Sent);
+        assert_eq!(pending.bytes, WRITE_MAX_BYTES);
+        assert!(!pending.is_empty());
+        assert_eq!(pending.flush_one(&writer), WriteFlush::Full);
+        assert_eq!(
+            receiver.recv().expect("receive in-flight PTY write").len(),
+            WRITE_HIGH_WATER - 1
+        );
+        assert!(pending.complete_write());
         assert!(pending.bytes < WRITE_MAX_BYTES);
+        assert!(
+            !pending.complete_write(),
+            "one write produces one completion"
+        );
     }
 
     #[test]
@@ -1482,7 +1596,7 @@ mod tests {
     }
 
     #[test]
-    fn saturated_writer_still_services_resize_without_mouse_motion() {
+    fn outstanding_write_keeps_resize_and_motion_pending() {
         let mut pending = PendingWrites::default();
         pending
             .enqueue(vec![0; WRITE_HIGH_WATER], WriteSource::Ui)
@@ -1506,21 +1620,23 @@ mod tests {
             queued_bytes: 0,
         });
 
-        let work = take_coalesced_work(&receiver, &ingress, pending.accepts_ui_sources());
+        let blocked = take_coalesced_work(&receiver, &ingress, pending.is_empty());
 
+        assert!(blocked.resize.is_none());
+        assert!(matches!(blocked.input, CoalescedInput::None));
+        let state = ingress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(state.resize.expect("resize remains pending").size, expected);
+        assert!(state.mouse_motion.is_some(), "mouse motion remains pending");
+        drop(state);
+
+        let ready = take_coalesced_work(&receiver, &ingress, true);
         assert_eq!(
-            work.resize.expect("resize remains serviceable").size,
+            ready.resize.expect("resize follows write completion").size,
             expected
         );
-        assert!(matches!(work.input, CoalescedInput::None));
-        assert!(
-            ingress
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .mouse_motion
-                .is_some(),
-            "mouse motion remains coalesced until writes can accept UI input"
-        );
+        assert!(matches!(ready.input, CoalescedInput::Motion(_)));
     }
 
     #[test]
