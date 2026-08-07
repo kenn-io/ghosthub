@@ -99,6 +99,7 @@ final class WorktreeMutationCoordinator {
         let phase: Phase
         let scope: Scope
         let removalTombstones: Set<RemovalTombstone>
+        let removalPresentationTargets: Set<WorkspaceTmuxSessionSelection>
         let requiresWorkspaceReestablishment: Bool
     }
 
@@ -135,6 +136,7 @@ final class WorktreeMutationCoordinator {
                     phase: .began,
                     scope: scope,
                     removalTombstones: [],
+                    removalPresentationTargets: [],
                     requiresWorkspaceReestablishment: false
                 )
             )
@@ -159,6 +161,7 @@ final class WorktreeMutationCoordinator {
                     phase: .ended,
                     scope: scope,
                     removalTombstones: removalTombstones,
+                    removalPresentationTargets: [],
                     requiresWorkspaceReestablishment:
                     requiresWorkspaceReestablishment
                 )
@@ -169,7 +172,8 @@ final class WorktreeMutationCoordinator {
     func prepareRemoval(
         hostID: UUID,
         projectIdentity: String,
-        worktrees: Set<RemovalTombstone>
+        worktrees: Set<RemovalTombstone>,
+        presentationTargets: Set<WorkspaceTmuxSessionSelection>
     ) {
         let scope = Scope(
             hostID: hostID,
@@ -182,6 +186,7 @@ final class WorktreeMutationCoordinator {
                 phase: .willRemove,
                 scope: scope,
                 removalTombstones: worktrees,
+                removalPresentationTargets: presentationTargets,
                 requiresWorkspaceReestablishment: false
             )
         )
@@ -1567,7 +1572,11 @@ final class WorkspaceSceneModel: ObservableObject {
         worktreeMutationCoordinator.prepareRemoval(
             hostID: mutationHostID,
             projectIdentity: mutationProjectIdentity,
-            worktrees: [removalTombstone]
+            worktrees: [removalTombstone],
+            presentationTargets: Set(
+                WorkspaceSidebarModel.tmuxSessionSelection(for: worktree)
+                    .map { [$0] } ?? []
+            )
         )
 
         do {
@@ -2233,35 +2242,34 @@ final class WorkspaceSceneModel: ObservableObject {
     private func retainPresentationsForFailedRemoval(
         _ event: WorktreeMutationCoordinator.Event
     ) {
-        let presentations = retainedTmuxPresentations.values.filter {
-            presentation in
-            let selection = presentation.selection
-            guard selection.hostID == event.scope.hostID,
-                  let path = selection.worktreePath
-            else { return false }
-            return Self.removalTombstones(
-                event.removalTombstones,
-                matchPath: path,
-                generation: selection.worktreeGeneration
-            )
-        }
-        for presentation in presentations {
+        let presentations:
+            [(RetainedTmuxPresentation, WorkspaceTmuxSessionSelection)] =
+            retainedTmuxPresentations.values.compactMap { presentation in
+                let selection = presentation.selection
+                guard selection.hostID == event.scope.hostID else { return nil }
+                let endpointTarget = event.removalPresentationTargets.first {
+                    Self.sameTmuxEndpoint(selection, $0)
+                }
+                let pathMatches = selection.worktreePath.map { path in
+                    Self.removalTombstones(
+                        event.removalTombstones,
+                        matchPath: path,
+                        generation: selection.worktreeGeneration
+                    )
+                } == true
+                guard pathMatches || endpointTarget != nil else { return nil }
+                return (presentation, endpointTarget ?? selection)
+            }
+        for (presentation, restorationSelection) in presentations {
             let key = TmuxPresentationKey(presentation.selection)
             pendingRemovalPresentationRestorations[event.scope, default: [:]][
                 key
             ] = PendingRemovalPresentation(
-                selection: presentation.selection,
+                selection: restorationSelection,
                 launchMode: presentation.launchMode,
                 requiresWorkspaceEstablishment:
                 presentation.reconnectContext?.phase
-                    == .establishingWorkspace
-                    || (
-                        presentation.launchMode == .attach
-                            && presentation.selection.worktreePath != nil
-                            && !nativeTmuxSessionCoordinator.hasLaunched(
-                                presentation.handle
-                            )
-                    ),
+                    == .establishingWorkspace,
                 wasActive: activeBorrowedTmuxHandle == presentation.handle,
                 userNavigationRevision: userNavigationRevision
             )
@@ -2485,6 +2493,20 @@ final class WorkspaceSceneModel: ObservableObject {
             discovered,
             hostID: hostID
         )
+        for presentation in retainedTmuxPresentations.values {
+            guard var context = presentation.reconnectContext,
+                  context.phase == .establishingWorkspace,
+                  context.selection.hostID == hostID,
+                  context.selection.socketName == nil,
+                  discovered.contains(where: {
+                      $0.name == context.selection.name
+                  })
+            else { continue }
+            context.phase = .attachOnly
+            presentation.reconnectContext = context
+            presentation.establishmentConfirmationTask?.cancel()
+            presentation.establishmentConfirmationTask = nil
+        }
         applyInventoryOverlayIfNeeded()
         updateWorkspaceInventoryState()
         applyDeferredTmuxPresentationsIfReady()
@@ -3658,6 +3680,8 @@ final class WorkspaceSceneModel: ObservableObject {
             openWorkspace: openWorkspace
         )
         let reconnectContext = attachmentHost.isRemote
+            || openWorkspace
+            || protectedSessionNeedsEstablishment
             ? TmuxReconnectContext(
                 selection: selection,
                 handleID: handle.id,
