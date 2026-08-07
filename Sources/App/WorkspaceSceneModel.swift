@@ -2238,8 +2238,7 @@ final class WorkspaceSceneModel: ObservableObject {
         generation: String?
     ) -> Bool {
         tombstones.contains { tombstone in
-            tombstone.path == path
-                && generation.map { tombstone.generation == $0 } ?? true
+            tombstone.matches(path: path, generation: generation)
         }
     }
 

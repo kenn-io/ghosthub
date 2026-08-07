@@ -376,6 +376,61 @@ struct WorkspaceWorktreeRemovalTests {
     }
 
     @MainActor
+    @Test("post-removal refresh ignores a generationless stale record")
+    func postRemovalRefreshIgnoresGenerationlessRecord() async throws {
+        let environment = try setupStandardEnvironment()
+        var removable = WorktreeSummary.fixture(
+            hostID: environment.host.id,
+            projectID: environment.project.id,
+            scopedKey: "/tmp/ghosthub-feature",
+            name: "feature/remove",
+            path: "/tmp/ghosthub-feature",
+            branch: "feature/remove",
+            generation: stableWorktreeGeneration
+        )
+        removable.tmuxSessionName = "kwt-ghosthub-feature"
+        var snapshot = environment.snapshot
+        snapshot.worktrees.append(removable)
+        let beforeRemoval = inventory(environment, including: removable)
+        let staleRefresh = inventory(
+            environment,
+            including: removable,
+            generation: nil
+        )
+        let loads = LockedValue(0)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtInventoryLoader: { _ in
+                loads.withLock { $0 += 1 }
+                return loads.load() == 1 ? beforeRemoval : staleRefresh
+            },
+            kwtWorktreeRemover: { _, _, _, _ in },
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        try await model.removeWorktree(request)
+        model.startKwtInventory()
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            loads.load() >= 3 && model.isWorkspaceInventoryRefreshComplete
+        }
+
+        #expect(loads.load() == 3)
+        #expect(!model.snapshot.worktrees.contains {
+            $0.hostID == removable.hostID && $0.path == removable.path
+        })
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("failed removal permits its worktree presentation to reopen")
     func failedRemovalPermitsPresentationReopen() async throws {
         let environment = try setupStandardEnvironment()
