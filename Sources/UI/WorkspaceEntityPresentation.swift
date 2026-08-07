@@ -9,6 +9,12 @@ extension HostSummary {
         guard kind == .remote else {
             return nil
         }
+        if let exeVM {
+            let location = exeVM.regionDisplayName ?? exeVM.region
+            return ["exe.dev", exeVM.accountName, location]
+                .compactMap { $0 }
+                .joined(separator: " · ")
+        }
         return sshDestination ?? remoteHostname
     }
 
@@ -34,6 +40,11 @@ extension HostSummary {
             sshDestination,
             remoteHostname,
             version,
+            exeVM?.accountName,
+            exeVM?.vmName,
+            exeVM?.region,
+            exeVM?.regionDisplayName,
+            exeVM?.httpsURL,
         ].compactMap { value in
             guard let value else {
                 return nil

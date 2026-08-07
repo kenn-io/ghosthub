@@ -26,6 +26,21 @@ ssh devbox
 Ghosthub follows OpenSSH configuration for users, ports, identity files,
 agents, host-key policies, and supported jump routing.
 
+## exe.dev hosts
+
+Ghosthub can discover running exe.dev VMs as SSH hosts without adding each VM
+manually. Create and manage VMs through [exe.dev](https://exe.dev/docs), then:
+
+1. Open **Settings → Integrations**.
+2. Add an exe.dev account. The default SSH destination is `exe.dev`.
+3. Select **Connect and Discover VMs** and complete any OpenSSH trust or
+   authentication prompt.
+
+Running VMs appear with the rest of the host fleet. Ghosthub uses each VM's
+exe.dev-provided SSH destination for ordinary tmux and optional kwt discovery.
+
+![Ghosthub Integrations settings showing a connected exe.dev account and discovered VM status](assets/guide-exe-dev.png)
+
 ## Add and test a host
 
 1. Open **Settings → Hosts**.

@@ -177,6 +177,32 @@ final class SettingsStoreTests {
         #expect(!reloaded.confirmBeforeQuitting)
     }
 
+    @Test("duplicate exe.dev destinations remain available for correction")
+    func duplicateExeDestinationsRemainInSettings() {
+        let accounts = [
+            ExeAccount(
+                configKey: "personal",
+                name: "Personal",
+                sshDestination: "exe.dev"
+            ),
+            ExeAccount(
+                configKey: "work",
+                name: "Work",
+                sshDestination: "exe.dev"
+            ),
+        ]
+        makeSUT().setExeAccounts(accounts)
+
+        let reloaded = makeSUT()
+
+        #expect(reloaded.exeAccounts == accounts)
+        #expect(
+            ExeAccountSanitizer.discoverableAccounts(
+                reloaded.exeAccounts
+            ).isEmpty
+        )
+    }
+
     @Test
     func testLoadingHiddenTmuxSessionPatternsFromAppConfig() throws {
         try writeAppConfig(toml: """

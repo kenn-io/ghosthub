@@ -37,9 +37,9 @@ private func stop(_ application: NSRunningApplication) {
     }
 }
 
-guard CommandLine.arguments.count == 9 else {
+guard CommandLine.arguments.count == 10 else {
     fail(
-        "usage: launch.swift APP EXECUTABLE OWNERSHIP_RECORD PID_RECORD HOSTS_HEX DEMO_ROOT SCRATCH SSH_AUTH_SOCK"
+        "usage: launch.swift APP EXECUTABLE OWNERSHIP_RECORD PID_RECORD HOSTS_HEX EXE_ACCOUNTS_HEX DEMO_ROOT SCRATCH SSH_AUTH_SOCK"
     )
 }
 
@@ -49,9 +49,10 @@ let expectedExecutable = URL(fileURLWithPath: CommandLine.arguments[2])
 let ownershipRecordURL = URL(fileURLWithPath: CommandLine.arguments[3])
 let publishedRecordURL = URL(fileURLWithPath: CommandLine.arguments[4])
 let hostsHex = CommandLine.arguments[5]
-let demoRoot = CommandLine.arguments[6]
-let scratch = CommandLine.arguments[7]
-let sshAuthSocket = CommandLine.arguments[8]
+let exeAccountsHex = CommandLine.arguments[6]
+let demoRoot = CommandLine.arguments[7]
+let scratch = CommandLine.arguments[8]
+let sshAuthSocket = CommandLine.arguments[9]
 
 // Once LaunchServices has created the application, this helper must run until
 // it either publishes the exact PID or terminates that exact application. The
@@ -64,6 +65,7 @@ let configuration = NSWorkspace.OpenConfiguration()
 configuration.arguments = [
     "-ApplePersistenceIgnoreState", "YES",
     "-ghosthub.settings.hosts.ssh", "<\(hostsHex)>",
+    "-ghosthub.settings.hosts.exeAccounts", "<\(exeAccountsHex)>",
 ]
 configuration.createsNewApplicationInstance = true
 configuration.environment = [

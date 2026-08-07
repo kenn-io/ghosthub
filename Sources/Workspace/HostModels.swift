@@ -29,6 +29,31 @@ public enum HostPlatform: String, Equatable, Sendable {
     case windows
 }
 
+public struct ExeVMMetadata: Equatable, Sendable {
+    public var accountConfigKey: String
+    public var accountName: String
+    public var vmName: String
+    public var region: String?
+    public var regionDisplayName: String?
+    public var httpsURL: String?
+
+    public init(
+        accountConfigKey: String,
+        accountName: String,
+        vmName: String,
+        region: String? = nil,
+        regionDisplayName: String? = nil,
+        httpsURL: String? = nil
+    ) {
+        self.accountConfigKey = accountConfigKey
+        self.accountName = accountName
+        self.vmName = vmName
+        self.region = region
+        self.regionDisplayName = regionDisplayName
+        self.httpsURL = httpsURL
+    }
+}
+
 extension HostPlatform: Codable {
     public init(from decoder: Decoder) throws {
         let raw = try decoder.singleValueContainer()
@@ -387,6 +412,7 @@ public struct HostSummary: Identifiable, Equatable, Sendable {
     public var transientOverride: HostConnectionState?
     public var operationAvailability:
         [String: OperationAvailabilityEntry]?
+    public var exeVM: ExeVMMetadata?
 
     public init(
         id: UUID,
@@ -407,7 +433,8 @@ public struct HostSummary: Identifiable, Equatable, Sendable {
         decodedConnectionState: HostConnectionState? = nil,
         transientOverride: HostConnectionState? = nil,
         operationAvailability:
-        [String: OperationAvailabilityEntry]? = nil
+        [String: OperationAvailabilityEntry]? = nil,
+        exeVM: ExeVMMetadata? = nil
     ) {
         self.id = id
         self.configKey = configKey
@@ -427,6 +454,7 @@ public struct HostSummary: Identifiable, Equatable, Sendable {
         self.decodedConnectionState = decodedConnectionState
         self.transientOverride = transientOverride
         self.operationAvailability = operationAvailability
+        self.exeVM = exeVM
     }
 
     public var connectionState: HostConnectionState {

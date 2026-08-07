@@ -8,6 +8,7 @@ public enum SettingsDomain: String, CaseIterable, Identifiable, Sendable {
     case agents
     case privacy
     case hosts
+    case integrations
 
     public var id: Self { self }
 
@@ -27,6 +28,8 @@ public enum SettingsDomain: String, CaseIterable, Identifiable, Sendable {
             return "Privacy"
         case .hosts:
             return "Hosts"
+        case .integrations:
+            return "Integrations"
         }
     }
 
@@ -48,6 +51,9 @@ public enum SettingsDomain: String, CaseIterable, Identifiable, Sendable {
         case .hosts:
             return "Connect the machines and tmux sessions"
                 + " in your tailnet or SSH network."
+        case .integrations:
+            return "Connect third-party services that contribute"
+                + " hosts and other resources to Ghosthub."
         }
     }
 }

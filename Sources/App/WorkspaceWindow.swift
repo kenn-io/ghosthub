@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import GhosthubSettings
 import GhosthubTerminal
 import GhosthubTerminalSupport
@@ -711,6 +712,40 @@ struct WorkspaceWindow: View {
                                         .discoverPeers()
                                         .peerLoadResult
                                 },
+                                exeAccountStatusesPublisher:
+                                ExeVMInventoryStore.shared.$statuses
+                                    .eraseToAnyPublisher(),
+                                probeExeAccountConnection: { account in
+                                    await Task.detached(
+                                        priority: .userInitiated
+                                    ) {
+                                        ExeVMClient().connectionProbe(
+                                            for: account
+                                        )
+                                    }.value
+                                },
+                                refreshExeAccounts: { accounts, prefetchedVMs in
+                                    ExeVMInventoryStore.shared.refresh(
+                                        accounts: accounts,
+                                        persistedAccounts:
+                                        settingsStore.exeAccounts,
+                                        prefetchedVMs: prefetchedVMs
+                                    )
+                                },
+                                cancelExeAccountRefresh: { refreshID in
+                                    ExeVMInventoryStore.shared.cancelRefresh(
+                                        refreshID,
+                                        retaining: settingsStore.exeAccounts
+                                    )
+                                },
+                                invalidateExeAccountRefresh: {
+                                    refreshID, accounts in
+                                    ExeVMInventoryStore.shared
+                                        .invalidateRefresh(
+                                            refreshID,
+                                            currentAccounts: accounts
+                                        )
+                                },
                                 installRemoteKwt: {
                                     host in
                                     await sceneModel
@@ -783,7 +818,7 @@ struct WorkspaceWindow: View {
                     sceneModel.createTmuxSession(selection)
                 },
                 refreshWorkspaceInventory: { [sceneModel] in
-                    sceneModel.refreshKwtInventory()
+                    sceneModel.refreshWorkspaceInventory()
                 },
                 reconnectActiveTmuxSessionNow: { [sceneModel] in
                     sceneModel.reconnectActiveTmuxSessionNow()

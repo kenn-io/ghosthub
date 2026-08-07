@@ -19,6 +19,13 @@ struct SettingsViewDraftTests {
         store.setShowMacOSNotifications(false)
         store.setNotificationAttentionSound(.glass)
         store.setSSHHosts([host(configKey: "epyc", name: "EPYC")])
+        store.setExeAccounts([
+            ExeAccount(
+                configKey: "personal",
+                name: "Personal",
+                sshDestination: "exe.dev"
+            ),
+        ])
 
         let draft = SettingsViewDraft(store: store)
 
@@ -35,6 +42,7 @@ struct SettingsViewDraftTests {
         #expect(draft.attentionSound == .glass)
         #expect(draft.sshHosts.map(\.configKey) == ["epyc"])
         #expect(draft.selectedSSHHostDraftID == draft.sshHosts.first?.id)
+        #expect(draft.exeAccounts.map(\.configKey) == ["personal"])
     }
 
     @Test("tmux theme opt-in persists without reloading libghostty")
@@ -119,6 +127,76 @@ struct SettingsViewDraftTests {
 
         #expect(result.shouldRefreshHosts)
         #expect(store.sshHosts.map(\.configKey) == ["lab"])
+    }
+
+    @Test("persist writes exe.dev accounts and requests host refresh")
+    func persistWritesExeAccounts() {
+        let store = makeStore()
+        var draft = SettingsViewDraft(store: store)
+        draft.exeAccounts = [ExeAccount(
+            configKey: "personal",
+            name: "Personal",
+            sshDestination: "exe.dev"
+        )]
+
+        let result = draft.persist(to: store)
+
+        #expect(result.shouldRefreshHosts)
+        #expect(store.exeAccounts == draft.exeAccounts)
+    }
+
+    @Test("invalid exe.dev drafts preserve values and apply revocations")
+    func invalidExeAccountDraftsPreserveValuesAndApplyRevocations() {
+        let originalAccounts = [
+            ExeAccount(
+                configKey: "personal",
+                name: "Personal",
+                sshDestination: "exe.dev"
+            ),
+            ExeAccount(
+                configKey: "work",
+                name: "Work",
+                sshDestination: "work-exe"
+            ),
+        ]
+        let store = makeStore()
+        store.setExeAccounts(originalAccounts)
+        var draft = SettingsViewDraft(store: store)
+        draft.exeAccounts[1].name = ""
+
+        let emptyNameResult = draft.persist(to: store)
+
+        #expect(!emptyNameResult.shouldRefreshHosts)
+        #expect(store.exeAccounts == originalAccounts)
+
+        draft.exeAccounts[1].name = "Work"
+        draft.exeAccounts[1].sshDestination = "exe.dev"
+
+        let duplicateDestinationResult = draft.persist(to: store)
+
+        #expect(!duplicateDestinationResult.shouldRefreshHosts)
+        #expect(store.exeAccounts == originalAccounts)
+
+        draft.exeAccounts[1].sshDestination = "work-exe"
+        draft.exeAccounts[1].name = ""
+        draft.exeAccounts.removeFirst()
+
+        let removalResult = draft.persist(to: store)
+
+        #expect(removalResult.shouldRefreshHosts)
+        #expect(store.exeAccounts == [originalAccounts[1]])
+
+        var disabledDraft = SettingsViewDraft(store: store)
+        disabledDraft.exeAccounts[0].isEnabled = false
+        disabledDraft.exeAccounts[0].name = ""
+        disabledDraft.exeAccounts[0].sshDestination = ""
+
+        let disableResult = disabledDraft.persist(to: store)
+
+        var disabledAccount = originalAccounts[1]
+        disabledAccount.isEnabled = false
+        #expect(disableResult.shouldRefreshHosts)
+        #expect(store.exeAccounts == [disabledAccount])
     }
 
     @Test("host sync preserves selection by stable key")

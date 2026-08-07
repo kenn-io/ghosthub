@@ -134,7 +134,8 @@ public extension HostSummary {
         decodedConnectionState: HostConnectionState? = nil,
         transientOverride: HostConnectionState? = nil,
         operationAvailability:
-        [String: OperationAvailabilityEntry]? = nil
+        [String: OperationAvailabilityEntry]? = nil,
+        exeVM: ExeVMMetadata? = nil
     ) -> HostSummary {
         HostSummary(
             id: id, configKey: configKey,
@@ -154,7 +155,8 @@ public extension HostSummary {
             decodedConnectionState,
             transientOverride: transientOverride,
             operationAvailability:
-            operationAvailability
+            operationAvailability,
+            exeVM: exeVM
         )
     }
 }

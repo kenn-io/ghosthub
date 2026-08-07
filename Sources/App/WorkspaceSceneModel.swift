@@ -436,6 +436,10 @@ final class WorkspaceSceneModel: ObservableObject {
         [SSHAuthenticationTarget: String] = [:]
     private let configuredSSHHostsProvider: () -> [SSHHost]
     private var configuredSSHHostsCancellable: AnyCancellable?
+    private let configuredExeHostsProvider: () -> [ExeConfiguredHost]
+    private let refreshExeHosts: () -> Void
+    private let startExeHostInventory: () -> Void
+    private var configuredExeHostsCancellable: AnyCancellable?
     private var terminalColorsCancellable: AnyCancellable?
     private var deferredTmuxPresentationTasks: [UUID: Task<Void, Never>] = [:]
     private var drainingDeferredTmuxPresentationTasks:
@@ -646,6 +650,17 @@ final class WorkspaceSceneModel: ObservableObject {
             SettingsStore.shared.sshHosts
         },
         configuredSSHHostsPublisher: AnyPublisher<[SSHHost], Never>? = nil,
+        configuredExeHostsProvider: @escaping () -> [ExeConfiguredHost] = {
+            ExeVMInventoryStore.shared.hosts
+        },
+        configuredExeHostsPublisher:
+        AnyPublisher<[ExeConfiguredHost], Never>? = nil,
+        refreshExeHosts: @escaping () -> Void = {
+            _ = ExeVMInventoryStore.shared.refresh()
+        },
+        startExeHostInventory: @escaping () -> Void = {
+            ExeVMInventoryStore.shared.start()
+        },
         terminalColorsPublisher:
         AnyPublisher<[UInt: TerminalResolvedColors], Never>? = nil,
         sceneSettings: WorkspaceSceneSettings = .live(),
@@ -724,6 +739,9 @@ final class WorkspaceSceneModel: ObservableObject {
         self.deferredTmuxPresentationRetryDelays =
             deferredTmuxPresentationRetryDelays
         self.configuredSSHHostsProvider = configuredSSHHostsProvider
+        self.configuredExeHostsProvider = configuredExeHostsProvider
+        self.refreshExeHosts = refreshExeHosts
+        self.startExeHostInventory = startExeHostInventory
         terminalCoordinator = TerminalSurfaceCoordinator(runtime: terminalRuntime)
         self.notificationService = notificationService
 
@@ -749,6 +767,7 @@ final class WorkspaceSceneModel: ObservableObject {
         if startServices, overrideSnapshot == nil {
             snapshot = ConfiguredHostOverlay.apply(
                 configuredSSHHostsProvider(),
+                exeHosts: configuredExeHostsProvider(),
                 to: snapshot
             )
         }
@@ -920,19 +939,33 @@ final class WorkspaceSceneModel: ObservableObject {
         fencedWorktreeMutationScopes = worktreeMutationCoordinator.scopes
         let sshHostsPublisher = configuredSSHHostsPublisher
             ?? SettingsStore.shared.$sshHosts.eraseToAnyPublisher()
+        let exeHostsPublisher = configuredExeHostsPublisher
+            ?? ExeVMInventoryStore.shared.$hosts.eraseToAnyPublisher()
         // Defer post-init work that mutates @Published state to
         // avoid "Publishing changes from within view updates" when
         // @StateObject creates the model during body evaluation.
-        DispatchQueue.main.async { [self, sshHostsPublisher] in
+        DispatchQueue.main.async {
+            [self, sshHostsPublisher, exeHostsPublisher] in
             configuredSSHHostsCancellable = sshHostsPublisher.sink {
                 [weak self] hosts in
                 guard let self, !self.hasOverrideSnapshot else { return }
                 self.snapshot = applyingConfiguredSSHHosts(
                     hosts,
+                    exeHosts: configuredExeHostsProvider(),
+                    to: self.snapshot
+                )
+            }
+            configuredExeHostsCancellable = exeHostsPublisher.sink {
+                [weak self] hosts in
+                guard let self, !self.hasOverrideSnapshot else { return }
+                self.snapshot = applyingConfiguredSSHHosts(
+                    configuredSSHHostsProvider(),
+                    exeHosts: hosts,
                     to: self.snapshot
                 )
             }
             if startServices {
+                startExeHostInventory()
                 startTmuxSessionDiscovery()
                 startKwtInventory()
                 syncTerminalConfig()
@@ -961,6 +994,7 @@ final class WorkspaceSceneModel: ObservableObject {
         activityCancellable?.cancel()
         panelRoutingCancellable?.cancel()
         configuredSSHHostsCancellable?.cancel()
+        configuredExeHostsCancellable?.cancel()
         terminalColorsCancellable?.cancel()
         worktreeMutationCancellable?.cancel()
         kwtInventoryTask?.cancel()
@@ -1182,6 +1216,12 @@ final class WorkspaceSceneModel: ObservableObject {
         sshAuthenticationCoordinator.cancelAll(
             scopeID: sshAuthenticationScopeID
         )
+    }
+
+    /// Refreshes the sidebar from provider, kwt, and tmux inventories.
+    func refreshWorkspaceInventory() {
+        refreshHosts()
+        refreshKwtInventory()
     }
 
     /// Refreshes the sidebar directly from each host's kwt and tmux inventory.
@@ -2398,18 +2438,22 @@ final class WorkspaceSceneModel: ObservableObject {
     }
 
     func refreshHosts() {
+        refreshExeHosts()
         snapshot = applyingConfiguredSSHHosts(
             configuredSSHHostsProvider(),
+            exeHosts: configuredExeHostsProvider(),
             to: snapshot
         )
     }
 
     private func applyingConfiguredSSHHosts(
         _ configuredHosts: [SSHHost],
+        exeHosts: [ExeConfiguredHost],
         to source: WorkspaceSnapshot
     ) -> WorkspaceSnapshot {
         let updated = ConfiguredHostOverlay.apply(
             configuredHosts,
+            exeHosts: exeHosts,
             to: source
         )
         let previousTargets = Dictionary(
@@ -3104,6 +3148,7 @@ final class WorkspaceSceneModel: ObservableObject {
         enriched.sessions = try database.fetchSessionSnapshot().sessions
         enriched = applyingConfiguredSSHHosts(
             configuredSSHHostsProvider(),
+            exeHosts: configuredExeHostsProvider(),
             to: enriched
         )
 

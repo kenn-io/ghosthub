@@ -4,10 +4,36 @@ import GhosthubSettings
 import GhosthubWorkspace
 
 enum ConfiguredHostOverlay {
+    private struct Entry {
+        var host: SSHHost
+        var exeVM: ExeVMMetadata?
+    }
+
     static func apply(
         _ configuredHosts: [SSHHost],
+        exeHosts: [ExeConfiguredHost] = [],
         to source: WorkspaceSnapshot
     ) -> WorkspaceSnapshot {
+        let manualDestinations = Set(
+            configuredHosts.map(\.sshDestination)
+        )
+        var reservedConfigKeys = Set(configuredHosts.map(\.configKey))
+        let exeEntries = exeHosts.compactMap { configured -> Entry? in
+            guard !manualDestinations.contains(
+                configured.sshHost.sshDestination
+            ),
+                reservedConfigKeys.insert(
+                    configured.sshHost.configKey
+                ).inserted
+            else { return nil }
+            return Entry(
+                host: configured.sshHost,
+                exeVM: configured.metadata
+            )
+        }
+        let entries = configuredHosts.map {
+            Entry(host: $0, exeVM: nil)
+        } + exeEntries
         var snapshot = source
         let localHosts = source.hosts.filter { $0.kind == .selfHost }
         let remoteHosts = source.hosts.filter { $0.kind == .remote }
@@ -20,7 +46,8 @@ enum ConfiguredHostOverlay {
         // A destination match is only a migration fallback. Reserve every
         // exact config-key identity first so an earlier renamed/reordered
         // entry cannot steal the host that belongs to a later configuration.
-        for (index, configured) in configuredHosts.enumerated() {
+        for (index, entry) in entries.enumerated() {
+            let configured = entry.host
             guard let existing = remoteHosts.first(where: {
                 !reservedHostIDs.contains($0.id)
                     && $0.configKey == configured.configKey
@@ -29,7 +56,8 @@ enum ConfiguredHostOverlay {
             reservedHostIDs.insert(existing.id)
         }
 
-        for (index, configured) in configuredHosts.enumerated() {
+        for (index, entry) in entries.enumerated() {
+            let configured = entry.host
             let existing = exactMatches[index] ?? remoteHosts.first {
                 !consumedHostIDs.contains($0.id)
                     && !reservedHostIDs.contains($0.id)
@@ -50,7 +78,8 @@ enum ConfiguredHostOverlay {
                 platform: configured.platform,
                 sshDestination: configured.sshDestination,
                 preferredTransport: .ssh,
-                lastKnownReachable: false
+                lastKnownReachable: false,
+                exeVM: entry.exeVM
             )
             host.configKey = configured.configKey
             host.name = configured.name
@@ -58,6 +87,7 @@ enum ConfiguredHostOverlay {
             host.platform = configured.platform
             host.sshDestination = configured.sshDestination
             host.preferredTransport = .ssh
+            host.exeVM = entry.exeVM
             if invalidatedHostIDs.contains(host.id) {
                 host.tmuxSessions = []
             }

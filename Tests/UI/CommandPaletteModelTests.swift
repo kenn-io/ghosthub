@@ -41,6 +41,9 @@ struct CommandPaletteModelTests {
         commands.expectCommandContains(
             title: "Open Terminal Settings", expectNilShortcut: true
         )
+        commands.expectCommandContains(
+            title: "Open Integrations Settings", expectNilShortcut: true
+        )
         commands.expectCommandNotContains(
             title: "Hide CPU & Memory in Pane Headers"
         )

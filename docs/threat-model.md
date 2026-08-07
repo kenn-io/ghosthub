@@ -49,6 +49,16 @@ server and socket, and processes running in panes Ghosthub attaches to. SSH
 host authentication and transport confidentiality are delegated to the user's
 OpenSSH configuration and host-key policy.
 
+Enabling an exe.dev account authorizes its configured SSH control endpoint to
+enumerate VM destinations for that account. Ghosthub accepts only the
+documented JSON inventory fields, uses each returned `ssh_dest` without
+rewriting it, and still applies the user's OpenSSH configuration and host-key
+policy when connecting to the VM. The provider cannot silently approve a VM
+host key or supply terminal contents through the control response. A
+compromised enabled provider can influence which SSH destinations Ghosthub
+offers and attempts to reach, so it is part of the configured trusted-peer
+boundary.
+
 A malicious or compromised configured SSH host is outside Ghosthub's threat
 model. In particular, Ghosthub does not claim availability, confidentiality,
 or protocol robustness when the remote SSH endpoint, tmux server, or attached

@@ -23,6 +23,25 @@ struct WorkspaceTmuxDiscoveryTests {
             .joined(separator: "\n")
     }
 
+    @Test("workspace refresh includes exe.dev inventory")
+    @MainActor
+    func workspaceRefreshIncludesExeInventory() async throws {
+        let environment = try setupStandardEnvironment()
+        let exeRefreshes = Counter()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            refreshExeHosts: {
+                _ = exeRefreshes.increment()
+            }
+        )
+
+        model.refreshWorkspaceInventory()
+
+        #expect(exeRefreshes.count == 1)
+        await model.shutdown()
+    }
+
     @Test("inventory refresh completion waits for kwt and tmux")
     @MainActor
     func inventoryRefreshCompletionWaitsForBothSources() async throws {

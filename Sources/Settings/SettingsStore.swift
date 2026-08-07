@@ -36,6 +36,7 @@ public final class SettingsStore: ObservableObject {
         static let terminalFontSize =
             "ghosthub.settings.terminalAppearance.fontSize"
         static let sshHosts = "ghosthub.settings.hosts.ssh"
+        static let exeAccounts = "ghosthub.settings.hosts.exeAccounts"
     }
 
     public static let shared = SettingsStore(
@@ -86,6 +87,7 @@ public final class SettingsStore: ObservableObject {
     @Published public private(set) var agentPreferences: AgentPreferences
     @Published public private(set) var shareAnonymousUsageData: Bool
     @Published public private(set) var sshHosts: [SSHHost]
+    @Published public private(set) var exeAccounts: [ExeAccount]
     @Published public private(set) var lastErrorMessage: String?
 
     private let configPipeline: LibghosttyConfigPipeline
@@ -147,6 +149,7 @@ public final class SettingsStore: ObservableObject {
                 using: userDefaults
             )
         let loadedSSHHosts = Self.loadSSHHosts(using: userDefaults)
+        let loadedExeAccounts = Self.loadExeAccounts(using: userDefaults)
 
         confirmBeforeQuitting = loadedConfirmBeforeQuitting
         interfaceAppearance = loadedAppearance
@@ -158,6 +161,7 @@ public final class SettingsStore: ObservableObject {
         agentPreferences = loadedAgents
         shareAnonymousUsageData = loadedShareAnonymousUsageData
         sshHosts = loadedSSHHosts
+        exeAccounts = loadedExeAccounts
         persistTerminalPreferences()
         persistTerminalAppearancePreferences()
     }
@@ -192,6 +196,7 @@ public final class SettingsStore: ObservableObject {
             )
 
         sshHosts = Self.loadSSHHosts(using: userDefaults)
+        exeAccounts = Self.loadExeAccounts(using: userDefaults)
         lastErrorMessage = nil
     }
 
@@ -410,6 +415,11 @@ public final class SettingsStore: ObservableObject {
         persistSSHHosts()
     }
 
+    public func setExeAccounts(_ accounts: [ExeAccount]) {
+        exeAccounts = ExeAccountSanitizer.storedAccounts(accounts)
+        persistExeAccounts()
+    }
+
     private func updateTerminalPreferences(
         _ update: (inout TerminalPreferences) -> Void
     ) {
@@ -537,6 +547,16 @@ public final class SettingsStore: ObservableObject {
         }
     }
 
+    private func persistExeAccounts() {
+        do {
+            let data = try JSONEncoder().encode(exeAccounts)
+            userDefaults.set(data, forKey: DefaultsKey.exeAccounts)
+            lastErrorMessage = nil
+        } catch {
+            lastErrorMessage = "Could not save exe.dev accounts: \(error.localizedDescription)"
+        }
+    }
+
     private func persistTmuxSessionPreferences(
         _ preferences: TmuxSessionPreferences
     ) throws {
@@ -575,6 +595,18 @@ public final class SettingsStore: ObservableObject {
               )
         else { return [] }
         return SSHHostSanitizer.sshHosts(hosts)
+    }
+
+    private static func loadExeAccounts(
+        using userDefaults: UserDefaults
+    ) -> [ExeAccount] {
+        guard let data = userDefaults.data(forKey: DefaultsKey.exeAccounts),
+              let accounts = try? JSONDecoder().decode(
+                  [ExeAccount].self,
+                  from: data
+              )
+        else { return [] }
+        return ExeAccountSanitizer.storedAccounts(accounts)
     }
 
     private static func loadTerminalPreferences(

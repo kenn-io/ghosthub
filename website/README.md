@@ -60,6 +60,8 @@ process through every documented UI state:
 
     cd website/demo
     ./stage.sh && ./run.sh && ./shoot.sh /tmp/ghosthub-website-assets
+    GHOSTHUB_DEMO_EXE_ACCOUNTS=1 ./run.sh
+    GHOSTHUB_DEMO_EXE_ONLY=1 ./shoot.sh /tmp/ghosthub-website-assets
     ./teardown.sh   # always run: stops demo processes and removes scratch state
 
 The staged app receives an explicit demo-only OpenSSH configuration and

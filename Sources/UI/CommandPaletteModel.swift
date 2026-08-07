@@ -329,6 +329,7 @@ public enum CommandPaletteModel {
                 .worktrees,
                 .agents,
                 .hosts,
+                .integrations,
             ]
             domainCommands = domains.map { domain in
                 WorkspaceCommandItem(

@@ -181,6 +181,7 @@ public struct WorkspaceTmuxSessionSelection:
 public enum WorkspaceSidebarRowIcon: Equatable, Sendable {
     case localHost
     case remoteHost
+    case exeDevHost
     case project
     case primaryWorktree
     case worktree
@@ -192,6 +193,8 @@ public enum WorkspaceSidebarRowIcon: Equatable, Sendable {
             return "laptopcomputer"
         case .remoteHost:
             return "server.rack"
+        case .exeDevHost:
+            return "cloud"
         case .project:
             return "folder"
         case .primaryWorktree:
@@ -245,7 +248,9 @@ public struct WorkspaceSidebarSection: Equatable, Identifiable, Sendable {
     public var row: WorkspaceSidebarRow {
         WorkspaceSidebarRow(
             target: .host(host.id),
-            icon: host.kind == .selfHost ? .localHost : .remoteHost,
+            icon: host.kind == .selfHost
+                ? .localHost
+                : host.exeVM == nil ? .remoteHost : .exeDevHost,
             title: host.sidebarTitle,
             subtitle: host.sidebarSubtitle
         )
