@@ -128,6 +128,18 @@ struct WorktreeRowStatusTests {
         #expect(!s.isAgentRunning)
     }
 
+    @Test func discoveredTmuxSessionIsRunningWithoutPresentation() {
+        let w = makeWorktree()
+        let s = WorktreeRowStatus.make(
+            for: w,
+            sessions: [],
+            hasLiveTmuxSession: true
+        )
+
+        #expect(s.isRunning)
+        #expect(!s.isAgentRunning)
+    }
+
     @Test func checksFailure() {
         let w = makeWorktree(linkedPR: 7, checks: .failure)
         let s = WorktreeRowStatus.make(for: w, sessions: [])

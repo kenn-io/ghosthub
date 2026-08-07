@@ -118,13 +118,14 @@ hosts should provide:
 
 - `git` and `tmux` on the non-interactive SSH `PATH`
 
-Kwt does not need to be installed system-wide. After the connection succeeds,
-use **Install kwt Worktree Helper** in Host Settings to copy Ghosthub's pinned
-architecture-matched helper into the remote user's `~/.ghosthub/` directory.
-On a fresh host, enter each existing checkout's absolute path under **Add
-Project**. The managed helper records it through kwt's supported registry
-command and Ghosthub refreshes project/worktree inventory. Tmux-only discovery
-and attachment work without either optional action.
+Kwt does not need to be installed system-wide. Ghosthub automatically copies
+or updates its pinned architecture-matched helper in the remote user's
+`~/.ghosthub/` directory when it loads inventory for a configured macOS or
+Linux host. On a fresh host, enter each existing checkout's absolute path under
+**Add Project**. The managed helper records it through kwt's supported registry
+command and Ghosthub refreshes project/worktree inventory. Tmux discovery and
+attachment continue to work if helper provisioning fails. Windows provisioning
+remains explicit until its kwt executables are Authenticode-signed.
 
 Ghosthub uses the host's OpenSSH configuration directly and invokes an
 ordinary tmux client on the target host. Tmux owns windows, panes, layouts,

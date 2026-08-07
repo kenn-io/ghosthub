@@ -15,6 +15,7 @@ struct SettingsViewDraftTests {
         store.setTerminalThemeAppliesToTmuxSessions(true)
         store.setHideRootCheckout(true)
         store.setShowHiddenWorktreesByDefault(true)
+        store.setHideKwtManagedSessions(false)
         store.setHiddenTmuxSessionPatterns(["forge-*", "scratch-?"])
         store.setShowMacOSNotifications(false)
         store.setNotificationAttentionSound(.glass)
@@ -35,6 +36,7 @@ struct SettingsViewDraftTests {
         #expect(draft.appliesTerminalThemeToTmuxSessions)
         #expect(draft.hideRootCheckout)
         #expect(draft.showHiddenWorktreesByDefault)
+        #expect(!draft.hideKwtManagedSessions)
         #expect(
             draft.hiddenTmuxSessionPatterns == ["forge-*", "scratch-?"]
         )
@@ -69,6 +71,7 @@ struct SettingsViewDraftTests {
         var draft = SettingsViewDraft(store: store)
         draft.hideRootCheckout = true
         draft.showHiddenWorktreesByDefault = true
+        draft.hideKwtManagedSessions = false
         draft.hiddenTmuxSessionPatterns = ["forge-*", "scratch-?"]
         draft.showMacOSNotifications = false
         draft.attentionSound = .ping
@@ -77,6 +80,7 @@ struct SettingsViewDraftTests {
 
         #expect(store.worktreePreferences.hideRootCheckout)
         #expect(store.worktreePreferences.showHiddenWorktreesByDefault)
+        #expect(!store.worktreePreferences.hideKwtManagedSessions)
         #expect(
             store.tmuxSessionPreferences.hiddenSessionPatterns
                 == ["forge-*", "scratch-?"]

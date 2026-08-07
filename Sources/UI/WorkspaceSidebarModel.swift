@@ -394,7 +394,8 @@ public enum WorkspaceSidebarModel {
                 tmuxSessionRows: tmuxSessionOrder.ordered(
                     host.tmuxSessions
                         .filter {
-                            !defaultServerSessionNames.contains($0.name)
+                            (!tmuxSessionVisibility.hideKwtManagedSessions
+                                || !defaultServerSessionNames.contains($0.name))
                                 && !tmuxSessionVisibility.isHidden($0.name)
                         }
                         .sorted {
@@ -448,7 +449,19 @@ public enum WorkspaceSidebarModel {
         snapshot: WorkspaceSnapshot
     ) -> WorkspaceSidebarRow {
         let sessions = snapshot.sessions(for: worktree.id)
-        let status = WorktreeRowStatus.make(for: worktree, sessions: sessions)
+        let host = snapshot.host(id: worktree.hostID)
+        let hasLiveTmuxSession = worktree.tmuxSocketName == nil
+            && host?.lastKnownReachable == true
+            && worktree.tmuxSessionName.map { sessionName in
+                host?.tmuxSessions.contains {
+                    $0.name == sessionName
+                } == true
+            } == true
+        let status = WorktreeRowStatus.make(
+            for: worktree,
+            sessions: sessions,
+            hasLiveTmuxSession: hasLiveTmuxSession
+        )
         // The branch/PR lives in the status's second line and the detail
         // card, so worktree rows carry no subtitle. Command-palette search
         // reads worktree.sidebarSubtitle directly instead.

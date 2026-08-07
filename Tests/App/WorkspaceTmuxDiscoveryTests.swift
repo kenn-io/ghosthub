@@ -2549,6 +2549,117 @@ struct WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test(
+        "automatic kwt provisioning follows the remote platform policy",
+        arguments: [
+            (HostPlatform.macOS, true),
+            (HostPlatform.linux, true),
+            (HostPlatform.windows, false),
+        ]
+    )
+    func automaticKwtProvisioning(
+        platform: HostPlatform,
+        expected: Bool
+    ) async throws {
+        let environment = try setupStandardEnvironment()
+        let remote = SSHHost(
+            configKey: "remote",
+            name: "Remote",
+            platform: platform,
+            sshDestination: "remote"
+        )
+        let configuredHosts = CurrentValueSubject<[SSHHost], Never>([remote])
+        let provisioningAttempts = Counter()
+        let remoteInventoryLoads = Counter()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            kwtInventoryLoader: { host in
+                if host.isRemote {
+                    _ = remoteInventoryLoads.increment()
+                    #expect((provisioningAttempts.count > 0) == expected)
+                }
+                return KwtHostInventory(projects: [])
+            },
+            kwtRemoteProvisioner: { host in
+                #expect(host.platform == platform)
+                _ = provisioningAttempts.increment()
+            },
+            tmuxSessionDiscovery: { _ in .success([]) },
+            configuredSSHHostsProvider: { configuredHosts.value },
+            configuredSSHHostsPublisher:
+            configuredHosts.eraseToAnyPublisher(),
+            startServices: true
+        )
+
+        await waitUntilMainActor {
+            remoteInventoryLoads.count > 0
+                && model.isWorkspaceInventoryRefreshComplete
+        }
+
+        #expect((provisioningAttempts.count > 0) == expected)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("kwt provisioning failure leaves remote tmux inventory available")
+    func provisioningFailureDoesNotBlockTmux() async throws {
+        let environment = try setupStandardEnvironment()
+        let remote = SSHHost(
+            configKey: "build-box",
+            name: "Build Box",
+            platform: .linux,
+            sshDestination: "build-box"
+        )
+        let configuredHosts = CurrentValueSubject<[SSHHost], Never>([remote])
+        let remoteInventoryLoads = Counter()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            kwtInventoryLoader: { host in
+                if host.isRemote {
+                    _ = remoteInventoryLoads.increment()
+                }
+                return KwtHostInventory(projects: [])
+            },
+            kwtRemoteProvisioner: { _ in
+                throw KwtRemoteInstallError.bundleIncomplete
+            },
+            tmuxSessionDiscovery: { host in
+                .success(host.isRemote ? [
+                    DiscoveredTmuxSession(
+                        name: "build",
+                        windowCount: 1,
+                        createdAt: "1721552400",
+                        managed: false
+                    ),
+                ] : [])
+            },
+            configuredSSHHostsProvider: { configuredHosts.value },
+            configuredSSHHostsPublisher:
+            configuredHosts.eraseToAnyPublisher(),
+            startServices: true
+        )
+
+        await waitUntilMainActor {
+            model.workspaceInventoryState == .loaded
+                && model.snapshot.hosts.contains {
+                    $0.configKey == remote.configKey
+                        && $0.tmuxSessions.map(\.name) == ["build"]
+                }
+                && !model.workspaceInventoryWarningsByHost.isEmpty
+        }
+
+        #expect(remoteInventoryLoads.count == 0)
+        let remoteSummary = try #require(
+            model.snapshot.hosts.first { $0.configKey == remote.configKey }
+        )
+        #expect(remoteSummary.primaryDiagnostic?.code == .missingKwt)
+        #expect(!remoteSummary.canCreateWorktree)
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("an unreachable SSH host does not block local inventory")
     func unreachableRemoteDoesNotBlockLocalInventory() async throws {
         let environment = try setupStandardEnvironment()

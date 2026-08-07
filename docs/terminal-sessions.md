@@ -290,10 +290,11 @@ inventory and exposes a clickable detail warning on that host without blocking
 the rest of the workspace. The detail offers a retry and a shortcut to Host
 Settings; OpenSSH status 255 is reported as an SSH connection failure instead
 of a login-shell or tmux failure. Remote hosts where Ghosthub's managed kwt is
-absent remain available for direct tmux discovery and attachment. Inventory
-never uploads the helper. The user grants permission with **Install kwt
-Worktree Helper** in Host Settings, after which inventory and protected
-attachment execute its exact revisioned path. On macOS and Linux, a fresh
+absent remain available for direct tmux discovery and attachment. Before kwt
+inventory runs for a configured macOS or Linux host, Ghosthub ensures its exact
+revisioned helper is installed under the remote user's `~/.ghosthub/`
+directory. A provisioning failure is reported for that host and disables its
+worktree actions without blocking tmux inventory. On macOS and Linux, a fresh
 helper has an empty project registry: **Add Project** in the host's **+** menu
 passes one user-supplied absolute checkout path to kwt's noninteractive
 registration command, then refreshes inventory. Immediately before
@@ -307,12 +308,17 @@ verifies its SHA-256 and exact revision, and activates it at
 workspace operations use only that exact per-user helper and never resolve
 `kwt.exe` from `PATH`.
 Project registration is not yet supported on Windows, so its Add Project
-actions are hidden. Discovery never installs or updates remote software
-implicitly.
+actions are hidden. Inventory never installs or updates the unsigned Windows
+helper automatically.
 
-Kwt session names are removed from the generic session group and rendered
-under their project/worktree. Every remaining tmux session is eligible for the
-host-level session group. Case-sensitive `*` and `?` wildcard patterns in
+Direct tmux discovery marks a default-server worktree session as running when
+its exact kwt session name is present and the host remains reachable. Cached
+inventory does not preserve the live indicator through a discovery failure.
+Kwt session names are removed from the generic session group by default and
+remain rendered under their project/worktree. Settings → Worktrees can expose
+those duplicate generic session entries. Every remaining tmux session is
+eligible for the host-level session group. Case-sensitive `*` and `?` wildcard
+patterns in
 `hidden_session_patterns` under `[tmux]` inside
 `~/.config/ghosthub/config.toml` hide matching standalone sessions from the
 sidebar and command palette. Settings → Worktrees edits the same list, one

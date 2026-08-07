@@ -4,13 +4,16 @@ import GhosthubWorkspace
 public struct WorktreePreferences: Equatable, Sendable {
     public var hideRootCheckout: Bool
     public var showHiddenWorktreesByDefault: Bool
+    public var hideKwtManagedSessions: Bool
 
     public init(
         hideRootCheckout: Bool,
-        showHiddenWorktreesByDefault: Bool
+        showHiddenWorktreesByDefault: Bool,
+        hideKwtManagedSessions: Bool
     ) {
         self.hideRootCheckout = hideRootCheckout
         self.showHiddenWorktreesByDefault = showHiddenWorktreesByDefault
+        self.hideKwtManagedSessions = hideKwtManagedSessions
     }
 }
 

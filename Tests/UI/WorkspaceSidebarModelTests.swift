@@ -552,6 +552,31 @@ struct WorkspaceSidebarModelTests {
 
         #expect(sections[0].tmuxSessionRows.map(\.title) == ["external-agent"])
         #expect(sections[0].projects[0].worktrees.map(\.id) == [worktree.id])
+        #expect(
+            sections[0].projects[0].worktreeRows[0]
+                .worktreeStatus?.isRunning == true
+        )
+
+        let showingKwtSessions = WorkspaceSidebarModel.sections(
+            in: snapshot,
+            tmuxSessionVisibility: TmuxSessionVisibility(
+                hideKwtManagedSessions: false
+            )
+        )
+
+        #expect(showingKwtSessions[0].tmuxSessionRows.map(\.title) == [
+            "external-agent", "kwt-docbank-main",
+        ])
+
+        var unreachableSnapshot = snapshot
+        unreachableSnapshot.hosts[0].lastKnownReachable = false
+        let unreachableSections = WorkspaceSidebarModel.sections(
+            in: unreachableSnapshot
+        )
+        #expect(
+            unreachableSections[0].projects[0].worktreeRows[0]
+                .worktreeStatus?.isRunning == false
+        )
     }
 
     @Test("hidden patterns remove only standalone tmux session rows")
@@ -652,6 +677,10 @@ struct WorkspaceSidebarModelTests {
 
         #expect(
             sections[0].tmuxSessionRows.map(\.title) == ["kwt-docbank-pr-32"]
+        )
+        #expect(
+            sections[0].projects[0].worktreeRows[0]
+                .worktreeStatus?.isRunning == false
         )
     }
 

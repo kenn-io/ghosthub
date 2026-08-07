@@ -28,8 +28,10 @@ layer, as subject to direct iteration.
   and exact tmux session names. Direct `tmux list-sessions` discovery supplies
   every otherwise-unbound session on each configured host.
 - Packaged builds invoke their revision-pinned bundled kwt for local operations.
-  After explicit user permission, remote hosts invoke Ghosthub's matching
-  revision-pinned managed helper from `~/.ghosthub/`.
+  Configured remote macOS and Linux hosts automatically install or update
+  Ghosthub's matching revision-pinned managed helper under `~/.ghosthub/`.
+  Windows helper installation remains explicit until the kwt executables are
+  Authenticode-signed.
 - Fresh remote hosts gain project context through the explicit Host Settings
   **Add Project** action, which delegates one absolute repository path to kwt;
   Ghosthub never scans the remote filesystem or edits kwt configuration.
@@ -89,7 +91,12 @@ layer, as subject to direct iteration.
   account, host, project, or session data. Publish required refreshed binaries
   to the orphan `website-assets` branch so ghosthub.ai does not ship stale
   product views.
-- Pull request descriptions should be concise, rationale-first prose. Do not add boilerplate or navel-gazing sections like "Changes", "Tests", or "Verification"; mention validation only when it is genuinely useful reviewer context.
+- Pull request descriptions must be concise and optimized for human scanning:
+  lead with a short rationale, then use bullets for the material behavior,
+  constraints, and reviewer-relevant consequences. Do not add boilerplate or
+  navel-gazing sections such as "Changes", "Validation", "Tests", or
+  "Verification". Mention unusual validation only inline when it is genuinely
+  useful reviewer context.
 - The canonical repository is `https://github.com/kenn-io/ghosthub`. Only push
   or open pull requests when the user explicitly asks.
 - The public repository does not accept unsolicited pull requests. Direct bug

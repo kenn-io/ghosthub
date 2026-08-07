@@ -7,7 +7,7 @@ import Testing
 
 @Suite("Managed remote kwt installation")
 struct KwtRemoteInstallerTests {
-    @Test("Linux arm64 helper is verified and installed by exact revision")
+    @Test("missing Linux arm64 helper is installed by exact revision")
     func installsLinuxARM64Helper() async throws {
         let revision = String(repeating: "d", count: 40)
         let helperURL = FileManager.default.temporaryDirectory
@@ -19,6 +19,11 @@ struct KwtRemoteInstallerTests {
             revision: revision,
             remoteRunner: { _, command in
                 recorder.record(command: command)
+                if command == KwtRemoteInstaller.readyProbeCommand(
+                    revision: revision
+                ) {
+                    return (1, "")
+                }
                 if command == KwtRemoteInstaller.targetProbeCommand {
                     return (
                         0,
@@ -48,7 +53,7 @@ struct KwtRemoteInstallerTests {
             }
         )
 
-        try await installer.install(on: SSHHost(
+        try await installer.ensureInstalled(on: SSHHost(
             configKey: "spark",
             name: "DGX Spark",
             platform: .linux,
@@ -70,6 +75,168 @@ struct KwtRemoteInstallerTests {
         #expect(installCommand.contains("mv -f"))
         #expect(installCommand.contains(revision))
         #expect(installCommand.contains("kwt version \(revision)"))
+    }
+
+    @Test("exact installed helper skips upload")
+    func exactInstalledHelperSkipsUpload() async throws {
+        let revision = String(repeating: "c", count: 40)
+        let recorder = KwtInstallRecorder()
+        let installer = KwtRemoteInstaller(
+            revision: revision,
+            remoteRunner: { _, command in
+                recorder.record(command: command)
+                return (0, "banner\nGHOSTHUB_KWT_READY\n")
+            },
+            uploadRunner: { host, source, destination in
+                recorder.record(
+                    host: host,
+                    source: source,
+                    destination: destination
+                )
+                return (0, "")
+            },
+            resourceProvider: { _ in nil }
+        )
+
+        try await installer.ensureInstalled(on: SSHHost(
+            configKey: "mbp",
+            name: "MacBook Pro",
+            platform: .macOS,
+            sshDestination: "wesm@mbp"
+        ))
+
+        #expect(recorder.commands == [
+            KwtRemoteInstaller.readyProbeCommand(revision: revision),
+        ])
+        #expect(recorder.destination == nil)
+    }
+
+    @Test("cancelling the last provisioning waiter stops before upload")
+    func cancellationStopsProvisioningBeforeUpload() async throws {
+        let revision = String(repeating: "b", count: 40)
+        let probeStarted = AsyncStream<Void>.makeStream()
+        let recorder = KwtInstallRecorder()
+        let installer = KwtRemoteInstaller(
+            revision: revision,
+            remoteRunner: { _, command in
+                recorder.record(command: command)
+                if command == KwtRemoteInstaller.readyProbeCommand(
+                    revision: revision
+                ) {
+                    return (1, "")
+                }
+                if command == KwtRemoteInstaller.targetProbeCommand {
+                    probeStarted.continuation.yield()
+                    let deadline = Date().addingTimeInterval(2)
+                    while !Task.isCancelled, Date() < deadline {
+                        Thread.sleep(forTimeInterval: 0.001)
+                    }
+                    return (
+                        0,
+                        "GHOSTHUB_KWT_TARGET\tLinux\taarch64\n"
+                    )
+                }
+                return (0, "")
+            },
+            uploadRunner: { host, source, destination in
+                recorder.record(
+                    host: host,
+                    source: source,
+                    destination: destination
+                )
+                return (0, "")
+            },
+            resourceProvider: { _ in nil }
+        )
+        let coordinator = KwtRemoteProvisioningCoordinator(
+            installer: installer
+        )
+        let task = Task {
+            try await coordinator.ensureInstalled(on: SSHHost(
+                configKey: "spark",
+                name: "DGX Spark",
+                platform: .linux,
+                sshDestination: "wesm@spark"
+            ))
+        }
+
+        var probeEvents = probeStarted.stream.makeAsyncIterator()
+        _ = await probeEvents.next()
+        task.cancel()
+        await #expect {
+            try await task.value
+        } throws: {
+            $0 is CancellationError
+        }
+        #expect(recorder.destination == nil)
+    }
+
+    @Test("cancellation after upload prevents helper activation")
+    func cancellationAfterUploadPreventsActivation() async throws {
+        let revision = String(repeating: "9", count: 40)
+        let helperURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        try Data("pinned kwt".utf8).write(to: helperURL)
+        defer { try? FileManager.default.removeItem(at: helperURL) }
+        let uploadStarted = AsyncStream<Void>.makeStream()
+        let recorder = KwtInstallRecorder()
+        let installer = KwtRemoteInstaller(
+            revision: revision,
+            remoteRunner: { _, command in
+                recorder.record(command: command)
+                if command == KwtRemoteInstaller.targetProbeCommand {
+                    return (
+                        0,
+                        "GHOSTHUB_KWT_TARGET\tLinux\taarch64\n"
+                    )
+                }
+                if command.contains("GHOSTHUB_KWT_UPLOAD") {
+                    return (
+                        0,
+                        "GHOSTHUB_KWT_UPLOAD\t/home/wesm/.ghosthub/"
+                            + "helpers/kwt/\(revision)/.incoming-test\n"
+                    )
+                }
+                return (0, "GHOSTHUB_KWT_INSTALLED\n")
+            },
+            uploadRunner: { host, source, destination in
+                recorder.record(
+                    host: host,
+                    source: source,
+                    destination: destination
+                )
+                uploadStarted.continuation.yield()
+                let deadline = Date().addingTimeInterval(2)
+                while !Task.isCancelled, Date() < deadline {
+                    Thread.sleep(forTimeInterval: 0.001)
+                }
+                return (0, "")
+            },
+            resourceProvider: { _ in helperURL }
+        )
+        let task = Task {
+            try await installer.install(on: SSHHost(
+                configKey: "spark",
+                name: "DGX Spark",
+                platform: .linux,
+                sshDestination: "wesm@spark"
+            ))
+        }
+
+        var uploadEvents = uploadStarted.stream.makeAsyncIterator()
+        _ = await uploadEvents.next()
+        task.cancel()
+        await #expect {
+            try await task.value
+        } throws: {
+            $0 is CancellationError
+        }
+        #expect(recorder.destination != nil)
+        #expect(!recorder.commands.contains {
+            $0.contains("GHOSTHUB_KWT_INSTALLED")
+        })
+        let cleanupCommand = try #require(recorder.commands.last)
+        #expect(cleanupCommand.contains("rm -f"))
     }
 
     @Test("uploaded helper must report the exact pinned revision")

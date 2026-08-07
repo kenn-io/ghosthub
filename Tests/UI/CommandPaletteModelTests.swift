@@ -685,6 +685,61 @@ struct CommandPaletteModelTests {
         commands.expectCommandContains(title: "Open tmux session: homelab")
     }
 
+    @Test("exposed kwt session keeps one worktree-aware lifecycle command")
+    func exposedKwtSessionDeduplicatesLifecycleCommands() throws {
+        let host = HostSummary.fixture(
+            tmuxSessions: [
+                TmuxSessionSummary(
+                    name: "kwt-ghosthub-main",
+                    managed: false,
+                    windows: [],
+                    serverPID: "4242",
+                    sessionID: "$3",
+                    createdAt: "1785190000"
+                ),
+            ]
+        )
+        let project = ProjectSummary.fixture(hostID: host.id)
+        var worktree = WorktreeSummary.fixture(
+            hostID: host.id,
+            projectID: project.id
+        )
+        worktree.tmuxSessionName = "kwt-ghosthub-main"
+        let commands = makeCommandPaletteCommands(
+            snapshot: WorkspaceSnapshot(
+                hosts: [host],
+                projects: [project],
+                worktrees: [worktree]
+            ),
+            selection: WorkspaceSelection(selectedHostID: host.id),
+            tmuxSessionVisibility: TmuxSessionVisibility(
+                hideKwtManagedSessions: false
+            )
+        )
+
+        let openCommands = commands.filter {
+            if case let .openTmuxSession(session) = $0.action {
+                return session.name == "kwt-ghosthub-main"
+            }
+            return false
+        }
+        let killCommands = commands.filter {
+            if case let .killTmuxSession(session) = $0.action {
+                return session.name == "kwt-ghosthub-main"
+            }
+            return false
+        }
+        let open = try #require(openCommands.first)
+        let kill = try #require(killCommands.first)
+        let expected = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: worktree)
+        )
+        #expect(openCommands.count == 1)
+        #expect(killCommands.count == 1)
+        #expect(open.action == .openTmuxSession(expected))
+        #expect(kill.action == .killTmuxSession(expected))
+    }
+
     @Test("import PR command hidden without GitHub-linked projects")
     func importPRCommandHiddenWithoutGitHubLink() {
         let host = HostSummary.fixture(

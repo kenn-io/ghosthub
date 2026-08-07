@@ -457,10 +457,15 @@ public struct SettingsView: View {
                     "Show hidden worktrees by default",
                     isOn: $draft.showHiddenWorktreesByDefault
                 )
+                Toggle(
+                    "Hide kwt-managed sessions from Tmux Sessions",
+                    isOn: $draft.hideKwtManagedSessions
+                )
 
                 Text(
-                    "Kwt remains authoritative for registered projects,"
-                        + " worktrees, and tmux session names."
+                    "Kwt-managed sessions remain available through their"
+                        + " worktrees when hidden from the separate tmux"
+                        + " session list."
                 )
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)

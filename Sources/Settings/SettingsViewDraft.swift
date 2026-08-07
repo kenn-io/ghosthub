@@ -31,6 +31,7 @@ public struct SettingsViewDraft: Equatable {
     public var copySelectionToClipboard: Bool
     public var hideRootCheckout: Bool
     public var showHiddenWorktreesByDefault: Bool
+    public var hideKwtManagedSessions: Bool
     public var hiddenTmuxSessionPatterns: [String]
     public var showMacOSNotifications: Bool
     public var attentionSound: WorkspaceNotificationSound
@@ -62,6 +63,8 @@ public struct SettingsViewDraft: Equatable {
         hideRootCheckout = store.worktreePreferences.hideRootCheckout
         showHiddenWorktreesByDefault = store.worktreePreferences
             .showHiddenWorktreesByDefault
+        hideKwtManagedSessions = store.worktreePreferences
+            .hideKwtManagedSessions
         hiddenTmuxSessionPatterns = store.tmuxSessionPreferences
             .hiddenSessionPatterns
         showMacOSNotifications = store.notificationConfiguration
@@ -117,6 +120,7 @@ public struct SettingsViewDraft: Equatable {
         store.setShowHiddenWorktreesByDefault(
             showHiddenWorktreesByDefault
         )
+        store.setHideKwtManagedSessions(hideKwtManagedSessions)
         let didPersistTmuxSessionPatterns = store
             .setHiddenTmuxSessionPatterns(hiddenTmuxSessionPatterns)
         store.setShowMacOSNotifications(showMacOSNotifications)

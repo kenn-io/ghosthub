@@ -42,9 +42,10 @@ when no review is pending.
 
 ## A project does not appear
 
-For a remote macOS or Linux host, first install the managed kwt helper from
-Host Settings. Then use the host's **Add Project** action and provide the
-absolute path to an existing checkout on that host. Ghosthub does not discover
+For a remote macOS or Linux host, Ghosthub installs its managed kwt helper
+automatically. If the host shows a provisioning warning, retry it or open Host
+Settings. Then use the host's **Add Project** action and provide the absolute
+path to an existing checkout on that host. Ghosthub does not discover
 repositories by scanning.
 
 Project registration is not yet supported for native Windows hosts.

@@ -85,6 +85,7 @@ struct KwtRemoteInstaller: Sendable {
 
     private static let targetMarker = "GHOSTHUB_KWT_TARGET\t"
     private static let uploadMarker = "GHOSTHUB_KWT_UPLOAD\t"
+    private static let readyMarker = "GHOSTHUB_KWT_READY"
     private static let installedMarker = "GHOSTHUB_KWT_INSTALLED"
 
     private let revision: String?
@@ -121,6 +122,17 @@ struct KwtRemoteInstaller: Sendable {
     }
 
     func install(on host: SSHHost) async throws {
+        try await install(on: host, ifNeeded: false)
+    }
+
+    func ensureInstalled(on host: SSHHost) async throws {
+        try await install(on: host, ifNeeded: true)
+    }
+
+    private func install(
+        on host: SSHHost,
+        ifNeeded: Bool
+    ) async throws {
         guard let info = TmuxHostResolver.parseSSHDestination(
             host.sshDestination
         ) else {
@@ -130,7 +142,8 @@ struct KwtRemoteInstaller: Sendable {
         let remoteRunner = remoteRunner
         let uploadRunner = uploadRunner
         let resourceProvider = resourceProvider
-        try await Task.detached(priority: .userInitiated) {
+        let operation = Task.detached(priority: .userInitiated) {
+            try Task.checkCancellation()
             guard let revision,
                   KwtBinaryLocator.remoteManagedPath(
                       revision: revision
@@ -139,7 +152,21 @@ struct KwtRemoteInstaller: Sendable {
                 throw KwtRemoteInstallError.bundleIncomplete
             }
 
+            if ifNeeded {
+                let ready = remoteRunner(
+                    info,
+                    Self.readyProbeCommand(revision: revision)
+                )
+                try Task.checkCancellation()
+                if ready.status == 0,
+                   ready.stdout.split(whereSeparator: \.isNewline)
+                   .contains(Substring(Self.readyMarker)) {
+                    return
+                }
+            }
+
             let probe = remoteRunner(info, Self.targetProbeCommand)
+            try Task.checkCancellation()
             guard probe.status == 0 else {
                 throw KwtRemoteInstallError.targetProbeFailed(
                     status: probe.status
@@ -166,6 +193,7 @@ struct KwtRemoteInstaller: Sendable {
                 .map { String(format: "%02x", $0) }
                 .joined()
             let incomingName = ".incoming-\(UUID().uuidString.lowercased())"
+            try Task.checkCancellation()
             let prepare = remoteRunner(
                 info,
                 Self.prepareCommand(
@@ -173,6 +201,7 @@ struct KwtRemoteInstaller: Sendable {
                     incomingName: incomingName
                 )
             )
+            try Task.checkCancellation()
             guard prepare.status == 0 else {
                 throw KwtRemoteInstallError.prepareFailed(
                     status: prepare.status
@@ -180,6 +209,7 @@ struct KwtRemoteInstaller: Sendable {
             }
             do {
                 let uploadPath = try Self.parseUploadPath(prepare.stdout)
+                try Task.checkCancellation()
                 let upload = uploadRunner(info, helperURL, uploadPath)
                 guard upload.status == 0 else {
                     let message = upload.output.trimmingCharacters(
@@ -190,6 +220,7 @@ struct KwtRemoteInstaller: Sendable {
                         message: message.isEmpty ? nil : message
                     )
                 }
+                try Task.checkCancellation()
                 let install = remoteRunner(
                     info,
                     Self.installCommand(
@@ -199,6 +230,7 @@ struct KwtRemoteInstaller: Sendable {
                         digest: digest
                     )
                 )
+                try Task.checkCancellation()
                 guard install.status == 0 else {
                     throw KwtRemoteInstallError.installFailed(
                         status: install.status
@@ -219,7 +251,12 @@ struct KwtRemoteInstaller: Sendable {
                 )
                 throw error
             }
-        }.value
+        }
+        try await withTaskCancellationHandler {
+            try await operation.value
+        } onCancel: {
+            operation.cancel()
+        }
     }
 
     static let targetProbeCommand =
@@ -227,6 +264,19 @@ struct KwtRemoteInstaller: Sendable {
             + "ghosthub_kwt_arch=$(uname -m) || exit $?; "
             + "printf 'GHOSTHUB_KWT_TARGET\\t%s\\t%s\\n' "
             + "\"$ghosthub_kwt_os\" \"$ghosthub_kwt_arch\""
+
+    static func readyProbeCommand(revision: String) -> String {
+        let path = "$HOME/.ghosthub/helpers/kwt/\(revision)/kwt"
+        return "ghosthub_kwt_path=\"\(path)\"; "
+            + "[ -x \"$ghosthub_kwt_path\" ] || exit 1; "
+            + "ghosthub_kwt_version=$(\"$ghosthub_kwt_path\" version) "
+            + "|| exit $?; "
+            + "ghosthub_kwt_version_first=$(printf '%s\\n' "
+            + "\"$ghosthub_kwt_version\" | sed -n '1p') || exit $?; "
+            + "[ \"$ghosthub_kwt_version_first\" = "
+            + shellQuotedCommandArgument("kwt version \(revision)")
+            + " ] || exit 1; printf 'GHOSTHUB_KWT_READY\\n'"
+    }
 
     static func prepareCommand(
         revision: String,
@@ -365,5 +415,79 @@ struct KwtRemoteInstaller: Sendable {
         arguments.append(source.path)
         arguments.append("\(target):\(destination)")
         return arguments
+    }
+}
+
+actor KwtRemoteProvisioningCoordinator {
+    static let shared = KwtRemoteProvisioningCoordinator()
+
+    private struct HostKey: Hashable {
+        let configKey: String
+        let platform: String
+        let sshDestination: String
+    }
+
+    private struct InFlight {
+        let task: Task<Void, Error>
+        var waiters: Set<UUID>
+    }
+
+    private var inFlight: [HostKey: InFlight] = [:]
+    private let installer: KwtRemoteInstaller
+
+    init(installer: KwtRemoteInstaller = KwtRemoteInstaller()) {
+        self.installer = installer
+    }
+
+    func ensureInstalled(on host: SSHHost) async throws {
+        let key = HostKey(
+            configKey: host.configKey,
+            platform: host.platform.rawValue,
+            sshDestination: host.sshDestination
+        )
+        let waiterID = UUID()
+        let task: Task<Void, Error>
+        if var existing = inFlight[key] {
+            existing.waiters.insert(waiterID)
+            inFlight[key] = existing
+            task = existing.task
+        } else {
+            let installer = installer
+            task = Task {
+                try await installer.ensureInstalled(on: host)
+            }
+            inFlight[key] = InFlight(
+                task: task,
+                waiters: [waiterID]
+            )
+        }
+
+        do {
+            try await withTaskCancellationHandler {
+                try Task.checkCancellation()
+                try await task.value
+                try Task.checkCancellation()
+            } onCancel: {
+                Task {
+                    await self.releaseWaiter(waiterID, for: key)
+                }
+            }
+            releaseWaiter(waiterID, for: key)
+        } catch {
+            releaseWaiter(waiterID, for: key)
+            throw error
+        }
+    }
+
+    private func releaseWaiter(_ waiterID: UUID, for key: HostKey) {
+        guard var existing = inFlight[key],
+              existing.waiters.remove(waiterID) != nil
+        else { return }
+        guard !existing.waiters.isEmpty else {
+            inFlight.removeValue(forKey: key)
+            existing.task.cancel()
+            return
+        }
+        inFlight[key] = existing
     }
 }

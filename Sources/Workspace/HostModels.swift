@@ -204,10 +204,9 @@ public struct RemoteHostDiagnostic: Codable, Equatable, Sendable, Identifiable {
         RemoteHostDiagnostic(
             code: .missingKwt,
             severity: .warning,
-            summary: "Git worktree support is not installed (optional).",
+            summary: "Git worktree support is unavailable (optional).",
             recoverySuggestion:
-            "Use Install kwt Worktree Helper in Host Settings to show "
-                + "projects and worktrees from this host. "
+            "Open Host Settings to install or repair the kwt helper. "
                 + "Tmux sessions remain available."
         )
     }

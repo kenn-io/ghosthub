@@ -2,9 +2,14 @@ import Foundation
 
 public struct TmuxSessionVisibility: Equatable, Sendable {
     public var hiddenPatterns: [String]
+    public var hideKwtManagedSessions: Bool
 
-    public init(hiddenPatterns: [String] = []) {
+    public init(
+        hiddenPatterns: [String] = [],
+        hideKwtManagedSessions: Bool = true
+    ) {
         self.hiddenPatterns = hiddenPatterns
+        self.hideKwtManagedSessions = hideKwtManagedSessions
     }
 
     public func isHidden(_ sessionName: String) -> Bool {

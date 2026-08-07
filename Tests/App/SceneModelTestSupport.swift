@@ -308,6 +308,8 @@ func makeModel(
         host in
         try await KwtInventoryClient().load(from: host)
     },
+    kwtRemoteProvisioner:
+    @escaping WorkspaceSceneModel.KwtRemoteProvisioner = { _ in },
     kwtWorktreeCreator: @escaping WorkspaceSceneModel.KwtWorktreeCreator = {
         request, projectPath, host in
         try await KwtWorktreeClient().create(
@@ -419,6 +421,7 @@ func makeModel(
         appliesTmuxPresentationStyleToExistingSessionsProvider:
         appliesTmuxPresentationStyleToExistingSessionsProvider,
         kwtInventoryLoader: kwtInventoryLoader,
+        kwtRemoteProvisioner: kwtRemoteProvisioner,
         kwtWorktreeCreator: kwtWorktreeCreator,
         kwtWorktreeRemover: kwtWorktreeRemover,
         worktreeMutationCoordinator: worktreeMutationCoordinator,
