@@ -94,7 +94,7 @@ private struct RemoteRestorationHarness {
             localHostID: UUID(),
             snapshot: snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
             tmuxSessionDiscovery: inventory.discover
         )
         let savedState = WorkspaceWindowState(
@@ -293,7 +293,7 @@ private struct ProtectedRestorationHarness {
             database: environment.database,
             localHostID: environment.host.id,
             snapshot: snapshot,
-            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
             tmuxSessionIdentityReader: probe.read
         )
         let savedState = WorkspaceWindowState(
@@ -332,7 +332,7 @@ struct WorkspaceRestorationTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             nativeTmuxSurfaceStore: store,
-            nativeTmuxPathProvider: { .success("/opt/homebrew/bin/tmux") },
+            nativeTmuxPathProvider: { successfulTmuxResolution("/opt/homebrew/bin/tmux") },
             tmuxSessionDiscovery: inventory.discover
         )
         model.startTmuxSessionDiscovery()
@@ -674,7 +674,7 @@ struct WorkspaceRestorationTests {
             database: environment.database,
             localHostID: environment.host.id,
             snapshot: snapshot,
-            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
             tmuxSessionIdentityReader: probe.read
         )
         let state = WorkspaceWindowState(
@@ -738,7 +738,7 @@ struct WorkspaceRestorationTests {
             database: environment.database,
             localHostID: environment.host.id,
             snapshot: snapshot,
-            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
             tmuxSessionIdentityReader: probe.read
         )
         let state = WorkspaceWindowState(
@@ -793,7 +793,7 @@ struct WorkspaceRestorationTests {
             database: environment.database,
             localHostID: environment.host.id,
             snapshot: snapshot,
-            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
             tmuxSessionIdentityReader: probe.read
         )
         let state = WorkspaceWindowState(
@@ -836,7 +836,7 @@ struct WorkspaceRestorationTests {
             database: environment.database,
             localHostID: environment.host.id,
             snapshot: snapshot,
-            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
             tmuxSessionIdentityReader: probe.read
         )
         let state = WorkspaceWindowState(

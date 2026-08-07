@@ -13,6 +13,9 @@ Ghosthub currently requires:
 - macOS 26 (Tahoe) or newer
 - tmux 3.2 or newer on the local Mac and on each remote macOS or Linux host
 
+The Cmd-D and Cmd-Shift-D pane shortcuts require tmux 3.4 or newer on the
+attached host. With tmux 3.2 or 3.3, use your normal tmux split keys.
+
 Native Windows hosts are experimental and have additional requirements. See
 [Remote Hosts](remote-hosts.md#experimental-windows-hosts).
 

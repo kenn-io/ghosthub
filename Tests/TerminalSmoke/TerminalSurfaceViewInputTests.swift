@@ -254,7 +254,8 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         charactersIgnoringModifiers: String,
         modifiers: NSEvent.ModifierFlags,
         keyCode: UInt16,
-        windowNumber: Int = 0
+        windowNumber: Int = 0,
+        isARepeat: Bool = false
     ) -> NSEvent {
         NSEvent.keyEvent(
             with: .keyDown,
@@ -265,7 +266,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             context: nil,
             characters: characters,
             charactersIgnoringModifiers: charactersIgnoringModifiers,
-            isARepeat: false,
+            isARepeat: isARepeat,
             keyCode: keyCode
         )!
     }
@@ -818,6 +819,81 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         )
         XCTAssertEqual(harness.inserted, [])
         XCTAssertEqual(harness.commands, [])
+    }
+
+    func testTmuxSplitShortcutsReachAttachedClientHandler() throws {
+        let appHandle = try requireAppHandle()
+        let view = TerminalSurfaceView(
+            app: appHandle,
+            configuration: TerminalSurfaceConfiguration()
+        )
+        var shortcuts: [TerminalTmuxSplitShortcut] = []
+        view.tmuxSplitShortcutHandler = { shortcuts.append($0) }
+
+        for event in [
+            makeKeyEvent(
+                characters: "d",
+                charactersIgnoringModifiers: "d",
+                modifiers: .command,
+                keyCode: 2,
+                windowNumber: 0
+            ),
+            makeKeyEvent(
+                characters: "D",
+                charactersIgnoringModifiers: "d",
+                modifiers: [.command, .shift],
+                keyCode: 2,
+                windowNumber: 0
+            ),
+        ] {
+            XCTAssertTrue(view.handleTmuxSplitShortcutForTesting(event))
+        }
+
+        XCTAssertEqual(shortcuts, [.right, .down])
+    }
+
+    func testTmuxSplitShortcutRepeatIsConsumedWithoutSplitting() throws {
+        let appHandle = try requireAppHandle()
+        let view = TerminalSurfaceView(
+            app: appHandle,
+            configuration: TerminalSurfaceConfiguration()
+        )
+        var shortcuts: [TerminalTmuxSplitShortcut] = []
+        view.tmuxSplitShortcutHandler = { shortcuts.append($0) }
+        let event = makeKeyEvent(
+            characters: "d",
+            charactersIgnoringModifiers: "d",
+            modifiers: .command,
+            keyCode: 2,
+            isARepeat: true
+        )
+
+        XCTAssertTrue(view.handleTmuxSplitShortcutForTesting(event))
+        XCTAssertEqual(shortcuts, [])
+    }
+
+    func testTmuxSplitShortcutConsumesKeyUpAfterCommandRelease() throws {
+        let appHandle = try requireAppHandle()
+        let view = TerminalSurfaceView(
+            app: appHandle,
+            configuration: TerminalSurfaceConfiguration()
+        )
+        view.tmuxSplitShortcutHandler = { _ in }
+        let keyDown = makeKeyEvent(
+            characters: "d",
+            charactersIgnoringModifiers: "d",
+            modifiers: .command,
+            keyCode: 2
+        )
+        let keyUp = makeKeyUpEvent(
+            characters: "d",
+            charactersIgnoringModifiers: "d",
+            modifiers: [],
+            keyCode: 2
+        )
+
+        XCTAssertTrue(view.handleTmuxSplitShortcutForTesting(keyDown))
+        XCTAssertNil(view.processLocalEventForTesting(keyUp))
     }
 
     func testCommandShiftBracketsAreReservedForTabNavigation() throws {

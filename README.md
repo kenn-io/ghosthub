@@ -99,6 +99,9 @@ Ghosthub requires:
 - macOS 26 (Tahoe) or newer
 - tmux 3.2 or newer locally and on remote macOS or Linux hosts
 
+Cmd-D and Cmd-Shift-D pane splitting requires tmux 3.4 or newer on the host.
+Older tmux versions remain supported through their normal pane-splitting keys.
+
 Experimental native Windows hosts require Windows 11 build 22523 or newer,
 OpenSSH, Windows PowerShell 5.1 or newer, and psmux with its `tmux.exe`
 compatibility alias available.

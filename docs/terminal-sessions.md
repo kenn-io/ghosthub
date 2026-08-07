@@ -179,7 +179,29 @@ shell so settings such as `TMUX_TMPDIR` resolve the same tmux server as later
 styling and identity commands. On Windows, those phases use encoded
 PowerShell commands within the same OpenSSH account environment. Unbound
 discovered sessions remain attach-only.
-Ghosthub does not expose rename, split, resize, window, or pane operations.
+Ghosthub does not expose rename, resize, or window operations. On an attached
+tmux terminal, Cmd-D and Cmd-Shift-D request Ghostty-style split-right and
+split-down operations; the File menu exposes the same actions and shortcuts.
+These actions require tmux 3.4 or newer; Ghosthub checks the binary on each
+local or remote attachment and leaves normal tmux key bindings available on
+older versions. On supported POSIX hosts, Ghosthub runs `split-window -h` or
+`split-window -v` against the active pane of that attachment's exact host and
+socket using its frozen SSH route. Once the client attaches, it publishes its
+TTY and stable tmux server and session identity under that attachment's unique
+token. Each split atomically finds and validates that exact client, then
+targets the session's active pane.
+Other clients attaching
+at the same time cannot be mistaken for the Ghosthub surface. Renaming the
+attached session therefore keeps splits working, while a same-named replacement
+or a client switched to another session is rejected. Failed client discovery is
+not cached, and each queued request receives its own attempt. Ghosthub
+serializes requests for the attachment. The keyboard
+shortcuts apply only while the terminal has effective keyboard focus and no
+sheet is attached; choosing either File menu item remains an explicit request.
+The action works regardless of the user's tmux prefix or key-table bindings
+while tmux remains authoritative for pane creation and layout. If tmux rejects
+a split, Ghosthub displays its diagnostic over the attachment. Native Windows
+psmux attachments do not offer pane-split actions or intercept these shortcuts.
 Kill Session is exposed separately from presentation only for a session known
 to be running and always requires confirmation.
 
@@ -201,13 +223,14 @@ the resolved host endpoint and cancelled when that endpoint changes or the
 owning window shuts down.
 
 Before discovery or attachment, Ghosthub resolves an absolute tmux-compatible
-binary path and verifies the reported tmux protocol version is 3.2 or newer.
-On POSIX hosts the login shell initializes its environment, then delegates
-Ghosthub's probe to `/bin/sh`; fish and other non-POSIX account shells never
-interpret the POSIX probe itself. On Windows, Ghosthub starts noninteractive
-Windows PowerShell and resolves `tmux.exe` with `Get-Command`.
-Successful paths are cached per host; lookup and version failures remain
-retryable and are presented to the user.
+binary path. POSIX hosts require tmux 3.2 or newer; the experimental Windows
+path accepts psmux's tmux 3.2 compatibility level. On POSIX hosts the login
+shell initializes its environment, then delegates Ghosthub's probe to
+`/bin/sh`; fish and other non-POSIX account shells never interpret the POSIX
+probe itself. On Windows, Ghosthub starts noninteractive Windows PowerShell
+and resolves `tmux.exe` with `Get-Command`.
+Successful paths are cached per frozen host connection; lookup and version
+failures remain retryable and are presented to the user.
 
 ## SSH Keepalive and Reconnect
 
@@ -367,8 +390,9 @@ session model and die with the app process.
   active-session command, never as a client-local libghostty overlay.
 - Keep mutable Ghosthub app state under `~/.ghosthub/`.
 - Do not read or depend on Ghostty.app global config.
-- Do not install Ghosthub split, zoom, or tab keybindings. Native tmux owns
-  those interactions and receives the terminal's ordinary input unchanged.
+- Do not install Ghosthub-owned layout, zoom, or tab management. Native tmux
+  owns those interactions. Explicit app shortcuts may request a semantic tmux
+  operation against the active attachment, such as pane splitting.
 - Do not disable libghostty shell integration to work around keybinding
   bugs.
 

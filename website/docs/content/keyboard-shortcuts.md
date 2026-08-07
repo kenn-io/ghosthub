@@ -17,6 +17,8 @@ icon: lucide/keyboard
 | Create or import a worktree | ++shift+cmd+n++ |
 | New window | ++cmd+n++ |
 | New tab | ++cmd+t++ |
+| Split the tmux pane right | ++cmd+d++ |
+| Split the tmux pane down | ++shift+cmd+d++ |
 | Close session presentation | ++cmd+w++ |
 | Close window | ++shift+cmd+w++ |
 | Open application log | ++option+cmd+l++ |
@@ -24,3 +26,10 @@ icon: lucide/keyboard
 
 Closing a presentation, window, or the app detaches from tmux. It does not end
 the session.
+
+Choose **File > Split Right** or **File > Split Down** if you prefer menus.
+Ghosthub asks tmux to split the pane directly, so custom prefixes and key
+bindings keep working. The shortcuts require a connected tmux terminal with
+keyboard focus, no open sheet, and tmux 3.4 or newer on the attached host. With
+tmux 3.2 or 3.3, use your normal tmux split keys. Pane splitting is not yet
+available on Windows psmux hosts.

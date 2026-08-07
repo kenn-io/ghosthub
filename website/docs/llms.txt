@@ -13,7 +13,7 @@ Ghosthub is alpha software. The Guide is a short visual tour; the Docs links bel
 - [Projects and worktrees](https://ghosthub.ai/docs/projects-worktrees.md): Register repositories and manage branch- or pull-request-backed worktrees
 - [Windows and navigation](https://ghosthub.ai/docs/windows-navigation.md): Sidebar, Command Palette, windows, tabs, and restoration
 - [Terminal configuration](https://ghosthub.ai/docs/terminal-configuration.md): Ghosthub-owned libghostty configuration and tmux themes
-- [Keyboard shortcuts](https://ghosthub.ai/docs/keyboard-shortcuts.md): Application and workspace shortcuts
+- [Keyboard shortcuts](https://ghosthub.ai/docs/keyboard-shortcuts.md): Application, workspace, and tmux pane-splitting shortcuts
 - [Privacy](https://ghosthub.ai/docs/privacy.md): Anonymous usage data and local state
 - [Troubleshooting](https://ghosthub.ai/docs/troubleshooting.md): Common local, SSH, tmux, and worktree problems
 

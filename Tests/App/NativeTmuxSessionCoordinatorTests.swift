@@ -5,15 +5,63 @@ import GhosthubWorkspace
 import Testing
 @testable import GhosthubApp
 
+private let coordinatorSplitIdentity = TmuxSessionIdentity(
+    serverPID: "123",
+    sessionID: "$7",
+    createdAt: "456"
+)
+private let coordinatorSplitClientOutput =
+    "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY\t123\t789\t321"
+        + "\t/dev/ttys001\t$7\t456\t%9\n"
+
+private func supportedPaneSplitter(
+    _ runner: @escaping TmuxPaneSplitter.Runner
+) -> TmuxPaneSplitter {
+    TmuxPaneSplitter(runner: runner)
+}
+
 @Suite("Native tmux connection identity", .serialized)
 @MainActor
 struct NativeTmuxSessionCoordinatorTests {
+    @Test("attachment reuses the version from binary resolution")
+    func attachmentReusesResolvedVersion() async {
+        let runnerCalls = LockedValue(0)
+        let store = RecordingTmuxSurfaceStore()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: {
+                .success(ResolvedTmuxBinary(
+                    path: "/opt/homebrew/bin/tmux",
+                    version: "tmux 3.4a"
+                ))
+            },
+            paneSplitter: TmuxPaneSplitter { _, _, _ in
+                runnerCalls.withLock { $0 += 1 }
+                return (1, "unexpected command")
+            }
+        )
+        var isReady = false
+        coordinator.onSurfaceReady = { _ in isReady = true }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "one-version-probe",
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity
+        )
+
+        await waitUntilMainActor { isReady }
+        _ = coordinator.surface(handle: handle)
+
+        #expect(coordinator.supportsPaneSplitting(handle))
+        #expect(runnerCalls.load() == 0)
+    }
+
     @Test("creation carries a launch command but attachment drops it")
     func launchCommandIsCreationOnly() async throws {
         let store = RecordingTmuxSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
-            tmuxPathProvider: { .success("/opt/homebrew/bin/tmux") }
+            tmuxPathProvider: { successfulTmuxResolution("/opt/homebrew/bin/tmux") }
         )
         var readyHandles = Set<UUID>()
         coordinator.onSurfaceReady = { readyHandles.insert($0.id) }
@@ -50,12 +98,107 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(attachCommand.contains("attach-session"))
     }
 
+    @Test("undiscovered attachments bind during surface establishment")
+    func undiscoveredAttachmentBindsDuringSurfaceEstablishment() async throws {
+        let identityCommands = LockedValue<[String]>([])
+        let splitCommands = LockedValue(0)
+        let releaseBinding = DispatchSemaphore(value: 0)
+        defer { releaseBinding.signal() }
+        let store = RecordingTmuxSurfaceStore()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            paneSplitter: supportedPaneSplitter { _, _, command in
+                if command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") {
+                    var isInitialBinding = false
+                    identityCommands.withLock {
+                        $0.append(command)
+                        isInitialBinding = $0.count == 1
+                    }
+                    if isInitialBinding {
+                        _ = releaseBinding.wait(timeout: .now() + 5)
+                    }
+                    return (0, coordinatorSplitClientOutput)
+                }
+                splitCommands.withLock { $0 += 1 }
+                return (0, "")
+            }
+        )
+        var readyCount = 0
+        coordinator.onSurfaceReady = { _ in readyCount += 1 }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "undiscovered",
+            host: .local
+        )
+
+        await waitUntilMainActor { readyCount == 1 }
+        _ = coordinator.surface(handle: handle)
+        await waitUntilMainActor { identityCommands.load().count == 1 }
+
+        let bindingCommand = try #require(identityCommands.load().first)
+        #expect(bindingCommand.contains("'list-clients' '-F'"))
+        #expect(coordinator.supportsPaneSplitting(handle))
+        let handler = try #require(store.surface.tmuxSplitShortcutHandler)
+        handler(.right)
+        #expect(splitCommands.load() == 0)
+        #expect(store.surface.tmuxSplitErrorMessage?.contains(
+            "client identity is unavailable"
+        ) == true)
+
+        releaseBinding.signal()
+        await waitUntilMainActor { readyCount == 2 }
+        handler(.right)
+        await waitUntilMainActor { splitCommands.load() == 1 }
+    }
+
+    @Test("tmux older than 3.4 does not install pane split shortcuts")
+    func oldTmuxDoesNotInstallSplitHandler() async {
+        let store = RecordingTmuxSurfaceStore()
+        let host = TmuxHost.ssh(SSHHostInfo(
+            user: "operator",
+            hostname: "legacy.example.test",
+            port: 2222
+        ))
+        let sshArguments = [
+            "-F", "/dev/null",
+            "-o", "HostName=legacy.internal.test",
+        ]
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution(
+                    "/usr/local/bin/tmux",
+                    version: "tmux 3.3a"
+                )
+            },
+            sshConnectionArgumentsProvider: { _ in
+                SSHConnectionArgumentsSnapshot(arguments: sshArguments)
+            }
+        )
+        var isReady = false
+        coordinator.onSurfaceReady = { _ in isReady = true }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "older-tmux",
+            host: host,
+            sessionIdentity: coordinatorSplitIdentity
+        )
+
+        await waitUntilMainActor { isReady }
+        _ = coordinator.surface(handle: handle)
+
+        #expect(store.surface.tmuxSplitShortcutHandler == nil)
+        #expect(!coordinator.supportsPaneSplitting(handle))
+    }
+
     @Test("new named sessions use tmux create-or-attach mode")
     func namedSessionUsesCreateMode() async throws {
         let store = RecordingTmuxSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
-            tmuxPathProvider: { .success("/opt/homebrew/bin/tmux") }
+            tmuxPathProvider: { successfulTmuxResolution("/opt/homebrew/bin/tmux") }
         )
         var states: [ConnectionState] = []
         var readyHandles: [BorrowedTmuxSessionHandle] = []
@@ -65,7 +208,8 @@ struct NativeTmuxSessionCoordinatorTests {
             hostID: UUID(),
             name: "release-work",
             host: .local,
-            launchMode: .create
+            launchMode: .create,
+            sessionIdentity: coordinatorSplitIdentity
         )
 
         #expect(coordinator.surface(handle: handle) == nil)
@@ -97,7 +241,7 @@ struct NativeTmuxSessionCoordinatorTests {
         let store = RecordingTmuxSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
-            tmuxPathProvider: { .success("/usr/bin/tmux") }
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") }
         )
         let hostID = UUID()
         var states: [ConnectionState] = []
@@ -107,7 +251,8 @@ struct NativeTmuxSessionCoordinatorTests {
         let handle = coordinator.attach(
             hostID: hostID,
             name: "release-work",
-            host: .local
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity
         )
 
         await waitUntilMainActor { readyCount == 1 }
@@ -126,7 +271,8 @@ struct NativeTmuxSessionCoordinatorTests {
         let reattached = coordinator.attach(
             hostID: hostID,
             name: "release-work",
-            host: .local
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity
         )
         #expect(reattached == handle)
         await waitUntilMainActor { readyCount == 2 }
@@ -147,7 +293,7 @@ struct NativeTmuxSessionCoordinatorTests {
         )
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
-            tmuxPathProvider: { .success("/opt/homebrew/bin/tmux") },
+            tmuxPathProvider: { successfulTmuxResolution("/opt/homebrew/bin/tmux") },
             presentationStyleProvider: { style }
         )
         var isReady = false
@@ -156,7 +302,8 @@ struct NativeTmuxSessionCoordinatorTests {
             hostID: UUID(),
             name: "docbank",
             host: .local,
-            launchMode: .create
+            launchMode: .create,
+            sessionIdentity: coordinatorSplitIdentity
         )
         style = TmuxPresentationStyle(
             foreground: "#EEEEEE",
@@ -179,7 +326,7 @@ struct NativeTmuxSessionCoordinatorTests {
         let store = RecordingTmuxSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
-            tmuxPathProvider: { .success("/opt/homebrew/bin/tmux") },
+            tmuxPathProvider: { successfulTmuxResolution("/opt/homebrew/bin/tmux") },
             presentationStyleProvider: {
                 TmuxPresentationStyle(
                     foreground: "#3B4851",
@@ -192,7 +339,8 @@ struct NativeTmuxSessionCoordinatorTests {
         let handle = coordinator.attach(
             hostID: UUID(),
             name: "existing",
-            host: .local
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity
         )
 
         await waitUntilMainActor { isReady }
@@ -211,7 +359,7 @@ struct NativeTmuxSessionCoordinatorTests {
         var appliesPresentationStyle = true
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
-            tmuxPathProvider: { .success("/opt/homebrew/bin/tmux") },
+            tmuxPathProvider: { successfulTmuxResolution("/opt/homebrew/bin/tmux") },
             presentationStyleProvider: {
                 TmuxPresentationStyle(
                     foreground: "#3B4851",
@@ -227,7 +375,8 @@ struct NativeTmuxSessionCoordinatorTests {
         let handle = coordinator.attach(
             hostID: UUID(),
             name: "existing",
-            host: .local
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity
         )
 
         await waitUntilMainActor { isReady }
@@ -249,7 +398,7 @@ struct NativeTmuxSessionCoordinatorTests {
         let store = RecordingTmuxSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
-            tmuxPathProvider: { .success("/usr/bin/tmux") },
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
             localKwtPathProvider: {
                 "/Applications/Ghosthub.app/Contents/Helpers/kwt"
             },
@@ -268,7 +417,8 @@ struct NativeTmuxSessionCoordinatorTests {
             name: "pr-32",
             host: .local,
             socketName: "kwt-pr-0123456789abcdef",
-            workingDirectory: "/worktrees/pr-32"
+            workingDirectory: "/worktrees/pr-32",
+            sessionIdentity: coordinatorSplitIdentity
         )
 
         await waitUntilMainActor { isReady }
@@ -281,7 +431,6 @@ struct NativeTmuxSessionCoordinatorTests {
             "/Applications/Ghosthub.app/Contents/Helpers/kwt"
         ))
         #expect(command.contains("/worktrees/pr-32"))
-        #expect(command.contains(#"'\''pr'\'' '\''attach'\''"#))
         #expect(command.contains("kwt-pr-0123456789abcdef"))
         #expect(!command.contains("'open'"))
     }
@@ -291,7 +440,7 @@ struct NativeTmuxSessionCoordinatorTests {
         let store = RecordingTmuxSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
-            tmuxPathProvider: { .success("/usr/bin/tmux") },
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
             localKwtPathProvider: {
                 "/Applications/Ghosthub.app/Contents/Helpers/kwt"
             }
@@ -303,7 +452,8 @@ struct NativeTmuxSessionCoordinatorTests {
             name: "kwt-widget-feature",
             host: .local,
             workingDirectory: "/worktrees/widget",
-            openWorkspace: true
+            openWorkspace: true,
+            sessionIdentity: coordinatorSplitIdentity
         )
 
         await waitUntilMainActor { isReady }
@@ -326,10 +476,12 @@ struct NativeTmuxSessionCoordinatorTests {
         let store = RecordingTmuxSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
-            tmuxPathProvider: { .success("/usr/bin/tmux") },
-            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
             sshConnectionArgumentsProvider: { _ in
-                ["-o", "StrictHostKeyChecking=yes"]
+                SSHConnectionArgumentsSnapshot(arguments: [
+                    "-o", "StrictHostKeyChecking=yes",
+                ])
             }
         )
         var isReady = false
@@ -341,7 +493,8 @@ struct NativeTmuxSessionCoordinatorTests {
                 user: "operator",
                 hostname: "build.example.test",
                 port: nil
-            ))
+            )),
+            sessionIdentity: coordinatorSplitIdentity
         )
 
         await waitUntilMainActor { isReady }
@@ -353,13 +506,504 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(command.contains("StrictHostKeyChecking=yes"))
     }
 
+    @Test("split shortcuts use the attachment's fixed remote route")
+    func splitShortcutUsesAttachmentRoute() async throws {
+        let calls = LockedValue<[(TmuxHost, [String], String)]>([])
+        let resolutionArguments = LockedValue<[String]?>(nil)
+        let routeProviderCalls = LockedValue(0)
+        let routeArguments = LockedValue([
+            "-F", "/dev/null",
+            "-o", "HostName=attached.example.test",
+            "-o", "ControlPath=/tmp/ghosthub-attached",
+        ])
+        let store = RecordingTmuxSurfaceStore()
+        let host = TmuxHost.ssh(SSHHostInfo(
+            user: "operator",
+            hostname: "build.example.test",
+            port: 2222
+        ))
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, arguments in
+                resolutionArguments.store(arguments)
+                return successfulTmuxResolution("/usr/local/bin/tmux")
+            },
+            sshConnectionArgumentsProvider: { _ in
+                routeProviderCalls.withLock { $0 += 1 }
+                return SSHConnectionArgumentsSnapshot(
+                    arguments: routeArguments.load()
+                )
+            },
+            paneSplitter: supportedPaneSplitter { host, arguments, command in
+                if command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") {
+                    return (0, coordinatorSplitClientOutput)
+                }
+                calls.withLock { $0.append((host, arguments, command)) }
+                return (1, "no space for new pane\n")
+            }
+        )
+        var readyCount = 0
+        coordinator.onSurfaceReady = { _ in readyCount += 1 }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "release-work",
+            host: host,
+            socketName: "isolated",
+            sessionIdentity: coordinatorSplitIdentity
+        )
+
+        await waitUntilMainActor { readyCount == 1 }
+        routeArguments.store([
+            "-F", "/dev/null",
+            "-o", "HostName=reconfigured.example.test",
+            "-o", "ControlPath=/tmp/ghosthub-reconfigured",
+        ])
+        _ = coordinator.surface(handle: handle)
+        await waitUntilMainActor { readyCount == 2 }
+        let handler = try #require(store.surface.tmuxSplitShortcutHandler)
+        handler(.down)
+        await waitUntilMainActor { calls.load().count == 1 }
+        await waitUntilMainActor {
+            store.surface.tmuxSplitErrorMessage != nil
+        }
+
+        let call = try #require(calls.load().first)
+        #expect(call.0 == host)
+        #expect(resolutionArguments.load() == call.1)
+        #expect(call.1 == [
+            "-F", "/dev/null",
+            "-o", "HostName=attached.example.test",
+            "-o", "ControlPath=/tmp/ghosthub-attached",
+        ])
+        #expect(routeProviderCalls.load() == 1)
+        #expect(!call.2.contains("'list-clients' '-F'"))
+        #expect(call.2.contains("'refresh-client' '-t' '/dev/ttys001'"))
+        #expect(call.2.contains("split-window"))
+        #expect(call.2.contains("-v"))
+        #expect(!call.2.contains("=release-work:"))
+        #expect(store.surface.tmuxSplitErrorMessage?.contains(
+            "release-work"
+        ) == true)
+        #expect(store.surface.tmuxSplitErrorMessage?.contains(
+            "no space for new pane"
+        ) == true)
+    }
+
+    @Test("remote tmux path cache follows the frozen SSH route")
+    func remoteTmuxPathCacheUsesConnectionIdentity() async {
+        let routeArguments = LockedValue([
+            "-F", "/dev/null",
+            "-o", "HostName=first.example.test",
+        ])
+        let resolvedArguments = LockedValue<[[String]]>([])
+        let store = RecordingTmuxSurfaceStore()
+        let hostID = UUID()
+        let host = TmuxHost.ssh(SSHHostInfo(
+            user: "operator",
+            hostname: "build.example.test",
+            port: nil
+        ))
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, arguments in
+                resolvedArguments.withLock { $0.append(arguments) }
+                return successfulTmuxResolution("/usr/local/bin/tmux")
+            },
+            sshConnectionArgumentsProvider: { _ in
+                SSHConnectionArgumentsSnapshot(
+                    arguments: routeArguments.load()
+                )
+            }
+        )
+        var readyCount = 0
+        coordinator.onSurfaceReady = { _ in readyCount += 1 }
+
+        _ = coordinator.attach(
+            hostID: hostID,
+            name: "first",
+            host: host
+        )
+        await waitUntilMainActor { readyCount == 1 }
+        routeArguments.store([
+            "-F", "/dev/null",
+            "-o", "HostName=second.example.test",
+        ])
+        _ = coordinator.attach(
+            hostID: hostID,
+            name: "second",
+            host: host
+        )
+        await waitUntilMainActor { readyCount == 2 }
+        _ = coordinator.attach(
+            hostID: hostID,
+            name: "third",
+            host: host
+        )
+        await waitUntilMainActor { readyCount == 3 }
+
+        #expect(resolvedArguments.load() == [
+            ["-F", "/dev/null", "-o", "HostName=first.example.test"],
+            ["-F", "/dev/null", "-o", "HostName=second.example.test"],
+        ])
+    }
+
+    @Test("keyboard splits require effective terminal focus")
+    func keyboardSplitRequiresTerminalFocus() async throws {
+        let calls = LockedValue<[String]>([])
+        let store = RecordingTmuxSurfaceStore()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            paneSplitter: supportedPaneSplitter { _, _, command in
+                if command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") {
+                    return (0, coordinatorSplitClientOutput)
+                }
+                calls.withLock { $0.append(command) }
+                return (0, "")
+            }
+        )
+        var readyCount = 0
+        coordinator.onSurfaceReady = { _ in readyCount += 1 }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "focused",
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity
+        )
+
+        await waitUntilMainActor { readyCount == 1 }
+        _ = coordinator.surface(handle: handle)
+        await waitUntilMainActor { readyCount == 2 }
+        coordinator.requestPaneSplit(
+            .right,
+            handle: handle,
+            requiresKeyboardFocus: true
+        )
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(calls.load().isEmpty)
+
+        coordinator.requestPaneSplit(
+            .right,
+            handle: handle,
+            requiresKeyboardFocus: false
+        )
+        await waitUntilMainActor { calls.load().count == 1 }
+
+        store.surface.hasEffectiveKeyboardFocus = true
+        coordinator.requestPaneSplit(
+            .down,
+            handle: handle,
+            requiresKeyboardFocus: true
+        )
+        await waitUntilMainActor { calls.load().count == 2 }
+    }
+
+    @Test("native Windows surfaces do not intercept pane split shortcuts")
+    func windowsSurfaceDoesNotInstallSplitHandler() async {
+        let store = RecordingTmuxSurfaceStore()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("tmux.exe") }
+        )
+        var isReady = false
+        coordinator.onSurfaceReady = { _ in isReady = true }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "windows",
+            host: .ssh(SSHHostInfo(
+                user: "operator",
+                hostname: "windows.example.test",
+                port: nil,
+                platform: .windows
+            )),
+            sessionIdentity: coordinatorSplitIdentity
+        )
+
+        await waitUntilMainActor { isReady }
+        _ = coordinator.surface(handle: handle)
+
+        #expect(store.surface.tmuxSplitShortcutHandler == nil)
+    }
+
+    @Test("split requests run in attachment order")
+    func splitRequestsAreSerialized() async throws {
+        let events = LockedValue<[String]>([])
+        let releaseFirst = DispatchSemaphore(value: 0)
+        defer { releaseFirst.signal() }
+        let store = RecordingTmuxSurfaceStore()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            paneSplitter: supportedPaneSplitter { _, _, command in
+                if command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") {
+                    return (0, coordinatorSplitClientOutput)
+                }
+                if !command.contains("-v") {
+                    events.withLock { $0.append("start-right") }
+                    _ = releaseFirst.wait(timeout: .now() + 5)
+                    events.withLock { $0.append("finish-right") }
+                } else {
+                    events.withLock { $0.append("start-down") }
+                    events.withLock { $0.append("finish-down") }
+                }
+                return (0, "")
+            }
+        )
+        var readyCount = 0
+        coordinator.onSurfaceReady = { _ in readyCount += 1 }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "ordered",
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity
+        )
+
+        await waitUntilMainActor { readyCount == 1 }
+        _ = coordinator.surface(handle: handle)
+        await waitUntilMainActor { readyCount == 2 }
+        let handler = try #require(store.surface.tmuxSplitShortcutHandler)
+        handler(.right)
+        await waitUntilMainActor { events.load() == ["start-right"] }
+        handler(.down)
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(events.load() == ["start-right"])
+
+        releaseFirst.signal()
+        await waitUntilMainActor { events.load().count == 4 }
+        #expect(events.load() == [
+            "start-right",
+            "finish-right",
+            "start-down",
+            "finish-down",
+        ])
+    }
+
+    @Test("detaching cancels the running split and its queue")
+    func detachCancelsSplitQueue() async throws {
+        let events = LockedValue<[String]>([])
+        let store = RecordingTmuxSurfaceStore()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            paneSplitter: supportedPaneSplitter { _, _, command in
+                if command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") {
+                    return (0, coordinatorSplitClientOutput)
+                }
+                if !command.contains("-v") {
+                    events.withLock { $0.append("start-right") }
+                    let deadline = Date().addingTimeInterval(5)
+                    while Date() < deadline,
+                          !withUnsafeCurrentTask(body: {
+                              $0?.isCancelled == true
+                          }) {
+                        Thread.sleep(forTimeInterval: 0.001)
+                    }
+                    let wasCancelled = withUnsafeCurrentTask(body: {
+                        $0?.isCancelled == true
+                    })
+                    events.withLock {
+                        $0.append(wasCancelled ? "cancel-right" : "timeout")
+                    }
+                } else {
+                    events.withLock { $0.append("run-down") }
+                }
+                return (0, "")
+            }
+        )
+        var readyCount = 0
+        coordinator.onSurfaceReady = { _ in readyCount += 1 }
+        let hostID = UUID()
+        let handle = coordinator.attach(
+            hostID: hostID,
+            name: "cancelled",
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity
+        )
+
+        await waitUntilMainActor { readyCount == 1 }
+        _ = coordinator.surface(handle: handle)
+        await waitUntilMainActor { readyCount == 2 }
+        let handler = try #require(store.surface.tmuxSplitShortcutHandler)
+        handler(.right)
+        await waitUntilMainActor { events.load() == ["start-right"] }
+        handler(.down)
+
+        coordinator.detach(hostID: hostID, name: "cancelled")
+
+        await waitUntilMainActor { events.load().count == 2 }
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(events.load() == ["start-right", "cancel-right"])
+    }
+
+    @Test("failed client binding can be retried without queuing a split")
+    func failedClientBindingCanBeRetried() async throws {
+        let clientLookups = LockedValue(0)
+        let splitCommands = LockedValue(0)
+        let store = RecordingTmuxSurfaceStore()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            paneSplitter: supportedPaneSplitter { _, _, command in
+                if command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") {
+                    var attempt = 0
+                    clientLookups.withLock {
+                        $0 += 1
+                        attempt = $0
+                    }
+                    if attempt == 1 {
+                        return (1, "no clients yet")
+                    }
+                    return (0, coordinatorSplitClientOutput)
+                }
+                splitCommands.withLock { $0 += 1 }
+                return (0, "")
+            }
+        )
+        var readyCount = 0
+        coordinator.onSurfaceReady = { _ in readyCount += 1 }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "appearing",
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity
+        )
+
+        await waitUntilMainActor { readyCount == 1 }
+        _ = coordinator.surface(handle: handle)
+        await waitUntilMainActor { clientLookups.load() == 1 }
+        #expect(coordinator.supportsPaneSplitting(handle))
+        let handler = try #require(store.surface.tmuxSplitShortcutHandler)
+        handler(.right)
+        await waitUntilMainActor { readyCount == 2 }
+        #expect(store.surface.tmuxSplitErrorMessage == nil)
+        #expect(splitCommands.load() == 0)
+        handler(.down)
+        await waitUntilMainActor { splitCommands.load() == 1 }
+        #expect(clientLookups.load() == 3)
+        #expect(store.surface.tmuxSplitErrorMessage == nil)
+    }
+
+    @Test("a replacement client reusing the attachment TTY is rejected")
+    func reusedClientTTYIsRejected() async throws {
+        let clientLookups = LockedValue(0)
+        let splitCommands = LockedValue(0)
+        let store = RecordingTmuxSurfaceStore()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            paneSplitter: supportedPaneSplitter { _, _, command in
+                if command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") {
+                    var lookup = 0
+                    clientLookups.withLock {
+                        $0 += 1
+                        lookup = $0
+                    }
+                    if lookup <= 2 {
+                        return (0, coordinatorSplitClientOutput)
+                    }
+                    return (
+                        0,
+                        "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY\t123\t790\t322"
+                            + "\t/dev/ttys001\t$7\t456\t%9\n"
+                    )
+                }
+                splitCommands.withLock { $0 += 1 }
+                return (0, "")
+            }
+        )
+        var readyCount = 0
+        coordinator.onSurfaceReady = { _ in readyCount += 1 }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "reused-tty",
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity
+        )
+
+        await waitUntilMainActor { readyCount == 1 }
+        _ = coordinator.surface(handle: handle)
+        await waitUntilMainActor { readyCount == 2 }
+        let handler = try #require(store.surface.tmuxSplitShortcutHandler)
+        handler(.right)
+        await waitUntilMainActor { splitCommands.load() == 1 }
+        handler(.down)
+        await waitUntilMainActor {
+            store.surface.tmuxSplitErrorMessage != nil
+                || splitCommands.load() == 2
+        }
+
+        #expect(clientLookups.load() == 3)
+        #expect(splitCommands.load() == 1)
+        #expect(store.surface.tmuxSplitErrorMessage?.contains(
+            "attached tmux session changed"
+        ) == true)
+    }
+
+    @Test("the attached client may move to another pane between splits")
+    func attachedClientPaneMayChange() async throws {
+        let clientLookups = LockedValue(0)
+        let splitCommands = LockedValue<[String]>([])
+        let store = RecordingTmuxSurfaceStore()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            paneSplitter: supportedPaneSplitter { _, _, command in
+                if command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") {
+                    var lookup = 0
+                    clientLookups.withLock {
+                        $0 += 1
+                        lookup = $0
+                    }
+                    if lookup <= 2 {
+                        return (0, coordinatorSplitClientOutput)
+                    }
+                    return (
+                        0,
+                        "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY\t123\t789\t321"
+                            + "\t/dev/ttys001\t$7\t456\t%10\n"
+                    )
+                }
+                splitCommands.withLock { $0.append(command) }
+                return (0, "")
+            }
+        )
+        var readyCount = 0
+        coordinator.onSurfaceReady = { _ in readyCount += 1 }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "moving-client",
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity
+        )
+
+        await waitUntilMainActor { readyCount == 1 }
+        _ = coordinator.surface(handle: handle)
+        await waitUntilMainActor { readyCount == 2 }
+        let handler = try #require(store.surface.tmuxSplitShortcutHandler)
+        handler(.right)
+        await waitUntilMainActor { splitCommands.load().count == 1 }
+        handler(.down)
+        await waitUntilMainActor {
+            store.surface.tmuxSplitErrorMessage != nil
+                || splitCommands.load().count == 2
+        }
+
+        #expect(clientLookups.load() == 3)
+        #expect(splitCommands.load().count == 2)
+        #expect(splitCommands.load().last?.contains("'%10'") == true)
+        #expect(store.surface.tmuxSplitErrorMessage == nil)
+    }
+
     @Test("endpoint changes replace provisioning and active handles")
     func endpointChangesReplaceHandles() async throws {
         let store = RecordingTmuxSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
-            tmuxPathProvider: { .success("/usr/bin/tmux") },
-            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") }
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") }
         )
         var states: [UUID: ConnectionState] = [:]
         coordinator.onStateChanged = { handle, state in
@@ -373,7 +1017,8 @@ struct NativeTmuxSessionCoordinatorTests {
                 user: "user",
                 hostname: "old.example.com",
                 port: nil
-            ))
+            )),
+            sessionIdentity: coordinatorSplitIdentity
         )
         let second = coordinator.attach(
             hostID: hostID,
@@ -382,7 +1027,8 @@ struct NativeTmuxSessionCoordinatorTests {
                 user: "user",
                 hostname: "new.example.com",
                 port: nil
-            ))
+            )),
+            sessionIdentity: coordinatorSplitIdentity
         )
 
         #expect(first.id != second.id)
@@ -399,7 +1045,8 @@ struct NativeTmuxSessionCoordinatorTests {
                 user: "user",
                 hostname: "third.example.com",
                 port: 2222
-            ))
+            )),
+            sessionIdentity: coordinatorSplitIdentity
         )
 
         #expect(third.id != second.id)
@@ -416,7 +1063,7 @@ struct NativeTmuxSessionCoordinatorTests {
         )
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
-            tmuxPathProvider: { .success("/usr/bin/tmux") }
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") }
         )
         var states: [ConnectionState] = []
         var isSurfaceReady = false
@@ -426,7 +1073,8 @@ struct NativeTmuxSessionCoordinatorTests {
             hostID: UUID(),
             name: "release-work",
             host: .local,
-            launchMode: .create
+            launchMode: .create,
+            sessionIdentity: coordinatorSplitIdentity
         )
 
         await waitUntilMainActor { isSurfaceReady }
@@ -457,7 +1105,7 @@ struct NativeTmuxSessionCoordinatorTests {
         let store = MissingTmuxSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
-            tmuxPathProvider: { .success("/usr/bin/tmux") }
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") }
         )
         var states: [ConnectionState] = []
         var isSurfaceReady = false
@@ -466,7 +1114,8 @@ struct NativeTmuxSessionCoordinatorTests {
         let handle = coordinator.attach(
             hostID: UUID(),
             name: "release-work",
-            host: .local
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity
         )
 
         await waitUntilMainActor { isSurfaceReady }
@@ -491,7 +1140,7 @@ struct NativeTmuxSessionCoordinatorTests {
         let store = RecordingTmuxSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
-            tmuxPathProvider: { .success("/usr/bin/tmux") }
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") }
         )
         var states: [ConnectionState] = []
         var isSurfaceReady = false
@@ -500,7 +1149,8 @@ struct NativeTmuxSessionCoordinatorTests {
         let handle = coordinator.attach(
             hostID: UUID(),
             name: "release-work",
-            host: .local
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity
         )
         await waitUntilMainActor { isSurfaceReady }
         _ = coordinator.surface(handle: handle)
@@ -521,14 +1171,15 @@ struct NativeTmuxSessionCoordinatorTests {
         let store = RecordingTmuxSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
-            tmuxPathProvider: { .success("/usr/bin/tmux") }
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") }
         )
         var isSurfaceReady = false
         coordinator.onSurfaceReady = { _ in isSurfaceReady = true }
         let handle = coordinator.attach(
             hostID: UUID(),
             name: "release-work",
-            host: .local
+            host: .local,
+            sessionIdentity: coordinatorSplitIdentity
         )
         await waitUntilMainActor { isSurfaceReady }
         _ = coordinator.surface(handle: handle)
@@ -548,8 +1199,8 @@ struct NativeTmuxSessionCoordinatorTests {
         let store = RecordingTmuxSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
-            tmuxPathProvider: { .success("/usr/bin/tmux") },
-            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
             remoteExitStatusDirectory: statusDirectory
         )
         var isSurfaceReady = false
@@ -561,7 +1212,8 @@ struct NativeTmuxSessionCoordinatorTests {
                 user: "dev",
                 hostname: "build.example.test",
                 port: nil
-            ))
+            )),
+            sessionIdentity: coordinatorSplitIdentity
         )
         await waitUntilMainActor { isSurfaceReady }
         _ = coordinator.surface(handle: handle)

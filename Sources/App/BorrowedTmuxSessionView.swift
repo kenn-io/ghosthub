@@ -234,6 +234,19 @@ private struct NativeTmuxTerminalView: View {
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .textBackgroundColor))
+        .overlay(alignment: .top) {
+            if let message = surfaceView.tmuxSplitErrorMessage {
+                Label(message, systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout)
+                    .padding(10)
+                    .background(
+                        .regularMaterial,
+                        in: RoundedRectangle(cornerRadius: 8)
+                    )
+                    .padding()
+                    .allowsHitTesting(false)
+            }
+        }
         .onAppear {
             surfaceView.registerPaneCloseRequestObserver(
                 id: observerID,
@@ -247,5 +260,9 @@ private struct NativeTmuxTerminalView: View {
         .onDisappear {
             surfaceView.unregisterPaneFocusObserver(id: observerID)
         }
+        .focusedSceneValue(
+            \.tmuxTerminalHasEffectiveKeyboardFocus,
+            surfaceView.hasEffectiveKeyboardFocus
+        )
     }
 }

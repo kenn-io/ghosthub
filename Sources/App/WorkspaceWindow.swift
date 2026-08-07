@@ -15,10 +15,19 @@ struct FocusedSceneModelKey: FocusedValueKey {
     typealias Value = WorkspaceSceneModel
 }
 
+struct TmuxTerminalKeyboardFocusKey: FocusedValueKey {
+    typealias Value = Bool
+}
+
 extension FocusedValues {
     var sceneModel: WorkspaceSceneModel? {
         get { self[FocusedSceneModelKey.self] }
         set { self[FocusedSceneModelKey.self] = newValue }
+    }
+
+    var tmuxTerminalHasEffectiveKeyboardFocus: Bool? {
+        get { self[TmuxTerminalKeyboardFocusKey.self] }
+        set { self[TmuxTerminalKeyboardFocusKey.self] = newValue }
     }
 }
 

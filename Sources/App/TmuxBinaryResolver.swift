@@ -46,7 +46,7 @@ enum TmuxBinaryError: Error, Equatable, LocalizedError, Sendable {
     case probeCancelled(shell: String)
     case probeOutputExceeded(shell: String)
     case sessionContextUnavailable
-    case unsupportedVersion(found: String)
+    case unsupportedVersion(found: String, minimum: String)
     case ownershipPersistenceFailed
 
     var errorDescription: String? {
@@ -72,8 +72,8 @@ enum TmuxBinaryError: Error, Equatable, LocalizedError, Sendable {
                 + " output. Check noisy shell startup files and retry."
         case .sessionContextUnavailable:
             return "The worktree is no longer available for terminal setup."
-        case let .unsupportedVersion(found):
-            return "Ghosthub requires tmux 3.2 or newer, but found"
+        case let .unsupportedVersion(found, minimum):
+            return "Ghosthub requires tmux \(minimum) or newer, but found"
                 + " \(found.isEmpty ? "an unrecognized version" : found)."
         case .ownershipPersistenceFailed:
             return "Ghosthub could not save the tmux session ownership"
@@ -107,6 +107,11 @@ struct DiscoveredTmuxSession: Equatable, Sendable {
     }
 }
 
+struct ResolvedTmuxBinary: Equatable, Sendable {
+    var path: String
+    var version: String
+}
+
 /// Resolves the tmux binary through the user's login shell, because a
 /// launchd-launched GUI app does not inherit Homebrew or user-bin PATH
 /// entries. Reads the passwd shell (not $SHELL, which may be absent).
@@ -118,7 +123,9 @@ struct TmuxBinaryResolver: Sendable {
     typealias ProcessRunner = @Sendable (_ shell: String, _ command: String)
         -> (status: Int32, stdout: String)
     typealias RemoteProcessRunner = @Sendable (
-        _ host: SSHHostInfo, _ command: String
+        _ host: SSHHostInfo,
+        _ sshConnectionArguments: [String],
+        _ command: String
     ) -> (status: Int32, stdout: String, stderr: String)
 
     private let processRunner: ProcessRunner
@@ -136,26 +143,53 @@ struct TmuxBinaryResolver: Sendable {
                 shell: shell, command: command, timeout: processTimeout
             )
         }
-        self.remoteProcessRunner = remoteProcessRunner ?? { host, command in
+        self.remoteProcessRunner = remoteProcessRunner ?? {
+            host, sshConnectionArguments, command in
             Self.runRemoteLoginShellSeparatingStandardError(
                 host: host,
                 command: command,
                 timeout: processTimeout,
-                accountShell: loginShellProvider()
+                accountShell: loginShellProvider(),
+                sshConnectionArguments: sshConnectionArguments
             )
         }
         self.loginShellProvider = loginShellProvider
     }
 
     func resolveTmuxPath() -> Result<String, TmuxBinaryError> {
+        resolveTmuxBinary().map(\.path)
+    }
+
+    func resolveTmuxBinary() -> Result<ResolvedTmuxBinary, TmuxBinaryError> {
         let shell = loginShellProvider()
         let result = processRunner(shell, Self.probeCommand)
-        return Self.parseProbe(result, shell: shell)
+        return Self.parseProbe(result, shell: shell, platform: .posix)
     }
 
     func resolveTmuxPath(on host: SSHHostInfo) -> Result<String, TmuxBinaryError> {
+        resolveTmuxPath(
+            on: host,
+            sshConnectionArguments: Self.remoteConnectionArguments(for: host)
+        )
+    }
+
+    func resolveTmuxPath(
+        on host: SSHHostInfo,
+        sshConnectionArguments: [String]
+    ) -> Result<String, TmuxBinaryError> {
+        resolveTmuxBinary(
+            on: host,
+            sshConnectionArguments: sshConnectionArguments
+        ).map(\.path)
+    }
+
+    func resolveTmuxBinary(
+        on host: SSHHostInfo,
+        sshConnectionArguments: [String]
+    ) -> Result<ResolvedTmuxBinary, TmuxBinaryError> {
         let result = remoteProcessRunner(
             host,
+            sshConnectionArguments,
             Self.probeCommand(for: host.platform)
         )
         if result.status == 255 {
@@ -169,7 +203,8 @@ struct TmuxBinaryResolver: Sendable {
         }
         return Self.parseProbe(
             (status: result.status, stdout: result.stdout),
-            shell: host.displayName
+            shell: host.displayName,
+            platform: host.platform
         )
     }
 
@@ -177,7 +212,8 @@ struct TmuxBinaryResolver: Sendable {
         let shell = loginShellProvider()
         return Self.parseDiscovery(
             processRunner(shell, Self.discoveryCommand),
-            shell: shell
+            shell: shell,
+            platform: .posix
         )
     }
 
@@ -186,6 +222,7 @@ struct TmuxBinaryResolver: Sendable {
     ) -> Result<[DiscoveredTmuxSession], TmuxBinaryError> {
         let result = remoteProcessRunner(
             host,
+            Self.remoteConnectionArguments(for: host),
             Self.discoveryCommand(for: host.platform)
         )
         if result.status == 255 {
@@ -199,7 +236,8 @@ struct TmuxBinaryResolver: Sendable {
         }
         return Self.parseDiscovery(
             (status: result.status, stdout: result.stdout),
-            shell: host.displayName
+            shell: host.displayName,
+            platform: host.platform
         )
     }
 
@@ -210,6 +248,7 @@ struct TmuxBinaryResolver: Sendable {
     ) -> Result<Bool, TmuxBinaryError> {
         let result = remoteProcessRunner(
             host,
+            Self.remoteConnectionArguments(for: host),
             Self.sessionProbeCommand(
                 name: name,
                 socketName: socketName,
@@ -239,7 +278,8 @@ struct TmuxBinaryResolver: Sendable {
         }
         switch Self.parseProbe(
             (status: result.status, stdout: result.stdout),
-            shell: host.displayName
+            shell: host.displayName,
+            platform: host.platform
         ) {
         case let .failure(error):
             return .failure(error)
@@ -408,8 +448,9 @@ struct TmuxBinaryResolver: Sendable {
 
     private static func parseProbe(
         _ result: (status: Int32, stdout: String),
-        shell: String
-    ) -> Result<String, TmuxBinaryError> {
+        shell: String,
+        platform: SSHHostInfo.Platform
+    ) -> Result<ResolvedTmuxBinary, TmuxBinaryError> {
         guard result.status == 0 else {
             if result.status == timedOutStatus {
                 return .failure(.probeTimedOut(shell: shell))
@@ -438,10 +479,13 @@ struct TmuxBinaryResolver: Sendable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let version = lines[pathIndex + 1]
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard isSupported(version) else {
-            return .failure(.unsupportedVersion(found: version))
+        guard isSupported(version, platform: platform) else {
+            return .failure(.unsupportedVersion(
+                found: version,
+                minimum: minimumVersion(for: platform)
+            ))
         }
-        return .success(path)
+        return .success(ResolvedTmuxBinary(path: path, version: version))
     }
 
     private static func isAbsoluteExecutablePath(_ value: String) -> Bool {
@@ -457,24 +501,30 @@ struct TmuxBinaryResolver: Sendable {
 
     private static func parseDiscovery(
         _ result: (status: Int32, stdout: String),
-        shell: String
+        shell: String,
+        platform: SSHHostInfo.Platform
     ) -> Result<[DiscoveredTmuxSession], TmuxBinaryError> {
         if result.status != 0 {
             switch result.status {
             case timedOutStatus, cancelledStatus, outputExceededStatus:
-                if case let .failure(error) = parseProbe(result, shell: shell) {
+                if case let .failure(error) = parseProbe(
+                    result,
+                    shell: shell,
+                    platform: platform
+                ) {
                     return .failure(error)
                 }
             default:
                 if case .success = parseProbe(
                     (status: 0, stdout: result.stdout),
-                    shell: shell
+                    shell: shell,
+                    platform: platform
                 ) {
                     return .failure(.shellFailed(status: result.status))
                 }
             }
         }
-        switch parseProbe(result, shell: shell) {
+        switch parseProbe(result, shell: shell, platform: platform) {
         case let .failure(error):
             return .failure(error)
         case .success:
@@ -507,7 +557,10 @@ struct TmuxBinaryResolver: Sendable {
         return .success(sessions)
     }
 
-    private static func isSupported(_ output: String) -> Bool {
+    private static func isSupported(
+        _ output: String,
+        platform: SSHHostInfo.Platform
+    ) -> Bool {
         let fields = output.split(whereSeparator: \.isWhitespace)
         guard fields.count >= 2, fields[0] == "tmux" else { return false }
         let components = fields[1].split(separator: ".", maxSplits: 1)
@@ -515,7 +568,14 @@ struct TmuxBinaryResolver: Sendable {
               let major = Int(components[0]) else { return false }
         let minorDigits = components[1].prefix(while: \.isNumber)
         guard let minor = Int(minorDigits) else { return false }
-        return major > 3 || (major == 3 && minor >= 2)
+        let minimumMinor = 2
+        return major > 3 || (major == 3 && minor >= minimumMinor)
+    }
+
+    private static func minimumVersion(
+        for platform: SSHHostInfo.Platform
+    ) -> String {
+        "3.2"
     }
 
     static func loginShell() -> String {
@@ -590,11 +650,12 @@ struct TmuxBinaryResolver: Sendable {
         host: SSHHostInfo,
         command: String,
         timeout: TimeInterval,
-        accountShell: String = loginShell()
+        accountShell: String = loginShell(),
+        sshConnectionArguments: [String]? = nil
     ) -> (status: Int32, stdout: String, stderr: String) {
         let command = (["/usr/bin/ssh"] + remoteLoginArguments(
-            host: host,
-            command: command
+            host: host, command: command,
+            sshConnectionArguments: sshConnectionArguments
         )).map(shellQuotedCommandArgument).joined(separator: " ")
         return runProcess(
             executable: accountShell,
@@ -605,17 +666,13 @@ struct TmuxBinaryResolver: Sendable {
 
     private static func remoteLoginArguments(
         host: SSHHostInfo,
-        command: String
+        command: String,
+        sshConnectionArguments: [String]? = nil
     ) -> [String] {
         var arguments = ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
-        arguments.append(contentsOf: tmuxSSHConnectionArguments())
         arguments.append(contentsOf:
-            SSHConnectionPool.connectionArguments(for: host)
+            sshConnectionArguments ?? remoteConnectionArguments(for: host)
         )
-        arguments.append(contentsOf:
-            SSHConfigurationResolver.noninteractiveHostKeyArguments(
-                for: host
-            ))
         if let port = host.port {
             arguments.append(contentsOf: ["-p", String(port)])
         }
@@ -624,6 +681,16 @@ struct TmuxBinaryResolver: Sendable {
             "--", target, remoteLoginCommand(host: host, command: command),
         ])
         return arguments
+    }
+
+    private static func remoteConnectionArguments(
+        for host: SSHHostInfo
+    ) -> [String] {
+        tmuxSSHConnectionArguments()
+            + SSHConnectionPool.connectionArguments(for: host)
+            + SSHConfigurationResolver.noninteractiveHostKeyArguments(
+                for: host
+            )
     }
 
     static func remoteLoginCommand(

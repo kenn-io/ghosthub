@@ -171,12 +171,18 @@ struct TmuxSessionStylerTests {
         else {
             return
         }
-        let socketName = "style-\(UUID().uuidString.prefix(8).lowercased())"
+        let socketName = ProcessInfo.processInfo.environment[
+            "GHOSTHUB_TEST_TMUX_RUN_ID"
+        ].map { "ghosthub-style-\($0)" }
+            ?? "ghosthub-style-\(UUID().uuidString.lowercased())"
         let sessionName = "review"
         defer {
             _ = TmuxBinaryResolver.runProcess(
                 executable: tmuxPath,
-                arguments: ["-L", socketName, "kill-server"],
+                arguments: [
+                    "-L", socketName,
+                    "kill-session", "-a", ";", "kill-session",
+                ],
                 timeout: 5
             )
         }

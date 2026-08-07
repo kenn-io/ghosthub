@@ -37,7 +37,91 @@ struct EffectiveProxyJumpHop: Sendable {
     let configuration: EffectiveSSHConfiguration
 }
 
+private final class TemporarySSHConfiguration: @unchecked Sendable {
+    let url: URL
+    private let directory: URL
+
+    init(url: URL, directory: URL) {
+        self.url = url
+        self.directory = directory
+    }
+
+    deinit {
+        try? FileManager.default.removeItem(at: directory)
+    }
+}
+
+struct SSHConnectionArgumentsCacheKey: Hashable, Sendable {
+    let arguments: [String]
+    let configurationLines: [String]
+}
+
+struct SSHConnectionArgumentsSnapshot: Sendable {
+    let arguments: [String]
+    let cacheKey: SSHConnectionArgumentsCacheKey
+    private let temporaryConfiguration: TemporarySSHConfiguration?
+
+    var configurationURL: URL? { temporaryConfiguration?.url }
+
+    init(arguments: [String]) {
+        self.arguments = arguments
+        cacheKey = SSHConnectionArgumentsCacheKey(
+            arguments: arguments,
+            configurationLines: []
+        )
+        temporaryConfiguration = nil
+    }
+
+    fileprivate init(
+        arguments: [String],
+        cacheKey: SSHConnectionArgumentsCacheKey,
+        temporaryConfiguration: TemporarySSHConfiguration?
+    ) {
+        self.arguments = arguments
+        self.cacheKey = cacheKey
+        self.temporaryConfiguration = temporaryConfiguration
+    }
+
+    func replacingArguments(
+        _ arguments: [String]
+    ) -> SSHConnectionArgumentsSnapshot {
+        let configurationPath = temporaryConfiguration?.url.path
+        return SSHConnectionArgumentsSnapshot(
+            arguments: arguments,
+            cacheKey: SSHConnectionArgumentsCacheKey(
+                arguments: arguments.map {
+                    $0 == configurationPath ? "/dev/null" : $0
+                },
+                configurationLines: cacheKey.configurationLines
+            ),
+            temporaryConfiguration: temporaryConfiguration
+        )
+    }
+}
+
 enum SSHConfigurationResolver {
+    private static let connectionConfigurationOptions = [
+        "addkeystoagent": "AddKeysToAgent",
+        "certificatefile": "CertificateFile",
+        "enablesshkeysign": "EnableSSHKeysign",
+        "forwardagent": "ForwardAgent",
+        "gssapiauthentication": "GSSAPIAuthentication",
+        "gssapidelegatecredentials": "GSSAPIDelegateCredentials",
+        "hostbasedacceptedalgorithms": "HostbasedAcceptedAlgorithms",
+        "hostbasedauthentication": "HostbasedAuthentication",
+        "identitiesonly": "IdentitiesOnly",
+        "identityagent": "IdentityAgent",
+        "identityfile": "IdentityFile",
+        "kbdinteractiveauthentication": "KbdInteractiveAuthentication",
+        "passwordauthentication": "PasswordAuthentication",
+        "pkcs11provider": "PKCS11Provider",
+        "preferredauthentications": "PreferredAuthentications",
+        "pubkeyacceptedalgorithms": "PubkeyAcceptedAlgorithms",
+        "pubkeyauthentication": "PubkeyAuthentication",
+        "securitykeyprovider": "SecurityKeyProvider",
+        "usekeychain": "UseKeychain",
+    ]
+
     typealias ConfigurationProvider = @Sendable (SSHHostInfo)
         -> EffectiveSSHConfiguration?
 
@@ -350,7 +434,71 @@ enum SSHConfigurationResolver {
                 "addressfamily",
                 "bindaddress",
                 "bindinterface",
+                "escapechar",
+                "sendenv",
             ]
+        )
+    }
+
+    static func connectionArgumentsSnapshot(
+        for host: SSHHostInfo,
+        configurationProvider: ConfigurationProvider,
+        temporaryDirectory: URL = FileManager.default.temporaryDirectory
+    ) -> SSHConnectionArgumentsSnapshot {
+        let configuration = configurationProvider(host)
+        let frozenProvider: ConfigurationProvider = { _ in configuration }
+        var arguments = snapshotConnectionArguments(
+            for: host,
+            configurationProvider: frozenProvider
+        )
+        let configurationLines = connectionConfigurationLines(configuration)
+        guard !configurationLines.isEmpty else {
+            return SSHConnectionArgumentsSnapshot(arguments: arguments)
+        }
+
+        let directory = temporaryDirectory.appendingPathComponent(
+            "ghosthub-ssh-snapshot-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let url = directory.appendingPathComponent("config")
+        let contents = configurationLines.joined(separator: "\n") + "\n"
+        do {
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: false,
+                attributes: [.posixPermissions: 0o700]
+            )
+            guard FileManager.default.createFile(
+                atPath: url.path,
+                contents: Data(contents.utf8),
+                attributes: [.posixPermissions: 0o600]
+            ) else { throw CocoaError(.fileWriteUnknown) }
+        } catch {
+            try? FileManager.default.removeItem(at: directory)
+            return SSHConnectionArgumentsSnapshot(arguments: [
+                "-F", "/dev/null",
+                "-o", "ProxyCommand=/usr/bin/false",
+            ])
+        }
+        if arguments.count >= 2,
+           arguments[0] == "-F",
+           arguments[1] == "/dev/null" {
+            arguments[1] = url.path
+        } else {
+            arguments.insert(contentsOf: ["-F", url.path], at: 0)
+        }
+        return SSHConnectionArgumentsSnapshot(
+            arguments: arguments,
+            cacheKey: SSHConnectionArgumentsCacheKey(
+                arguments: arguments.map {
+                    $0 == url.path ? "/dev/null" : $0
+                },
+                configurationLines: configurationLines
+            ),
+            temporaryConfiguration: TemporarySSHConfiguration(
+                url: url,
+                directory: directory
+            )
         )
     }
 
@@ -472,5 +620,30 @@ enum SSHConfigurationResolver {
     private static func meaningfulProxyValue(_ value: String?) -> String? {
         guard let value, value.lowercased() != "none" else { return nil }
         return value
+    }
+
+    private static func connectionConfigurationLines(
+        _ configuration: EffectiveSSHConfiguration?
+    ) -> [String] {
+        configuration?.resolvedOptions.compactMap { option in
+            guard let separator = option.firstIndex(of: "=") else {
+                return nil
+            }
+            let name = String(option[..<separator]).lowercased()
+            let value = String(option[option.index(after: separator)...])
+            if name == "setenv" {
+                return "SetEnv \(quotedConfigurationValue(value))"
+            }
+            guard let directive = connectionConfigurationOptions[name] else {
+                return nil
+            }
+            return "\(directive) \(quotedConfigurationValue(value))"
+        } ?? []
+    }
+
+    private static func quotedConfigurationValue(_ value: String) -> String {
+        "\"" + value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"") + "\""
     }
 }

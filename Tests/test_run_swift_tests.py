@@ -300,14 +300,17 @@ def test_cancellation_reaps_daemonized_server_without_run_directory(
     if shutil.which("tmux") is None:
         pytest.skip("tmux is unavailable")
 
-    server_pid_file = tmp_path / "server.pid"
+    server_pid_file = tmp_path / "server.pids"
     tmux_dir_file = tmp_path / "tmux-dir"
     command = tmp_path / "start-server-and-wait.sh"
     command.write_text(
         "#!/bin/sh\n"
         'socket="$TMUX_TMPDIR/orphan-socket"\n'
         'tmux -S "$socket" new-session -d\n'
-        f'tmux -S "$socket" display-message -p "#{{pid}}" > "{server_pid_file}"\n'
+        f'tmux -S "$socket" display-message -p "#{{pid}}" >> "{server_pid_file}"\n'
+        'named_socket="ghosthub-pane-regression-$GHOSTHUB_TEST_TMUX_RUN_ID"\n'
+        'tmux -L "$named_socket" new-session -d\n'
+        f'tmux -L "$named_socket" display-message -p "#{{pid}}" >> "{server_pid_file}"\n'
         f'echo "$TMUX_TMPDIR" > "{tmux_dir_file}"\n'
         "sleep 30\n"
     )
@@ -329,7 +332,10 @@ def test_cancellation_reaps_daemonized_server_without_run_directory(
         wrapper.kill()
         wrapper.wait(timeout=10)
         pytest.fail("tmux server did not start")
-    server_pid = int(server_pid_file.read_text().strip())
+    server_pids = [
+        int(value) for value in server_pid_file.read_text().splitlines()
+    ]
+    assert len(server_pids) == 2
 
     # The server daemonized outside the test process group, so once its run
     # directory is gone only identity-based process cleanup can reach it.
@@ -338,14 +344,20 @@ def test_cancellation_reaps_daemonized_server_without_run_directory(
     assert wrapper.wait(timeout=10) == 143
 
     deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        try:
-            os.kill(server_pid, 0)
-        except ProcessLookupError:
-            return
-        time.sleep(0.05)
-    os.kill(server_pid, signal.SIGKILL)
-    pytest.fail("daemonized tmux server survived run-directory removal")
+    survivors = server_pids
+    while survivors and time.monotonic() < deadline:
+        survivors = []
+        for server_pid in server_pids:
+            try:
+                os.kill(server_pid, 0)
+            except ProcessLookupError:
+                continue
+            survivors.append(server_pid)
+        if survivors:
+            time.sleep(0.05)
+    for server_pid in survivors:
+        os.kill(server_pid, signal.SIGKILL)
+    assert not survivors, "daemonized tmux servers survived run-directory removal"
 
 
 def test_default_purge_skips_active_run_directories() -> None:

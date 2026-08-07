@@ -215,14 +215,19 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         windowsKwtRelativePath: String? = nil,
         workingDirectory: String? = nil,
         sshConnectionArguments: [String] = tmuxSSHConnectionArguments(),
-        remoteExitStatusPath: String? = nil
+        remoteExitStatusPath: String? = nil,
+        clientTTYToken: String? = nil
     ) -> String {
         switch host {
         case .local:
-            return localAttachCommand(
+            let command = localAttachCommand(
                 tmuxPath: tmuxPath,
                 kwtPath: kwtPath,
                 workingDirectory: workingDirectory
+            )
+            return recordedClientTTYCommand(
+                command,
+                token: clientTTYToken
             )
         case let .ssh(info):
             let command: String
@@ -232,7 +237,8 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                         info: info,
                         tmuxPath: tmuxPath,
                         workingDirectory: workingDirectory,
-                        sshConnectionArguments: sshConnectionArguments
+                        sshConnectionArguments: sshConnectionArguments,
+                        clientTTYToken: clientTTYToken
                     )
                 } else if launchMode != .attachOnly,
                           protectedWorkspacePath == nil,
@@ -258,14 +264,16 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                         tmuxPath: tmuxPath,
                         workingDirectory: workingDirectory,
                         initialCommand: initialCommand,
-                        sshConnectionArguments: sshConnectionArguments
+                        sshConnectionArguments: sshConnectionArguments,
+                        clientTTYToken: clientTTYToken
                     )
                 } else {
                     command = remoteCreateThenAttachCommand(
                         info: info,
                         tmuxPath: tmuxPath,
                         workingDirectory: workingDirectory,
-                        sshConnectionArguments: sshConnectionArguments
+                        sshConnectionArguments: sshConnectionArguments,
+                        clientTTYToken: clientTTYToken
                     )
                 }
             } else if launchMode != .attachOnly,
@@ -275,14 +283,16 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                     info: info,
                     tmuxPath: tmuxPath,
                     remoteKwtCommandPrelude: remoteKwtCommandPrelude,
-                    sshConnectionArguments: sshConnectionArguments
+                    sshConnectionArguments: sshConnectionArguments,
+                    clientTTYToken: clientTTYToken
                 )
             } else {
                 command = remoteAttachCommand(
                     info: info,
                     tmuxPath: tmuxPath,
                     remoteKwtCommandPrelude: remoteKwtCommandPrelude,
-                    sshConnectionArguments: sshConnectionArguments
+                    sshConnectionArguments: sshConnectionArguments,
+                    clientTTYToken: clientTTYToken
                 )
             }
             let recordedCommand: String
@@ -471,6 +481,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         tmuxPath: String,
         remoteKwtCommandPrelude: String?,
         sshConnectionArguments: [String],
+        clientTTYToken: String?,
         includesPresentation: Bool = true
     ) -> String {
         if info.platform == .windows {
@@ -518,7 +529,10 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         // so login-initialized settings such as TMUX_TMPDIR resolve the same
         // tmux server as later styling and identity commands.
         let remoteAttach = accountLoginShellCommand(
-            remoteAttachCommands.joined(separator: "; ")
+            recordedClientTTYBody(
+                remoteAttachCommands.joined(separator: "; "),
+                token: clientTTYToken
+            )
         )
         return sshAttachCommand(
             label: "ghosthub-ssh-tmux",
@@ -533,14 +547,16 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         info: SSHHostInfo,
         tmuxPath: String,
         remoteKwtCommandPrelude: String?,
-        sshConnectionArguments: [String]
+        sshConnectionArguments: [String],
+        clientTTYToken: String?
     ) -> String {
         guard let workspacePath else {
             return remoteAttachCommand(
                 info: info,
                 tmuxPath: tmuxPath,
                 remoteKwtCommandPrelude: nil,
-                sshConnectionArguments: sshConnectionArguments
+                sshConnectionArguments: sshConnectionArguments,
+                clientTTYToken: clientTTYToken
             )
         }
         let remoteOpen: String
@@ -557,10 +573,10 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                 "printf 'Ghosthub: managed kwt is unavailable\\n' >&2; "
                     + "exit 127"
         }
-        let initialBody = [
+        let initialBody = recordedClientTTYBody([
             "unset TMUX TMUX_PANE",
             remoteOpen,
-        ].joined(separator: "; ")
+        ].joined(separator: "; "), token: clientTTYToken)
         let initialAttach = shellCommand(
             sshArguments(
                 info: info,
@@ -679,7 +695,8 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         info: SSHHostInfo,
         tmuxPath: String,
         workingDirectory: String?,
-        sshConnectionArguments: [String]
+        sshConnectionArguments: [String],
+        clientTTYToken: String?
     ) -> String {
         var remoteCreate: String
         if info.platform == .windows {
@@ -724,6 +741,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
             tmuxPath: tmuxPath,
             remoteKwtCommandPrelude: nil,
             sshConnectionArguments: sshConnectionArguments,
+            clientTTYToken: clientTTYToken,
             includesPresentation: false
         )
         return shellCommand([
@@ -741,7 +759,8 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         tmuxPath: String,
         workingDirectory: String?,
         initialCommand: String,
-        sshConnectionArguments: [String]
+        sshConnectionArguments: [String],
+        clientTTYToken: String?
     ) -> String {
         var createArguments = tmuxArguments(
             tmuxPath,
@@ -756,7 +775,10 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         let createAndAttach = createArguments
             .map(shellQuotedCommandArgument)
             .joined(separator: " ")
-        let initialBody = "unset TMUX TMUX_PANE; exec \(createAndAttach)"
+        let initialBody = recordedClientTTYBody(
+            "unset TMUX TMUX_PANE; exec \(createAndAttach)",
+            token: clientTTYToken
+        )
         return shellCommand(
             sshArguments(
                 info: info,
@@ -783,6 +805,70 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
             .map(shellQuotedCommandArgument).joined(separator: " ")
         return "\(hasSession) 2>/dev/null || "
             + "\(createSession) || \(hasSession)"
+    }
+
+    private func recordedClientTTYCommand(
+        _ command: String,
+        token: String?
+    ) -> String {
+        guard let token else { return command }
+        return shellCommand([
+            "/bin/sh", "-c",
+            recordedClientTTYBody(
+                command,
+                token: token
+            ),
+        ])
+    }
+
+    private func recordedClientTTYBody(
+        _ command: String,
+        token: String?
+    ) -> String {
+        guard let token,
+              !token.isEmpty,
+              token.utf8.allSatisfy({ byte in
+                  byte == 45 || byte >= 48 && byte <= 57
+                      || byte >= 65 && byte <= 90
+                      || byte >= 97 && byte <= 122
+              })
+        else { return command }
+        let nestedCommand = shellCommand(["/bin/sh", "-c", command])
+        return [
+            "unset TMUX TMUX_PANE",
+            "ghosthub_client_tty_dir=\"$HOME/.ghosthub/tmux-clients\"",
+            "ghosthub_client_tty_path=\"$ghosthub_client_tty_dir/\(token)\"",
+            "ghosthub_client_tty_tmp=\"$ghosthub_client_tty_path.$$\"",
+            "ghosthub_client_pid=",
+            "ghosthub_client_token_ready=",
+            "ghosthub_client_tty=$(tty 2>/dev/null) "
+                + "|| ghosthub_client_tty=",
+            "if [ -n \"$ghosthub_client_tty\" ] "
+                + "&& (umask 077; mkdir -p \"$ghosthub_client_tty_dir\"); "
+                + "then ghosthub_client_token_ready=1; fi",
+            "ghosthub_client_cleanup() { rm -f "
+                + "\"$ghosthub_client_tty_path\" "
+                + "\"$ghosthub_client_tty_tmp\"; "
+                + "case \"$ghosthub_client_pid\" in "
+                + "''|*[!0-9]*) ;; *) kill \"$ghosthub_client_pid\" "
+                + "2>/dev/null || : ;; esac; }",
+            "trap ghosthub_client_cleanup 0",
+            "trap 'exit 129' HUP",
+            "trap 'exit 130' INT",
+            "trap 'exit 143' TERM",
+            "if [ -n \"$ghosthub_client_token_ready\" ]; then "
+                + "(umask 077; printf '%s\\n' \"$ghosthub_client_tty\" "
+                + "> \"$ghosthub_client_tty_tmp\") "
+                + "&& mv -f \"$ghosthub_client_tty_tmp\" "
+                + "\"$ghosthub_client_tty_path\" || :; fi",
+            "exec 3<&0",
+            "\(nestedCommand) <&3 3<&- & ghosthub_client_pid=$!",
+            "wait \"$ghosthub_client_pid\"",
+            "ghosthub_client_status=$?",
+            "ghosthub_client_pid=",
+            "exec 3<&-",
+            "exit \"$ghosthub_client_status\"",
+        ].joined(separator: "; ")
     }
 
     private func windowsCreateIfAbsentScript(

@@ -266,11 +266,11 @@ struct WorkspaceWorktreeRemovalTests {
         let pathResolutions = LockedValue(0)
         let completedPathResolutions = LockedValue(0)
         let resolveTmuxPath: @Sendable ()
-            -> Result<String, TmuxBinaryError> = {
+            -> Result<ResolvedTmuxBinary, TmuxBinaryError> = {
                 pathResolutions.withLock { $0 += 1 }
                 pathGate.wait()
                 completedPathResolutions.withLock { $0 += 1 }
-                return .success("/usr/bin/tmux")
+                return successfulTmuxResolution("/usr/bin/tmux")
             }
         defer {
             pathGate.signal()
@@ -426,7 +426,7 @@ struct WorkspaceWorktreeRemovalTests {
             localHostID: environment.host.id,
             snapshot: staleSnapshot,
             nativeTmuxSurfaceStore: staleSurfaces,
-            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
             worktreeMutationCoordinator: coordinator
         )
         let staleSelection = try #require(
@@ -539,7 +539,7 @@ struct WorkspaceWorktreeRemovalTests {
             database: environment.database,
             localHostID: environment.host.id,
             snapshot: snapshot,
-            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
             kwtInventoryLoader: { _ in beforeRemoval },
             kwtWorktreeRemover: { _, _, _, _ in
                 _ = await removerHold.load(beforeRemoval)
@@ -635,7 +635,7 @@ struct WorkspaceWorktreeRemovalTests {
             database: environment.database,
             localHostID: environment.host.id,
             snapshot: snapshot,
-            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
             kwtInventoryLoader: { _ in beforeRemoval },
             kwtWorktreeRemover: { _, _, _, _ in
                 _ = await removerHold.load(beforeRemoval)
@@ -706,7 +706,7 @@ struct WorkspaceWorktreeRemovalTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             nativeTmuxSurfaceStore: surfaces,
-            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
             localKwtPathProvider: { "/test/kwt" },
             kwtInventoryLoader: { _ in beforeRemoval },
             kwtWorktreeRemover: { _, _, _, _ in
@@ -773,7 +773,7 @@ struct WorkspaceWorktreeRemovalTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             nativeTmuxSurfaceStore: surfaces,
-            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
             kwtInventoryLoader: { _ in beforeRemoval },
             kwtWorktreeRemover: { _, _, _, _ in
                 throw KwtWorktreeError.removalFailed(
@@ -841,7 +841,7 @@ struct WorkspaceWorktreeRemovalTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             nativeTmuxSurfaceStore: surfaces,
-            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
             localKwtPathProvider: { "/test/kwt" },
             kwtInventoryLoader: { _ in beforeRemoval },
             kwtWorktreeRemover: { _, _, _, _ in
@@ -914,7 +914,7 @@ struct WorkspaceWorktreeRemovalTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             nativeTmuxSurfaceStore: surfaces,
-            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
             localKwtPathProvider: { "/test/kwt" },
             kwtInventoryLoader: { _ in beforeRemoval },
             kwtWorktreeRemover: { _, _, _, _ in
@@ -992,7 +992,7 @@ struct WorkspaceWorktreeRemovalTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             nativeTmuxSurfaceStore: surfaces,
-            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
             kwtInventoryLoader: { _ in beforeRemoval },
             kwtWorktreeRemover: { _, _, _, _ in
                 _ = await removerHold.load(beforeRemoval)
@@ -1080,7 +1080,7 @@ struct WorkspaceWorktreeRemovalTests {
             database: environment.database,
             localHostID: environment.host.id,
             snapshot: snapshot,
-            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
             kwtInventoryLoader: { _ in replacementInventory },
             tmuxSessionIdentityReader: { selection, host in
                 throw TmuxSessionKillError.sessionNotRunning(
@@ -1553,7 +1553,7 @@ struct WorkspaceWorktreeRemovalTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             nativeTmuxSurfaceStore: surfaces,
-            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
             kwtInventoryLoader: { _ in beforeRemoval },
             kwtWorktreeRemover: { _, _, _, _ in
                 removals.withLock { $0 += 1 }

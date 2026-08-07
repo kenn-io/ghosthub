@@ -12,6 +12,13 @@ import GhosthubWorkspace
 import GhosthubTerminalSupport
 @testable import GhosthubApp
 
+func successfulTmuxResolution(
+    _ path: String,
+    version: String = "tmux 3.4"
+) -> Result<ResolvedTmuxBinary, TmuxBinaryError> {
+    .success(ResolvedTmuxBinary(path: path, version: version))
+}
+
 // MARK: - Environment Setup
 
 struct HostEnv {
@@ -295,12 +302,12 @@ func makeModel(
     notificationService: any NotificationService = NotificationServiceStub(),
     nativeTmuxSurfaceStore: (any TmuxSurfaceStoring)? = nil,
     nativeTmuxPathProvider:
-    (@Sendable () -> Result<String, TmuxBinaryError>)? = nil,
+    (@Sendable () -> Result<ResolvedTmuxBinary, TmuxBinaryError>)? = nil,
     localKwtPathProvider: @escaping @Sendable () -> String? = {
         KwtBinaryLocator.bundledPath()
     },
-    remoteTmuxPathProvider: @escaping @Sendable (SSHHostInfo)
-        -> Result<String, TmuxBinaryError> = { _ in
+    remoteTmuxPathProvider: @escaping @Sendable (SSHHostInfo, [String])
+        -> Result<ResolvedTmuxBinary, TmuxBinaryError> = { _, _ in
             .failure(.notFound(shell: "test"))
         },
     tmuxPresentationStyleProvider:
@@ -483,6 +490,10 @@ final class RecordingTmuxSurfaceStore: TmuxSurfaceStoring {
         return surface
     }
 
+    func paneSurfaceIfPresent(for _: SurfaceKey) -> (any TmuxPaneSurfacing)? {
+        requestedConfigurations.isEmpty ? nil : surface
+    }
+
     func removeSurface(for key: SurfaceKey) {
         removedKeys.append(key)
     }
@@ -491,6 +502,9 @@ final class RecordingTmuxSurfaceStore: TmuxSurfaceStoring {
 @MainActor
 final class RecordingTmuxPaneSurface: TmuxPaneSurfacing {
     var blocksClipboardReads = false
+    var tmuxSplitErrorMessage: String?
+    var hasEffectiveKeyboardFocus = false
+    var tmuxSplitShortcutHandler: ((TerminalTmuxSplitShortcut) -> Void)?
     let launchError: Error?
     var childExitCode: UInt32?
     private(set) var closeObservers: [UUID: (Bool, UInt32?) -> Void] = [:]

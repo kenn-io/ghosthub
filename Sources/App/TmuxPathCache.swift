@@ -1,8 +1,8 @@
 import Foundation
 
-/// Memoizes a tmux-path resolution, but only for a successful result.
+/// Memoizes a tmux binary resolution, but only for a successful result.
 ///
-/// `TmuxBinaryResolver.resolveTmuxPath()` shells out to the login shell,
+/// `TmuxBinaryResolver.resolveTmuxBinary()` shells out to the login shell,
 /// which is worth caching for the lifetime of the coordinator. A failure
 /// (tmux not on PATH) must NOT be cached the same way: installing tmux after
 /// the first failed resolve (`brew install tmux`) should be picked up on the
@@ -12,24 +12,29 @@ import Foundation
 /// main actor — a slow login shell must never beachball the UI on first open.
 final class TmuxPathCache: @unchecked Sendable {
     private let lock = NSLock()
-    private var cachedPath: String?
-    private let resolve: @Sendable () -> Result<String, TmuxBinaryError>
+    private var cachedBinary: ResolvedTmuxBinary?
+    private let resolve:
+        @Sendable () -> Result<ResolvedTmuxBinary, TmuxBinaryError>
 
-    init(resolve: @escaping @Sendable () -> Result<String, TmuxBinaryError>) {
+    init(
+        resolve: @escaping @Sendable ()
+            -> Result<ResolvedTmuxBinary, TmuxBinaryError>
+    ) {
         self.resolve = resolve
     }
 
-    func resolveTmuxPath() -> Result<String, TmuxBinaryError> {
+    func resolveTmuxBinary()
+        -> Result<ResolvedTmuxBinary, TmuxBinaryError> {
         lock.lock()
-        if let cachedPath {
+        if let cachedBinary {
             lock.unlock()
-            return .success(cachedPath)
+            return .success(cachedBinary)
         }
         lock.unlock()
         let resolved = resolve()
-        if case let .success(path) = resolved {
+        if case let .success(binary) = resolved {
             lock.lock()
-            cachedPath = path
+            cachedBinary = binary
             lock.unlock()
         }
         return resolved

@@ -382,8 +382,18 @@ struct SSHConnectionPoolTests {
         )
         let arguments = SSHConnectionPool.proxyArguments(
             for: target,
-            configurationProvider: { _ in
-                EffectiveSSHConfiguration(
+            configurationProvider: { host in
+                if host == proxy {
+                    return EffectiveSSHConfiguration(
+                        user: "frozen-relay",
+                        strictHostKeyChecking: "yes",
+                        proxyJump: nil,
+                        proxyCommand: nil,
+                        hostname: "relay.internal.test",
+                        port: 2222
+                    )
+                }
+                return EffectiveSSHConfiguration(
                     user: "operator",
                     strictHostKeyChecking: "yes",
                     proxyJump: nil,
@@ -395,10 +405,14 @@ struct SSHConnectionPoolTests {
         #expect(arguments.contains("ProxyJump=none"))
         #expect(arguments.contains(where: {
             $0.hasPrefix("ProxyCommand=")
+                && $0.contains("'-F' '/dev/null'")
+                && $0.contains("ProxyJump=none")
+                && $0.contains("ProxyCommand=/usr/bin/false")
                 && $0.contains("ControlPath=")
                 && $0.contains("ControlMaster=no")
                 && $0.contains("ControlPersist=no")
-                && $0.contains("relay@jump.example.test")
+                && $0.contains("'-p' '2222'")
+                && $0.contains("frozen-relay@relay.internal.test")
         }))
     }
 
