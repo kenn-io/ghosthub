@@ -131,6 +131,78 @@ struct WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("authoritative inventory latches a retained canonical generation")
+    func authoritativeInventoryLatchesRetainedGeneration() async throws {
+        let environment = try setupStandardEnvironment()
+        let firstGeneration = "0123456789abcdef0123456789abcdef"
+        let replacementGeneration = "fedcba9876543210fedcba9876543210"
+        let publishedGeneration = LockedValue(firstGeneration)
+        var snapshot = environment.snapshot
+        snapshot.worktrees[0].generation = nil
+        snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-main"
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            kwtInventoryLoader: { _ in
+                KwtHostInventory(projects: [
+                    KwtProjectInventory(
+                        project: KwtProjectRecord(
+                            repository: environment.project.scopedKey,
+                            name: environment.project.name,
+                            path: environment.project.rootPath,
+                            lastTouched: nil
+                        ),
+                        worktrees: [
+                            KwtWorktreeRecord(
+                                path: environment.worktree.path,
+                                branch: environment.worktree.branch,
+                                commitHash: "",
+                                isMain: true,
+                                createdAt: nil,
+                                generation: publishedGeneration.load(),
+                                repository: environment.project.scopedKey,
+                                sessionName: "kwt-ghosthub-main",
+                                tmuxSocketName: nil
+                            ),
+                        ],
+                        warning: nil
+                    ),
+                ])
+            },
+            startServices: false
+        )
+        let initial = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(
+                for: snapshot.worktrees[0]
+            )
+        )
+        model.openBorrowedTmuxSession(initial)
+        let originalHandle = try #require(
+            model.retainedBorrowedTmuxHandle(for: initial)
+        )
+
+        model.startKwtInventory()
+        await waitUntilMainActor {
+            model.activeBorrowedTmuxSelection?.worktreeGeneration
+                == firstGeneration
+        }
+        let enriched = try #require(model.activeBorrowedTmuxSelection)
+        #expect(
+            model.retainedBorrowedTmuxHandle(for: enriched) == originalHandle
+        )
+
+        publishedGeneration.withLock { $0 = replacementGeneration }
+        model.refreshKwtInventory()
+        await waitUntilMainActor {
+            model.snapshot.worktrees[0].generation == replacementGeneration
+                && model.retainedBorrowedTmuxPresentationCount == 0
+        }
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test(
         "authoritative replacement waits for explicit reselection",
         arguments: [

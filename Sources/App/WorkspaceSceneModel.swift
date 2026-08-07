@@ -99,6 +99,7 @@ final class WorktreeMutationCoordinator {
         let phase: Phase
         let scope: Scope
         let removalTombstones: Set<RemovalTombstone>
+        let requiresWorkspaceReestablishment: Bool
     }
 
     static let shared = WorktreeMutationCoordinator()
@@ -133,7 +134,8 @@ final class WorktreeMutationCoordinator {
                 Event(
                     phase: .began,
                     scope: scope,
-                    removalTombstones: []
+                    removalTombstones: [],
+                    requiresWorkspaceReestablishment: false
                 )
             )
         }
@@ -143,7 +145,8 @@ final class WorktreeMutationCoordinator {
     func release(
         hostID: UUID,
         projectIdentity: String,
-        removalTombstones: Set<RemovalTombstone> = []
+        removalTombstones: Set<RemovalTombstone> = [],
+        requiresWorkspaceReestablishment: Bool = false
     ) {
         let scope = Scope(
             hostID: hostID,
@@ -155,7 +158,9 @@ final class WorktreeMutationCoordinator {
                 Event(
                     phase: .ended,
                     scope: scope,
-                    removalTombstones: removalTombstones
+                    removalTombstones: removalTombstones,
+                    requiresWorkspaceReestablishment:
+                    requiresWorkspaceReestablishment
                 )
             )
         }
@@ -176,7 +181,8 @@ final class WorktreeMutationCoordinator {
             Event(
                 phase: .willRemove,
                 scope: scope,
-                removalTombstones: worktrees
+                removalTombstones: worktrees,
+                requiresWorkspaceReestablishment: false
             )
         )
     }
@@ -372,6 +378,7 @@ final class WorkspaceSceneModel: ObservableObject {
         var selection: WorkspaceTmuxSessionSelection
         var launchMode: TmuxAttachmentLaunchMode
         var wasActive: Bool
+        var userNavigationRevision: UInt64
     }
     private var retainedTmuxPresentations:
         [TmuxPresentationKey: RetainedTmuxPresentation] = [:]
@@ -391,6 +398,7 @@ final class WorkspaceSceneModel: ObservableObject {
             WorktreeMutationCoordinator.Scope:
                 [TmuxPresentationKey: PendingRemovalPresentation]
         ] = [:]
+    private var userNavigationRevision: UInt64 = 0
     var suppressesSelectedWorktreeSessionOpen: Bool {
         suppressesAutomaticWorktreeSessionOpen
             || selection.selectedWorktreeID.map {
@@ -624,6 +632,9 @@ final class WorkspaceSceneModel: ObservableObject {
         nativeTmuxSurfaceStore: (any TmuxSurfaceStoring)? = nil,
         nativeTmuxPathProvider:
         (@Sendable () -> Result<String, TmuxBinaryError>)? = nil,
+        localKwtPathProvider: @escaping @Sendable () -> String? = {
+            KwtBinaryLocator.bundledPath()
+        },
         remoteTmuxPathProvider: @escaping @Sendable (SSHHostInfo)
             -> Result<String, TmuxBinaryError> = {
                 TmuxBinaryResolver().resolveTmuxPath(on: $0)
@@ -866,6 +877,7 @@ final class WorkspaceSceneModel: ObservableObject {
             tmuxPathProvider: {
                 tmuxPathCache.resolveTmuxPath()
             },
+            localKwtPathProvider: localKwtPathProvider,
             presentationStyleProvider: {
                 tmuxPresentationStyleProvider(nil)
             },
@@ -1100,6 +1112,7 @@ final class WorkspaceSceneModel: ObservableObject {
 
     func selectFromUser(_ newSelection: WorkspaceSelection) {
         cancelPendingRestoration()
+        userNavigationRevision &+= 1
         if let worktreeID = newSelection.selectedWorktreeID {
             explicitlyDismissedWorktreePresentationIDs.remove(worktreeID)
         }
@@ -1490,13 +1503,17 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         var removalTombstones:
             Set<WorktreeMutationCoordinator.RemovalTombstone> = []
+        var requiresWorkspaceReestablishment = false
+        var terminatedSession = false
         invalidateKwtInventoryRefresh()
         defer {
             ownsWorktreeMutation = false
             worktreeMutationCoordinator.release(
                 hostID: mutationHostID,
                 projectIdentity: mutationProjectIdentity,
-                removalTombstones: removalTombstones
+                removalTombstones: removalTombstones,
+                requiresWorkspaceReestablishment:
+                requiresWorkspaceReestablishment
             )
         }
 
@@ -1555,17 +1572,23 @@ final class WorkspaceSceneModel: ObservableObject {
         do {
             if let sessionKillRequest = request.sessionKillRequest {
                 try await killTmuxSession(sessionKillRequest)
+                terminatedSession = true
             }
             guard removalHostEndpointMatches(request) else {
                 throw KwtWorktreeError.removalTargetChanged
             }
             if !checkoutAlreadyAbsent {
-                try await kwtWorktreeRemover(
-                    worktree.path,
-                    generation,
-                    project.rootPath,
-                    confirmedHost
-                )
+                do {
+                    try await kwtWorktreeRemover(
+                        worktree.path,
+                        generation,
+                        project.rootPath,
+                        confirmedHost
+                    )
+                } catch {
+                    requiresWorkspaceReestablishment = terminatedSession
+                    throw error
+                }
             }
             cancelPendingRestoration()
             removalTombstones.insert(removalTombstone)
@@ -2152,7 +2175,11 @@ final class WorkspaceSceneModel: ObservableObject {
                     hostID: event.scope.hostID
                 )
             } else if let pendingRestorations {
-                restorePresentationsAfterFailedRemoval(pendingRestorations)
+                restorePresentationsAfterFailedRemoval(
+                    pendingRestorations,
+                    requiresWorkspaceReestablishment:
+                    event.requiresWorkspaceReestablishment
+                )
             }
         }
         guard inventoryHosts[event.scope.hostID] != nil else { return }
@@ -2224,21 +2251,27 @@ final class WorkspaceSceneModel: ObservableObject {
             ] = PendingRemovalPresentation(
                 selection: presentation.selection,
                 launchMode: presentation.launchMode,
-                wasActive: activeBorrowedTmuxHandle == presentation.handle
+                wasActive: activeBorrowedTmuxHandle == presentation.handle,
+                userNavigationRevision: userNavigationRevision
             )
             invalidateBorrowedTmuxSession(presentation.selection)
         }
     }
 
     private func restorePresentationsAfterFailedRemoval(
-        _ presentations: [TmuxPresentationKey: PendingRemovalPresentation]
+        _ presentations: [TmuxPresentationKey: PendingRemovalPresentation],
+        requiresWorkspaceReestablishment: Bool
     ) {
         for presentation in presentations.values {
             _ = presentTmuxSession(
                 presentation.selection,
-                launchMode: presentation.launchMode,
-                intent: .restoreOnly,
+                launchMode: requiresWorkspaceReestablishment
+                    ? .attach : presentation.launchMode,
+                intent: requiresWorkspaceReestablishment
+                    ? .userInitiated : .restoreOnly,
                 activatesPresentation: presentation.wasActive
+                    && presentation.userNavigationRevision
+                    == userNavigationRevision
             )
         }
     }
@@ -3455,6 +3488,7 @@ final class WorkspaceSceneModel: ObservableObject {
 
     func openBorrowedTmuxSession(_ selection: WorkspaceTmuxSessionSelection) {
         cancelPendingRestoration()
+        userNavigationRevision &+= 1
         if let worktreeID = selection.worktreeID {
             explicitlyDismissedWorktreePresentationIDs.remove(worktreeID)
         }
@@ -3471,6 +3505,7 @@ final class WorkspaceSceneModel: ObservableObject {
 
     func createTmuxSession(_ selection: WorkspaceTmuxSessionSelection) {
         cancelPendingRestoration()
+        userNavigationRevision &+= 1
         if let worktreeID = selection.worktreeID {
             explicitlyDismissedWorktreePresentationIDs.remove(worktreeID)
         }
@@ -3680,7 +3715,7 @@ final class WorkspaceSceneModel: ObservableObject {
     ) {
         let invalidSelections: [WorkspaceTmuxSessionSelection] =
             retainedTmuxPresentations.values.compactMap { presentation in
-                let retained = presentation.selection
+                var retained = presentation.selection
                 guard retained.hostID == hostID,
                       let worktreeID = retained.worktreeID
                 else { return nil }
@@ -3690,6 +3725,16 @@ final class WorkspaceSceneModel: ObservableObject {
                       .tmuxSessionSelection(for: worktree),
                       Self.sameTmuxEndpoint(retained, current)
                 else { return retained }
+                if retained.worktreeGeneration == nil,
+                   let canonicalGeneration = WorktreeGeneration.canonical(
+                       current.worktreeGeneration
+                   ) {
+                    retained.worktreeGeneration = canonicalGeneration
+                    presentation.selection = retained
+                    if activeBorrowedTmuxHandle == presentation.handle {
+                        activeBorrowedTmuxSelection = retained
+                    }
+                }
                 if let retainedGeneration = retained.worktreeGeneration,
                    let currentGeneration = current.worktreeGeneration,
                    retainedGeneration != currentGeneration {

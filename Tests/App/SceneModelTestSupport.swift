@@ -296,6 +296,9 @@ func makeModel(
     nativeTmuxSurfaceStore: (any TmuxSurfaceStoring)? = nil,
     nativeTmuxPathProvider:
     (@Sendable () -> Result<String, TmuxBinaryError>)? = nil,
+    localKwtPathProvider: @escaping @Sendable () -> String? = {
+        KwtBinaryLocator.bundledPath()
+    },
     remoteTmuxPathProvider: @escaping @Sendable (SSHHostInfo)
         -> Result<String, TmuxBinaryError> = { _ in
             .failure(.notFound(shell: "test"))
@@ -413,6 +416,7 @@ func makeModel(
         notificationService: notificationService,
         nativeTmuxSurfaceStore: nativeTmuxSurfaceStore,
         nativeTmuxPathProvider: nativeTmuxPathProvider,
+        localKwtPathProvider: localKwtPathProvider,
         remoteTmuxPathProvider: remoteTmuxPathProvider,
         tmuxPresentationStyleProvider: tmuxPresentationStyleProvider,
         appliesTmuxPresentationStyleToExistingSessionsProvider:
