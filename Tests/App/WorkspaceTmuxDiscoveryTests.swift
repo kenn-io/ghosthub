@@ -2866,6 +2866,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.localHostID,
             snapshot: environment.snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
             remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
             tmuxExactSessionProbe: { _ in probes.removeFirst() },
             tmuxReconnectIntervals: [.milliseconds(1)]
