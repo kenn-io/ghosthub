@@ -792,6 +792,10 @@ struct NativeTmuxSessionCoordinatorTests {
                 if command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY") {
                     return (0, coordinatorSplitClientOutput)
                 }
+                if command.contains("'set-hook' '-gu'"),
+                   !command.contains("'refresh-client'") {
+                    return (0, "")
+                }
                 if !command.contains("-v") {
                     events.withLock { $0.append("start-right") }
                     let deadline = Date().addingTimeInterval(5)

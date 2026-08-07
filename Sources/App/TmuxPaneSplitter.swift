@@ -131,7 +131,22 @@ struct TmuxPaneSplitter: Sendable {
         } onCancel: {
             task.cancel()
         }
-        guard !Task.isCancelled else { return nil }
+        if Task.isCancelled {
+            let cleanupCommand = Self.cleanupCommand(
+                tmuxPath: target.tmuxPath,
+                socketName: target.socketName,
+                hookIndex: hookIndex
+            )
+            let cleanupTask = Task.detached(priority: .userInitiated) {
+                runner(
+                    target.host,
+                    target.sshConnectionArguments,
+                    cleanupCommand
+                )
+            }
+            _ = await cleanupTask.value
+            return nil
+        }
         if result.diagnostic.split(whereSeparator: \.isNewline)
             .contains(Substring(mismatchMarker)) {
             return TmuxPaneSplitFailure(
@@ -208,11 +223,29 @@ struct TmuxPaneSplitter: Sendable {
             mismatchMarker, ";",
             "set-hook", "-gu", hookName,
         ].map(shellQuotedCommandArgument).joined(separator: " ")
-        let cleanup = tmux + " " + [
-            "set-hook", "-gu", hookName,
-        ].map(shellQuotedCommandArgument).joined(separator: " ")
+        let cleanup = cleanupCommand(
+            tmuxPath: tmuxPath,
+            socketName: socketName,
+            hookIndex: hookIndex
+        )
         return queue + "; ghosthub_status=$?; "
             + cleanup + " >/dev/null 2>&1; exit \"$ghosthub_status\""
+    }
+
+    static func cleanupCommand(
+        tmuxPath: String,
+        socketName: String?,
+        hookIndex: Int
+    ) -> String {
+        var arguments = [tmuxPath]
+        if let socketName, !socketName.isEmpty {
+            arguments += ["-L", socketName]
+        }
+        arguments += [
+            "set-hook", "-gu", "after-refresh-client[\(hookIndex)]",
+        ]
+        return arguments.map(shellQuotedCommandArgument)
+            .joined(separator: " ")
     }
 
     static func guardedHookBody(

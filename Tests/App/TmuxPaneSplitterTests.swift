@@ -784,6 +784,49 @@ struct TmuxPaneSplitterTests {
         #expect(failure == nil)
     }
 
+    @Test("cancellation removes an installed split hook")
+    func cancellationRemovesInstalledHook() async {
+        let hookInstalled = LockedValue(false)
+        let splitStarted = LockedValue(false)
+        let commands = LockedValue<[String]>([])
+        let splitter = TmuxPaneSplitter { _, _, command in
+            commands.withLock { $0.append(command) }
+            if command.contains("'refresh-client'") {
+                hookInstalled.store(true)
+                splitStarted.store(true)
+                while !withUnsafeCurrentTask(body: {
+                    $0?.isCancelled == true
+                }) {
+                    Thread.sleep(forTimeInterval: 0.001)
+                }
+            } else if command.contains("'set-hook' '-gu'") {
+                hookInstalled.store(false)
+            }
+            return (0, "")
+        }
+        let task = Task {
+            await splitter.split(
+                .right,
+                target: TmuxPaneSplitTarget(
+                    host: .local,
+                    tmuxPath: "/usr/bin/tmux",
+                    sessionName: "cancelled",
+                    socketName: nil,
+                    sshConnectionArguments: [],
+                    expectedIdentity: testSplitClient.sessionIdentity,
+                    expectedClient: testSplitClient
+                )
+            )
+        }
+
+        await waitUntil { splitStarted.load() }
+        task.cancel()
+        _ = await task.value
+
+        #expect(!hookInstalled.load())
+        #expect(commands.load().count == 2)
+    }
+
     @Test("validation and split share one exact-client tmux queue")
     func posixCommands() {
         let right = TmuxPaneSplitter.command(
