@@ -1,4 +1,5 @@
 import Foundation
+import GhosthubSettings
 import GhosthubTestSupport
 import GhosthubTmux
 import GhosthubUI
@@ -666,6 +667,159 @@ struct WorkspaceWorktreeRemovalTests {
         #expect(restoredCommand.contains("kwt"))
         #expect(restoredCommand.contains("open"))
         #expect(!restoredCommand.contains("attach-session"))
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("failed removal preserves pending workspace establishment")
+    func failedRemovalPreservesPendingEstablishment() async throws {
+        let environment = try setupRemoteEnvironment()
+        var removable = try #require(environment.snapshot.worktrees.first)
+        removable.generation = stableWorktreeGeneration
+        removable.scopedKey = removable.path
+        removable.tmuxSessionName = "kwt-ghosthub-main"
+        var snapshot = environment.snapshot
+        snapshot.worktrees = [removable]
+        let beforeRemoval = inventory(environment, including: removable)
+        let surfaces = RecordingTmuxSurfaceStore()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaces,
+            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            kwtInventoryLoader: { _ in beforeRemoval },
+            kwtWorktreeRemover: { _, _, _, _ in
+                throw KwtWorktreeError.removalFailed(
+                    host: "Office Linux",
+                    status: 1
+                )
+            },
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            },
+            createdSessionDiscoveryDelays: [.seconds(10)]
+        )
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: removable)
+        )
+        model.openBorrowedTmuxSession(selection)
+        await waitUntilMainActor {
+            !surfaces.requestedConfigurations.isEmpty
+        }
+        #expect(surfaces.lastCommand?.contains("'open'") == true)
+        model.openBorrowedTmuxSession(WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "other-session"
+        ))
+        await waitUntilMainActor {
+            surfaces.requestedConfigurations.count == 2
+        }
+        let initialRequestCount = surfaces.requestedConfigurations.count
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        await #expect(throws: KwtWorktreeError.self) {
+            try await model.removeWorktree(request)
+        }
+        await waitUntilMainActor {
+            surfaces.requestedConfigurations.count > initialRequestCount
+        }
+
+        #expect(surfaces.lastCommand?.contains("'open'") == true)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("endpoint changes discard pending removal restoration")
+    func endpointChangeDiscardsPendingRemovalRestoration() async throws {
+        let environment = try setupRemoteEnvironment()
+        var removable = try #require(environment.snapshot.worktrees.first)
+        removable.generation = stableWorktreeGeneration
+        removable.scopedKey = removable.path
+        removable.tmuxSessionName = "kwt-ghosthub-main"
+        var snapshot = environment.snapshot
+        snapshot.worktrees = [removable]
+        let beforeRemoval = inventory(environment, including: removable)
+        let surfaces = RecordingTmuxSurfaceStore()
+        let removerHold = RemovalPreflightHold()
+        let originalDestination = try #require(
+            environment.host.sshDestination
+        )
+        let configuredHosts = LockedValue([
+            SSHHost(
+                configKey: environment.host.configKey,
+                name: environment.host.name,
+                platform: .linux,
+                sshDestination: originalDestination
+            ),
+        ])
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaces,
+            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            kwtInventoryLoader: { _ in beforeRemoval },
+            kwtWorktreeRemover: { _, _, _, _ in
+                _ = await removerHold.load(beforeRemoval)
+                throw KwtWorktreeError.removalFailed(
+                    host: "Office Linux",
+                    status: 1
+                )
+            },
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            },
+            configuredSSHHostsProvider: { configuredHosts.load() }
+        )
+        model.refreshHosts()
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: removable)
+        )
+        model.openBorrowedTmuxSession(selection)
+        await waitUntilMainActor {
+            !surfaces.requestedConfigurations.isEmpty
+        }
+        model.openBorrowedTmuxSession(WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "other-session"
+        ))
+        await waitUntilMainActor {
+            surfaces.requestedConfigurations.count == 2
+        }
+        let initialRequestCount = surfaces.requestedConfigurations.count
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        let removal = Task { @MainActor in
+            try await model.removeWorktree(request)
+        }
+        await waitUntilMainActor { await removerHold.started }
+        configuredHosts.withLock {
+            $0 = [
+                SSHHost(
+                    configKey: environment.host.configKey,
+                    name: environment.host.name,
+                    platform: .linux,
+                    sshDestination: "wesm@replacement.example.com"
+                ),
+            ]
+        }
+        model.refreshHosts()
+        await removerHold.release()
+        await #expect(throws: KwtWorktreeError.self) {
+            try await removal.value
+        }
+
+        #expect(model.retainedBorrowedTmuxPresentationCount == 0)
+        #expect(
+            surfaces.requestedConfigurations.count == initialRequestCount
+        )
         await model.shutdown()
     }
 

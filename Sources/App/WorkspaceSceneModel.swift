@@ -377,6 +377,7 @@ final class WorkspaceSceneModel: ObservableObject {
     private struct PendingRemovalPresentation {
         var selection: WorkspaceTmuxSessionSelection
         var launchMode: TmuxAttachmentLaunchMode
+        var requiresWorkspaceEstablishment: Bool
         var wasActive: Bool
         var userNavigationRevision: UInt64
     }
@@ -2251,6 +2252,16 @@ final class WorkspaceSceneModel: ObservableObject {
             ] = PendingRemovalPresentation(
                 selection: presentation.selection,
                 launchMode: presentation.launchMode,
+                requiresWorkspaceEstablishment:
+                presentation.reconnectContext?.phase
+                    == .establishingWorkspace
+                    || (
+                        presentation.launchMode == .attach
+                            && presentation.selection.worktreePath != nil
+                            && !nativeTmuxSessionCoordinator.hasLaunched(
+                                presentation.handle
+                            )
+                    ),
                 wasActive: activeBorrowedTmuxHandle == presentation.handle,
                 userNavigationRevision: userNavigationRevision
             )
@@ -2263,11 +2274,13 @@ final class WorkspaceSceneModel: ObservableObject {
         requiresWorkspaceReestablishment: Bool
     ) {
         for presentation in presentations.values {
+            let establishesWorkspace = requiresWorkspaceReestablishment
+                || presentation.requiresWorkspaceEstablishment
             _ = presentTmuxSession(
                 presentation.selection,
-                launchMode: requiresWorkspaceReestablishment
+                launchMode: establishesWorkspace
                     ? .attach : presentation.launchMode,
-                intent: requiresWorkspaceReestablishment
+                intent: establishesWorkspace
                     ? .userInitiated : .restoreOnly,
                 activatesPresentation: presentation.wasActive
                     && presentation.userNavigationRevision
@@ -2655,6 +2668,10 @@ final class WorkspaceSceneModel: ObservableObject {
 
     private func invalidateTmuxAttachments(for hostIDs: Set<UUID>) {
         guard !hostIDs.isEmpty else { return }
+        for scope in pendingRemovalPresentationRestorations.keys
+            where hostIDs.contains(scope.hostID) {
+            pendingRemovalPresentationRestorations.removeValue(forKey: scope)
+        }
         let pendingForInvalidatedHosts = pendingCreatedTmuxSessions.filter {
             hostIDs.contains($0.value.hostID)
         }
