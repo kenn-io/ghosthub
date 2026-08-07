@@ -24,6 +24,8 @@ const WRITE_BATCH_MAX: usize = COMMAND_BYTE_CAPACITY + READ_BUFFER_SIZE;
 const WRITE_UI_MAX_BYTES: usize = WRITE_HIGH_WATER + WRITE_BATCH_MAX;
 const WRITE_PARSER_RESERVE: usize = WRITE_BATCH_MAX;
 const WRITE_MAX_BYTES: usize = WRITE_UI_MAX_BYTES + WRITE_PARSER_RESERVE;
+const CHILD_EXIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const CHILD_OUTPUT_DRAIN_GRACE: Duration = Duration::from_millis(250);
 const REAP_ATTEMPTS: usize = 20;
 const REAP_POLL_DELAY: Duration = Duration::from_millis(25);
 
@@ -571,12 +573,28 @@ fn run_worker(
 ) {
     let mut report_exit = false;
     let mut observed_exit = None;
+    let mut next_child_poll = Instant::now();
     let mut output_tail = Vec::new();
     let mut pending_paste = None;
     let mut approved_paste = None;
     let mut pending_writes = PendingWrites::default();
     let suspended_commands = never();
     'worker: loop {
+        if child_exit_drain_expired(
+            &mut observed_exit,
+            &mut next_child_poll,
+            Instant::now(),
+            || {
+                child
+                    .try_wait()
+                    .ok()
+                    .flatten()
+                    .map(|status| status.exit_code())
+            },
+        ) {
+            report_exit = true;
+            break;
+        }
         match paste_actions.try_recv() {
             Ok(action) => {
                 if !service_paste_action(
@@ -708,18 +726,7 @@ fn run_worker(
                     break 'worker;
                 },
             },
-            default(Duration::from_millis(50)) => {
-                if observed_exit.is_none()
-                    && let Ok(Some(status)) = child.try_wait()
-                {
-                    observed_exit = Some((status.exit_code(), Instant::now()));
-                } else if observed_exit.is_some_and(|(_, observed_at)| {
-                    observed_at.elapsed() >= Duration::from_millis(250)
-                }) {
-                    report_exit = true;
-                    break 'worker;
-                }
-            }
+            default(CHILD_EXIT_POLL_INTERVAL) => {}
         }
     }
 
@@ -743,6 +750,26 @@ fn run_worker(
             },
         );
     }
+}
+
+fn child_exit_drain_expired(
+    observed_exit: &mut Option<(u32, Instant)>,
+    next_poll: &mut Instant,
+    now: Instant,
+    try_wait: impl FnOnce() -> Option<u32>,
+) -> bool {
+    if let Some((_, deadline)) = observed_exit {
+        return now >= *deadline;
+    }
+    if now < *next_poll {
+        return false;
+    }
+
+    *next_poll = now + CHILD_EXIT_POLL_INTERVAL;
+    if let Some(exit_code) = try_wait() {
+        *observed_exit = Some((exit_code, now + CHILD_OUTPUT_DRAIN_GRACE));
+    }
+    false
 }
 
 fn process_paste_action(
@@ -1255,6 +1282,41 @@ mod tests {
 
         assert_eq!(exit_code, 9);
         assert_eq!(*events.lock().expect("event log"), ["wait", "drop", "reap"]);
+    }
+
+    #[test]
+    fn continuous_reader_activity_cannot_starve_exit_drain_deadline() {
+        let (reader_sender, reader) = bounded(1);
+        reader_sender.send(()).expect("prime reader");
+        let started_at = Instant::now();
+        let mut observed_exit = None;
+        let mut next_poll = started_at;
+
+        assert!(!child_exit_drain_expired(
+            &mut observed_exit,
+            &mut next_poll,
+            started_at,
+            || Some(7),
+        ));
+
+        for elapsed_ms in (10..250).step_by(10) {
+            reader.try_recv().expect("reader stays active");
+            reader_sender.try_send(()).expect("refill reader");
+            assert!(!child_exit_drain_expired(
+                &mut observed_exit,
+                &mut next_poll,
+                started_at + Duration::from_millis(elapsed_ms),
+                || panic!("an observed child must not be polled again"),
+            ));
+        }
+
+        assert!(child_exit_drain_expired(
+            &mut observed_exit,
+            &mut next_poll,
+            started_at + CHILD_OUTPUT_DRAIN_GRACE,
+            || panic!("an observed child must not be polled again"),
+        ));
+        assert_eq!(observed_exit.map(|(code, _)| code), Some(7));
     }
 
     #[test]
