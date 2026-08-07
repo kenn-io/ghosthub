@@ -39,9 +39,6 @@ jobs:
           node-version: 22
           cache: pnpm
           cache-dependency-path: website/pnpm-lock.yaml
-      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
-        with:
-          cache-dependency-glob: website/docs/uv.lock
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
       - run: pnpm lint

@@ -17,11 +17,12 @@ documentation and has a separate build.
     pnpm test       # vitest unit tests
     pnpm build      # production build to dist/
 
-The website build uses `uv` for Zensical. CI installs it directly; other clean
-build environments use the checksum-pinned bootstrap in `scripts/run-uv.sh`.
-To preview only the public docs:
+The website build uses the checksum-pinned `uv` bootstrap in
+`scripts/run-uv.sh` in local, CI, and deployment environments. The pinned
+binary is cached under `website/.cache/` after its first verified install. To
+preview only the public docs:
 
-    uv run --project docs zensical serve --config-file zensical.toml
+    ./scripts/run-uv.sh run --project docs --frozen zensical serve --config-file zensical.toml
 
 Constants (repo slug, Discord invite) live in `src/config.ts`.
 

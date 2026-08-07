@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if command -v uv >/dev/null 2>&1; then
-  exec uv "$@"
-fi
-
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 website_root="$(cd "$script_dir/.." && pwd)"
 uv_version="0.9.5"
 uv_cache="$website_root/.cache/uv-$uv_version"
+uv_bin="$uv_cache/bin/uv"
 installer="$uv_cache/install.sh"
 installer_sha256="8402ab80d2ef54d7044a71ea4e4e1e8db3b20c87c7bffbc30bff59f1e80ebbd5"
+
+if [[ -x "$uv_bin" ]]; then
+  exec "$uv_bin" "$@"
+fi
 
 mkdir -p "$uv_cache"
 curl \
@@ -35,7 +36,6 @@ else
 fi
 env UV_UNMANAGED_INSTALL="$uv_cache/bin" sh "$installer" >/dev/null
 
-uv_bin="$uv_cache/bin/uv"
 if [[ ! -x "$uv_bin" ]]; then
   printf 'uv installer did not create the expected executable: %s\n' "$uv_bin" >&2
   exit 1
