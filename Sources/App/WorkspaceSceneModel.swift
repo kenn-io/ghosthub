@@ -104,6 +104,7 @@ final class WorktreeMutationCoordinator {
     static let shared = WorktreeMutationCoordinator()
 
     private var activeScopes: Set<Scope> = []
+    private var pendingRemovalsByScope: [Scope: Set<RemovalTombstone>] = [:]
     private let eventSubject = PassthroughSubject<Event, Never>()
 
     var events: AnyPublisher<Event, Never> {
@@ -112,6 +113,10 @@ final class WorktreeMutationCoordinator {
 
     var scopes: Set<Scope> {
         activeScopes
+    }
+
+    var pendingRemovals: [Scope: Set<RemovalTombstone>] {
+        pendingRemovalsByScope
     }
 
     func acquire(
@@ -145,6 +150,7 @@ final class WorktreeMutationCoordinator {
             projectIdentity: projectIdentity
         )
         if activeScopes.remove(scope) != nil {
+            pendingRemovalsByScope.removeValue(forKey: scope)
             eventSubject.send(
                 Event(
                     phase: .ended,
@@ -165,6 +171,7 @@ final class WorktreeMutationCoordinator {
             projectIdentity: projectIdentity
         )
         guard activeScopes.contains(scope), !worktrees.isEmpty else { return }
+        pendingRemovalsByScope[scope, default: []].formUnion(worktrees)
         eventSubject.send(
             Event(
                 phase: .willRemove,
@@ -369,11 +376,17 @@ final class WorkspaceSceneModel: ObservableObject {
     @Published private(set) var suppressesAutomaticWorktreeSessionOpen = false
     @Published private var explicitlyDismissedWorktreePresentationIDs:
         Set<UUID> = []
+    @Published private var pendingWorktreeRemovals:
+        [
+            WorktreeMutationCoordinator.Scope:
+                Set<WorktreeMutationCoordinator.RemovalTombstone>
+        ] = [:]
     var suppressesSelectedWorktreeSessionOpen: Bool {
         suppressesAutomaticWorktreeSessionOpen
             || selection.selectedWorktreeID.map {
                 explicitlyDismissedWorktreePresentationIDs.contains($0)
             } == true
+            || selectedWorktreeRemovalIsPending
     }
     private var pendingRestoration: WorkspaceWindowState?
     private var protectedRestorationProbeTask: Task<Void, Never>?
@@ -984,6 +997,7 @@ final class WorkspaceSceneModel: ObservableObject {
             self?.worktreeMutationEvent(event)
         }
         fencedWorktreeMutationScopes = worktreeMutationCoordinator.scopes
+        pendingWorktreeRemovals = worktreeMutationCoordinator.pendingRemovals
         let sshHostsPublisher = configuredSSHHostsPublisher
             ?? SettingsStore.shared.$sshHosts.eraseToAnyPublisher()
         // Defer post-init work that mutates @Published state to
@@ -2133,6 +2147,8 @@ final class WorkspaceSceneModel: ObservableObject {
         case .began:
             fencedWorktreeMutationScopes.insert(event.scope)
         case .willRemove:
+            pendingWorktreeRemovals[event.scope, default: []]
+                .formUnion(event.removalTombstones)
             closeRetainedTmuxPresentations(
                 forWorktreeIDs: worktreeIDs(
                     matching: event.removalTombstones,
@@ -2142,6 +2158,7 @@ final class WorkspaceSceneModel: ObservableObject {
             return
         case .ended:
             fencedWorktreeMutationScopes.remove(event.scope)
+            pendingWorktreeRemovals.removeValue(forKey: event.scope)
             if !event.removalTombstones.isEmpty {
                 worktreeRemovalTombstones[event.scope, default: []]
                     .formUnion(event.removalTombstones)
@@ -3437,6 +3454,7 @@ final class WorkspaceSceneModel: ObservableObject {
            WorktreeGeneration.isCanonical(generation) {
             selection.worktreeGeneration = generation
         }
+        guard !worktreeRemovalIsPending(for: selection) else { return nil }
         let effectiveLaunchMode: TmuxAttachmentLaunchMode =
             selection.socketName != nil && launchMode == .create
                 ? .attach
@@ -3561,6 +3579,33 @@ final class WorkspaceSceneModel: ObservableObject {
         for selection: WorkspaceTmuxSessionSelection
     ) -> RetainedTmuxPresentation? {
         retainedTmuxPresentations[TmuxPresentationKey(selection)]
+    }
+
+    private var selectedWorktreeRemovalIsPending: Bool {
+        guard let worktreeID = selection.selectedWorktreeID,
+              let worktree = snapshot.worktree(id: worktreeID),
+              let tmuxSelection = WorkspaceSidebarModel
+              .tmuxSessionSelection(for: worktree)
+        else { return false }
+        return worktreeRemovalIsPending(for: tmuxSelection)
+    }
+
+    private func worktreeRemovalIsPending(
+        for selection: WorkspaceTmuxSessionSelection
+    ) -> Bool {
+        guard selection.worktreeID != nil,
+              let path = selection.worktreePath,
+              let generation = selection.worktreeGeneration
+        else { return false }
+        return pendingWorktreeRemovals.contains { scope, tombstones in
+            scope.hostID == selection.hostID
+                && tombstones.contains(
+                    WorktreeMutationCoordinator.RemovalTombstone(
+                        path: path,
+                        generation: generation
+                    )
+                )
+        }
     }
 
     private func reconcileRetainedTmuxPresentations(
