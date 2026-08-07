@@ -3,16 +3,23 @@
 use std::ffi::{OsStr, OsString};
 use std::io::{self, Read};
 use std::process::{Command, Stdio};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 pub use model::DiagnosticKind as HostErrorKind;
 
+mod command_process;
+#[cfg(windows)]
+mod windows_system;
 mod wsl;
 
-pub use wsl::{HostError, HostSnapshot, WslConfig, WslEndpoint, WslHost, WslRuntimeIdentity};
+pub use wsl::{
+    AdmissionAttacher, AttachTerm, HostError, HostSnapshot, SystemWslPresence, WslConfig,
+    WslEndpoint, WslExecutable, WslHost, WslPresence, WslRuntimeIdentity,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommandOutput {
@@ -21,8 +28,15 @@ pub struct CommandOutput {
     pub stderr: Vec<u8>,
 }
 
+#[derive(Debug, Default)]
+struct CancellationState {
+    cancelled: AtomicBool,
+    mutex: Mutex<()>,
+    wake: Condvar,
+}
+
 #[derive(Clone, Debug, Default)]
-pub struct CancellationToken(Arc<AtomicBool>);
+pub struct CancellationToken(Arc<CancellationState>);
 
 impl CancellationToken {
     #[must_use]
@@ -31,12 +45,39 @@ impl CancellationToken {
     }
 
     pub fn cancel(&self) {
-        self.0.store(true, Ordering::Release);
+        let _guard = self
+            .0
+            .mutex
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.0.cancelled.store(true, Ordering::Release);
+        self.0.wake.notify_all();
     }
 
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::Acquire)
+        self.0.cancelled.load(Ordering::Acquire)
+    }
+
+    /// Wait until cancellation or the timeout expires.
+    ///
+    /// Returns `true` when cancellation woke the wait.
+    #[must_use]
+    pub fn wait_cancelled(&self, timeout: Duration) -> bool {
+        if self.is_cancelled() {
+            return true;
+        }
+        let guard = self
+            .0
+            .mutex
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _wait = self
+            .0
+            .wake
+            .wait_timeout_while(guard, timeout, |()| !self.is_cancelled())
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.is_cancelled()
     }
 }
 
@@ -55,8 +96,45 @@ pub trait CommandRunner: Send + Sync {
     ) -> io::Result<CommandOutput>;
 }
 
+impl<R: CommandRunner + ?Sized> CommandRunner for Arc<R> {
+    fn run(
+        &self,
+        program: &OsStr,
+        args: &[OsString],
+        cancellation: &CancellationToken,
+        timeout: Duration,
+    ) -> io::Result<CommandOutput> {
+        (**self).run(program, args, cancellation, timeout)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct StdCommandRunner;
+
+const OUTPUT_CHUNK_BYTES: usize = 16 * 1024;
+const OUTPUT_CHANNEL_DEPTH: usize = 16;
+const MAX_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
+const OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
+
+#[derive(Clone, Copy)]
+enum OutputStream {
+    Stdout,
+    Stderr,
+}
+
+enum ReaderEvent {
+    Chunk(OutputStream, Vec<u8>),
+    Done(OutputStream, io::Result<()>),
+}
+
+#[derive(Default)]
+struct CapturedOutput {
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    stdout_done: bool,
+    stderr_done: bool,
+    reader_error: Option<io::Error>,
+}
 
 impl CommandRunner for StdCommandRunner {
     fn run(
@@ -66,55 +144,318 @@ impl CommandRunner for StdCommandRunner {
         cancellation: &CancellationToken,
         timeout: Duration,
     ) -> io::Result<CommandOutput> {
-        let mut child = Command::new(program)
+        let mut command = Command::new(program);
+        command_process::prepare(&mut command);
+        let mut child = command
             .args(args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
+        let mut containment = match command_process::CommandContainment::attach(&mut child) {
+            Ok(containment) => containment,
+            Err(error) => {
+                let _ignored = child.kill();
+                let _ignored = child.wait();
+                return Err(error);
+            }
+        };
         let stdout = child.stdout.take().ok_or_else(|| {
             io::Error::new(io::ErrorKind::BrokenPipe, "child stdout was not captured")
         })?;
         let stderr = child.stderr.take().ok_or_else(|| {
             io::Error::new(io::ErrorKind::BrokenPipe, "child stderr was not captured")
         })?;
-        let stdout = thread::spawn(move || read_all(stdout));
-        let stderr = thread::spawn(move || read_all(stderr));
+        let (sender, receiver) = sync_channel(OUTPUT_CHANNEL_DEPTH);
+        let stdout = spawn_reader(stdout, OutputStream::Stdout, sender.clone());
+        let stderr = spawn_reader(stderr, OutputStream::Stderr, sender);
+        let mut captured = CapturedOutput::default();
         let deadline = Instant::now() + timeout;
         let status = loop {
+            if let Err(error) = drain_available(&receiver, &mut captured) {
+                terminate_command(&mut child, &mut containment);
+                finish_or_detach_readers(
+                    &receiver,
+                    &mut captured,
+                    &CancellationToken::new(),
+                    Instant::now() + OUTPUT_DRAIN_TIMEOUT,
+                    stdout,
+                    stderr,
+                );
+                return Err(error);
+            }
             if cancellation.is_cancelled() {
-                let _ignored = child.kill();
-                let _ignored = child.wait();
+                terminate_command(&mut child, &mut containment);
+                finish_or_detach_readers(
+                    &receiver,
+                    &mut captured,
+                    &CancellationToken::new(),
+                    Instant::now() + OUTPUT_DRAIN_TIMEOUT,
+                    stdout,
+                    stderr,
+                );
                 return Err(io::Error::new(
                     io::ErrorKind::Interrupted,
                     "command cancelled",
                 ));
             }
             if Instant::now() >= deadline {
-                let _ignored = child.kill();
-                let _ignored = child.wait();
+                terminate_command(&mut child, &mut containment);
+                finish_or_detach_readers(
+                    &receiver,
+                    &mut captured,
+                    &CancellationToken::new(),
+                    Instant::now() + OUTPUT_DRAIN_TIMEOUT,
+                    stdout,
+                    stderr,
+                );
                 return Err(io::Error::new(io::ErrorKind::TimedOut, "command timed out"));
             }
-            if let Some(status) = child.try_wait()? {
-                break status;
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) => {}
+                Err(error) => {
+                    terminate_command(&mut child, &mut containment);
+                    finish_or_detach_readers(
+                        &receiver,
+                        &mut captured,
+                        &CancellationToken::new(),
+                        Instant::now() + OUTPUT_DRAIN_TIMEOUT,
+                        stdout,
+                        stderr,
+                    );
+                    return Err(error);
+                }
             }
             thread::sleep(Duration::from_millis(10));
         };
+        containment.terminate();
+        finish_readers(
+            &receiver,
+            &mut captured,
+            cancellation,
+            Instant::now() + OUTPUT_DRAIN_TIMEOUT,
+        )?;
+        join_readers(stdout, stderr)?;
+        if let Some(error) = captured.reader_error {
+            return Err(error);
+        }
         Ok(CommandOutput {
             status: status.code().unwrap_or(-1),
-            stdout: join_reader(stdout)?,
-            stderr: join_reader(stderr)?,
+            stdout: captured.stdout,
+            stderr: captured.stderr,
         })
     }
 }
 
-fn read_all(mut reader: impl Read) -> io::Result<Vec<u8>> {
-    let mut bytes = Vec::new();
-    reader.read_to_end(&mut bytes)?;
-    Ok(bytes)
+fn finish_or_detach_readers(
+    receiver: &Receiver<ReaderEvent>,
+    captured: &mut CapturedOutput,
+    cancellation: &CancellationToken,
+    deadline: Instant,
+    stdout: thread::JoinHandle<()>,
+    stderr: thread::JoinHandle<()>,
+) {
+    if finish_readers(receiver, captured, cancellation, deadline).is_ok() {
+        let _ignored = join_readers(stdout, stderr);
+    }
+    // Dropping unfinished handles detaches only the bounded reader threads.
+    // Their senders unblock as soon as this function's receiver is dropped.
 }
 
-fn join_reader(reader: thread::JoinHandle<io::Result<Vec<u8>>>) -> io::Result<Vec<u8>> {
-    reader
+fn spawn_reader(
+    reader: impl Read + Send + 'static,
+    stream: OutputStream,
+    sender: SyncSender<ReaderEvent>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || read_chunks(reader, stream, &sender))
+}
+
+fn read_chunks(mut reader: impl Read, stream: OutputStream, sender: &SyncSender<ReaderEvent>) {
+    let result = loop {
+        let mut chunk = vec![0; OUTPUT_CHUNK_BYTES];
+        match reader.read(&mut chunk) {
+            Ok(0) => break Ok(()),
+            Ok(read) => {
+                chunk.truncate(read);
+                if sender.send(ReaderEvent::Chunk(stream, chunk)).is_err() {
+                    return;
+                }
+            }
+            Err(error) => break Err(error),
+        }
+    };
+    let _ignored = sender.send(ReaderEvent::Done(stream, result));
+}
+
+fn drain_available(
+    receiver: &Receiver<ReaderEvent>,
+    captured: &mut CapturedOutput,
+) -> io::Result<()> {
+    loop {
+        match receiver.try_recv() {
+            Ok(event) => capture_event(captured, event)?,
+            Err(TryRecvError::Empty | TryRecvError::Disconnected) => return Ok(()),
+        }
+    }
+}
+
+fn finish_readers(
+    receiver: &Receiver<ReaderEvent>,
+    captured: &mut CapturedOutput,
+    cancellation: &CancellationToken,
+    deadline: Instant,
+) -> io::Result<()> {
+    let mut cancelled = false;
+    while !captured.stdout_done || !captured.stderr_done {
+        if cancellation.is_cancelled() {
+            cancelled = true;
+        }
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "command output collection timed out",
+            ));
+        }
+        match receiver.recv_timeout(Duration::from_millis(10)) {
+            Ok(event) => capture_event(captured, event)?,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "command output readers disconnected",
+                ));
+            }
+        }
+    }
+    if cancelled {
+        Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "command output collection cancelled",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn capture_event(captured: &mut CapturedOutput, event: ReaderEvent) -> io::Result<()> {
+    match event {
+        ReaderEvent::Chunk(OutputStream::Stdout, chunk) => {
+            append_capped(&mut captured.stdout, &chunk)?;
+        }
+        ReaderEvent::Chunk(OutputStream::Stderr, chunk) => {
+            append_capped(&mut captured.stderr, &chunk)?;
+        }
+        ReaderEvent::Done(OutputStream::Stdout, result) => {
+            captured.stdout_done = true;
+            record_reader_result(captured, result);
+        }
+        ReaderEvent::Done(OutputStream::Stderr, result) => {
+            captured.stderr_done = true;
+            record_reader_result(captured, result);
+        }
+    }
+    Ok(())
+}
+
+fn append_capped(output: &mut Vec<u8>, chunk: &[u8]) -> io::Result<()> {
+    if output.len().saturating_add(chunk.len()) > MAX_CAPTURE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "command output exceeded capture limit",
+        ));
+    }
+    output.extend_from_slice(chunk);
+    Ok(())
+}
+
+fn record_reader_result(captured: &mut CapturedOutput, result: io::Result<()>) {
+    if let Err(error) = result
+        && captured.reader_error.is_none()
+    {
+        captured.reader_error = Some(error);
+    }
+}
+
+fn terminate_command(
+    child: &mut std::process::Child,
+    containment: &mut command_process::CommandContainment,
+) {
+    containment.terminate();
+    let _ignored = child.kill();
+    let _ignored = child.wait();
+}
+
+fn join_readers(stdout: thread::JoinHandle<()>, stderr: thread::JoinHandle<()>) -> io::Result<()> {
+    stdout
         .join()
-        .map_err(|_| io::Error::other("command output reader panicked"))?
+        .map_err(|_| io::Error::other("command stdout reader panicked"))?;
+    stderr
+        .join()
+        .map_err(|_| io::Error::other("command stderr reader panicked"))?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn captured_output_has_a_hard_limit() {
+        let mut output = vec![0; MAX_CAPTURE_BYTES - 1];
+
+        let error = append_capped(&mut output, &[1, 2])
+            .expect_err("capture beyond the fixed limit must fail");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(output.len(), MAX_CAPTURE_BYTES - 1);
+    }
+
+    #[test]
+    fn cancellation_wakes_a_timed_wait() {
+        let cancellation = CancellationToken::new();
+        let waiting = cancellation.clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let thread = thread::spawn(move || {
+            sender
+                .send(waiting.wait_cancelled(Duration::from_secs(30)))
+                .expect("receiver remains live");
+        });
+
+        cancellation.cancel();
+
+        assert!(
+            receiver
+                .recv_timeout(Duration::from_secs(1))
+                .expect("wait wakes promptly")
+        );
+        thread.join().expect("wait thread exits");
+    }
+
+    #[test]
+    fn cancellation_uses_the_waiter_mutex_for_notification() {
+        let cancellation = CancellationToken::new();
+        let guard = cancellation.0.mutex.lock().expect("cancellation mutex");
+        let cancelling = cancellation.clone();
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let child_barrier = Arc::clone(&barrier);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let thread = thread::spawn(move || {
+            child_barrier.wait();
+            cancelling.cancel();
+            sender.send(()).expect("receiver remains live");
+        });
+
+        barrier.wait();
+        assert!(
+            receiver.recv_timeout(Duration::from_millis(50)).is_err(),
+            "cancel must synchronize with the condition-variable mutex"
+        );
+        drop(guard);
+
+        receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("cancel proceeds after the waiter mutex is released");
+        assert!(cancellation.is_cancelled());
+        thread.join().expect("cancel thread exits");
+    }
 }

@@ -96,7 +96,7 @@ pub fn psmux_probe_plan(namespace: &ProbeNamespace) -> Vec<ProbeCommand> {
     let renamed = namespace.session("main-renamed");
     let restart = namespace.session("server-restart");
     let main_target = format!("={main}");
-    let prefix_target = format!("={main}-prefix-miss");
+    let prefix_target = format!("={main}-o");
     let collision_target = format!("={collision}");
     let renamed_target = format!("={renamed}");
     let restart_target = format!("={restart}");
@@ -320,7 +320,7 @@ pub fn probe_psmux(executable: &str, namespace: &ProbeNamespace) -> io::Result<P
     let renamed = namespace.session("main-renamed");
     let restart_name = namespace.session("server-restart");
     let main_target = format!("={main}");
-    let prefix_target = format!("={main}-prefix-miss");
+    let prefix_target = format!("={main}-o");
     let collision_target = format!("={collision_name}");
     let renamed_target = format!("={renamed}");
     let restart_target = format!("={restart_name}");
