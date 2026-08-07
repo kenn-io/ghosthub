@@ -141,6 +141,7 @@ final class TmuxSessionActivityController: ObservableObject {
                     identity: entry.identity,
                     host: entry.host,
                     requestID: requestID,
+                    startedAt: startedAt,
                     completedAt: date ?? .now
                 )
             }
@@ -158,6 +159,7 @@ final class TmuxSessionActivityController: ObservableObject {
         identity: TmuxSessionIdentity,
         host: TmuxHost,
         requestID: UUID,
+        startedAt: Date,
         completedAt: Date
     ) {
         guard inFlightSamples[id]?.requestID == requestID else { return }
@@ -169,7 +171,7 @@ final class TmuxSessionActivityController: ObservableObject {
         switch result {
         case let .sample(paneID, dimensions, fingerprint):
             let previousIsRecent = entry.lastSampledAt.map { sampledAt in
-                completedAt.timeIntervalSince(sampledAt) < activityDuration
+                startedAt.timeIntervalSince(sampledAt) < activityDuration
             } ?? false
             if entry.paneID == paneID,
                entry.dimensions == dimensions,

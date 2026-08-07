@@ -1536,6 +1536,85 @@ struct WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("an occluded connected attachment still enrolls warm activity")
+    func occludedConnectedAttachmentEnrollsWarmActivity() async throws {
+        let environment = try setupStandardEnvironment()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let identityReads = Counter()
+        let identityAvailable = LockedValue(false)
+        let sampleCounts = LockedValue<[String: Int]>([:])
+        let activityController = TmuxSessionActivityController(
+            sampler: { selection, _, _ in
+                var count = 0
+                sampleCounts.withLock { counts in
+                    count = (counts[selection.name] ?? 0) + 1
+                    counts[selection.name] = count
+                }
+                return .sample(
+                    paneID: "%2",
+                    dimensions: "120x30",
+                    fingerprint: "\(selection.name)-\(count)"
+                )
+            },
+            automaticallyPolls: false
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            tmuxSessionIdentityReader: { selection, host in
+                _ = identityReads.increment()
+                guard identityAvailable.load() else {
+                    throw TmuxSessionKillError.sessionNotRunning(
+                        host: host.displayName,
+                        session: selection.name
+                    )
+                }
+                return TmuxSessionIdentity(
+                    serverPID: "31415",
+                    sessionID: "$42",
+                    createdAt: "1721552400"
+                )
+            },
+            tmuxSessionActivityController: activityController,
+            createdSessionDiscoveryDelays: [.milliseconds(1)]
+        )
+        let first = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "kwt-ghosthub-main",
+            socketName: "protected"
+        )
+        model.openBorrowedTmuxSession(first)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        await waitUntilMainActor { identityReads.count >= 1 }
+
+        let second = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "build"
+        )
+        model.openBorrowedTmuxSession(second)
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedTmuxSurface()
+            return surfaceStore.requestCount == 2
+        }
+        identityAvailable.store(true)
+
+        let start = Date.now
+        for tick in 1 ... 400
+            where !model.workingTmuxSessionIDs.contains(first.id) {
+            await activityController.sampleWarmSessions(
+                at: start.addingTimeInterval(Double(tick))
+            )
+            try await Task.sleep(for: .milliseconds(2))
+        }
+
+        #expect(model.workingTmuxSessionIDs.contains(first.id))
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("connected attachment validates stale discovered activity identity")
     func connectedAttachmentValidatesStaleActivityIdentity() async throws {
         let environment = try setupStandardEnvironment()

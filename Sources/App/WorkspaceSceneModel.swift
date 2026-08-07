@@ -4942,9 +4942,9 @@ final class WorkspaceSceneModel: ObservableObject {
         handle: BorrowedTmuxSessionHandle
     ) {
         guard let activityController = tmuxSessionActivityController,
-              activeBorrowedTmuxHandle == handle,
+              let selection = retainedTmuxPresentation(for: handle)?
+              .selection,
               !nativeTmuxSessionCoordinator.hasClosedAttachment(handle),
-              let selection = activeBorrowedTmuxSelection,
               let hostSummary = snapshot.host(id: selection.hostID),
               let host = TmuxHostResolver.resolve(hostSummary)
         else { return }
@@ -4970,9 +4970,10 @@ final class WorkspaceSceneModel: ObservableObject {
                 }
                 guard let self,
                       !Task.isCancelled,
-                      activeBorrowedTmuxHandle == handle,
                       borrowedTmuxConnectionStates[handle.id] == .connected,
-                      let currentSelection = activeBorrowedTmuxSelection,
+                      let currentSelection = retainedTmuxPresentation(
+                          for: handle
+                      )?.selection,
                       Self.sameTmuxEndpoint(currentSelection, selection),
                       let currentHostSummary = snapshot.host(
                           id: currentSelection.hostID
@@ -4989,13 +4990,15 @@ final class WorkspaceSceneModel: ObservableObject {
                     continue
                 }
                 guard !Task.isCancelled,
-                      activeBorrowedTmuxHandle == handle,
                       !nativeTmuxSessionCoordinator.hasClosedAttachment(
                           handle
                       ),
                       borrowedTmuxConnectionStates[handle.id] == .connected,
-                      activeBorrowedTmuxSelection.map({
-                          Self.sameTmuxEndpoint($0, currentSelection)
+                      retainedTmuxPresentation(for: handle).map({
+                          Self.sameTmuxEndpoint(
+                              $0.selection,
+                              currentSelection
+                          )
                       }) == true
                 else { return }
                 activityController.warm(

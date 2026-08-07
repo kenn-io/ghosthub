@@ -379,9 +379,12 @@ pane, and pane-dimension reads before and after the capture must also match.
 Native Windows sampling verifies at runtime that psmux supports the format
 predicate and if-shell contract, then uses the same atomic reads; when the
 capability probe fails, the sample is refused rather than taken without the
-predicate. The first sample after a pane switch or a pane resize establishes a
-quiet baseline; later scrollback progression on that pane at unchanged
-dimensions marks the session active for thirty seconds. In-place prompt,
+predicate. The first sample after a pane switch, a pane resize, or a sampling gap
+longer than the activity window establishes a quiet baseline; later
+scrollback progression on that pane at unchanged dimensions marks the session
+active for thirty seconds. Sample continuity is measured from each probe's
+start, so a slow probe on a laggy host cannot stretch the gap past the window
+and demote real changes to baselines. In-place prompt,
 spinner, and status redraws do not count as activity, and neither do client
 resizes, which reflow scrollback without representing new work.
 Windows activity sampling requires psmux 3.3.4 or newer because earlier

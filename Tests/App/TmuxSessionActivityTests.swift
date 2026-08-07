@@ -1159,6 +1159,48 @@ struct TmuxSessionActivityControllerTests {
         await secondRound.value
     }
 
+    @Test("a slow quiet probe still reports fresh activity")
+    func slowProbeCountsChangesFromItsStart() async {
+        let sampleCount = LockedValue(0)
+        let controller = TmuxSessionActivityController(
+            sampler: { _, _, _ in
+                var current = 0
+                sampleCount.withLock { count in
+                    count += 1
+                    current = count
+                }
+                if current == 1 {
+                    return .sample(
+                        paneID: "%2",
+                        dimensions: "120x30",
+                        fingerprint: "baseline"
+                    )
+                }
+                try? await Task.sleep(for: .milliseconds(700))
+                return .sample(
+                    paneID: "%2",
+                    dimensions: "120x30",
+                    fingerprint: "changed"
+                )
+            },
+            activityDuration: 0.5,
+            workingSampleInterval: 0,
+            quietSampleInterval: 0,
+            automaticallyPolls: false
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: UUID(),
+            name: "build"
+        )
+        controller.warm(selection, identity: activityIdentity, on: .local)
+        await controller.sampleWarmSessions()
+        #expect(controller.workingSessionIDs.isEmpty)
+
+        await controller.sampleWarmSessions()
+
+        #expect(controller.workingSessionIDs == [selection.id])
+    }
+
     @Test("a blocked probe expires activity at completion")
     func blockedProbeUsesCompletionTime() async {
         let sampleCount = LockedValue(0)
