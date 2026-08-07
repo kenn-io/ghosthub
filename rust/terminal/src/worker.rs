@@ -1,41 +1,76 @@
+use std::collections::VecDeque;
 use std::fmt;
 use std::io::{Read, Write};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use crossbeam_channel::{Receiver, Sender, TryRecvError, bounded, select, unbounded};
-use input::{EncodedInput, KeyInput, MouseInput, encode_input, encode_mouse};
+use crossbeam_channel::{Receiver, Sender, TryRecvError, TrySendError, bounded, never, select};
+use input::{EncodedInput, KeyInput, MouseAction, MouseInput, encode_input, encode_mouse};
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
-use session::AttachPlan;
+use session::{AdmissionPlan, AttachPlan};
 use surface::{GridSize, PixelSize, SurfaceStore};
 
 use crate::windows_job::RelayJob;
-use crate::{ClipboardReadRequest, ClipboardWrite, TerminalEngine};
+use crate::{ClipboardPolicy, ClipboardReadRequest, ClipboardWrite, DefaultColors, TerminalEngine};
 
 const READ_BUFFER_SIZE: usize = 64 * 1024;
 const EVENT_CAPACITY: usize = 64;
+const COMMAND_CAPACITY: usize = 256;
+const COMMAND_BYTE_CAPACITY: usize = 1024 * 1024;
+const WRITE_HIGH_WATER: usize = 1024 * 1024;
+const WRITE_BATCH_MAX: usize = COMMAND_BYTE_CAPACITY + READ_BUFFER_SIZE;
+const WRITE_UI_MAX_BYTES: usize = WRITE_HIGH_WATER + WRITE_BATCH_MAX;
+const WRITE_PARSER_RESERVE: usize = WRITE_BATCH_MAX;
+const WRITE_MAX_BYTES: usize = WRITE_UI_MAX_BYTES + WRITE_PARSER_RESERVE;
+const REAP_ATTEMPTS: usize = 20;
+const REAP_POLL_DELAY: Duration = Duration::from_millis(25);
 
 pub enum TerminalEvent {
     ClipboardWrite(ClipboardWrite),
     ClipboardRead(ClipboardReadRequest),
     ConfirmPaste(EncodedInput),
-    Exited(u32),
+    Exited { code: u32, output_tail: String },
     Error(String),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorkerErrorKind {
+    Other,
+    Backpressure,
+}
+
 #[derive(Debug)]
-pub struct WorkerError(String);
+pub struct WorkerError {
+    message: String,
+    kind: WorkerErrorKind,
+}
 
 impl WorkerError {
     fn new(subject: &str, error: impl fmt::Display) -> Self {
-        Self(format!("{subject}: {error}"))
+        Self {
+            message: format!("{subject}: {error}"),
+            kind: WorkerErrorKind::Other,
+        }
+    }
+
+    fn backpressure(subject: &str, error: impl fmt::Display) -> Self {
+        Self {
+            message: format!("{subject}: {error}"),
+            kind: WorkerErrorKind::Backpressure,
+        }
+    }
+
+    #[must_use]
+    pub fn is_backpressure(&self) -> bool {
+        self.kind == WorkerErrorKind::Backpressure
     }
 }
 
 impl fmt::Display for WorkerError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
+        formatter.write_str(&self.message)
     }
 }
 
@@ -45,12 +80,31 @@ enum Command {
     Input(Vec<u8>),
     Key(KeyInput),
     Mouse(MouseInput),
-    ConfirmPaste(EncodedInput),
-    Resize {
-        size: GridSize,
-        sequence: u64,
-        pixel_size: PixelSize,
-    },
+}
+
+struct QueuedCommand {
+    command: Command,
+    bytes: usize,
+    preceding_resize: Option<ResizeCommand>,
+}
+
+enum PasteAction {
+    Confirm(EncodedInput),
+    Cancel,
+}
+
+#[derive(Clone, Copy)]
+struct ResizeCommand {
+    size: GridSize,
+    sequence: u64,
+    pixel_size: PixelSize,
+}
+
+#[derive(Default)]
+struct IngressState {
+    resize: Option<ResizeCommand>,
+    mouse_motion: Option<MouseInput>,
+    queued_bytes: usize,
 }
 
 enum ReaderMessage {
@@ -59,11 +113,82 @@ enum ReaderMessage {
     Error(String),
 }
 
+#[derive(Default)]
+struct PendingWrites {
+    queue: VecDeque<Vec<u8>>,
+    bytes: usize,
+}
+
+#[derive(Clone, Copy)]
+enum WriteSource {
+    Ui,
+    Parser,
+}
+
+impl PendingWrites {
+    fn accepts_ui_sources(&self) -> bool {
+        self.bytes < WRITE_HIGH_WATER
+    }
+
+    fn enqueue(&mut self, bytes: Vec<u8>, source: WriteSource) -> Result<(), WorkerError> {
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        let total = self.bytes.saturating_add(bytes.len());
+        let limit = match source {
+            WriteSource::Ui => WRITE_UI_MAX_BYTES,
+            WriteSource::Parser => WRITE_MAX_BYTES,
+        };
+        if bytes.len() > WRITE_BATCH_MAX || total > limit {
+            return Err(WorkerError::backpressure(
+                "queue PTY write",
+                match source {
+                    WriteSource::Ui => "terminal input byte budget is full",
+                    WriteSource::Parser => "terminal parser reply reserve is full",
+                },
+            ));
+        }
+        self.bytes = total;
+        self.queue.push_back(bytes);
+        Ok(())
+    }
+
+    fn flush_one(&mut self, writer: &Sender<Vec<u8>>) -> WriteFlush {
+        let Some(bytes) = self.queue.pop_front() else {
+            return WriteFlush::Empty;
+        };
+        let length = bytes.len();
+        match writer.try_send(bytes) {
+            Ok(()) => {
+                self.bytes -= length;
+                WriteFlush::Sent
+            }
+            Err(TrySendError::Full(bytes)) => {
+                self.queue.push_front(bytes);
+                WriteFlush::Full
+            }
+            Err(TrySendError::Disconnected(_)) => WriteFlush::Disconnected,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WriteFlush {
+    Empty,
+    Sent,
+    Full,
+    Disconnected,
+}
+
 pub struct TerminalWorker {
-    commands: Sender<Command>,
+    commands: Sender<QueuedCommand>,
+    paste_actions: Sender<PasteAction>,
+    ingress: Arc<Mutex<IngressState>>,
+    coalesced_wake: Sender<()>,
     shutdown: Sender<()>,
     events: Receiver<TerminalEvent>,
     surface: Arc<SurfaceStore>,
+    confirmed_live: Arc<AtomicBool>,
     thread: Option<thread::JoinHandle<()>>,
 }
 
@@ -76,7 +201,14 @@ impl TerminalWorker {
     /// cannot be established. A containment failure tears down the child
     /// before returning.
     pub fn attach(plan: &AttachPlan, size: GridSize) -> Result<Self, WorkerError> {
-        Self::attach_with_metadata(plan, size, 0, PixelSize::default())
+        Self::attach_with_metadata(
+            plan,
+            size,
+            0,
+            PixelSize::default(),
+            ClipboardPolicy::default(),
+            DefaultColors::default(),
+        )
     }
 
     /// Spawn an attached client with UI-derived initial dimensions.
@@ -90,6 +222,46 @@ impl TerminalWorker {
         size: GridSize,
         resize_sequence: u64,
         pixel_size: PixelSize,
+        clipboard_policy: ClipboardPolicy,
+        default_colors: DefaultColors,
+    ) -> Result<Self, WorkerError> {
+        Self::launch(
+            plan.program(),
+            plan.args(),
+            size,
+            resize_sequence,
+            pixel_size,
+            clipboard_policy,
+            default_colors,
+        )
+    }
+
+    /// Spawn one isolated mux-admission client inside a native pseudoterminal.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the PTY, child process, or relay containment
+    /// cannot be established.
+    pub fn admission(plan: &AdmissionPlan, size: GridSize) -> Result<Self, WorkerError> {
+        Self::launch(
+            plan.program(),
+            plan.args(),
+            size,
+            0,
+            PixelSize::default(),
+            ClipboardPolicy::default(),
+            DefaultColors::default(),
+        )
+    }
+
+    fn launch(
+        program: &std::ffi::OsStr,
+        args: &[std::ffi::OsString],
+        size: GridSize,
+        resize_sequence: u64,
+        pixel_size: PixelSize,
+        clipboard_policy: ClipboardPolicy,
+        default_colors: DefaultColors,
     ) -> Result<Self, WorkerError> {
         let pty_size = pty_size(size, pixel_size)?;
         let job = RelayJob::new().map_err(|error| WorkerError::new("create relay job", error))?;
@@ -106,12 +278,12 @@ impl TerminalWorker {
             .take_writer()
             .map_err(|error| WorkerError::new("take PTY writer", error))?;
 
-        let mut command = CommandBuilder::new(plan.program());
-        command.args(plan.args());
+        let mut command = CommandBuilder::new(program);
+        command.args(args);
         let mut child = pair
             .slave
             .spawn_command(command)
-            .map_err(|error| WorkerError::new("spawn attach client", error))?;
+            .map_err(|error| WorkerError::new("spawn terminal client", error))?;
         drop(pair.slave);
 
         if let Err(error) = job.assign_and_verify(child.as_ref()) {
@@ -119,21 +291,29 @@ impl TerminalWorker {
             drop(pair.master);
             let _ignored = child.kill();
             let _ignored = child.wait();
-            return Err(WorkerError::new("contain attach client", error));
+            return Err(WorkerError::new("contain terminal client", error));
         }
 
-        let engine = TerminalEngine::with_geometry(
+        let engine = TerminalEngine::with_geometry_and_colors(
             size,
             resize_sequence,
             pixel_size,
-            crate::ClipboardPolicy::default(),
+            clipboard_policy,
+            default_colors,
         );
         let surface = engine.surface_handle();
-        let (commands, command_receiver) = unbounded();
+        let (commands, command_receiver) = bounded(COMMAND_CAPACITY);
+        let (paste_actions, paste_action_receiver) = bounded(1);
+        let ingress = Arc::new(Mutex::new(IngressState::default()));
+        let worker_ingress = Arc::clone(&ingress);
+        let (coalesced_wake, coalesced_wake_receiver) = bounded(1);
+        let worker_coalesced_wake = coalesced_wake.clone();
         let (shutdown, shutdown_receiver) = bounded(1);
         let (events_sender, events) = bounded(EVENT_CAPACITY);
         let (reader_sender, reader_receiver) = bounded(1);
         let (write_sender, write_receiver) = bounded(1);
+        let confirmed_live = Arc::new(AtomicBool::new(false));
+        let worker_confirmed_live = Arc::clone(&confirmed_live);
 
         let writer_errors = reader_sender.clone();
         thread::Builder::new()
@@ -154,19 +334,28 @@ impl TerminalWorker {
                     child,
                     job,
                     &command_receiver,
+                    &paste_action_receiver,
+                    &worker_ingress,
+                    &worker_coalesced_wake,
+                    &coalesced_wake_receiver,
                     &shutdown_receiver,
                     &reader_receiver,
                     &write_sender,
                     &events_sender,
+                    &worker_confirmed_live,
                 );
             })
             .map_err(|error| WorkerError::new("spawn terminal worker", error))?;
 
         Ok(Self {
             commands,
+            paste_actions,
+            ingress,
+            coalesced_wake,
             shutdown,
             events,
             surface,
+            confirmed_live,
             thread: Some(worker_thread),
         })
     }
@@ -181,15 +370,24 @@ impl TerminalWorker {
         Arc::clone(&self.surface)
     }
 
+    /// Whether the attached terminal emitted its initialization control stream.
+    #[must_use]
+    pub fn is_confirmed_live(&self) -> bool {
+        self.confirmed_live.load(Ordering::Acquire)
+    }
+
     /// Queue one neutral key or paste event for mode-aware encoding.
     ///
     /// # Errors
     ///
     /// Returns an error after the terminal worker has stopped.
     pub fn send_key(&self, input: KeyInput) -> Result<(), WorkerError> {
-        self.commands
-            .send(Command::Key(input))
-            .map_err(|error| WorkerError::new("send terminal key", error))
+        try_send_ordered(
+            &self.commands,
+            &self.ingress,
+            Command::Key(input),
+            "send terminal key",
+        )
     }
 
     /// Queue one grid-relative mouse event for mode-aware SGR encoding.
@@ -198,9 +396,20 @@ impl TerminalWorker {
     ///
     /// Returns an error after the terminal worker has stopped.
     pub fn send_mouse(&self, input: MouseInput) -> Result<(), WorkerError> {
-        self.commands
-            .send(Command::Mouse(input))
-            .map_err(|error| WorkerError::new("send terminal mouse event", error))
+        if matches!(input.action, MouseAction::Move(_)) {
+            self.ingress
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .mouse_motion = Some(input);
+            wake_coalesced(&self.coalesced_wake, "send terminal mouse event")
+        } else {
+            try_send_ordered(
+                &self.commands,
+                &self.ingress,
+                Command::Mouse(input),
+                "send terminal mouse event",
+            )
+        }
     }
 
     /// Approve and queue a paste previously reported for confirmation.
@@ -209,9 +418,24 @@ impl TerminalWorker {
     ///
     /// Returns an error after the terminal worker has stopped.
     pub fn confirm_paste(&self, input: EncodedInput) -> Result<(), WorkerError> {
-        self.commands
-            .send(Command::ConfirmPaste(input))
-            .map_err(|error| WorkerError::new("confirm terminal paste", error))
+        try_send_paste_action(
+            &self.paste_actions,
+            PasteAction::Confirm(input),
+            "confirm terminal paste",
+        )
+    }
+
+    /// Cancel a paste awaiting confirmation and resume queued input.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after the terminal worker has stopped.
+    pub fn cancel_paste(&self) -> Result<(), WorkerError> {
+        try_send_paste_action(
+            &self.paste_actions,
+            PasteAction::Cancel,
+            "cancel terminal paste",
+        )
     }
 
     /// Send already-authorized bytes to the attached client.
@@ -220,9 +444,12 @@ impl TerminalWorker {
     ///
     /// Returns an error after the terminal worker has stopped.
     pub fn send_bytes(&self, bytes: Vec<u8>) -> Result<(), WorkerError> {
-        self.commands
-            .send(Command::Input(bytes))
-            .map_err(|error| WorkerError::new("send terminal input", error))
+        try_send_ordered(
+            &self.commands,
+            &self.ingress,
+            Command::Input(bytes),
+            "send terminal input",
+        )
     }
 
     /// Resize the VT grid and PTY in one ordered worker operation.
@@ -245,13 +472,15 @@ impl TerminalWorker {
         sequence: u64,
         pixel_size: PixelSize,
     ) -> Result<(), WorkerError> {
-        self.commands
-            .send(Command::Resize {
-                size,
-                sequence,
-                pixel_size,
-            })
-            .map_err(|error| WorkerError::new("send terminal resize", error))
+        self.ingress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .resize = Some(ResizeCommand {
+            size,
+            sequence,
+            pixel_size,
+        });
+        wake_coalesced(&self.coalesced_wake, "send terminal resize")
     }
 
     /// Read one pending semantic terminal event without blocking.
@@ -313,64 +542,123 @@ fn write_pty(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the serial worker loop keeps command and PTY ordering visible"
+)]
 fn run_worker(
     mut engine: TerminalEngine,
     master: Box<dyn MasterPty + Send>,
     mut child: Box<dyn portable_pty::Child + Send + Sync>,
     job: RelayJob,
-    commands: &Receiver<Command>,
+    commands: &Receiver<QueuedCommand>,
+    paste_actions: &Receiver<PasteAction>,
+    ingress: &Mutex<IngressState>,
+    coalesced_wake_sender: &Sender<()>,
+    coalesced_wake: &Receiver<()>,
     shutdown: &Receiver<()>,
     reader: &Receiver<ReaderMessage>,
     writer: &Sender<Vec<u8>>,
     events: &Sender<TerminalEvent>,
+    confirmed_live: &AtomicBool,
 ) {
     let mut report_exit = false;
-    let mut reported_exit = false;
+    let mut observed_exit = None;
+    let mut output_tail = Vec::new();
+    let mut pending_paste = None;
+    let mut pending_writes = PendingWrites::default();
+    let suspended_commands = never();
+    let suspended_paste_actions = never();
     'worker: loop {
+        match pending_writes.flush_one(writer) {
+            WriteFlush::Sent => {
+                let _ignored =
+                    wake_coalesced(coalesced_wake_sender, "resume coalesced terminal work");
+                continue;
+            }
+            WriteFlush::Disconnected => break,
+            WriteFlush::Empty | WriteFlush::Full => {}
+        }
+        let accepts_ui_sources = pending_writes.accepts_ui_sources();
+        let active_commands = if pending_paste.is_some() || !accepts_ui_sources {
+            &suspended_commands
+        } else {
+            commands
+        };
+        let active_paste_actions = if accepts_ui_sources {
+            paste_actions
+        } else {
+            &suspended_paste_actions
+        };
         select! {
             recv(shutdown) -> _ => break,
-            recv(commands) -> message => match message {
-                Ok(Command::Input(bytes)) => {
-                    if !queue_write(writer, shutdown, bytes) {
+            recv(active_paste_actions) -> message => match message {
+                Ok(PasteAction::Confirm(input)) if pending_paste.as_ref() == Some(&input) => {
+                    let approved = pending_paste.take().expect("matching pending paste").approve();
+                    if !queue_write(&mut pending_writes, WriteSource::Ui, shutdown, events, approved) {
+                        break 'worker;
+                    }
+                    let _ignored = wake_coalesced(coalesced_wake_sender, "resume terminal input");
+                }
+                Ok(PasteAction::Confirm(_)) if pending_paste.is_some() => {
+                    if !emit_event(events, shutdown, TerminalEvent::Error("paste confirmation does not match the pending input".to_owned())) {
                         break 'worker;
                     }
                 }
-                Ok(Command::Key(input)) => {
-                    let encoded = encode_input(&input, engine.modes());
-                    if encoded.requires_confirmation() {
-                        if !emit_event(events, shutdown, TerminalEvent::ConfirmPaste(encoded)) {
-                            break 'worker;
-                        }
-                    } else if !queue_write(writer, shutdown, encoded.approve()) {
-                        break 'worker;
-                    }
+                Ok(PasteAction::Cancel) if pending_paste.is_some() => {
+                    pending_paste = None;
+                    let _ignored = wake_coalesced(coalesced_wake_sender, "resume terminal input");
                 }
-                Ok(Command::Mouse(input)) => {
-                    let encoded = encode_mouse(input, engine.modes());
-                    if !encoded.is_empty() && !queue_write(writer, shutdown, encoded) {
-                        break 'worker;
-                    }
-                }
-                Ok(Command::ConfirmPaste(input)) => {
-                    if !queue_write(writer, shutdown, input.approve()) {
-                        break 'worker;
-                    }
-                }
-                Ok(Command::Resize { size, sequence, pixel_size }) => {
-                    match pty_size(size, pixel_size).and_then(|size| master.resize(size).map_err(|error| WorkerError::new("resize PTY", error))) {
-                        Ok(()) => engine.resize_with_metadata(size, sequence, pixel_size),
-                        Err(error) => if !emit_event(events, shutdown, TerminalEvent::Error(error.to_string())) {
-                            break 'worker;
-                        },
-                    }
-                }
+                Ok(PasteAction::Confirm(_)) => if !emit_event(events, shutdown, TerminalEvent::Error("no paste is awaiting confirmation".to_owned())) {
+                    break 'worker;
+                },
+                Ok(PasteAction::Cancel) => {},
                 Err(_) => break,
+            },
+            recv(active_commands) -> message => match message {
+                Ok(queued) => {
+                    let bytes = queued.bytes;
+                    let keep_running = process_queued_command(
+                        queued,
+                        &mut engine,
+                        &*master,
+                        &mut pending_writes,
+                        shutdown,
+                        events,
+                        &mut pending_paste,
+                    );
+                    release_command_bytes(ingress, bytes);
+                    if !keep_running {
+                        break 'worker;
+                    }
+                },
+                Err(_) => break,
+            },
+            recv(coalesced_wake) -> _ => {
+                if !process_coalesced(
+                    commands,
+                    ingress,
+                    pending_paste.is_none() && accepts_ui_sources,
+                    coalesced_wake_sender,
+                    &mut engine,
+                    &*master,
+                    &mut pending_writes,
+                    shutdown,
+                    events,
+                    &mut pending_paste,
+                ) {
+                    break 'worker;
+                }
             },
             recv(reader) -> message => match message {
                 Ok(ReaderMessage::Bytes(bytes)) => {
+                    retain_output_tail(&mut output_tail, &bytes);
                     let output = engine.process(&bytes);
+                    if engine.has_entered_alternate_screen() {
+                        confirmed_live.store(true, Ordering::Release);
+                    }
                     for bytes in output.pty_writes {
-                        if !queue_write(writer, shutdown, bytes) {
+                        if !queue_write(&mut pending_writes, WriteSource::Parser, shutdown, events, bytes) {
                             break 'worker;
                         }
                     }
@@ -396,9 +684,14 @@ fn run_worker(
                 },
             },
             default(Duration::from_millis(50)) => {
-                if let Ok(Some(status)) = child.try_wait() {
-                    let _ignored = emit_event(events, shutdown, TerminalEvent::Exited(status.exit_code()));
-                    reported_exit = true;
+                if observed_exit.is_none()
+                    && let Ok(Some(status)) = child.try_wait()
+                {
+                    observed_exit = Some((status.exit_code(), Instant::now()));
+                } else if observed_exit.is_some_and(|(_, observed_at)| {
+                    observed_at.elapsed() >= Duration::from_millis(250)
+                }) {
+                    report_exit = true;
                     break 'worker;
                 }
             }
@@ -406,17 +699,351 @@ fn run_worker(
     }
 
     drop(master);
-    drop(job);
-    let exit_code = reap_child(&mut *child);
-    if report_exit && !reported_exit {
-        let _ignored = emit_event(events, shutdown, TerminalEvent::Exited(exit_code));
+    let reaped_exit_code = reap_with_lifetime_guard(
+        job,
+        report_exit,
+        observed_exit.map(|(code, _)| code),
+        |mode| match mode {
+            ReapMode::Natural => wait_for_child_exit(&mut *child),
+            ReapMode::Contained => Some(reap_child(&mut *child)),
+        },
+    );
+    if report_exit {
+        let _ignored = emit_event(
+            events,
+            shutdown,
+            TerminalEvent::Exited {
+                code: reaped_exit_code,
+                output_tail: String::from_utf8_lossy(&output_tail).into_owned(),
+            },
+        );
     }
 }
 
-fn queue_write(writer: &Sender<Vec<u8>>, shutdown: &Receiver<()>, bytes: Vec<u8>) -> bool {
-    select! {
-        send(writer, bytes) -> result => result.is_ok(),
-        recv(shutdown) -> _ => false,
+#[allow(clippy::too_many_arguments)]
+fn process_ready_command(
+    command: Command,
+    engine: &mut TerminalEngine,
+    pending_writes: &mut PendingWrites,
+    shutdown: &Receiver<()>,
+    events: &Sender<TerminalEvent>,
+    pending_paste: &mut Option<EncodedInput>,
+) -> bool {
+    match command {
+        Command::Input(bytes) => {
+            queue_write(pending_writes, WriteSource::Ui, shutdown, events, bytes)
+        }
+        Command::Key(input) => {
+            let encoded = encode_input(&input, engine.modes());
+            if encoded.requires_confirmation() {
+                *pending_paste = Some(encoded.clone());
+                emit_event(events, shutdown, TerminalEvent::ConfirmPaste(encoded))
+            } else {
+                queue_write(
+                    pending_writes,
+                    WriteSource::Ui,
+                    shutdown,
+                    events,
+                    encoded.approve(),
+                )
+            }
+        }
+        Command::Mouse(input) => {
+            let encoded = encode_mouse(input, engine.modes());
+            encoded.is_empty()
+                || queue_write(pending_writes, WriteSource::Ui, shutdown, events, encoded)
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn process_queued_command(
+    queued: QueuedCommand,
+    engine: &mut TerminalEngine,
+    master: &dyn MasterPty,
+    pending_writes: &mut PendingWrites,
+    shutdown: &Receiver<()>,
+    events: &Sender<TerminalEvent>,
+    pending_paste: &mut Option<EncodedInput>,
+) -> bool {
+    if let Some(resize) = queued.preceding_resize
+        && !process_resize(resize, engine, master, shutdown, events)
+    {
+        return false;
+    }
+    process_ready_command(
+        queued.command,
+        engine,
+        pending_writes,
+        shutdown,
+        events,
+        pending_paste,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn process_coalesced(
+    commands: &Receiver<QueuedCommand>,
+    ingress: &Mutex<IngressState>,
+    accept_mouse_motion: bool,
+    coalesced_wake: &Sender<()>,
+    engine: &mut TerminalEngine,
+    master: &dyn MasterPty,
+    pending_writes: &mut PendingWrites,
+    shutdown: &Receiver<()>,
+    events: &Sender<TerminalEvent>,
+    pending_paste: &mut Option<EncodedInput>,
+) -> bool {
+    let CoalescedWork {
+        resize,
+        input,
+        wake_again,
+    } = take_coalesced_work(commands, ingress, accept_mouse_motion);
+
+    if let Some(resize) = resize
+        && !process_resize(resize, engine, master, shutdown, events)
+    {
+        return false;
+    }
+    let keep_running = match input {
+        CoalescedInput::None => true,
+        CoalescedInput::Motion(input) => process_ready_command(
+            Command::Mouse(input),
+            engine,
+            pending_writes,
+            shutdown,
+            events,
+            pending_paste,
+        ),
+        CoalescedInput::Command(queued) => {
+            let bytes = queued.bytes;
+            debug_assert!(queued.preceding_resize.is_none());
+            let keep_running = process_queued_command(
+                queued,
+                engine,
+                master,
+                pending_writes,
+                shutdown,
+                events,
+                pending_paste,
+            );
+            release_command_bytes(ingress, bytes);
+            keep_running
+        }
+        CoalescedInput::Disconnected => false,
+    };
+    if wake_again {
+        let _ignored = wake_coalesced(coalesced_wake, "continue terminal input");
+    }
+    keep_running
+}
+
+enum CoalescedInput {
+    None,
+    Motion(MouseInput),
+    Command(QueuedCommand),
+    Disconnected,
+}
+
+struct CoalescedWork {
+    resize: Option<ResizeCommand>,
+    input: CoalescedInput,
+    wake_again: bool,
+}
+
+fn take_coalesced_work(
+    commands: &Receiver<QueuedCommand>,
+    ingress: &Mutex<IngressState>,
+    accept_mouse_motion: bool,
+) -> CoalescedWork {
+    // Ordered senders hold this same lock while flushing an older motion and
+    // enqueueing their command. Checking the queue and taking a newer motion
+    // under the lock therefore forms one atomic ordering decision.
+    let mut state = ingress
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (resize, input, wake_again) = if accept_mouse_motion {
+        match commands.try_recv() {
+            Ok(mut command) => {
+                let resize = command.preceding_resize.take();
+                (
+                    resize,
+                    CoalescedInput::Command(command),
+                    state.resize.is_some() || state.mouse_motion.is_some(),
+                )
+            }
+            Err(TryRecvError::Empty) => (
+                state.resize.take(),
+                state
+                    .mouse_motion
+                    .take()
+                    .map_or(CoalescedInput::None, CoalescedInput::Motion),
+                false,
+            ),
+            Err(TryRecvError::Disconnected) => {
+                (state.resize.take(), CoalescedInput::Disconnected, false)
+            }
+        }
+    } else {
+        (state.resize.take(), CoalescedInput::None, false)
+    };
+    CoalescedWork {
+        resize,
+        input,
+        wake_again,
+    }
+}
+
+fn process_resize(
+    command: ResizeCommand,
+    engine: &mut TerminalEngine,
+    master: &dyn MasterPty,
+    shutdown: &Receiver<()>,
+    events: &Sender<TerminalEvent>,
+) -> bool {
+    match pty_size(command.size, command.pixel_size).and_then(|pty_size| {
+        master
+            .resize(pty_size)
+            .map_err(|error| WorkerError::new("resize PTY", error))
+    }) {
+        Ok(()) => {
+            engine.resize_with_metadata(command.size, command.sequence, command.pixel_size);
+            true
+        }
+        Err(error) => emit_event(events, shutdown, TerminalEvent::Error(error.to_string())),
+    }
+}
+
+fn try_send_ordered(
+    sender: &Sender<QueuedCommand>,
+    ingress: &Mutex<IngressState>,
+    command: Command,
+    subject: &str,
+) -> Result<(), WorkerError> {
+    let mut ingress = ingress
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(motion) = ingress.mouse_motion.take()
+        && let Err(error) = enqueue_command(
+            sender,
+            &mut ingress,
+            Command::Mouse(motion),
+            "preserve terminal mouse ordering",
+        )
+    {
+        ingress.mouse_motion = Some(motion);
+        return Err(error);
+    }
+    enqueue_command(sender, &mut ingress, command, subject)
+}
+
+fn enqueue_command(
+    sender: &Sender<QueuedCommand>,
+    ingress: &mut IngressState,
+    command: Command,
+    subject: &str,
+) -> Result<(), WorkerError> {
+    let bytes = command_bytes(&command);
+    if ingress.queued_bytes.saturating_add(bytes) > COMMAND_BYTE_CAPACITY {
+        return Err(WorkerError::backpressure(
+            subject,
+            "terminal input byte budget is full",
+        ));
+    }
+    let preceding_resize = ingress.resize.take();
+    match sender.try_send(QueuedCommand {
+        command,
+        bytes,
+        preceding_resize,
+    }) {
+        Ok(()) => {
+            ingress.queued_bytes += bytes;
+            Ok(())
+        }
+        Err(TrySendError::Full(queued)) => {
+            ingress.resize = queued.preceding_resize;
+            Err(WorkerError::backpressure(
+                subject,
+                "terminal input queue is full",
+            ))
+        }
+        Err(TrySendError::Disconnected(queued)) => {
+            ingress.resize = queued.preceding_resize;
+            Err(WorkerError::new(subject, "terminal worker has stopped"))
+        }
+    }
+}
+
+const fn command_bytes(command: &Command) -> usize {
+    match command {
+        Command::Input(bytes) => bytes.len(),
+        Command::Key(KeyInput::Text { text, .. } | KeyInput::Paste(text)) => text.len(),
+        Command::Key(KeyInput::Named { .. }) | Command::Mouse(_) => 0,
+    }
+}
+
+fn release_command_bytes(ingress: &Mutex<IngressState>, bytes: usize) {
+    let mut ingress = ingress
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ingress.queued_bytes = ingress.queued_bytes.saturating_sub(bytes);
+}
+
+fn try_send_paste_action(
+    sender: &Sender<PasteAction>,
+    action: PasteAction,
+    subject: &str,
+) -> Result<(), WorkerError> {
+    sender
+        .try_send(action)
+        .map_err(|error| bounded_send_error(subject, &error))
+}
+
+fn bounded_send_error<T>(subject: &str, error: &TrySendError<T>) -> WorkerError {
+    match error {
+        TrySendError::Full(_) => {
+            WorkerError::backpressure(subject, "terminal control queue is full")
+        }
+        TrySendError::Disconnected(_) => WorkerError::new(subject, "terminal worker has stopped"),
+    }
+}
+
+fn wake_coalesced(sender: &Sender<()>, subject: &str) -> Result<(), WorkerError> {
+    match sender.try_send(()) {
+        Ok(()) | Err(TrySendError::Full(())) => Ok(()),
+        Err(TrySendError::Disconnected(())) => {
+            Err(WorkerError::new(subject, "terminal worker has stopped"))
+        }
+    }
+}
+
+fn retain_output_tail(tail: &mut Vec<u8>, bytes: &[u8]) {
+    const LIMIT: usize = 8 * 1024;
+    if bytes.len() >= LIMIT {
+        tail.clear();
+        tail.extend_from_slice(&bytes[bytes.len() - LIMIT..]);
+        return;
+    }
+    let overflow = tail.len().saturating_add(bytes.len()).saturating_sub(LIMIT);
+    if overflow > 0 {
+        tail.drain(..overflow);
+    }
+    tail.extend_from_slice(bytes);
+}
+
+fn queue_write(
+    pending_writes: &mut PendingWrites,
+    source: WriteSource,
+    shutdown: &Receiver<()>,
+    events: &Sender<TerminalEvent>,
+    bytes: Vec<u8>,
+) -> bool {
+    match pending_writes.enqueue(bytes, source) {
+        Ok(()) => true,
+        Err(error) => {
+            let _ignored = emit_event(events, shutdown, TerminalEvent::Error(error.to_string()));
+            false
+        }
     }
 }
 
@@ -432,14 +1059,46 @@ fn emit_event(
 }
 
 fn reap_child(child: &mut dyn portable_pty::Child) -> u32 {
-    for _ in 0..20 {
-        if let Ok(Some(status)) = child.try_wait() {
-            return status.exit_code();
-        }
-        thread::sleep(Duration::from_millis(25));
+    if let Some(exit_code) = wait_for_child_exit(child) {
+        return exit_code;
     }
     let _ignored = child.kill();
     child.wait().map_or(u32::MAX, |status| status.exit_code())
+}
+
+fn wait_for_child_exit(child: &mut dyn portable_pty::Child) -> Option<u32> {
+    for _ in 0..REAP_ATTEMPTS {
+        if let Ok(Some(status)) = child.try_wait() {
+            return Some(status.exit_code());
+        }
+        thread::sleep(REAP_POLL_DELAY);
+    }
+    None
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReapMode {
+    Natural,
+    Contained,
+}
+
+fn reap_with_lifetime_guard<G, F>(
+    guard: G,
+    preserve_natural_exit: bool,
+    observed_exit: Option<u32>,
+    mut reap: F,
+) -> u32
+where
+    F: FnMut(ReapMode) -> Option<u32>,
+{
+    if preserve_natural_exit
+        && let Some(exit_code) = observed_exit.or_else(|| reap(ReapMode::Natural))
+    {
+        drop(guard);
+        return exit_code;
+    }
+    drop(guard);
+    reap(ReapMode::Contained).unwrap_or(u32::MAX)
 }
 
 fn pty_size(size: GridSize, pixel_size: PixelSize) -> Result<PtySize, WorkerError> {
@@ -451,4 +1110,305 @@ fn pty_size(size: GridSize, pixel_size: PixelSize) -> Result<PtySize, WorkerErro
         pixel_width: pixel_size.width,
         pixel_height: pixel_size.height,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use input::{Modifiers, MouseAction, MouseButton, MouseInput};
+
+    use super::*;
+
+    #[derive(Debug)]
+    struct DropProbe(Arc<Mutex<Vec<&'static str>>>);
+
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            self.0.lock().expect("event log").push("drop");
+        }
+    }
+
+    #[test]
+    fn reported_exit_is_reaped_before_the_lifetime_guard_closes() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let reap_events = Arc::clone(&events);
+
+        let exit_code =
+            reap_with_lifetime_guard(DropProbe(Arc::clone(&events)), true, None, |mode| {
+                assert_eq!(mode, ReapMode::Natural);
+                reap_events.lock().expect("event log").push("reap");
+                Some(7)
+            });
+
+        assert_eq!(exit_code, 7);
+        assert_eq!(*events.lock().expect("event log"), ["reap", "drop"]);
+    }
+
+    #[test]
+    fn explicit_shutdown_closes_the_lifetime_guard_before_reaping() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let reap_events = Arc::clone(&events);
+
+        let exit_code =
+            reap_with_lifetime_guard(DropProbe(Arc::clone(&events)), false, None, |mode| {
+                assert_eq!(mode, ReapMode::Contained);
+                reap_events.lock().expect("event log").push("reap");
+                Some(1)
+            });
+
+        assert_eq!(exit_code, 1);
+        assert_eq!(*events.lock().expect("event log"), ["drop", "reap"]);
+    }
+
+    #[test]
+    fn pty_failure_closes_the_guard_after_a_bounded_natural_wait() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let reap_events = Arc::clone(&events);
+
+        let exit_code =
+            reap_with_lifetime_guard(DropProbe(Arc::clone(&events)), true, None, |mode| {
+                let mut events = reap_events.lock().expect("event log");
+                match mode {
+                    ReapMode::Natural => {
+                        events.push("wait");
+                        None
+                    }
+                    ReapMode::Contained => {
+                        events.push("reap");
+                        Some(9)
+                    }
+                }
+            });
+
+        assert_eq!(exit_code, 9);
+        assert_eq!(*events.lock().expect("event log"), ["wait", "drop", "reap"]);
+    }
+
+    #[test]
+    fn button_events_form_ordering_barriers_for_coalesced_motion() {
+        let (sender, receiver) = bounded(COMMAND_CAPACITY);
+        let ingress = Mutex::new(IngressState {
+            mouse_motion: Some(MouseInput {
+                action: MouseAction::Move(None),
+                column: 4,
+                row: 2,
+                modifiers: Modifiers::default(),
+            }),
+            ..IngressState::default()
+        });
+
+        try_send_ordered(
+            &sender,
+            &ingress,
+            Command::Mouse(MouseInput {
+                action: MouseAction::Press(MouseButton::Left),
+                column: 4,
+                row: 2,
+                modifiers: Modifiers::default(),
+            }),
+            "test mouse ordering",
+        )
+        .expect("queue motion and press");
+
+        let first = receiver.try_recv().expect("queued motion");
+        let second = receiver.try_recv().expect("queued press");
+        assert!(matches!(
+            first.command,
+            Command::Mouse(MouseInput {
+                action: MouseAction::Move(None),
+                ..
+            })
+        ));
+        assert!(matches!(
+            second.command,
+            Command::Mouse(MouseInput {
+                action: MouseAction::Press(MouseButton::Left),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn input_payloads_share_a_total_byte_budget() {
+        let (sender, receiver) = bounded(COMMAND_CAPACITY);
+        let ingress = Mutex::new(IngressState::default());
+
+        let error = try_send_ordered(
+            &sender,
+            &ingress,
+            Command::Input(vec![0; COMMAND_BYTE_CAPACITY + 1]),
+            "test byte budget",
+        )
+        .expect_err("oversized payload must be refused");
+
+        assert!(error.is_backpressure());
+        assert!(receiver.is_empty());
+    }
+
+    #[test]
+    fn stalled_writer_throttles_ui_and_reserves_parser_reply_capacity() {
+        let (writer, receiver) = bounded(1);
+        writer.send(vec![0]).expect("fill writer handoff");
+        let mut pending = PendingWrites::default();
+        pending
+            .enqueue(vec![1; WRITE_HIGH_WATER - 1], WriteSource::Ui)
+            .expect("queue UI input below the throttle point");
+
+        assert_eq!(pending.flush_one(&writer), WriteFlush::Full);
+        assert!(pending.accepts_ui_sources());
+
+        pending
+            .enqueue(vec![2; WRITE_BATCH_MAX], WriteSource::Ui)
+            .expect("one selected UI batch may cross the throttle point");
+        assert!(!pending.accepts_ui_sources());
+        assert_eq!(pending.bytes, WRITE_UI_MAX_BYTES - 1);
+
+        pending
+            .enqueue(vec![3; WRITE_PARSER_RESERVE], WriteSource::Parser)
+            .expect("parser replies retain reserved capacity");
+        pending
+            .enqueue(vec![4], WriteSource::Parser)
+            .expect("parser replies may use the full reserve");
+        assert_eq!(pending.bytes, WRITE_MAX_BYTES);
+        assert!(
+            pending.enqueue(vec![5], WriteSource::Parser).is_err(),
+            "the parser reserve remains bounded"
+        );
+
+        assert_eq!(receiver.recv().expect("release writer handoff"), vec![0]);
+        assert_eq!(pending.flush_one(&writer), WriteFlush::Sent);
+        assert!(pending.bytes < WRITE_MAX_BYTES);
+    }
+
+    #[test]
+    fn saturated_writer_still_services_resize_without_mouse_motion() {
+        let mut pending = PendingWrites::default();
+        pending
+            .enqueue(vec![0; WRITE_HIGH_WATER], WriteSource::Ui)
+            .expect("fill pending writes to the UI throttle");
+        assert!(!pending.accepts_ui_sources());
+
+        let (_sender, receiver) = bounded(COMMAND_CAPACITY);
+        let expected = GridSize::new(132, 43).expect("valid grid");
+        let ingress = Mutex::new(IngressState {
+            resize: Some(ResizeCommand {
+                size: expected,
+                sequence: 7,
+                pixel_size: PixelSize::new(1_320, 860),
+            }),
+            mouse_motion: Some(MouseInput {
+                action: MouseAction::Move(None),
+                column: 3,
+                row: 2,
+                modifiers: Modifiers::default(),
+            }),
+            queued_bytes: 0,
+        });
+
+        let work = take_coalesced_work(&receiver, &ingress, pending.accepts_ui_sources());
+
+        assert_eq!(
+            work.resize.expect("resize remains serviceable").size,
+            expected
+        );
+        assert!(matches!(work.input, CoalescedInput::None));
+        assert!(
+            ingress
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .mouse_motion
+                .is_some(),
+            "mouse motion remains coalesced until writes can accept UI input"
+        );
+    }
+
+    #[test]
+    fn queued_input_precedes_a_newer_coalesced_motion_atomically() {
+        let (sender, receiver) = bounded(COMMAND_CAPACITY);
+        let ingress = Mutex::new(IngressState::default());
+        try_send_ordered(
+            &sender,
+            &ingress,
+            Command::Mouse(MouseInput {
+                action: MouseAction::Press(MouseButton::Left),
+                column: 3,
+                row: 2,
+                modifiers: Modifiers::default(),
+            }),
+            "test ordered input",
+        )
+        .expect("queue press");
+        ingress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .mouse_motion = Some(MouseInput {
+            action: MouseAction::Move(Some(MouseButton::Left)),
+            column: 4,
+            row: 2,
+            modifiers: Modifiers::default(),
+        });
+
+        let first = take_coalesced_work(&receiver, &ingress, true);
+        assert!(matches!(
+            first.input,
+            CoalescedInput::Command(QueuedCommand {
+                command: Command::Mouse(MouseInput {
+                    action: MouseAction::Press(MouseButton::Left),
+                    ..
+                }),
+                ..
+            })
+        ));
+        assert!(first.wake_again);
+
+        let second = take_coalesced_work(&receiver, &ingress, true);
+        assert!(matches!(
+            second.input,
+            CoalescedInput::Motion(MouseInput {
+                action: MouseAction::Move(Some(MouseButton::Left)),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn resize_is_an_ordering_barrier_before_queued_input() {
+        let (sender, receiver) = bounded(COMMAND_CAPACITY);
+        let first_size = GridSize::new(80, 24).expect("valid first grid");
+        let second_size = GridSize::new(120, 40).expect("valid second grid");
+        let ingress = Mutex::new(IngressState {
+            resize: Some(ResizeCommand {
+                size: first_size,
+                sequence: 1,
+                pixel_size: PixelSize::default(),
+            }),
+            ..IngressState::default()
+        });
+
+        try_send_ordered(
+            &sender,
+            &ingress,
+            Command::Input(b"input".to_vec()),
+            "test resize ordering",
+        )
+        .expect("queue input behind resize");
+        ingress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .resize = Some(ResizeCommand {
+            size: second_size,
+            sequence: 2,
+            pixel_size: PixelSize::default(),
+        });
+
+        let first = take_coalesced_work(&receiver, &ingress, true);
+        assert_eq!(first.resize.expect("preceding resize").size, first_size);
+        assert!(matches!(first.input, CoalescedInput::Command(_)));
+        assert!(first.wake_again);
+
+        let second = take_coalesced_work(&receiver, &ingress, true);
+        assert_eq!(second.resize.expect("newer resize").size, second_size);
+        assert!(matches!(second.input, CoalescedInput::None));
+    }
 }

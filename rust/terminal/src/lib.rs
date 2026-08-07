@@ -1,14 +1,19 @@
 //! Terminal engine and PTY client ownership.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::Flags;
+use alacritty_terminal::term::color::Colors;
 use alacritty_terminal::term::{ClipboardType, Config, Osc52, Term, TermDamage, TermMode};
-use alacritty_terminal::vte::ansi::{Color, NamedColor, Processor};
-use input::{MouseTracking, TerminalModes};
+use alacritty_terminal::vte::ansi::{
+    Color, Handler, ModifyOtherKeys as VteModifyOtherKeys, NamedColor, NamedPrivateMode,
+    PrivateMode, Processor,
+};
+use input::{KittyKeyboard, ModifyOtherKeys, MouseTracking, TerminalModes};
 use surface::{
     Cell as SurfaceCell, CellStyle, Cursor, Damage, GridSize, PixelSize, Rgb, SurfaceFrame,
     SurfaceStore,
@@ -86,6 +91,38 @@ impl Default for ClipboardPolicy {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DefaultColors {
+    foreground: Rgb,
+    background: Rgb,
+}
+
+impl DefaultColors {
+    #[must_use]
+    pub const fn new(foreground: Rgb, background: Rgb) -> Self {
+        Self {
+            foreground,
+            background,
+        }
+    }
+
+    #[must_use]
+    pub const fn foreground(self) -> Rgb {
+        self.foreground
+    }
+
+    #[must_use]
+    pub const fn background(self) -> Rgb {
+        self.background
+    }
+}
+
+impl Default for DefaultColors {
+    fn default() -> Self {
+        Self::new(Rgb::WHITE, Rgb::BLACK)
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClipboardWrite {
     pub target: ClipboardTarget,
@@ -136,6 +173,9 @@ impl EngineOutput {
 
 pub struct TerminalEngine {
     parser: Processor,
+    damage_parser: Processor,
+    damage_boundary: StructuralBoundary,
+    entered_alternate_screen: bool,
     term: Term<EventCollector>,
     events: EventCollector,
     surface: Arc<SurfaceStore>,
@@ -144,6 +184,7 @@ pub struct TerminalEngine {
     resize_sequence: u64,
     pixel_size: PixelSize,
     clipboard_policy: ClipboardPolicy,
+    default_colors: DefaultColors,
 }
 
 impl TerminalEngine {
@@ -158,16 +199,44 @@ impl TerminalEngine {
     }
 
     #[must_use]
+    pub fn with_default_colors(size: GridSize, default_colors: DefaultColors) -> Self {
+        Self::with_geometry_and_colors(
+            size,
+            0,
+            PixelSize::default(),
+            ClipboardPolicy::default(),
+            default_colors,
+        )
+    }
+
+    #[must_use]
     pub fn with_geometry(
         size: GridSize,
         resize_sequence: u64,
         pixel_size: PixelSize,
         clipboard_policy: ClipboardPolicy,
     ) -> Self {
+        Self::with_geometry_and_colors(
+            size,
+            resize_sequence,
+            pixel_size,
+            clipboard_policy,
+            DefaultColors::default(),
+        )
+    }
+
+    #[must_use]
+    pub fn with_geometry_and_colors(
+        size: GridSize,
+        resize_sequence: u64,
+        pixel_size: PixelSize,
+        clipboard_policy: ClipboardPolicy,
+        default_colors: DefaultColors,
+    ) -> Self {
         let events = EventCollector::default();
         let config = Config {
             scrolling_history: 0,
-            kitty_keyboard: false,
+            kitty_keyboard: true,
             osc52: Osc52::CopyPaste,
             ..Config::default()
         };
@@ -175,6 +244,9 @@ impl TerminalEngine {
         let surface = Arc::new(SurfaceStore::new(SurfaceFrame::blank(0, size)));
         let mut engine = Self {
             parser: Processor::new(),
+            damage_parser: Processor::new(),
+            damage_boundary: StructuralBoundary::default(),
+            entered_alternate_screen: false,
             term,
             events,
             surface,
@@ -183,6 +255,7 @@ impl TerminalEngine {
             resize_sequence,
             pixel_size,
             clipboard_policy,
+            default_colors,
         };
         engine.publish_full();
         engine.term.reset_damage();
@@ -191,11 +264,34 @@ impl TerminalEngine {
 
     #[must_use]
     pub fn process(&mut self, bytes: &[u8]) -> EngineOutput {
-        let before = capture_grid(&self.term, self.size);
-        self.parser.advance(&mut self.term, bytes);
-        let after = capture_grid(&self.term, self.size);
-        self.publish_damage(detect_scroll(&before, &after));
+        let mut segment_start = 0;
+        for (index, byte) in bytes.iter().enumerate() {
+            self.damage_parser
+                .advance(&mut self.damage_boundary, std::slice::from_ref(byte));
+            self.entered_alternate_screen |= self.damage_boundary.take_alternate_screen_entry();
+            if !self.damage_boundary.take() {
+                continue;
+            }
+            if segment_start < index {
+                self.process_segment(&bytes[segment_start..index], false);
+            }
+            self.process_segment(&bytes[index..=index], true);
+            segment_start = index + 1;
+        }
+        if segment_start < bytes.len() {
+            self.process_segment(&bytes[segment_start..], false);
+        }
         self.drain_events()
+    }
+
+    fn process_segment(&mut self, bytes: &[u8], observe_scroll: bool) {
+        let before = observe_scroll.then(|| capture_grid(&self.term, self.size));
+        self.parser.advance(&mut self.term, bytes);
+        let scroll = before.and_then(|before| {
+            let after = capture_grid(&self.term, self.size);
+            detect_scroll(&before, &after)
+        });
+        self.publish_damage(scroll);
     }
 
     #[must_use]
@@ -213,6 +309,7 @@ impl TerminalEngine {
         let mode = self.term.mode();
         TerminalModes {
             application_cursor: mode.contains(TermMode::APP_CURSOR),
+            application_keypad: mode.contains(TermMode::APP_KEYPAD),
             bracketed_paste: mode.contains(TermMode::BRACKETED_PASTE),
             mouse_tracking: if mode.contains(TermMode::MOUSE_MOTION) {
                 MouseTracking::Motion
@@ -224,7 +321,19 @@ impl TerminalEngine {
                 MouseTracking::None
             },
             sgr_mouse: mode.contains(TermMode::SGR_MOUSE),
+            modify_other_keys: self.damage_boundary.modify_other_keys,
+            kitty_keyboard: KittyKeyboard {
+                disambiguate_escape_codes: mode.contains(TermMode::DISAMBIGUATE_ESC_CODES),
+                report_event_types: mode.contains(TermMode::REPORT_EVENT_TYPES),
+                report_alternate_keys: mode.contains(TermMode::REPORT_ALTERNATE_KEYS),
+                report_all_keys_as_escape_codes: mode.contains(TermMode::REPORT_ALL_KEYS_AS_ESC),
+                report_associated_text: mode.contains(TermMode::REPORT_ASSOCIATED_TEXT),
+            },
         }
+    }
+
+    fn has_entered_alternate_screen(&self) -> bool {
+        self.entered_alternate_screen
     }
 
     pub fn resize(&mut self, size: GridSize) {
@@ -247,8 +356,9 @@ impl TerminalEngine {
     }
 
     fn publish_full(&mut self) {
-        let rows = 0..self.size.rows();
-        self.publish_rows(&[Damage::Full], rows);
+        let damage = [Damage::Full];
+        let (patches, _) = self.collect_patches(&damage, 0..self.size.rows());
+        self.publish_patches(&damage, patches);
     }
 
     fn publish_damage(&mut self, scroll: Option<ScrollObservation>) {
@@ -276,22 +386,59 @@ impl TerminalEngine {
         if damage.is_empty() {
             return;
         }
-        self.publish_rows(&damage, rows);
+        let (patches, changed_rows) = self.collect_patches(&damage, rows);
+        let mut effective_damage = damage
+            .iter()
+            .filter(|damage| matches!(damage, Damage::Full | Damage::Scroll { .. }))
+            .cloned()
+            .collect::<Vec<_>>();
+        effective_damage.extend(coalesce_rows(&changed_rows));
+        self.publish_patches(&effective_damage, patches);
     }
 
-    fn publish_rows(&mut self, damage: &[Damage], rows: impl IntoIterator<Item = usize>) {
+    fn collect_patches(
+        &self,
+        damage: &[Damage],
+        rows: impl IntoIterator<Item = usize>,
+    ) -> (Vec<(usize, SurfaceCell)>, Vec<usize>) {
         let columns = self.size.columns();
         let grid = self.term.grid();
-        let patches: Vec<_> = rows
-            .into_iter()
-            .flat_map(|row| {
-                let line = i32::try_from(row).expect("terminal row fits an i32");
-                (0..columns).map(move |column| {
-                    let cell = &grid[Line(line)][Column(column)];
-                    (row * columns + column, convert_cell(cell))
-                })
-            })
-            .collect();
+        let colors = self.term.colors();
+        let previous = self.surface.load();
+        let full = damage.contains(&Damage::Full);
+        let mut patches = Vec::new();
+        let mut changed_rows = Vec::new();
+        for row in rows {
+            let line = i32::try_from(row).expect("terminal row fits an i32");
+            let previous_row = previous_row_after_damage(row, damage);
+            let mut changed = false;
+            for column in 0..columns {
+                let cell = convert_cell(
+                    &grid[Line(line)][Column(column)],
+                    colors,
+                    self.default_colors,
+                );
+                let differs = if full {
+                    true
+                } else {
+                    previous_row.map_or_else(
+                        || cell != SurfaceCell::default(),
+                        |row| cell != previous.row(row)[column],
+                    )
+                };
+                if differs {
+                    patches.push((row * columns + column, cell));
+                    changed = true;
+                }
+            }
+            if changed {
+                changed_rows.push(row);
+            }
+        }
+        (patches, changed_rows)
+    }
+
+    fn publish_patches(&mut self, damage: &[Damage], patches: Vec<(usize, SurfaceCell)>) {
         let renderable = self.term.renderable_content();
         let cursor = Cursor {
             row: usize::try_from(renderable.cursor.point.line.0).unwrap_or(0),
@@ -360,6 +507,90 @@ struct ScrollObservation {
     dirty_rows: Vec<usize>,
 }
 
+#[derive(Default)]
+struct StructuralBoundary {
+    found: bool,
+    entered_alternate_screen: bool,
+    modify_other_keys: ModifyOtherKeys,
+}
+
+impl StructuralBoundary {
+    fn mark(&mut self) {
+        self.found = true;
+    }
+
+    fn take(&mut self) -> bool {
+        std::mem::take(&mut self.found)
+    }
+
+    fn take_alternate_screen_entry(&mut self) -> bool {
+        std::mem::take(&mut self.entered_alternate_screen)
+    }
+}
+
+impl Handler for StructuralBoundary {
+    fn set_modify_other_keys(&mut self, mode: VteModifyOtherKeys) {
+        self.modify_other_keys = match mode {
+            VteModifyOtherKeys::Reset => ModifyOtherKeys::Disabled,
+            VteModifyOtherKeys::EnableExceptWellDefined => ModifyOtherKeys::ExceptWellDefined,
+            VteModifyOtherKeys::EnableAll => ModifyOtherKeys::All,
+        };
+    }
+
+    fn reset_state(&mut self) {
+        self.modify_other_keys = ModifyOtherKeys::Disabled;
+    }
+
+    fn set_private_mode(&mut self, mode: PrivateMode) {
+        if mode == NamedPrivateMode::SwapScreenAndSetRestoreCursor.into() {
+            self.entered_alternate_screen = true;
+        }
+    }
+
+    fn linefeed(&mut self) {
+        self.mark();
+    }
+
+    fn newline(&mut self) {
+        self.mark();
+    }
+
+    fn scroll_up(&mut self, _rows: usize) {
+        self.mark();
+    }
+
+    fn scroll_down(&mut self, _rows: usize) {
+        self.mark();
+    }
+
+    fn insert_blank_lines(&mut self, _count: usize) {
+        self.mark();
+    }
+
+    fn delete_lines(&mut self, _count: usize) {
+        self.mark();
+    }
+
+    fn reverse_index(&mut self) {
+        self.mark();
+    }
+}
+
+fn previous_row_after_damage(row: usize, damage: &[Damage]) -> Option<usize> {
+    damage.iter().rev().try_fold(row, |row, damage| {
+        let Damage::Scroll { top, bottom, delta } = *damage else {
+            return Some(row);
+        };
+        if row < top || row >= bottom {
+            return Some(row);
+        }
+        let previous = i64::try_from(row).ok()? - i64::from(delta);
+        usize::try_from(previous)
+            .ok()
+            .filter(|row| *row >= top && *row < bottom)
+    })
+}
+
 fn capture_grid(term: &Term<EventCollector>, size: GridSize) -> GridObservation {
     let grid = term.grid();
     let mut row_identities = Vec::with_capacity(size.rows());
@@ -379,34 +610,36 @@ fn detect_scroll(before: &GridObservation, after: &GridObservation) -> Option<Sc
         return None;
     }
 
-    let limit = i32::try_from(row_count).ok()?;
+    let old_rows = before
+        .row_identities
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(row, identity)| (identity, row))
+        .collect::<HashMap<_, _>>();
     let mut best: Option<(usize, usize, i32)> = None;
-    for delta in (1 - limit)..limit {
+    let mut run: Option<(usize, usize, usize, i32)> = None;
+    for (new_row, identity) in after.row_identities.iter().enumerate() {
+        let Some(&old_row) = old_rows.get(identity) else {
+            run = None;
+            continue;
+        };
+        let delta = i32::try_from(new_row).ok()? - i32::try_from(old_row).ok()?;
         if delta == 0 {
+            run = None;
             continue;
         }
-
-        let mut run_start = 0;
-        let mut run_length = 0;
-        for new_row in 0..row_count {
-            let old_row = i32::try_from(new_row).ok()? - delta;
-            let matches = usize::try_from(old_row)
-                .ok()
-                .filter(|old_row| *old_row < row_count)
-                .is_some_and(|old_row| {
-                    after.row_identities[new_row] == before.row_identities[old_row]
-                });
-            if matches {
-                if run_length == 0 {
-                    run_start = new_row;
-                }
-                run_length += 1;
-                if best.is_none_or(|(_, length, _)| run_length > length) {
-                    best = Some((run_start, run_length, delta));
-                }
-            } else {
-                run_length = 0;
+        let (start, length) = match run {
+            Some((start, length, previous_old, run_delta))
+                if run_delta == delta && previous_old.checked_add(1) == Some(old_row) =>
+            {
+                (start, length + 1)
             }
+            _ => (new_row, 1),
+        };
+        run = Some((start, length, old_row, delta));
+        if best.is_none_or(|(_, best_length, _)| length > best_length) {
+            best = Some((start, length, delta));
         }
     }
 
@@ -422,7 +655,7 @@ fn detect_scroll(before: &GridObservation, after: &GridObservation) -> Option<Sc
         return None;
     }
 
-    let dirty_rows = if delta < 0 {
+    let dirty_rows: Vec<_> = if delta < 0 {
         (bottom - distance..bottom).collect()
     } else {
         (top..top + distance).collect()
@@ -468,7 +701,13 @@ fn coalesce_rows(rows: &[usize]) -> Vec<Damage> {
     damage
 }
 
-fn convert_cell(cell: &alacritty_terminal::term::cell::Cell) -> SurfaceCell {
+fn convert_cell(
+    cell: &alacritty_terminal::term::cell::Cell,
+    colors: &Colors,
+    default_colors: DefaultColors,
+) -> SurfaceCell {
+    #[cfg(test)]
+    CONVERTED_CELLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut text = if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
         String::new()
     } else {
@@ -478,8 +717,8 @@ fn convert_cell(cell: &alacritty_terminal::term::cell::Cell) -> SurfaceCell {
         text.extend(zerowidth);
     }
     let mut converted = SurfaceCell::plain(text);
-    converted.foreground = convert_color(cell.fg, true);
-    converted.background = convert_color(cell.bg, false);
+    converted.foreground = convert_color(cell.fg, colors, true, default_colors);
+    converted.background = convert_color(cell.bg, colors, false, default_colors);
     if cell.flags.contains(Flags::BOLD) {
         converted.style.insert(CellStyle::BOLD);
     }
@@ -507,18 +746,36 @@ fn convert_cell(cell: &alacritty_terminal::term::cell::Cell) -> SurfaceCell {
     converted
 }
 
-fn convert_color(color: Color, foreground: bool) -> Rgb {
+fn convert_color(
+    color: Color,
+    colors: &Colors,
+    foreground: bool,
+    default_colors: DefaultColors,
+) -> Rgb {
+    let configured = match color {
+        Color::Spec(_) => None,
+        Color::Indexed(index) => colors[usize::from(index)],
+        Color::Named(named) => colors[named],
+    };
+    if let Some(color) = configured {
+        return Rgb::new(color.r, color.g, color.b);
+    }
     match color {
         Color::Spec(color) => Rgb::new(color.r, color.g, color.b),
         Color::Indexed(index) => indexed_color(index),
-        Color::Named(NamedColor::Foreground | NamedColor::BrightForeground) => Rgb::WHITE,
-        Color::Named(NamedColor::Background | NamedColor::Cursor) => Rgb::BLACK,
+        Color::Named(NamedColor::Foreground | NamedColor::BrightForeground) => {
+            default_colors.foreground()
+        }
+        Color::Named(NamedColor::Background | NamedColor::Cursor) => default_colors.background(),
+        Color::Named(NamedColor::DimForeground) => default_colors.foreground(),
         Color::Named(named) if standard_named_index(named).is_some() => {
             indexed_color(standard_named_index(named).expect("standard color has an index"))
         }
-        Color::Named(named) => {
-            dim_named_color(named).unwrap_or(if foreground { Rgb::WHITE } else { Rgb::BLACK })
-        }
+        Color::Named(named) => dim_named_color(named).unwrap_or(if foreground {
+            default_colors.foreground()
+        } else {
+            default_colors.background()
+        }),
     }
 }
 
@@ -553,7 +810,7 @@ fn dim_named_color(color: NamedColor) -> Option<Rgb> {
         NamedColor::DimBlue => 4,
         NamedColor::DimMagenta => 5,
         NamedColor::DimCyan => 6,
-        NamedColor::DimWhite | NamedColor::DimForeground => 7,
+        NamedColor::DimWhite => 7,
         _ => return None,
     };
     Some(indexed_color(index))
@@ -591,4 +848,96 @@ fn indexed_color(index: u8) -> Rgb {
     }
     let gray = 8 + (index - 232).min(23) * 10;
     Rgb::new(gray, gray, gray)
+}
+
+#[cfg(test)]
+static CONVERTED_CELLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+mod tests {
+    use std::fmt::Write as _;
+    use std::sync::atomic::Ordering;
+
+    use surface::{GridSize, Rgb};
+
+    use super::{
+        CONVERTED_CELLS, DefaultColors, GridObservation, TermMode, TerminalEngine, detect_scroll,
+    };
+
+    #[test]
+    fn configured_default_colors_apply_to_terminal_cells() {
+        let size = GridSize::new(2, 1).expect("valid grid");
+        let colors = DefaultColors::new(Rgb::new(0x12, 0x34, 0x56), Rgb::new(0x65, 0x43, 0x21));
+        let mut engine = TerminalEngine::with_default_colors(size, colors);
+
+        let _output = engine.process(b"x");
+        let frame = engine.surface().load();
+        let cell = &frame.row(0)[0];
+
+        assert_eq!(cell.foreground, colors.foreground());
+        assert_eq!(cell.background, colors.background());
+    }
+
+    #[test]
+    fn dynamic_palette_changes_apply_to_rendered_cells() {
+        let size = GridSize::new(3, 1).expect("valid grid");
+        let mut engine = TerminalEngine::new(size);
+
+        let _output = engine.process(
+            b"\x1b]4;1;#123456\x1b\\\x1b]10;#abcdef\x1b\\\x1b]11;#654321\x1b\\\
+              \x1b[31mx\x1b[39my",
+        );
+        let frame = engine.surface().load();
+
+        assert_eq!(frame.row(0)[0].foreground, Rgb::new(0x12, 0x34, 0x56));
+        assert_eq!(frame.row(0)[1].foreground, Rgb::new(0xab, 0xcd, 0xef));
+        assert_eq!(frame.row(0)[0].background, Rgb::new(0x65, 0x43, 0x21));
+        assert_eq!(frame.row(0)[1].background, Rgb::new(0x65, 0x43, 0x21));
+    }
+
+    #[test]
+    fn alternate_screen_entry_is_sticky_within_one_process_call() {
+        let mut engine = TerminalEngine::new(GridSize::new(2, 1).expect("valid grid"));
+
+        let _output = engine.process(b"\x1b[?1049h\x1b[?1049l");
+
+        assert!(engine.has_entered_alternate_screen());
+        assert!(!engine.term.mode().contains(TermMode::ALT_SCREEN));
+    }
+
+    #[test]
+    fn row_identity_lookup_detects_a_partial_scroll_region() {
+        let before = GridObservation {
+            row_identities: (0..10).collect(),
+        };
+        let after = GridObservation {
+            row_identities: vec![0, 1, 3, 4, 5, 6, 7, 2, 8, 9],
+        };
+
+        let scroll = detect_scroll(&before, &after).expect("partial scroll");
+
+        assert_eq!(scroll.top, 2);
+        assert_eq!(scroll.bottom, 8);
+        assert_eq!(scroll.delta, -1);
+        assert_eq!(scroll.dirty_rows, [7]);
+    }
+
+    #[test]
+    fn one_line_scroll_converts_only_incremental_rows() {
+        let size = GridSize::new(80, 24).expect("valid grid");
+        let mut engine = TerminalEngine::new(size);
+        let mut initial = String::new();
+        for row in 0..24 {
+            write!(initial, "row-{row:02}\r\n").expect("write terminal fixture");
+        }
+        let _output = engine.process(initial.as_bytes());
+        CONVERTED_CELLS.store(0, Ordering::Relaxed);
+
+        let _output = engine.process(b"next\r\n");
+
+        assert!(
+            CONVERTED_CELLS.load(Ordering::Relaxed) <= size.columns() * 2,
+            "one-line scroll converted the full grid"
+        );
+    }
 }

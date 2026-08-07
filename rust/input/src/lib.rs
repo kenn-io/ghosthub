@@ -24,13 +24,38 @@ pub enum NamedKey {
     Insert,
     Delete,
     F(u8),
+    KeypadDigit(u8),
+    KeypadDecimal,
+    KeypadDivide,
+    KeypadMultiply,
+    KeypadSubtract,
+    KeypadAdd,
+    KeypadEnter,
+    KeypadEqual,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum KeyInput {
-    Text { text: String, modifiers: Modifiers },
-    Named { key: NamedKey, modifiers: Modifiers },
+    Text {
+        text: String,
+        logical_key: Option<String>,
+        modifiers: Modifiers,
+        event: KeyEvent,
+    },
+    Named {
+        key: NamedKey,
+        modifiers: Modifiers,
+        event: KeyEvent,
+    },
     Paste(String),
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum KeyEvent {
+    #[default]
+    Press,
+    Repeat,
+    Release,
 }
 
 impl KeyInput {
@@ -38,27 +63,96 @@ impl KeyInput {
     pub fn text(text: impl Into<String>, modifiers: Modifiers) -> Self {
         Self::Text {
             text: text.into(),
+            logical_key: None,
             modifiers,
+            event: KeyEvent::Press,
+        }
+    }
+
+    #[must_use]
+    pub fn text_with_key(
+        text: impl Into<String>,
+        logical_key: impl Into<String>,
+        modifiers: Modifiers,
+    ) -> Self {
+        Self::Text {
+            text: text.into(),
+            logical_key: Some(logical_key.into()),
+            modifiers,
+            event: KeyEvent::Press,
         }
     }
 
     #[must_use]
     pub const fn named(key: NamedKey, modifiers: Modifiers) -> Self {
-        Self::Named { key, modifiers }
+        Self::Named {
+            key,
+            modifiers,
+            event: KeyEvent::Press,
+        }
     }
 
     #[must_use]
     pub fn paste(text: impl Into<String>) -> Self {
         Self::Paste(text.into())
     }
+
+    #[must_use]
+    pub fn with_event(mut self, event: KeyEvent) -> Self {
+        match &mut self {
+            Self::Text {
+                event: input_event, ..
+            }
+            | Self::Named {
+                event: input_event, ..
+            } => *input_event = event,
+            Self::Paste(_) => {}
+        }
+        self
+    }
 }
 
+// These booleans are independent terminal protocol modes, not mutually
+// exclusive application states.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct TerminalModes {
     pub application_cursor: bool,
+    pub application_keypad: bool,
     pub bracketed_paste: bool,
     pub mouse_tracking: MouseTracking,
     pub sgr_mouse: bool,
+    pub modify_other_keys: ModifyOtherKeys,
+    pub kitty_keyboard: KittyKeyboard,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ModifyOtherKeys {
+    #[default]
+    Disabled,
+    ExceptWellDefined,
+    All,
+}
+
+// Kitty defines these as independently negotiated bit flags.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct KittyKeyboard {
+    pub disambiguate_escape_codes: bool,
+    pub report_event_types: bool,
+    pub report_alternate_keys: bool,
+    pub report_all_keys_as_escape_codes: bool,
+    pub report_associated_text: bool,
+}
+
+impl KittyKeyboard {
+    const fn enabled(self) -> bool {
+        self.disambiguate_escape_codes
+            || self.report_event_types
+            || self.report_alternate_keys
+            || self.report_all_keys_as_escape_codes
+            || self.report_associated_text
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -130,16 +224,30 @@ impl EncodedInput {
 #[must_use]
 pub fn encode_input(input: &KeyInput, modes: TerminalModes) -> EncodedInput {
     match input {
-        KeyInput::Text { text, modifiers } => EncodedInput::ready(encode_text(text, *modifiers)),
-        KeyInput::Named { key, modifiers } => {
-            EncodedInput::ready(encode_named(*key, *modifiers, modes))
-        }
+        KeyInput::Text {
+            text,
+            logical_key,
+            modifiers,
+            event,
+        } => EncodedInput::ready(encode_text(
+            text,
+            logical_key.as_deref(),
+            *modifiers,
+            *event,
+            modes,
+        )),
+        KeyInput::Named {
+            key,
+            modifiers,
+            event,
+        } => EncodedInput::ready(encode_named(*key, *modifiers, *event, modes)),
         KeyInput::Paste(text) if modes.bracketed_paste => {
-            let mut bytes = Vec::with_capacity(text.len() + 12);
+            let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+            let mut bytes = Vec::with_capacity(normalized.len() + 12);
             bytes.extend_from_slice(b"\x1b[200~");
-            bytes.extend_from_slice(text.as_bytes());
+            bytes.extend_from_slice(normalized.as_bytes());
             bytes.extend_from_slice(b"\x1b[201~");
-            if text.contains("\x1b[201~") {
+            if normalized.contains("\x1b[201~") {
                 EncodedInput::confirmation_required(bytes)
             } else {
                 EncodedInput::ready(bytes)
@@ -201,7 +309,23 @@ const fn mouse_button_code(button: MouseButton) -> u8 {
     }
 }
 
-fn encode_text(text: &str, modifiers: Modifiers) -> Vec<u8> {
+fn encode_text(
+    text: &str,
+    logical_key: Option<&str>,
+    modifiers: Modifiers,
+    event: KeyEvent,
+    modes: TerminalModes,
+) -> Vec<u8> {
+    if should_encode_kitty_text(modifiers, modes.kitty_keyboard) {
+        return encode_kitty_text(text, logical_key, modifiers, event, modes.kitty_keyboard);
+    }
+    if event == KeyEvent::Release {
+        return Vec::new();
+    }
+    if should_encode_modify_other_keys(text, modifiers, modes.modify_other_keys) {
+        return encode_modify_other_keys(text, modifiers);
+    }
+
     let mut bytes = if modifiers.control {
         control_byte(text).map_or_else(|| text.as_bytes().to_vec(), |byte| vec![byte])
     } else {
@@ -214,6 +338,149 @@ fn encode_text(text: &str, modifiers: Modifiers) -> Vec<u8> {
     bytes
 }
 
+fn encode_modify_other_keys(text: &str, modifiers: Modifiers) -> Vec<u8> {
+    let mut chars = text.chars();
+    let Some(character) = chars.next() else {
+        return Vec::new();
+    };
+    if chars.next().is_some() {
+        return Vec::new();
+    }
+    format!(
+        "\x1b[27;{};{}~",
+        modifier_parameter(modifiers),
+        u32::from(character)
+    )
+    .into_bytes()
+}
+
+fn should_encode_kitty_text(modifiers: Modifiers, kitty: KittyKeyboard) -> bool {
+    // Event-type reporting annotates keys already encoded as Kitty events; it
+    // does not promote ordinary text into key events. Report-all is the
+    // protocol flag that performs that promotion.
+    kitty.report_all_keys_as_escape_codes
+        || (kitty.disambiguate_escape_codes && (modifiers.control || modifiers.alt))
+}
+
+fn should_encode_modify_other_keys(
+    text: &str,
+    modifiers: Modifiers,
+    mode: ModifyOtherKeys,
+) -> bool {
+    if modifier_parameter(modifiers) == 1 {
+        return false;
+    }
+    match mode {
+        ModifyOtherKeys::Disabled => false,
+        ModifyOtherKeys::All => true,
+        ModifyOtherKeys::ExceptWellDefined => {
+            if modifiers.control && control_byte(text).is_some() {
+                return false;
+            }
+            let byte = text.as_bytes().first().copied();
+            let one_modifier =
+                u8::from(modifiers.shift) + u8::from(modifiers.control) + u8::from(modifiers.alt)
+                    == 1;
+            !(text.len() == 1
+                && byte.is_some_and(|byte| (b'@'..=b'\x7f').contains(&byte))
+                && one_modifier
+                && !modifiers.alt)
+        }
+    }
+}
+
+fn encode_kitty_text(
+    text: &str,
+    logical_key: Option<&str>,
+    modifiers: Modifiers,
+    event: KeyEvent,
+    kitty: KittyKeyboard,
+) -> Vec<u8> {
+    if event == KeyEvent::Release && !kitty.report_event_types {
+        return Vec::new();
+    }
+    let primary = text_key_code(text, logical_key, modifiers);
+    let shifted = kitty
+        .report_alternate_keys
+        .then(|| shifted_key_code(text, modifiers))
+        .flatten()
+        .filter(|shifted| *shifted != primary);
+    let associated = (kitty.report_associated_text && event != KeyEvent::Release)
+        .then(|| text.chars().map(u32::from).collect::<Vec<_>>());
+    encode_csi_u(
+        primary,
+        modifiers,
+        kitty.report_event_types.then_some(event),
+        shifted,
+        associated.as_deref(),
+    )
+}
+
+fn text_key_code(text: &str, logical_key: Option<&str>, modifiers: Modifiers) -> u32 {
+    let key = logical_key.unwrap_or(text);
+    let mut chars = key.chars();
+    let Some(character) = chars.next() else {
+        return 0;
+    };
+    if chars.next().is_some() {
+        return 0;
+    }
+    if modifiers.shift {
+        character.to_lowercase().next().map_or(0, u32::from)
+    } else {
+        u32::from(character)
+    }
+}
+
+fn shifted_key_code(text: &str, modifiers: Modifiers) -> Option<u32> {
+    modifiers.shift.then(|| {
+        let mut chars = text.chars();
+        let character = chars.next()?;
+        chars.next().is_none().then_some(u32::from(character))
+    })?
+}
+
+fn encode_csi_u(
+    key_code: u32,
+    modifiers: Modifiers,
+    event: Option<KeyEvent>,
+    shifted_key: Option<u32>,
+    associated_text: Option<&[u32]>,
+) -> Vec<u8> {
+    let mut sequence = format!("\x1b[{key_code}");
+    if let Some(shifted_key) = shifted_key {
+        sequence.push(':');
+        sequence.push_str(&shifted_key.to_string());
+    }
+    if modifier_parameter(modifiers) != 1 || event.is_some() || associated_text.is_some() {
+        sequence.push(';');
+        sequence.push_str(&modifier_parameter(modifiers).to_string());
+        if let Some(event) = event {
+            sequence.push(':');
+            sequence.push(char::from(b'0' + key_event_parameter(event)));
+        }
+    }
+    if let Some(associated_text) = associated_text {
+        sequence.push(';');
+        for (index, codepoint) in associated_text.iter().enumerate() {
+            if index != 0 {
+                sequence.push(':');
+            }
+            sequence.push_str(&codepoint.to_string());
+        }
+    }
+    sequence.push('u');
+    sequence.into_bytes()
+}
+
+const fn key_event_parameter(event: KeyEvent) -> u8 {
+    match event {
+        KeyEvent::Press => 1,
+        KeyEvent::Repeat => 2,
+        KeyEvent::Release => 3,
+    }
+}
+
 fn control_byte(text: &str) -> Option<u8> {
     let bytes = text.as_bytes();
     if bytes.len() != 1 {
@@ -221,14 +488,37 @@ fn control_byte(text: &str) -> Option<u8> {
     }
 
     match bytes[0] {
+        b' ' | b'2' | b'`' => Some(0x00),
+        b'3' => Some(0x1b),
+        b'4' => Some(0x1c),
+        b'5' => Some(0x1d),
+        b'6' => Some(0x1e),
+        b'7' | b'/' => Some(0x1f),
+        b'8' | b'?' => Some(0x7f),
         b'@'..=b'_' => Some(bytes[0] & 0x1f),
         b'a'..=b'z' => Some(bytes[0] - b'a' + 1),
-        b'?' => Some(0x7f),
         _ => None,
     }
 }
 
-fn encode_named(key: NamedKey, modifiers: Modifiers, modes: TerminalModes) -> Vec<u8> {
+fn encode_named(
+    key: NamedKey,
+    modifiers: Modifiers,
+    event: KeyEvent,
+    modes: TerminalModes,
+) -> Vec<u8> {
+    if event == KeyEvent::Release && !modes.kitty_keyboard.report_event_types {
+        return Vec::new();
+    }
+    if let Some(sequence) = encode_kitty_named(key, modifiers, event, modes.kitty_keyboard) {
+        return sequence;
+    }
+    if event == KeyEvent::Release {
+        return Vec::new();
+    }
+    if let Some(sequence) = encode_keypad(key, modes.application_keypad) {
+        return sequence;
+    }
     if key == NamedKey::Tab && modifiers.shift && !modifiers.alt && !modifiers.control {
         return b"\x1b[Z".to_vec();
     }
@@ -268,6 +558,14 @@ fn encode_named(key: NamedKey, modifiers: Modifiers, modes: TerminalModes) -> Ve
         NamedKey::F(11) => b"\x1b[23~",
         NamedKey::F(12) => b"\x1b[24~",
         NamedKey::F(_) => return Vec::new(),
+        NamedKey::KeypadDigit(_)
+        | NamedKey::KeypadDecimal
+        | NamedKey::KeypadDivide
+        | NamedKey::KeypadMultiply
+        | NamedKey::KeypadSubtract
+        | NamedKey::KeypadAdd
+        | NamedKey::KeypadEnter
+        | NamedKey::KeypadEqual => unreachable!("keypad keys are handled before legacy keys"),
     };
 
     let mut bytes = sequence.to_vec();
@@ -275,6 +573,116 @@ fn encode_named(key: NamedKey, modifiers: Modifiers, modes: TerminalModes) -> Ve
         bytes.insert(0, b'\x1b');
     }
     bytes
+}
+
+fn encode_keypad(key: NamedKey, application_mode: bool) -> Option<Vec<u8>> {
+    let sequence: &[u8] = match (key, application_mode) {
+        (NamedKey::KeypadDigit(digit), true) if digit <= 9 => {
+            return Some(vec![b'\x1b', b'O', b'p' + digit]);
+        }
+        (NamedKey::KeypadDigit(digit), false) if digit <= 9 => {
+            return Some(vec![b'0' + digit]);
+        }
+        (NamedKey::KeypadDigit(_), _) => return Some(Vec::new()),
+        (NamedKey::KeypadDecimal, true) => b"\x1bOn",
+        (NamedKey::KeypadDivide, true) => b"\x1bOo",
+        (NamedKey::KeypadMultiply, true) => b"\x1bOj",
+        (NamedKey::KeypadSubtract, true) => b"\x1bOm",
+        (NamedKey::KeypadAdd, true) => b"\x1bOk",
+        (NamedKey::KeypadEnter, true) => b"\x1bOM",
+        (NamedKey::KeypadEqual, true) => b"\x1bOX",
+        (NamedKey::KeypadDecimal, false) => b".",
+        (NamedKey::KeypadDivide, false) => b"/",
+        (NamedKey::KeypadMultiply, false) => b"*",
+        (NamedKey::KeypadSubtract, false) => b"-",
+        (NamedKey::KeypadAdd, false) => b"+",
+        (NamedKey::KeypadEnter, false) => b"\r",
+        (NamedKey::KeypadEqual, false) => b"=",
+        _ => return None,
+    };
+    Some(sequence.to_vec())
+}
+
+fn encode_kitty_named(
+    key: NamedKey,
+    modifiers: Modifiers,
+    event: KeyEvent,
+    kitty: KittyKeyboard,
+) -> Option<Vec<u8>> {
+    if !kitty.enabled() {
+        return None;
+    }
+
+    let all_keys = kitty.report_all_keys_as_escape_codes;
+    let modified = modifier_parameter(modifiers) != 1;
+    // Kitty keeps Enter, Tab, and Backspace usable as legacy controls under
+    // event-type reporting alone. Their releases exist only in report-all.
+    let csi_u_code = match key {
+        NamedKey::Escape if kitty.disambiguate_escape_codes || all_keys => Some(27),
+        NamedKey::Enter if all_keys || (kitty.disambiguate_escape_codes && modified) => Some(13),
+        NamedKey::Tab if all_keys || (kitty.disambiguate_escape_codes && modified) => Some(9),
+        NamedKey::Backspace if all_keys || (kitty.disambiguate_escape_codes && modified) => {
+            Some(127)
+        }
+        NamedKey::KeypadDigit(digit)
+            if digit <= 9 && (kitty.disambiguate_escape_codes || all_keys) =>
+        {
+            Some(57_399 + u32::from(digit))
+        }
+        NamedKey::KeypadDecimal if kitty.disambiguate_escape_codes || all_keys => Some(57_409),
+        NamedKey::KeypadDivide if kitty.disambiguate_escape_codes || all_keys => Some(57_410),
+        NamedKey::KeypadMultiply if kitty.disambiguate_escape_codes || all_keys => Some(57_411),
+        NamedKey::KeypadSubtract if kitty.disambiguate_escape_codes || all_keys => Some(57_412),
+        NamedKey::KeypadAdd if kitty.disambiguate_escape_codes || all_keys => Some(57_413),
+        NamedKey::KeypadEnter if kitty.disambiguate_escape_codes || all_keys => Some(57_414),
+        NamedKey::KeypadEqual if kitty.disambiguate_escape_codes || all_keys => Some(57_415),
+        _ => None,
+    };
+    if let Some(key_code) = csi_u_code {
+        return Some(encode_csi_u(
+            key_code,
+            modifiers,
+            kitty.report_event_types.then_some(event),
+            None,
+            None,
+        ));
+    }
+
+    kitty
+        .report_event_types
+        .then(|| encode_named_with_event_type(key, modifiers, event))
+        .flatten()
+}
+
+fn encode_named_with_event_type(
+    key: NamedKey,
+    modifiers: Modifiers,
+    event: KeyEvent,
+) -> Option<Vec<u8>> {
+    let parameter = modifier_parameter(modifiers);
+    let event = key_event_parameter(event);
+    let sequence = match key {
+        NamedKey::ArrowUp => format!("\x1b[1;{parameter}:{event}A"),
+        NamedKey::ArrowDown => format!("\x1b[1;{parameter}:{event}B"),
+        NamedKey::ArrowRight => format!("\x1b[1;{parameter}:{event}C"),
+        NamedKey::ArrowLeft => format!("\x1b[1;{parameter}:{event}D"),
+        NamedKey::Home => format!("\x1b[1;{parameter}:{event}H"),
+        NamedKey::End => format!("\x1b[1;{parameter}:{event}F"),
+        NamedKey::PageUp => format!("\x1b[5;{parameter}:{event}~"),
+        NamedKey::PageDown => format!("\x1b[6;{parameter}:{event}~"),
+        NamedKey::Insert => format!("\x1b[2;{parameter}:{event}~"),
+        NamedKey::Delete => format!("\x1b[3;{parameter}:{event}~"),
+        NamedKey::F(number @ 1..=4) => {
+            let final_byte = char::from(b'P' + number - 1);
+            format!("\x1b[1;{parameter}:{event}{final_byte}")
+        }
+        NamedKey::F(number @ 5..=12) => {
+            let code = [15, 17, 18, 19, 20, 21, 23, 24][usize::from(number - 5)];
+            format!("\x1b[{code};{parameter}:{event}~")
+        }
+        _ => return None,
+    };
+    Some(sequence.into_bytes())
 }
 
 fn modified_named_sequence(key: NamedKey, modifiers: Modifiers) -> Option<Vec<u8>> {

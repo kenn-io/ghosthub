@@ -1,19 +1,58 @@
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io;
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use contracts::{Manifest, PlatformTag};
-use host::{CancellationToken, CommandOutput, CommandRunner, HostErrorKind, WslConfig, WslHost};
+use host::{
+    AdmissionAttacher, CancellationToken, CommandOutput, CommandRunner, HostErrorKind, WslConfig,
+    WslExecutable, WslHost,
+};
 use serde::Deserialize;
+use session::AdmissionPlan;
 use session::ExecutablePlatform;
+
+#[derive(Clone, Copy, Debug)]
+struct AdmissionStatusFailure {
+    command: &'static str,
+    status: i32,
+    stderr: &'static str,
+}
 
 #[derive(Debug)]
 struct RecordingRunner {
     outputs: Mutex<VecDeque<io::Result<CommandOutput>>>,
     calls: Mutex<Vec<(OsString, Vec<OsString>)>>,
+    timeouts: Mutex<Vec<std::time::Duration>>,
+    admission_identity_count: Mutex<u32>,
+    admission_environment: Mutex<String>,
+    admission_attached: Arc<AtomicBool>,
+    attachment_plans: Mutex<Vec<(OsString, Vec<OsString>)>>,
+    removed_sessions: Mutex<HashSet<String>>,
+    admission_sessions: Mutex<HashSet<(String, String)>>,
+    admission_failure: Option<&'static str>,
+    late_creation: Mutex<LateCreationState>,
+    admission_status_failure: Mutex<Option<AdmissionStatusFailure>>,
+    namespaces_are_isolated: bool,
+    exact_targets_are_strict: bool,
+    admission_directory: Mutex<AdmissionDirectoryState>,
+}
+
+#[derive(Debug, Default)]
+struct AdmissionDirectoryState {
+    exists: bool,
+    create_after_next_remove: bool,
+}
+
+#[derive(Debug, Default)]
+struct LateCreationState {
+    enabled: bool,
+    session: Option<String>,
+    present: bool,
+    cleanup_attempts: usize,
 }
 
 impl RecordingRunner {
@@ -21,26 +60,339 @@ impl RecordingRunner {
         Self {
             outputs: Mutex::new(outputs.into_iter().map(Ok).collect()),
             calls: Mutex::new(Vec::new()),
+            timeouts: Mutex::new(Vec::new()),
+            admission_identity_count: Mutex::new(0),
+            admission_environment: Mutex::new("present".to_owned()),
+            admission_attached: Arc::new(AtomicBool::new(false)),
+            attachment_plans: Mutex::new(Vec::new()),
+            removed_sessions: Mutex::new(HashSet::new()),
+            admission_sessions: Mutex::new(HashSet::new()),
+            admission_failure: None,
+            late_creation: Mutex::new(LateCreationState::default()),
+            admission_status_failure: Mutex::new(None),
+            namespaces_are_isolated: true,
+            exact_targets_are_strict: true,
+            admission_directory: Mutex::new(AdmissionDirectoryState::default()),
         }
     }
 
+    fn failing_admission(command: &'static str) -> Self {
+        Self {
+            outputs: Mutex::new(VecDeque::from([Ok(instance_output())])),
+            calls: Mutex::new(Vec::new()),
+            timeouts: Mutex::new(Vec::new()),
+            admission_identity_count: Mutex::new(0),
+            admission_environment: Mutex::new("present".to_owned()),
+            admission_attached: Arc::new(AtomicBool::new(false)),
+            attachment_plans: Mutex::new(Vec::new()),
+            removed_sessions: Mutex::new(HashSet::new()),
+            admission_sessions: Mutex::new(HashSet::new()),
+            admission_failure: Some(command),
+            late_creation: Mutex::new(LateCreationState::default()),
+            admission_status_failure: Mutex::new(None),
+            namespaces_are_isolated: true,
+            exact_targets_are_strict: true,
+            admission_directory: Mutex::new(AdmissionDirectoryState::default()),
+        }
+    }
+
+    fn rejecting_admission(command: &'static str) -> Self {
+        Self {
+            outputs: Mutex::new(VecDeque::from([Ok(instance_output())])),
+            calls: Mutex::new(Vec::new()),
+            timeouts: Mutex::new(Vec::new()),
+            admission_identity_count: Mutex::new(0),
+            admission_environment: Mutex::new("present".to_owned()),
+            admission_attached: Arc::new(AtomicBool::new(false)),
+            attachment_plans: Mutex::new(Vec::new()),
+            removed_sessions: Mutex::new(HashSet::new()),
+            admission_sessions: Mutex::new(HashSet::new()),
+            admission_failure: None,
+            late_creation: Mutex::new(LateCreationState::default()),
+            admission_status_failure: Mutex::new(Some(AdmissionStatusFailure {
+                command,
+                status: 1,
+                stderr: "scripted admission rejection",
+            })),
+            namespaces_are_isolated: true,
+            exact_targets_are_strict: true,
+            admission_directory: Mutex::new(AdmissionDirectoryState::default()),
+        }
+    }
+
+    fn missing_admission_executable(command: &'static str) -> Self {
+        Self::admission_status_failure(command, 127, "/usr/bin/env: '/missing/tmux': No such file")
+    }
+
+    fn admission_status_failure(command: &'static str, status: i32, stderr: &'static str) -> Self {
+        Self {
+            outputs: Mutex::new(VecDeque::from([Ok(instance_output())])),
+            calls: Mutex::new(Vec::new()),
+            timeouts: Mutex::new(Vec::new()),
+            admission_identity_count: Mutex::new(0),
+            admission_environment: Mutex::new("present".to_owned()),
+            admission_attached: Arc::new(AtomicBool::new(false)),
+            attachment_plans: Mutex::new(Vec::new()),
+            removed_sessions: Mutex::new(HashSet::new()),
+            admission_sessions: Mutex::new(HashSet::new()),
+            admission_failure: None,
+            late_creation: Mutex::new(LateCreationState::default()),
+            admission_status_failure: Mutex::new(Some(AdmissionStatusFailure {
+                command,
+                status,
+                stderr,
+            })),
+            namespaces_are_isolated: true,
+            exact_targets_are_strict: true,
+            admission_directory: Mutex::new(AdmissionDirectoryState::default()),
+        }
+    }
+
+    fn ignoring_namespaces() -> Self {
+        Self {
+            outputs: Mutex::new(VecDeque::from([Ok(instance_output())])),
+            calls: Mutex::new(Vec::new()),
+            timeouts: Mutex::new(Vec::new()),
+            admission_identity_count: Mutex::new(0),
+            admission_environment: Mutex::new("present".to_owned()),
+            admission_attached: Arc::new(AtomicBool::new(false)),
+            attachment_plans: Mutex::new(Vec::new()),
+            removed_sessions: Mutex::new(HashSet::new()),
+            admission_sessions: Mutex::new(HashSet::new()),
+            admission_failure: None,
+            late_creation: Mutex::new(LateCreationState::default()),
+            admission_status_failure: Mutex::new(None),
+            namespaces_are_isolated: false,
+            exact_targets_are_strict: true,
+            admission_directory: Mutex::new(AdmissionDirectoryState::default()),
+        }
+    }
+
+    fn ignoring_exact_targets() -> Self {
+        let mut runner = Self::new(vec![instance_output()]);
+        runner.exact_targets_are_strict = false;
+        runner
+    }
+
+    fn timing_out_after_creation(command: &'static str) -> Self {
+        let runner = Self::failing_admission(command);
+        runner
+            .late_creation
+            .lock()
+            .expect("late creation lock")
+            .enabled = true;
+        runner
+    }
+
+    fn late_creation_state(&self) -> (bool, usize) {
+        let state = self.late_creation.lock().expect("late creation lock");
+        (state.present, state.cleanup_attempts)
+    }
+
     fn calls(&self) -> Vec<(OsString, Vec<OsString>)> {
+        self.calls
+            .lock()
+            .expect("calls lock")
+            .iter()
+            .filter(|(_, args)| !is_admission_call(args))
+            .cloned()
+            .collect()
+    }
+
+    fn all_calls(&self) -> Vec<(OsString, Vec<OsString>)> {
         self.calls.lock().expect("calls lock").clone()
+    }
+
+    fn all_timeouts(&self) -> Vec<std::time::Duration> {
+        self.timeouts.lock().expect("timeouts lock").clone()
+    }
+
+    fn attachment_plans(&self) -> Vec<(OsString, Vec<OsString>)> {
+        self.attachment_plans
+            .lock()
+            .expect("attachment plans lock")
+            .clone()
+    }
+
+    fn admission_directory_exists(&self) -> bool {
+        self.admission_directory
+            .lock()
+            .expect("admission directory lock")
+            .exists
+    }
+}
+
+struct RecordingClient {
+    attached: Arc<AtomicBool>,
+}
+
+struct FailingAttacher;
+
+struct BaselineTermAttacher<'a> {
+    runner: &'a RecordingRunner,
+}
+
+impl AdmissionAttacher for FailingAttacher {
+    type Client = ();
+
+    fn attach(&self, _plan: &AdmissionPlan) -> Result<Self::Client, String> {
+        Err("scripted ConPTY failure".to_owned())
+    }
+}
+
+impl AdmissionAttacher for BaselineTermAttacher<'_> {
+    type Client = RecordingClient;
+
+    fn attach(&self, plan: &AdmissionPlan) -> Result<Self::Client, String> {
+        if plan
+            .args()
+            .iter()
+            .any(|argument| argument == "TERM=xterm-256color")
+        {
+            return Err("xterm-256color terminfo is unavailable".to_owned());
+        }
+        self.runner.attach(plan)
+    }
+}
+
+impl Drop for RecordingClient {
+    fn drop(&mut self) {
+        self.attached.store(false, Ordering::Release);
+    }
+}
+
+impl AdmissionAttacher for RecordingRunner {
+    type Client = RecordingClient;
+
+    fn attach(&self, plan: &AdmissionPlan) -> Result<Self::Client, String> {
+        self.attachment_plans
+            .lock()
+            .expect("attachment plans lock")
+            .push((plan.program().to_owned(), plan.args().to_vec()));
+        if !plan.args().iter().any(|argument| argument == "-E")
+            && let Some(value) = plan.args().iter().find_map(|argument| {
+                argument
+                    .to_str()
+                    .and_then(|argument| argument.strip_prefix("GHOSTHUB_PROBE="))
+            })
+        {
+            value.clone_into(&mut self.admission_environment.lock().expect("environment lock"));
+        }
+        self.admission_attached.store(true, Ordering::Release);
+        Ok(RecordingClient {
+            attached: Arc::clone(&self.admission_attached),
+        })
     }
 }
 
 impl CommandRunner for RecordingRunner {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the scripted runner records one subprocess boundary"
+    )]
     fn run(
         &self,
         program: &OsStr,
         args: &[OsString],
         _cancellation: &CancellationToken,
-        _timeout: std::time::Duration,
+        timeout: std::time::Duration,
     ) -> io::Result<CommandOutput> {
         self.calls
             .lock()
             .expect("calls lock")
             .push((program.to_owned(), args.to_vec()));
+        self.timeouts.lock().expect("timeouts lock").push(timeout);
+        if self
+            .admission_failure
+            .is_some_and(|failed| admission_command(args).is_some_and(|command| command == failed))
+        {
+            let mut late_creation = self.late_creation.lock().expect("late creation lock");
+            if late_creation.enabled {
+                late_creation.session = argument_after(args, "-s").map(str::to_owned);
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "scripted command completed after its caller timed out",
+                ));
+            }
+            return Err(if admission_command(args) == Some("mkdir") {
+                self.admission_directory
+                    .lock()
+                    .expect("admission directory lock")
+                    .create_after_next_remove = true;
+                io::Error::new(io::ErrorKind::TimedOut, "scripted admission timeout")
+            } else {
+                io::Error::other("scripted admission failure")
+            });
+        }
+        if args.iter().any(|argument| argument == "/usr/bin/mkdir") {
+            self.admission_directory
+                .lock()
+                .expect("admission directory lock")
+                .exists = true;
+            return Ok(output(0, "", ""));
+        }
+        if args.iter().any(|argument| argument == "/usr/bin/rm") {
+            let mut directory = self
+                .admission_directory
+                .lock()
+                .expect("admission directory lock");
+            directory.exists = false;
+            if directory.create_after_next_remove {
+                directory.exists = true;
+                directory.create_after_next_remove = false;
+            }
+            return Ok(output(0, "", ""));
+        }
+        if args.iter().any(|argument| argument == "/usr/bin/test") {
+            let exists = self
+                .admission_directory
+                .lock()
+                .expect("admission directory lock")
+                .exists;
+            return Ok(output(i32::from(exists), "", ""));
+        }
+        let admission_command = admission_command(args);
+        if matches!(admission_command, Some("kill-session" | "kill-server")) {
+            let mut late_creation = self.late_creation.lock().expect("late creation lock");
+            let targets_late_session = admission_command == Some("kill-server")
+                || argument_after(args, "-t").is_some_and(|target| {
+                    late_creation
+                        .session
+                        .as_deref()
+                        .is_some_and(|session| target.trim_start_matches('=') == session)
+                });
+            if late_creation.enabled && targets_late_session {
+                late_creation.cleanup_attempts += 1;
+                if late_creation.present {
+                    late_creation.present = false;
+                } else if late_creation.cleanup_attempts == 1 {
+                    late_creation.present = true;
+                }
+            }
+        }
+        let mut status_failure = self
+            .admission_status_failure
+            .lock()
+            .expect("status failure lock");
+        if status_failure
+            .as_ref()
+            .is_some_and(|failed| admission_command == Some(failed.command))
+        {
+            let failure = status_failure.take().expect("status failure");
+            return Ok(output(failure.status, "", failure.stderr));
+        }
+        if let Some(output) = admission_output(
+            args,
+            &self.admission_identity_count,
+            &self.admission_environment,
+            &self.admission_attached,
+            &self.removed_sessions,
+            &self.admission_sessions,
+            self.namespaces_are_isolated,
+            self.exact_targets_are_strict,
+        ) {
+            return Ok(output);
+        }
         self.outputs
             .lock()
             .expect("outputs lock")
@@ -49,12 +401,291 @@ impl CommandRunner for RecordingRunner {
     }
 }
 
+fn is_admission_call(args: &[OsString]) -> bool {
+    args.iter().any(|argument| {
+        argument.to_str().is_some_and(|argument| {
+            argument.starts_with("ghv-") || argument.starts_with("/tmp/ghosthub-tmux-probe.")
+        })
+    }) || args.last().is_some_and(|argument| argument == "-V")
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "the admission simulator keeps each tmux command's state transition visible"
+)]
+fn admission_output(
+    args: &[OsString],
+    identity_count: &Mutex<u32>,
+    environment: &Mutex<String>,
+    attached: &AtomicBool,
+    removed_sessions: &Mutex<HashSet<String>>,
+    sessions: &Mutex<HashSet<(String, String)>>,
+    namespaces_are_isolated: bool,
+    exact_targets_are_strict: bool,
+) -> Option<CommandOutput> {
+    if args.last().is_some_and(|argument| argument == "-V") {
+        return Some(output(0, "tmux 3.4\n", ""));
+    }
+    if !is_admission_call(args) {
+        return None;
+    }
+    let command = admission_command(args)?;
+    Some(match command {
+        "new-session" => {
+            let namespace = argument_after(args, "-L").unwrap_or_default().to_owned();
+            let session = argument_after(args, "-s").unwrap_or_default().to_owned();
+            sessions
+                .lock()
+                .expect("admission sessions lock")
+                .insert((namespace, session));
+            if let Some(value) = argument_after(args, "-e")
+                .and_then(|argument| argument.strip_prefix("GHOSTHUB_PROBE="))
+            {
+                value.clone_into(&mut environment.lock().expect("environment lock"));
+            }
+            output(0, "", "")
+        }
+        "set-option" => output(0, "", ""),
+        "rename-session" => {
+            let namespace = argument_after(args, "-L").unwrap_or_default().to_owned();
+            let old = argument_after(args, "-t")
+                .unwrap_or_default()
+                .trim_start_matches('=')
+                .to_owned();
+            let new = args
+                .last()
+                .expect("new session name")
+                .to_string_lossy()
+                .into_owned();
+            let mut sessions = sessions.lock().expect("admission sessions lock");
+            sessions.remove(&(namespace.clone(), old));
+            sessions.insert((namespace, new));
+            output(0, "", "")
+        }
+        "kill-session" => {
+            if let Some(target) = argument_after(args, "-t") {
+                sessions.lock().expect("admission sessions lock").remove(&(
+                    argument_after(args, "-L").unwrap_or_default().to_owned(),
+                    target.trim_start_matches('=').to_owned(),
+                ));
+                removed_sessions
+                    .lock()
+                    .expect("removed sessions lock")
+                    .insert(target.trim_start_matches('=').to_owned());
+            }
+            output(0, "", "")
+        }
+        "kill-server" => {
+            let namespace = argument_after(args, "-L").unwrap_or_default();
+            sessions
+                .lock()
+                .expect("admission sessions lock")
+                .retain(|(candidate, _)| candidate != namespace);
+            *identity_count.lock().expect("identity count lock") += 1;
+            output(0, "", "")
+        }
+        "set-environment" => {
+            *environment.lock().expect("environment lock") = args
+                .last()
+                .expect("environment value")
+                .to_string_lossy()
+                .into_owned();
+            output(0, "", "")
+        }
+        "show-environment" => output(
+            0,
+            &format!(
+                "GHOSTHUB_PROBE={}\n",
+                environment.lock().expect("environment lock")
+            ),
+            "",
+        ),
+        "list-sessions" => {
+            let count = *identity_count.lock().expect("identity count lock");
+            let namespace = argument_after(args, "-L").expect("isolated namespace");
+            let suffix = namespace
+                .strip_prefix("ghv-")
+                .expect("primary admission namespace");
+            let session = format!("ghc-{suffix}");
+            output(
+                0,
+                &format!(
+                    "{}\t$1\t{session}\n{}\t$1\t{session}-renamed\n",
+                    4242 + count,
+                    4242 + count
+                ),
+                "",
+            )
+        }
+        "list-clients" => output(
+            0,
+            if attached.load(Ordering::Acquire) {
+                "$1\n"
+            } else {
+                ""
+            },
+            "",
+        ),
+        "has-session" => {
+            let namespace = argument_after(args, "-L").unwrap_or_default();
+            let target = argument_after(args, "-t").unwrap_or_default();
+            let missing = (exact_targets_are_strict && target.ends_with("-o"))
+                || removed_sessions
+                    .lock()
+                    .expect("removed sessions lock")
+                    .contains(target.trim_start_matches('='));
+            let name = target.trim_start_matches('=');
+            let present = sessions
+                .lock()
+                .expect("admission sessions lock")
+                .iter()
+                .any(|(candidate_namespace, candidate_name)| {
+                    (!namespaces_are_isolated || candidate_namespace == namespace)
+                        && if exact_targets_are_strict || !target.starts_with('=') {
+                            candidate_name == name
+                        } else {
+                            candidate_name.starts_with(name)
+                        }
+                });
+            if !missing && present {
+                output(0, "", "")
+            } else {
+                output(1, "", "can't find session")
+            }
+        }
+        other => panic!("unexpected admission command: {other}"),
+    })
+}
+
+fn admission_command(args: &[OsString]) -> Option<&str> {
+    if args.last().is_some_and(|argument| argument == "-V") {
+        return Some("-V");
+    }
+    args.iter().find_map(|argument| {
+        let argument = argument.to_str()?;
+        if argument == "/usr/bin/mkdir" {
+            return Some("mkdir");
+        }
+        matches!(
+            argument,
+            "new-session"
+                | "kill-session"
+                | "kill-server"
+                | "show-environment"
+                | "set-environment"
+                | "set-option"
+                | "list-sessions"
+                | "list-clients"
+                | "has-session"
+                | "rename-session"
+        )
+        .then_some(argument)
+    })
+}
+
+fn argument_after<'a>(args: &'a [OsString], flag: &str) -> Option<&'a str> {
+    args.windows(2)
+        .find_map(|pair| (pair[0] == flag).then(|| pair[1].to_str()).flatten())
+}
+
+fn has_tmux_environment_scrub(args: &[OsString]) -> bool {
+    args.windows(7).any(|window| {
+        window
+            == [
+                "/usr/bin/env",
+                "-u",
+                "TMUX",
+                "-u",
+                "TMUX_PANE",
+                "-u",
+                "TMUX_TMPDIR",
+            ]
+    })
+}
+
+fn assert_private_admission_isolation(
+    admission_calls: &[&(OsString, Vec<OsString>)],
+    attachment_plans: &[(OsString, Vec<OsString>)],
+) {
+    let private_path = admission_calls
+        .iter()
+        .find(|(_, args)| args.iter().any(|argument| argument == "/usr/bin/mkdir"))
+        .and_then(|(_, args)| args.last())
+        .expect("private directory path")
+        .to_string_lossy();
+    let private_tmpdir = format!("TMUX_TMPDIR={private_path}");
+    let nonce = private_path
+        .rsplit('-')
+        .next()
+        .expect("private directory nonce");
+    assert_eq!(nonce.len(), 32);
+    let name_nonce = &nonce[..16];
+    assert!(
+        admission_calls
+            .iter()
+            .filter(|(_, args)| args.iter().any(|argument| argument == "/usr/bin/tmux"))
+            .all(|(_, args)| {
+                args.iter()
+                    .any(|argument| argument == OsStr::new(&private_tmpdir))
+            }),
+        "every admission tmux command must use the private socket root"
+    );
+    assert!(attachment_plans.iter().all(|(_, args)| {
+        args.iter()
+            .any(|argument| argument == OsStr::new(&private_tmpdir))
+            && has_tmux_environment_scrub(args)
+    }));
+    assert!(admission_calls.iter().all(|(_, args)| {
+        args.iter()
+            .filter_map(|argument| argument.to_str())
+            .all(|argument| {
+                !argument.starts_with("ghv-")
+                    && !argument.starts_with("ghc-")
+                    && !argument.starts_with("ghp-")
+                    || argument.contains(name_nonce)
+            })
+    }));
+    let mktemp_index = admission_calls
+        .iter()
+        .position(|(_, args)| args.iter().any(|argument| argument == "/usr/bin/mkdir"))
+        .expect("private directory creation");
+    let first_create_index = admission_calls
+        .iter()
+        .position(|(_, args)| args.iter().any(|argument| argument == "new-session"))
+        .expect("first admission session creation");
+    let remove_index = admission_calls
+        .iter()
+        .rposition(|(_, args)| args.iter().any(|argument| argument == "/usr/bin/rm"))
+        .expect("private directory cleanup");
+    assert!(mktemp_index < first_create_index);
+    assert!(remove_index > first_create_index);
+}
+
 fn output(status: i32, stdout: &str, stderr: &str) -> CommandOutput {
     CommandOutput {
         status,
         stdout: stdout.as_bytes().to_vec(),
         stderr: stderr.as_bytes().to_vec(),
     }
+}
+
+fn discover(host: &WslHost<RecordingRunner>) -> Result<host::HostSnapshot, host::HostError> {
+    host.discover(host.runner())
+}
+
+fn test_host(config: WslConfig, runner: RecordingRunner) -> WslHost<RecordingRunner> {
+    WslHost::new(
+        config,
+        runner,
+        WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
+            .expect("absolute system WSL path"),
+    )
+}
+
+#[test]
+fn rejects_a_bare_wsl_executable_name() {
+    assert!(WslExecutable::from_absolute("wsl.exe").is_err());
 }
 
 fn instance_output() -> CommandOutput {
@@ -81,20 +712,19 @@ fn retries_discovery_when_the_distro_restarts_between_crossings() {
         old,
         output(0, "4242\t$3\t1700000000\tstale\t0\n", ""),
         new.clone(),
-        new.clone(),
         output(0, "5252\t$4\t1700000001\tfresh\t0\n", ""),
         new,
     ]);
-    let host = WslHost::new(
+    let host = test_host(
         WslConfig::with_distro("Ubuntu").expect("valid config"),
         runner,
     );
 
-    let snapshot = host.discover().expect("retry stable discovery");
+    let snapshot = discover(&host).expect("retry stable discovery");
 
     assert_eq!(snapshot.runtime().init_start_ticks(), 200);
     assert_eq!(snapshot.sessions()[0].name(), "fresh");
-    assert_eq!(host.runner().calls().len(), 6);
+    assert_eq!(host.runner().calls().len(), 5);
 }
 
 #[test]
@@ -109,19 +739,19 @@ fn rejects_malformed_runtime_and_session_identity() {
             "",
         ),
     ] {
-        let host = WslHost::new(
+        let host = test_host(
             WslConfig::with_distro("Ubuntu").expect("valid config"),
             RecordingRunner::new(vec![runtime, output(0, "", "")]),
         );
         assert_eq!(
-            host.discover()
+            discover(&host)
                 .expect_err("identity must be rejected")
                 .kind(),
             HostErrorKind::MalformedOutput
         );
     }
 
-    let host = WslHost::new(
+    let host = test_host(
         WslConfig::with_distro("Ubuntu").expect("valid config"),
         RecordingRunner::new(vec![
             instance_output(),
@@ -129,7 +759,7 @@ fn rejects_malformed_runtime_and_session_identity() {
         ]),
     );
     assert_eq!(
-        host.discover()
+        discover(&host)
             .expect_err("session ID must be rejected")
             .kind(),
         HostErrorKind::MalformedOutput
@@ -148,9 +778,9 @@ fn default_distro_with_no_tmux_server_is_empty_inventory() {
         ),
         instance_output(),
     ]);
-    let host = WslHost::new(WslConfig::default(), runner);
+    let host = test_host(WslConfig::default(), runner);
 
-    let snapshot = host.discover().expect("no server is not an error");
+    let snapshot = discover(&host).expect("no server is not an error");
 
     assert_eq!(snapshot.endpoint().distro(), "Ubuntu");
     assert!(snapshot.sessions().is_empty());
@@ -165,12 +795,12 @@ fn discovers_identity_in_one_tmux_crossing() {
         output(0, "4242\t$3\t1700000000\twork name\t1\n", ""),
         instance_output(),
     ]);
-    let host = WslHost::new(
+    let host = test_host(
         WslConfig::with_distro("Ubuntu").expect("valid config"),
         runner,
     );
 
-    let snapshot = host.discover().expect("discover sessions");
+    let snapshot = discover(&host).expect("discover sessions");
     let session = snapshot.sessions().first().expect("one session");
 
     assert_eq!(session.name(), "work name");
@@ -182,17 +812,404 @@ fn discovers_identity_in_one_tmux_crossing() {
 }
 
 #[test]
-fn attach_plan_preserves_exact_name_as_one_argument() {
+fn admission_uses_inert_sessions_and_always_cleans_its_namespaces() {
+    let runner = RecordingRunner::new(vec![
+        instance_output(),
+        output(0, "4242\t$3\t1700000000\twork\t0\n", ""),
+        instance_output(),
+    ]);
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        runner,
+    );
+
+    discover(&host).expect("admit tmux and discover sessions");
+
+    let calls = host.runner().all_calls();
+    let admission_calls = calls
+        .iter()
+        .filter(|(_, args)| is_admission_call(args))
+        .collect::<Vec<_>>();
+    let created = admission_calls
+        .iter()
+        .filter(|(_, args)| args.iter().any(|argument| argument == "new-session"))
+        .collect::<Vec<_>>();
+    assert_eq!(created.len(), 4);
+    assert!(created.iter().all(|(_, args)| {
+        args.iter()
+            .any(|argument| argument == "exec /usr/bin/sleep 60")
+    }));
+    assert_eq!(
+        created
+            .iter()
+            .filter(|(_, args)| args.iter().any(|argument| argument == "-A"))
+            .count(),
+        0
+    );
+    assert!(admission_calls.iter().any(|(_, args)| {
+        args.iter().any(|argument| argument == "rename-session")
+            && args
+                .last()
+                .is_some_and(|argument| argument.to_string_lossy().ends_with("-renamed"))
+    }));
+    assert_eq!(
+        admission_calls
+            .iter()
+            .filter(|(_, args)| args.iter().any(|argument| argument == "list-sessions"))
+            .count(),
+        3
+    );
+    assert!(admission_calls.iter().any(|(_, args)| {
+        args.iter().any(|argument| argument == "has-session")
+            && argument_after(args, "-t").is_some_and(|target| target.ends_with("-old"))
+    }));
+    let captured_attachments = admission_calls
+        .iter()
+        .filter(|(_, args)| args.iter().any(|argument| argument == "attach-session"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        captured_attachments.len(),
+        0,
+        "captured control-mode processes are not valid attachment evidence"
+    );
+    let attachment_plans = host.runner().attachment_plans();
+    assert_eq!(attachment_plans.len(), 3);
+    assert_eq!(
+        attachment_plans
+            .iter()
+            .filter(|(_, args)| {
+                args.iter().any(|argument| argument == "new-session")
+                    && args.iter().any(|argument| argument == "-A")
+            })
+            .count(),
+        1
+    );
+    assert_eq!(
+        attachment_plans
+            .iter()
+            .filter(|(_, args)| args.iter().any(|argument| argument == "-E"))
+            .count(),
+        1
+    );
+    assert!(
+        admission_calls
+            .iter()
+            .filter(|(_, args)| args.iter().any(|argument| argument == "kill-server"))
+            .count()
+            >= 3
+    );
+    assert_private_admission_isolation(&admission_calls, &attachment_plans);
+}
+
+#[test]
+fn admission_does_not_require_xterm_256color_terminfo() {
+    let runner = RecordingRunner::new(vec![
+        instance_output(),
+        output(0, "4242\t$3\t1700000000\twork\t0\n", ""),
+        instance_output(),
+    ]);
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        runner,
+    );
+    let attacher = BaselineTermAttacher {
+        runner: host.runner(),
+    };
+
+    host.discover(&attacher)
+        .expect("baseline xterm admission succeeds without xterm-256color");
+
+    let plans = host.runner().attachment_plans();
+    assert_eq!(plans.len(), 3);
+    assert!(plans.iter().all(|(_, args)| {
+        args.iter().any(|argument| argument == "TERM=xterm")
+            && !args
+                .iter()
+                .any(|argument| argument == "TERM=xterm-256color")
+    }));
+}
+
+#[test]
+fn admission_failure_before_isolation_cleans_only_created_sessions() {
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        RecordingRunner::failing_admission("show-environment"),
+    );
+
+    discover(&host).expect_err("admission must fail");
+
+    let calls = host.runner().all_calls();
+    assert!(
+        !calls
+            .iter()
+            .any(|(_, args)| { args.iter().any(|argument| argument == "kill-server") })
+    );
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|(_, args)| args.iter().any(|argument| argument == "kill-session"))
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn timed_out_session_creation_is_prearmed_for_cleanup() {
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        RecordingRunner::timing_out_after_creation("new-session"),
+    );
+
+    let error = discover(&host).expect_err("late session creation must still time out");
+
+    assert_eq!(error.kind(), HostErrorKind::Timeout);
+    let calls = host.runner().all_calls();
+    let created = calls
+        .iter()
+        .find(|(_, args)| args.iter().any(|argument| argument == "new-session"))
+        .and_then(|(_, args)| argument_after(args, "-s"))
+        .expect("attempted session name");
+    let cleanup_target = format!("={created}");
+    assert!(calls.iter().any(|(_, args)| {
+        args.iter().any(|argument| argument == "kill-session")
+            && argument_after(args, "-t") == Some(cleanup_target.as_str())
+    }));
+    let (late_session_present, cleanup_attempts) = host.runner().late_creation_state();
+    assert!(
+        cleanup_attempts > 1,
+        "ambiguous creation must be terminated throughout the settle window"
+    );
+    assert!(
+        !late_session_present,
+        "cleanup after the simulated late completion must win"
+    );
+    for ((_, args), timeout) in calls.iter().zip(host.runner().all_timeouts()) {
+        if args
+            .iter()
+            .any(|argument| matches!(argument.to_str(), Some("kill-session" | "kill-server")))
+        {
+            assert!(timeout <= std::time::Duration::from_millis(500));
+        }
+    }
+}
+
+#[test]
+fn cancelled_admission_directory_creation_cleans_the_preselected_path() {
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        RecordingRunner::failing_admission("mkdir"),
+    );
+
+    let error = discover(&host).expect_err("directory creation must time out");
+
+    assert_eq!(error.kind(), HostErrorKind::Timeout);
+    let calls = host.runner().all_calls();
+    let mkdir_path = calls
+        .iter()
+        .find(|(_, args)| args.iter().any(|argument| argument == "/usr/bin/mkdir"))
+        .and_then(|(_, args)| args.last())
+        .expect("preselected mkdir path");
+    let remove_path = calls
+        .iter()
+        .rfind(|(_, args)| args.iter().any(|argument| argument == "/usr/bin/rm"))
+        .and_then(|(_, args)| args.last())
+        .expect("cleanup path");
+    assert_eq!(mkdir_path, remove_path);
+    assert!(
+        calls
+            .iter()
+            .filter(|(_, args)| args.iter().any(|argument| argument == "/usr/bin/rm"))
+            .count()
+            > 1,
+        "uncertain creation must keep removing through the duration-based settle window"
+    );
+    assert!(calls.iter().any(|(_, args)| {
+        args.iter().any(|argument| argument == "/usr/bin/test") && args.last() == Some(remove_path)
+    }));
+    assert!(
+        !host.runner().admission_directory_exists(),
+        "a removal after the near-deadline simulated mkdir must win"
+    );
+    assert!(
+        !calls
+            .iter()
+            .any(|(_, args)| args.iter().any(|argument| argument == "/usr/bin/tmux"))
+    );
+}
+
+#[test]
+fn failed_real_client_probe_is_not_cached_as_verified() {
+    let runner = RecordingRunner::new(vec![
+        instance_output(),
+        instance_output(),
+        output(0, "4242\t$3\t1700000000\twork\t0\n", ""),
+        instance_output(),
+    ]);
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        runner,
+    );
+
+    let error = host
+        .discover(&FailingAttacher)
+        .expect_err("failed ConPTY proof must reject admission");
+    assert_eq!(error.kind(), HostErrorKind::Transport);
+
+    discover(&host).expect("a later real-client proof can retry admission");
+    assert_eq!(
+        host.runner()
+            .all_calls()
+            .iter()
+            .filter(|(_, args)| args.last().is_some_and(|argument| argument == "-V"))
+            .count(),
+        2,
+        "failed attachment evidence must never populate the verification cache"
+    );
+}
+
+#[test]
+fn ignored_namespaces_are_rejected_without_killing_any_server() {
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        RecordingRunner::ignoring_namespaces(),
+    );
+
+    assert_eq!(
+        discover(&host)
+            .expect_err("namespace isolation is required")
+            .kind(),
+        HostErrorKind::UnsupportedEnvironment
+    );
+
+    let calls = host.runner().all_calls();
+    assert!(
+        !calls
+            .iter()
+            .any(|(_, args)| { args.iter().any(|argument| argument == "kill-server") })
+    );
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|(_, args)| args.iter().any(|argument| argument == "kill-session"))
+            .count(),
+        3
+    );
+    assert!(
+        !calls
+            .iter()
+            .any(|(_, args)| { args.iter().any(|argument| argument == "attach-session") })
+    );
+}
+
+#[test]
+fn prefix_matching_exact_targets_are_rejected() {
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        RecordingRunner::ignoring_exact_targets(),
+    );
+
+    assert_eq!(
+        discover(&host)
+            .expect_err("prefix-matching exact targets must fail admission")
+            .kind(),
+        HostErrorKind::UnsupportedEnvironment
+    );
+    assert!(host.runner().all_calls().iter().any(|(_, args)| {
+        args.iter().any(|argument| argument == "has-session")
+            && argument_after(args, "-t").is_some_and(|target| target.ends_with("-o"))
+    }));
+}
+
+#[test]
+fn failed_primary_creation_never_reaches_server_wide_commands() {
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        RecordingRunner::rejecting_admission("new-session"),
+    );
+
+    assert_eq!(
+        discover(&host)
+            .expect_err("both namespace sessions must exist")
+            .kind(),
+        HostErrorKind::UnsupportedEnvironment
+    );
+
+    let calls = host.runner().all_calls();
+    assert!(!calls.iter().any(|(_, args)| {
+        args.iter()
+            .any(|argument| matches!(argument.to_str(), Some("kill-server" | "set-option")))
+    }));
+}
+
+#[test]
+fn preexisting_private_target_is_never_created_or_deleted() {
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        RecordingRunner::admission_status_failure("has-session", 0, ""),
+    );
+
+    let error = discover(&host).expect_err("preexisting target must stop admission");
+
+    assert_eq!(error.kind(), HostErrorKind::UnsupportedEnvironment);
+    let calls = host.runner().all_calls();
+    assert!(!calls.iter().any(|(_, args)| {
+        args.iter().any(|argument| {
+            matches!(
+                argument.to_str(),
+                Some("new-session" | "kill-session" | "kill-server")
+            )
+        })
+    }));
+}
+
+#[test]
+fn duplicate_creation_failure_never_grants_cleanup_authority() {
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        RecordingRunner::admission_status_failure("new-session", 1, "duplicate session"),
+    );
+
+    discover(&host).expect_err("duplicate creation must stop admission");
+
+    assert!(!host.runner().all_calls().iter().any(|(_, args)| {
+        args.iter()
+            .any(|argument| matches!(argument.to_str(), Some("kill-session" | "kill-server")))
+    }));
+}
+
+#[test]
+fn discovery_decodes_quoted_session_names_without_splitting_records() {
+    let runner = RecordingRunner::new(vec![
+        instance_output(),
+        output(
+            0,
+            "4242\t$3\t1700000000\twork\\ name\\tand\\nlines\t1\n",
+            "",
+        ),
+        instance_output(),
+    ]);
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        runner,
+    );
+
+    let snapshot = discover(&host).expect("discover quoted session name");
+
+    assert_eq!(snapshot.sessions()[0].name(), "work name\tand\nlines");
+}
+
+#[test]
+fn attach_plan_targets_the_fresh_stable_session_id() {
     let runner = RecordingRunner::new(vec![
         instance_output(),
         output(0, "4242\t$3\t1700000000\twork name\t0\n", ""),
         instance_output(),
     ]);
-    let host = WslHost::new(
+    let host = test_host(
         WslConfig::with_distro("Ubuntu").expect("valid config"),
         runner,
     );
-    let snapshot = host.discover().expect("discover sessions");
+    let snapshot = discover(&host).expect("discover sessions");
 
     let plan = host
         .attach_plan(
@@ -206,7 +1223,7 @@ fn attach_plan_preserves_exact_name_as_one_argument() {
         .map(|value| value.to_string_lossy().into_owned())
         .collect::<Vec<_>>();
 
-    assert_eq!(plan.program(), OsStr::new("wsl.exe"));
+    assert_eq!(plan.program(), OsStr::new(r"C:\Windows\System32\wsl.exe"));
     assert_eq!(
         args,
         vec![
@@ -214,12 +1231,21 @@ fn attach_plan_preserves_exact_name_as_one_argument() {
             "Ubuntu",
             "--exec",
             "/usr/bin/env",
+            "-u",
+            "TMUX",
+            "-u",
+            "TMUX_PANE",
+            "-u",
+            "TMUX_TMPDIR",
             "TERM=xterm-256color",
             "/usr/bin/tmux",
-            "attach-session",
-            "-E",
+            "if-shell",
+            "-F",
             "-t",
-            "=work name",
+            "=$3:",
+            "#{&&:#{==:#{pid},4242},#{&&:#{==:#{session_id},$3},#{==:#{session_created},1700000000}}}",
+            "attach-session -E -t =$3",
+            "display-message -p __ghosthub_attach_identity_mismatch_v1__",
         ]
     );
     assert!(!args.iter().any(|argument| argument == "new-session"));
@@ -238,8 +1264,8 @@ fn configured_socket_directory_is_explicit_environment() {
         output(0, "4242\t$3\t1700000000\twork\t0\n", ""),
         instance_output(),
     ]);
-    let host = WslHost::new(config, runner);
-    let snapshot = host.discover().expect("discover sessions");
+    let host = test_host(config, runner);
+    let snapshot = discover(&host).expect("discover sessions");
     let plan = host
         .attach_plan(
             snapshot.endpoint(),
@@ -254,17 +1280,37 @@ fn configured_socket_directory_is_explicit_environment() {
 
     assert!(args.iter().any(|arg| arg == "TMUX_TMPDIR=/run/user/1000"));
     assert!(args.iter().any(|arg| arg == "/opt/tmux/bin/tmux"));
+    assert!(has_tmux_environment_scrub(plan.args()));
+}
+
+#[test]
+fn discovery_scrubs_inherited_tmux_client_environment() {
+    let runner = RecordingRunner::new(vec![
+        instance_output(),
+        output(0, "4242\t$3\t1700000000\twork\t0\n", ""),
+        instance_output(),
+    ]);
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        runner,
+    );
+
+    discover(&host).expect("discover sessions");
+
+    assert!(host.runner().calls().iter().any(|(_, args)| {
+        args.iter().any(|argument| argument == "list-sessions") && has_tmux_environment_scrub(args)
+    }));
 }
 
 #[test]
 fn malformed_inventory_is_classified() {
     let runner = RecordingRunner::new(vec![instance_output(), output(0, "not-five-fields\n", "")]);
-    let host = WslHost::new(
+    let host = test_host(
         WslConfig::with_distro("Ubuntu").expect("valid config"),
         runner,
     );
 
-    let error = host.discover().expect_err("malformed output must fail");
+    let error = discover(&host).expect_err("malformed output must fail");
 
     assert_eq!(error.kind(), HostErrorKind::MalformedOutput);
 }
@@ -275,16 +1321,46 @@ fn missing_tmux_binary_is_classified() {
         instance_output(),
         output(127, "", "/usr/bin/env: '/missing/tmux': No such file\n"),
     ]);
-    let host = WslHost::new(
+    let host = test_host(
         WslConfig::configured(Some("Ubuntu".to_owned()), "/missing/tmux", None)
             .expect("valid config"),
         runner,
     );
 
-    let error = host.discover().expect_err("missing binary must fail");
+    let error = discover(&host).expect_err("missing binary must fail");
 
     assert_eq!(error.kind(), HostErrorKind::ExecutableNotFound);
     assert!(error.to_string().contains("/missing/tmux"));
+}
+
+#[test]
+fn missing_tmux_binary_during_admission_is_classified_before_capability_checks() {
+    let host = test_host(
+        WslConfig::configured(Some("Ubuntu".to_owned()), "/missing/tmux", None)
+            .expect("valid config"),
+        RecordingRunner::missing_admission_executable("-V"),
+    );
+
+    let error = host
+        .discover(host.runner())
+        .expect_err("missing binary must fail admission");
+
+    assert_eq!(error.kind(), HostErrorKind::ExecutableNotFound);
+    assert!(error.to_string().contains("/missing/tmux"));
+}
+
+#[test]
+fn permission_failure_during_admission_is_classified_before_capability_checks() {
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        RecordingRunner::admission_status_failure("show-environment", 1, "permission denied"),
+    );
+
+    let error = host
+        .discover(host.runner())
+        .expect_err("permission failure must fail admission");
+
+    assert_eq!(error.kind(), HostErrorKind::PermissionDenied);
 }
 
 #[test]
@@ -296,14 +1372,22 @@ fn rejects_wsl1_runtime_identity() {
          1 (init) S 0 1 1 0 -1 0 1 2 3 4 5 6 7 8 9 10 11 12 42 15\n",
         "",
     )]);
-    let host = WslHost::new(
+    let host = test_host(
         WslConfig::with_distro("Ubuntu").expect("valid config"),
         runner,
     );
 
-    let error = host.discover().expect_err("WSL1 must be rejected");
+    let error = discover(&host).expect_err("WSL1 must be rejected");
 
     assert_eq!(error.kind(), HostErrorKind::UnsupportedEnvironment);
+    let calls = host.runner().all_calls();
+    assert_eq!(calls.len(), 1, "runtime validation must precede admission");
+    assert!(
+        !calls[0]
+            .1
+            .iter()
+            .any(|argument| matches!(argument.to_str(), Some("/usr/bin/tmux" | "/usr/bin/mkdir")))
+    );
 }
 
 #[derive(Debug, Deserialize)]
@@ -350,12 +1434,12 @@ fn consumes_the_windows_hosted_posix_wsl_contract() {
         output(0, &fixture.inventory_output, ""),
         output(0, &fixture.instance_output, ""),
     ]);
-    let host = WslHost::new(
+    let host = test_host(
         WslConfig::configured(Some(fixture.distro), fixture.tmux_path, fixture.tmux_tmpdir)
             .expect("valid fixture config"),
         runner,
     );
-    let snapshot = host.discover().expect("discover fixture");
+    let snapshot = discover(&host).expect("discover fixture");
     let session = snapshot.sessions().first().expect("fixture session");
 
     assert_eq!(session.identity().server_pid(), fixture.expected.server_pid);
