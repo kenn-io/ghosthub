@@ -637,7 +637,7 @@ struct WorkspaceWindow: View {
                 isWorkspaceRestorationPending:
                 sceneModel.isWorkspaceRestorationPending,
                 suppressesAutomaticWorktreeSessionOpen:
-                sceneModel.suppressesAutomaticWorktreeSessionOpen,
+                sceneModel.suppressesSelectedWorktreeSessionOpen,
                 activeTmuxSession:
                 sceneModel.activeBorrowedTmuxSelection,
                 activeTmuxSessionIsConnected:

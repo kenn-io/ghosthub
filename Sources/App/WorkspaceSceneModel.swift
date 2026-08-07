@@ -91,6 +91,7 @@ final class WorktreeMutationCoordinator {
 
     enum Phase: Sendable {
         case began
+        case willRemove
         case ended
     }
 
@@ -152,6 +153,25 @@ final class WorktreeMutationCoordinator {
                 )
             )
         }
+    }
+
+    func prepareRemoval(
+        hostID: UUID,
+        projectIdentity: String,
+        worktrees: Set<RemovalTombstone>
+    ) {
+        let scope = Scope(
+            hostID: hostID,
+            projectIdentity: projectIdentity
+        )
+        guard activeScopes.contains(scope), !worktrees.isEmpty else { return }
+        eventSubject.send(
+            Event(
+                phase: .willRemove,
+                scope: scope,
+                removalTombstones: worktrees
+            )
+        )
     }
 }
 
@@ -347,6 +367,14 @@ final class WorkspaceSceneModel: ObservableObject {
         [UUID: TmuxPresentationKey] = [:]
     @Published private(set) var isWorkspaceRestorationPending = false
     @Published private(set) var suppressesAutomaticWorktreeSessionOpen = false
+    @Published private var explicitlyDismissedWorktreePresentationIDs:
+        Set<UUID> = []
+    var suppressesSelectedWorktreeSessionOpen: Bool {
+        suppressesAutomaticWorktreeSessionOpen
+            || selection.selectedWorktreeID.map {
+                explicitlyDismissedWorktreePresentationIDs.contains($0)
+            } == true
+    }
     private var pendingRestoration: WorkspaceWindowState?
     private var protectedRestorationProbeTask: Task<Void, Never>?
     private var protectedRestorationProbeID: UUID?
@@ -1048,6 +1076,9 @@ final class WorkspaceSceneModel: ObservableObject {
 
     func selectFromUser(_ newSelection: WorkspaceSelection) {
         cancelPendingRestoration()
+        if let worktreeID = newSelection.selectedWorktreeID {
+            explicitlyDismissedWorktreePresentationIDs.remove(worktreeID)
+        }
         selection = newSelection
         attachReplacedWorktreeSessionIfNeeded()
     }
@@ -1069,7 +1100,7 @@ final class WorkspaceSceneModel: ObservableObject {
               ),
               generation != activeGeneration
         else { return }
-        closeBorrowedTmuxSession(active)
+        invalidateBorrowedTmuxSession(active)
         openBorrowedTmuxSession(replacement)
     }
 
@@ -1470,6 +1501,11 @@ final class WorkspaceSceneModel: ObservableObject {
         guard let generation = worktree.generation else {
             throw KwtWorktreeError.removalTargetChanged
         }
+        let removalTombstone =
+            WorktreeMutationCoordinator.RemovalTombstone(
+                path: worktree.path,
+                generation: generation
+            )
 
         if request.sessionKillRequest == nil,
            let session = WorkspaceSidebarModel.tmuxSessionSelection(
@@ -1488,6 +1524,12 @@ final class WorkspaceSceneModel: ObservableObject {
             }
         }
 
+        worktreeMutationCoordinator.prepareRemoval(
+            hostID: mutationHostID,
+            projectIdentity: mutationProjectIdentity,
+            worktrees: [removalTombstone]
+        )
+
         do {
             if let sessionKillRequest = request.sessionKillRequest {
                 try await killTmuxSession(sessionKillRequest)
@@ -1504,12 +1546,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 )
             }
             cancelPendingRestoration()
-            removalTombstones.insert(
-                WorktreeMutationCoordinator.RemovalTombstone(
-                    path: worktree.path,
-                    generation: generation
-                )
-            )
+            removalTombstones.insert(removalTombstone)
         } catch {
             recordKwtUnavailability(error, hostID: project.hostID)
             throw error
@@ -1648,6 +1685,7 @@ final class WorkspaceSceneModel: ObservableObject {
         hostID: UUID
     ) {
         closeRetainedTmuxPresentations(forWorktreeIDs: [worktree.id])
+        explicitlyDismissedWorktreePresentationIDs.remove(worktree.id)
         if let inventory = kwtInventoriesByHost[hostID] {
             kwtInventoriesByHost[hostID] =
                 inventory.removingWorktree(atPath: worktree.path)
@@ -1660,7 +1698,7 @@ final class WorkspaceSceneModel: ObservableObject {
             in: snapshot,
             visibility: worktreeVisibility
         )
-        selectFromUser(removalSelection)
+        synchronizeSelection(removalSelection)
         updateWorkspaceInventoryState()
     }
 
@@ -2063,6 +2101,11 @@ final class WorkspaceSceneModel: ObservableObject {
                         }
                     }
                     self.applyInventoryOverlayIfNeeded()
+                    if case .success = result {
+                        self.reconcileRetainedTmuxPresentations(
+                            afterAuthoritativeInventoryFor: hostID
+                        )
+                    }
                     self.updateWorkspaceInventoryState()
                 }
             }
@@ -2089,6 +2132,14 @@ final class WorkspaceSceneModel: ObservableObject {
         switch event.phase {
         case .began:
             fencedWorktreeMutationScopes.insert(event.scope)
+        case .willRemove:
+            closeRetainedTmuxPresentations(
+                forWorktreeIDs: worktreeIDs(
+                    matching: event.removalTombstones,
+                    hostID: event.scope.hostID
+                )
+            )
+            return
         case .ended:
             fencedWorktreeMutationScopes.remove(event.scope)
             if !event.removalTombstones.isEmpty {
@@ -2125,17 +2176,12 @@ final class WorkspaceSceneModel: ObservableObject {
             }
             kwtInventoriesByHost[hostID] = inventory
         }
-        let removedIDs = Set<UUID>(
-            snapshot.worktrees.compactMap { worktree in
-                guard worktree.hostID == hostID,
-                      matches(worktree.path, worktree.generation)
-                else {
-                    return nil
-                }
-                return worktree.id
-            }
+        let removedIDs = worktreeIDs(
+            matching: tombstones,
+            hostID: hostID
         )
         closeRetainedTmuxPresentations(forWorktreeIDs: removedIDs)
+        explicitlyDismissedWorktreePresentationIDs.subtract(removedIDs)
         snapshot.worktrees.removeAll { removedIDs.contains($0.id) }
         snapshot.sessions.removeAll {
             guard let worktreeID = $0.worktreeID else { return false }
@@ -2148,6 +2194,22 @@ final class WorkspaceSceneModel: ObservableObject {
             visibility: worktreeVisibility
         )
         updateWorkspaceInventoryState()
+    }
+
+    private func worktreeIDs(
+        matching tombstones:
+        Set<WorktreeMutationCoordinator.RemovalTombstone>,
+        hostID: UUID
+    ) -> Set<UUID> {
+        Set(snapshot.worktrees.compactMap { worktree in
+            guard worktree.hostID == hostID,
+                  tombstones.contains(where: {
+                      $0.path == worktree.path
+                          && $0.generation == worktree.generation
+                  })
+            else { return nil }
+            return worktree.id
+        })
     }
 
     private func activeRemovalTombstones(
@@ -3312,6 +3374,9 @@ final class WorkspaceSceneModel: ObservableObject {
 
     func openBorrowedTmuxSession(_ selection: WorkspaceTmuxSessionSelection) {
         cancelPendingRestoration()
+        if let worktreeID = selection.worktreeID {
+            explicitlyDismissedWorktreePresentationIDs.remove(worktreeID)
+        }
         let hasPendingCreation = pendingCreatedTmuxSessions.values.contains {
             Self.sameTmuxSession($0, selection)
         }
@@ -3325,6 +3390,9 @@ final class WorkspaceSceneModel: ObservableObject {
 
     func createTmuxSession(_ selection: WorkspaceTmuxSessionSelection) {
         cancelPendingRestoration()
+        if let worktreeID = selection.worktreeID {
+            explicitlyDismissedWorktreePresentationIDs.remove(worktreeID)
+        }
         let hasPendingCreation = pendingCreatedTmuxSessions.values.contains {
             Self.sameTmuxSession($0, selection)
         }
@@ -3395,7 +3463,7 @@ final class WorkspaceSceneModel: ObservableObject {
                         : nil
                 }
             for replaced in replacedSelections {
-                closeBorrowedTmuxSession(replaced)
+                invalidateBorrowedTmuxSession(replaced)
             }
         }
         let key = TmuxPresentationKey(selection)
@@ -3405,7 +3473,7 @@ final class WorkspaceSceneModel: ObservableObject {
                     retained.handle
                 )
             if recreatesClosedAttachment {
-                closeBorrowedTmuxSession(retained.selection)
+                invalidateBorrowedTmuxSession(retained.selection)
             } else {
                 if retained.selection.worktreeGeneration == nil,
                    selection.worktreeGeneration != nil {
@@ -3495,6 +3563,36 @@ final class WorkspaceSceneModel: ObservableObject {
         retainedTmuxPresentations[TmuxPresentationKey(selection)]
     }
 
+    private func reconcileRetainedTmuxPresentations(
+        afterAuthoritativeInventoryFor hostID: UUID
+    ) {
+        let invalidSelections: [WorkspaceTmuxSessionSelection] =
+            retainedTmuxPresentations.values.compactMap { presentation in
+                let retained = presentation.selection
+                guard retained.hostID == hostID,
+                      let worktreeID = retained.worktreeID
+                else { return nil }
+                guard let worktree = snapshot.worktree(id: worktreeID),
+                      worktree.hostID == hostID,
+                      let current = WorkspaceSidebarModel
+                      .tmuxSessionSelection(for: worktree),
+                      Self.sameTmuxEndpoint(retained, current)
+                else { return retained }
+                if let retainedGeneration = retained.worktreeGeneration,
+                   let currentGeneration = current.worktreeGeneration,
+                   retainedGeneration != currentGeneration {
+                    return retained
+                }
+                return nil
+            }
+        for selection in invalidSelections {
+            invalidateBorrowedTmuxSession(selection)
+        }
+        explicitlyDismissedWorktreePresentationIDs.formIntersection(
+            Set(snapshot.worktrees.map(\.id))
+        )
+    }
+
     private func closeRetainedTmuxPresentations(
         forWorktreeIDs worktreeIDs: Set<UUID>
     ) {
@@ -3507,7 +3605,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 return presentation.selection
             }
         for selection in selections {
-            closeBorrowedTmuxSession(selection)
+            invalidateBorrowedTmuxSession(selection)
         }
     }
 
@@ -3603,7 +3701,23 @@ final class WorkspaceSceneModel: ObservableObject {
     }
 
     func closeBorrowedTmuxSession(_ selection: WorkspaceTmuxSessionSelection) {
+        closeBorrowedTmuxSession(selection, recordsExplicitDismissal: true)
+    }
+
+    private func invalidateBorrowedTmuxSession(
+        _ selection: WorkspaceTmuxSessionSelection
+    ) {
+        closeBorrowedTmuxSession(selection, recordsExplicitDismissal: false)
+    }
+
+    private func closeBorrowedTmuxSession(
+        _ selection: WorkspaceTmuxSessionSelection,
+        recordsExplicitDismissal: Bool
+    ) {
         cancelPendingRestoration()
+        if recordsExplicitDismissal, let worktreeID = selection.worktreeID {
+            explicitlyDismissedWorktreePresentationIDs.insert(worktreeID)
+        }
         let key = TmuxPresentationKey(selection)
         guard let presentation = retainedTmuxPresentations.removeValue(
             forKey: key
@@ -3723,7 +3837,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 Self.sameTmuxEndpoint($0.selection, tmuxSelection)
             }
         )?.selection {
-            closeBorrowedTmuxSession(retainedTarget)
+            invalidateBorrowedTmuxSession(retainedTarget)
         }
         if tmuxSelection.socketName == nil {
             tmuxSessionsByHost[tmuxSelection.hostID]?.removeAll {
@@ -4651,7 +4765,7 @@ final class WorkspaceSceneModel: ObservableObject {
             current: activeBorrowedTmuxLaunchMode,
             sessionConfirmedEnded: sessionConfirmedEnded
         )
-        closeBorrowedTmuxSession(selection)
+        invalidateBorrowedTmuxSession(selection)
         if recreateEndedNamedSession {
             guard let handle = presentTmuxSession(
                 selection,

@@ -61,6 +61,75 @@ struct WorkspaceTmuxDiscoveryTests {
         await model.shutdown()
     }
 
+    @MainActor
+    @Test("authoritative inventory removal closes retained presentation")
+    func authoritativeInventoryRemovalClosesRetainedPresentation() async throws {
+        let environment = try setupStandardEnvironment()
+        let generation = "0123456789abcdef0123456789abcdef"
+        var snapshot = environment.snapshot
+        snapshot.worktrees[0].generation = generation
+        snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-main"
+        let inventoryRemoved = LockedValue(false)
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            kwtInventoryLoader: { _ in
+                KwtHostInventory(projects: [
+                    KwtProjectInventory(
+                        project: KwtProjectRecord(
+                            repository: environment.project.scopedKey,
+                            name: environment.project.name,
+                            path: environment.project.rootPath,
+                            lastTouched: nil
+                        ),
+                        worktrees: inventoryRemoved.load() ? [] : [
+                            KwtWorktreeRecord(
+                                path: environment.worktree.path,
+                                branch: environment.worktree.branch,
+                                commitHash: "",
+                                isMain: true,
+                                createdAt: nil,
+                                generation: generation,
+                                repository: environment.project.scopedKey,
+                                sessionName: "kwt-ghosthub-main",
+                                tmuxSocketName: nil
+                            ),
+                        ],
+                        warning: nil
+                    ),
+                ])
+            },
+            tmuxSessionDiscovery: { _ in .success([]) },
+            startServices: true
+        )
+        await waitUntilMainActor {
+            model.isWorkspaceInventoryRefreshComplete
+                && model.snapshot.worktrees.count == 1
+        }
+        let worktree = try #require(model.snapshot.worktrees.first)
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: worktree)
+        )
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        #expect(model.retainedBorrowedTmuxPresentationCount == 1)
+
+        inventoryRemoved.withLock { $0 = true }
+        model.refreshKwtInventory()
+
+        await waitUntilMainActor {
+            model.snapshot.worktree(id: worktree.id) == nil
+                && model.retainedBorrowedTmuxPresentationCount == 0
+        }
+        #expect(surfaceStore.removedKeys.count == 1)
+        #expect(model.activeBorrowedTmuxSelection == nil)
+        await model.shutdown()
+    }
+
     private enum CreationKwtFailurePhase: CaseIterable, Sendable {
         case command
         case inventoryRefresh
@@ -578,6 +647,53 @@ struct WorkspaceTmuxDiscoveryTests {
         #expect(model.activeBorrowedTmuxSelection == second)
         #expect(model.retainedBorrowedTmuxPresentationCount == 1)
         #expect(surfaceStore.removedKeys.count == 1)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("closed worktree waits for explicit selection before reopening")
+    func closedWorktreeWaitsForExplicitSelection() async throws {
+        let environment = try setupStandardEnvironment()
+        var snapshot = environment.snapshot
+        snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-main"
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: { .success("/usr/bin/tmux") }
+        )
+        var userSelection = model.selection
+        userSelection.select(
+            .worktree(environment.worktree.id),
+            in: model.snapshot
+        )
+        model.selectFromUser(userSelection)
+        let tmuxSelection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(
+                for: userSelection,
+                in: model.snapshot
+            )
+        )
+        model.openBorrowedTmuxSession(tmuxSelection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+
+        model.closeBorrowedTmuxSession(tmuxSelection)
+
+        #expect(model.activeBorrowedTmuxSelection == nil)
+        #expect(model.retainedBorrowedTmuxPresentationCount == 0)
+        #expect(model.suppressesSelectedWorktreeSessionOpen)
+
+        model.synchronizeSelection(userSelection)
+        #expect(model.suppressesSelectedWorktreeSessionOpen)
+        #expect(surfaceStore.requestCount == 1)
+
+        model.selectFromUser(userSelection)
+        #expect(!model.suppressesSelectedWorktreeSessionOpen)
+        model.openBorrowedTmuxSession(tmuxSelection)
+        await waitUntilMainActor { surfaceStore.requestCount == 2 }
+        #expect(model.retainedBorrowedTmuxPresentationCount == 1)
         await model.shutdown()
     }
 

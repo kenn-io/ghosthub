@@ -256,6 +256,7 @@ struct WorkspaceWorktreeRemovalTests {
         let afterRemoval = inventory(environment)
         let coordinator = WorktreeMutationCoordinator()
         let pathGate = DispatchSemaphore(value: 0)
+        let removerHold = RemovalPreflightHold()
         let pathResolutions = LockedValue(0)
         let completedPathResolutions = LockedValue(0)
         let resolveTmuxPath: @Sendable ()
@@ -285,7 +286,9 @@ struct WorkspaceWorktreeRemovalTests {
                     ? beforeRemoval
                     : afterRemoval
             },
-            kwtWorktreeRemover: { _, _, _, _ in },
+            kwtWorktreeRemover: { _, _, _, _ in
+                _ = await removerHold.load(afterRemoval)
+            },
             worktreeMutationCoordinator: coordinator,
             tmuxSessionIdentityReader: { selection, host in
                 throw TmuxSessionKillError.sessionNotRunning(
@@ -314,10 +317,17 @@ struct WorkspaceWorktreeRemovalTests {
         #expect(secondModel.retainedBorrowedTmuxPresentationCount == 1)
 
         let request = try await firstModel.prepareWorktreeRemoval(removable.id)
-        try await firstModel.removeWorktree(request)
+        let removal = Task { @MainActor in
+            try await firstModel.removeWorktree(request)
+        }
+        for _ in 0 ..< 1_000 {
+            if await removerHold.started {
+                break
+            }
+            await Task.yield()
+        }
+        #expect(await removerHold.started)
 
-        #expect(firstModel.snapshot.worktree(id: removable.id) == nil)
-        #expect(secondModel.snapshot.worktree(id: removable.id) == nil)
         #expect(firstModel.retainedBorrowedTmuxPresentationCount == 0)
         #expect(secondModel.retainedBorrowedTmuxPresentationCount == 0)
 
@@ -331,6 +341,11 @@ struct WorkspaceWorktreeRemovalTests {
         }
         #expect(firstSurfaces.requestedConfigurations.isEmpty)
         #expect(secondSurfaces.requestedConfigurations.isEmpty)
+
+        await removerHold.release()
+        try await removal.value
+        #expect(firstModel.snapshot.worktree(id: removable.id) == nil)
+        #expect(secondModel.snapshot.worktree(id: removable.id) == nil)
         await firstModel.shutdown()
         await secondModel.shutdown()
     }
