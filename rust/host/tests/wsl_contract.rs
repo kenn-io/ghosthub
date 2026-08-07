@@ -53,6 +53,8 @@ struct LateCreationState {
     session: Option<String>,
     present: bool,
     cleanup_attempts: usize,
+    cleanup_failures_remaining: usize,
+    cleanup_verification_failures_remaining: usize,
 }
 
 impl RecordingRunner {
@@ -181,6 +183,20 @@ impl RecordingRunner {
             .lock()
             .expect("late creation lock")
             .enabled = true;
+        runner
+    }
+
+    fn with_cleanup_failures(kill_failures: usize, verification_failures: usize) -> Self {
+        let runner = Self::new(vec![
+            instance_output(),
+            output(0, "4242\t$3\t1700000000\t0\t4\twork\n", ""),
+            instance_output(),
+        ]);
+        {
+            let mut cleanup = runner.late_creation.lock().expect("cleanup state lock");
+            cleanup.cleanup_failures_remaining = kill_failures;
+            cleanup.cleanup_verification_failures_remaining = verification_failures;
+        }
         runner
     }
 
@@ -352,6 +368,27 @@ impl CommandRunner for RecordingRunner {
             return Ok(output(i32::from(exists), "", ""));
         }
         let admission_command = admission_command(args);
+        if timeout <= std::time::Duration::from_millis(500) {
+            let mut cleanup = self.late_creation.lock().expect("cleanup state lock");
+            if matches!(admission_command, Some("kill-session" | "kill-server"))
+                && cleanup.cleanup_failures_remaining > 0
+            {
+                cleanup.cleanup_failures_remaining -= 1;
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "scripted cleanup termination timeout",
+                ));
+            }
+            if admission_command == Some("list-sessions")
+                && cleanup.cleanup_verification_failures_remaining > 0
+            {
+                cleanup.cleanup_verification_failures_remaining -= 1;
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "scripted cleanup verification timeout",
+                ));
+            }
+        }
         if matches!(admission_command, Some("kill-session" | "kill-server")) {
             let mut late_creation = self.late_creation.lock().expect("late creation lock");
             let targets_late_session = admission_command == Some("kill-server")
@@ -504,6 +541,14 @@ fn admission_output(
         "list-sessions" => {
             let count = *identity_count.lock().expect("identity count lock");
             let namespace = argument_after(args, "-L").expect("isolated namespace");
+            if !sessions
+                .lock()
+                .expect("admission sessions lock")
+                .iter()
+                .any(|(candidate, _)| candidate == namespace)
+            {
+                return Some(output(1, "", "no server running on private socket"));
+            }
             let suffix = namespace
                 .strip_prefix("ghv-")
                 .expect("primary admission namespace");
@@ -662,6 +707,23 @@ fn assert_private_admission_isolation(
         .expect("private directory cleanup");
     assert!(mktemp_index < first_create_index);
     assert!(remove_index > first_create_index);
+}
+
+fn assert_cleanup_verification_count(
+    admission_calls: &[&(OsString, Vec<OsString>)],
+    expected: usize,
+) {
+    assert_eq!(
+        admission_calls
+            .iter()
+            .filter(|(_, args)| {
+                args.iter().any(|argument| argument == "list-sessions")
+                    && !args.iter().any(|argument| argument == "-F")
+            })
+            .count(),
+        expected,
+        "cleanup verifies each private server is absent"
+    );
 }
 
 fn output(status: i32, stdout: &str, stderr: &str) -> CommandOutput {
@@ -862,15 +924,20 @@ fn admission_uses_inert_sessions_and_always_cleans_its_namespaces() {
     assert_eq!(
         admission_calls
             .iter()
-            .filter(|(_, args)| args.iter().any(|argument| argument == "list-sessions"))
+            .filter(|(_, args)| {
+                args.iter().any(|argument| argument == "list-sessions")
+                    && args.iter().any(|argument| argument == "-F")
+            })
             .count(),
         3
     );
     assert!(admission_calls.iter().all(|(_, args)| {
         !args.iter().any(|argument| argument == "list-sessions")
+            || !args.iter().any(|argument| argument == "-F")
             || argument_after(args, "-F")
                 == Some("#{pid}\t#{session_id}\t#{n:session_name}\t#{session_name}")
     }));
+    assert_cleanup_verification_count(&admission_calls, 2);
     assert!(admission_calls.iter().any(|(_, args)| {
         args.iter().any(|argument| argument == "has-session")
             && argument_after(args, "-t").is_some_and(|target| target.ends_with("-old"))
@@ -939,6 +1006,53 @@ fn admission_does_not_require_xterm_256color_terminfo() {
                 .iter()
                 .any(|argument| argument == "TERM=xterm-256color")
     }));
+}
+
+#[test]
+fn cleanup_retries_failed_termination_before_removing_the_socket_root() {
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        RecordingRunner::with_cleanup_failures(1, 0),
+    );
+
+    discover(&host).expect("admission succeeds after cleanup retry");
+
+    let calls = host.runner().all_calls();
+    assert!(
+        calls
+            .iter()
+            .filter(|(_, args)| args.iter().any(|argument| argument == "kill-server"))
+            .count()
+            > 2,
+        "a failed private-server termination is retried"
+    );
+    assert!(
+        !host.runner().admission_directory_exists(),
+        "the socket root is removed only after absence is confirmed"
+    );
+}
+
+#[test]
+fn cleanup_preserves_the_socket_root_when_absence_cannot_be_confirmed() {
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        RecordingRunner::with_cleanup_failures(0, usize::MAX),
+    );
+
+    discover(&host).expect("admission result is independent of best-effort cleanup reporting");
+
+    assert!(
+        host.runner().admission_directory_exists(),
+        "an unverified server must remain reachable through its private socket root"
+    );
+    assert!(
+        !host
+            .runner()
+            .all_calls()
+            .iter()
+            .any(|(_, args)| args.iter().any(|argument| argument == "/usr/bin/rm")),
+        "unconfirmed termination must not unlink the private socket path"
+    );
 }
 
 #[test]

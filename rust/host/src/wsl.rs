@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -1221,20 +1222,22 @@ impl<R: CommandRunner> WslHost<R> {
         tmux_tmpdir: &str,
         tmux_args: &[&str],
         timeout: Duration,
-    ) {
+    ) -> Option<CommandOutput> {
         if timeout.is_zero() {
-            return;
+            return None;
         }
         let mut args = pinned_prefix(endpoint);
         append_tmux_environment(&mut args, None, Some(tmux_tmpdir), &[]);
         args.push(OsString::from(&self.config.tmux_binary));
         args.extend(tmux_args.iter().map(OsString::from));
-        let _ignored = self.runner.run(
-            self.wsl_executable.as_os_str(),
-            &args,
-            &CancellationToken::new(),
-            timeout.min(CLEANUP_COMMAND_TIMEOUT),
-        );
+        self.runner
+            .run(
+                self.wsl_executable.as_os_str(),
+                &args,
+                &CancellationToken::new(),
+                timeout.min(CLEANUP_COMMAND_TIMEOUT),
+            )
+            .ok()
     }
 
     fn read_admission_identity(
@@ -1602,20 +1605,14 @@ impl<'a, R: CommandRunner> AdmissionCleanup<'a, R> {
         self.isolated_namespaces = Some(namespaces.into_iter().cloned().collect());
     }
 
-    fn cleanup_pass_budget(&self) -> Duration {
-        let commands = self
-            .isolated_namespaces
-            .as_ref()
-            .map_or(self.exact_sessions.len(), Vec::len);
-        CLEANUP_COMMAND_TIMEOUT.saturating_mul(u32::try_from(commands).unwrap_or(u32::MAX))
-    }
-
-    fn terminate_mux_once(&self, budget: Duration) {
+    fn terminate_mux_once(&self, budget: Duration) -> bool {
         let deadline = Instant::now() + budget;
-        if let Some(namespaces) = &self.isolated_namespaces {
-            for namespace in namespaces {
+        let mut namespaces = BTreeSet::new();
+        if let Some(isolated_namespaces) = &self.isolated_namespaces {
+            for namespace in isolated_namespaces {
+                let _inserted = namespaces.insert(namespace.clone());
                 let remaining = deadline.saturating_duration_since(Instant::now());
-                self.host.run_tmux_cleanup(
+                let _output = self.host.run_tmux_cleanup(
                     self.endpoint,
                     &self.tmux_tmpdir,
                     &["-f", "/dev/null", "-L", namespace, "kill-server"],
@@ -1624,9 +1621,10 @@ impl<'a, R: CommandRunner> AdmissionCleanup<'a, R> {
             }
         } else {
             for (namespace, session) in &self.exact_sessions {
+                let _inserted = namespaces.insert(namespace.clone());
                 let target = format!("={session}");
                 let remaining = deadline.saturating_duration_since(Instant::now());
-                self.host.run_tmux_cleanup(
+                let _output = self.host.run_tmux_cleanup(
                     self.endpoint,
                     &self.tmux_tmpdir,
                     &[
@@ -1642,26 +1640,51 @@ impl<'a, R: CommandRunner> AdmissionCleanup<'a, R> {
                 );
             }
         }
+        namespaces.into_iter().all(|namespace| {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            self.host
+                .run_tmux_cleanup(
+                    self.endpoint,
+                    &self.tmux_tmpdir,
+                    &["-f", "/dev/null", "-L", &namespace, "list-sessions"],
+                    remaining,
+                )
+                .is_some_and(|output| {
+                    output.status != 0 && is_no_server(&String::from_utf8_lossy(&output.stderr))
+                })
+        })
     }
 }
 
 impl<R: CommandRunner> Drop for AdmissionCleanup<'_, R> {
     fn drop(&mut self) {
-        if self.server_creation_uncertain {
+        let confirmed_absent = if self.server_creation_uncertain {
             let start = Instant::now();
+            let mut confirmed_absent = false;
             settle_uncertain_cleanup(
                 || start.elapsed(),
                 thread::sleep,
-                |remaining| self.terminate_mux_once(remaining),
+                |remaining| confirmed_absent = self.terminate_mux_once(remaining),
             );
+            confirmed_absent
         } else {
-            self.terminate_mux_once(self.cleanup_pass_budget());
+            let start = Instant::now();
+            retry_cleanup_until_absent(
+                || start.elapsed(),
+                thread::sleep,
+                |remaining| self.terminate_mux_once(remaining),
+            )
+        };
+        // The socket root is the only route to a private server. Preserve it
+        // whenever termination cannot be proved so a later cleanup can still
+        // reach the process rather than stranding it behind an unlinked path.
+        if confirmed_absent {
+            self.host.remove_admission_tmpdir(
+                self.endpoint,
+                &self.tmux_tmpdir,
+                self.creation_settled,
+            );
         }
-        // Keep the private socket root reachable until the final termination
-        // pass, then remove it. Unlinking it earlier could strand a server
-        // whose timed-out creation publishes its socket between passes.
-        self.host
-            .remove_admission_tmpdir(self.endpoint, &self.tmux_tmpdir, self.creation_settled);
     }
 }
 
@@ -1718,6 +1741,27 @@ fn settle_uncertain_cleanup(
         let remaining = UNCERTAIN_CLEANUP_SETTLE.saturating_sub(elapsed());
         if remaining.is_zero() {
             break;
+        }
+        wait(UNCERTAIN_CLEANUP_DELAY.min(remaining));
+    }
+}
+
+fn retry_cleanup_until_absent(
+    mut elapsed: impl FnMut() -> Duration,
+    mut wait: impl FnMut(Duration),
+    mut cleanup: impl FnMut(Duration) -> bool,
+) -> bool {
+    loop {
+        let remaining = UNCERTAIN_CLEANUP_SETTLE.saturating_sub(elapsed());
+        if remaining.is_zero() {
+            return false;
+        }
+        if cleanup(remaining) {
+            return true;
+        }
+        let remaining = UNCERTAIN_CLEANUP_SETTLE.saturating_sub(elapsed());
+        if remaining.is_zero() {
+            return false;
         }
         wait(UNCERTAIN_CLEANUP_DELAY.min(remaining));
     }
