@@ -98,7 +98,7 @@ run_tmux_pids() {
     ps -axo pid=,command= | awk -v run_id="$run_id" \
         -v run_dir="$run_dir" '
         BEGIN {
-            socket_pattern = "^ghosthub-(test|kill)-" run_id "$"
+            socket_pattern = "^(ghosthub|gh)-[A-Za-z0-9-]+-" run_id "$"
         }
         /^[[:space:]]*[0-9]+[[:space:]]+([^[:space:]]*\/)?tmux[[:space:]]/ {
             for (field = 2; field < NF; field++) {

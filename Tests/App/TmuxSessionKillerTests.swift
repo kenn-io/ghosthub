@@ -21,7 +21,10 @@ struct TmuxSessionKillerTests {
         defer {
             _ = TmuxBinaryResolver.runProcess(
                 executable: tmuxPath,
-                arguments: ["-L", socketName, "kill-server"],
+                arguments: [
+                    "-L", socketName,
+                    "kill-session", "-a", ";", "kill-session",
+                ],
                 timeout: 5
             )
         }

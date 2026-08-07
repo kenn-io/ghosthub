@@ -357,23 +357,27 @@ enum SSHConnectionPool {
             SSHConfigurationResolver.configuration
     ) -> String? {
         guard let proxy = target.precedingTarget,
-              let controlPath = authenticationIdentity(
+              let identity = authenticationIdentity(
                   for: proxy,
                   configurationProvider: configurationProvider
-              )?.controlPath
+              )
         else { return nil }
+        let endpoint = identity.displayHost
         var arguments = [
             "/usr/bin/ssh",
+            "-F", "/dev/null",
             "-o", "BatchMode=yes",
             "-o", "ControlMaster=no",
             "-o", "ControlPersist=no",
-            "-o", "ControlPath=\(controlPath)",
+            "-o", "ControlPath=\(identity.controlPath)",
+            "-o", "ProxyJump=none",
+            "-o", "ProxyCommand=/usr/bin/false",
         ]
-        if let port = proxy.host.port {
+        if let port = endpoint.port {
             arguments.append(contentsOf: ["-p", String(port)])
         }
         arguments.append(contentsOf: [
-            "-W", "[%h]:%p", destination(for: proxy.host),
+            "-W", "[%h]:%p", destination(for: endpoint),
         ])
         return arguments.map(shellQuotedCommandArgument).joined(separator: " ")
     }

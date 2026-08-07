@@ -25,10 +25,28 @@ struct TmuxBinaryResolverTests {
             #expect(command.hasPrefix("ghosthub_tmux_path="))
             return (
                 status: 0,
-                stdout: "/opt/homebrew/bin/tmux\ntmux 3.6a\n"
+                stdout: "/opt/homebrew/bin/tmux\ntmux 3.2a\n"
             )
         })
         #expect(try resolver.resolveTmuxPath().get() == "/opt/homebrew/bin/tmux")
+    }
+
+    @Test("resolution preserves the probed tmux version")
+    func preservesVersion() throws {
+        let resolver = TmuxBinaryResolver(processRunner: { _, _ in
+            (
+                status: 0,
+                stdout: "/opt/homebrew/bin/tmux\ntmux 3.4a\n"
+            )
+        })
+
+        #expect(
+            try resolver.resolveTmuxBinary().get()
+                == ResolvedTmuxBinary(
+                    path: "/opt/homebrew/bin/tmux",
+                    version: "tmux 3.4a"
+                )
+        )
     }
 
     @Test("account shell initializes PATH without interpreting probe syntax")
@@ -159,26 +177,42 @@ struct TmuxBinaryResolverTests {
         })
         #expect(
             resolver.resolveTmuxPath()
-                == .failure(.unsupportedVersion(found: "tmux 3.1c"))
+                == .failure(.unsupportedVersion(
+                    found: "tmux 3.1c",
+                    minimum: "3.2"
+                ))
         )
     }
 
-    @Test("remote resolution tolerates login banners and returns an absolute path")
-    func resolvesRemoteLoginShellPath() throws {
+    @Test("remote resolution uses its supplied SSH snapshot")
+    func resolvesRemotePathWithSuppliedSSHArguments() throws {
         let host = SSHHostInfo(user: "wesm", hostname: "build-box", port: 2222)
-        let resolver = TmuxBinaryResolver(remoteProcessRunner: { received, command in
-            #expect(received == host)
-            #expect(command.contains("command -v tmux"))
-            return (
-                status: 0,
-                stdout: "welcome\n/usr/local/bin/tmux\ntmux 3.2a\n",
-                stderr: ""
-            )
-        })
+        let sshArguments = [
+            "-F", "/dev/null",
+            "-o", "SetEnv=GHOSTHUB_TMUX_PROFILE=fleet",
+        ]
+        let resolver = TmuxBinaryResolver(
+            remoteProcessRunner: { received, receivedArguments, command in
+                #expect(received == host)
+                #expect(receivedArguments == sshArguments)
+                #expect(command.contains("command -v tmux"))
+                return (
+                    status: 0,
+                    stdout: "welcome\n/usr/local/bin/tmux\ntmux 3.6a\n",
+                    stderr: ""
+                )
+            }
+        )
 
         #expect(
-            try resolver.resolveTmuxPath(on: host).get()
-                == "/usr/local/bin/tmux"
+            try resolver.resolveTmuxBinary(
+                on: host,
+                sshConnectionArguments: sshArguments
+            ).get()
+                == ResolvedTmuxBinary(
+                    path: "/usr/local/bin/tmux",
+                    version: "tmux 3.6a"
+                )
         )
     }
 
@@ -188,7 +222,7 @@ struct TmuxBinaryResolverTests {
             user: "wesm", hostname: "untrusted-host", port: nil
         )
         let resolver = TmuxBinaryResolver(
-            remoteProcessRunner: { _, _ in
+            remoteProcessRunner: { _, _, _ in
                 (
                     status: 255,
                     stdout: "",
@@ -216,14 +250,14 @@ struct TmuxBinaryResolverTests {
             port: nil
         )
         let resolver = TmuxBinaryResolver(
-            remoteProcessRunner: { _, command in
+            remoteProcessRunner: { _, _, command in
                 #expect(command.contains("-L"))
                 #expect(command.contains("kwt-pr-0123456789abcdef"))
                 #expect(command.contains("has-session"))
                 #expect(command.contains("=pr-32"))
                 return (
                     status: 0,
-                    stdout: "/usr/bin/tmux\ntmux 3.4\n"
+                    stdout: "/usr/bin/tmux\ntmux 3.6\n"
                         + "GHOSTHUB_TMUX_SESSION_PRESENT\n",
                     stderr: ""
                 )
@@ -245,10 +279,10 @@ struct TmuxBinaryResolverTests {
             port: nil
         )
         let resolver = TmuxBinaryResolver(
-            remoteProcessRunner: { _, _ in
+            remoteProcessRunner: { _, _, _ in
                 (
                     status: 0,
-                    stdout: "/usr/bin/tmux\ntmux 3.4\n"
+                    stdout: "/usr/bin/tmux\ntmux 3.6\n"
                         + "GHOSTHUB_TMUX_SESSION_ABSENT\n",
                     stderr: ""
                 )
@@ -270,7 +304,7 @@ struct TmuxBinaryResolverTests {
             port: nil
         )
         let resolver = TmuxBinaryResolver(
-            remoteProcessRunner: { _, _ in
+            remoteProcessRunner: { _, _, _ in
                 (
                     status: 0,
                     stdout: "/usr/bin/tmux\ntmux 3.1c\n"
@@ -284,7 +318,10 @@ struct TmuxBinaryResolverTests {
             name: "pr-32",
             socketName: "kwt-pr-0123456789abcdef",
             on: host
-        ) == .failure(.unsupportedVersion(found: "tmux 3.1c")))
+        ) == .failure(.unsupportedVersion(
+            found: "tmux 3.1c",
+            minimum: "3.2"
+        )))
     }
 
     @Test("exact probe does not treat generic tmux failure as absence")
@@ -295,10 +332,10 @@ struct TmuxBinaryResolverTests {
             port: nil
         )
         let resolver = TmuxBinaryResolver(
-            remoteProcessRunner: { _, _ in
+            remoteProcessRunner: { _, _, _ in
                 (
                     status: 1,
-                    stdout: "/usr/bin/tmux\ntmux 3.4\n",
+                    stdout: "/usr/bin/tmux\ntmux 3.6\n",
                     stderr: "error connecting to /tmp/tmux: Permission denied"
                 )
             }
@@ -320,7 +357,7 @@ struct TmuxBinaryResolverTests {
             platform: .windows
         )
         let resolver = TmuxBinaryResolver(
-            remoteProcessRunner: { _, command in
+            remoteProcessRunner: { _, _, command in
                 for argument in [
                     "-L",
                     "kwt-pr-0123456789abcdef",
@@ -359,7 +396,7 @@ struct TmuxBinaryResolverTests {
             platform: .windows
         )
         let resolver = TmuxBinaryResolver(
-            remoteProcessRunner: { received, command in
+            remoteProcessRunner: { received, _, command in
                 #expect(received == host)
                 #expect(command.contains("Get-Command tmux.exe"))
                 #expect(command.contains("[Console]::OutputEncoding"))
@@ -474,14 +511,14 @@ struct TmuxBinaryResolverTests {
             user: "wesm", hostname: "build-box", port: 2222
         )
         let resolver = TmuxBinaryResolver(
-            remoteProcessRunner: { received, command in
+            remoteProcessRunner: { received, _, command in
                 #expect(received == host)
                 #expect(command.contains("list-sessions"))
                 return (
                     status: 0,
                     stdout: """
                     /usr/local/bin/tmux
-                    tmux 3.4
+                    tmux 3.6
                     GHOSTHUB_TMUX_SESSION\t3\t202\t$7\t99\t\tremote-work
 
                     """,
@@ -510,7 +547,7 @@ struct TmuxBinaryResolverTests {
             platform: .windows
         )
         let resolver = TmuxBinaryResolver(
-            remoteProcessRunner: { received, command in
+            remoteProcessRunner: { received, _, command in
                 #expect(received == host)
                 #expect(command.contains("Get-Command tmux.exe"))
                 #expect(command.contains("'list-sessions' '-F'"))
@@ -521,7 +558,7 @@ struct TmuxBinaryResolverTests {
                 return (
                     status: 0,
                     stdout: "C:\\Tools\\psmux\\tmux.exe\r\n"
-                        + "tmux 3.3.7\r\n"
+                        + "tmux 3.6.7\r\n"
                         + "GHOSTHUB_TMUX_SESSION\t2\t202\t$7"
                         + "\t1783344091\t\twindows-work\r\n",
                     stderr: ""
@@ -545,7 +582,7 @@ struct TmuxBinaryResolverTests {
     @Test("a reachable tmux server with no sessions produces an empty inventory")
     func discoversEmptyServer() throws {
         let resolver = TmuxBinaryResolver(processRunner: { _, _ in
-            (status: 0, stdout: "/usr/bin/tmux\ntmux 3.3a\n")
+            (status: 0, stdout: "/usr/bin/tmux\ntmux 3.6a\n")
         })
 
         #expect(try resolver.discoverSessions().get().isEmpty)
@@ -565,7 +602,7 @@ struct TmuxBinaryResolverTests {
         try """
         #!/bin/sh
         if [ "$1" = "-V" ]; then
-          printf 'tmux 3.3a\n'
+          printf 'tmux 3.6a\n'
           exit 0
         fi
         printf 'error connecting to /tmp/tmux-501/default (No such file or directory)\n' >&2
@@ -582,7 +619,7 @@ struct TmuxBinaryResolverTests {
             port: nil
         )
         let resolver = TmuxBinaryResolver(
-            remoteProcessRunner: { _, command in
+            remoteProcessRunner: { _, _, command in
                 return TmuxBinaryResolver.runProcess(
                     executable: "/bin/sh",
                     arguments: ["-c", command],
@@ -610,10 +647,10 @@ struct TmuxBinaryResolverTests {
             port: nil
         )
         let resolver = TmuxBinaryResolver(
-            remoteProcessRunner: { _, _ in
+            remoteProcessRunner: { _, _, _ in
                 (
                     status: 1,
-                    stdout: "/usr/bin/tmux\ntmux 3.3a\n",
+                    stdout: "/usr/bin/tmux\ntmux 3.6a\n",
                     stderr: "error connecting to /tmp/tmux-501/default (Permission denied)\n"
                 )
             }
@@ -639,7 +676,7 @@ struct TmuxBinaryResolverTests {
         try """
         #!/bin/sh
         if [ "$1" = "-V" ]; then
-          printf 'tmux 3.3a\n'
+          printf 'tmux 3.6a\n'
           exit 0
         fi
         printf 'error connecting to tmux server (Permission denied)\n' >&2
@@ -973,11 +1010,18 @@ struct TmuxPathCacheTests {
         let counter = Counter()
         let cache = TmuxPathCache {
             _ = counter.increment()
-            return .success("/opt/homebrew/bin/tmux")
+            return .success(ResolvedTmuxBinary(
+                path: "/opt/homebrew/bin/tmux",
+                version: "tmux 3.4a"
+            ))
         }
 
-        #expect(try cache.resolveTmuxPath().get() == "/opt/homebrew/bin/tmux")
-        #expect(try cache.resolveTmuxPath().get() == "/opt/homebrew/bin/tmux")
+        let expected = ResolvedTmuxBinary(
+            path: "/opt/homebrew/bin/tmux",
+            version: "tmux 3.4a"
+        )
+        #expect(try cache.resolveTmuxBinary().get() == expected)
+        #expect(try cache.resolveTmuxBinary().get() == expected)
         #expect(counter.count == 1)
     }
 
@@ -987,14 +1031,20 @@ struct TmuxPathCacheTests {
         let cache = TmuxPathCache {
             counter.increment() == 1
                 ? .failure(.notFound(shell: "/bin/zsh"))
-                : .success("/opt/homebrew/bin/tmux")
+                : .success(ResolvedTmuxBinary(
+                    path: "/opt/homebrew/bin/tmux",
+                    version: "tmux 3.4"
+                ))
         }
 
-        guard case .failure = cache.resolveTmuxPath() else {
+        guard case .failure = cache.resolveTmuxBinary() else {
             Issue.record("expected the first resolve to fail")
             return
         }
-        #expect(try cache.resolveTmuxPath().get() == "/opt/homebrew/bin/tmux")
+        #expect(
+            try cache.resolveTmuxBinary().get().path
+                == "/opt/homebrew/bin/tmux"
+        )
         #expect(counter.count == 2)
     }
 }

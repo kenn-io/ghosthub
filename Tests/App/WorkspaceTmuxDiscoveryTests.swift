@@ -95,7 +95,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
             kwtInventoryLoader: { _ in
                 KwtHostInventory(projects: [
                     KwtProjectInventory(
@@ -163,7 +163,7 @@ struct WorkspaceTmuxDiscoveryTests {
             database: environment.database,
             localHostID: environment.host.id,
             snapshot: snapshot,
-            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
             kwtInventoryLoader: { _ in
                 KwtHostInventory(projects: [
                     KwtProjectInventory(
@@ -251,7 +251,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
             kwtInventoryLoader: { _ in
                 KwtHostInventory(projects: [
                     KwtProjectInventory(
@@ -491,12 +491,12 @@ struct WorkspaceTmuxDiscoveryTests {
         private let gate = DispatchSemaphore(value: 0)
         private var started = false
 
-        func resolve() -> Result<String, TmuxBinaryError> {
+        func resolve() -> Result<ResolvedTmuxBinary, TmuxBinaryError> {
             lock.lock()
             started = true
             lock.unlock()
             gate.wait()
-            return .success("/usr/bin/tmux")
+            return successfulTmuxResolution("/usr/bin/tmux")
         }
 
         var didStart: Bool {
@@ -728,7 +728,7 @@ struct WorkspaceTmuxDiscoveryTests {
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
-            nativeTmuxPathProvider: { .success("/opt/homebrew/bin/tmux") }
+            nativeTmuxPathProvider: { successfulTmuxResolution("/opt/homebrew/bin/tmux") }
         )
 
         model.createTmuxSession(WorkspaceTmuxSessionSelection(
@@ -759,7 +759,7 @@ struct WorkspaceTmuxDiscoveryTests {
             database: environment.database,
             localHostID: environment.host.id,
             snapshot: snapshot,
-            nativeTmuxPathProvider: { .success("/opt/homebrew/bin/tmux") }
+            nativeTmuxPathProvider: { successfulTmuxResolution("/opt/homebrew/bin/tmux") }
         )
         let selection = WorkspaceTmuxSessionSelection(
             hostID: environment.host.id,
@@ -788,7 +788,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.host.id,
             snapshot: environment.snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            nativeTmuxPathProvider: { .success("/usr/bin/tmux") }
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") }
         )
         let first = WorkspaceTmuxSessionSelection(
             hostID: environment.host.id,
@@ -848,7 +848,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.localHostID,
             snapshot: snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") }
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") }
         )
         let first = WorkspaceTmuxSessionSelection(
             hostID: environment.remoteHost.id,
@@ -888,7 +888,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.host.id,
             snapshot: environment.snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            nativeTmuxPathProvider: { .success("/usr/bin/tmux") }
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") }
         )
         let first = WorkspaceTmuxSessionSelection(
             hostID: environment.host.id,
@@ -928,7 +928,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            nativeTmuxPathProvider: { .success("/usr/bin/tmux") }
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") }
         )
         var userSelection = model.selection
         userSelection.select(
@@ -1007,7 +1007,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.host.id,
             snapshot: environment.snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            nativeTmuxPathProvider: { .success("/usr/bin/tmux") }
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") }
         )
         for name in ["first", "second"] {
             model.openBorrowedTmuxSession(.init(
@@ -1058,7 +1058,7 @@ struct WorkspaceTmuxDiscoveryTests {
             database: environment.database,
             localHostID: environment.host.id,
             snapshot: snapshot,
-            nativeTmuxPathProvider: { .success("/opt/homebrew/bin/tmux") }
+            nativeTmuxPathProvider: { successfulTmuxResolution("/opt/homebrew/bin/tmux") }
         )
         let observed = WorkspaceTmuxSessionSelection(
             hostID: environment.host.id,
@@ -1120,7 +1120,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.host.id,
             snapshot: environment.snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            nativeTmuxPathProvider: { .success("/usr/bin/tmux") }
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") }
         )
         let worktree = WorkspaceTmuxSessionSelection(
             hostID: environment.host.id,
@@ -1188,7 +1188,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") }
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") }
         )
         let selection = WorkspaceTmuxSessionSelection(
             hostID: environment.host.id,
@@ -1226,7 +1226,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") }
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") }
         )
         let selection = WorkspaceTmuxSessionSelection(
             hostID: environment.host.id,
@@ -1305,7 +1305,7 @@ struct WorkspaceTmuxDiscoveryTests {
             database: environment.database,
             localHostID: environment.host.id,
             snapshot: environment.snapshot,
-            nativeTmuxPathProvider: { .success("/opt/homebrew/bin/tmux") },
+            nativeTmuxPathProvider: { successfulTmuxResolution("/opt/homebrew/bin/tmux") },
             tmuxSessionKiller: { _, _, _ in
                 throw expectedError
             }
@@ -1445,7 +1445,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.host.id,
             snapshot: environment.snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
             tmuxSessionIdentityReader: { _, _ in
                 _ = identityReads.increment()
                 return TmuxSessionIdentity(
@@ -1485,7 +1485,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.host.id,
             snapshot: environment.snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
             tmuxSessionIdentityReader: { _, _ in
                 _ = identityReads.increment()
                 return TmuxSessionIdentity(
@@ -1534,7 +1534,7 @@ struct WorkspaceTmuxDiscoveryTests {
             database: environment.database,
             localHostID: environment.host.id,
             snapshot: snapshot,
-            nativeTmuxPathProvider: { .success("/opt/homebrew/bin/tmux") },
+            nativeTmuxPathProvider: { successfulTmuxResolution("/opt/homebrew/bin/tmux") },
             tmuxSessionKiller: { _, _, _ in }
         )
         var selection = WorkspaceTmuxSessionSelection(
@@ -1576,7 +1576,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.host.id,
             snapshot: environment.snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
             tmuxSessionDiscovery: { _ in
                 discoveryCalls.increment() == 1
                     ? .success([discovered])
@@ -1633,7 +1633,7 @@ struct WorkspaceTmuxDiscoveryTests {
             database: environment.database,
             localHostID: environment.host.id,
             nativeTmuxSurfaceStore: surfaceStore,
-            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
             tmuxSessionDiscovery: { _ in
                 _ = discoveryCalls.increment()
                 return .success([discovered])
@@ -1791,7 +1791,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            nativeTmuxPathProvider: { .success("/usr/bin/tmux") }
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") }
         )
         let selection = WorkspaceTmuxSessionSelection(
             hostID: environment.host.id,
@@ -1821,7 +1821,7 @@ struct WorkspaceTmuxDiscoveryTests {
             database: environment.database,
             localHostID: environment.host.id,
             nativeTmuxSurfaceStore: surfaceStore,
-            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
             createdSessionDiscoveryDelays: [.seconds(10)]
         )
         let selection = WorkspaceTmuxSessionSelection(
@@ -1852,7 +1852,7 @@ struct WorkspaceTmuxDiscoveryTests {
             database: environment.database,
             localHostID: environment.host.id,
             nativeTmuxSurfaceStore: surfaceStore,
-            nativeTmuxPathProvider: { .success("/opt/homebrew/bin/tmux") },
+            nativeTmuxPathProvider: { successfulTmuxResolution("/opt/homebrew/bin/tmux") },
             createdSessionDiscoveryDelays: [.seconds(10)]
         )
         let selection = WorkspaceTmuxSessionSelection(
@@ -1892,7 +1892,7 @@ struct WorkspaceTmuxDiscoveryTests {
             database: environment.database,
             localHostID: environment.host.id,
             nativeTmuxSurfaceStore: surfaceStore,
-            nativeTmuxPathProvider: { .success("/opt/homebrew/bin/tmux") },
+            nativeTmuxPathProvider: { successfulTmuxResolution("/opt/homebrew/bin/tmux") },
             tmuxSessionDiscovery: { _ in
                 .success([
                     DiscoveredTmuxSession(
@@ -1932,7 +1932,7 @@ struct WorkspaceTmuxDiscoveryTests {
             database: environment.database,
             localHostID: environment.host.id,
             nativeTmuxSurfaceStore: surfaceStore,
-            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
             createdSessionDiscoveryDelays: [.seconds(10)]
         )
         let selection = WorkspaceTmuxSessionSelection(
@@ -1998,7 +1998,7 @@ struct WorkspaceTmuxDiscoveryTests {
             database: environment.database,
             localHostID: environment.host.id,
             snapshot: environment.snapshot,
-            remoteTmuxPathProvider: { _ in
+            remoteTmuxPathProvider: { _, _ in
                 .failure(.sshConnectionFailed(
                     host: "office-linux",
                     classification: SSHConnectionFailure.classify(
@@ -2039,7 +2039,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.host.id,
             snapshot: environment.snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
             tmuxSessionDiscovery: { _ in
                 guard attempts.increment() > 1 else {
                     return .failure(.sshConnectionFailed(
@@ -2133,7 +2133,7 @@ struct WorkspaceTmuxDiscoveryTests {
             database: environment.database,
             localHostID: environment.host.id,
             nativeTmuxSurfaceStore: surfaceStore,
-            nativeTmuxPathProvider: { .success("/opt/homebrew/bin/tmux") },
+            nativeTmuxPathProvider: { successfulTmuxResolution("/opt/homebrew/bin/tmux") },
             kwtInventoryLoader: { _ in KwtHostInventory(projects: []) },
             tmuxSessionDiscovery: { _ in
                 _ = attempts.increment()
@@ -2236,7 +2236,7 @@ struct WorkspaceTmuxDiscoveryTests {
             database: environment.database,
             localHostID: environment.host.id,
             nativeTmuxSurfaceStore: surfaceStore,
-            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
             tmuxSessionDiscovery: { _ in
                 guard attempts.increment() >= 3 else {
                     return .success([])
@@ -2281,7 +2281,7 @@ struct WorkspaceTmuxDiscoveryTests {
             database: environment.database,
             localHostID: environment.host.id,
             nativeTmuxSurfaceStore: surfaceStore,
-            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
             tmuxSessionDiscovery: discovery.discover,
             createdSessionDiscoveryDelays: [
                 .milliseconds(1),
@@ -2343,7 +2343,7 @@ struct WorkspaceTmuxDiscoveryTests {
             database: environment.database,
             localHostID: environment.host.id,
             nativeTmuxSurfaceStore: surfaceStore,
-            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
             tmuxSessionDiscovery: discovery.discover,
             configuredSSHHostsProvider: { configuredHosts.value },
             createdSessionDiscoveryDelays: [.milliseconds(1)]
@@ -2410,7 +2410,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.host.id,
             snapshot: environment.snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
             configuredSSHHostsProvider: { configuredHosts.value }
         )
         model.refreshHosts()
@@ -2473,7 +2473,7 @@ struct WorkspaceTmuxDiscoveryTests {
             database: environment.database,
             localHostID: environment.host.id,
             nativeTmuxSurfaceStore: surfaceStore,
-            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
             tmuxSessionDiscovery: discovery.discover,
             createdSessionDiscoveryDelays: [.zero]
         )
@@ -2505,7 +2505,7 @@ struct WorkspaceTmuxDiscoveryTests {
             database: environment.database,
             localHostID: environment.host.id,
             nativeTmuxSurfaceStore: surfaceStore,
-            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
             kwtInventoryLoader: { _ in KwtHostInventory(projects: []) },
             tmuxSessionDiscovery: discovery.discover,
             createdSessionDiscoveryDelays: [.milliseconds(1)],
@@ -2577,7 +2577,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.localHostID,
             snapshot: environment.snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
             tmuxSessionDiscovery: { _ in discoveries.removeFirst() },
             tmuxReconnectIntervals: [.milliseconds(1)]
         )
@@ -2626,8 +2626,8 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.localHostID,
             snapshot: snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
-            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
             tmuxSessionDiscovery: { host in
                 if host.isRemote {
                     return .success([
@@ -2691,7 +2691,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.localHostID,
             snapshot: environment.snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
             tmuxSessionDiscovery: { _ in .success([]) },
             createdSessionDiscoveryDelays: [.seconds(10)],
             tmuxReconnectIntervals: [.milliseconds(1)]
@@ -2755,7 +2755,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.localHostID,
             snapshot: environment.snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
             tmuxSessionDiscovery: { _ in .success([]) },
             createdSessionDiscoveryDelays: [
                 .milliseconds(10),
@@ -2834,7 +2834,7 @@ struct WorkspaceTmuxDiscoveryTests {
             database: environment.database,
             localHostID: environment.host.id,
             nativeTmuxSurfaceStore: surfaceStore,
-            nativeTmuxPathProvider: { .success("/opt/homebrew/bin/tmux") },
+            nativeTmuxPathProvider: { successfulTmuxResolution("/opt/homebrew/bin/tmux") },
             createdSessionDiscoveryDelays: [.seconds(10)]
         )
         let selection = WorkspaceTmuxSessionSelection(
@@ -2882,7 +2882,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.localHostID,
             snapshot: environment.snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
             tmuxSessionDiscovery: discovery.discover,
             createdSessionDiscoveryDelays: [.milliseconds(20)],
             tmuxReconnectIntervals: [.milliseconds(1)]
@@ -2931,7 +2931,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.localHostID,
             snapshot: environment.snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
             tmuxSessionDiscovery: discovery.discover,
             createdSessionDiscoveryDelays: [.seconds(10)],
             tmuxReconnectIntervals: [.milliseconds(1)]
@@ -2981,7 +2981,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
             tmuxSessionDiscovery: { _ in .success([]) },
             tmuxReconnectIntervals: [.milliseconds(1)]
         )
@@ -3033,7 +3033,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.localHostID,
             snapshot: environment.snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
             tmuxSessionDiscovery: { _ in discoveries.removeFirst() },
             tmuxReconnectIntervals: [.milliseconds(1)]
         )
@@ -3066,7 +3066,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.localHostID,
             snapshot: environment.snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
             tmuxSessionDiscovery: discovery.discover,
             tmuxReconnectIntervals: [.seconds(10)],
             tmuxReconnectProbeDeadline: .milliseconds(20)
@@ -3109,7 +3109,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.localHostID,
             snapshot: environment.snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
             tmuxSessionDiscovery: { host in
                 switch attempts.increment() {
                 case 1:
@@ -3205,7 +3205,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.localHostID,
             snapshot: environment.snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
             tmuxExactSessionProbe: { target in
                 switch attempts.increment() {
                 case 1:
@@ -3264,7 +3264,7 @@ struct WorkspaceTmuxDiscoveryTests {
             database: environment.database,
             localHostID: environment.host.id,
             nativeTmuxSurfaceStore: surfaceStore,
-            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
             tmuxSessionDiscovery: { host in
                 #expect(host == oldTarget)
                 discoveryGate.wait()
@@ -3340,7 +3340,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.localHostID,
             snapshot: environment.snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
             tmuxSessionDiscovery: { _ in discoveries.removeFirst() },
             tmuxReconnectIntervals: [.seconds(10)]
         )
@@ -3372,7 +3372,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.localHostID,
             snapshot: environment.snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
             tmuxSessionDiscovery: { _ in .success([]) },
             tmuxReconnectIntervals: [.milliseconds(1)]
         )
@@ -3402,7 +3402,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.host.id,
             snapshot: environment.snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
             tmuxSessionDiscovery: { _ in .success([]) },
             tmuxReconnectIntervals: [.milliseconds(1)]
         )
@@ -3451,7 +3451,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.host.id,
             snapshot: environment.snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
             tmuxSessionDiscovery: { _ in discoveries.removeFirst() },
             createdSessionDiscoveryDelays: [.seconds(10)],
             tmuxReconnectIntervals: [.milliseconds(1)]
@@ -3495,7 +3495,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.localHostID,
             snapshot: environment.snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
             tmuxSessionDiscovery: { _ in
                 .success([
                     DiscoveredTmuxSession(
@@ -3543,8 +3543,8 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.localHostID,
             snapshot: environment.snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
-            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
             tmuxExactSessionProbe: { _ in probes.removeFirst() },
             tmuxReconnectIntervals: [.milliseconds(1)]
         )
@@ -3599,7 +3599,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.localHostID,
             snapshot: environment.snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
             tmuxExactSessionProbe: { _ in probes.removeFirst() },
             createdSessionDiscoveryDelays: [.seconds(10)],
             tmuxReconnectIntervals: [.milliseconds(1)]
@@ -3637,7 +3637,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.localHostID,
             snapshot: environment.snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
             tmuxExactSessionProbe: { _ in probes.removeFirst() },
             tmuxReconnectIntervals: [.milliseconds(1)]
         )
@@ -3680,7 +3680,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.localHostID,
             snapshot: environment.snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
             tmuxSessionDiscovery: { _ in discoveries.removeFirst() },
             tmuxReconnectIntervals: [.milliseconds(1)]
         )
@@ -3744,8 +3744,8 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.localHostID,
             snapshot: snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
-            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
             tmuxSessionDiscovery: { host in
                 host.isRemote ? discoveries.removeFirst() : .success([])
             },
@@ -3812,7 +3812,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.localHostID,
             snapshot: snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
             tmuxSessionDiscovery: { _ in
                 .failure(.sshConnectionFailed(
                     host: "build-box",
@@ -3882,7 +3882,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.localHostID,
             snapshot: environment.snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
             tmuxSessionDiscovery: { _ in discoveries.removeFirst() },
             tmuxReconnectIntervals: [.milliseconds(1)]
         )
@@ -3941,7 +3941,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.localHostID,
             snapshot: environment.snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
             tmuxSessionDiscovery: { _ in .success([]) },
             tmuxReconnectIntervals: [.milliseconds(1)]
         )
@@ -3969,8 +3969,8 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.localHostID,
             snapshot: environment.snapshot,
             nativeTmuxSurfaceStore: surfaceStore,
-            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
-            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
             tmuxSessionDiscovery: { _ in .success([]) },
             tmuxReconnectIntervals: [.milliseconds(1)]
         )

@@ -113,7 +113,7 @@ struct WorkspaceTmuxThemeTests {
             localHostID: UUID(),
             snapshot: windowsSnapshot,
             nativeTmuxSurfaceStore: windowsStore,
-            remoteTmuxPathProvider: { _ in .success("tmux.exe") },
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("tmux.exe") },
             tmuxPresentationStyleProvider: { _ in primaryStyle }
         )
         windowsModel.openBorrowedTmuxSession(
@@ -124,6 +124,7 @@ struct WorkspaceTmuxThemeTests {
         )
         await connectActiveTmuxSession(windowsModel, store: windowsStore)
         #expect(!windowsModel.canApplyThemeToActiveTmuxSession)
+        #expect(!windowsModel.canSplitActiveTmuxPane)
         await windowsModel.shutdown()
     }
 
@@ -333,7 +334,7 @@ struct WorkspaceTmuxThemeTests {
             localHostID: environment.host.id,
             snapshot: environment.snapshot,
             nativeTmuxSurfaceStore: store,
-            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
             tmuxPresentationStyleProvider: { identity in
                 identity.flatMap { resolvedStyles[$0] }
             },
@@ -400,7 +401,7 @@ struct WorkspaceTmuxThemeTests {
             localHostID: UUID(),
             snapshot: environment.snapshot,
             nativeTmuxSurfaceStore: store,
-            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
             tmuxPresentationStyleProvider: { _ in resolvedStyle },
             appliesTmuxPresentationStyleToExistingSessionsProvider: { true },
             tmuxSessionIdentityReader: { _, _ in sessionIdentity },
@@ -844,7 +845,7 @@ private func makeThemedScene(
         localHostID: environment.host.id,
         snapshot: environment.snapshot,
         nativeTmuxSurfaceStore: store,
-        nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+        nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
         tmuxPresentationStyleProvider: tmuxPresentationStyleProvider,
         appliesTmuxPresentationStyleToExistingSessionsProvider: {
             stylesExistingSessions

@@ -438,6 +438,29 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         return borrowedTmuxConnectionStates[handle.id] == .connected
     }
+    var canSplitActiveTmuxPane: Bool {
+        guard let selection = activeBorrowedTmuxSelection,
+              isConnectedActiveTmuxSession(selection),
+              let handle = activeBorrowedTmuxHandle,
+              nativeTmuxSessionCoordinator.supportsPaneSplitting(handle)
+        else { return false }
+        return true
+    }
+
+    func splitActiveTmuxPane(
+        _ shortcut: TerminalTmuxSplitShortcut,
+        requiresKeyboardFocus: Bool = false
+    ) {
+        guard canSplitActiveTmuxPane,
+              let handle = activeBorrowedTmuxHandle
+        else { return }
+        nativeTmuxSessionCoordinator.requestPaneSplit(
+            shortcut,
+            handle: handle,
+            requiresKeyboardFocus: requiresKeyboardFocus
+        )
+    }
+
     var canApplyThemeToActiveTmuxSession: Bool {
         guard let selection = activeBorrowedTmuxSelection,
               isConnectedActiveTmuxSession(selection),
@@ -686,13 +709,16 @@ final class WorkspaceSceneModel: ObservableObject {
         notificationService: NotificationService,
         nativeTmuxSurfaceStore: (any TmuxSurfaceStoring)? = nil,
         nativeTmuxPathProvider:
-        (@Sendable () -> Result<String, TmuxBinaryError>)? = nil,
+        (@Sendable () -> Result<ResolvedTmuxBinary, TmuxBinaryError>)? = nil,
         localKwtPathProvider: @escaping @Sendable () -> String? = {
             KwtBinaryLocator.bundledPath()
         },
-        remoteTmuxPathProvider: @escaping @Sendable (SSHHostInfo)
-            -> Result<String, TmuxBinaryError> = {
-                TmuxBinaryResolver().resolveTmuxPath(on: $0)
+        remoteTmuxPathProvider: @escaping @Sendable (SSHHostInfo, [String])
+            -> Result<ResolvedTmuxBinary, TmuxBinaryError> = {
+                TmuxBinaryResolver().resolveTmuxBinary(
+                    on: $0,
+                    sshConnectionArguments: $1
+                )
             },
         tmuxPresentationStyleProvider:
         @escaping (UInt?) -> TmuxPresentationStyle? = { _ in nil },
@@ -944,13 +970,13 @@ final class WorkspaceSceneModel: ObservableObject {
         let tmuxResolver = TmuxBinaryResolver()
         let tmuxPathCache = TmuxPathCache(
             resolve: nativeTmuxPathProvider
-                ?? tmuxResolver.resolveTmuxPath
+                ?? tmuxResolver.resolveTmuxBinary
         )
         nativeTmuxSessionCoordinatorBacking = NativeTmuxSessionCoordinator(
             terminalCoordinator: nativeTmuxSurfaceStore
                 ?? terminalCoordinator,
             tmuxPathProvider: {
-                tmuxPathCache.resolveTmuxPath()
+                tmuxPathCache.resolveTmuxBinary()
             },
             localKwtPathProvider: localKwtPathProvider,
             presentationStyleProvider: {
@@ -3866,7 +3892,11 @@ final class WorkspaceSceneModel: ObservableObject {
                 ? initialCommand
                 : nil,
             workingDirectory: selection.worktreePath,
-            openWorkspace: openWorkspace
+            openWorkspace: openWorkspace,
+            sessionIdentity: Self.discoveredTmuxSessionIdentity(
+                selection,
+                hostSummary: host
+            )
         )
         let phase: RemoteTmuxEstablishmentPhase
         if openWorkspace || protectedSessionNeedsEstablishment {

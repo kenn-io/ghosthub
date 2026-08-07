@@ -5,6 +5,94 @@ import Testing
 
 @Suite("Native tmux attachment")
 struct TmuxAttachmentInfoTests {
+    @Test("POSIX attachments publish their client TTY under a unique token")
+    func posixAttachmentsPublishClientTTY() {
+        let token = "attachment-01234567"
+        let local = TmuxAttachmentInfo(
+            sessionName: "release-work",
+            host: .local
+        ).attachCommand(
+            tmuxPath: "/opt/homebrew/bin/tmux",
+            clientTTYToken: token
+        )
+        let remote = TmuxAttachmentInfo(
+            sessionName: "release-work",
+            host: .ssh(SSHHostInfo(
+                user: "operator",
+                hostname: "build.example.test",
+                port: nil
+            ))
+        ).attachCommand(
+            tmuxPath: "/usr/bin/tmux",
+            clientTTYToken: token
+        )
+
+        for command in [local, remote] {
+            #expect(command.contains(".ghosthub/tmux-clients"))
+            #expect(command.contains(token))
+        }
+    }
+
+    @Test("slow attachments publish their client TTY immediately")
+    func slowAttachmentsPublishClientTTYImmediately() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let tmux = directory.appendingPathComponent("tmux")
+        try """
+        #!/bin/sh
+        exec /bin/sleep 5
+        """.write(to: tmux, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: tmux.path
+        )
+        let token = "slow-\(UUID().uuidString.lowercased())"
+        let shellHome = try #require(
+            ProcessInfo.processInfo.environment["HOME"]
+        )
+        let tokenPath = URL(fileURLWithPath: shellHome, isDirectory: true)
+            .appendingPathComponent(".ghosthub/tmux-clients/\(token)")
+        defer { try? FileManager.default.removeItem(at: tokenPath) }
+        let command = TmuxAttachmentInfo(
+            sessionName: "unpublished",
+            host: .local,
+            launchMode: .attachOnly
+        ).attachCommand(tmuxPath: tmux.path, clientTTYToken: token)
+        let process = Process()
+        let input = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/script")
+        process.arguments = ["-q", "/dev/null", "/bin/sh", "-c", command]
+        process.environment = ProcessInfo.processInfo.environment.merging([
+            "TERM": "xterm-256color",
+        ]) { _, new in new }
+        process.standardInput = input
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        defer {
+            if process.isRunning {
+                process.terminate()
+            }
+        }
+
+        var publishedTTY = ""
+        for _ in 0 ..< 200 where publishedTTY.isEmpty {
+            publishedTTY = ((try? String(
+                contentsOf: tokenPath,
+                encoding: .utf8
+            )) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        #expect(publishedTTY.hasPrefix("/dev/"))
+        #expect(process.isRunning)
+    }
+
     @Test("host display names omit the default SSH port")
     func hostDisplayNames() {
         #expect(
@@ -393,7 +481,10 @@ struct TmuxAttachmentInfoTests {
         defer {
             let cleanup = Process()
             cleanup.executableURL = URL(fileURLWithPath: tmuxPath)
-            cleanup.arguments = ["-L", socketName, "kill-server"]
+            cleanup.arguments = [
+                "-L", socketName,
+                "kill-session", "-a", ";", "kill-session",
+            ]
             cleanup.standardOutput = FileHandle.nullDevice
             cleanup.standardError = FileHandle.nullDevice
             try? cleanup.run()
@@ -814,6 +905,7 @@ struct TmuxAttachmentInfoTests {
 
     @Test("remote profile creation allocates a TTY before running its command")
     func remoteProfileCreationUsesInitialTTY() {
+        let token = "profile-attachment-01234567"
         let command = TmuxAttachmentInfo(
             sessionName: "codex",
             host: .ssh(SSHHostInfo(
@@ -821,7 +913,10 @@ struct TmuxAttachmentInfoTests {
             )),
             launchMode: .create,
             initialCommand: "sudo docker exec -it codex codex"
-        ).attachCommand(tmuxPath: "/opt/bin/tmux")
+        ).attachCommand(
+            tmuxPath: "/opt/bin/tmux",
+            clientTTYToken: token
+        )
 
         #expect(command.contains("sudo docker exec -it codex codex"))
         #expect(command.components(
@@ -830,6 +925,8 @@ struct TmuxAttachmentInfoTests {
         #expect(command.contains("'-tt'"))
         #expect(command.contains("new-session"))
         #expect(command.contains("'-A'"))
+        #expect(command.contains(".ghosthub/tmux-clients"))
+        #expect(command.contains(token))
         #expect(!command.contains("has-session"))
         #expect(!command.contains("attach-session"))
         #expect(!command.contains("reconnecting"))

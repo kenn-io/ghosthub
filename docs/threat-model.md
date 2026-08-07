@@ -260,7 +260,25 @@ command argument and the selected host identity is fixed before launch.
 Remote creation authority is one-shot: after it succeeds, transport recovery
 can only rerun `attach-session`. Existing same-named sessions are attached
 without modifying their panes or windows. Creation never grants authority to
-rename, split, resize, or otherwise structurally mutate sessions. The separate
+rename, resize, or otherwise structurally mutate sessions. The user's explicit
+Cmd-D and Cmd-Shift-D actions grant one-shot authority to run `split-window`
+against the active pane of the attachment's fixed endpoint, frozen SSH
+configuration, socket, and captured tmux server PID, session ID, and creation
+time. Ghosthub enables these actions only after the attachment's local or
+remote binary reports tmux 3.4 or newer. After attaching, each POSIX surface
+writes its TTY under a unique attachment token on the target host. Ghosthub
+uses that TTY to bind the surface to the client's stable PID, creation time,
+server, and session identity. A single tmux conditional revalidates that bound
+identity and pane before splitting. A rename remains valid, but a replacement
+client or a client switched to another session after binding does not inherit
+the authority. Failed
+client bindings are not cached or allowed to discard later queued requests.
+Keyboard
+equivalents require effective terminal focus and no attached sheet; selecting
+the File menu item is itself an explicit request. This bypasses tmux key
+bindings by design but leaves pane creation, layout, and process startup inside
+tmux. Native Windows psmux surfaces do not expose or intercept the pane-split
+actions. The separate
 Kill Session action is offered only for a session established as running by
 discovery or a currently connected active attachment. Before confirmation,
 Ghosthub binds the selected endpoint, socket, exact target, and tmux
@@ -277,6 +295,8 @@ status/message styles and set existing window foreground/background defaults.
 This presentation-only exception targets the exact selected session, affects
 every attached client, and does not authorize changes to tmux key tables,
 prefixes, mouse behavior, windows, panes, layout, history, or process state.
+The separate explicit pane-split shortcuts authorize only creation of one pane
+at a time in the active attachment.
 
 ### Release distribution
 

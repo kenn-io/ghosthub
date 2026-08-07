@@ -1,3 +1,4 @@
+import Foundation
 import GhosthubTmux
 import Testing
 @testable import GhosthubApp
@@ -325,9 +326,11 @@ struct SSHConfigurationResolverTests {
         )
         let preserved = [
             "ciphers=aes256-gcm@openssh.com",
+            "escapechar=none",
             "kexalgorithms=curve25519-sha256",
             "macs=hmac-sha2-512-etm@openssh.com",
             "requiredrsasize=4096",
+            "sendenv=TMUX_TMPDIR",
         ]
 
         let arguments = SSHConfigurationResolver.snapshotConnectionArguments(
@@ -339,6 +342,7 @@ struct SSHConfigurationResolverTests {
                     proxyJump: nil,
                     proxyCommand: nil,
                     resolvedOptions: preserved + [
+                        "setenv=GHOSTHUB_TMUX_PROFILE=fleet-secret",
                         "identityfile=/credentials/id_ed25519",
                     ]
                 )
@@ -348,7 +352,137 @@ struct SSHConfigurationResolverTests {
         for option in preserved {
             #expect(arguments.contains(option))
         }
+        #expect(!arguments.contains(
+            "setenv=GHOSTHUB_TMUX_PROFILE=fleet-secret"
+        ))
         #expect(!arguments.contains("identityfile=/credentials/id_ed25519"))
+    }
+
+    @Test("connection snapshots keep SetEnv values in a private config file")
+    func protectsSetEnvValuesFromProcessArguments() throws {
+        let host = SSHHostInfo(
+            user: "deploy",
+            hostname: "build.example.test",
+            port: nil
+        )
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: temporaryDirectory,
+            withIntermediateDirectories: false
+        )
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+
+        let snapshot = SSHConfigurationResolver.connectionArgumentsSnapshot(
+            for: host,
+            configurationProvider: { _ in
+                EffectiveSSHConfiguration(
+                    user: "deploy",
+                    strictHostKeyChecking: "yes",
+                    proxyJump: nil,
+                    proxyCommand: nil,
+                    resolvedOptions: [
+                        "sendenv=TMUX_TMPDIR",
+                        "setenv=GHOSTHUB_TOKEN=fleet secret#value",
+                    ]
+                )
+            },
+            temporaryDirectory: temporaryDirectory
+        )
+
+        let configurationURL = try #require(snapshot.configurationURL)
+        #expect(snapshot.arguments.contains(configurationURL.path))
+        #expect(!snapshot.arguments.joined(separator: " ").contains(
+            "fleet secret#value"
+        ))
+        let contents = try String(
+            contentsOf: configurationURL,
+            encoding: .utf8
+        )
+        #expect(contents.contains(
+            "SetEnv \"GHOSTHUB_TOKEN=fleet secret#value\""
+        ))
+        let fileAttributes = try FileManager.default.attributesOfItem(
+            atPath: configurationURL.path
+        )
+        let directoryAttributes = try FileManager.default.attributesOfItem(
+            atPath: configurationURL.deletingLastPathComponent().path
+        )
+        let filePermissions = try #require(
+            fileAttributes[.posixPermissions] as? NSNumber
+        )
+        let directoryPermissions = try #require(
+            directoryAttributes[.posixPermissions] as? NSNumber
+        )
+        #expect(filePermissions.intValue & 0o777 == 0o600)
+        #expect(directoryPermissions.intValue & 0o777 == 0o700)
+    }
+
+    @Test("connection snapshots retain authentication configuration")
+    func preservesAuthenticationWithoutControlConnection() throws {
+        let host = SSHHostInfo(
+            user: "deploy",
+            hostname: "build.example.test",
+            port: nil
+        )
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: temporaryDirectory,
+            withIntermediateDirectories: false
+        )
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+
+        let snapshot = SSHConfigurationResolver.connectionArgumentsSnapshot(
+            for: host,
+            configurationProvider: { _ in
+                EffectiveSSHConfiguration(
+                    user: "deploy",
+                    strictHostKeyChecking: "yes",
+                    proxyJump: nil,
+                    proxyCommand: nil,
+                    resolvedOptions: [
+                        "authenticationmethods=publickey,password",
+                        "certificatefile=/credentials/deploy-cert.pub",
+                        "enablesshkeysign=yes",
+                        "identitiesonly=yes",
+                        "identityagent=/run/user/501/ssh-agent.sock",
+                        "identityfile=/credentials/deploy key",
+                        "preferredauthentications=publickey,password",
+                        "usekeychain=yes",
+                    ]
+                )
+            },
+            temporaryDirectory: temporaryDirectory
+        )
+
+        let configurationURL = try #require(snapshot.configurationURL)
+        let contents = try String(
+            contentsOf: configurationURL,
+            encoding: .utf8
+        )
+        #expect(!contents.contains("AuthenticationMethods"))
+        #expect(contents.contains(
+            "CertificateFile \"/credentials/deploy-cert.pub\""
+        ))
+        #expect(contents.contains("EnableSSHKeysign \"yes\""))
+        #expect(contents.contains("IdentitiesOnly \"yes\""))
+        #expect(contents.contains(
+            "IdentityAgent \"/run/user/501/ssh-agent.sock\""
+        ))
+        #expect(contents.contains(
+            "IdentityFile \"/credentials/deploy key\""
+        ))
+        #expect(contents.contains(
+            "PreferredAuthentications \"publickey,password\""
+        ))
+        #expect(contents.contains("UseKeychain \"yes\""))
+        let parsed = TmuxBinaryResolver.runProcess(
+            executable: "/usr/bin/ssh",
+            arguments: ["-G"] + snapshot.arguments + ["--", "example.invalid"],
+            timeout: 5
+        )
+        #expect(parsed.status == 0, Comment(rawValue: parsed.stderr))
     }
 
     @Test("opaque proxy commands fail routine SSH operations closed")

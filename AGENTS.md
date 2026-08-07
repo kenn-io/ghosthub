@@ -104,9 +104,9 @@ layer, as subject to direct iteration.
   must coordinate privately with Kenn Software and sign the CLA before their
   work can be accepted.
 - Never include superpowers planning documents (`docs/superpowers/specs/`,
-  `docs/superpowers/plans/`) in a pull request. They are local working
-  artifacts; remove them from the branch before pushing or opening a pull
-  request.
+  `docs/superpowers/plans/`) in a pull request. Creating and using them locally
+  during development is fine; they are local working artifacts. Remove them
+  from the branch before pushing, opening, or updating a pull request.
 - Do not poll or watch GitHub Actions through `gh`, the GitHub API, or browser automation unless the user explicitly asks you to do so.
 - **NO DATABASE MIGRATIONS** until the first production release. Update the current schema, bootstrap paths, fixtures, and tests directly.
 

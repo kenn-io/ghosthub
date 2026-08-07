@@ -418,6 +418,25 @@ authentication and host-key escalation state, and attach-only client
 replacement. Inactive presentations remain supervised. Tmux owns all windows,
 panes, history, input, rendering, and server-side lifetime.
 
+Cmd-D and Cmd-Shift-D provide Ghostty-style split-right and split-down actions,
+also exposed in the File menu when the attached host reports tmux 3.4 or newer.
+Each explicit action runs `split-window -h` or `split-window -v` against the
+active pane of the attachment's exact host and socket. The attachment retains
+its resolved SSH configuration and effective endpoint, so a later SSH alias
+edit cannot reroute a split. Each POSIX surface publishes its TTY under a unique
+token; as the surface opens, Ghosthub finds that client by TTY and captures its
+stable server, client, and session identity. Each split then uses one tmux
+conditional to validate that identity and the active pane before mutating the
+layout. This follows a session rename but rejects a replacement client or a
+client switched to another session after binding. Requests
+are serialized per attachment; detaching cancels the active command and queue.
+Keyboard equivalents require effective terminal focus and no attached sheet;
+clicking the File menu action remains an explicit request. This semantic routing
+is independent of the user's tmux prefix and key tables. Command failures appear
+on the attachment rather than silently disappearing. Ghosthub does not maintain
+a parallel pane model; tmux remains layout and process authority. Native Windows
+psmux surfaces do not expose or intercept these split actions.
+
 Ghosthub applies the selected Tmux Theme when it creates a new bare session.
 Built-in themes provide fixed colors; Follow ghostty.conf uses the effective
 foreground and background retained from libghostty's surface-scoped config

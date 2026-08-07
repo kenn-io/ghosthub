@@ -1,6 +1,7 @@
 import SwiftUI
 import GhosthubSettings
 import GhosthubTerminal
+import GhosthubTerminalSupport
 import GhosthubUI
 import GhosthubWorkspace
 #if canImport(AppKit)
@@ -15,6 +16,30 @@ enum QuitPolicy {
     }
 }
 
+#if canImport(AppKit)
+enum PaneSplitCommand {
+    static func usesKeyboardShortcut(
+        canSplit: Bool,
+        hasEffectiveKeyboardFocus: Bool
+    ) -> Bool {
+        canSplit && hasEffectiveKeyboardFocus
+    }
+
+    @MainActor
+    static func requiresKeyboardFocus(
+        _ shortcut: TerminalTmuxSplitShortcut,
+        currentEvent: NSEvent? = NSApplication.shared.currentEvent
+    ) -> Bool {
+        guard currentEvent?.type == .keyDown else { return false }
+        return TerminalTmuxSplitShortcut.matching(
+            flags: currentEvent?.modifierFlags ?? [],
+            charactersIgnoringModifiers:
+            currentEvent?.charactersIgnoringModifiers
+        ) == shortcut
+    }
+}
+#endif
+
 @main
 struct GhosthubApp: App {
     @StateObject private var terminalRuntime = LibghosttyRuntime.shared
@@ -25,6 +50,8 @@ struct GhosthubApp: App {
     private let updateRelaunchRestorer = UpdateRelaunchRestorer()
     #endif
     @FocusedValue(\.sceneModel) private var focusedSceneModel
+    @FocusedValue(\.tmuxTerminalHasEffectiveKeyboardFocus)
+    private var tmuxTerminalHasEffectiveKeyboardFocus
     @Environment(\.openWindow) private var openWindow
     @State private var didRequestLaunchActivation = false
     #if canImport(AppKit)
@@ -275,6 +302,45 @@ struct GhosthubApp: App {
                 appDelegate.requestNewWorkspaceTab()
             }
             .keyboardShortcut("t")
+
+            Divider()
+
+            Button("Split Right") {
+                focusedSceneModel?.splitActiveTmuxPane(
+                    .right,
+                    requiresKeyboardFocus: PaneSplitCommand
+                        .requiresKeyboardFocus(.right)
+                )
+            }
+            .keyboardShortcut(
+                PaneSplitCommand.usesKeyboardShortcut(
+                    canSplit:
+                    focusedSceneModel?.canSplitActiveTmuxPane == true,
+                    hasEffectiveKeyboardFocus:
+                    tmuxTerminalHasEffectiveKeyboardFocus == true
+                ) ? KeyboardShortcut("d") : nil
+            )
+            .disabled(focusedSceneModel?.canSplitActiveTmuxPane != true)
+
+            Button("Split Down") {
+                focusedSceneModel?.splitActiveTmuxPane(
+                    .down,
+                    requiresKeyboardFocus: PaneSplitCommand
+                        .requiresKeyboardFocus(.down)
+                )
+            }
+            .keyboardShortcut(
+                PaneSplitCommand.usesKeyboardShortcut(
+                    canSplit:
+                    focusedSceneModel?.canSplitActiveTmuxPane == true,
+                    hasEffectiveKeyboardFocus:
+                    tmuxTerminalHasEffectiveKeyboardFocus == true
+                ) ? KeyboardShortcut(
+                    "d",
+                    modifiers: [.command, .shift]
+                ) : nil
+            )
+            .disabled(focusedSceneModel?.canSplitActiveTmuxPane != true)
 
             Divider()
 
