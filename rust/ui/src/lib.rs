@@ -1436,7 +1436,23 @@ impl RootView {
         snapshot: &workspace::WorkspaceSnapshot,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let mut tree = div()
+        let mut body = div()
+            .id("workspace-tree-scroll")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .overflow_x_hidden();
+        for (host_index, host) in snapshot.hosts().iter().enumerate() {
+            body = body.child(Self::host_tree(
+                host_index,
+                host,
+                snapshot.selected_host() == Some(host.id()),
+                snapshot.content(),
+                cx,
+            ));
+        }
+
+        div()
             .w(px(APP_NAVIGATION_WIDTH))
             .h_full()
             .flex_none()
@@ -1458,18 +1474,9 @@ impl RootView {
                     .font_weight(FontWeight::BOLD)
                     .text_color(rgb(0xa5_ac_b8))
                     .child("WORKSPACES"),
-            );
-
-        for (host_index, host) in snapshot.hosts().iter().enumerate() {
-            tree = tree.child(Self::host_tree(
-                host_index,
-                host,
-                snapshot.selected_host() == Some(host.id()),
-                snapshot.content(),
-                cx,
-            ));
-        }
-        tree.into_any_element()
+            )
+            .child(body)
+            .into_any_element()
     }
 
     fn host_tree(
@@ -1479,115 +1486,210 @@ impl RootView {
         content: &WorkspaceContent,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        let mut host_tree =
+            div()
+                .flex()
+                .flex_col()
+                .child(Self::host_header(host_index, host, is_selected, cx));
+
+        match host.connection() {
+            HostConnectionState::Connecting => {
+                host_tree = host_tree.child(Self::host_status_row(
+                    host_index,
+                    "Refreshing sessions…".to_owned(),
+                    "Cancel",
+                    true,
+                    cx,
+                ));
+            }
+            HostConnectionState::Unavailable => {
+                let message = host.diagnostic().map_or_else(
+                    || "Host unavailable".to_owned(),
+                    |diagnostic| diagnostic.message().to_owned(),
+                );
+                host_tree = host_tree.child(Self::host_status_row(
+                    host_index, message, "Retry", false, cx,
+                ));
+            }
+            HostConnectionState::Disconnected => {
+                host_tree = host_tree.child(Self::host_status_row(
+                    host_index,
+                    "Host disconnected".to_owned(),
+                    "Connect",
+                    false,
+                    cx,
+                ));
+            }
+            HostConnectionState::Ready => {}
+        }
+
+        let sessions = tree_sessions(host, content);
+        if host.connection() == HostConnectionState::Ready || !sessions.is_empty() {
+            host_tree = host_tree.child(Self::session_tree(host_index, &sessions, cx));
+        }
+        host_tree.into_any_element()
+    }
+
+    fn host_header(
+        host_index: usize,
+        host: &HostItem,
+        is_selected: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
         let status_color = match host.connection() {
             HostConnectionState::Ready => 0x62_c0_7a,
             HostConnectionState::Connecting => 0xd3_a4_4a,
             HostConnectionState::Disconnected => 0x8f_96_a3,
             HostConnectionState::Unavailable => 0xd0_65_65,
         };
-        let mut host_tree = div().flex().flex_col().child(
+        let mut host_header = div()
+            .id(("host", host_index))
+            .h(px(46.0))
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_3()
+            .bg(rgb(if is_selected { 0x16_1920 } else { 0x0f_1116 }))
+            .child(div().text_color(rgb(0x6f_7682)).child("▾"))
+            .child(div().text_color(rgb(status_color)).child("●"))
+            .child(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .truncate()
+                            .text_sm()
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(rgb(0xd2_d7_df))
+                            .child(host.name().to_owned()),
+                    )
+                    .child(
+                        div()
+                            .truncate()
+                            .text_xs()
+                            .text_color(rgb(0x71_7885))
+                            .child(host.endpoint().to_owned()),
+                    ),
+            );
+        if host.connection() == HostConnectionState::Ready {
+            host_header = host_header.child(
+                div()
+                    .id(("refresh-host", host_index))
+                    .flex_none()
+                    .px_2()
+                    .py_1()
+                    .rounded_sm()
+                    .cursor_pointer()
+                    .text_xs()
+                    .text_color(rgb(0x8f_96_a3))
+                    .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xd2_d7_df)))
+                    .child("Refresh")
+                    .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
+            );
+        }
+        host_header.into_any_element()
+    }
+
+    fn session_tree(
+        host_index: usize,
+        sessions: &[TreeSession],
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let mut tree = div().flex().flex_col().child(
             div()
-                .id(("host", host_index))
-                .h(px(46.0))
+                .h(px(28.0))
                 .flex()
                 .items_center()
-                .gap_2()
-                .px_3()
-                .bg(rgb(if is_selected { 0x16_1920 } else { 0x0f_1116 }))
-                .child(div().text_color(rgb(0x6f_7682)).child("▾"))
-                .child(div().text_color(rgb(status_color)).child("●"))
-                .child(
-                    div()
-                        .min_w_0()
-                        .flex_1()
-                        .flex()
-                        .flex_col()
-                        .child(
-                            div()
-                                .truncate()
-                                .text_sm()
-                                .font_weight(FontWeight::BOLD)
-                                .text_color(rgb(0xd2_d7_df))
-                                .child(host.name().to_owned()),
-                        )
-                        .child(
-                            div()
-                                .truncate()
-                                .text_xs()
-                                .text_color(rgb(0x71_7885))
-                                .child(host.endpoint().to_owned()),
-                        ),
-                )
-                .child(
-                    div()
-                        .id(("refresh-host", host_index))
-                        .flex_none()
-                        .px_2()
-                        .py_1()
-                        .rounded_sm()
-                        .cursor_pointer()
-                        .text_xs()
-                        .text_color(rgb(0x8f_96_a3))
-                        .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xd2_d7_df)))
-                        .child("Refresh")
-                        .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
-                ),
+                .pl(px(35.0))
+                .text_xs()
+                .font_weight(FontWeight::BOLD)
+                .text_color(rgb(0x73_7a87))
+                .child("TMUX SESSIONS"),
         );
-
-        if host.connection() == HostConnectionState::Ready {
-            host_tree = host_tree.child(
+        if sessions.is_empty() {
+            tree = tree.child(
                 div()
-                    .h(px(28.0))
-                    .flex()
-                    .items_center()
-                    .pl(px(35.0))
+                    .px_3()
+                    .pl(px(51.0))
+                    .py_2()
                     .text_xs()
-                    .font_weight(FontWeight::BOLD)
                     .text_color(rgb(0x73_7a87))
-                    .child("TMUX SESSIONS"),
+                    .child("No sessions"),
             );
-            if host.sessions().is_empty() {
-                host_tree = host_tree.child(
-                    div()
-                        .px_3()
-                        .pl(px(51.0))
-                        .py_2()
-                        .text_xs()
-                        .text_color(rgb(0x73_7a87))
-                        .child("No sessions"),
-                );
-            } else {
-                let active = active_session_name(content);
-                for (session_index, session) in host.sessions().iter().enumerate() {
-                    host_tree = host_tree.child(Self::tree_session_row(
-                        host_index,
-                        session_index,
-                        session,
-                        active == Some(session.name()),
-                        cx,
-                    ));
-                }
-            }
         }
-        host_tree.into_any_element()
+        for (session_index, session) in sessions.iter().enumerate() {
+            tree = tree.child(Self::tree_session_row(
+                host_index,
+                session_index,
+                &session.name,
+                session.attached_clients,
+                session.active,
+                cx,
+            ));
+        }
+        tree.into_any_element()
+    }
+
+    fn host_status_row(
+        host_index: usize,
+        message: String,
+        action: &'static str,
+        cancel: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let action_id = if cancel {
+            "cancel-host-refresh"
+        } else {
+            "retry-host-refresh"
+        };
+        div()
+            .mx_2()
+            .mb_1()
+            .px_2()
+            .py_2()
+            .rounded_sm()
+            .bg(rgb(0x16_1920))
+            .child(div().text_xs().text_color(rgb(0x9b_a2ae)).child(message))
+            .child(
+                div()
+                    .id((action_id, host_index))
+                    .mt_1()
+                    .cursor_pointer()
+                    .text_xs()
+                    .text_color(rgb(0x79_aee3))
+                    .hover(|style| style.text_color(rgb(0xb6_d8_f8)))
+                    .child(action)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if cancel {
+                            this.cancel_refresh(cx);
+                        } else {
+                            this.refresh(cx);
+                        }
+                    })),
+            )
+            .into_any_element()
     }
 
     fn tree_session_row(
         host_index: usize,
         index: usize,
-        session: &workspace::SessionItem,
+        session_name: &str,
+        attached_clients: Option<u32>,
         is_active: bool,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let name = session.name().to_owned();
+        let name = session_name.to_owned();
         let detail = if is_active {
             "open".to_owned()
-        } else if session.attached_clients() == 0 {
+        } else if attached_clients == Some(0) {
             "detached".to_owned()
-        } else if session.attached_clients() == 1 {
+        } else if attached_clients == Some(1) {
             "1 client".to_owned()
         } else {
-            format!("{} clients", session.attached_clients())
+            format!("{} clients", attached_clients.unwrap_or_default())
         };
         let mut row = div()
             .id((
@@ -1839,6 +1941,74 @@ fn active_session_name(content: &WorkspaceContent) -> Option<&str> {
         | WorkspaceContent::Ready { .. }
         | WorkspaceContent::Error { .. } => None,
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct TreeSession {
+    name: String,
+    attached_clients: Option<u32>,
+    active: bool,
+}
+
+fn active_session_for_endpoint<'a>(
+    content: &'a WorkspaceContent,
+    endpoint: &str,
+) -> Option<&'a str> {
+    match content {
+        WorkspaceContent::Attaching {
+            endpoint: active_endpoint,
+            session,
+        }
+        | WorkspaceContent::Terminal {
+            endpoint: active_endpoint,
+            session,
+            ..
+        } if active_endpoint == endpoint => Some(session),
+        WorkspaceContent::Shell
+        | WorkspaceContent::Loading
+        | WorkspaceContent::Ready { .. }
+        | WorkspaceContent::Attaching { .. }
+        | WorkspaceContent::Terminal { .. }
+        | WorkspaceContent::Error { .. } => None,
+    }
+}
+
+fn tree_sessions(host: &HostItem, content: &WorkspaceContent) -> Vec<TreeSession> {
+    let active = active_session_for_endpoint(content, host.endpoint());
+    if host.connection() != HostConnectionState::Ready {
+        return active.map_or_else(Vec::new, |name| {
+            let attached_clients = host
+                .sessions()
+                .iter()
+                .find(|session| session.name() == name)
+                .map(workspace::SessionItem::attached_clients);
+            vec![TreeSession {
+                name: name.to_owned(),
+                attached_clients,
+                active: true,
+            }]
+        });
+    }
+
+    let mut sessions = host
+        .sessions()
+        .iter()
+        .map(|session| TreeSession {
+            name: session.name().to_owned(),
+            attached_clients: Some(session.attached_clients()),
+            active: active == Some(session.name()),
+        })
+        .collect::<Vec<_>>();
+    if let Some(name) = active
+        && !sessions.iter().any(|session| session.active)
+    {
+        sessions.push(TreeSession {
+            name: name.to_owned(),
+            attached_clients: None,
+            active: true,
+        });
+    }
+    sessions
 }
 
 fn workspace_window_title(content: &WorkspaceContent) -> String {
@@ -2286,13 +2456,13 @@ mod tests {
         coalesce_last_resize, coalesce_last_wheel, input_queue_has_capacity, named_key,
         normalize_cell_width, queued_input_matches_presentation, terminal_cell_at_with_offset,
         terminal_key_input, terminal_line_height, terminal_wheel_steps, transitioned_presentation,
-        workspace_window_title,
+        tree_sessions, workspace_window_title,
     };
     use std::sync::Arc;
     use surface::{GridSize, SurfaceFrame, SurfaceStore};
     use workspace::{
-        KeyEvent, KeyInput, Modifiers, MouseAction, MouseButton, MouseInput, NamedKey,
-        WorkspaceContent,
+        HostConnectionState, HostItem, KeyEvent, KeyInput, Modifiers, MouseAction, MouseButton,
+        MouseInput, NamedKey, SessionItem, WorkspaceContent,
     };
 
     #[test]
@@ -2374,6 +2544,34 @@ mod tests {
             "demo — Ubuntu — Ghosthub"
         );
         assert_eq!(workspace_window_title(&WorkspaceContent::Shell), "Ghosthub");
+    }
+
+    #[test]
+    fn active_session_stays_in_the_tree_while_its_host_refreshes_or_fails() {
+        let size = GridSize::new(80, 24).expect("valid grid");
+        let terminal = WorkspaceContent::Terminal {
+            endpoint: "Ubuntu".to_owned(),
+            session: "demo".to_owned(),
+            presentation_id: 1,
+            surface: Arc::new(SurfaceStore::new(SurfaceFrame::blank(1, size))),
+        };
+        for state in [
+            HostConnectionState::Connecting,
+            HostConnectionState::Unavailable,
+        ] {
+            let host = HostItem::wsl(
+                "Ubuntu",
+                None,
+                state,
+                vec![SessionItem::new("other", 0)],
+                None,
+            );
+
+            let rows = tree_sessions(&host, &terminal);
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].name, "demo");
+            assert!(rows[0].active);
+        }
     }
 
     #[test]
