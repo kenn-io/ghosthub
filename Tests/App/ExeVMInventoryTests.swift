@@ -215,8 +215,8 @@ struct ExeVMInventoryTests {
     }
 
     @MainActor
-    @Test("ending a draft refresh restores persisted inventory")
-    func endingDraftRefreshRestoresPersistedInventory() async throws {
+    @Test("draft invalidation restores persisted inventory immediately")
+    func draftInvalidationRestoresPersistedInventoryImmediately() async throws {
         let client = ExeVMClient { host, startMarker, endMarker in
             let vmName = host.hostname.components(separatedBy: ".").first!
             return (
@@ -260,13 +260,15 @@ struct ExeVMInventoryTests {
                 return
             }
         }
-        let editedRefreshID = store.refresh(accounts: [edited])
+        let editedRefreshID = store.refresh(
+            accounts: [edited],
+            persistedAccounts: [persisted]
+        )
         await loaded.value
         store.invalidateRefresh(
             editedRefreshID,
             currentAccounts: [persisted]
         )
-        store.cancelRefresh(editedRefreshID, retaining: [persisted])
 
         let restored = try #require(store.hosts.first)
         #expect(restored.sshHost.sshDestination == "vm+old@exe.dev")
@@ -275,6 +277,7 @@ struct ExeVMInventoryTests {
             totalVMs: 1,
             runningVMs: 1
         ))
+        store.cancelRefresh(editedRefreshID, retaining: [persisted])
 
         let added = ExeAccount(
             configKey: "work",
@@ -286,16 +289,19 @@ struct ExeVMInventoryTests {
                 return
             }
         }
-        let addedRefreshID = store.refresh(accounts: [persisted, added])
+        let addedRefreshID = store.refresh(
+            accounts: [persisted, added],
+            persistedAccounts: [persisted]
+        )
         await addedLoaded.value
         store.invalidateRefresh(
             addedRefreshID,
             currentAccounts: [persisted]
         )
-        store.cancelRefresh(addedRefreshID, retaining: [persisted])
 
         #expect(store.hosts.map(\.metadata.accountConfigKey) == ["personal"])
         #expect(store.statuses["work"] == nil)
+        store.cancelRefresh(addedRefreshID, retaining: [persisted])
     }
 
     @MainActor

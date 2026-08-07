@@ -726,7 +726,9 @@ struct WorkspaceWindow: View {
                                 },
                                 refreshExeAccounts: { accounts in
                                     ExeVMInventoryStore.shared.refresh(
-                                        accounts: accounts
+                                        accounts: accounts,
+                                        persistedAccounts:
+                                        settingsStore.exeAccounts
                                     )
                                 },
                                 cancelExeAccountRefresh: { refreshID in
