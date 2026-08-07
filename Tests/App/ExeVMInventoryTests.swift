@@ -181,11 +181,25 @@ struct ExeVMInventoryTests {
         )])
         await newRefresh.value
 
-        store.cancelRefresh(oldRefreshID)
+        store.cancelRefresh(
+            oldRefreshID,
+            retaining: [ExeAccount(
+                configKey: "personal",
+                name: "Personal",
+                sshDestination: "new.exe.dev"
+            )]
+        )
         let current = try #require(store.hosts.first)
         #expect(current.sshHost.sshDestination == "vm+new@exe.dev")
 
-        store.cancelRefresh(newRefreshID)
+        store.cancelRefresh(
+            newRefreshID,
+            retaining: [ExeAccount(
+                configKey: "personal",
+                name: "Personal",
+                sshDestination: "new.exe.dev"
+            )]
+        )
         #expect(store.hosts.count == 1)
         #expect(store.statuses["personal"] == .loaded(
             totalVMs: 1,
@@ -198,6 +212,90 @@ struct ExeVMInventoryTests {
             totalVMs: 1,
             runningVMs: 1
         ))
+    }
+
+    @MainActor
+    @Test("ending a draft refresh restores persisted inventory")
+    func endingDraftRefreshRestoresPersistedInventory() async throws {
+        let client = ExeVMClient { host, startMarker, endMarker in
+            let vmName = host.hostname.components(separatedBy: ".").first!
+            return (
+                0,
+                """
+                \(startMarker)
+                {"vms":[{"vm_name":"\(vmName)","ssh_dest":"vm+\(
+                    vmName
+                )@exe.dev","status":"running"}]}
+                \(endMarker)
+                """,
+                ""
+            )
+        }
+        let store = ExeVMInventoryStore(client: client)
+        let persisted = ExeAccount(
+            configKey: "personal",
+            name: "Personal",
+            sshDestination: "old.exe.dev"
+        )
+        var loaded = Task { @MainActor in
+            for await hosts in store.$hosts.values
+                where hosts.first?.sshHost.sshDestination
+                == "vm+old@exe.dev" {
+                return
+            }
+        }
+        let persistedRefreshID = store.refresh(accounts: [persisted])
+        await loaded.value
+        store.cancelRefresh(persistedRefreshID, retaining: [persisted])
+
+        let edited = ExeAccount(
+            configKey: "personal",
+            name: "Edited",
+            sshDestination: "new.exe.dev"
+        )
+        loaded = Task { @MainActor in
+            for await hosts in store.$hosts.values
+                where hosts.first?.sshHost.sshDestination
+                == "vm+new@exe.dev" {
+                return
+            }
+        }
+        let editedRefreshID = store.refresh(accounts: [edited])
+        await loaded.value
+        store.invalidateRefresh(
+            editedRefreshID,
+            currentAccounts: [persisted]
+        )
+        store.cancelRefresh(editedRefreshID, retaining: [persisted])
+
+        let restored = try #require(store.hosts.first)
+        #expect(restored.sshHost.sshDestination == "vm+old@exe.dev")
+        #expect(restored.metadata.accountName == "Personal")
+        #expect(store.statuses["personal"] == .loaded(
+            totalVMs: 1,
+            runningVMs: 1
+        ))
+
+        let added = ExeAccount(
+            configKey: "work",
+            name: "Work",
+            sshDestination: "work.exe.dev"
+        )
+        let addedLoaded = Task { @MainActor in
+            for await hosts in store.$hosts.values where hosts.count == 2 {
+                return
+            }
+        }
+        let addedRefreshID = store.refresh(accounts: [persisted, added])
+        await addedLoaded.value
+        store.invalidateRefresh(
+            addedRefreshID,
+            currentAccounts: [persisted]
+        )
+        store.cancelRefresh(addedRefreshID, retaining: [persisted])
+
+        #expect(store.hosts.map(\.metadata.accountConfigKey) == ["personal"])
+        #expect(store.statuses["work"] == nil)
     }
 
     @MainActor
@@ -237,7 +335,21 @@ struct ExeVMInventoryTests {
                   let refreshID
             else { return }
             cancellations.withLock { $0 += 1 }
-            store.cancelRefresh(refreshID)
+            store.cancelRefresh(
+                refreshID,
+                retaining: [
+                    ExeAccount(
+                        configKey: "personal",
+                        name: "Personal",
+                        sshDestination: "personal.exe.dev"
+                    ),
+                    ExeAccount(
+                        configKey: "work",
+                        name: "Work",
+                        sshDestination: "work.exe.dev"
+                    ),
+                ]
+            )
         }
         refreshID = store.refresh(accounts: [
             ExeAccount(

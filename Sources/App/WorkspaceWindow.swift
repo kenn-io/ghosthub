@@ -731,7 +731,8 @@ struct WorkspaceWindow: View {
                                 },
                                 cancelExeAccountRefresh: { refreshID in
                                     ExeVMInventoryStore.shared.cancelRefresh(
-                                        refreshID
+                                        refreshID,
+                                        retaining: settingsStore.exeAccounts
                                     )
                                 },
                                 invalidateExeAccountRefresh: {

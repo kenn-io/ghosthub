@@ -199,6 +199,7 @@ private struct ExeVMInventoryRefreshState {
     var accountNames: [String: String]
     var visibleAccountDestinations: [String: String]
     var visibleAccountNames: [String: String]
+    var previousHostsByAccount: [String: ExeAccountHostCache]
     var previousStatuses: [String: ExeAccountStatus]
     var completedAccountKeys: Set<String> = []
     var publishedAccountKeys: Set<String> = []
@@ -250,9 +251,14 @@ final class ExeVMInventoryStore: ObservableObject {
         refreshState = nil
         refreshTask?.cancel()
         refreshTask = nil
-        if let previousState, !previousState.isComplete {
-            restoreStatuses(from: previousState)
+        if let previousState {
+            reconcileInventory(
+                retaining: accounts,
+                after: previousState
+            )
         }
+        let previousHostsByAccount = hostsByAccount
+        let previousStatuses = statusesByAccount
         let refreshID = UUID()
         hostsByAccount = hostsByAccount.filter {
             enabledDestinations[$0.key] == $0.value.sshDestination
@@ -281,7 +287,8 @@ final class ExeVMInventoryStore: ObservableObject {
             accountNames: enabledNames,
             visibleAccountDestinations: enabledDestinations,
             visibleAccountNames: enabledNames,
-            previousStatuses: statusesByAccount,
+            previousHostsByAccount: previousHostsByAccount,
+            previousStatuses: previousStatuses,
             publishedAccountKeys: publishedAccountKeys
         )
 
@@ -372,16 +379,19 @@ final class ExeVMInventoryStore: ObservableObject {
         return refreshID
     }
 
-    func cancelRefresh(_ refreshID: UUID) {
+    func cancelRefresh(
+        _ refreshID: UUID,
+        retaining accounts: [ExeAccount]
+    ) {
         guard let state = refreshState,
               state.id == refreshID
         else { return }
         refreshState = nil
         if !state.isComplete {
             refreshTask?.cancel()
-            restoreStatuses(from: state)
         }
         refreshTask = nil
+        reconcileInventory(retaining: accounts, after: state)
         publishInventory()
     }
 
@@ -487,13 +497,49 @@ final class ExeVMInventoryStore: ObservableObject {
         return names
     }
 
-    private func restoreStatuses(
-        from state: ExeVMInventoryRefreshState
+    private func reconcileInventory(
+        retaining accounts: [ExeAccount],
+        after state: ExeVMInventoryRefreshState
     ) {
-        for configKey in state.accountDestinations.keys
-            where !state.completedAccountKeys.contains(configKey) {
-            statusesByAccount[configKey] = state.previousStatuses[configKey]
+        let retainedAccounts = ExeAccountSanitizer
+            .discoverableAccounts(accounts)
+            .filter(\.isEnabled)
+        var retainedHosts: [String: ExeAccountHostCache] = [:]
+        var retainedStatuses: [String: ExeAccountStatus] = [:]
+
+        for account in retainedAccounts {
+            let configKey = account.configKey
+            let destination = account.sshDestination
+            let currentMatches = state.accountDestinations[configKey]
+                == destination
+            let cache: ExeAccountHostCache? = if currentMatches,
+                                                 let current = hostsByAccount[configKey],
+                                                 current.sshDestination == destination {
+                current
+            } else if let previous = state
+                .previousHostsByAccount[configKey],
+                previous.sshDestination == destination {
+                previous
+            } else {
+                nil
+            }
+            if var cache {
+                for index in cache.hosts.indices {
+                    cache.hosts[index].metadata.accountName = account.name
+                }
+                retainedHosts[configKey] = cache
+            }
+
+            if currentMatches,
+               state.completedAccountKeys.contains(configKey),
+               let status = statusesByAccount[configKey] {
+                retainedStatuses[configKey] = status
+            } else if let status = state.previousStatuses[configKey] {
+                retainedStatuses[configKey] = status
+            }
         }
+        hostsByAccount = retainedHosts
+        statusesByAccount = retainedStatuses
     }
 
     private func publishInventory() {
