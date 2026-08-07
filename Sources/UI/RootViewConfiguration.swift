@@ -193,42 +193,49 @@ public struct TmuxConnectionRecoveryRequest:
 }
 
 struct TmuxConnectionRecoveryRequestRouter {
-    private(set) var reviewedRequestID: UUID?
+    private(set) var reviewedRequestIDs: Set<UUID> = []
+    private(set) var currentReviewRequest: TmuxConnectionRecoveryRequest?
 
     mutating func take(
         _ request: TmuxConnectionRecoveryRequest?,
         whileReviewIsPresented: Bool
     ) -> TmuxConnectionRecoveryRequest? {
-        guard let request, reviewedRequestID != request.id else { return nil }
+        guard let request, !reviewedRequestIDs.contains(request.id) else {
+            return nil
+        }
         guard !whileReviewIsPresented else { return nil }
-        reviewedRequestID = request.id
+        reviewedRequestIDs.insert(request.id)
+        currentReviewRequest = request
         return request
     }
 
-    func recoveryRequestID(
+    mutating func recoveryRequestID(
         for hostID: UUID,
         activeRequest: TmuxConnectionRecoveryRequest?
     ) -> UUID? {
         guard let activeRequest,
-              activeRequest.id == reviewedRequestID,
+              reviewedRequestIDs.contains(activeRequest.id),
               activeRequest.hostID == hostID
         else { return nil }
+        currentReviewRequest = activeRequest
         return activeRequest.id
     }
 
-    func recoveryHostIDToResume(
+    mutating func reviewDidDismiss() {
+        currentReviewRequest = nil
+    }
+
+    func recoveryRequestToResume(
         reviewedHostID: UUID?,
-        reviewRequestID: UUID?,
-        activeRequest: TmuxConnectionRecoveryRequest?
-    ) -> UUID? {
+        reviewRequestID: UUID?
+    ) -> TmuxConnectionRecoveryRequest? {
         guard let reviewedHostID,
               let reviewRequestID,
-              recoveryRequestID(
-                  for: reviewedHostID,
-                  activeRequest: activeRequest
-              ) == reviewRequestID
+              let currentReviewRequest,
+              currentReviewRequest.hostID == reviewedHostID,
+              currentReviewRequest.id == reviewRequestID
         else { return nil }
-        return reviewedHostID
+        return currentReviewRequest
     }
 }
 
@@ -238,6 +245,7 @@ public struct InteractionHandlers {
     public let reloadTerminalConfig: (() -> Void)?
     public let selectWorkspace: ((WorkspaceSelection) -> Void)?
     public let openTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)?
+    public let hideTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)?
     public let closeTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)?
     public let prepareTmuxSessionKill:
         ((WorkspaceTmuxSessionSelection) async throws
@@ -249,7 +257,8 @@ public struct InteractionHandlers {
     public let createTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)?
     public let refreshWorkspaceInventory: (() -> Void)?
     public let reconnectActiveTmuxSessionNow: (() -> Void)?
-    public let resumeTmuxReconnectAfterSSHRecovery: ((UUID) -> Void)?
+    public let resumeTmuxReconnectAfterSSHRecovery:
+        ((TmuxConnectionRecoveryRequest) -> Void)?
     public let reviewSSHHostKey:
         ((UUID, String) async -> SSHConnectionRecoveryResult)?
     public let trustSSHHostKey:
@@ -280,6 +289,7 @@ public struct InteractionHandlers {
         reloadTerminalConfig: (() -> Void)? = nil,
         selectWorkspace: ((WorkspaceSelection) -> Void)? = nil,
         openTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)? = nil,
+        hideTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)? = nil,
         closeTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)? = nil,
         prepareTmuxSessionKill:
         ((WorkspaceTmuxSessionSelection) async throws
@@ -291,7 +301,8 @@ public struct InteractionHandlers {
         createTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)? = nil,
         refreshWorkspaceInventory: (() -> Void)? = nil,
         reconnectActiveTmuxSessionNow: (() -> Void)? = nil,
-        resumeTmuxReconnectAfterSSHRecovery: ((UUID) -> Void)? = nil,
+        resumeTmuxReconnectAfterSSHRecovery:
+        ((TmuxConnectionRecoveryRequest) -> Void)? = nil,
         reviewSSHHostKey:
         ((UUID, String) async -> SSHConnectionRecoveryResult)? = nil,
         trustSSHHostKey:
@@ -321,6 +332,7 @@ public struct InteractionHandlers {
         self.reloadTerminalConfig = reloadTerminalConfig
         self.selectWorkspace = selectWorkspace
         self.openTmuxSession = openTmuxSession
+        self.hideTmuxSession = hideTmuxSession
         self.closeTmuxSession = closeTmuxSession
         self.prepareTmuxSessionKill = prepareTmuxSessionKill
         self.killTmuxSession = killTmuxSession

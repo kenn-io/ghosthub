@@ -80,23 +80,37 @@ struct TmuxSessionPresentationLifecycleTests {
         #expect(router.take(request, whileReviewIsPresented: false) == nil)
     }
 
-    @Test("a new tmux recovery request can open after dismissal")
-    func newTmuxRecoveryRequestCanReopen() {
-        let hostID = UUID()
+    @Test("alternating dismissed tmux recovery requests stay dismissed")
+    func alternatingDismissedTmuxRecoveryRequestsStayDismissed() {
+        let firstHostID = UUID()
+        let secondHostID = UUID()
         let first = TmuxConnectionRecoveryRequest(
-            hostID: hostID,
+            hostID: firstHostID,
             message: "SSH authentication is required."
         )
         let second = TmuxConnectionRecoveryRequest(
-            hostID: hostID,
+            hostID: secondHostID,
             message: "The SSH host key needs review."
         )
         var router = TmuxConnectionRecoveryRequestRouter()
 
         #expect(router.take(first, whileReviewIsPresented: false) == first)
-        #expect(router.take(nil, whileReviewIsPresented: false) == nil)
-        #expect(router.take(first, whileReviewIsPresented: false) == nil)
+        router.reviewDidDismiss()
         #expect(router.take(second, whileReviewIsPresented: false) == second)
+        router.reviewDidDismiss()
+        #expect(router.take(first, whileReviewIsPresented: false) == nil)
+        #expect(router.take(second, whileReviewIsPresented: false) == nil)
+
+        let manualReviewRequestID = router.recoveryRequestID(
+            for: firstHostID,
+            activeRequest: first
+        )
+        #expect(
+            router.recoveryRequestToResume(
+                reviewedHostID: firstHostID,
+                reviewRequestID: manualReviewRequestID
+            ) == first
+        )
     }
 
     @Test("tmux recovery waits for an existing SSH review to dismiss")
@@ -126,11 +140,10 @@ struct TmuxSessionPresentationLifecycleTests {
         _ = router.take(request, whileReviewIsPresented: false)
 
         #expect(
-            router.recoveryHostIDToResume(
+            router.recoveryRequestToResume(
                 reviewedHostID: hostID,
-                reviewRequestID: request.id,
-                activeRequest: request
-            ) == hostID
+                reviewRequestID: request.id
+            ) == request
         )
     }
 
@@ -145,10 +158,9 @@ struct TmuxSessionPresentationLifecycleTests {
         _ = router.take(request, whileReviewIsPresented: false)
 
         #expect(
-            router.recoveryHostIDToResume(
+            router.recoveryRequestToResume(
                 reviewedHostID: hostID,
-                reviewRequestID: nil,
-                activeRequest: request
+                reviewRequestID: nil
             ) == nil
         )
     }
@@ -168,11 +180,10 @@ struct TmuxSessionPresentationLifecycleTests {
         )
 
         #expect(
-            router.recoveryHostIDToResume(
+            router.recoveryRequestToResume(
                 reviewedHostID: hostID,
-                reviewRequestID: manualReviewRequestID,
-                activeRequest: request
-            ) == hostID
+                reviewRequestID: manualReviewRequestID
+            ) == request
         )
     }
 
@@ -366,8 +377,8 @@ struct TmuxSessionPresentationLifecycleTests {
         withExtendedLifetime(hostingView) {}
     }
 
-    @Test("navigation detaches an initially restored unbound session")
-    func navigationDetachesInitiallyRestoredUnboundSession() {
+    @Test("navigation hides an initially restored unbound session")
+    func navigationHidesInitiallyRestoredUnboundSession() {
         let hostID = UUID()
         let model = EndpointChangePresentationModel(
             hostID: hostID,
@@ -385,8 +396,9 @@ struct TmuxSessionPresentationLifecycleTests {
         hostingView.layoutSubtreeIfNeeded()
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))
 
-        #expect(model.closedSessions.count == 1)
-        #expect(model.closedSessions.first?.name == "docbank")
+        #expect(model.hiddenSessions.count == 1)
+        #expect(model.hiddenSessions.first?.name == "docbank")
+        #expect(model.closedSessions.isEmpty)
         withExtendedLifetime(hostingView) {}
     }
 }
@@ -395,6 +407,7 @@ struct TmuxSessionPresentationLifecycleTests {
 private final class EndpointChangePresentationModel: ObservableObject {
     @Published var display: WorkspaceDisplayState
     @Published var selection: WorkspaceSelection
+    private(set) var hiddenSessions: [WorkspaceTmuxSessionSelection] = []
     private(set) var closedSessions: [WorkspaceTmuxSessionSelection] = []
     private let alternateHostID = UUID()
     let hostID: UUID
@@ -428,6 +441,16 @@ private final class EndpointChangePresentationModel: ObservableObject {
 
     func recordClosedSession(_ session: WorkspaceTmuxSessionSelection) {
         closedSessions.append(session)
+    }
+
+    func recordHiddenSession(_ session: WorkspaceTmuxSessionSelection) {
+        hiddenSessions.append(session)
+        display = Self.display(
+            hostID: hostID,
+            alternateHostID: alternateHostID,
+            destination: "old-builder",
+            activeSession: nil
+        )
     }
 
     private static func display(
@@ -478,6 +501,7 @@ private struct EndpointChangePresentationHarness: View {
                 }
             ),
             handlers: InteractionHandlers(
+                hideTmuxSession: model.recordHiddenSession,
                 closeTmuxSession: model.recordClosedSession
             ),
             selection: $model.selection

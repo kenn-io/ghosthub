@@ -66,14 +66,13 @@ struct KwtHostInventory: Equatable, Sendable {
                }) {
                 retained.worktrees = prior.worktrees
             }
-            retained.worktrees.removeAll {
-                guard let generation = $0.generation else { return false }
-                return excludingWorktrees.contains(
-                    KwtWorktreeIdentity(
-                        path: $0.path,
-                        generation: generation
+            retained.worktrees.removeAll { worktree in
+                excludingWorktrees.contains {
+                    $0.matches(
+                        path: worktree.path,
+                        generation: worktree.generation
                     )
-                )
+                }
             }
             return retained
         })
@@ -91,6 +90,11 @@ struct KwtHostInventory: Equatable, Sendable {
 struct KwtWorktreeIdentity: Hashable, Sendable {
     let path: String
     let generation: String
+
+    func matches(path: String, generation: String?) -> Bool {
+        self.path == path
+            && generation.map { self.generation == $0 } ?? true
+    }
 }
 
 enum KwtInventoryError: Error, Equatable, LocalizedError {

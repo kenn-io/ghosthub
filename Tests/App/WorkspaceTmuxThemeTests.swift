@@ -317,6 +317,77 @@ struct WorkspaceTmuxThemeTests {
     }
 
     @MainActor
+    @Test("inactive styling supersedes colors changed during an apply")
+    func inactiveStylingSupersedesChangedColors() async throws {
+        let environment = try setupHostEnvironment()
+        let store = ThemeTmuxSurfaceStoreStub(
+            surfaceIdentities: [42, 43]
+        )
+        var resolvedStyles: [UInt: TmuxPresentationStyle] = [:]
+        let appliedStyles = LockedValue<
+            [String: [TmuxPresentationStyle]]
+        >([:])
+        let gate = StylerGate()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: store,
+            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            tmuxPresentationStyleProvider: { identity in
+                identity.flatMap { resolvedStyles[$0] }
+            },
+            appliesTmuxPresentationStyleToExistingSessionsProvider: { true },
+            tmuxSessionIdentityReader: { _, _ in sessionIdentity },
+            tmuxSessionStyler: { style, selection, _, _ in
+                appliedStyles.withLock {
+                    $0[selection.name, default: []].append(style)
+                }
+                if selection.name == "first", style == primaryStyle {
+                    await gate.blockUntilOpened()
+                    throw CancellationError()
+                }
+            }
+        )
+        let first = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "first"
+        )
+        let second = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "second"
+        )
+        model.openBorrowedTmuxSession(first)
+        await connectActiveTmuxSession(model, store: store)
+        model.openBorrowedTmuxSession(second)
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedTmuxSurface()
+            return store.requestCount == 2
+                && model.activeBorrowedTmuxSessionIsConnected
+        }
+
+        resolvedStyles = [42: primaryStyle, 43: newerStyle]
+        model.terminalPresentationStyleDidChange()
+        await gate.waitUntilBlocked()
+        await waitUntilMainActor {
+            appliedStyles.load()["second"] == [newerStyle]
+        }
+
+        resolvedStyles[42] = newerStyle
+        model.terminalPresentationStyleDidChange()
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(appliedStyles.load()["first"] == [primaryStyle])
+
+        gate.open()
+        await waitUntilMainActor {
+            appliedStyles.load()["first"] == [primaryStyle, newerStyle]
+                && model.tmuxStylingQuiesced
+        }
+        #expect(model.activeBorrowedTmuxSelection == second)
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("remote deferred kwt styling applies once with the read identity")
     func remoteDeferredKwtStylingAppliesOnce() async throws {
         let environment = try setupRemoteEnvironment()
@@ -848,23 +919,38 @@ private final class ThemeTmuxPaneSurfaceStub: TmuxPaneSurfacing {
 private final class ThemeTmuxSurfaceStoreStub: TmuxSurfaceStoring {
     private let surface = ThemeTmuxPaneSurfaceStub()
     private(set) var requestCount = 0
-    private let surfaceIdentity: UInt?
+    private let surfaceIdentities: [UInt?]
+    private var surfaceIdentitiesByKey: [SurfaceKey: UInt] = [:]
+    private var retainedKeys: Set<SurfaceKey> = []
 
     init(surfaceIdentity: UInt? = nil) {
-        self.surfaceIdentity = surfaceIdentity
+        surfaceIdentities = [surfaceIdentity]
+    }
+
+    init(surfaceIdentities: [UInt?]) {
+        self.surfaceIdentities = surfaceIdentities
     }
 
     func paneSurface(
-        for _: SurfaceKey,
+        for key: SurfaceKey,
         configuration _: TerminalSurfaceConfiguration
     ) -> (any TmuxPaneSurfacing)? {
+        guard !retainedKeys.contains(key) else { return surface }
+        retainedKeys.insert(key)
+        let identityIndex = min(requestCount, surfaceIdentities.count - 1)
+        if let identity = surfaceIdentities[identityIndex] {
+            surfaceIdentitiesByKey[key] = identity
+        }
         requestCount += 1
         return surface
     }
 
-    func removeSurface(for _: SurfaceKey) {}
+    func removeSurface(for key: SurfaceKey) {
+        retainedKeys.remove(key)
+        surfaceIdentitiesByKey.removeValue(forKey: key)
+    }
 
-    func surfaceIdentity(for _: SurfaceKey) -> UInt? {
-        surfaceIdentity
+    func surfaceIdentity(for key: SurfaceKey) -> UInt? {
+        surfaceIdentitiesByKey[key]
     }
 }

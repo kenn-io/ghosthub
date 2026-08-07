@@ -90,6 +90,7 @@ public struct RootView: View {
             }
             .onChange(of: sshHostKeyReview.isPresented) { wasPresented, isPresented in
                 guard wasPresented, !isPresented else { return }
+                tmuxRecoveryRequestRouter.reviewDidDismiss()
                 reviewTmuxConnectionRequestIfNeeded()
             }
             .sheet(isPresented: $isCommandPalettePresented) {
@@ -231,8 +232,7 @@ public struct RootView: View {
                     selection: selection,
                     selectionBaseline: tmuxSelectionBaseline,
                     activeSession: activeTmuxSession,
-                    isWorkspaceVisible: true,
-                    deactivate: deactivateTmuxSession
+                    hide: hideTmuxSession
                 )
             )
             .onAppear {
@@ -471,7 +471,7 @@ public struct RootView: View {
                 activateTmuxSession(session)
             },
             onNavigateAwayFromTmuxSession: {
-                deactivateTmuxSession()
+                hideTmuxSession()
             },
             onRequestKillTmuxSession: requestSessionKill,
             onRequestRemoveWorktree: requestWorktreeRemoval,
@@ -558,19 +558,17 @@ public struct RootView: View {
     }
 
     private func retrySSHRecovery() {
-        let recoveryHostID =
+        let recoveryRequest =
             sshHostKeyReview.presentation == .inventoryIssue
-                ? tmuxRecoveryRequestRouter.recoveryHostIDToResume(
+                ? tmuxRecoveryRequestRouter.recoveryRequestToResume(
                     reviewedHostID: sshHostKeyReview.hostID,
-                    reviewRequestID:
-                    sshHostKeyReview.tmuxRecoveryRequestID,
-                    activeRequest: display.tmuxConnectionRecoveryRequest
+                    reviewRequestID: sshHostKeyReview.tmuxRecoveryRequestID
                 )
                 : nil
         cancelSSHAuthenticationIfNeeded()
         sshHostKeyReview.dismiss()
-        if let recoveryHostID {
-            handlers.resumeTmuxReconnectAfterSSHRecovery?(recoveryHostID)
+        if let recoveryRequest {
+            handlers.resumeTmuxReconnectAfterSSHRecovery?(recoveryRequest)
         }
         handlers.refreshWorkspaceInventory?()
     }
@@ -624,19 +622,16 @@ public struct RootView: View {
                 )
                 return
             case .connected:
-                let recoveryHostID =
-                    tmuxRecoveryRequestRouter.recoveryHostIDToResume(
+                let recoveryRequest =
+                    tmuxRecoveryRequestRouter.recoveryRequestToResume(
                         reviewedHostID: hostID,
-                        reviewRequestID:
-                        sshHostKeyReview.tmuxRecoveryRequestID,
-                        activeRequest:
-                        display.tmuxConnectionRecoveryRequest
+                        reviewRequestID: sshHostKeyReview.tmuxRecoveryRequestID
                     )
                 handlers.cancelSSHAuthentication?(hostID)
                 sshHostKeyReview.authenticationSucceeded {
-                    if let recoveryHostID {
+                    if let recoveryRequest {
                         handlers.resumeTmuxReconnectAfterSSHRecovery?(
-                            recoveryHostID
+                            recoveryRequest
                         )
                     }
                 }
@@ -673,9 +668,6 @@ public struct RootView: View {
             handlers.openTmuxSession?(session)
             return
         }
-        if let previous = activeTmuxSession {
-            handlers.closeTmuxSession?(previous)
-        }
         tmuxSelectionBaseline = selection
         handlers.openTmuxSession?(session)
     }
@@ -691,9 +683,6 @@ public struct RootView: View {
             hostID: host.id,
             name: name
         )
-        if let previous = activeTmuxSession {
-            handlers.closeTmuxSession?(previous)
-        }
         selectWorkspace(Self.selectionForHostTmuxSession(
             session,
             from: selection,
@@ -876,6 +865,12 @@ public struct RootView: View {
         handlers.closeTmuxSession?(previous)
     }
 
+    private func hideTmuxSession() {
+        guard let previous = activeTmuxSession else { return }
+        tmuxSelectionBaseline = nil
+        handlers.hideTmuxSession?(previous)
+    }
+
     private var selectedWorktreeTmuxSession:
         WorkspaceTmuxSessionSelection? {
         let selected = WorkspaceSidebarModel.tmuxSessionSelection(
@@ -910,7 +905,7 @@ public struct RootView: View {
         guard !display.suppressesAutomaticWorktreeSessionOpen else { return }
         guard let session = selectedWorktreeTmuxSession else {
             if activeTmuxSession?.worktreeID != nil {
-                deactivateTmuxSession()
+                hideTmuxSession()
             }
             return
         }
@@ -1329,15 +1324,15 @@ public struct RootView: View {
 
 }
 
-/// Keeps a borrowed tmux attachment scoped to the workspace presentation.
-/// Kept as a small modifier so route and removal lifecycle behavior can be
-/// exercised without constructing the entire sidebar hierarchy.
+/// Hides the active tmux presentation when navigation leaves its route while
+/// retaining the underlying attachment for a later return. Kept as a small
+/// modifier so route behavior can be exercised without constructing the
+/// entire sidebar hierarchy.
 struct TmuxSessionPresentationLifecycleModifier: ViewModifier {
     let selection: WorkspaceSelection
     let selectionBaseline: WorkspaceSelection?
     let activeSession: WorkspaceTmuxSessionSelection?
-    let isWorkspaceVisible: Bool
-    let deactivate: () -> Void
+    let hide: () -> Void
 
     func body(content: Content) -> some View {
         content
@@ -1345,16 +1340,8 @@ struct TmuxSessionPresentationLifecycleModifier: ViewModifier {
                 if activeSession != nil,
                    let selectionBaseline,
                    newSelection != selectionBaseline {
-                    deactivate()
+                    hide()
                 }
-            }
-            .onChange(of: isWorkspaceVisible) { _, isVisible in
-                if !isVisible {
-                    deactivate()
-                }
-            }
-            .onDisappear {
-                deactivate()
             }
     }
 }

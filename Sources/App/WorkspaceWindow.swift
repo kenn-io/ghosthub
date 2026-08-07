@@ -638,7 +638,7 @@ struct WorkspaceWindow: View {
                 isWorkspaceRestorationPending:
                 sceneModel.isWorkspaceRestorationPending,
                 suppressesAutomaticWorktreeSessionOpen:
-                sceneModel.suppressesAutomaticWorktreeSessionOpen,
+                sceneModel.suppressesSelectedWorktreeSessionOpen,
                 activeTmuxSession:
                 sceneModel.activeBorrowedTmuxSelection,
                 activeTmuxSessionIsConnected:
@@ -802,6 +802,9 @@ struct WorkspaceWindow: View {
                 openTmuxSession: { [sceneModel] selection in
                     sceneModel.openBorrowedTmuxSession(selection)
                 },
+                hideTmuxSession: { [sceneModel] selection in
+                    sceneModel.hideBorrowedTmuxSession(selection)
+                },
                 closeTmuxSession: { [sceneModel] selection in
                     sceneModel.closeBorrowedTmuxSession(selection)
                 },
@@ -824,9 +827,9 @@ struct WorkspaceWindow: View {
                     sceneModel.reconnectActiveTmuxSessionNow()
                 },
                 resumeTmuxReconnectAfterSSHRecovery: {
-                    [sceneModel] hostID in
+                    [sceneModel] request in
                     sceneModel.resumeTmuxReconnectAfterSSHRecovery(
-                        hostID: hostID
+                        request
                     )
                 },
                 reviewSSHHostKey: { [sceneModel] hostID, inventoryWarning in

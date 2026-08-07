@@ -1,4 +1,5 @@
 import Foundation
+import GhosthubSettings
 import GhosthubTestSupport
 import GhosthubTmux
 import GhosthubUI
@@ -233,6 +234,874 @@ struct WorkspaceWorktreeRemovalTests {
         }
         await firstModel.shutdown()
         await secondModel.shutdown()
+    }
+
+    @MainActor
+    @Test("removal cancels pending presentations in every scene")
+    func removalCancelsPendingPresentationsInEveryScene() async throws {
+        let environment = try setupStandardEnvironment()
+        var removable = WorktreeSummary.fixture(
+            hostID: environment.host.id,
+            projectID: environment.project.id,
+            scopedKey: "/tmp/ghosthub-feature",
+            name: "feature/remove",
+            path: "/tmp/ghosthub-feature",
+            branch: "feature/remove",
+            generation: stableWorktreeGeneration
+        )
+        removable.tmuxSessionName = "kwt-ghosthub-feature"
+        var snapshot = environment.snapshot
+        snapshot.worktrees.append(removable)
+        var staleSnapshot = snapshot
+        let staleIndex = try #require(
+            staleSnapshot.worktrees.firstIndex { $0.id == removable.id }
+        )
+        staleSnapshot.worktrees[staleIndex].generation = nil
+
+        let beforeRemoval = inventory(environment, including: removable)
+        let afterRemoval = inventory(environment)
+        let coordinator = WorktreeMutationCoordinator()
+        let pathGate = DispatchSemaphore(value: 0)
+        let removerHold = RemovalPreflightHold()
+        let pathResolutions = LockedValue(0)
+        let completedPathResolutions = LockedValue(0)
+        let resolveTmuxPath: @Sendable ()
+            -> Result<String, TmuxBinaryError> = {
+                pathResolutions.withLock { $0 += 1 }
+                pathGate.wait()
+                completedPathResolutions.withLock { $0 += 1 }
+                return .success("/usr/bin/tmux")
+            }
+        defer {
+            pathGate.signal()
+            pathGate.signal()
+        }
+
+        let firstLoads = LockedValue(0)
+        let firstSurfaces = RecordingTmuxSurfaceStore()
+        let secondSurfaces = RecordingTmuxSurfaceStore()
+        let firstModel = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: firstSurfaces,
+            nativeTmuxPathProvider: resolveTmuxPath,
+            kwtInventoryLoader: { _ in
+                firstLoads.withLock { $0 += 1 }
+                return firstLoads.load() == 1
+                    ? beforeRemoval
+                    : afterRemoval
+            },
+            kwtWorktreeRemover: { _, _, _, _ in
+                _ = await removerHold.load(afterRemoval)
+            },
+            worktreeMutationCoordinator: coordinator,
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+        let secondModel = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: staleSnapshot,
+            nativeTmuxSurfaceStore: secondSurfaces,
+            nativeTmuxPathProvider: resolveTmuxPath,
+            kwtInventoryLoader: { _ in beforeRemoval },
+            worktreeMutationCoordinator: coordinator
+        )
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: removable)
+        )
+        let staleSelection = try #require(
+            staleSnapshot.worktree(id: removable.id).flatMap(
+                WorkspaceSidebarModel.tmuxSessionSelection(for:)
+            )
+        )
+        var navigation = firstModel.selection
+        navigation.select(.worktree(removable.id), in: firstModel.snapshot)
+        firstModel.selectFromUser(navigation)
+        secondModel.selectFromUser(navigation)
+
+        firstModel.openBorrowedTmuxSession(selection)
+        secondModel.openBorrowedTmuxSession(staleSelection)
+        await waitUntilMainActor { pathResolutions.load() == 2 }
+        #expect(firstModel.retainedBorrowedTmuxPresentationCount == 1)
+        #expect(secondModel.retainedBorrowedTmuxPresentationCount == 1)
+
+        let request = try await firstModel.prepareWorktreeRemoval(removable.id)
+        let removal = Task { @MainActor in
+            try await firstModel.removeWorktree(request)
+        }
+        for _ in 0 ..< 1_000 {
+            if await removerHold.started {
+                break
+            }
+            await Task.yield()
+        }
+        #expect(await removerHold.started)
+
+        #expect(firstModel.retainedBorrowedTmuxPresentationCount == 0)
+        #expect(secondModel.retainedBorrowedTmuxPresentationCount == 0)
+        #expect(firstModel.suppressesSelectedWorktreeSessionOpen)
+        #expect(secondModel.suppressesSelectedWorktreeSessionOpen)
+
+        firstModel.openBorrowedTmuxSession(selection)
+        secondModel.openBorrowedTmuxSession(staleSelection)
+        for _ in 0 ..< 10 {
+            await Task.yield()
+        }
+        #expect(firstModel.retainedBorrowedTmuxPresentationCount == 0)
+        #expect(secondModel.retainedBorrowedTmuxPresentationCount == 0)
+        #expect(pathResolutions.load() == 2)
+
+        pathGate.signal()
+        pathGate.signal()
+        await waitUntilMainActor {
+            completedPathResolutions.load() == 2
+        }
+        for _ in 0 ..< 10 {
+            await Task.yield()
+        }
+        #expect(firstSurfaces.requestedConfigurations.isEmpty)
+        #expect(secondSurfaces.requestedConfigurations.isEmpty)
+
+        await removerHold.release()
+        try await removal.value
+        #expect(firstModel.snapshot.worktree(id: removable.id) == nil)
+        #expect(secondModel.snapshot.worktree(id: removable.id) == nil)
+        await firstModel.shutdown()
+        await secondModel.shutdown()
+    }
+
+    @MainActor
+    @Test("failed removal restores the canonical endpoint in a stale scene")
+    func failedRemovalRestoresCanonicalEndpointAcrossScenes() async throws {
+        let environment = try setupStandardEnvironment()
+        var stale = WorktreeSummary.fixture(
+            hostID: environment.host.id,
+            projectID: environment.project.id,
+            scopedKey: "/tmp/ghosthub-feature",
+            name: "feature/remove",
+            path: "/tmp/ghosthub-feature",
+            branch: "feature/remove",
+            generation: stableWorktreeGeneration
+        )
+        stale.tmuxSessionName = "kwt-ghosthub-stale"
+        var canonical = stale
+        canonical.tmuxSessionName = "kwt-ghosthub-canonical"
+        var currentSnapshot = environment.snapshot
+        currentSnapshot.worktrees.append(canonical)
+        var staleSnapshot = environment.snapshot
+        staleSnapshot.worktrees.append(stale)
+        let currentInventory = inventory(
+            environment,
+            including: canonical
+        )
+        let coordinator = WorktreeMutationCoordinator()
+        let staleSurfaces = RecordingTmuxSurfaceStore()
+        let currentModel = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: currentSnapshot,
+            kwtInventoryLoader: { _ in currentInventory },
+            kwtWorktreeRemover: { _, _, _, _ in
+                throw KwtWorktreeError.removalFailed(
+                    host: "Local",
+                    status: 1
+                )
+            },
+            worktreeMutationCoordinator: coordinator,
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+        let staleModel = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: staleSnapshot,
+            nativeTmuxSurfaceStore: staleSurfaces,
+            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            worktreeMutationCoordinator: coordinator
+        )
+        let staleSelection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: stale)
+        )
+        let canonicalSelection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: canonical)
+        )
+        staleModel.openBorrowedTmuxSession(staleSelection)
+        await waitUntilMainActor {
+            staleSurfaces.requestedConfigurations.count == 1
+        }
+
+        let request = try await currentModel.prepareWorktreeRemoval(
+            canonical.id
+        )
+        await #expect(throws: KwtWorktreeError.self) {
+            try await currentModel.removeWorktree(request)
+        }
+        await waitUntilMainActor {
+            staleSurfaces.requestedConfigurations.count == 2
+        }
+
+        #expect(
+            staleModel.retainedBorrowedTmuxHandle(for: staleSelection) == nil
+        )
+        #expect(
+            staleModel.retainedBorrowedTmuxHandle(for: canonicalSelection)
+                != nil
+        )
+        #expect(staleModel.activeBorrowedTmuxSelection == canonicalSelection)
+        await currentModel.shutdown()
+        await staleModel.shutdown()
+    }
+
+    @MainActor
+    @Test("post-removal refresh ignores a generationless stale record")
+    func postRemovalRefreshIgnoresGenerationlessRecord() async throws {
+        let environment = try setupStandardEnvironment()
+        var removable = WorktreeSummary.fixture(
+            hostID: environment.host.id,
+            projectID: environment.project.id,
+            scopedKey: "/tmp/ghosthub-feature",
+            name: "feature/remove",
+            path: "/tmp/ghosthub-feature",
+            branch: "feature/remove",
+            generation: stableWorktreeGeneration
+        )
+        removable.tmuxSessionName = "kwt-ghosthub-feature"
+        var snapshot = environment.snapshot
+        snapshot.worktrees.append(removable)
+        let beforeRemoval = inventory(environment, including: removable)
+        let staleRefresh = inventory(
+            environment,
+            including: removable,
+            generation: nil
+        )
+        let loads = LockedValue(0)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtInventoryLoader: { _ in
+                loads.withLock { $0 += 1 }
+                return loads.load() == 1 ? beforeRemoval : staleRefresh
+            },
+            kwtWorktreeRemover: { _, _, _, _ in },
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        try await model.removeWorktree(request)
+        model.startKwtInventory()
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            loads.load() >= 3 && model.isWorkspaceInventoryRefreshComplete
+        }
+
+        #expect(loads.load() == 3)
+        #expect(!model.snapshot.worktrees.contains {
+            $0.hostID == removable.hostID && $0.path == removable.path
+        })
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("failed removal restores an inactive retained presentation")
+    func failedRemovalRestoresInactivePresentation() async throws {
+        let environment = try setupStandardEnvironment()
+        var removable = WorktreeSummary.fixture(
+            hostID: environment.host.id,
+            projectID: environment.project.id,
+            scopedKey: "/tmp/ghosthub-feature",
+            name: "feature/remove",
+            path: "/tmp/ghosthub-feature",
+            branch: "feature/remove",
+            generation: stableWorktreeGeneration
+        )
+        removable.tmuxSessionName = "kwt-ghosthub-feature"
+        var snapshot = environment.snapshot
+        snapshot.worktrees.append(removable)
+        let beforeRemoval = inventory(environment, including: removable)
+        let removerHold = RemovalPreflightHold()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            kwtInventoryLoader: { _ in beforeRemoval },
+            kwtWorktreeRemover: { _, _, _, _ in
+                _ = await removerHold.load(beforeRemoval)
+                throw KwtWorktreeError.removalFailed(
+                    host: "Local",
+                    status: 1
+                )
+            },
+            worktreeMutationCoordinator: WorktreeMutationCoordinator(),
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+        var navigation = model.selection
+        navigation.select(.worktree(removable.id), in: model.snapshot)
+        model.selectFromUser(navigation)
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: removable)
+        )
+        let other = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "other"
+        )
+        model.openBorrowedTmuxSession(selection)
+        let removedHandle = try #require(
+            model.retainedBorrowedTmuxHandle(for: selection)
+        )
+        model.openBorrowedTmuxSession(other)
+        let activeHandle = try #require(
+            model.retainedBorrowedTmuxHandle(for: other)
+        )
+        #expect(model.retainedBorrowedTmuxPresentationCount == 2)
+        #expect(model.activeBorrowedTmuxSelection == other)
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        let removal = Task { @MainActor in
+            try await model.removeWorktree(request)
+        }
+        for _ in 0 ..< 1_000 {
+            if await removerHold.started {
+                break
+            }
+            await Task.yield()
+        }
+        #expect(await removerHold.started)
+        #expect(model.retainedBorrowedTmuxPresentationCount == 1)
+        #expect(model.suppressesSelectedWorktreeSessionOpen)
+
+        model.openBorrowedTmuxSession(selection)
+        #expect(model.retainedBorrowedTmuxPresentationCount == 1)
+
+        await removerHold.release()
+        await #expect(
+            throws: KwtWorktreeError.removalFailed(
+                host: "Local",
+                status: 1
+            )
+        ) {
+            try await removal.value
+        }
+        #expect(!model.suppressesSelectedWorktreeSessionOpen)
+        #expect(model.retainedBorrowedTmuxPresentationCount == 2)
+        #expect(
+            model.retainedBorrowedTmuxHandle(for: selection) != removedHandle
+        )
+        #expect(model.retainedBorrowedTmuxHandle(for: other) == activeHandle)
+        #expect(model.activeBorrowedTmuxSelection == other)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("failed removal does not replace newer active presentation")
+    func failedRemovalPreservesNewerActivePresentation() async throws {
+        let environment = try setupStandardEnvironment()
+        var removable = WorktreeSummary.fixture(
+            hostID: environment.host.id,
+            projectID: environment.project.id,
+            scopedKey: "/tmp/ghosthub-feature",
+            name: "feature/remove",
+            path: "/tmp/ghosthub-feature",
+            branch: "feature/remove",
+            generation: stableWorktreeGeneration
+        )
+        removable.tmuxSessionName = "kwt-ghosthub-feature"
+        var snapshot = environment.snapshot
+        snapshot.worktrees.append(removable)
+        let beforeRemoval = inventory(environment, including: removable)
+        let removerHold = RemovalPreflightHold()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            kwtInventoryLoader: { _ in beforeRemoval },
+            kwtWorktreeRemover: { _, _, _, _ in
+                _ = await removerHold.load(beforeRemoval)
+                throw KwtWorktreeError.removalFailed(
+                    host: "Local",
+                    status: 1
+                )
+            },
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+        let removed = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: removable)
+        )
+        let newer = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "newer"
+        )
+        model.openBorrowedTmuxSession(removed)
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        let removal = Task { @MainActor in
+            try await model.removeWorktree(request)
+        }
+        await waitUntilMainActor { await removerHold.started }
+        #expect(model.retainedBorrowedTmuxPresentationCount == 0)
+
+        model.openBorrowedTmuxSession(newer)
+        let newerHandle = try #require(
+            model.retainedBorrowedTmuxHandle(for: newer)
+        )
+        await removerHold.release()
+        await #expect(throws: KwtWorktreeError.self) {
+            try await removal.value
+        }
+
+        #expect(model.retainedBorrowedTmuxPresentationCount == 2)
+        #expect(model.activeBorrowedTmuxSelection == newer)
+        #expect(model.retainedBorrowedTmuxHandle(for: newer) == newerHandle)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("failed removal re-establishes a terminated worktree session")
+    func failedRemovalReestablishesTerminatedSession() async throws {
+        let environment = try setupStandardEnvironment()
+        var removable = WorktreeSummary.fixture(
+            hostID: environment.host.id,
+            projectID: environment.project.id,
+            scopedKey: "/tmp/ghosthub-feature",
+            name: "feature/remove",
+            path: "/tmp/ghosthub-feature",
+            branch: "feature/remove",
+            generation: stableWorktreeGeneration
+        )
+        removable.tmuxSessionName = "kwt-ghosthub-feature"
+        var snapshot = environment.snapshot
+        snapshot.worktrees.append(removable)
+        let beforeRemoval = inventory(environment, including: removable)
+        let surfaces = RecordingTmuxSurfaceStore()
+        let kills = LockedValue(0)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaces,
+            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            localKwtPathProvider: { "/test/kwt" },
+            kwtInventoryLoader: { _ in beforeRemoval },
+            kwtWorktreeRemover: { _, _, _, _ in
+                throw KwtWorktreeError.removalFailed(
+                    host: "Local",
+                    status: 1
+                )
+            },
+            tmuxSessionKiller: { _, _, _ in
+                kills.withLock { $0 += 1 }
+            },
+            tmuxSessionIdentityReader: { _, _ in
+                TmuxSessionIdentity(
+                    serverPID: "31415",
+                    sessionID: "$8",
+                    createdAt: "1721552400"
+                )
+            }
+        )
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: removable)
+        )
+        model.openBorrowedTmuxSession(selection)
+        await waitUntilMainActor {
+            !surfaces.requestedConfigurations.isEmpty
+        }
+        let initialRequestCount = surfaces.requestedConfigurations.count
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        await #expect(throws: KwtWorktreeError.removalFailed(
+            host: "Local",
+            status: 1
+        )) {
+            try await model.removeWorktree(request)
+        }
+        await waitUntilMainActor {
+            surfaces.requestedConfigurations.count > initialRequestCount
+        }
+
+        #expect(kills.load() == 1)
+        let restoredCommand = try #require(
+            surfaces.requestedConfigurations.last?.command
+        )
+        #expect(restoredCommand.contains("kwt"))
+        #expect(restoredCommand.contains("open"))
+        #expect(!restoredCommand.contains("attach-session"))
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("failed removal preserves pending workspace establishment")
+    func failedRemovalPreservesPendingEstablishment() async throws {
+        let environment = try setupRemoteEnvironment()
+        var removable = try #require(environment.snapshot.worktrees.first)
+        removable.generation = stableWorktreeGeneration
+        removable.scopedKey = removable.path
+        removable.tmuxSessionName = "kwt-ghosthub-main"
+        var snapshot = environment.snapshot
+        snapshot.worktrees = [removable]
+        let beforeRemoval = inventory(environment, including: removable)
+        let surfaces = RecordingTmuxSurfaceStore()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaces,
+            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            kwtInventoryLoader: { _ in beforeRemoval },
+            kwtWorktreeRemover: { _, _, _, _ in
+                throw KwtWorktreeError.removalFailed(
+                    host: "Office Linux",
+                    status: 1
+                )
+            },
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            },
+            createdSessionDiscoveryDelays: [.seconds(10)]
+        )
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: removable)
+        )
+        model.openBorrowedTmuxSession(selection)
+        await waitUntilMainActor {
+            !surfaces.requestedConfigurations.isEmpty
+        }
+        #expect(surfaces.lastCommand?.contains("'open'") == true)
+        model.openBorrowedTmuxSession(WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "other-session"
+        ))
+        await waitUntilMainActor {
+            surfaces.requestedConfigurations.count == 2
+        }
+        let initialRequestCount = surfaces.requestedConfigurations.count
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        await #expect(throws: KwtWorktreeError.self) {
+            try await model.removeWorktree(request)
+        }
+        await waitUntilMainActor {
+            surfaces.requestedConfigurations.count > initialRequestCount
+        }
+
+        #expect(surfaces.lastCommand?.contains("'open'") == true)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("failed removal preserves interrupted local establishment")
+    func failedRemovalPreservesInterruptedLocalEstablishment() async throws {
+        let environment = try setupStandardEnvironment()
+        var removable = WorktreeSummary.fixture(
+            hostID: environment.host.id,
+            projectID: environment.project.id,
+            scopedKey: "/tmp/ghosthub-feature",
+            name: "feature/remove",
+            path: "/tmp/ghosthub-feature",
+            branch: "feature/remove",
+            generation: stableWorktreeGeneration
+        )
+        removable.tmuxSessionName = "kwt-ghosthub-feature"
+        var snapshot = environment.snapshot
+        snapshot.worktrees.append(removable)
+        let beforeRemoval = inventory(environment, including: removable)
+        let surfaces = RecordingTmuxSurfaceStore()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaces,
+            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            localKwtPathProvider: { "/test/kwt" },
+            kwtInventoryLoader: { _ in beforeRemoval },
+            kwtWorktreeRemover: { _, _, _, _ in
+                throw KwtWorktreeError.removalFailed(
+                    host: "Local",
+                    status: 1
+                )
+            },
+            tmuxSessionDiscovery: { _ in .success([]) },
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            },
+            createdSessionDiscoveryDelays: [.seconds(10)]
+        )
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: removable)
+        )
+        model.openBorrowedTmuxSession(selection)
+        await waitUntilMainActor {
+            !surfaces.requestedConfigurations.isEmpty
+        }
+        #expect(surfaces.lastCommand?.contains("kwt") == true)
+        model.openBorrowedTmuxSession(WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "other-session"
+        ))
+        await waitUntilMainActor {
+            surfaces.requestedConfigurations.count == 2
+        }
+        let initialRequestCount = surfaces.requestedConfigurations.count
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        await #expect(throws: KwtWorktreeError.self) {
+            try await model.removeWorktree(request)
+        }
+        await waitUntilMainActor {
+            surfaces.requestedConfigurations.count > initialRequestCount
+        }
+
+        #expect(surfaces.lastCommand?.contains("kwt") == true)
+        #expect(surfaces.lastCommand?.contains("open") == true)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("failed removal restores a pathless matching endpoint")
+    func failedRemovalRestoresPathlessMatchingEndpoint() async throws {
+        let environment = try setupStandardEnvironment()
+        var removable = WorktreeSummary.fixture(
+            hostID: environment.host.id,
+            projectID: environment.project.id,
+            scopedKey: "/tmp/ghosthub-feature",
+            name: "feature/remove",
+            path: "/tmp/ghosthub-feature",
+            branch: "feature/remove",
+            generation: stableWorktreeGeneration
+        )
+        removable.tmuxSessionName = "kwt-ghosthub-feature"
+        removable.tmuxSocketName = "kwt-pr-0123456789abcdef"
+        var snapshot = environment.snapshot
+        snapshot.worktrees.append(removable)
+        let beforeRemoval = inventory(environment, including: removable)
+        let surfaces = RecordingTmuxSurfaceStore()
+        let kills = LockedValue(0)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaces,
+            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            localKwtPathProvider: { "/test/kwt" },
+            kwtInventoryLoader: { _ in beforeRemoval },
+            kwtWorktreeRemover: { _, _, _, _ in
+                throw KwtWorktreeError.removalFailed(
+                    host: "Local",
+                    status: 1
+                )
+            },
+            tmuxSessionKiller: { _, _, _ in
+                kills.withLock { $0 += 1 }
+            },
+            tmuxSessionIdentityReader: { _, _ in
+                TmuxSessionIdentity(
+                    serverPID: "31415",
+                    sessionID: "$8",
+                    createdAt: "1721552400"
+                )
+            }
+        )
+        let pathless = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "kwt-ghosthub-feature",
+            socketName: "kwt-pr-0123456789abcdef"
+        )
+        model.openBorrowedTmuxSession(pathless)
+        await waitUntilMainActor {
+            !surfaces.requestedConfigurations.isEmpty
+        }
+        let initialRequestCount = surfaces.requestedConfigurations.count
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        await #expect(throws: KwtWorktreeError.self) {
+            try await model.removeWorktree(request)
+        }
+        await waitUntilMainActor {
+            surfaces.requestedConfigurations.count > initialRequestCount
+        }
+
+        #expect(kills.load() == 1)
+        #expect(
+            model.activeBorrowedTmuxSelection?.worktreePath == removable.path
+        )
+        #expect(surfaces.lastCommand?.contains("kwt") == true)
+        #expect(surfaces.lastCommand?.contains("pr") == true)
+        #expect(surfaces.lastCommand?.contains("attach") == true)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("endpoint changes discard pending removal restoration")
+    func endpointChangeDiscardsPendingRemovalRestoration() async throws {
+        let environment = try setupRemoteEnvironment()
+        var removable = try #require(environment.snapshot.worktrees.first)
+        removable.generation = stableWorktreeGeneration
+        removable.scopedKey = removable.path
+        removable.tmuxSessionName = "kwt-ghosthub-main"
+        var snapshot = environment.snapshot
+        snapshot.worktrees = [removable]
+        let beforeRemoval = inventory(environment, including: removable)
+        let surfaces = RecordingTmuxSurfaceStore()
+        let removerHold = RemovalPreflightHold()
+        let originalDestination = try #require(
+            environment.host.sshDestination
+        )
+        let configuredHosts = LockedValue([
+            SSHHost(
+                configKey: environment.host.configKey,
+                name: environment.host.name,
+                platform: .linux,
+                sshDestination: originalDestination
+            ),
+        ])
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaces,
+            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            kwtInventoryLoader: { _ in beforeRemoval },
+            kwtWorktreeRemover: { _, _, _, _ in
+                _ = await removerHold.load(beforeRemoval)
+                throw KwtWorktreeError.removalFailed(
+                    host: "Office Linux",
+                    status: 1
+                )
+            },
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            },
+            configuredSSHHostsProvider: { configuredHosts.load() }
+        )
+        model.refreshHosts()
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: removable)
+        )
+        model.openBorrowedTmuxSession(selection)
+        await waitUntilMainActor {
+            !surfaces.requestedConfigurations.isEmpty
+        }
+        model.openBorrowedTmuxSession(WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "other-session"
+        ))
+        await waitUntilMainActor {
+            surfaces.requestedConfigurations.count == 2
+        }
+        let initialRequestCount = surfaces.requestedConfigurations.count
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        let removal = Task { @MainActor in
+            try await model.removeWorktree(request)
+        }
+        await waitUntilMainActor { await removerHold.started }
+        configuredHosts.withLock {
+            $0 = [
+                SSHHost(
+                    configKey: environment.host.configKey,
+                    name: environment.host.name,
+                    platform: .linux,
+                    sshDestination: "wesm@replacement.example.com"
+                ),
+            ]
+        }
+        model.refreshHosts()
+        await removerHold.release()
+        await #expect(throws: KwtWorktreeError.self) {
+            try await removal.value
+        }
+
+        #expect(model.retainedBorrowedTmuxPresentationCount == 0)
+        #expect(
+            surfaces.requestedConfigurations.count == initialRequestCount
+        )
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("removal preflight invalidates a replaced retained endpoint")
+    func removalPreflightInvalidatesReplacedPresentation() async throws {
+        let environment = try setupStandardEnvironment()
+        var removable = WorktreeSummary.fixture(
+            hostID: environment.host.id,
+            projectID: environment.project.id,
+            scopedKey: "/tmp/ghosthub-feature",
+            name: "feature/remove",
+            path: "/tmp/ghosthub-feature",
+            branch: "feature/remove",
+            generation: stableWorktreeGeneration
+        )
+        removable.tmuxSessionName = "kwt-ghosthub-feature"
+        var replacement = removable
+        replacement.tmuxSessionName = "kwt-ghosthub-replacement"
+        var snapshot = environment.snapshot
+        snapshot.worktrees.append(removable)
+        let replacementInventory = inventory(
+            environment,
+            including: replacement
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            kwtInventoryLoader: { _ in replacementInventory },
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: removable)
+        )
+        model.openBorrowedTmuxSession(selection)
+        #expect(model.retainedBorrowedTmuxPresentationCount == 1)
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        await #expect(throws: KwtWorktreeError.removalTargetChanged) {
+            try await model.removeWorktree(request)
+        }
+
+        #expect(model.retainedBorrowedTmuxPresentationCount == 0)
+        await model.shutdown()
     }
 
     @MainActor
@@ -662,6 +1531,71 @@ struct WorkspaceWorktreeRemovalTests {
             try await removal.value
         }
         #expect(removals.load() == 0)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("failed removal re-establishes after endpoint changes during kill")
+    func endpointChangeDuringKillReestablishesPresentation() async throws {
+        let environment = try setupRemoteEnvironment()
+        var worktree = try #require(environment.snapshot.worktrees.first)
+        worktree.generation = stableWorktreeGeneration
+        worktree.scopedKey = worktree.path
+        worktree.tmuxSessionName = "kwt-remote-feature"
+        var snapshot = environment.snapshot
+        snapshot.worktrees = [worktree]
+        let beforeRemoval = inventory(environment, including: worktree)
+        let killHold = RemovalPreflightHold()
+        let surfaces = RecordingTmuxSurfaceStore()
+        let removals = LockedValue(0)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaces,
+            remoteTmuxPathProvider: { _ in .success("/usr/bin/tmux") },
+            kwtInventoryLoader: { _ in beforeRemoval },
+            kwtWorktreeRemover: { _, _, _, _ in
+                removals.withLock { $0 += 1 }
+            },
+            tmuxSessionDiscovery: { _ in .success([]) },
+            tmuxSessionKiller: { _, _, _ in
+                _ = await killHold.load(beforeRemoval)
+            },
+            tmuxSessionIdentityReader: { _, _ in
+                TmuxSessionIdentity(
+                    serverPID: "31415",
+                    sessionID: "$8",
+                    createdAt: "1721552400"
+                )
+            },
+            createdSessionDiscoveryDelays: [.seconds(10)]
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: try #require(worktree.tmuxSessionName)
+        )
+        model.openBorrowedTmuxSession(selection)
+        await waitUntilMainActor {
+            surfaces.requestedConfigurations.count == 1
+        }
+        let request = try await model.prepareWorktreeRemoval(worktree.id)
+        let removal = Task { @MainActor in
+            try await model.removeWorktree(request)
+        }
+        await waitUntilMainActor { await killHold.started }
+
+        model.snapshot.hosts[0].sshDestination = "replacement.example.com"
+        await killHold.release()
+        await #expect(throws: KwtWorktreeError.removalTargetChanged) {
+            try await removal.value
+        }
+        await waitUntilMainActor {
+            surfaces.requestedConfigurations.count == 2
+        }
+
+        #expect(removals.load() == 0)
+        #expect(surfaces.lastCommand?.contains("'open'") == true)
         await model.shutdown()
     }
 

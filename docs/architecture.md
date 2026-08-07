@@ -62,11 +62,15 @@ still owns geometry and tab grouping without dropping or duplicating a session.
 After assignment, the scene model owns the complete logical descriptor; delayed
 native payloads that share its window UUID but contain stale navigation or tmux
 data are rewritten before they can become persisted scene state.
-An active tmux presentation retains the worktree generation observed when it
-was established; a later non-nil generation change is a replacement even when
-inventory reuses the same runtime UUID. Scene persistence observes the complete
-captured restoration value so later generation enrichment is written without
-requiring another navigation event.
+Every explicitly opened tmux presentation is retained by that workspace scene,
+keyed by exact host, socket, and session identity. Active selection determines
+which retained surface is mounted in the visible hierarchy; navigation only
+hides the previous surface and does not terminate its tmux/SSH client or stop
+its recovery supervisor. A retained worktree presentation keeps the generation
+observed when it was established; a later non-nil generation change is a
+replacement even when inventory reuses the same runtime UUID. Scene persistence
+captures only the active presentation, while later generation enrichment is
+written without requiring another navigation event.
 Once a restored scene has current inventory, Ghosthub resolves the descriptor
 back to live models and reattaches only to the confirmed exact session.
 Missing or offline targets fail soft and remain pending across later inventory
@@ -82,7 +86,8 @@ surface when needed. Restoring the same session in more than one window may
 reproduce the existing shared-presentation behavior tracked by kata `s75s`;
 restoration does not add a separate collision policy.
 
-Closing a native tab or window closes only that workspace presentation. Closing
+Closing a native tab or window closes every retained presentation owned by that
+workspace scene. Closing
 the final workspace window leaves Ghosthub running, matching ordinary macOS
 terminal behavior; Cmd-Q remains the explicit app-termination path. Ghosthub
 confirms app termination by default, and users can disable that confirmation in
@@ -391,8 +396,10 @@ remain visible, and explicit reloads publish a user-visible result.
 
 Kwt workspaces and otherwise-unbound host sessions use the same native tmux
 client. Ghosthub never projects tmux windows or panes into a Swift split tree.
-Closing the app, changing selection, or pressing Cmd-W closes only the client;
-it never runs `kill-session`. An explicit, confirmed Kill Session action
+Changing selection only hides the previous retained client. Pressing Cmd-W
+closes the active client, while closing its workspace window or the app closes
+every client retained by that scene; none of these paths runs `kill-session`.
+An explicit, confirmed Kill Session action
 targets the exact session (`=<name>:`) on its selected default or protected
 socket only when discovery or a currently connected active attachment
 establishes that it is running. Confirmation captures the selected host
@@ -405,9 +412,10 @@ operation can fail. After success, Ghosthub closes the matching current active
 selection and navigates away only when the killed target is active at
 completion time, so switching sessions during the command is preserved. The
 action terminates all of that session's windows, panes, and processes. For SSH,
-Ghosthub supplies keepalives. Remote shell commands are one-shot; the active
-scene owns transport-status-255 recovery, probe scheduling, authentication and
-host-key escalation, and attach-only client replacement. Tmux owns all windows,
+Ghosthub supplies keepalives. Remote shell commands are one-shot; each retained
+presentation owns its own transport-status-255 recovery, probe scheduling,
+authentication and host-key escalation state, and attach-only client
+replacement. Inactive presentations remain supervised. Tmux owns all windows,
 panes, history, input, rendering, and server-side lifetime.
 
 Ghosthub applies the selected Tmux Theme when it creates a new bare session.
@@ -461,7 +469,7 @@ exhaustion and command termination may retire it. Confirmation permanently
 demotes later retries to attach-only. Host endpoint changes and scene shutdown
 cancel pending probes.
 
-Each active remote tmux presentation owns at most one native reconnect
+Each retained remote tmux presentation owns at most one native reconnect
 supervisor. It uses the host's shared in-flight default-socket inventory probe,
 or an exact headless `has-session` probe for a protected socket. Attempt starts
 follow 1, 2, 4, 8, 16, and 30-second intervals, include probe runtime, and are
@@ -469,8 +477,9 @@ bounded by a 15-second probe deadline. Transport failures continue
 automatically and **Reconnect Now** advances the existing schedule;
 authentication or host-key failures pause it and route through native SSH
 recovery. Exact absence ends an established presentation, while reachable
-non-transport failures become an unable-to-attach state. Navigation, endpoint
-changes, replacement presentations, and scene shutdown cancel stale work.
+non-transport failures become an unable-to-attach state. Endpoint changes,
+explicit closure, replacement presentations, and scene shutdown cancel stale
+work. Navigation does not cancel recovery.
 Each complete remote establishment or attachment command records its final
 status through an app-owned per-launch temporary file because libghostty's
 outer macOS login process does not reliably preserve a nested command's status.
