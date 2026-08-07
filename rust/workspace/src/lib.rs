@@ -501,6 +501,14 @@ struct AttachRequest {
     inventory_generation: u64,
 }
 
+enum AttachFreshError {
+    Host(WorkspaceError),
+    SessionChanged {
+        error: WorkspaceError,
+        snapshot: HostSnapshot,
+    },
+}
+
 struct ActiveAttachment<T> {
     request: T,
     term: AttachTerm,
@@ -1659,20 +1667,7 @@ fn run_attach(inner: &Inner, request: &AttachRequest, term: AttachTerm, generati
             }
             let surface = worker.surface_handle();
             let endpoint = snapshot.endpoint().distro().to_owned();
-            let inventory_state = ready_content(&snapshot);
-            publish_refresh(inner, request.inventory_generation, || {
-                *inner
-                    .host
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Published::new(
-                    HostContext {
-                        host: request.host.clone(),
-                        snapshot,
-                    },
-                    request.inventory_generation,
-                ));
-                set_inventory_state(inner, inventory_state);
-            });
+            publish_attach_inventory(inner, request, snapshot);
             if let Err(error) = publish_worker_at_latest_geometry(
                 &inner.terminal_geometry,
                 &inner.worker,
@@ -1706,9 +1701,43 @@ fn run_attach(inner: &Inner, request: &AttachRequest, term: AttachTerm, generati
             if !attachment.clear_if_current(generation) {
                 return;
             }
-            publish_attachment_failure(inner, error);
+            match error {
+                AttachFreshError::Host(error) => publish_attachment_failure(inner, error),
+                AttachFreshError::SessionChanged { error, snapshot } => {
+                    publish_stale_attachment_failure(inner, request, snapshot, &error);
+                }
+            }
         }
     }
+}
+
+fn publish_attach_inventory(inner: &Inner, request: &AttachRequest, snapshot: HostSnapshot) {
+    let inventory_state = ready_content(&snapshot);
+    publish_refresh(inner, request.inventory_generation, || {
+        *inner
+            .host
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Published::new(
+            HostContext {
+                host: request.host.clone(),
+                snapshot,
+            },
+            request.inventory_generation,
+        ));
+        set_inventory_state(inner, inventory_state);
+    });
+}
+
+fn publish_stale_attachment_failure(
+    inner: &Inner,
+    request: &AttachRequest,
+    snapshot: HostSnapshot,
+    error: &WorkspaceError,
+) {
+    clear_pending_paste(inner);
+    set_inner_state(inner, WorkspaceContent::Shell);
+    set_local_notice(inner, error.to_string());
+    publish_attach_inventory(inner, request, snapshot);
 }
 
 fn publish_attachment_failure(inner: &Inner, error: impl fmt::Display) {
@@ -1726,32 +1755,44 @@ fn attach_fresh(
     inner: &Inner,
     request: &AttachRequest,
     term: AttachTerm,
-) -> Result<(TerminalWorker, HostSnapshot, String, TerminalGeometry), WorkspaceError> {
+) -> Result<(TerminalWorker, HostSnapshot, String, TerminalGeometry), AttachFreshError> {
     let fresh = request
         .host
         .discover(&ConptyAdmissionAttacher::new())
-        .map_err(|error| WorkspaceError::new(error.to_string()))?;
+        .map_err(|error| AttachFreshError::Host(WorkspaceError::new(error.to_string())))?;
     if fresh.endpoint() != &request.endpoint || fresh.runtime() != &request.runtime {
-        return Err(WorkspaceError::new(
-            "WSL runtime changed since session discovery; refresh and try again",
-        ));
+        return Err(AttachFreshError::SessionChanged {
+            error: WorkspaceError::new(
+                "WSL runtime changed since session discovery; refresh and try again",
+            ),
+            snapshot: fresh,
+        });
     }
     let session = fresh
         .sessions()
         .iter()
         .find(|session| session.name() == request.name)
-        .ok_or_else(|| {
-            WorkspaceError::new("session no longer exists; refresh and choose another session")
-        })?;
+        .cloned();
+    let Some(session) = session else {
+        return Err(AttachFreshError::SessionChanged {
+            error: WorkspaceError::new(
+                "session no longer exists; refresh and choose another session",
+            ),
+            snapshot: fresh,
+        });
+    };
     if session.identity() != &request.identity {
-        return Err(WorkspaceError::new(
-            "session identity changed since discovery; refusing stale attachment",
-        ));
+        return Err(AttachFreshError::SessionChanged {
+            error: WorkspaceError::new(
+                "session identity changed since discovery; refusing stale attachment",
+            ),
+            snapshot: fresh,
+        });
     }
     let plan = request
         .host
-        .attach_plan_with_term(fresh.endpoint(), session, term)
-        .map_err(|error| WorkspaceError::new(error.to_string()))?;
+        .attach_plan_with_term(fresh.endpoint(), &session, term)
+        .map_err(|error| AttachFreshError::Host(WorkspaceError::new(error.to_string())))?;
     let geometry = *inner
         .terminal_geometry
         .lock()
@@ -1764,16 +1805,23 @@ fn attach_fresh(
         ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
         default_colors(&inner.appearance),
     )
-    .map_err(|error| WorkspaceError::new(error.to_string()))?;
+    .map_err(|error| AttachFreshError::Host(WorkspaceError::new(error.to_string())))?;
     Ok((worker, fresh, plan.target_name().to_owned(), geometry))
 }
 
 fn set_terminal_notice(inner: &Inner, term: AttachTerm) {
+    let notice = (term == AttachTerm::Xterm).then(|| REDUCED_COLOR_NOTICE.to_owned());
     *inner
         .terminal_notice
         .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) =
-        (term == AttachTerm::Xterm).then(|| REDUCED_COLOR_NOTICE.to_owned());
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = notice;
+}
+
+fn set_local_notice(inner: &Inner, message: String) {
+    *inner
+        .terminal_notice
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(message);
 }
 
 fn clear_terminal_notice(inner: &Inner) {
@@ -2154,6 +2202,75 @@ mod tests {
             host.diagnostic().map(HostDiagnostic::message),
             Some("attachment launch failed")
         );
+    }
+
+    #[test]
+    fn stale_attachment_refreshes_inventory_without_disabling_the_host() {
+        let executable = WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
+            .expect("absolute WSL path");
+        let config = WslConfig::with_distro("Ubuntu").expect("valid config");
+        let workspace = Workspace::application(
+            TerminalAppearance::default(),
+            Some(WslHostSpec::available(config.clone(), executable.clone())),
+        );
+        let host = WslHost::new(
+            config,
+            Arc::new(StdCommandRunner) as SharedCommandRunner,
+            executable,
+        );
+        let original = HostSnapshot::test_fixture(
+            "Ubuntu",
+            "boot-id",
+            42,
+            vec![session::DiscoveredSession::new(
+                "work",
+                session::SessionIdentity::new(100, "$1", 200),
+                0,
+            )],
+        );
+        *workspace
+            .inner
+            .host
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Published::new(
+            HostContext {
+                host,
+                snapshot: original,
+            },
+            0,
+        ));
+        set_inventory_state(
+            &workspace.inner,
+            WorkspaceContent::Ready {
+                endpoint: "Ubuntu".to_owned(),
+                sessions: vec![SessionItem::new("work", 0)],
+            },
+        );
+        let request = capture_attach_request(&workspace.inner, "work").expect("attach request");
+        let replacement = HostSnapshot::test_fixture(
+            "Ubuntu",
+            "boot-id",
+            42,
+            vec![session::DiscoveredSession::new(
+                "other",
+                session::SessionIdentity::new(100, "$2", 201),
+                0,
+            )],
+        );
+
+        publish_stale_attachment_failure(
+            &workspace.inner,
+            &request,
+            replacement,
+            &WorkspaceError::new("session no longer exists"),
+        );
+
+        let snapshot = workspace.snapshot();
+        assert!(matches!(snapshot.content(), WorkspaceContent::Shell));
+        let host = &snapshot.hosts()[0];
+        assert_eq!(host.connection(), HostConnectionState::Ready);
+        assert_eq!(host.sessions(), &[SessionItem::new("other", 0)]);
+        assert_eq!(snapshot.notice(), Some("session no longer exists"));
     }
 
     #[test]

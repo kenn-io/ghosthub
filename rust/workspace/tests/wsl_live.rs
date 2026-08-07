@@ -202,11 +202,18 @@ fn refuses_to_attach_when_the_discovered_session_was_replaced() {
         .expect("begin guarded attach");
 
     wait_until(|| {
+        let snapshot = workspace.snapshot();
         matches!(
-            workspace.snapshot().content(),
-            WorkspaceContent::Error { message }
-                if message.contains("identity changed")
-        )
+            snapshot.content(),
+            WorkspaceContent::Shell | WorkspaceContent::Ready { .. }
+        ) && snapshot.hosts()[0].connection() == workspace::HostConnectionState::Ready
+            && snapshot.hosts()[0]
+                .sessions()
+                .iter()
+                .any(|session| session.name() == "workspace-live")
+            && snapshot
+                .notice()
+                .is_some_and(|notice| notice.contains("identity changed"))
     });
 }
 

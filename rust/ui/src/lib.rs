@@ -1,6 +1,6 @@
 //! GPUI presentation for the Rust Ghosthub application.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -311,7 +311,7 @@ struct TerminalPointer {
 
 #[derive(Default)]
 struct TerminalKeyboard {
-    pressed: HashSet<String>,
+    pressed: HashMap<String, KeyInput>,
 }
 
 impl TerminalKeyboard {
@@ -320,17 +320,32 @@ impl TerminalKeyboard {
     }
 
     fn reservations_after_press(&self, key: &str) -> usize {
-        self.pressed.len() + usize::from(!self.pressed.contains(key))
+        self.pressed.len() + usize::from(!self.pressed.contains_key(key))
     }
 
     fn accepts(&self, key: &str, event: InputKeyEvent) -> bool {
-        event == InputKeyEvent::Press || self.pressed.contains(key)
+        event == InputKeyEvent::Press || self.pressed.contains_key(key)
     }
 
-    fn finish_accepted(&mut self, key: &str, event: InputKeyEvent) {
+    fn input_for(&self, key: &str, event: InputKeyEvent) -> Option<KeyInput> {
+        self.pressed
+            .get(key)
+            .cloned()
+            .map(|input| input.with_event(event))
+    }
+
+    fn finish_accepted(
+        &mut self,
+        key: &str,
+        pressed_input: Option<KeyInput>,
+        event: InputKeyEvent,
+    ) {
         match event {
             InputKeyEvent::Press => {
-                self.pressed.insert(key.to_owned());
+                self.pressed.insert(
+                    key.to_owned(),
+                    pressed_input.expect("accepted press retains its input"),
+                );
             }
             InputKeyEvent::Release => {
                 self.pressed.remove(key);
@@ -665,7 +680,8 @@ impl RootView {
         } else {
             InputKeyEvent::Press
         };
-        let input = terminal_key_input(keystroke, event);
+        let input = terminal_key_input(keystroke, event)
+            .or_else(|| self.keyboard.input_for(&keystroke.key, event));
         if let Some(input) = input {
             self.send_key_event(input, &keystroke.key, event);
             cx.stop_propagation();
@@ -677,7 +693,10 @@ impl RootView {
             cx.stop_propagation();
             return;
         }
-        if let Some(input) = terminal_key_input(&event.keystroke, InputKeyEvent::Release) {
+        if let Some(input) = self
+            .keyboard
+            .input_for(&event.keystroke.key, InputKeyEvent::Release)
+        {
             self.send_key_event(input, &event.keystroke.key, InputKeyEvent::Release);
             cx.stop_propagation();
         }
@@ -822,8 +841,9 @@ impl RootView {
             InputKeyEvent::Press => self.keyboard.reservations_after_press(key),
             InputKeyEvent::Repeat | InputKeyEvent::Release => self.keyboard.reserved_releases(),
         };
+        let pressed_input = (event == InputKeyEvent::Press).then(|| input.clone());
         if self.enqueue_input_with_reserve(PendingUiInput::Key(input), reserved_key_releases) {
-            self.keyboard.finish_accepted(key, event);
+            self.keyboard.finish_accepted(key, pressed_input, event);
         }
     }
 
@@ -1916,22 +1936,36 @@ mod tests {
     #[test]
     fn accepted_key_press_reserves_capacity_until_release_is_accepted() {
         let mut keyboard = TerminalKeyboard::default();
+        let press = KeyInput::text_with_key("!", "1", Modifiers::default());
+        let release_without_text = gpui::Keystroke {
+            modifiers: gpui::Modifiers::default(),
+            key: "a".to_owned(),
+            key_char: None,
+        };
 
         assert!(keyboard.accepts("a", KeyEvent::Press));
         assert!(!keyboard.accepts("a", KeyEvent::Repeat));
         assert!(!keyboard.accepts("a", KeyEvent::Release));
         assert_eq!(keyboard.reservations_after_press("a"), 1);
-        keyboard.finish_accepted("a", KeyEvent::Press);
+        keyboard.finish_accepted("a", Some(press.clone()), KeyEvent::Press);
         assert_eq!(keyboard.reserved_releases(), 1);
         assert_eq!(keyboard.reservations_after_press("a"), 1);
         assert!(keyboard.accepts("a", KeyEvent::Repeat));
         assert!(keyboard.accepts("a", KeyEvent::Release));
         assert!(!keyboard.accepts("b", KeyEvent::Repeat));
         assert!(!keyboard.accepts("b", KeyEvent::Release));
+        assert_eq!(
+            keyboard.input_for("a", KeyEvent::Release),
+            Some(press.clone().with_event(KeyEvent::Release))
+        );
+        assert_eq!(
+            terminal_key_input(&release_without_text, KeyEvent::Release),
+            None
+        );
 
-        keyboard.finish_accepted("a", KeyEvent::Repeat);
+        keyboard.finish_accepted("a", None, KeyEvent::Repeat);
         assert_eq!(keyboard.reserved_releases(), 1);
-        keyboard.finish_accepted("a", KeyEvent::Release);
+        keyboard.finish_accepted("a", None, KeyEvent::Release);
         assert_eq!(keyboard.reserved_releases(), 0);
         assert!(!keyboard.accepts("a", KeyEvent::Repeat));
         assert!(!keyboard.accepts("a", KeyEvent::Release));
