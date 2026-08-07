@@ -481,14 +481,15 @@ impl TerminalWorker {
         sequence: u64,
         pixel_size: PixelSize,
     ) -> Result<(), WorkerError> {
-        self.ingress
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .resize = Some(ResizeCommand {
-            size,
-            sequence,
-            pixel_size,
-        });
+        set_ordered_resize(
+            &self.commands,
+            &self.ingress,
+            ResizeCommand {
+                size,
+                sequence,
+                pixel_size,
+            },
+        )?;
         wake_coalesced(&self.coalesced_wake, "send terminal resize")
     }
 
@@ -1022,10 +1023,31 @@ fn try_send_ordered(
     let mut ingress = ingress
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    flush_mouse_motion(sender, &mut ingress)?;
+    enqueue_command(sender, &mut ingress, command, subject)
+}
+
+fn set_ordered_resize(
+    sender: &Sender<QueuedCommand>,
+    ingress: &Mutex<IngressState>,
+    resize: ResizeCommand,
+) -> Result<(), WorkerError> {
+    let mut ingress = ingress
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    flush_mouse_motion(sender, &mut ingress)?;
+    ingress.resize = Some(resize);
+    Ok(())
+}
+
+fn flush_mouse_motion(
+    sender: &Sender<QueuedCommand>,
+    ingress: &mut IngressState,
+) -> Result<(), WorkerError> {
     if let Some(motion) = ingress.mouse_motion.take()
         && let Err(error) = enqueue_command(
             sender,
-            &mut ingress,
+            ingress,
             Command::Mouse(motion),
             "preserve terminal mouse ordering",
         )
@@ -1033,7 +1055,7 @@ fn try_send_ordered(
         ingress.mouse_motion = Some(motion);
         return Err(error);
     }
-    enqueue_command(sender, &mut ingress, command, subject)
+    Ok(())
 }
 
 fn enqueue_command(
@@ -1593,6 +1615,61 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn resize_stays_behind_older_coalesced_motion() {
+        let (sender, receiver) = bounded(COMMAND_CAPACITY);
+        let first_size = GridSize::new(80, 24).expect("valid first grid");
+        let second_size = GridSize::new(120, 40).expect("valid second grid");
+        let ingress = Mutex::new(IngressState {
+            resize: Some(ResizeCommand {
+                size: first_size,
+                sequence: 1,
+                pixel_size: PixelSize::default(),
+            }),
+            mouse_motion: Some(MouseInput {
+                action: MouseAction::Move(None),
+                column: 79,
+                row: 23,
+                modifiers: Modifiers::default(),
+            }),
+            queued_bytes: 0,
+        });
+
+        set_ordered_resize(
+            &sender,
+            &ingress,
+            ResizeCommand {
+                size: second_size,
+                sequence: 2,
+                pixel_size: PixelSize::default(),
+            },
+        )
+        .expect("queue resize behind motion");
+
+        let first = take_coalesced_work(&receiver, &ingress, true);
+        assert_eq!(first.resize.expect("resize before motion").size, first_size);
+        assert!(matches!(
+            first.input,
+            CoalescedInput::Command(QueuedCommand {
+                command: Command::Mouse(MouseInput {
+                    action: MouseAction::Move(None),
+                    column: 79,
+                    row: 23,
+                    ..
+                }),
+                ..
+            })
+        ));
+        assert!(first.wake_again, "newer resize remains scheduled");
+
+        let second = take_coalesced_work(&receiver, &ingress, true);
+        assert_eq!(
+            second.resize.expect("resize after motion").size,
+            second_size
+        );
+        assert!(matches!(second.input, CoalescedInput::None));
     }
 
     #[test]
