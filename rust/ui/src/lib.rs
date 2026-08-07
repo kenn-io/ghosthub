@@ -1,6 +1,6 @@
 //! GPUI presentation for the Rust Ghosthub application.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -287,6 +287,7 @@ pub struct RootView {
     input_refusal: InputRefusal,
     wheel_remainder: f32,
     wheel_target: Option<WheelTarget>,
+    keyboard: TerminalKeyboard,
     pointer: TerminalPointer,
 }
 
@@ -306,6 +307,33 @@ struct TerminalMetrics {
 struct TerminalPointer {
     pressed: [bool; 3],
     last_cell: Option<(usize, usize)>,
+}
+
+#[derive(Default)]
+struct TerminalKeyboard {
+    pressed: HashSet<String>,
+}
+
+impl TerminalKeyboard {
+    fn reserved_releases(&self) -> usize {
+        self.pressed.len()
+    }
+
+    fn reservations_after_press(&self, key: &str) -> usize {
+        self.pressed.len() + usize::from(!self.pressed.contains(key))
+    }
+
+    fn finish_accepted(&mut self, key: &str, event: InputKeyEvent) {
+        match event {
+            InputKeyEvent::Press => {
+                self.pressed.insert(key.to_owned());
+            }
+            InputKeyEvent::Release => {
+                self.pressed.remove(key);
+            }
+            InputKeyEvent::Repeat => {}
+        }
+    }
 }
 
 impl TerminalPointer {
@@ -394,6 +422,24 @@ impl PendingUiInput {
             Self::Key(KeyInput::Named { .. }) | Self::Mouse(_) => 0,
         }
     }
+
+    fn is_balancing_release(&self) -> bool {
+        matches!(
+            self,
+            Self::Key(
+                KeyInput::Text {
+                    event: InputKeyEvent::Release,
+                    ..
+                } | KeyInput::Named {
+                    event: InputKeyEvent::Release,
+                    ..
+                }
+            ) | Self::Mouse(MouseInput {
+                action: MouseAction::Release(_),
+                ..
+            })
+        )
+    }
 }
 
 fn input_queue_has_capacity(
@@ -401,20 +447,17 @@ fn input_queue_has_capacity(
     pending_items: usize,
     pending_bytes: usize,
     input_bytes: usize,
+    reserved_key_releases: usize,
 ) -> bool {
-    let item_capacity = if matches!(
-        input,
-        PendingUiInput::Mouse(MouseInput {
-            action: MouseAction::Release(_),
-            ..
-        })
-    ) {
+    let balancing_release = input.is_balancing_release();
+    let item_capacity = if balancing_release {
         UI_INPUT_CAPACITY
     } else {
-        UI_INPUT_CAPACITY - MOUSE_RELEASE_RESERVE
+        UI_INPUT_CAPACITY.saturating_sub(MOUSE_RELEASE_RESERVE + reserved_key_releases)
     };
     pending_items < item_capacity
-        && pending_bytes.saturating_add(input_bytes) <= UI_INPUT_BYTE_CAPACITY
+        && (balancing_release
+            || pending_bytes.saturating_add(input_bytes) <= UI_INPUT_BYTE_CAPACITY)
 }
 
 impl RootView {
@@ -485,6 +528,7 @@ impl RootView {
             input_refusal: InputRefusal::default(),
             wheel_remainder: 0.0,
             wheel_target: None,
+            keyboard: TerminalKeyboard::default(),
             pointer: TerminalPointer::default(),
         };
         view.resize_for_window(window);
@@ -549,6 +593,7 @@ impl RootView {
         );
         self.wheel_remainder = 0.0;
         self.wheel_target = None;
+        self.keyboard = TerminalKeyboard::default();
         self.pointer = TerminalPointer::default();
         if matches!(
             self.diagnostic.as_deref(),
@@ -614,7 +659,7 @@ impl RootView {
         };
         let input = terminal_key_input(keystroke, event);
         if let Some(input) = input {
-            self.send_key(input);
+            self.send_key_event(input, &keystroke.key, event);
             cx.stop_propagation();
         }
     }
@@ -625,7 +670,7 @@ impl RootView {
             return;
         }
         if let Some(input) = terminal_key_input(&event.keystroke, InputKeyEvent::Release) {
-            self.send_key(input);
+            self.send_key_event(input, &event.keystroke.key, InputKeyEvent::Release);
             cx.stop_propagation();
         }
     }
@@ -760,7 +805,25 @@ impl RootView {
         self.enqueue_input(PendingUiInput::Key(input));
     }
 
+    fn send_key_event(&mut self, input: KeyInput, key: &str, event: InputKeyEvent) {
+        let reserved_key_releases = match event {
+            InputKeyEvent::Press => self.keyboard.reservations_after_press(key),
+            InputKeyEvent::Repeat | InputKeyEvent::Release => self.keyboard.reserved_releases(),
+        };
+        if self.enqueue_input_with_reserve(PendingUiInput::Key(input), reserved_key_releases) {
+            self.keyboard.finish_accepted(key, event);
+        }
+    }
+
     fn enqueue_input(&mut self, input: PendingUiInput) -> bool {
+        self.enqueue_input_with_reserve(input, self.keyboard.reserved_releases())
+    }
+
+    fn enqueue_input_with_reserve(
+        &mut self,
+        input: PendingUiInput,
+        reserved_key_releases: usize,
+    ) -> bool {
         let _scope_changed = self.sync_terminal_scope();
         if matches!(
             &input,
@@ -788,6 +851,7 @@ impl RootView {
             self.pending_input.len(),
             self.pending_input_bytes,
             bytes,
+            reserved_key_releases,
         ) {
             self.input_refusal.refuse();
             self.diagnostic = Some(INPUT_BUFFER_FULL_DIAGNOSTIC.to_owned());
@@ -1628,9 +1692,10 @@ mod tests {
 
     use super::{
         INPUT_BUFFER_FULL_DIAGNOSTIC, INPUT_BUFFERED_DIAGNOSTIC, InputRefusal, PendingUiInput,
-        QueuedUiInput, TerminalPointer, UI_INPUT_CAPACITY, clear_terminal_input_state,
-        clears_after_input_delivery, clears_when_input_queue_is_empty, input_queue_has_capacity,
-        named_key, normalize_cell_width, restore_undelivered_wheel_steps, terminal_key_input,
+        QueuedUiInput, TerminalKeyboard, TerminalPointer, UI_INPUT_BYTE_CAPACITY,
+        UI_INPUT_CAPACITY, clear_terminal_input_state, clears_after_input_delivery,
+        clears_when_input_queue_is_empty, input_queue_has_capacity, named_key,
+        normalize_cell_width, restore_undelivered_wheel_steps, terminal_key_input,
         terminal_wheel_steps, transitioned_presentation,
     };
     use workspace::{
@@ -1785,34 +1850,70 @@ mod tests {
     }
 
     #[test]
-    fn shared_input_queue_reserves_capacity_for_balancing_mouse_releases() {
-        let release = PendingUiInput::Mouse(MouseInput {
+    fn shared_input_queue_reserves_capacity_for_balancing_releases() {
+        let mouse_release = PendingUiInput::Mouse(MouseInput {
             action: MouseAction::Release(MouseButton::Left),
             column: 0,
             row: 0,
             modifiers: Modifiers::default(),
         });
-        let ordinary = PendingUiInput::Key(KeyInput::named(NamedKey::Enter, Modifiers::default()));
+        let key_release = PendingUiInput::Key(
+            KeyInput::named(NamedKey::Enter, Modifiers::default()).with_event(KeyEvent::Release),
+        );
+        let key_repeat = PendingUiInput::Key(
+            KeyInput::named(NamedKey::Enter, Modifiers::default()).with_event(KeyEvent::Repeat),
+        );
 
         assert!(input_queue_has_capacity(
-            &release,
+            &mouse_release,
             UI_INPUT_CAPACITY - 1,
             0,
-            0
-        ));
-        assert!(!input_queue_has_capacity(&release, UI_INPUT_CAPACITY, 0, 0));
-        assert!(!input_queue_has_capacity(
-            &ordinary,
-            UI_INPUT_CAPACITY - 3,
             0,
-            0
+            1,
+        ));
+        assert!(!input_queue_has_capacity(
+            &mouse_release,
+            UI_INPUT_CAPACITY,
+            0,
+            0,
+            1,
         ));
         assert!(input_queue_has_capacity(
-            &ordinary,
+            &key_release,
+            UI_INPUT_CAPACITY - 1,
+            UI_INPUT_BYTE_CAPACITY,
+            1,
+            1,
+        ));
+        assert!(!input_queue_has_capacity(
+            &key_repeat,
             UI_INPUT_CAPACITY - 4,
             0,
-            0
+            0,
+            1,
         ));
+        assert!(input_queue_has_capacity(
+            &key_repeat,
+            UI_INPUT_CAPACITY - 5,
+            0,
+            0,
+            1,
+        ));
+    }
+
+    #[test]
+    fn accepted_key_press_reserves_capacity_until_release_is_accepted() {
+        let mut keyboard = TerminalKeyboard::default();
+
+        assert_eq!(keyboard.reservations_after_press("a"), 1);
+        keyboard.finish_accepted("a", KeyEvent::Press);
+        assert_eq!(keyboard.reserved_releases(), 1);
+        assert_eq!(keyboard.reservations_after_press("a"), 1);
+
+        keyboard.finish_accepted("a", KeyEvent::Repeat);
+        assert_eq!(keyboard.reserved_releases(), 1);
+        keyboard.finish_accepted("a", KeyEvent::Release);
+        assert_eq!(keyboard.reserved_releases(), 0);
     }
 
     #[test]
