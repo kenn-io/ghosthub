@@ -1,4 +1,4 @@
-use input::MouseTracking;
+use input::{ModifyOtherKeys, MouseTracking};
 use surface::{CellStyle, Damage, GridSize, PixelSize, Rgb};
 use terminal::{ClipboardPolicy, ClipboardTarget, TerminalEngine};
 
@@ -29,6 +29,23 @@ fn exposes_modes_that_control_input_encoding() {
     assert!(modes.bracketed_paste);
     assert_eq!(modes.mouse_tracking, MouseTracking::Drag);
     assert!(modes.sgr_mouse);
+}
+
+#[test]
+fn exposes_negotiated_keypad_and_extended_keyboard_modes() {
+    let size = GridSize::new(4, 2).expect("valid grid");
+    let mut engine = TerminalEngine::new(size);
+
+    let _output = engine.process(b"\x1b=\x1b[>4;2m\x1b[=31u");
+
+    let modes = engine.modes();
+    assert!(modes.application_keypad);
+    assert_eq!(modes.modify_other_keys, ModifyOtherKeys::All);
+    assert!(modes.kitty_keyboard.disambiguate_escape_codes);
+    assert!(modes.kitty_keyboard.report_event_types);
+    assert!(modes.kitty_keyboard.report_alternate_keys);
+    assert!(modes.kitty_keyboard.report_all_keys_as_escape_codes);
+    assert!(modes.kitty_keyboard.report_associated_text);
 }
 
 #[test]
@@ -128,26 +145,60 @@ fn configured_local_osc_52_read_can_be_completed_by_the_ui() {
 }
 
 #[test]
-fn sustained_output_reports_scroll_motion_and_only_the_exposed_row() {
+fn sustained_output_reports_scroll_then_only_the_exposed_row() {
     let size = GridSize::new(3, 3).expect("valid grid");
     let mut engine = TerminalEngine::new(size);
     let _output = engine.process(b"a\r\nb\r\nc");
 
-    let _output = engine.process(b"\r\nd");
+    let _output = engine.process(b"\r\n");
+
+    let scroll = engine.surface().load();
+    assert_eq!(
+        scroll.damage(),
+        &[Damage::Scroll {
+            top: 0,
+            bottom: 3,
+            delta: -1,
+        }]
+    );
+    drop(scroll);
+
+    let _output = engine.process(b"d");
 
     let surface = engine.surface().load();
-    assert_eq!(
-        surface.damage(),
-        &[
-            Damage::Scroll {
-                top: 0,
-                bottom: 3,
-                delta: -1,
-            },
-            Damage::Rows { start: 2, end: 3 },
-        ]
-    );
+    assert_eq!(surface.damage(), &[Damage::Rows { start: 2, end: 3 }]);
     assert_eq!(surface.cell(0).text(), "b");
     assert_eq!(surface.cell(3).text(), "c");
     assert_eq!(surface.cell(6).text(), "d");
+}
+
+#[test]
+fn damage_after_scroll_is_relative_to_the_immediately_previous_frame() {
+    let size = GridSize::new(3, 3).expect("valid grid");
+    let mut engine = TerminalEngine::new(size);
+    let _output = engine.process(b"a\r\nb\r\nc");
+
+    let _output = engine.process(b"\r\nd\x1b[1;1HZ");
+
+    let surface = engine.surface().load();
+    assert_eq!(surface.cell(0).text(), "Z");
+    assert_eq!(surface.cell(6).text(), "d");
+    assert_eq!(
+        surface.damage(),
+        &[
+            Damage::Rows { start: 0, end: 1 },
+            Damage::Rows { start: 2, end: 3 },
+        ]
+    );
+    assert_eq!(surface.previous_generation(), surface.generation() - 1);
+}
+
+#[test]
+fn denied_remote_osc_52_write_emits_no_clipboard_event() {
+    let size = GridSize::new(4, 2).expect("valid grid");
+    let mut engine = TerminalEngine::with_clipboard_policy(size, ClipboardPolicy::remote(false));
+
+    let output = engine.process(b"\x1b]52;c;SGVsbG8=\x07");
+
+    assert!(output.clipboard_writes().is_empty());
 }

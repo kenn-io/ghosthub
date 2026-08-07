@@ -167,7 +167,7 @@ pub struct SurfaceFrame {
     size: GridSize,
     resize_sequence: u64,
     pixel_size: PixelSize,
-    rows: Vec<Vec<Cell>>,
+    rows: Vec<Arc<Vec<Cell>>>,
     cursor: Option<Cursor>,
     damage: Vec<Damage>,
 }
@@ -182,7 +182,7 @@ impl SurfaceFrame {
             resize_sequence: 0,
             pixel_size: PixelSize::new(0, 0),
             rows: (0..size.rows())
-                .map(|_| vec![Cell::default(); size.columns()])
+                .map(|_| Arc::new(vec![Cell::default(); size.columns()]))
                 .collect(),
             cursor: None,
             damage: vec![Damage::Full],
@@ -220,11 +220,13 @@ impl SurfaceFrame {
     }
 
     pub fn cells(&self) -> impl Iterator<Item = &Cell> {
-        self.rows.iter().flatten()
+        self.rows.iter().flat_map(|row| row.iter())
     }
 
     pub fn cells_mut(&mut self) -> impl Iterator<Item = &mut Cell> {
-        self.rows.iter_mut().flatten()
+        self.rows
+            .iter_mut()
+            .flat_map(|row| Arc::make_mut(row).iter_mut())
     }
 
     #[must_use]
@@ -237,7 +239,7 @@ impl SurfaceFrame {
     pub fn cell_mut(&mut self, index: usize) -> &mut Cell {
         let row = index / self.size.columns();
         let column = index % self.size.columns();
-        &mut self.rows[row][column]
+        &mut Arc::make_mut(&mut self.rows[row])[column]
     }
 
     #[must_use]
@@ -246,7 +248,7 @@ impl SurfaceFrame {
     }
 
     pub fn row_mut(&mut self, row: usize) -> &mut [Cell] {
-        &mut self.rows[row]
+        Arc::make_mut(&mut self.rows[row]).as_mut_slice()
     }
 
     #[must_use]
@@ -276,14 +278,14 @@ impl SurfaceFrame {
 #[derive(Debug)]
 pub struct SurfaceStore {
     latest: ArcSwap<SurfaceFrame>,
-    producer: Mutex<SurfaceFrame>,
+    producer: Mutex<Option<SurfaceFrame>>,
 }
 
 impl SurfaceStore {
     #[must_use]
     pub fn new(initial: SurfaceFrame) -> Self {
         Self {
-            producer: Mutex::new(initial.clone()),
+            producer: Mutex::new(Some(initial.clone())),
             latest: ArcSwap::from_pointee(initial),
         }
     }
@@ -298,7 +300,7 @@ impl SurfaceStore {
         *self
             .producer
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = frame.clone();
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(frame.clone());
         self.latest.store(Arc::new(frame));
         true
     }
@@ -320,17 +322,19 @@ impl SurfaceStore {
             return false;
         }
 
-        let mut producer = self
+        let mut producer_slot = self
             .producer
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(mut producer) = producer_slot.take() else {
+            return false;
+        };
         let previous_generation = producer.generation();
         prepare_frame(&mut producer, generation, size, damage);
         render(&mut producer);
 
-        let published = std::mem::replace(&mut *producer, SurfaceFrame::blank(0, size));
-        let retired = self.latest.swap(Arc::new(published));
-        *producer = match Arc::try_unwrap(retired) {
+        let retired = self.latest.swap(Arc::new(producer));
+        let producer = match Arc::try_unwrap(retired) {
             Ok(mut reusable) => {
                 prepare_frame(&mut reusable, generation, size, damage);
                 render(&mut reusable);
@@ -340,6 +344,7 @@ impl SurfaceStore {
         };
         debug_assert_eq!(producer.generation(), generation);
         debug_assert_eq!(producer.previous_generation(), previous_generation);
+        *producer_slot = Some(producer);
         true
     }
 
@@ -381,14 +386,60 @@ fn apply_scroll(frame: &mut SurfaceFrame, top: usize, bottom: usize, delta: i32)
     if delta < 0 {
         affected.rotate_left(distance);
         for row in &mut affected[height - distance..] {
-            row.fill(Cell::default());
+            Arc::make_mut(row).fill(Cell::default());
         }
     } else {
         affected.rotate_right(distance);
         for row in &mut affected[..distance] {
-            row.fill(Cell::default());
+            Arc::make_mut(row).fill(Cell::default());
         }
     }
 }
 
 pub type SurfaceLease = Arc<SurfaceFrame>;
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::{Cell, Damage, GridSize, SurfaceFrame, SurfaceStore};
+
+    #[test]
+    fn leased_frame_fallback_shares_unchanged_rows() {
+        let size = GridSize::new(2, 2).expect("valid grid");
+        let store = SurfaceStore::new(SurfaceFrame::blank(1, size));
+        let held_lease = store.load();
+
+        assert!(
+            store.update(2, size, &[Damage::Rows { start: 0, end: 1 }], |frame| {
+                *frame.cell_mut(0) = Cell::plain("changed");
+            })
+        );
+
+        let latest = store.load();
+        let producer = store
+            .producer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let producer = producer.as_ref().expect("producer frame remains available");
+
+        assert_eq!(held_lease.cell(0).text(), " ");
+        assert_eq!(latest.cell(0).text(), "changed");
+        assert!(Arc::ptr_eq(&latest.rows[0], &producer.rows[0]));
+        assert!(Arc::ptr_eq(&latest.rows[1], &producer.rows[1]));
+    }
+
+    #[test]
+    fn mutating_a_shared_frame_copies_only_the_changed_row() {
+        let size = GridSize::new(2, 2).expect("valid grid");
+        let original = SurfaceFrame::blank(1, size);
+        let mut copy = original.clone();
+
+        *copy.cell_mut(0) = Cell::plain("changed");
+
+        assert!(!Arc::ptr_eq(&original.rows[0], &copy.rows[0]));
+        assert!(Arc::ptr_eq(&original.rows[1], &copy.rows[1]));
+        assert_eq!(original.cell(0).text(), " ");
+        assert_eq!(copy.cell(0).text(), "changed");
+    }
+}

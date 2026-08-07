@@ -7,6 +7,8 @@ use serde::Deserialize;
 
 pub mod probe;
 
+pub const IDENTITY_MISMATCH_MARKER: &str = "__ghosthub_attach_identity_mismatch_v1__";
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionIdentity {
     server_pid: u32,
@@ -79,6 +81,34 @@ pub struct AttachPlan {
     args: Vec<OsString>,
     target_name: String,
     identity: SessionIdentity,
+}
+
+/// One isolated capability probe that may exercise otherwise unavailable mux
+/// launch behavior. It is intentionally neither cloneable nor serializable.
+#[derive(Debug, Eq, PartialEq)]
+pub struct AdmissionPlan {
+    program: OsString,
+    args: Vec<OsString>,
+}
+
+impl AdmissionPlan {
+    #[must_use]
+    pub fn isolated(program: impl Into<OsString>, args: Vec<OsString>) -> Self {
+        Self {
+            program: program.into(),
+            args,
+        }
+    }
+
+    #[must_use]
+    pub fn program(&self) -> &OsStr {
+        &self.program
+    }
+
+    #[must_use]
+    pub fn args(&self) -> &[OsString] {
+        &self.args
+    }
 }
 
 impl AttachPlan {
