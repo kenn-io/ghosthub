@@ -1,7 +1,7 @@
 import AppKit
 import GhosthubSettings
 import GhosthubTerminalSupport
-import GhosthubUI
+@testable import GhosthubUI
 import GhosthubWorkspace
 import SwiftUI
 import XCTest
@@ -223,6 +223,60 @@ final class SettingsViewTests: XCTestCase {
         XCTAssertEqual(sheet.frame.size, initialSize)
     }
 
+    func testDomainNavigationKeepsExeAccountRefresh() throws {
+        let store = makeSettingsStore()
+        store.selectedDomain = .integrations
+        let refreshID = UUID()
+        var cancelledRefreshIDs: [UUID] = []
+        let actions = SettingsActions(
+            cancelExeAccountRefresh: { cancelledRefreshIDs.append($0) }
+        )
+        let hostingView = NSHostingView(
+            rootView: SettingsSheetHost(
+                store: store,
+                actions: actions,
+                initialExeAccountRefreshID: refreshID
+            )
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1600, height: 1000),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = hostingView
+        window.makeKeyAndOrderFront(nil)
+        window.displayIfNeeded()
+        pumpRunLoopAndLayout(for: hostingView)
+        addTeardownBlock { window.close() }
+        let sheet = try XCTUnwrap(waitForAttachedSheet(on: window))
+        let sheetContent = try XCTUnwrap(sheet.contentView)
+        sheet.displayIfNeeded()
+        sheetContent.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+
+        let settingsList = try XCTUnwrap(
+            viewDescendants(of: sheetContent)
+                .compactMap { $0 as? NSTableView }
+                .first { $0.selectedRow >= 0 }
+        )
+        let integrationsIndex = try XCTUnwrap(
+            SettingsDomain.allCases.firstIndex(of: .integrations)
+        )
+        let appearanceIndex = try XCTUnwrap(
+            SettingsDomain.allCases.firstIndex(of: .appearance)
+        )
+        let appearanceRow = settingsList.selectedRow
+            + appearanceIndex - integrationsIndex
+        settingsList.selectRowIndexes(
+            IndexSet(integer: appearanceRow),
+            byExtendingSelection: false
+        )
+        pumpRunLoopAndLayout(for: hostingView)
+
+        XCTAssertEqual(cancelledRefreshIDs, [])
+    }
+
 }
 
 @MainActor
@@ -240,11 +294,17 @@ private func firstUntitledButton(in view: NSView) -> NSButton? {
 
 private struct SettingsSheetHost: View {
     @ObservedObject var store: SettingsStore
+    var actions = SettingsActions()
+    var initialExeAccountRefreshID: UUID?
 
     var body: some View {
         Color.clear
             .sheet(isPresented: .constant(true)) {
-                SettingsView(store: store)
+                SettingsView(
+                    store: store,
+                    actions: actions,
+                    initialExeAccountRefreshID: initialExeAccountRefreshID
+                )
             }
     }
 }

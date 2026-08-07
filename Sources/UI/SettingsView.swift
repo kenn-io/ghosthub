@@ -168,16 +168,36 @@ public struct SettingsView: View {
     @State private var isLoadingTailscale = false
     @State private var isTailscaleSheetPresented = false
     @State private var isInstallingWindowsKwt = false
+    @State private var exeAccountRefreshID: UUID?
     public init(
         store: SettingsStore,
         actions: SettingsActions = SettingsActions(),
         showsToolbar: Bool = true,
         simplifiedForTesting: Bool = false
     ) {
+        self.init(
+            store: store,
+            actions: actions,
+            showsToolbar: showsToolbar,
+            simplifiedForTesting: simplifiedForTesting,
+            initialExeAccountRefreshID: nil
+        )
+    }
+
+    init(
+        store: SettingsStore,
+        actions: SettingsActions,
+        showsToolbar: Bool = true,
+        simplifiedForTesting: Bool = false,
+        initialExeAccountRefreshID: UUID?
+    ) {
         _store = ObservedObject(wrappedValue: store)
         self.actions = actions
         self.showsToolbar = showsToolbar
         self.simplifiedForTesting = simplifiedForTesting
+        _exeAccountRefreshID = State(
+            initialValue: initialExeAccountRefreshID
+        )
 
         _draft = State(
             initialValue: SettingsViewDraft(
@@ -191,6 +211,7 @@ public struct SettingsView: View {
             .presentationSizing(.form)
             .onDisappear {
                 persist()
+                finishExeAccountRefresh()
             }
             .onChange(of: draft.selectedSSHHostDraftID) { _, _ in
                 hostProbeResult = nil
@@ -368,6 +389,7 @@ public struct SettingsView: View {
     private var integrationsDetail: some View {
         ExeAccountsSettingsView(
             accounts: $draft.exeAccounts,
+            inventoryRefreshID: $exeAccountRefreshID,
             statusesPublisher: actions.exeAccountStatusesPublisher,
             pendingSSHHostKeyConfirmation:
             actions.pendingSSHHostKeyConfirmation,
@@ -379,7 +401,6 @@ public struct SettingsView: View {
             actions.cancelSSHAuthentication,
             probeConnection: actions.probeExeAccountConnection,
             refresh: actions.refreshExeAccounts,
-            cancelRefresh: actions.cancelExeAccountRefresh,
             invalidateRefresh: actions.invalidateExeAccountRefresh
         )
     }
@@ -797,6 +818,12 @@ public struct SettingsView: View {
             actions.reloadTerminalConfig()
         }
         return result
+    }
+
+    private func finishExeAccountRefresh() {
+        guard let exeAccountRefreshID else { return }
+        self.exeAccountRefreshID = nil
+        actions.cancelExeAccountRefresh(exeAccountRefreshID)
     }
 
 }

@@ -178,6 +178,7 @@ struct ExeAccountConnectionRunner {
 
 struct ExeAccountsSettingsView: View {
     @Binding var accounts: [ExeAccount]
+    @Binding var inventoryRefreshID: UUID?
     let statusesPublisher:
         AnyPublisher<[String: ExeAccountStatus], Never>
     let pendingSSHHostKeyConfirmation:
@@ -197,7 +198,6 @@ struct ExeAccountsSettingsView: View {
     let probeConnection:
         (ExeAccount) async -> ExeAccountConnectionProbeResult
     let refresh: ([ExeAccount], [String: [ExeVMRecord]]) -> UUID?
-    let cancelRefresh: (UUID) -> Void
     let invalidateRefresh: (UUID, [ExeAccount]) -> Void
 
     @State private var statuses: [String: ExeAccountStatus] = [:]
@@ -208,7 +208,6 @@ struct ExeAccountsSettingsView: View {
     @State private var isTrusting = false
     @State private var connectionOperation: ExeAccountConnectionOperation?
     @State private var connectionTask: Task<Void, Never>?
-    @State private var inventoryRefreshID: UUID?
 
     var body: some View {
         settingsSection("exe.dev") {
@@ -250,7 +249,6 @@ struct ExeAccountsSettingsView: View {
         }
         .onDisappear {
             cancelConnection()
-            cancelInventoryRefresh()
         }
         .sheet(item: $pendingTrust) { pending in
             hostTrustSheet(pending)
@@ -487,12 +485,6 @@ struct ExeAccountsSettingsView: View {
         connectionTask?.cancel()
         connectionTask = nil
         connectionOperation = nil
-    }
-
-    private func cancelInventoryRefresh() {
-        guard let inventoryRefreshID else { return }
-        self.inventoryRefreshID = nil
-        cancelRefresh(inventoryRefreshID)
     }
 
     private func invalidateInventoryRefresh(
