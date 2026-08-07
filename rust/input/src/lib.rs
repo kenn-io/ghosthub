@@ -316,6 +316,13 @@ fn encode_text(
     event: KeyEvent,
     modes: TerminalModes,
 ) -> Vec<u8> {
+    if !is_single_key_text(text, logical_key) {
+        return if event == KeyEvent::Release {
+            Vec::new()
+        } else {
+            text.as_bytes().to_vec()
+        };
+    }
     if should_encode_kitty_text(modifiers, modes.kitty_keyboard) {
         return encode_kitty_text(text, logical_key, modifiers, event, modes.kitty_keyboard);
     }
@@ -336,6 +343,15 @@ fn encode_text(
         bytes.insert(0, b'\x1b');
     }
     bytes
+}
+
+fn is_single_key_text(text: &str, logical_key: Option<&str>) -> bool {
+    has_one_scalar(text) && logical_key.is_none_or(has_one_scalar)
+}
+
+fn has_one_scalar(text: &str) -> bool {
+    let mut chars = text.chars();
+    chars.next().is_some() && chars.next().is_none()
 }
 
 fn encode_modify_other_keys(text: &str, modifiers: Modifiers) -> Vec<u8> {

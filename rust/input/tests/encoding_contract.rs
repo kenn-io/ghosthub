@@ -144,6 +144,23 @@ fn modify_other_keys_all_encodes_shifted_text() {
 }
 
 #[test]
+fn modify_other_keys_preserves_composed_text() {
+    let composed = KeyInput::text(
+        "e\u{301}",
+        Modifiers {
+            control: true,
+            ..Modifiers::default()
+        },
+    );
+    let modes = TerminalModes {
+        modify_other_keys: ModifyOtherKeys::All,
+        ..TerminalModes::default()
+    };
+
+    assert_eq!(ready(&composed, modes), "e\u{301}".as_bytes());
+}
+
+#[test]
 fn kitty_disambiguates_modified_text_and_keypad_keys() {
     let control_a = KeyInput::text(
         "a",
@@ -399,6 +416,36 @@ fn kitty_can_report_all_keys_with_associated_text() {
 
     assert_eq!(ready(&input, all_keys), b"\x1b[97u");
     assert_eq!(ready(&input, associated_text), b"\x1b[97;1;97u");
+}
+
+#[test]
+fn kitty_preserves_composed_text_that_is_not_one_key() {
+    let modes = TerminalModes {
+        kitty_keyboard: KittyKeyboard {
+            report_event_types: true,
+            report_all_keys_as_escape_codes: true,
+            report_associated_text: true,
+            ..KittyKeyboard::default()
+        },
+        ..TerminalModes::default()
+    };
+    let composed = KeyInput::text_with_key(
+        "\u{1f469}\u{200d}\u{1f4bb}",
+        "compose",
+        Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        },
+    );
+
+    assert_eq!(
+        ready(&composed, modes),
+        "\u{1f469}\u{200d}\u{1f4bb}".as_bytes()
+    );
+    assert!(
+        ready(&composed.with_event(KeyEvent::Release), modes).is_empty(),
+        "a release must not recommit composed text"
+    );
 }
 
 #[test]

@@ -1208,6 +1208,20 @@ fn discovery_decodes_length_prefixed_session_names_without_splitting_records() {
     let snapshot = discover(&host).expect("discover length-prefixed session name");
 
     assert_eq!(snapshot.sessions()[0].name(), "work name\tand\nlines");
+    let plan = host.attach_plan(snapshot.endpoint(), &snapshot.sessions()[0]);
+    assert_eq!(plan.target_name(), "work name\tand\nlines");
+    assert!(
+        plan.args()
+            .iter()
+            .any(|argument| argument == "attach-session -E -t =$3")
+    );
+    assert!(
+        !plan
+            .args()
+            .iter()
+            .any(|argument| argument.to_string_lossy().contains("work name")),
+        "the display name must not participate in attachment targeting"
+    );
     assert!(host.runner().all_calls().iter().any(|(_, args)| {
         args.iter().any(|argument| argument == "list-sessions")
             && argument_after(args, "-F")
@@ -1230,12 +1244,10 @@ fn attach_plan_targets_the_fresh_stable_session_id() {
     );
     let snapshot = discover(&host).expect("discover sessions");
 
-    let plan = host
-        .attach_plan(
-            snapshot.endpoint(),
-            snapshot.sessions().first().expect("one session"),
-        )
-        .expect("build attach plan");
+    let plan = host.attach_plan(
+        snapshot.endpoint(),
+        snapshot.sessions().first().expect("one session"),
+    );
     let args = plan
         .args()
         .iter()
@@ -1285,12 +1297,10 @@ fn configured_socket_directory_is_explicit_environment() {
     ]);
     let host = test_host(config, runner);
     let snapshot = discover(&host).expect("discover sessions");
-    let plan = host
-        .attach_plan(
-            snapshot.endpoint(),
-            snapshot.sessions().first().expect("one session"),
-        )
-        .expect("build attach plan");
+    let plan = host.attach_plan(
+        snapshot.endpoint(),
+        snapshot.sessions().first().expect("one session"),
+    );
     let args = plan
         .args()
         .iter()

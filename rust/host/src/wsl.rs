@@ -413,35 +413,17 @@ impl<R: CommandRunner> WslHost<R> {
     }
 
     /// Build an attach-only plan for a discovered session.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the session name cannot be represented.
-    pub fn attach_plan(
-        &self,
-        endpoint: &WslEndpoint,
-        session: &DiscoveredSession,
-    ) -> Result<AttachPlan, HostError> {
+    pub fn attach_plan(&self, endpoint: &WslEndpoint, session: &DiscoveredSession) -> AttachPlan {
         self.attach_plan_with_term(endpoint, session, AttachTerm::Xterm256Color)
     }
 
     /// Build an attach-only plan with an explicit terminal capability level.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the session name cannot be represented.
     pub fn attach_plan_with_term(
         &self,
         endpoint: &WslEndpoint,
         session: &DiscoveredSession,
         term: AttachTerm,
-    ) -> Result<AttachPlan, HostError> {
-        if session.name().contains(['\0', '\n', '\r']) {
-            return Err(HostError::new(
-                DiagnosticKind::MalformedOutput,
-                "tmux session name contains an invalid control character",
-            ));
-        }
+    ) -> AttachPlan {
         let mut args = pinned_prefix(endpoint);
         append_tmux_environment(
             &mut args,
@@ -476,12 +458,12 @@ impl<R: CommandRunner> WslHost<R> {
             OsString::from(format!("display-message -p {IDENTITY_MISMATCH_MARKER}")),
         ]);
 
-        Ok(AttachPlan::attach_only(
+        AttachPlan::attach_only(
             self.wsl_executable.as_os_str(),
             args,
             session.name(),
             session.identity().clone(),
-        ))
+        )
     }
 
     fn resolve_endpoint(&self, cancellation: &CancellationToken) -> Result<WslEndpoint, HostError> {

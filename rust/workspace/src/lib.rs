@@ -1810,8 +1810,7 @@ fn attach_fresh(
     }
     let plan = request
         .host
-        .attach_plan_with_term(fresh.endpoint(), &session, term)
-        .map_err(|error| AttachFreshError::Host(WorkspaceError::new(error.to_string())))?;
+        .attach_plan_with_term(fresh.endpoint(), &session, term);
     let geometry = *inner
         .terminal_geometry
         .lock()
