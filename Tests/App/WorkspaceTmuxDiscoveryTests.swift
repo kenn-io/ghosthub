@@ -706,8 +706,17 @@ struct WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
-    @Test("returning to a replaced worktree invalidates its retained client")
-    func returningToReplacedWorktreeInvalidatesRetainedClient() async throws {
+    @Test(
+        "returning to an inactive replaced worktree invalidates its old endpoint",
+        arguments: [
+            ("kwt-ghosthub-replacement", String?.none),
+            ("kwt-ghosthub-main", Optional("replacement-socket")),
+        ]
+    )
+    func returningToReplacedWorktreeInvalidatesRetainedClient(
+        replacementName: String,
+        replacementSocket: String?
+    ) async throws {
         let environment = try setupStandardEnvironment()
         let surfaceStore = SceneTmuxSurfaceStoreStub()
         let model = try makeModel(
@@ -717,7 +726,7 @@ struct WorkspaceTmuxDiscoveryTests {
             nativeTmuxSurfaceStore: surfaceStore,
             nativeTmuxPathProvider: { .success("/usr/bin/tmux") }
         )
-        var worktree = WorkspaceTmuxSessionSelection(
+        let worktree = WorkspaceTmuxSessionSelection(
             hostID: environment.host.id,
             name: "kwt-ghosthub-main",
             worktreeID: environment.worktree.id,
@@ -739,18 +748,22 @@ struct WorkspaceTmuxDiscoveryTests {
             return surfaceStore.requestCount == 2
         }
 
-        worktree.worktreeGeneration =
+        var replacement = worktree
+        replacement.name = replacementName
+        replacement.socketName = replacementSocket
+        replacement.worktreeGeneration =
             "fedcba9876543210fedcba9876543210"
-        model.openBorrowedTmuxSession(worktree)
+        model.openBorrowedTmuxSession(replacement)
         await waitUntilMainActor {
             model.prepareActiveBorrowedTmuxSurface()
             return surfaceStore.requestCount == 3
         }
 
         #expect(
-            model.retainedBorrowedTmuxHandle(for: worktree) != originalHandle
+            model.retainedBorrowedTmuxHandle(for: replacement) != originalHandle
         )
-        #expect(model.activeBorrowedTmuxSelection == worktree)
+        #expect(model.retainedBorrowedTmuxHandle(for: worktree) == nil)
+        #expect(model.activeBorrowedTmuxSelection == replacement)
         #expect(model.retainedBorrowedTmuxPresentationCount == 2)
         #expect(surfaceStore.removedKeys.count == 1)
         await model.shutdown()

@@ -3371,20 +3371,38 @@ final class WorkspaceSceneModel: ObservableObject {
             selection.socketName != nil && launchMode == .create
                 ? .attach
                 : launchMode
+        if let worktreeID = selection.worktreeID {
+            let replacedSelections: [WorkspaceTmuxSessionSelection] =
+                retainedTmuxPresentations.values.compactMap { presentation in
+                    let retained = presentation.selection
+                    guard retained.worktreeID == worktreeID else { return nil }
+                    let endpointChanged = !Self.sameTmuxEndpoint(
+                        retained,
+                        selection
+                    )
+                    let generationChanged = if let retainedGeneration =
+                        retained.worktreeGeneration,
+                        let selectionGeneration = selection
+                        .worktreeGeneration {
+                        retainedGeneration != selectionGeneration
+                    } else {
+                        false
+                    }
+                    return endpointChanged || generationChanged
+                        ? retained
+                        : nil
+                }
+            for replaced in replacedSelections {
+                closeBorrowedTmuxSession(replaced)
+            }
+        }
         let key = TmuxPresentationKey(selection)
         if let retained = retainedTmuxPresentations[key] {
-            let generationChanged = if let retainedGeneration =
-                retained.selection.worktreeGeneration,
-                let selectionGeneration = selection.worktreeGeneration {
-                retainedGeneration != selectionGeneration
-            } else {
-                false
-            }
             let recreatesClosedAttachment = effectiveLaunchMode == .create
                 && nativeTmuxSessionCoordinator.hasClosedAttachment(
                     retained.handle
                 )
-            if generationChanged || recreatesClosedAttachment {
+            if recreatesClosedAttachment {
                 closeBorrowedTmuxSession(retained.selection)
             } else {
                 if retained.selection.worktreeGeneration == nil,
