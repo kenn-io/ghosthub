@@ -272,6 +272,21 @@ without kwt remains a valid tmux-only host; remote inventory failures stay
 attached to that host and never replace usable local or cached inventory with a
 workspace-wide error. Ghosthub has no Middleman runtime or API dependency.
 
+An enabled exe.dev account is a host-inventory provider, not a terminal
+backend. Ghosthub invokes the account's configured OpenSSH destination with
+`ls --json`, then treats each running VM as an ordinary Linux SSH host using
+the response's exact `ssh_dest`; it never synthesizes a VM hostname or SSH
+username. Enabled accounts must use unique OpenSSH destinations; multiple
+accounts therefore use distinct Host aliases. The account display name is
+provider presentation metadata and never contributes to stable host identity.
+The dynamic VM list is not copied into manual host settings. A
+failed provider refresh retains the last usable VM list, while a successful
+refresh removes stopped or deleted VMs. When a manual SSH host has the same
+destination, the explicit manual configuration wins. System OpenSSH still
+owns configuration, host-key storage, authentication, and routing for both the
+exe.dev control destination and every discovered VM. Tmux and kwt continue to
+own session and worktree identity exactly as they do on any other SSH host.
+
 Kwt also owns pull-request provider integration: authentication, repository
 identity, candidate discovery, and worktree import. Ghosthub may present a
 machine-readable candidate list and submit the user's selection through a

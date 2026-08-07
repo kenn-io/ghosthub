@@ -202,6 +202,131 @@ struct ConfiguredHostOverlayTests {
         #expect(Set(result.hosts.map(\.id)).count == 2)
     }
 
+    @Test("exe.dev VMs retain provider metadata as ordinary SSH hosts")
+    func exeVMsRetainProviderMetadata() throws {
+        let metadata = ExeVMMetadata(
+            accountConfigKey: "personal",
+            accountName: "Personal",
+            vmName: "build",
+            region: "lon",
+            regionDisplayName: "London, UK",
+            httpsURL: "https://build.exe.xyz"
+        )
+
+        let result = ConfiguredHostOverlay.apply(
+            [],
+            exeHosts: [ExeConfiguredHost(
+                sshHost: SSHHost(
+                    configKey: "exe-dev.personal.build",
+                    name: "build",
+                    platform: .linux,
+                    sshDestination: "vm+build@exe.dev"
+                ),
+                metadata: metadata
+            )],
+            to: .empty
+        )
+
+        let host = try #require(result.hosts.first)
+        #expect(host.sshDestination == "vm+build@exe.dev")
+        #expect(host.preferredTransport == .ssh)
+        #expect(host.exeVM == metadata)
+    }
+
+    @Test("manual SSH hosts win when exe.dev returns the same destination")
+    func manualHostsWinDuplicateDestinations() throws {
+        let manual = SSHHost(
+            configKey: "manual-build",
+            name: "Manual Build",
+            platform: .linux,
+            sshDestination: "build.exe.xyz"
+        )
+        let result = ConfiguredHostOverlay.apply(
+            [manual],
+            exeHosts: [ExeConfiguredHost(
+                sshHost: SSHHost(
+                    configKey: "exe-dev.personal.build",
+                    name: "build",
+                    platform: .linux,
+                    sshDestination: "build.exe.xyz"
+                ),
+                metadata: ExeVMMetadata(
+                    accountConfigKey: "personal",
+                    accountName: "Personal",
+                    vmName: "build"
+                )
+            )],
+            to: .empty
+        )
+
+        let host = try #require(result.hosts.first)
+        #expect(result.hosts.count == 1)
+        #expect(host.configKey == manual.configKey)
+        #expect(host.exeVM == nil)
+    }
+
+    @Test("manual and generated config keys remain unique")
+    func manualAndGeneratedConfigKeysRemainUnique() throws {
+        let manual = SSHHost(
+            configKey: "exe-dev.personal.build",
+            name: "Manual Build",
+            platform: .linux,
+            sshDestination: "manual-build"
+        )
+        let metadata = ExeVMMetadata(
+            accountConfigKey: "personal",
+            accountName: "Personal",
+            vmName: "build"
+        )
+        let result = ConfiguredHostOverlay.apply(
+            [manual],
+            exeHosts: [
+                ExeConfiguredHost(
+                    sshHost: SSHHost(
+                        configKey: "exe-dev.personal.build",
+                        name: "Provider Build",
+                        platform: .linux,
+                        sshDestination: "provider-build"
+                    ),
+                    metadata: metadata
+                ),
+                ExeConfiguredHost(
+                    sshHost: SSHHost(
+                        configKey: "exe-dev.personal.test",
+                        name: "First Test",
+                        platform: .linux,
+                        sshDestination: "first-test"
+                    ),
+                    metadata: metadata
+                ),
+                ExeConfiguredHost(
+                    sshHost: SSHHost(
+                        configKey: "exe-dev.personal.test",
+                        name: "Duplicate Test",
+                        platform: .linux,
+                        sshDestination: "duplicate-test"
+                    ),
+                    metadata: metadata
+                ),
+            ],
+            to: .empty
+        )
+
+        #expect(Set(result.hosts.map(\.configKey)) == Set([
+            "exe-dev.personal.build",
+            "exe-dev.personal.test",
+        ]))
+        let manualHost = try #require(result.hosts.first {
+            $0.configKey == "exe-dev.personal.build"
+        })
+        let providerHost = try #require(result.hosts.first {
+            $0.configKey == "exe-dev.personal.test"
+        })
+        #expect(manualHost.sshDestination == "manual-build")
+        #expect(providerHost.sshDestination == "first-test")
+        #expect(Set(result.hosts.map(\.id)).count == result.hosts.count)
+    }
+
     @Test("destination fallback cannot consume a later exact config identity")
     func destinationFallbackReservesExactMatches() {
         let existingA = HostSummary.fixture(

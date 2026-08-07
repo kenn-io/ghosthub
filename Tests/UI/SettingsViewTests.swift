@@ -153,6 +153,7 @@ final class SettingsViewTests: XCTestCase {
             SettingsDomain.keyboard,
             .worktrees,
             .agents,
+            .integrations,
         ] {
             store.selectedDomain = domain
             assertStableSize(fittingSize(for: store))

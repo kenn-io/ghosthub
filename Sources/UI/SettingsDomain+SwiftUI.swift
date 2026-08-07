@@ -17,6 +17,8 @@ extension SettingsDomain {
             return "hand.raised"
         case .hosts:
             return "desktopcomputer"
+        case .integrations:
+            return "puzzlepiece.extension"
         }
     }
 }

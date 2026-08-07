@@ -69,4 +69,31 @@ struct HostPresentationTests {
         #expect(hostCommand.keywords
             .contains("install github cli (`gh`) on the remote host to import pull requests."))
     }
+
+    @Test("exe.dev hosts show provider location and cloud identity")
+    func exeDevHostPresentation() throws {
+        let host = HostSummary.fixture(
+            name: "build",
+            kind: .remote,
+            platform: .linux,
+            sshDestination: "vm+build@exe.dev",
+            exeVM: ExeVMMetadata(
+                accountConfigKey: "personal",
+                accountName: "Personal",
+                vmName: "build",
+                region: "lon",
+                regionDisplayName: "London, UK"
+            )
+        )
+
+        let section = try #require(
+            WorkspaceSidebarModel.sections(
+                in: .fixture(hosts: [host])
+            ).first
+        )
+
+        #expect(section.row.icon == .exeDevHost)
+        #expect(section.row.subtitle == "exe.dev · Personal · London, UK")
+        #expect(host.searchKeywords.contains("personal"))
+    }
 }

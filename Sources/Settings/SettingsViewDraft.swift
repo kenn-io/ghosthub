@@ -36,6 +36,7 @@ public struct SettingsViewDraft: Equatable {
     public var attentionSound: WorkspaceNotificationSound
     public var sshHosts: [SSHHostDraft]
     public var selectedSSHHostDraftID: UUID?
+    public var exeAccounts: [ExeAccount]
 
     @MainActor
     public init(store: SettingsStore) {
@@ -68,6 +69,7 @@ public struct SettingsViewDraft: Equatable {
         attentionSound = store.notificationConfiguration.attentionSound
         self.sshHosts = sshHosts
         selectedSSHHostDraftID = sshHosts.first?.id
+        exeAccounts = store.exeAccounts
     }
 
     @MainActor
@@ -88,7 +90,13 @@ public struct SettingsViewDraft: Equatable {
             comparedWith: store
         )
         let hosts = SSHHostSanitizer.sshHosts(sshHosts.map(\.sshHost))
+        let exeAccountsToPersist = ExeAccountSanitizer
+            .accountsForPersistence(
+                exeAccounts,
+                previous: store.exeAccounts
+            )
         let shouldRefreshHosts = hosts != store.sshHosts
+            || exeAccountsToPersist != store.exeAccounts
 
         store.selectedDomain = selectedDomain
         store.setInterfaceAppearance(interfaceAppearance)
@@ -116,6 +124,7 @@ public struct SettingsViewDraft: Equatable {
 
         if shouldRefreshHosts {
             store.setSSHHosts(hosts)
+            store.setExeAccounts(exeAccountsToPersist)
         }
         return SettingsPersistResult(
             shouldRefreshHosts: shouldRefreshHosts,

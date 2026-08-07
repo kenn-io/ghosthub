@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import GhosthubSettings
 import SwiftUI
 import GhosthubWorkspace
@@ -31,6 +32,16 @@ public struct SettingsActions {
     var loadTailscalePeers: () async -> TailscalePeerLoadResult = {
         .failure("Tailscale import is unavailable.")
     }
+    var exeAccountStatusesPublisher:
+        AnyPublisher<[String: ExeAccountStatus], Never> = Just([:])
+        .eraseToAnyPublisher()
+    var probeExeAccountConnection:
+        (ExeAccount) async -> ExeAccountConnectionProbeResult = { _ in
+            .failed("exe.dev connection probing is unavailable.")
+        }
+    var refreshExeAccounts: ([ExeAccount]) -> UUID? = { _ in nil }
+    var cancelExeAccountRefresh: (UUID) -> Void = { _ in }
+    var invalidateExeAccountRefresh: (UUID, [ExeAccount]) -> Void = { _, _ in }
     var installRemoteKwt:
         (SSHHost) async -> Result<Void, HostProbeError> = { _ in
             .failure(.message("Remote kwt installation is unavailable."))
@@ -77,6 +88,20 @@ public struct SettingsActions {
         loadTailscalePeers: @escaping () async -> TailscalePeerLoadResult = {
             .failure("Tailscale import is unavailable.")
         },
+        exeAccountStatusesPublisher:
+        AnyPublisher<[String: ExeAccountStatus], Never> = Just([:])
+            .eraseToAnyPublisher(),
+        probeExeAccountConnection: @escaping (
+            ExeAccount
+        ) async -> ExeAccountConnectionProbeResult = { _ in
+            .failed("exe.dev connection probing is unavailable.")
+        },
+        refreshExeAccounts: @escaping ([ExeAccount]) -> UUID? = { _ in nil },
+        cancelExeAccountRefresh: @escaping (UUID) -> Void = { _ in },
+        invalidateExeAccountRefresh: @escaping (
+            UUID,
+            [ExeAccount]
+        ) -> Void = { _, _ in },
         installRemoteKwt: @escaping (
             SSHHost
         ) async -> Result<Void, HostProbeError> = { _ in
@@ -105,6 +130,11 @@ public struct SettingsActions {
         self.isSSHAuthenticationReady = isSSHAuthenticationReady
         self.cancelSSHAuthentication = cancelSSHAuthentication
         self.loadTailscalePeers = loadTailscalePeers
+        self.exeAccountStatusesPublisher = exeAccountStatusesPublisher
+        self.probeExeAccountConnection = probeExeAccountConnection
+        self.refreshExeAccounts = refreshExeAccounts
+        self.cancelExeAccountRefresh = cancelExeAccountRefresh
+        self.invalidateExeAccountRefresh = invalidateExeAccountRefresh
         self.installRemoteKwt = installRemoteKwt
         self.registerRemoteProject = registerRemoteProject
         self.installWindowsKwt = installWindowsKwt
@@ -240,6 +270,8 @@ public struct SettingsView: View {
                 privacyDetail
             case .hosts:
                 hostsDetail
+            case .integrations:
+                integrationsDetail
             }
         }
     }
@@ -326,6 +358,25 @@ public struct SettingsView: View {
             registerRemoteProject: actions.registerRemoteProject,
             loadTailscalePeers: actions.loadTailscalePeers,
             installWindowsKwt: actions.installWindowsKwt
+        )
+    }
+
+    private var integrationsDetail: some View {
+        ExeAccountsSettingsView(
+            accounts: $draft.exeAccounts,
+            statusesPublisher: actions.exeAccountStatusesPublisher,
+            pendingSSHHostKeyConfirmation:
+            actions.pendingSSHHostKeyConfirmation,
+            trustSSHHostKey: actions.trustSSHHostKey,
+            sshAuthenticationView: actions.sshAuthenticationView,
+            isSSHAuthenticationReady:
+            actions.isSSHAuthenticationReady,
+            cancelSSHAuthentication:
+            actions.cancelSSHAuthentication,
+            probeConnection: actions.probeExeAccountConnection,
+            refresh: actions.refreshExeAccounts,
+            cancelRefresh: actions.cancelExeAccountRefresh,
+            invalidateRefresh: actions.invalidateExeAccountRefresh
         )
     }
 

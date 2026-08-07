@@ -42,6 +42,12 @@ struct SettingsDomainTests {
                 "Connect the machines and tmux sessions"
                     + " in your tailnet or SSH network."
             ),
+            (
+                .integrations,
+                "Integrations",
+                "Connect third-party services that contribute"
+                    + " hosts and other resources to Ghosthub."
+            ),
         ]
 
         #expect(SettingsDomain.allCases == expected.map(\.0))
