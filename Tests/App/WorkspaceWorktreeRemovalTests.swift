@@ -236,6 +236,106 @@ struct WorkspaceWorktreeRemovalTests {
     }
 
     @MainActor
+    @Test("removal cancels pending presentations in every scene")
+    func removalCancelsPendingPresentationsInEveryScene() async throws {
+        let environment = try setupStandardEnvironment()
+        var removable = WorktreeSummary.fixture(
+            hostID: environment.host.id,
+            projectID: environment.project.id,
+            scopedKey: "/tmp/ghosthub-feature",
+            name: "feature/remove",
+            path: "/tmp/ghosthub-feature",
+            branch: "feature/remove",
+            generation: stableWorktreeGeneration
+        )
+        removable.tmuxSessionName = "kwt-ghosthub-feature"
+        var snapshot = environment.snapshot
+        snapshot.worktrees.append(removable)
+
+        let beforeRemoval = inventory(environment, including: removable)
+        let afterRemoval = inventory(environment)
+        let coordinator = WorktreeMutationCoordinator()
+        let pathGate = DispatchSemaphore(value: 0)
+        let pathResolutions = LockedValue(0)
+        let completedPathResolutions = LockedValue(0)
+        let resolveTmuxPath: @Sendable ()
+            -> Result<String, TmuxBinaryError> = {
+                pathResolutions.withLock { $0 += 1 }
+                pathGate.wait()
+                completedPathResolutions.withLock { $0 += 1 }
+                return .success("/usr/bin/tmux")
+            }
+        defer {
+            pathGate.signal()
+            pathGate.signal()
+        }
+
+        let firstLoads = LockedValue(0)
+        let firstSurfaces = RecordingTmuxSurfaceStore()
+        let secondSurfaces = RecordingTmuxSurfaceStore()
+        let firstModel = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: firstSurfaces,
+            nativeTmuxPathProvider: resolveTmuxPath,
+            kwtInventoryLoader: { _ in
+                firstLoads.withLock { $0 += 1 }
+                return firstLoads.load() == 1
+                    ? beforeRemoval
+                    : afterRemoval
+            },
+            kwtWorktreeRemover: { _, _, _, _ in },
+            worktreeMutationCoordinator: coordinator,
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+        let secondModel = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: secondSurfaces,
+            nativeTmuxPathProvider: resolveTmuxPath,
+            kwtInventoryLoader: { _ in beforeRemoval },
+            worktreeMutationCoordinator: coordinator
+        )
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: removable)
+        )
+
+        firstModel.openBorrowedTmuxSession(selection)
+        secondModel.openBorrowedTmuxSession(selection)
+        await waitUntilMainActor { pathResolutions.load() == 2 }
+        #expect(firstModel.retainedBorrowedTmuxPresentationCount == 1)
+        #expect(secondModel.retainedBorrowedTmuxPresentationCount == 1)
+
+        let request = try await firstModel.prepareWorktreeRemoval(removable.id)
+        try await firstModel.removeWorktree(request)
+
+        #expect(firstModel.snapshot.worktree(id: removable.id) == nil)
+        #expect(secondModel.snapshot.worktree(id: removable.id) == nil)
+        #expect(firstModel.retainedBorrowedTmuxPresentationCount == 0)
+        #expect(secondModel.retainedBorrowedTmuxPresentationCount == 0)
+
+        pathGate.signal()
+        pathGate.signal()
+        await waitUntilMainActor {
+            completedPathResolutions.load() == 2
+        }
+        for _ in 0 ..< 10 {
+            await Task.yield()
+        }
+        #expect(firstSurfaces.requestedConfigurations.isEmpty)
+        #expect(secondSurfaces.requestedConfigurations.isEmpty)
+        await firstModel.shutdown()
+        await secondModel.shutdown()
+    }
+
+    @MainActor
     @Test(
         "live session removal leaves a same-path worktree on another host"
     )
