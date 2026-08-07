@@ -278,9 +278,7 @@ fn wheel_delta_accumulates_fractional_lines_and_preserves_magnitude() {
     let mut large_remainder = 0.0;
     assert_eq!(
         terminal_wheel_steps(&mut large_remainder, 20_000.0, 20.0),
-        64
+        1_000
     );
-    assert!((large_remainder - 936.0).abs() < f32::EPSILON);
-    assert_eq!(terminal_wheel_steps(&mut large_remainder, 0.0, 20.0), 64);
-    assert!((large_remainder - 872.0).abs() < f32::EPSILON);
+    assert!(large_remainder.abs() < f32::EPSILON);
 }

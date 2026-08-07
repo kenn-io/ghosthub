@@ -24,7 +24,7 @@ const TERMINAL_PADDING: f32 = 12.0;
 const CELL_LINE_GAP: f32 = 2.0;
 const UI_INPUT_CAPACITY: usize = 512;
 const MOUSE_RELEASE_RESERVE: usize = 3;
-const MAX_WHEEL_EVENTS_PER_CALLBACK: i16 = 64;
+const MAX_WHEEL_EVENTS_PER_CALLBACK: usize = 64;
 const UI_INPUT_BYTE_CAPACITY: usize = 512 * 1024;
 const INPUT_BUFFERED_DIAGNOSTIC: &str = "Terminal is busy; input is buffered.";
 const INPUT_BUFFER_FULL_DIAGNOSTIC: &str =
@@ -286,16 +286,14 @@ pub struct RootView {
     pending_input_bytes: usize,
     input_refusal: InputRefusal,
     wheel_remainder: f32,
-    wheel_target: Option<WheelTarget>,
     keyboard: TerminalKeyboard,
     pointer: TerminalPointer,
 }
 
-#[derive(Clone, Copy)]
-struct WheelTarget {
-    presentation_id: u64,
-    cell: (usize, usize),
-    modifiers: gpui::Modifiers,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct WheelBatch {
+    input: MouseInput,
+    remaining: u32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -391,6 +389,7 @@ impl TerminalPointer {
 enum PendingUiInput {
     Key(KeyInput),
     Mouse(MouseInput),
+    Wheel(WheelBatch),
     ClipboardResponse(Vec<u8>),
     Resize(TerminalResize),
 }
@@ -449,7 +448,10 @@ impl PendingUiInput {
         match self {
             Self::Key(KeyInput::Text { text, .. } | KeyInput::Paste(text)) => text.len(),
             Self::ClipboardResponse(bytes) => bytes.len(),
-            Self::Key(KeyInput::Named { .. }) | Self::Mouse(_) | Self::Resize(_) => 0,
+            Self::Key(KeyInput::Named { .. })
+            | Self::Mouse(_)
+            | Self::Wheel(_)
+            | Self::Resize(_) => 0,
         }
     }
 
@@ -515,13 +517,7 @@ impl RootView {
                         let scope_changed = view.sync_terminal_scope();
                         let handled = view.handle_events(cx);
                         let flushed = view.flush_pending_input();
-                        let wheel_flushed = view.flush_wheel_input();
-                        if scope_changed
-                            || handled
-                            || flushed
-                            || wheel_flushed
-                            || view.poll_changed()
-                        {
+                        if scope_changed || handled || flushed || view.poll_changed() {
                             cx.notify();
                         }
                     })
@@ -564,7 +560,6 @@ impl RootView {
             pending_input_bytes: 0,
             input_refusal: InputRefusal::default(),
             wheel_remainder: 0.0,
-            wheel_target: None,
             keyboard: TerminalKeyboard::default(),
             pointer: TerminalPointer::default(),
         };
@@ -634,7 +629,6 @@ impl RootView {
             &mut self.input_refusal,
         );
         self.wheel_remainder = 0.0;
-        self.wheel_target = None;
         self.keyboard = TerminalKeyboard::default();
         self.pointer = TerminalPointer::default();
         if matches!(
@@ -846,47 +840,30 @@ impl RootView {
         if vertical == 0.0 {
             return;
         }
-        let _flushed = self.flush_wheel_input();
         if let Some(cell) = self.terminal_cell_at(event.position.x.into(), event.position.y.into())
         {
-            if self.wheel_target.is_none() || self.wheel_remainder.abs() < 1.0 {
-                self.wheel_target = Some(WheelTarget {
+            let steps = terminal_wheel_steps(
+                &mut self.wheel_remainder,
+                vertical,
+                self.terminal_metrics.line_height,
+            );
+            if let Some(action) = terminal_wheel_action(steps) {
+                let input = MouseInput {
+                    action,
+                    column: cell.0,
+                    row: cell.1,
+                    modifiers: input_modifiers(event.modifiers),
+                };
+                let _accepted = self.enqueue_input(
                     presentation_id,
-                    cell,
-                    modifiers: event.modifiers,
-                });
+                    PendingUiInput::Wheel(WheelBatch {
+                        input,
+                        remaining: steps.unsigned_abs(),
+                    }),
+                );
             }
-            self.wheel_remainder += vertical / self.terminal_metrics.line_height;
-            let _flushed = self.flush_wheel_input();
         }
         cx.stop_propagation();
-    }
-
-    fn flush_wheel_input(&mut self) -> bool {
-        let Some(target) = self.wheel_target else {
-            return false;
-        };
-        let steps = terminal_wheel_steps(&mut self.wheel_remainder, 0.0, 1.0);
-        let Some(action) = terminal_wheel_action(steps) else {
-            return false;
-        };
-        let mut delivered = 0;
-        for _ in 0..steps.unsigned_abs() {
-            if !self.send_mouse_at_cell(
-                target.presentation_id,
-                action,
-                target.cell,
-                target.modifiers,
-            ) {
-                break;
-            }
-            delivered += 1;
-        }
-        restore_undelivered_wheel_steps(&mut self.wheel_remainder, steps, delivered);
-        if self.wheel_remainder.abs() < 1.0 {
-            self.wheel_target = None;
-        }
-        delivered > 0
     }
 
     fn terminal_cell_at(&self, x: f32, y: f32) -> Option<(usize, usize)> {
@@ -969,6 +946,16 @@ impl RootView {
         {
             return true;
         }
+        if let PendingUiInput::Wheel(batch) = &input
+            && coalesce_last_wheel(
+                &mut self.pending_input,
+                presentation_id,
+                *batch,
+                self.input_refusal.acceptance_marker(),
+            )
+        {
+            return true;
+        }
         if matches!(
             &input,
             PendingUiInput::Mouse(MouseInput {
@@ -1022,6 +1009,7 @@ impl RootView {
 
     fn flush_pending_input(&mut self) -> bool {
         let mut changed = self.sync_terminal_scope();
+        let mut delivered_wheel_steps = 0;
         if self.paste_confirmation {
             return changed;
         }
@@ -1033,6 +1021,11 @@ impl RootView {
                 }
                 return changed;
             };
+            if delivered_wheel_steps >= MAX_WHEEL_EVENTS_PER_CALLBACK
+                && matches!(input.input, PendingUiInput::Wheel(_))
+            {
+                return changed;
+            }
             let active_presentation = terminal_presentation_id(self.workspace.snapshot().content());
             if !queued_input_matches_presentation(input, active_presentation) {
                 let stale = self.pending_input.pop_front().expect("front input exists");
@@ -1043,6 +1036,7 @@ impl RootView {
             let result = match &input.input {
                 PendingUiInput::Key(input) => self.workspace.send_key(input.clone()),
                 PendingUiInput::Mouse(input) => self.workspace.send_mouse(*input),
+                PendingUiInput::Wheel(batch) => self.workspace.send_mouse(batch.input),
                 PendingUiInput::ClipboardResponse(bytes) => {
                     self.workspace.send_clipboard_response(bytes.clone())
                 }
@@ -1055,6 +1049,22 @@ impl RootView {
             };
             match result {
                 Ok(()) => {
+                    if let Some(QueuedUiInput {
+                        input: PendingUiInput::Wheel(batch),
+                        ..
+                    }) = self.pending_input.front_mut()
+                    {
+                        debug_assert!(batch.remaining > 0);
+                        batch.remaining = batch.remaining.saturating_sub(1);
+                        delivered_wheel_steps += 1;
+                        changed = true;
+                        if batch.remaining > 0 {
+                            if delivered_wheel_steps >= MAX_WHEEL_EVENTS_PER_CALLBACK {
+                                return changed;
+                            }
+                            continue;
+                        }
+                    }
                     let delivered = self.pending_input.pop_front().expect("front input exists");
                     self.pending_input_bytes =
                         self.pending_input_bytes.saturating_sub(delivered.bytes);
@@ -1602,6 +1612,26 @@ fn coalesce_last_resize(
     true
 }
 
+fn coalesce_last_wheel(
+    pending: &mut VecDeque<QueuedUiInput>,
+    presentation_id: u64,
+    batch: WheelBatch,
+    accepted_after_refusal: Option<u64>,
+) -> bool {
+    let Some(last) = pending.back_mut() else {
+        return false;
+    };
+    let PendingUiInput::Wheel(pending_batch) = &mut last.input else {
+        return false;
+    };
+    if last.presentation_id != presentation_id || pending_batch.input != batch.input {
+        return false;
+    }
+    pending_batch.remaining = pending_batch.remaining.saturating_add(batch.remaining);
+    last.accepted_after_refusal = accepted_after_refusal;
+    true
+}
+
 fn clear_terminal_input_state(
     paste_confirmation: &mut bool,
     pending_input: &mut VecDeque<QueuedUiInput>,
@@ -1902,7 +1932,7 @@ fn normalize_cell_width(measured: f32) -> f32 {
 #[must_use]
 #[allow(
     clippy::cast_possible_truncation,
-    reason = "truncating completed fractional lines is the wheel-step boundary"
+    reason = "completed wheel lines are represented by a bounded batch count"
 )]
 pub fn terminal_wheel_steps(remainder: &mut f32, vertical_delta: f32, line_height: f32) -> i32 {
     if !vertical_delta.is_finite() || !line_height.is_finite() || line_height <= 0.0 {
@@ -1910,17 +1940,8 @@ pub fn terminal_wheel_steps(remainder: &mut f32, vertical_delta: f32, line_heigh
     }
     let total = *remainder + vertical_delta / line_height;
     let completed = total.trunc();
-    let wheel_limit = f32::from(MAX_WHEEL_EVENTS_PER_CALLBACK);
-    let dispatched = completed.clamp(-wheel_limit, wheel_limit);
-    *remainder = total - dispatched;
-    dispatched as i32
-}
-
-fn restore_undelivered_wheel_steps(remainder: &mut f32, steps: i32, delivered: u32) {
-    let undelivered = i16::try_from(steps.unsigned_abs().saturating_sub(delivered))
-        .expect("wheel callback is bounded");
-    let signed = if steps < 0 { -undelivered } else { undelivered };
-    *remainder += f32::from(signed);
+    *remainder = total.fract();
+    completed as i32
 }
 
 #[must_use]
@@ -1967,10 +1988,10 @@ mod tests {
     use super::{
         INPUT_BUFFER_FULL_DIAGNOSTIC, INPUT_BUFFERED_DIAGNOSTIC, InputRefusal, PendingUiInput,
         QueuedUiInput, TerminalKeyboard, TerminalPointer, TerminalResize, UI_INPUT_BYTE_CAPACITY,
-        UI_INPUT_CAPACITY, clear_terminal_input_state, clears_after_input_delivery,
-        clears_when_input_queue_is_empty, coalesce_last_resize, input_queue_has_capacity,
-        named_key, normalize_cell_width, queued_input_matches_presentation,
-        restore_undelivered_wheel_steps, terminal_key_input, terminal_wheel_steps,
+        UI_INPUT_CAPACITY, WheelBatch, clear_terminal_input_state, clears_after_input_delivery,
+        clears_when_input_queue_is_empty, coalesce_last_resize, coalesce_last_wheel,
+        input_queue_has_capacity, named_key, normalize_cell_width,
+        queued_input_matches_presentation, terminal_key_input, terminal_wheel_steps,
         transitioned_presentation,
     };
     use workspace::{
@@ -2104,24 +2125,89 @@ mod tests {
     }
 
     #[test]
-    fn refused_wheel_events_return_to_the_fractional_accumulator() {
-        let mut remainder: f32 = 0.25;
+    fn completed_wheel_steps_leave_only_a_fractional_remainder() {
+        let mut remainder = 0.5;
 
-        restore_undelivered_wheel_steps(&mut remainder, 64, 10);
-        assert!((remainder - 54.25).abs() < f32::EPSILON);
-
-        restore_undelivered_wheel_steps(&mut remainder, -64, 60);
-        assert!((remainder - 50.25).abs() < f32::EPSILON);
+        assert_eq!(terminal_wheel_steps(&mut remainder, 130.0, 1.0), 130);
+        assert!((remainder - 0.5).abs() < f32::EPSILON);
     }
 
     #[test]
-    fn pending_wheel_steps_drain_without_a_new_gesture() {
-        let mut remainder: f32 = 130.5;
+    fn wheel_batches_preserve_direction_target_and_modifiers() {
+        let first = WheelBatch {
+            input: MouseInput {
+                action: MouseAction::WheelUp,
+                column: 4,
+                row: 7,
+                modifiers: Modifiers::default(),
+            },
+            remaining: 54,
+        };
+        let mut pending = VecDeque::from([QueuedUiInput {
+            presentation_id: 8,
+            input: PendingUiInput::Wheel(first),
+            bytes: 0,
+            accepted_after_refusal: None,
+        }]);
+        let same_target = WheelBatch {
+            remaining: 10,
+            ..first
+        };
+        assert!(coalesce_last_wheel(&mut pending, 8, same_target, Some(2)));
+        assert!(matches!(
+            pending[0].input,
+            PendingUiInput::Wheel(WheelBatch { remaining: 64, .. })
+        ));
 
-        assert_eq!(terminal_wheel_steps(&mut remainder, 0.0, 1.0), 64);
-        assert_eq!(terminal_wheel_steps(&mut remainder, 0.0, 1.0), 64);
-        assert_eq!(terminal_wheel_steps(&mut remainder, 0.0, 1.0), 2);
-        assert!((remainder - 0.5).abs() < f32::EPSILON);
+        let later_opposite_target = WheelBatch {
+            input: MouseInput {
+                action: MouseAction::WheelDown,
+                column: 12,
+                row: 9,
+                modifiers: Modifiers {
+                    alt: true,
+                    ..Modifiers::default()
+                },
+            },
+            remaining: 3,
+        };
+        assert!(!coalesce_last_wheel(
+            &mut pending,
+            8,
+            later_opposite_target,
+            None
+        ));
+        pending.push_back(QueuedUiInput {
+            presentation_id: 8,
+            input: PendingUiInput::Wheel(later_opposite_target),
+            bytes: 0,
+            accepted_after_refusal: None,
+        });
+        assert_eq!(pending.len(), 2);
+        assert!(matches!(
+            pending[0].input,
+            PendingUiInput::Wheel(WheelBatch {
+                input: MouseInput {
+                    action: MouseAction::WheelUp,
+                    column: 4,
+                    row: 7,
+                    ..
+                },
+                remaining: 64,
+            })
+        ));
+        assert!(matches!(
+            pending[1].input,
+            PendingUiInput::Wheel(WheelBatch {
+                input: MouseInput {
+                    action: MouseAction::WheelDown,
+                    column: 12,
+                    row: 9,
+                    modifiers: Modifiers { alt: true, .. },
+                },
+                remaining: 3,
+            })
+        ));
     }
 
     #[test]

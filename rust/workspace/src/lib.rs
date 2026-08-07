@@ -1156,7 +1156,7 @@ impl Workspace {
         {
             worker
                 .resize_with_metadata(geometry.grid, geometry.sequence, geometry.pixels)
-                .map_err(|error| WorkspaceError::new(error.to_string()))?;
+                .map_err(|error| WorkspaceError::from_worker(&error))?;
         }
         Ok(())
     }
