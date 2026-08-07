@@ -431,8 +431,8 @@ struct WorkspaceWorktreeRemovalTests {
     }
 
     @MainActor
-    @Test("failed removal permits its worktree presentation to reopen")
-    func failedRemovalPermitsPresentationReopen() async throws {
+    @Test("failed removal restores an inactive retained presentation")
+    func failedRemovalRestoresInactivePresentation() async throws {
         let environment = try setupStandardEnvironment()
         var removable = WorktreeSummary.fixture(
             hostID: environment.host.id,
@@ -475,8 +475,20 @@ struct WorkspaceWorktreeRemovalTests {
         let selection = try #require(
             WorkspaceSidebarModel.tmuxSessionSelection(for: removable)
         )
+        let other = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "other"
+        )
         model.openBorrowedTmuxSession(selection)
-        #expect(model.retainedBorrowedTmuxPresentationCount == 1)
+        let removedHandle = try #require(
+            model.retainedBorrowedTmuxHandle(for: selection)
+        )
+        model.openBorrowedTmuxSession(other)
+        let activeHandle = try #require(
+            model.retainedBorrowedTmuxHandle(for: other)
+        )
+        #expect(model.retainedBorrowedTmuxPresentationCount == 2)
+        #expect(model.activeBorrowedTmuxSelection == other)
 
         let request = try await model.prepareWorktreeRemoval(removable.id)
         let removal = Task { @MainActor in
@@ -489,11 +501,11 @@ struct WorkspaceWorktreeRemovalTests {
             await Task.yield()
         }
         #expect(await removerHold.started)
-        #expect(model.retainedBorrowedTmuxPresentationCount == 0)
+        #expect(model.retainedBorrowedTmuxPresentationCount == 1)
         #expect(model.suppressesSelectedWorktreeSessionOpen)
 
         model.openBorrowedTmuxSession(selection)
-        #expect(model.retainedBorrowedTmuxPresentationCount == 0)
+        #expect(model.retainedBorrowedTmuxPresentationCount == 1)
 
         await removerHold.release()
         await #expect(
@@ -505,8 +517,62 @@ struct WorkspaceWorktreeRemovalTests {
             try await removal.value
         }
         #expect(!model.suppressesSelectedWorktreeSessionOpen)
+        #expect(model.retainedBorrowedTmuxPresentationCount == 2)
+        #expect(
+            model.retainedBorrowedTmuxHandle(for: selection) != removedHandle
+        )
+        #expect(model.retainedBorrowedTmuxHandle(for: other) == activeHandle)
+        #expect(model.activeBorrowedTmuxSelection == other)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("removal preflight invalidates a replaced retained endpoint")
+    func removalPreflightInvalidatesReplacedPresentation() async throws {
+        let environment = try setupStandardEnvironment()
+        var removable = WorktreeSummary.fixture(
+            hostID: environment.host.id,
+            projectID: environment.project.id,
+            scopedKey: "/tmp/ghosthub-feature",
+            name: "feature/remove",
+            path: "/tmp/ghosthub-feature",
+            branch: "feature/remove",
+            generation: stableWorktreeGeneration
+        )
+        removable.tmuxSessionName = "kwt-ghosthub-feature"
+        var replacement = removable
+        replacement.tmuxSessionName = "kwt-ghosthub-replacement"
+        var snapshot = environment.snapshot
+        snapshot.worktrees.append(removable)
+        let replacementInventory = inventory(
+            environment,
+            including: replacement
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxPathProvider: { .success("/usr/bin/tmux") },
+            kwtInventoryLoader: { _ in replacementInventory },
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: removable)
+        )
         model.openBorrowedTmuxSession(selection)
         #expect(model.retainedBorrowedTmuxPresentationCount == 1)
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        await #expect(throws: KwtWorktreeError.removalTargetChanged) {
+            try await model.removeWorktree(request)
+        }
+
+        #expect(model.retainedBorrowedTmuxPresentationCount == 0)
         await model.shutdown()
     }
 

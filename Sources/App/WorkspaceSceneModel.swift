@@ -368,6 +368,11 @@ final class WorkspaceSceneModel: ObservableObject {
             self.reconnectSupervisor = reconnectSupervisor
         }
     }
+    private struct PendingRemovalPresentation {
+        var selection: WorkspaceTmuxSessionSelection
+        var launchMode: TmuxAttachmentLaunchMode
+        var wasActive: Bool
+    }
     private var retainedTmuxPresentations:
         [TmuxPresentationKey: RetainedTmuxPresentation] = [:]
     private var retainedTmuxPresentationKeysByHandle:
@@ -380,6 +385,11 @@ final class WorkspaceSceneModel: ObservableObject {
         [
             WorktreeMutationCoordinator.Scope:
                 Set<WorktreeMutationCoordinator.RemovalTombstone>
+        ] = [:]
+    private var pendingRemovalPresentationRestorations:
+        [
+            WorktreeMutationCoordinator.Scope:
+                [TmuxPresentationKey: PendingRemovalPresentation]
         ] = [:]
     var suppressesSelectedWorktreeSessionOpen: Bool {
         suppressesAutomaticWorktreeSessionOpen
@@ -1256,6 +1266,7 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         retainedTmuxPresentations.removeAll()
         retainedTmuxPresentationKeysByHandle.removeAll()
+        pendingRemovalPresentationRestorations.removeAll()
         activeBorrowedTmuxSelection = nil
         activeBorrowedTmuxHandle = nil
         activeBorrowedTmuxLaunchMode = nil
@@ -1333,13 +1344,10 @@ final class WorkspaceSceneModel: ObservableObject {
             cancelPendingRestoration()
 
             let refreshed = try await kwtInventoryLoader(host)
-            let previous = kwtInventoriesByHost[project.hostID]
-            kwtInventoriesByHost[project.hostID] =
-                refreshed.retainingFailedProjectWorktrees(from: previous)
-            kwtAvailabilityByHost[project.hostID] = true
-            kwtInventoryFailuresByHost.removeValue(forKey: project.hostID)
-            applyInventoryOverlayIfNeeded()
-            updateWorkspaceInventoryState()
+            applyAuthoritativeKwtInventory(
+                refreshed,
+                hostID: project.hostID
+            )
             scheduleTmuxSessionDiscovery()
         } catch {
             if isRemoteKwtUnavailable(error, hostID: project.hostID) {
@@ -1575,21 +1583,16 @@ final class WorkspaceSceneModel: ObservableObject {
 
         do {
             let refreshed = try await kwtInventoryLoader(confirmedHost)
-            let previous = kwtInventoriesByHost[project.hostID]
-            kwtInventoriesByHost[project.hostID] =
-                refreshed.retainingFailedProjectWorktrees(
-                    from: previous,
-                    excludingWorktrees: [
-                        KwtWorktreeIdentity(
-                            path: worktree.path,
-                            generation: generation
-                        ),
-                    ]
-                )
-            kwtAvailabilityByHost[project.hostID] = true
-            kwtInventoryFailuresByHost.removeValue(forKey: project.hostID)
-            applyInventoryOverlayIfNeeded()
-            updateWorkspaceInventoryState()
+            applyAuthoritativeKwtInventory(
+                refreshed,
+                hostID: project.hostID,
+                excludingWorktrees: [
+                    KwtWorktreeIdentity(
+                        path: worktree.path,
+                        generation: generation
+                    ),
+                ]
+            )
         } catch {
             if isRemoteKwtUnavailable(error, hostID: project.hostID) {
                 kwtAvailabilityByHost[project.hostID] = false
@@ -1622,13 +1625,7 @@ final class WorkspaceSceneModel: ObservableObject {
         }) else {
             return nil
         }
-        let previous = kwtInventoriesByHost[hostID]
-        kwtInventoriesByHost[hostID] =
-            inventory.retainingFailedProjectWorktrees(from: previous)
-        kwtAvailabilityByHost[hostID] = true
-        kwtInventoryFailuresByHost.removeValue(forKey: hostID)
-        applyInventoryOverlayIfNeeded()
-        updateWorkspaceInventoryState()
+        applyAuthoritativeKwtInventory(inventory, hostID: hostID)
         guard record.repository == request.project.scopedKey,
               record.branch == request.worktree.branch,
               record.isMain == request.worktree.isPrimary,
@@ -1820,10 +1817,10 @@ final class WorkspaceSceneModel: ObservableObject {
 
         do {
             let refreshed = try await kwtInventoryLoader(host)
-            let previous = kwtInventoriesByHost[project.hostID]
-            kwtInventoriesByHost[project.hostID] =
-                refreshed.retainingFailedProjectWorktrees(from: previous)
-            kwtInventoryFailuresByHost.removeValue(forKey: project.hostID)
+            applyAuthoritativeKwtInventory(
+                refreshed,
+                hostID: project.hostID
+            )
         } catch {
             kwtInventoryFailuresByHost[project.hostID] =
                 error.localizedDescription
@@ -2078,23 +2075,15 @@ final class WorkspaceSceneModel: ObservableObject {
                     }
                     switch result {
                     case let .success(inventory):
-                        let previous = self.kwtInventoriesByHost[hostID]
                         let tombstones =
                             self.activeRemovalTombstones(
                                 after: inventory,
                                 hostID: hostID
                             )
-                        self.kwtInventoriesByHost[hostID] =
-                            inventory.retainingFailedProjectWorktrees(
-                                from: previous,
-                                excludingWorktrees: tombstones
-                            )
-                        self.kwtAvailabilityByHost[hostID] = true
-                        // A host inventory is useful even when one project
-                        // cannot be read. Retain that project's cached
-                        // worktrees and keep other hosts available.
-                        self.kwtInventoryFailuresByHost.removeValue(
-                            forKey: hostID
+                        self.applyAuthoritativeKwtInventory(
+                            inventory,
+                            hostID: hostID,
+                            excludingWorktrees: tombstones
                         )
                     case let .failure(error):
                         if self.isRemoteKwtUnavailable(
@@ -2114,13 +2103,10 @@ final class WorkspaceSceneModel: ObservableObject {
                                 error.localizedDescription
                         }
                     }
-                    self.applyInventoryOverlayIfNeeded()
-                    if case .success = result {
-                        self.reconcileRetainedTmuxPresentations(
-                            afterAuthoritativeInventoryFor: hostID
-                        )
+                    if case .failure = result {
+                        self.applyInventoryOverlayIfNeeded()
+                        self.updateWorkspaceInventoryState()
                     }
-                    self.updateWorkspaceInventoryState()
                 }
             }
             guard let self, !Task.isCancelled,
@@ -2149,16 +2135,15 @@ final class WorkspaceSceneModel: ObservableObject {
         case .willRemove:
             pendingWorktreeRemovals[event.scope, default: []]
                 .formUnion(event.removalTombstones)
-            closeRetainedTmuxPresentations(
-                forWorktreeIDs: worktreeIDs(
-                    matching: event.removalTombstones,
-                    hostID: event.scope.hostID
-                )
-            )
+            retainPresentationsForFailedRemoval(event)
             return
         case .ended:
             fencedWorktreeMutationScopes.remove(event.scope)
             pendingWorktreeRemovals.removeValue(forKey: event.scope)
+            let pendingRestorations =
+                pendingRemovalPresentationRestorations.removeValue(
+                    forKey: event.scope
+                )
             if !event.removalTombstones.isEmpty {
                 worktreeRemovalTombstones[event.scope, default: []]
                     .formUnion(event.removalTombstones)
@@ -2166,6 +2151,8 @@ final class WorkspaceSceneModel: ObservableObject {
                     event.removalTombstones,
                     hostID: event.scope.hostID
                 )
+            } else if let pendingRestorations {
+                restorePresentationsAfterFailedRemoval(pendingRestorations)
             }
         }
         guard inventoryHosts[event.scope.hostID] != nil else { return }
@@ -2213,6 +2200,47 @@ final class WorkspaceSceneModel: ObservableObject {
             visibility: worktreeVisibility
         )
         updateWorkspaceInventoryState()
+    }
+
+    private func retainPresentationsForFailedRemoval(
+        _ event: WorktreeMutationCoordinator.Event
+    ) {
+        let presentations = retainedTmuxPresentations.values.filter {
+            presentation in
+            let selection = presentation.selection
+            guard selection.hostID == event.scope.hostID,
+                  let path = selection.worktreePath
+            else { return false }
+            return Self.removalTombstones(
+                event.removalTombstones,
+                matchPath: path,
+                generation: selection.worktreeGeneration
+            )
+        }
+        for presentation in presentations {
+            let key = TmuxPresentationKey(presentation.selection)
+            pendingRemovalPresentationRestorations[event.scope, default: [:]][
+                key
+            ] = PendingRemovalPresentation(
+                selection: presentation.selection,
+                launchMode: presentation.launchMode,
+                wasActive: activeBorrowedTmuxHandle == presentation.handle
+            )
+            invalidateBorrowedTmuxSession(presentation.selection)
+        }
+    }
+
+    private func restorePresentationsAfterFailedRemoval(
+        _ presentations: [TmuxPresentationKey: PendingRemovalPresentation]
+    ) {
+        for presentation in presentations.values {
+            _ = presentTmuxSession(
+                presentation.selection,
+                launchMode: presentation.launchMode,
+                intent: .restoreOnly,
+                activatesPresentation: presentation.wasActive
+            )
+        }
     }
 
     private func worktreeIDs(
@@ -2278,6 +2306,26 @@ final class WorkspaceSceneModel: ObservableObject {
             }
         }
         return activeTombstones
+    }
+
+    private func applyAuthoritativeKwtInventory(
+        _ inventory: KwtHostInventory,
+        hostID: UUID,
+        excludingWorktrees: Set<KwtWorktreeIdentity> = []
+    ) {
+        let previous = kwtInventoriesByHost[hostID]
+        kwtInventoriesByHost[hostID] =
+            inventory.retainingFailedProjectWorktrees(
+                from: previous,
+                excludingWorktrees: excludingWorktrees
+            )
+        kwtAvailabilityByHost[hostID] = true
+        kwtInventoryFailuresByHost.removeValue(forKey: hostID)
+        applyInventoryOverlayIfNeeded()
+        reconcileRetainedTmuxPresentations(
+            afterAuthoritativeInventoryFor: hostID
+        )
+        updateWorkspaceInventoryState()
     }
 
     private func isRemoteKwtUnavailable(
@@ -3461,7 +3509,8 @@ final class WorkspaceSceneModel: ObservableObject {
     private func presentTmuxSession(
         _ selection: WorkspaceTmuxSessionSelection,
         launchMode: TmuxAttachmentLaunchMode,
-        intent: TmuxPresentationIntent = .userInitiated
+        intent: TmuxPresentationIntent = .userInitiated,
+        activatesPresentation: Bool = true
     ) -> BorrowedTmuxSessionHandle? {
         var selection = selection
         if let worktreeID = selection.worktreeID,
@@ -3513,18 +3562,22 @@ final class WorkspaceSceneModel: ObservableObject {
                    selection.worktreeGeneration != nil {
                     retained.selection = selection
                 }
-                activateTmuxPresentation(retained)
+                if activatesPresentation {
+                    activateTmuxPresentation(retained)
+                }
                 return retained.handle
             }
         }
         guard let host = snapshot.host(id: selection.hostID),
               let attachmentHost = TmuxHostResolver.resolve(host)
         else {
-            activeBorrowedTmuxSelection = selection
-            activeBorrowedTmuxHandle = nil
-            activeBorrowedTmuxLaunchMode = effectiveLaunchMode
-            activeBorrowedTmuxRecoveryState = nil
-            tmuxConnectionRecoveryRequest = nil
+            if activatesPresentation {
+                activeBorrowedTmuxSelection = selection
+                activeBorrowedTmuxHandle = nil
+                activeBorrowedTmuxLaunchMode = effectiveLaunchMode
+                activeBorrowedTmuxRecoveryState = nil
+                tmuxConnectionRecoveryRequest = nil
+            }
             return nil
         }
         let knownSessions = tmuxSessionsByHost[selection.hostID]
@@ -3575,7 +3628,9 @@ final class WorkspaceSceneModel: ObservableObject {
         )
         retainedTmuxPresentations[key] = presentation
         retainedTmuxPresentationKeysByHandle[handle.id] = key
-        activateTmuxPresentation(presentation)
+        if activatesPresentation {
+            activateTmuxPresentation(presentation)
+        }
         borrowedTmuxConnectionStates[handle.id] = .connecting
         if effectiveLaunchMode == .create {
             transferPendingCreation(for: selection, to: handle)
