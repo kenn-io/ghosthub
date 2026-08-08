@@ -16,7 +16,7 @@ struct ResourceSamplingCoordinatorTests {
         // let the first refresh fire before the cancellation under test.
         ctx.coordinator.scheduleRefresh(after: 0.01)
 
-        await waitUntil {
+        await waitUntilMainActor {
             recorder.handledCount == 1
         }
         try? await Task.sleep(for: .milliseconds(250))
@@ -39,7 +39,7 @@ struct ResourceSamplingCoordinatorTests {
             )
         )
 
-        await waitUntil {
+        await waitUntilMainActor {
             recorder.handledCount == 1
         }
 
