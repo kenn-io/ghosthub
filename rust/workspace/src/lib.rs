@@ -450,6 +450,7 @@ trait WslDiscovery: Send + Sync {
         &self,
         config: WslConfig,
         executable: WslExecutable,
+        existing_host: Option<RuntimeHost>,
         cancellation: &CancellationToken,
     ) -> Result<HostContext, HostError>;
 }
@@ -471,9 +472,11 @@ impl WslDiscovery for SystemWslDiscovery {
         &self,
         config: WslConfig,
         executable: WslExecutable,
+        existing_host: Option<RuntimeHost>,
         cancellation: &CancellationToken,
     ) -> Result<HostContext, HostError> {
-        let host = WslHost::new(config, Arc::clone(&self.runner), executable);
+        let host = existing_host
+            .unwrap_or_else(|| WslHost::new(config, Arc::clone(&self.runner), executable));
         host.discover_with_cancel(&ConptyAdmissionAttacher::new(), cancellation)
             .map(|snapshot| HostContext { host, snapshot })
     }
@@ -1319,6 +1322,30 @@ impl Workspace {
         Ok(())
     }
 
+    /// Refresh a connected WSL host without turning activation into an
+    /// automatic retry loop for disconnected or failed hosts.
+    ///
+    /// Returns `true` when a ready host started a refresh.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only when a ready host no longer has refresh
+    /// configuration.
+    pub fn refresh_if_ready(&self) -> Result<bool, WorkspaceError> {
+        let ready = self
+            .inner
+            .hosts
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .any(|host| host.id == "wsl" && host.connection == HostConnectionState::Ready);
+        if !ready {
+            return Ok(false);
+        }
+        self.refresh()?;
+        Ok(true)
+    }
+
     /// Cancel the active WSL inventory refresh, if one is connecting.
     ///
     /// Returns `true` when an active refresh was cancelled.
@@ -2142,6 +2169,12 @@ impl Workspace {
             return;
         }
         let discovery = Arc::clone(&inner.discovery);
+        let existing_host = inner
+            .host
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(|published| published.value.host.clone());
         let task_inner = Arc::clone(&inner);
         let task_cancellation = cancellation.clone();
         let spawn_result = inner.refresh_runtime.spawn(
@@ -2154,7 +2187,12 @@ impl Workspace {
                     executable
                         .map_or_else(WslExecutable::system, Ok)
                         .and_then(|executable| {
-                            discovery.discover(config, executable, &task_cancellation)
+                            discovery.discover(
+                                config,
+                                executable,
+                                existing_host,
+                                &task_cancellation,
+                            )
                         });
                 if task_cancellation.is_cancelled() {
                     return;
@@ -3322,7 +3360,7 @@ fn default_terminal_geometry() -> TerminalGeometry {
 mod tests {
     use super::*;
     use std::collections::VecDeque;
-    use std::sync::Barrier;
+    use std::sync::{Barrier, atomic::AtomicUsize};
 
     #[derive(Default)]
     struct ManualRefreshRuntime {
@@ -3382,6 +3420,16 @@ mod tests {
 
     struct FixedDiscovery {
         snapshot: HostSnapshot,
+        reused_hosts: AtomicUsize,
+    }
+
+    impl FixedDiscovery {
+        fn new(snapshot: HostSnapshot) -> Self {
+            Self {
+                snapshot,
+                reused_hosts: AtomicUsize::new(0),
+            }
+        }
     }
 
     impl WslDiscovery for FixedDiscovery {
@@ -3389,11 +3437,19 @@ mod tests {
             &self,
             config: WslConfig,
             executable: WslExecutable,
+            existing_host: Option<RuntimeHost>,
             _cancellation: &CancellationToken,
         ) -> Result<HostContext, HostError> {
             let runner: SharedCommandRunner = Arc::new(StdCommandRunner);
+            let host = existing_host.map_or_else(
+                || WslHost::new(config, runner, executable),
+                |host| {
+                    self.reused_hosts.fetch_add(1, Ordering::AcqRel);
+                    host
+                },
+            );
             Ok(HostContext {
-                host: WslHost::new(config, runner, executable),
+                host,
                 snapshot: self.snapshot.clone(),
             })
         }
@@ -5079,18 +5135,16 @@ mod tests {
     #[test]
     fn refresh_deadlines_and_retry_order_are_manually_driven() {
         let runtime = Arc::new(ManualRefreshRuntime::default());
-        let discovery = Arc::new(FixedDiscovery {
-            snapshot: HostSnapshot::test_fixture(
-                "Ubuntu",
-                "boot",
-                42,
-                vec![session::DiscoveredSession::new(
-                    "work",
-                    session::SessionIdentity::new(100, "$1", 200),
-                    0,
-                )],
-            ),
-        });
+        let discovery = Arc::new(FixedDiscovery::new(HostSnapshot::test_fixture(
+            "Ubuntu",
+            "boot",
+            42,
+            vec![session::DiscoveredSession::new(
+                "work",
+                session::SessionIdentity::new(100, "$1", 200),
+                0,
+            )],
+        )));
         let spec = WslHostSpec::available(
             WslConfig::with_distro("Ubuntu").expect("valid config"),
             WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
@@ -5150,20 +5204,62 @@ mod tests {
     }
 
     #[test]
+    fn activation_refreshes_only_ready_hosts_and_reuses_the_admitted_host() {
+        let runtime = Arc::new(ManualRefreshRuntime::default());
+        let discovery = Arc::new(FixedDiscovery::new(HostSnapshot::test_fixture(
+            "Ubuntu",
+            "boot",
+            42,
+            vec![session::DiscoveredSession::new(
+                "work",
+                session::SessionIdentity::new(100, "$1", 200),
+                0,
+            )],
+        )));
+        let spec = WslHostSpec::available(
+            WslConfig::with_distro("Ubuntu").expect("valid config"),
+            WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
+                .expect("absolute WSL path"),
+        );
+        let workspace = Workspace::application_with_services(
+            TerminalAppearance::default(),
+            Some(spec),
+            discovery.clone(),
+            runtime.clone(),
+        );
+
+        assert!(!workspace.refresh_if_ready().expect("disconnected no-op"));
+        workspace.connect_enabled_hosts().expect("connect host");
+        assert!(!workspace.refresh_if_ready().expect("connecting no-op"));
+        runtime.run_next_work();
+        assert_eq!(
+            workspace.snapshot().hosts()[0].connection(),
+            HostConnectionState::Ready
+        );
+
+        assert!(workspace.refresh_if_ready().expect("refresh ready host"));
+        runtime.run_next_work();
+
+        assert_eq!(discovery.reused_hosts.load(Ordering::Acquire), 1);
+        assert_eq!(
+            workspace.snapshot().hosts()[0].connection(),
+            HostConnectionState::Ready
+        );
+    }
+
+    #[test]
     fn cancelling_refresh_invalidates_work_and_restores_disconnected_host() {
         let runtime = Arc::new(ManualRefreshRuntime::default());
-        let discovery = Arc::new(FixedDiscovery {
-            snapshot: HostSnapshot::test_fixture(
-                "Ubuntu",
-                "boot",
-                42,
-                vec![session::DiscoveredSession::new(
-                    "work",
-                    session::SessionIdentity::new(100, "$1", 200),
-                    0,
-                )],
-            ),
-        });
+        let discovery = Arc::new(FixedDiscovery::new(HostSnapshot::test_fixture(
+            "Ubuntu",
+            "boot",
+            42,
+            vec![session::DiscoveredSession::new(
+                "work",
+                session::SessionIdentity::new(100, "$1", 200),
+                0,
+            )],
+        )));
         let spec = WslHostSpec::available(
             WslConfig::with_distro("Ubuntu").expect("valid config"),
             WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")

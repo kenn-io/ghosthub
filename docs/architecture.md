@@ -134,7 +134,10 @@ frame. Missing WSL omits that host. A slow, failed, or unsupported WSL runtime
 changes only the host entry to an unavailable state with Retry and never
 replaces the application shell. The first refresh has a 45-second total budget
 for cold start; later attempts have 30 seconds, in addition to per-command
-timeouts.
+timeouts. Returning focus to a window refreshes a ready WSL inventory, matching
+the Swift app's activation-driven discovery without retrying disconnected or
+failed hosts in a loop. Later refreshes reuse the admitted host capability so
+they perform ordinary inventory reads instead of repeating tmux admission.
 
 Rust keeps backend and authority boundaries structural: the UI package has
 direct dependencies only on workspace, model, and surface, while persistence

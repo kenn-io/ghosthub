@@ -583,6 +583,21 @@ impl RootView {
         })
         .detach();
 
+        cx.observe_window_activation(window, |view, window, cx| {
+            if !window.is_window_active() {
+                return;
+            }
+            match view.workspace.refresh_if_ready() {
+                Ok(true) => cx.notify(),
+                Ok(false) => {}
+                Err(error) => {
+                    view.diagnostic = Some(error.to_string());
+                    cx.notify();
+                }
+            }
+        })
+        .detach();
+
         cx.on_next_frame(window, |view, _window, cx| {
             if let Err(error) = view.workspace.connect_enabled_hosts() {
                 view.diagnostic = Some(error.to_string());
@@ -2167,14 +2182,11 @@ fn tree_sessions(
         .as_ref()
         .filter(|active| active.host_id() == host.id());
 
-    let mut selections = if host.connection() == HostConnectionState::Ready {
-        host.sessions()
-            .iter()
-            .map(|session| SessionSelection::new(host.id(), host.endpoint(), session.name()))
-            .collect::<Vec<_>>()
-    } else {
-        Vec::new()
-    };
+    let mut selections = host
+        .sessions()
+        .iter()
+        .map(|session| SessionSelection::new(host.id(), host.endpoint(), session.name()))
+        .collect::<Vec<_>>();
     for selection in retained
         .iter()
         .filter(|selection| selection.host_id() == host.id())
@@ -2998,7 +3010,7 @@ mod tests {
     }
 
     #[test]
-    fn active_session_stays_in_the_tree_while_its_host_refreshes_or_fails() {
+    fn cached_and_active_sessions_stay_in_the_tree_while_the_host_refreshes_or_fails() {
         let size = GridSize::new(80, 24).expect("valid grid");
         let terminal = WorkspaceContent::Terminal {
             host_id: "wsl".to_owned(),
@@ -3020,9 +3032,11 @@ mod tests {
             );
 
             let rows = tree_sessions(&host, &terminal, &[]);
-            assert_eq!(rows.len(), 1);
-            assert_eq!(rows[0].selection.session(), "demo");
-            assert!(rows[0].active);
+            assert_eq!(rows.len(), 2);
+            assert_eq!(rows[0].selection.session(), "other");
+            assert!(!rows[0].active);
+            assert_eq!(rows[1].selection.session(), "demo");
+            assert!(rows[1].active);
         }
     }
 

@@ -151,6 +151,14 @@ Expiry cancels the active generation and discards late publication. Retry
 supersedes the earlier generation without changing the configured distro,
 binary, socket directory, or identity rules.
 
+When a Ghosthub window becomes active, workspace refreshes a ready WSL host so
+sessions created or removed in another terminal appear without an explicit
+Refresh click. Connecting, disconnected, and unavailable hosts do not start an
+activation retry; their existing Cancel, Connect, and Retry actions remain
+authoritative. Refresh retains the last published session rows while work is in
+flight and reuses the admitted WSL host capability, including its runtime-bound
+tmux verification cache.
+
 Each host command runs in a disposable descendant container: a kill-on-close
 Job Object on Windows and a dedicated process group on Unix. Stdout and stderr
 travel through a bounded fixed-chunk channel into capped capture buffers. On
