@@ -6,7 +6,7 @@ description: Security boundaries and trust assumptions for Ghosthub
 # Threat Model
 
 This document defines the security claims Ghosthub makes and the assumptions
-used to classify security findings. Ghosthub is a native terminal and tmux
+used to classify security findings. Ghosthub is a native terminal and tmux/Herdr
 control plane for one user across machines that user administers. It is not a
 sandbox or a hardened client for attaching to hostile terminal servers.
 
@@ -18,8 +18,8 @@ Ghosthub aims to protect:
   clipboard
 - terminal input and session metadata while they cross the network
 - the session lifecycle boundary: ordinary presentation only attaches or
-  detaches; creation and exact-target session termination require separate,
-  explicit user actions, with confirmation before termination
+  detaches; creation and termination require separate, explicit user actions,
+  with confirmation before tmux Kill and Herdr Stop/Delete
 - app-owned settings and persistence from unintended cross-host or
   cross-worktree mutation
 - application-update integrity, rooted in the reviewed Sparkle Ed25519 key,
@@ -27,8 +27,15 @@ Ghosthub aims to protect:
 
 The main security goals are to use the system SSH trust and encryption model,
 avoid sending local data to a remote pane except through an intentional
-terminal interaction, and keep tmux presentation non-destructive outside the
-user's explicit named-session creation request.
+terminal interaction, and keep tmux and Herdr presentation non-destructive
+outside explicit whole-session lifecycle requests.
+
+Herdr does not expose a stable session-generation identifier. Ghosthub
+revalidates name, state, configuration paths, and the selected host endpoint,
+but does not claim that this prevents a same-name/same-socket replacement race.
+Stop can terminate every process in a session; Delete can permanently remove
+saved shape. Both actions require confirmation, and Delete is never offered for
+the default session.
 
 ## Trust Boundaries
 

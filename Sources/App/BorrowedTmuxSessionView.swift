@@ -1,3 +1,4 @@
+import GhosthubTransport
 import GhosthubTerminal
 import GhosthubTmux
 import SwiftUI
@@ -8,7 +9,7 @@ struct BorrowedTmuxSessionView: View {
     var isRemoteHost: Bool
     var displayTitle: String?
     var connectionState: ConnectionState?
-    var recoveryState: BorrowedTmuxRecoveryState?
+    var recoveryState: NativeSessionRecoveryState?
     var attachmentClosure: BorrowedTmuxAttachmentClosure?
     var sessionClosed: Bool
     var defersTerminalResize: Bool
@@ -29,7 +30,7 @@ struct BorrowedTmuxSessionView: View {
         isRemoteHost: Bool,
         displayTitle: String? = nil,
         connectionState: ConnectionState?,
-        recoveryState: BorrowedTmuxRecoveryState? = nil,
+        recoveryState: NativeSessionRecoveryState? = nil,
         attachmentClosure: BorrowedTmuxAttachmentClosure? = nil,
         sessionClosed: Bool = false,
         defersTerminalResize: Bool = false,

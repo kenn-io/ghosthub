@@ -67,6 +67,10 @@ enum WorkspaceAccessibilityModel {
             hint = "Open this directory workspace."
         case .tmuxSession:
             hint = "Attach to this tmux session."
+        case .herdrSession:
+            hint = row.herdrSessionState == .stopped
+                ? "Restart and attach to this Herdr session."
+                : "Attach to this Herdr session."
         }
         return WorkspaceAccessibilityDescriptor(
             label: row.title,

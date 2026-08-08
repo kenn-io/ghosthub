@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import plistlib
 import pwd
@@ -233,6 +234,79 @@ def test_demo_ssh_uses_only_scratch_configuration(tmp_path: Path) -> None:
     assert settings["stricthostkeychecking"] == "true"
     assert settings.get("proxycommand", "none") == "none"
     assert settings.get("proxyjump", "none") == "none"
+
+
+def test_demo_herdr_emits_marker_framed_realistic_inventory(
+    tmp_path: Path,
+) -> None:
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(mode=0o700)
+    (scratch / ".ghosthub-demo-scratch").touch()
+    env = {
+        **os.environ,
+        "PATH": f"{DEMO / 'bin'}{os.pathsep}{os.environ['PATH']}",
+        "GHOSTHUB_DEMO_SCRATCH": str(scratch),
+    }
+
+    result = run_bash(
+        "printf 'GHOSTHUB_HERDR_JSON\\n'; herdr session list --json",
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    marker, payload = result.stdout.split("\n", maxsplit=1)
+    assert marker == "GHOSTHUB_HERDR_JSON"
+    sessions = json.loads(payload)["sessions"]
+    assert [session["name"] for session in sessions if session["running"]] == [
+        "default",
+        "release-review",
+    ]
+    assert sessions[0]["default"] is True
+    assert sessions[2]["running"] is False
+    assert sessions[2]["socket_path"].endswith("/herdr.sock")
+
+
+def test_demo_herdr_lifecycle_updates_observable_inventory(tmp_path: Path) -> None:
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(mode=0o700)
+    (scratch / ".ghosthub-demo-scratch").touch()
+    env = {
+        **os.environ,
+        "PATH": f"{DEMO / 'bin'}{os.pathsep}{os.environ['PATH']}",
+        "GHOSTHUB_DEMO_SCRATCH": str(scratch),
+    }
+
+    stopped = run_bash("herdr session stop release-review --json", env=env)
+    assert stopped.returncode == 0, stopped.stderr
+    assert json.loads(stopped.stdout)["stopped"] is True
+
+    listed = run_bash("herdr session list --json", env=env)
+    sessions = {item["name"]: item for item in json.loads(listed.stdout)["sessions"]}
+    assert sessions["release-review"]["running"] is False
+
+    deleted = run_bash("herdr session delete archived --json", env=env)
+    assert deleted.returncode == 0, deleted.stderr
+    assert json.loads(deleted.stdout)["deleted"] is True
+    listed = run_bash("herdr session list --json", env=env)
+    assert "archived" not in {
+        item["name"] for item in json.loads(listed.stdout)["sessions"]
+    }
+
+
+def test_demo_herdr_requires_staged_scratch_ownership(tmp_path: Path) -> None:
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(mode=0o700)
+    env = {
+        **os.environ,
+        "PATH": f"{DEMO / 'bin'}{os.pathsep}{os.environ['PATH']}",
+        "GHOSTHUB_DEMO_SCRATCH": str(scratch),
+    }
+
+    result = run_bash("herdr session list --json", env=env)
+
+    assert result.returncode == 64
+    assert result.stdout == ""
+    assert "demo scratch is not staged" in result.stderr
 
 @pytest.mark.parametrize(
     ("launcher_shell", "launcher_zdotdir"),

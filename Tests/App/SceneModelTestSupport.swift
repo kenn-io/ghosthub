@@ -1,6 +1,8 @@
+import GhosthubTransport
 import AppKit
 import Combine
 import Foundation
+import GhosthubHerdr
 import GhosthubTestSupport
 import SwiftUI
 import XCTest
@@ -300,9 +302,12 @@ func makeModel(
     configuration: WorkspaceConfiguration = .defaults(),
     terminalRuntime: LibghosttyRuntime = .shared,
     notificationService: any NotificationService = NotificationServiceStub(),
-    nativeTmuxSurfaceStore: (any TmuxSurfaceStoring)? = nil,
+    nativeTmuxSurfaceStore: (any NativeSessionSurfaceStoring)? = nil,
+    nativeHerdrSurfaceStore: (any NativeSessionSurfaceStoring)? = nil,
     nativeTmuxPathProvider:
     (@Sendable () -> Result<ResolvedTmuxBinary, TmuxBinaryError>)? = nil,
+    nativeHerdrPathProvider: (@Sendable (CommandHost)
+        -> Result<String, HerdrCommandError>)? = nil,
     localKwtPathProvider: @escaping @Sendable () -> String? = {
         KwtBinaryLocator.bundledPath()
     },
@@ -339,6 +344,16 @@ func makeModel(
     },
     worktreeMutationCoordinator: WorktreeMutationCoordinator =
         WorktreeMutationCoordinator(),
+    herdrLifecycleCoordinator: HerdrSessionLifecycleCoordinator =
+        HerdrSessionLifecycleCoordinator(),
+    herdrSessionRecordReader:
+    @escaping WorkspaceSceneModel.HerdrSessionRecordReading = { name, _ in
+        .failure(.sessionMissing(name))
+    },
+    herdrSessionMutator:
+    @escaping WorkspaceSceneModel.HerdrSessionMutating = { _, record, _ in
+        .success(record)
+    },
     kwtPullRequestLister:
     @escaping WorkspaceSceneModel.KwtPullRequestLister = {
         projectIdentity, host in
@@ -366,6 +381,8 @@ func makeModel(
     },
     tmuxSessionDiscovery: @escaping
     WorkspaceSceneModel.TmuxSessionDiscovery = { _ in .success([]) },
+    herdrSessionDiscovery: @escaping
+    WorkspaceSceneModel.HerdrSessionDiscovery = { _ in .unavailable },
     tmuxExactSessionProbe: @escaping
     WorkspaceSceneModel.TmuxSessionExactProbe = { _ in .success(false) },
     tmuxSessionKiller: @escaping
@@ -421,7 +438,7 @@ func makeModel(
         .seconds(16), .seconds(30),
     ],
     tmuxReconnectProbeDeadline: Duration =
-        TmuxSessionReconnectSupervisor.defaultProbeDeadline,
+        SessionReconnectSupervisor.defaultProbeDeadline,
     startServices: Bool = false
 ) throws -> WorkspaceSceneModel {
     return try WorkspaceSceneModel(
@@ -430,7 +447,9 @@ func makeModel(
         terminalRuntime: terminalRuntime,
         notificationService: notificationService,
         nativeTmuxSurfaceStore: nativeTmuxSurfaceStore,
+        nativeHerdrSurfaceStore: nativeHerdrSurfaceStore,
         nativeTmuxPathProvider: nativeTmuxPathProvider,
+        nativeHerdrPathProvider: nativeHerdrPathProvider,
         localKwtPathProvider: localKwtPathProvider,
         remoteTmuxPathProvider: remoteTmuxPathProvider,
         tmuxPresentationStyleProvider: tmuxPresentationStyleProvider,
@@ -441,10 +460,14 @@ func makeModel(
         kwtWorktreeCreator: kwtWorktreeCreator,
         kwtWorktreeRemover: kwtWorktreeRemover,
         worktreeMutationCoordinator: worktreeMutationCoordinator,
+        herdrLifecycleCoordinator: herdrLifecycleCoordinator,
+        herdrSessionRecordReader: herdrSessionRecordReader,
+        herdrSessionMutator: herdrSessionMutator,
         kwtPullRequestLister: kwtPullRequestLister,
         kwtPullRequestImporter: kwtPullRequestImporter,
         kwtProjectRegistration: kwtProjectRegistration,
         tmuxSessionDiscovery: tmuxSessionDiscovery,
+        herdrSessionDiscovery: herdrSessionDiscovery,
         tmuxExactSessionProbe: tmuxExactSessionProbe,
         tmuxSessionKiller: tmuxSessionKiller,
         tmuxSessionIdentityReader: tmuxSessionIdentityReader,
@@ -472,8 +495,8 @@ func makeModel(
 // MARK: - Protocol Stubs
 
 @MainActor
-final class RecordingTmuxSurfaceStore: TmuxSurfaceStoring {
-    let surface: RecordingTmuxPaneSurface
+final class RecordingNativeSessionSurfaceStore: NativeSessionSurfaceStoring {
+    let surface: RecordingNativeSessionPaneSurface
     private(set) var requestedKeys: [SurfaceKey] = []
     private(set) var requestedConfigurations: [TerminalSurfaceConfiguration] = []
     private(set) var removedKeys: [SurfaceKey] = []
@@ -481,19 +504,21 @@ final class RecordingTmuxSurfaceStore: TmuxSurfaceStoring {
     var lastCommand: String? { requestedConfigurations.last?.command }
 
     init(launchError: Error? = nil) {
-        surface = RecordingTmuxPaneSurface(launchError: launchError)
+        surface = RecordingNativeSessionPaneSurface(launchError: launchError)
     }
 
     func paneSurface(
         for key: SurfaceKey,
         configuration: TerminalSurfaceConfiguration
-    ) -> (any TmuxPaneSurfacing)? {
+    ) -> (any NativeSessionPaneSurfacing)? {
         requestedKeys.append(key)
         requestedConfigurations.append(configuration)
         return surface
     }
 
-    func paneSurfaceIfPresent(for _: SurfaceKey) -> (any TmuxPaneSurfacing)? {
+    func paneSurfaceIfPresent(
+        for _: SurfaceKey
+    ) -> (any NativeSessionPaneSurfacing)? {
         requestedConfigurations.isEmpty ? nil : surface
     }
 
@@ -503,7 +528,7 @@ final class RecordingTmuxSurfaceStore: TmuxSurfaceStoring {
 }
 
 @MainActor
-final class RecordingTmuxPaneSurface: TmuxPaneSurfacing {
+final class RecordingNativeSessionPaneSurface: NativeSessionPaneSurfacing {
     var blocksClipboardReads = false
     var tmuxSplitErrorMessage: String?
     var hasEffectiveKeyboardFocus = false

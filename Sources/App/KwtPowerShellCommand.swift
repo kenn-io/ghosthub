@@ -1,3 +1,4 @@
+import GhosthubTransport
 import GhosthubTmux
 
 enum KwtPowerShellCommand {

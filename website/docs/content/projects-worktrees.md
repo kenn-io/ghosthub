@@ -16,8 +16,8 @@ locally and a matching managed helper on remote macOS or Linux hosts.
 
 Start with an existing Git checkout on the target host.
 
-1. Open the **+** menu beside the local Mac or a remote macOS or Linux host.
-2. Choose **Add Project**.
+1. Expand the local Mac or a remote macOS or Linux host.
+2. Select the **+** beside **Projects**.
 3. Enter the checkout's absolute path on that host.
 4. Confirm the registration.
 

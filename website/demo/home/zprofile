@@ -1,5 +1,6 @@
 # Copied to $SCRATCH/home/.zprofile by stage.sh. The demo app's login shells
-# source this, which routes kwt to the shim and tmux to the demo socket dir.
+# source this, which routes Herdr to the fixture, kwt to its staged helper,
+# and tmux to the demo socket dir.
 if [ -n "${GHOSTHUB_DEMO_ROOT:-}" ]; then
   export PATH="$GHOSTHUB_DEMO_ROOT/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 fi

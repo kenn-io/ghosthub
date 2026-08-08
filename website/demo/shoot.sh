@@ -75,7 +75,7 @@ notifications.post(
         "expectKind": environment["GHOSTHUB_DEMO_EXPECT_KIND"] ?? "",
     ]
 )
-let deadline = Date(timeIntervalSinceNow: 30)
+let deadline = Date(timeIntervalSinceNow: 60)
 while acknowledgement.result == nil && Date() < deadline {
     RunLoop.current.run(
         mode: .default,
@@ -225,6 +225,7 @@ if [[ "${GHOSTHUB_DEMO_EXE_ONLY:-}" == "1" ]]; then
   exit 0
 fi
 
+if [[ "${GHOSTHUB_DEMO_TABS_ONLY:-}" != "1" ]]; then
 echo "==> controller: unmatched palette commands fail validation"
 unmatched_command="__ghosthub_missing_command__"
 unmatched_error="$scratch/unmatched-command.error"
@@ -238,22 +239,26 @@ demo_input escape
 echo "==> hero: active coding-agent worktree"
 palette "fix-reconnect-backoff"
 sleep 5
-# The group and project disclosure controls are deliberately compact. Their
-# rendered positions are stable because the demo window has a fixed 1600×1000
-# frame, while SwiftUI does not expose those two controls as pressable nodes on
-# every supported macOS build.
-demo_input click "80,666"
-sleep 0.5
-demo_input click "32,628"
+# The Projects disclosure control is deliberately compact. Its rendered
+# position is stable because the demo window has a fixed 1600×1000 frame,
+# while SwiftUI does not expose it as a pressable node on every supported
+# macOS build. Leave the default-expanded Herdr group open above it. The
+# controller uses AppKit's bottom-left coordinate origin.
+demo_input click "32,489"
 sleep 0.5
 capture_state hero.png
 
 echo "==> guide: ordinary worktree session"
 palette "add-session-filters"
 sleep 4
-demo_input click "32,492"
-sleep 0.5
+# Select the running default Herdr row so its discoverable lifecycle menu
+# affordance remains visible while the palette names the available actions.
+# AppKit uses a bottom-left coordinate origin for the fixed demo window.
+demo_input click "120,578"
+sleep 2
+palette "Herdr" false
 capture_state guide-sessions.png
+demo_input escape
 
 echo "==> guide: remote host settings"
 palette "Open Hosts Settings" true sheet
@@ -288,27 +293,44 @@ prepare_command_window() {
   fi
   demo_input frame "160,145,1200,760"
   sleep 1
-  if [[ "$select" == "press" ]]; then
+  if [[ "$select" == "row" ]]; then
+    case "$query" in
+      add-session-filters)
+        demo_input click "32,222"
+        sleep 0.5
+        demo_input click "80,155"
+        ;;
+      docbank-export) demo_input click "80,603" ;;
+      release-watch) demo_input click "80,558" ;;
+      scratch) demo_input click "80,515" ;;
+      test-matrix) demo_input click "80,470" ;;
+      *)
+        echo "error: no fixed demo row for $query" >&2
+        return 1
+        ;;
+    esac
+  elif [[ "$select" == "press" ]]; then
     demo_input press "$query"
-  else
+  elif [[ "$select" == "palette" ]]; then
     palette "$query"
   fi
   sleep 3
-  palette "Hide Sidebar"
+  demo_input hide-sidebar
 }
 
 echo "==> guide: six-window tmux command center"
-prepare_command_window "fix-reconnect-backoff" false
-prepare_command_window "add-session-filters"
-prepare_command_window "scratch"
-prepare_command_window "docbank-export"
-prepare_command_window "release-watch"
-prepare_command_window "test-matrix"
+prepare_command_window "fix-reconnect-backoff" false none
+prepare_command_window "add-session-filters" true row
+prepare_command_window "scratch" true row
+prepare_command_window "docbank-export" true row
+prepare_command_window "release-watch" true row
+prepare_command_window "test-matrix" true row
 matrix_raw="$scratch/screenshots-raw/guide-command-center.png"
 "$demo_root/capture.sh" "$matrix_raw" matrix
 process_matrix_capture "$matrix_raw" "$out_dir/guide-command-center.png"
 sips -g pixelWidth -g pixelHeight \
   "$out_dir/guide-command-center.png" | tail -2
+fi
 
 prepare_command_tab() {
   local query="$1" create="${2:-true}" select="${3:-palette}"
@@ -318,24 +340,59 @@ prepare_command_tab() {
   fi
   demo_input frame "110,145,1500,820"
   sleep 1
-  if [[ "$select" == "press" ]]; then
+  if [[ "$select" == "row" ]]; then
+    case "$query" in
+      fix-reconnect-backoff)
+        demo_input click "32,365"
+        sleep 0.5
+        demo_input click "32,327"
+        sleep 0.5
+        demo_input click "80,258"
+        ;;
+      add-session-filters)
+        demo_input click "32,293"
+        sleep 0.5
+        demo_input click "32,252"
+        sleep 0.5
+        demo_input click "80,174"
+        ;;
+      docbank-export) demo_input click "80,613" ;;
+      release-watch) demo_input click "80,569" ;;
+      scratch) demo_input click "80,525" ;;
+      test-matrix) demo_input click "80,481" ;;
+      *)
+        echo "error: no fixed demo tab row for $query" >&2
+        return 1
+        ;;
+    esac
+  elif [[ "$select" == "press" ]]; then
     demo_input press "$query"
   else
     palette "$query"
   fi
   sleep 3
-  palette "Hide Sidebar"
 }
 
 echo "==> guide: six-tab tmux workspace"
 demo_input new-window
 sleep 2
-prepare_command_tab "fix-reconnect-backoff" false
-prepare_command_tab "add-session-filters"
-prepare_command_tab "scratch"
-prepare_command_tab "docbank-export"
-prepare_command_tab "release-watch"
-prepare_command_tab "test-matrix"
+if [[ "${GHOSTHUB_DEMO_TABS_ONLY:-}" != "1" ]]; then
+  # The preceding command-center capture leaves the shared Projects and
+  # agentsview disclosures expanded. Normalize the fresh window to the
+  # collapsed state used by the focused tabs-only workflow.
+  demo_input frame "110,145,1500,820"
+  demo_input click "32,283"
+  sleep 0.5
+  demo_input click "32,365"
+  sleep 0.5
+fi
+prepare_command_tab "fix-reconnect-backoff" false row
+prepare_command_tab "add-session-filters" true row
+prepare_command_tab "scratch" true row
+prepare_command_tab "docbank-export" true row
+prepare_command_tab "release-watch" true row
+prepare_command_tab "test-matrix" true row
+demo_input hide-sidebar
 capture_state guide-native-tabs.png
 
 echo "==> guide: passive session activity indicator"

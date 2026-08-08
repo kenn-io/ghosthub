@@ -1,4 +1,5 @@
 import Foundation
+import GhosthubTransport
 import GhosthubTmux
 import Testing
 @testable import GhosthubApp
@@ -477,7 +478,7 @@ struct SSHConfigurationResolverTests {
             "PreferredAuthentications \"publickey,password\""
         ))
         #expect(contents.contains("UseKeychain \"yes\""))
-        let parsed = TmuxBinaryResolver.runProcess(
+        let parsed = AccountCommandRunner.runProcess(
             executable: "/usr/bin/ssh",
             arguments: ["-G"] + snapshot.arguments + ["--", "example.invalid"],
             timeout: 5

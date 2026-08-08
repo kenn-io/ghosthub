@@ -14,14 +14,14 @@ import { RELEASES_URL } from '../config';
 
 const title = 'How to use Ghosthub';
 const description =
-  'A visual tour of connected tmux sessions, automatic SSH reconnect, '
+  'A visual tour of connected tmux and Herdr sessions, automatic SSH reconnect, '
   + 'worktrees, the Command Palette, native tabs and windows, and terminal configuration.';
 
 const imageWidths = [640, 960, 1280, 1600];
 const imageSizes = '(max-width: 900px) calc(100vw - 3rem), 900px';
 const imageAlt = {
   sessions:
-    'Ghosthub workspace showing local sessions, projects, worktrees, and a remote host in the sidebar',
+    'Ghosthub workspace showing Tmux Sessions, Herdr Sessions, Projects, and a remote host in the sidebar',
   hosts: 'Ghosthub Hosts settings with a configured remote GPU host',
   worktree:
     'Ghosthub new worktree sheet listing available local and remote branches',
@@ -41,25 +41,32 @@ const imageAlt = {
       <p class="eyebrow">Five-minute guide</p>
       <h1>How to use Ghosthub</h1>
       <p class="lead">
-        Ghosthub creates and attaches to any tmux session across your Mac and
-        SSH hosts, with no Git setup required. It also manages worktree-bound
-        sessions created from branches and GitHub pull requests. If SSH drops,
-        it retries and reattaches to the same exact session automatically.
+        Ghosthub attaches to tmux and Herdr sessions across your Mac and SSH
+        hosts, with no Git setup required. It creates ordinary tmux and Herdr
+        sessions and manages tmux-backed worktrees from branches and GitHub
+        pull requests. If SSH drops, it probes and reattaches to the same exact
+        running session automatically.
+      </p>
+      <p>
+        Herdr is not an alternative to Ghosthub. Run Herdr and tmux side by
+        side, then use Ghosthub to discover and open both while each
+        multiplexer keeps ownership of its own session world.
       </p>
       <p class="docs-callout">
         Looking for detailed setup and reference material? Visit the{' '}
         <a href="/docs/">Ghosthub Docs</a>.
       </p>
-      <p class="promise" aria-label="Automatic SSH reconnect plus tmux reattach">
+      <p class="promise" aria-label="Automatic SSH reconnect plus exact session reattach">
         <span class="promise-icon" aria-hidden="true">↻</span>
         <span>Automatic SSH reconnect</span>
         <i aria-hidden="true">+</i>
-        <span>tmux reattach</span>
+        <span>Exact session reattach</span>
       </p>
       <div class="requirements" aria-label="Requirements">
         <span>Apple Silicon</span>
         <span>macOS 26+</span>
         <span>tmux 3.2+</span>
+        <span>Herdr optional</span>
       </div>
       <InstallCommand />
     </div>
@@ -79,27 +86,42 @@ const imageAlt = {
       <div class="container step-copy">
         <p class="number">01</p>
         <div>
-          <h2>Open a tmux session</h2>
+          <h2>Open a session</h2>
           <p>
             Launch Ghosthub and expand your Mac under{' '}
-            <strong>Hosts</strong>. Existing tmux sessions appear
-            automatically alongside projects and worktrees. Select one to
-            attach with an ordinary tmux client.
+            <strong>Hosts</strong>. Existing sessions appear under{' '}
+            <strong>Tmux Sessions</strong> and <strong>Herdr Sessions</strong>,
+            followed by tmux-backed projects and worktrees. Select one to
+            attach with its ordinary whole-session client.
           </p>
           <p>
-            Use the <strong>+</strong> menu to create a named session or add
-            an existing project. The command palette offers the same actions,
-            plus commands to open any discovered session.
+            There is no either-or decision: Ghosthub presents Herdr alongside
+            tmux. Herdr still owns its workspaces, tabs, panes, history, key
+            bindings, and processes; Ghosthub keeps its tmux and worktree
+            workflows available at the same time.
           </p>
           <p>
-            Switching between hosts, worktrees, and sessions keeps each opened
-            terminal connected, so returning picks up where you left off. Press
-            <kbd>⌘W</kbd> to detach only the active terminal; your work keeps
-            running in tmux. After a session connects, a small accent
+            Select the <strong>+</strong> beside <strong>Tmux Sessions</strong>{' '}
+            or, when Herdr is installed, <strong>Herdr Sessions</strong>. Each
+            action creates on that exact host. The Command Palette offers the
+            same actions, plus commands for every discovered session.
+          </p>
+          <p>
+            Running Herdr sessions can be stopped after confirmation; stopped
+            rows stay visible so you can restart their saved shape, or delete a
+            stopped non-default session. Closing or switching away still only
+            detaches—the lifecycle actions are always separate. See{' '}
+            <a href="/docs/sessions/">Sessions</a> for reconnect behavior,
+            lifecycle controls, and backend ownership.
+          </p>
+          <p>
+            Switching between tmux sessions and worktrees keeps each opened
+            tmux terminal connected, so returning picks up where you left off.
+            Press <kbd>⌘W</kbd> to detach only the active terminal; your work
+            keeps running in tmux. After a tmux session connects, a small accent
             indicator appears beside its row when Ghosthub observes recent
-            tmux scrollback progress. See <a href="/docs/sessions/">Sessions</a>{' '}
-            for session lifecycle, activity indicators, and confirmed kill
-            controls.
+            scrollback progress. See <a href="/docs/sessions/">Sessions</a>{' '}
+            for activity indicators and lifecycle details.
           </p>
           <p>
             With tmux 3.4+, use <kbd>⌘D</kbd> to split right or{' '}
@@ -186,9 +208,9 @@ const imageAlt = {
         <div>
           <h2>Add project and worktree context</h2>
           <p>
-            Open the <strong>+</strong> menu beside your local Mac or a remote
-            macOS or Linux host, choose <strong>Add Project</strong>, and enter
-            the absolute path to an existing checkout. Ghosthub registers that
+            Expand your local Mac or a remote macOS or Linux host, select the{' '}
+            <strong>+</strong> beside <strong>Projects</strong>, and enter the
+            absolute path to an existing checkout. Ghosthub registers that
             repository through its bundled or managed{' '}
             <a href="https://kwt.sh">kwt</a> helper without scanning the machine.
           </p>
@@ -355,10 +377,10 @@ const imageAlt = {
       <p class="eyebrow">That’s it</p>
       <h2>Your sessions keep running</h2>
       <p>
-        Ghosthub never replaces tmux windows, panes, history, or plugins.
+        Ghosthub works with tmux and Herdr rather than replacing either one.
         Quit the app or install an update and the sessions remain where you
-        left them. Ghosthub restores each exact session it can confirm and
-        keeps retrying offline SSH hosts as inventory refreshes.
+        left them. Ghosthub restores each exact running session it can confirm
+        and keeps retrying offline SSH hosts as inventory refreshes.
       </p>
       <a data-download href={RELEASES_URL}>Download Ghosthub <span aria-hidden="true">&rarr;</span></a>
     </div>

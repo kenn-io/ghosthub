@@ -64,7 +64,9 @@ struct WorkspaceSidebarDisclosureState: Equatable {
     }
 
     private static func isExpandedByDefault(_ key: String) -> Bool {
-        key.hasPrefix("host:") || key.hasPrefix("sessions:")
+        key.hasPrefix("host:")
+            || key.hasPrefix("sessions:")
+            || key.hasPrefix("herdr-sessions:")
     }
 
     static func host(_ hostID: UUID) -> String {
@@ -73,6 +75,10 @@ struct WorkspaceSidebarDisclosureState: Equatable {
 
     static func sessions(_ hostID: UUID) -> String {
         "sessions:\(hostID.uuidString)"
+    }
+
+    static func herdrSessions(_ hostID: UUID) -> String {
+        "herdr-sessions:\(hostID.uuidString)"
     }
 
     static func projects(_ hostID: UUID) -> String {

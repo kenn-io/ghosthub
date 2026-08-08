@@ -4,6 +4,7 @@ import GhosthubWorkspace
 public enum WorkspaceSidebarOrderStorage {
     public static let worktreeKey = "workspaceSidebarWorktreeOrderV1"
     public static let tmuxSessionKey = "workspaceSidebarTmuxSessionOrderV1"
+    public static let herdrSessionKey = "workspaceSidebarHerdrSessionOrderV1"
 
     public static func worktreeRawValue(
         in defaults: UserDefaults = .standard
@@ -216,6 +217,7 @@ public enum WorkspaceSidebarRowIcon: Equatable, Sendable {
     case worktree
     case directoryWorkspace
     case tmuxSession
+    case herdrSession
 
     public var systemImageName: String {
         switch self {
@@ -235,8 +237,16 @@ public enum WorkspaceSidebarRowIcon: Equatable, Sendable {
             return "folder.badge.gearshape"
         case .tmuxSession:
             return "terminal"
+        case .herdrSession:
+            return "rectangle.3.group"
         }
     }
+}
+
+public enum WorkspaceSidebarGroup: Equatable, Sendable {
+    case tmuxSessions
+    case herdrSessions
+    case projects
 }
 
 public struct WorkspaceSidebarRow: Equatable, Identifiable, Sendable {
@@ -249,6 +259,10 @@ public struct WorkspaceSidebarRow: Equatable, Identifiable, Sendable {
     public var worktreeStatus: WorktreeRowStatus?
     /// Direct tmux discovery state for non-worktree workspace rows.
     public var sessionIsRunning: Bool
+    /// Populated only for Herdr session rows.
+    public var herdrSessionState: HerdrSessionState?
+    /// Populated only for Herdr session rows.
+    public var herdrSessionIsDefault: Bool?
 
     public var id: WorkspaceNavigationTarget { target }
 
@@ -259,7 +273,9 @@ public struct WorkspaceSidebarRow: Equatable, Identifiable, Sendable {
         subtitle: String? = nil,
         indentLevel: Int = 0,
         worktreeStatus: WorktreeRowStatus? = nil,
-        sessionIsRunning: Bool = false
+        sessionIsRunning: Bool = false,
+        herdrSessionState: HerdrSessionState? = nil,
+        herdrSessionIsDefault: Bool? = nil
     ) {
         self.target = target
         self.icon = icon
@@ -268,6 +284,8 @@ public struct WorkspaceSidebarRow: Equatable, Identifiable, Sendable {
         self.indentLevel = indentLevel
         self.worktreeStatus = worktreeStatus
         self.sessionIsRunning = sessionIsRunning
+        self.herdrSessionState = herdrSessionState
+        self.herdrSessionIsDefault = herdrSessionIsDefault
     }
 }
 
@@ -276,12 +294,28 @@ public struct WorkspaceSidebarSection: Equatable, Identifiable, Sendable {
     public var projects: [WorkspaceSidebarProject]
     public var directoryWorkspaceRows: [WorkspaceSidebarRow]
     public var tmuxSessionRows: [WorkspaceSidebarRow]
+    public var herdrSessionRows: [WorkspaceSidebarRow]
 
     public var id: UUID { host.id }
     public var isEmpty: Bool {
         projects.isEmpty
             && directoryWorkspaceRows.isEmpty
             && tmuxSessionRows.isEmpty
+            && herdrSessionRows.isEmpty
+    }
+
+    public var visibleGroups: [WorkspaceSidebarGroup] {
+        var groups: [WorkspaceSidebarGroup] = []
+        if !tmuxSessionRows.isEmpty {
+            groups.append(.tmuxSessions)
+        }
+        if !herdrSessionRows.isEmpty {
+            groups.append(.herdrSessions)
+        }
+        if !projects.isEmpty || !directoryWorkspaceRows.isEmpty {
+            groups.append(.projects)
+        }
+        return groups
     }
 
     public var row: WorkspaceSidebarRow {
@@ -400,13 +434,17 @@ public enum WorkspaceSidebarModel {
         visibility: WorktreeVisibility = .default,
         tmuxSessionVisibility: TmuxSessionVisibility = TmuxSessionVisibility(),
         worktreeOrderRawValue: String = "",
-        tmuxSessionOrderRawValue: String = ""
+        tmuxSessionOrderRawValue: String = "",
+        herdrSessionOrderRawValue: String = ""
     ) -> [WorkspaceSidebarSection] {
         let worktreeOrder = WorkspaceSidebarOrder(
             rawValue: worktreeOrderRawValue
         )
         let tmuxSessionOrder = WorkspaceSidebarOrder(
             rawValue: tmuxSessionOrderRawValue
+        )
+        let herdrSessionOrder = WorkspaceSidebarOrder(
+            rawValue: herdrSessionOrderRawValue
         )
         return snapshot.hosts.map { host in
             // Discovery only lists the host's default tmux server. A
@@ -471,7 +509,20 @@ public enum WorkspaceSidebarModel {
                         )
                     }
                 )
-                .map { tmuxSessionRow($0, hostID: host.id) }
+                .map { tmuxSessionRow($0, hostID: host.id) },
+                herdrSessionRows: herdrSessionOrder.ordered(
+                    host.herdrSessions.sorted {
+                        $0.name.localizedStandardCompare($1.name)
+                            == .orderedAscending
+                    },
+                    identifiedBy: {
+                        herdrSessionOrderID(
+                            hostID: host.id,
+                            name: $0.name
+                        )
+                    }
+                )
+                .map { herdrSessionRow($0, hostID: host.id) }
             )
         }
     }
@@ -496,6 +547,29 @@ public enum WorkspaceSidebarModel {
         name: String
     ) -> String {
         "\(hostID.uuidString):\(name)"
+    }
+
+    static func herdrSessionOrderID(
+        hostID: UUID,
+        name: String
+    ) -> String {
+        "herdr:\(hostID.uuidString):\(name)"
+    }
+
+    private static func herdrSessionRow(
+        _ session: HerdrSessionSummary,
+        hostID: UUID
+    ) -> WorkspaceSidebarRow {
+        WorkspaceSidebarRow(
+            target: .herdrSession(hostID: hostID, name: session.name),
+            icon: .herdrSession,
+            title: session.name,
+            subtitle: session.state == .running
+                ? "Herdr session"
+                : "Stopped",
+            herdrSessionState: session.state,
+            herdrSessionIsDefault: session.isDefault
+        )
     }
 
     private static func tmuxSessionRow(

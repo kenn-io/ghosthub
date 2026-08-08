@@ -1,3 +1,4 @@
+import GhosthubTransport
 import CryptoKit
 import Darwin
 import Foundation
@@ -85,11 +86,11 @@ enum SSHConnectionPool {
         _ host: SSHHostInfo,
         controlPath: String
     ) -> Bool {
-        let result = TmuxBinaryResolver.runProcessInLoginShell(
+        let result = AccountCommandRunner.runProcessInLoginShell(
             executable: "/usr/bin/ssh",
             arguments: checkArguments(for: host, controlPath: controlPath),
             timeout: 3,
-            accountShell: TmuxBinaryResolver.loginShell()
+            accountShell: AccountCommandRunner.loginShell()
         )
         return result.status == 0
     }

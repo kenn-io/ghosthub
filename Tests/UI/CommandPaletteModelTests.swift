@@ -162,6 +162,52 @@ struct CommandPaletteModelTests {
         #expect(command.shortcut == nil)
     }
 
+    @Test("Herdr lifecycle commands follow availability and session state")
+    func herdrLifecycleCommands() {
+        let hostID = UUID()
+        let host = HostSummary.fixture(
+            id: hostID,
+            herdrSessions: [
+                .init(name: "api", isDefault: false, state: .running),
+                .init(name: "sleeping", isDefault: false, state: .stopped),
+                .init(name: "default", isDefault: true, state: .stopped),
+            ],
+            herdrAvailable: true
+        )
+        let commands = makeCommandPaletteCommands(
+            snapshot: .fixture(hosts: [host]),
+            selection: .init(selectedHostID: hostID)
+        )
+
+        #expect(commands.contains {
+            $0.action == .newHerdrSession(hostID)
+        })
+        #expect(commands.contains {
+            $0.action == .stopHerdrSession(.init(
+                hostID: hostID,
+                name: "api"
+            ))
+        })
+        #expect(commands.contains {
+            $0.action == .restartHerdrSession(.init(
+                hostID: hostID,
+                name: "sleeping"
+            ))
+        })
+        #expect(commands.contains {
+            $0.action == .deleteHerdrSession(.init(
+                hostID: hostID,
+                name: "sleeping"
+            ))
+        })
+        #expect(!commands.contains {
+            $0.action == .deleteHerdrSession(.init(
+                hostID: hostID,
+                name: "default"
+            ))
+        })
+    }
+
     @Test("unavailable sessions omit one-shot theme application")
     func unavailableSessionsOmitThemeApplication() {
         let host = HostSummary.fixture(platform: .macOS)
@@ -622,6 +668,44 @@ struct CommandPaletteModelTests {
         #expect(
             protectedKill.action == .killTmuxSession(protectedSession)
         )
+    }
+
+    @Test("running Herdr sessions expose searchable open and stop commands")
+    func runningHerdrSessionCommands() throws {
+        let host = HostSummary.fixture(
+            name: "Build Box",
+            kind: .remote,
+            platform: .linux,
+            sshDestination: "dev@builder",
+            herdrSessions: [
+                HerdrSessionSummary(name: "api", isDefault: true, state: .running),
+            ]
+        )
+        let commands = makeCommandPaletteCommands(
+            snapshot: .fixture(hosts: [host]),
+            selection: WorkspaceSelection(selectedHostID: host.id)
+        )
+
+        let open = try #require(commands.first {
+            $0.title == "Open Herdr session: api"
+        })
+        #expect(open.action == .openHerdrSession(
+            WorkspaceHerdrSessionSelection(hostID: host.id, name: "api")
+        ))
+        #expect(open.keywords.contains("Build Box"))
+        let stop = try #require(commands.first {
+            $0.title == "Stop Herdr session: api"
+        })
+        #expect(CommandPaletteModel.filteredCommands(
+            commands,
+            query: "api build box"
+        ).map(\.id) == [open.id, stop.id])
+        #expect(!commands.contains { command in
+            command.title.contains("api")
+                && (command.title.localizedCaseInsensitiveContains("kill")
+                    || command.title.localizedCaseInsensitiveContains("theme")
+                    || command.title.localizedCaseInsensitiveContains("delete"))
+        })
     }
 
     @Test("Windows hosts do not offer POSIX project registration")

@@ -4,10 +4,11 @@ This document is the foundational mandate for AI agents (Gemini, Codex, etc.) wo
 
 ## Core Mental Model
 
-Ghosthub is a **native terminal for local and remote tmux fleets** on macOS.
-It gives equal status to two ways of working:
+Ghosthub is a **native terminal for local and remote tmux and Herdr fleets** on
+macOS. It gives equal status to three ways of working:
 
 - Create or attach to any tmux session on a configured host.
+- Create, attach to, stop, restart, or delete Herdr sessions on a supported host.
 - Create tmux sessions bound to git worktrees and manage the worktree lifecycle,
   including imports from branches and GitHub pull requests.
 
@@ -16,8 +17,8 @@ Worktrees are optional; Ghosthub remains fully useful without them.
 - **Hosts:** Every machine is a Host. The local Mac is the default host. Remote machines (macOS/Linux) are added via SSH.
 - **Projects:** A Project is a git repository reported by kwt on a specific Host.
 - **Worktrees:** Projects contain kwt workspaces (standard checkouts or linked git worktrees), each with an exact tmux session name.
-- **Sessions:** Every workspace session and every otherwise-unbound tmux session opens through the same ordinary tmux client. Tmux owns windows, panes, layout, history, and process lifetime.
-- **Attachment:** Ghosthub owns discovery, local/SSH client presentation, keepalives, and reconnect. Closing a presentation detaches. Only the explicit, confirmed Kill Session action may destroy a tmux session.
+- **Sessions:** Worktree sessions and otherwise-unbound tmux sessions open through an ordinary tmux client. Running and stopped Herdr sessions are host inventory; opening a running session attaches, while creating or restarting uses Herdr's launch path. Each backend owns its windows, tabs, panes, layout, history, key bindings, and process lifetime.
+- **Attachment:** Each scene presents at most one native tmux or Herdr client. Ghosthub owns discovery, local/SSH client presentation, keepalives, and reconnect. Closing a presentation detaches. Tmux destruction requires the explicit, confirmed Kill Session action. Herdr Stop and Delete are separate confirmed actions; Restart and Create are constructive actions.
 - **Middleman:** Sessions created by Middleman remain discoverable because they are ordinary sessions on a host tmux server. Ghosthub does not use Middleman as session authority.
 - **Console Panel:** A host-scoped persistent terminal area (e.g., for `roborev`) that is independent of the active worktree.
 
@@ -26,7 +27,10 @@ layer, as subject to direct iteration.
 
 - Kwt's machine-readable CLI is authoritative for project/worktree identity
   and exact tmux session names. Direct `tmux list-sessions` discovery supplies
-  every otherwise-unbound session on each configured host.
+  every otherwise-unbound session on each configured host. Herdr's
+  machine-readable session list independently supplies running and stopped Herdr sessions
+  on the local Mac and remote POSIX hosts; a missing Herdr installation is
+  normal and silent.
 - Packaged builds invoke their revision-pinned bundled kwt for local operations.
   Configured remote macOS and Linux hosts automatically install or update
   Ghosthub's matching revision-pinned managed helper under `~/.ghosthub/`.
@@ -37,6 +41,11 @@ layer, as subject to direct iteration.
   Ghosthub never scans the remote filesystem or edits kwt configuration.
 - Ghosthub never uses `tmux -CC` or reconstructs tmux panes, windows, layouts,
   history, or terminal output in Swift.
+- Ghosthub never reconstructs Herdr workspaces, tabs, panes, history, or
+  terminal output in Swift, and does not use Herdr as worktree authority.
+  Whole-session create, stop, restart, and delete are the only Herdr lifecycle
+  controls. Ghosthub never manages Herdr themes, workspaces, tabs, panes,
+  agents, plugins, installation, updates, configuration, or server-wide state.
 - Ghosthub has no Middleman runtime or API dependency.
 
 ## Source of Truth Hierarchy
@@ -66,8 +75,8 @@ layer, as subject to direct iteration.
 - Never amend commits.
 - Do not leave the app build broken at the end of a turn.
 - If a turn touches Swift app code, terminal integration, `Package.swift`, or bootstrap logic, `make build` must pass before the turn is done.
-- If a turn changes kwt inventory, host resolution, tmux discovery, or native
-  tmux attachment, run `make test-essential-workflows` before claiming the
+- If a turn changes kwt inventory, host resolution, tmux or Herdr discovery,
+  or native session attachment, run `make test-essential-workflows` before claiming the
   change is correct.
 - If a turn touches release packaging, signing, notarization, or `.github/workflows/release.yml`, update `docs/release.md` in the same turn.
 - `RELEASE_VERSION` is the sole source of the current release version outside
@@ -226,7 +235,8 @@ Use non-interactive shell flags so agents do not hang on prompts: `cp -f`,
 
 - `Sources/`: Swift app modules (`GhosthubApp`, `GhosthubUI`,
   `GhosthubWorkspace`, `GhosthubSettings`, `GhosthubTerminal`,
-  `GhosthubTerminalSupport`, `GhosthubPersistence`, `GhosthubTmux`).
+  `GhosthubTerminalSupport`, `GhosthubPersistence`, `GhosthubTransport`,
+  `GhosthubTmux`, `GhosthubHerdr`).
 - `Sources/App/`: Main macOS app logic and UI.
 - `Sources/UI/`: Reusable SwiftUI/AppKit presentation components.
 - `Sources/Workspace/`: Pure workspace, host, project, worktree, and session models.
@@ -234,7 +244,9 @@ Use non-interactive shell flags so agents do not hang on prompts: `cp -f`,
 - `Sources/Terminal/`: `libghostty` integration and surface management.
 - `Sources/TerminalSupport/`: libghostty config/bootstrap support that can compile without the linked library.
 - `Sources/Persistence/`: Database schema, models, and GRDB repositories.
-- `Sources/TmuxControl/`: Native tmux/SSH attachment command model.
+- `Sources/Transport/`: Shared local/SSH command routing and shell helpers.
+- `Sources/Tmux/`: Native tmux attachment command model.
+- `Sources/Herdr/`: Native Herdr discovery and attachment command model.
 - `tools/`: Python-based build, bootstrap (including `libghostty`), and
   packaging automation.
 - `Tests/`: Swift and Python test suites. Python tests are in `Tests/test_*.py`;

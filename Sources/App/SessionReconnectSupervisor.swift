@@ -1,13 +1,13 @@
 import Foundation
 
-enum TmuxReconnectDecision: Sendable {
+enum SessionReconnectDecision: Sendable {
     case retry
     case stop
 }
 
 @MainActor
-final class TmuxSessionReconnectSupervisor {
-    typealias Attempt = @MainActor @Sendable () async -> TmuxReconnectDecision
+final class SessionReconnectSupervisor {
+    typealias Attempt = @MainActor @Sendable () async -> SessionReconnectDecision
     typealias Sleep = @Sendable (Duration) async throws -> Void
 
     nonisolated static let defaultProbeDeadline = Duration.seconds(15)
@@ -27,7 +27,7 @@ final class TmuxSessionReconnectSupervisor {
     }
 
     private enum AttemptRace: Sendable {
-        case decision(TmuxReconnectDecision)
+        case decision(SessionReconnectDecision)
         case deadline
         case cancelled
     }
@@ -122,7 +122,7 @@ final class TmuxSessionReconnectSupervisor {
 
     private func runAttempt(
         _ attempt: @escaping Attempt
-    ) async -> TmuxReconnectDecision {
+    ) async -> SessionReconnectDecision {
         let deadline = probeDeadline
         return await withTaskGroup(of: AttemptRace.self) { group in
             group.addTask {

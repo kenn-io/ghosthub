@@ -1,5 +1,5 @@
 ---
-description: Install Ghosthub and attach to your first local tmux session.
+description: Install Ghosthub and attach to a local tmux or Herdr session.
 icon: lucide/rocket
 ---
 
@@ -15,6 +15,14 @@ Ghosthub currently requires:
 
 The Cmd-D and Cmd-Shift-D pane shortcuts require tmux 3.4 or newer on the
 attached host. With tmux 3.2 or 3.3, use your normal tmux split keys.
+
+Herdr is optional. When its CLI is available on the local Mac or a remote
+POSIX host, Ghosthub also discovers its running and stopped sessions.
+Experimental Windows hosts do not support Herdr.
+
+Ghosthub and Herdr are complementary, not competing choices. Keep using tmux
+and tmux-backed worktrees wherever they fit, run Herdr wherever it fits, and
+open both kinds of session from the same Ghosthub host sidebar.
 
 Native Windows hosts are experimental and have additional requirements. See
 [Remote Hosts](remote-hosts.md#experimental-windows-hosts).
@@ -49,20 +57,24 @@ tmux -V
 
 1. Launch Ghosthub.
 2. Expand your Mac under **Hosts** in the sidebar.
-3. Select an existing tmux session.
+3. Select an existing entry under **Tmux Sessions** or **Herdr Sessions**.
 
-Ghosthub attaches an ordinary tmux client to that session. Existing tmux
-windows, panes, processes, history, key bindings, and plugins stay under tmux's
-control.
+Ghosthub attaches the ordinary whole-session client for that backend. Existing
+tmux windows and panes or Herdr workspaces, tabs, and panes stay under their
+backend's control. Closing the presentation detaches without stopping the
+server.
 
 ## Create a session
 
-1. Open the **+** menu beside your Mac in the sidebar.
-2. Choose **New Session**.
-3. Enter a tmux session name and create it.
+1. Expand your Mac in the sidebar.
+2. Select the **+** beside **Tmux Sessions** or, when available, **Herdr
+   Sessions**.
+3. Enter a session name and create it.
 
 The session is not tied to a Git repository. Close the Ghosthub window or tab
-to detach; your shell and other processes continue running in tmux.
+to detach; your shell and other processes continue running in its multiplexer.
+Stopped Herdr sessions remain visible with a **Stopped** label so you can
+restart their saved shape later.
 
 ## What to do next
 
@@ -75,4 +87,4 @@ to detach; your shell and other processes continue running in tmux.
 !!! note "Worktrees are optional"
 
     You do not need kwt, a Git repository, or a worktree to use Ghosthub as a
-    local and remote tmux session switcher.
+    local and remote tmux or Herdr session switcher.

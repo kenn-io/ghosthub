@@ -1,3 +1,4 @@
+import GhosthubTransport
 import CryptoKit
 import Foundation
 import GhosthubSettings
@@ -103,7 +104,7 @@ struct KwtRemoteInstaller: Sendable {
         self.revision = revision
             ?? KwtBinaryLocator.bundledRemoteRevision(bundle: bundle)
         self.remoteRunner = remoteRunner ?? { host, command in
-            TmuxBinaryResolver.runRemoteLoginShell(
+            AccountCommandRunner.runRemoteLoginShell(
                 host: host,
                 command: command,
                 timeout: 30
@@ -133,7 +134,7 @@ struct KwtRemoteInstaller: Sendable {
         on host: SSHHost,
         ifNeeded: Bool
     ) async throws {
-        guard let info = TmuxHostResolver.parseSSHDestination(
+        guard let info = CommandHostResolver.parseSSHDestination(
             host.sshDestination
         ) else {
             throw KwtRemoteInstallError.invalidHost
@@ -370,7 +371,7 @@ struct KwtRemoteInstaller: Sendable {
         source: URL,
         destination: String
     ) -> (status: Int32, output: String) {
-        let result = TmuxBinaryResolver.runProcessInLoginShell(
+        let result = AccountCommandRunner.runProcessInLoginShell(
             executable: "/usr/bin/scp",
             arguments: uploadArguments(
                 host: host,

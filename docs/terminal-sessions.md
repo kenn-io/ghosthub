@@ -6,16 +6,20 @@ configuration and launcher-terminal environment.
 
 ## Product Boundary
 
-Ghosthub is a native session switcher for tmux servers across the local Mac
-and configured SSH hosts. There are two inventory sources:
+Ghosthub is a native session switcher for tmux and Herdr fleets across the
+local Mac and configured SSH hosts. There are three independent inventory
+sources:
 
 - **kwt workspaces:** projects, worktrees, and registered plain directories
   read from kwt's supported JSON commands, including each workspace's exact
   `session_name`.
 - **unbound sessions:** every other session returned by direct `tmux
   list-sessions` discovery on the host.
+- **Herdr sessions:** running and stopped sessions returned by `herdr session list --json`
+  on the local Mac and remote POSIX hosts.
 
-Both open through the same ordinary tmux client in one libghostty surface. A
+The two tmux-backed sources open through the same ordinary tmux client in one
+libghostty surface. Herdr opens through its ordinary whole-session client. A
 session created by Middleman is visible when it exists on the host tmux server,
 but Ghosthub does not consult Middleman to identify, create, attach, mutate, or
 destroy it.
@@ -24,6 +28,11 @@ Ghosthub may also create one ordinary session when the user explicitly chooses
 New Tmux Session for a host. This is not a separate managed-session type: the
 result immediately joins the same direct tmux inventory and has the same
 detach-only presentation lifecycle as every other session.
+
+Herdr is optional. Exit 127 during its capability or inventory probe is silent
+and does not affect host usability. Invalid output and real command failures
+produce only a host-scoped warning; they never change tmux reachability, kwt
+availability, cached project inventory, or the workspace's blocking state.
 
 ## Native Tmux Attachment
 
@@ -95,6 +104,65 @@ and may apply `reverse` across the client rather than only its status line. The
 persistent override and one-shot action are therefore unavailable for native
 Windows sessions.
 
+## Native Herdr Attachment
+
+Ghosthub resolves `herdr` in the host account's login environment and attaches
+the complete session with `herdr session attach <exact-name>`. Local sessions
+use libghostty's normal macOS login-shell path. Remote sessions use an ordinary
+OpenSSH PTY, the same trusted host configuration and pooled connection as tmux,
+and the remote account login environment. Ghosthub does not use Herdr's own
+remote-client mode.
+
+Herdr owns workspaces, tabs, panes, layout, history, key bindings, terminal
+state, and the processes inside each session. Ghosthub owns discovery,
+whole-session lifecycle requests, and the disposable client presentation. Each
+scene may present either one tmux client or one Herdr client, never both.
+Navigating away, pressing Cmd-W, closing a window, or quitting closes only the
+client. Ghosthub never controls Herdr themes, workspaces, tabs, panes, agents,
+plugins, installation, updates, configuration, or server-wide state.
+
+### Herdr session lifecycle
+
+Ordinary open and restoration use `herdr session attach <exact-name>` only for
+inventory reported as running. Create and Restart are explicitly different:
+they use plain `herdr` for the default session or `herdr --session <name>` for a
+named session, which launches a missing server and attaches immediately.
+
+Stop and Delete are separate confirmed operations. Immediately before either
+command, Ghosthub reruns `herdr session list --json` through the current local
+or SSH endpoint and checks the expected running/stopped state and configuration
+paths. Stop terminates every process while retaining Herdr's saved shape;
+Restart recreates processes within that shape. Delete requires a stopped,
+non-default session and permanently removes its saved state. The default
+session may be stopped and restarted but never deleted.
+
+Herdr provides no stable generation ID. The socket path is derived from the
+name, so path revalidation catches a relocated configuration root but cannot
+prove that a same-name replacement is the original session. Three accepted
+races remain: a create collision after the final absence check, same-socket
+replacement after revalidation, and `session attach` resurrecting a server
+that stops after running discovery. A failed client launch may therefore leave
+a newly started server behind. Discovery reconciles the resulting state.
+
+An intentional stop suppresses reconnect in every scene presenting that exact
+host/name before the command runs. Success detaches all matching clients;
+failure performs a fresh probe before recovery can resume. A scene never
+blindly reconnects and resurrects a session another scene deliberately stopped.
+
+Discovery, reconnect probes, and attachment remove inherited Herdr routing
+identity before resolving or starting the client. The scrubbed variables are
+`HERDR_ENV`, `HERDR_SESSION`, `HERDR_SOCKET_PATH`,
+`HERDR_CLIENT_SOCKET_PATH`, `HERDR_PANE_ID`, `HERDR_TAB_ID`,
+`HERDR_WORKSPACE_ID`, `HERDR_BIN_PATH`, `HERDR_ACTIVE_WORKSPACE_ID`,
+`HERDR_ACTIVE_TAB_ID`, `HERDR_ACTIVE_PANE_ID`, and
+`HERDR_ACTIVE_PANE_CWD`. This is the Herdr equivalent of removing `TMUX` and
+`TMUX_PANE`: launching Ghosthub from inside a multiplexer must not redirect a
+new client into the enclosing session.
+
+Live validation and automated fixtures must isolate Herdr with
+`XDG_CONFIG_HOME`. `HERDR_CONFIG_PATH` alone is insufficient because it does
+not relocate all session state.
+
 ## Relaunch Restoration
 
 Quitting Ghosthub or installing an update only drops disposable clients. When
@@ -125,14 +193,19 @@ sessions between restored geometry or tab groups. The manifest is removed only
 after every saved window has begun attach-only restoration in one live assigned
 scene; native scene restoration still supplies geometry and tab grouping when
 available. Once assigned, the scene model's complete logical descriptor replaces
-any delayed same-ID native payload with stale navigation or tmux data.
+any delayed same-ID native payload with stale navigation or presentation data.
 An ordinary local session must be present in direct discovery before Ghosthub
 runs the exact `attach-session` path. Remote sessions use that same rule and,
 after a confirmed attachment, Ghosthub's native reconnect supervisor owns any
 transport recovery.
+An ordinary Herdr session restores only after a completed fresh Herdr probe on
+the descriptor's exact host reports that exact name as running. A missing or
+stopped session remains pending and never substitutes another name. Because
+Herdr's attach command can restart a server that stops after the final probe,
+Ghosthub accepts only that narrow probe-to-launch race.
 Offline or otherwise unavailable targets remain pending and retry when normal
 inventory refreshes publish new state. Navigating the window elsewhere cancels
-the pending target. If a scene was captured without an active tmux
+the pending target. If a scene was captured without an active native
 presentation, Ghosthub restores its host and selected project, worktree, or
 directory navigation but does not open or create the workspace session until
 the user explicitly selects it.
@@ -241,8 +314,8 @@ failures remain retryable and are presented to the user.
 Remote clients use the user's OpenSSH configuration and add server keepalives.
 If OpenSSH requires interactive authentication, Ghosthub shows its challenge
 in a native secure-entry sheet and passes the session-only response through a
-private FIFO. Later inventory and tmux clients reuse that app-session control
-connection and remain noninteractive. Every control connection is named for
+private FIFO. Later inventory, tmux, and Herdr clients reuse that app-session
+control connection and remain noninteractive. Every control connection is named for
 one app launch and supervised by a parent-held descriptor that stays open for
 the app lifetime, so an app crash terminates the SSH master and a later launch
 cannot reuse its socket.
@@ -253,8 +326,13 @@ in an app-owned, per-attachment temporary file before it exits. The native
 coordinator consumes that status instead of relying on libghostty's outer macOS
 login process, whose reported status may be zero even when nested OpenSSH
 exited 255.
+For both backends, status 0 is a clean detach, OpenSSH status 255 is transport
+loss, and another nonzero status is a non-transport client failure. This relies
+on the Herdr client's documented detach status; like tmux, a client-originated
+255 may briefly enter recovery, then self-correct when the exact probe reports
+the session absent.
 After a confirmed attachment exits with OpenSSH's transport/setup status 255,
-that retained presentation's native supervisor probes the real SSH and tmux
+that presentation's native supervisor probes the real SSH and backend
 path at attempt-start intervals of 1, 2, 4, 8, 16, and then 30 seconds. Each
 probe has a 15-second end-to-end deadline; its runtime counts against the
 interval, and an overrun clamps the next delay to zero. Attempts never overlap.
@@ -268,18 +346,21 @@ creates or flashes a terminal surface. Confirmed presence launches one new
 attach-only client. Confirmed absence ends a default-socket or protected-socket
 presentation only when that exact session had already been established; an
 unconfirmed interrupted kwt establishment may rerun its one-shot creation path.
-A reachable non-transport tmux failure is presented as unable to attach rather
-than retried indefinitely. A clean detach does not start recovery.
+A reachable non-transport client failure is presented as unable to attach
+rather than retried indefinitely. A clean tmux or Herdr detach does not start
+recovery. Herdr recovery shares only the supervisor policy: each attempt uses
+its own exact Herdr session probe, stops when Herdr is unavailable or the name
+is absent, and never creates a terminal surface for an unsuccessful probe.
 
 Transport failures continue retrying automatically, with no more than 30
-seconds between attempt starts, even while their retained presentation is
-inactive. Authentication and host-key review failures pause that presentation's
+seconds between attempt starts, even while a retained tmux presentation is
+inactive. Authentication and host-key review failures pause the presentation's
 automatic retry and appear in the existing native recovery flow when it is
 active. Successful recovery resumes the same supervisor. If SSH is already
 reachable when that flow checks again, **Retry** resumes the supervisor as well
-as refreshing host inventory. Only the recovery flow opened for that tmux
-request may resume it; authentication started from ordinary host inventory
-never reopens a session. Dismissing it leaves an honest
+as refreshing host inventory. Only the recovery flow opened for that native
+session request may resume it; authentication started from ordinary host
+inventory never reopens a session. Dismissing it leaves an honest
 **Connection needs attention** presentation with **Review Connection** when
 native review is available; reopening that review retains the active recovery
 request and can resume its supervisor after success. **Host Settings** remains
@@ -299,9 +380,10 @@ build 22523 or newer. Older ConPTY builds preserve keyboard input but consume
 psmux mouse-reporting sequences; supporting them would require the separate
 psmux `ssh -T` wrapper and is not part of this experiment.
 
-Tmux remains alive on the remote host while the network is unavailable. After
-connectivity returns, the client reattaches to the same exact session and tmux
-renders its authoritative state. Copy-mode and programs on configured remote
+Tmux and Herdr servers remain alive on the remote host while the network is
+unavailable. After connectivity returns, the client reattaches to the same
+exact session and its backend renders authoritative state. Copy-mode and
+programs on configured remote
 hosts may write the Mac clipboard through OSC 52 when allowed by the user's
 `clipboard-write` configuration, so remote tmux copy behaves like local tmux
 copy. Remote terminal surfaces cannot read the local Mac clipboard through
@@ -313,8 +395,10 @@ unsafe unbracketed text can reach the PTY.
 
 ## Inventory and Startup
 
-At startup Ghosthub loads kwt project/worktree inventory and tmux session
-inventory for every resolvable host. The initial content view remains in an
+At startup Ghosthub loads kwt project/worktree inventory, tmux session
+inventory, and optional Herdr inventory for every supported resolvable host.
+Herdr is not probed on experimental Windows hosts. The initial content view
+remains in an
 explicit loading state until kwt returns, so the empty onboarding state never
 flashes before existing workspaces are known. That loaded empty state is
 informational: kwt owns project registration, and Ghosthub does not expose a
@@ -330,8 +414,8 @@ inventory runs for a configured macOS or Linux host, Ghosthub ensures its exact
 revisioned helper is installed under the remote user's `~/.ghosthub/`
 directory. A provisioning failure is reported for that host and disables its
 worktree actions without blocking tmux inventory. On macOS and Linux, a fresh
-helper has an empty project registry: **Add Project** in the host's **+** menu
-passes one user-supplied absolute checkout path to kwt's noninteractive
+helper has an empty project registry: the **+** beside the host's **Projects**
+group passes one user-supplied absolute checkout path to kwt's noninteractive
 registration command, then refreshes inventory. Immediately before
 registration, Ghosthub re-resolves the host ID and rejects the operation if its
 endpoint changed while Add Project was open. No filesystem scan occurs.
@@ -437,10 +521,15 @@ session model and die with the app process.
   at session creation, through the explicit shared-session override, or by the
   active-session command, never as a client-local libghostty overlay.
 - Keep mutable Ghosthub app state under `~/.ghosthub/`.
+- Before nested discovery or attachment, remove `TMUX` and `TMUX_PANE` for
+  tmux and the documented Herdr control variables for Herdr so an enclosing
+  multiplexer cannot redirect the client.
 - Do not read or depend on Ghostty.app global config.
 - Do not install Ghosthub-owned layout, zoom, or tab management. Native tmux
   owns those interactions. Explicit app shortcuts may request a semantic tmux
   operation against the active attachment, such as pane splitting.
+- Do not install Herdr workspace, tab, or pane keybindings. The whole-session
+  Herdr client receives ordinary terminal input unchanged.
 - Do not disable libghostty shell integration to work around keybinding
   bugs.
 

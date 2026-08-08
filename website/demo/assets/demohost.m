@@ -17,11 +17,17 @@ static NSString *const DemoInputNotification =
     @"com.ghosthub.demo.input";
 static NSString *const DemoInputAcknowledgement =
     @"com.ghosthub.demo.input.ack";
+static __weak NSWindow *DemoControlledWindow;
 
 @interface DemoController : NSObject
 @end
 
 static NSWindow *DemoRootWindow(void);
+
+static NSWindow *DemoEventWindow(void) {
+  NSWindow *root = DemoRootWindow();
+  return root.attachedSheet ?: root ?: [NSApp keyWindow] ?: [NSApp mainWindow];
+}
 
 static NSString *DemoHostName(id self, SEL _cmd) {
   return @"studio.local";
@@ -29,7 +35,7 @@ static NSString *DemoHostName(id self, SEL _cmd) {
 
 static BOOL DemoSendKey(NSString *characters, unsigned short keyCode,
                         NSEventModifierFlags modifiers) {
-  NSWindow *window = [NSApp keyWindow] ?: [NSApp mainWindow];
+  NSWindow *window = DemoEventWindow();
   if (window == nil) return NO;
   NSTimeInterval now = [NSProcessInfo processInfo].systemUptime;
   NSEvent *down = [NSEvent keyEventWithType:NSEventTypeKeyDown
@@ -107,7 +113,7 @@ static BOOL DemoClick(NSPoint point) {
 }
 
 static BOOL DemoInsertText(NSString *text) {
-  id responder = [NSApp keyWindow].firstResponder;
+  id responder = DemoEventWindow().firstResponder;
   if (![responder respondsToSelector:
           @selector(insertText:replacementRange:)]) return NO;
   [responder insertText:text
@@ -213,7 +219,21 @@ static BOOL DemoPalettePostcondition(NSString *kind,
 }
 
 static NSWindow *DemoRootWindow(void) {
-  NSWindow *window = [NSApp keyWindow] ?: [NSApp mainWindow];
+  NSWindow *window = DemoControlledWindow;
+  if (window == nil || !window.isVisible) {
+    window = [NSApp keyWindow] ?: [NSApp mainWindow];
+  }
+  if (window == nil) {
+    for (NSWindow *candidate in NSApp.orderedWindows) {
+      if (candidate.isVisible && !candidate.isSheet &&
+          candidate.sheetParent == nil && candidate.parentWindow == nil &&
+          candidate.level == NSNormalWindowLevel &&
+          candidate.contentView != nil) {
+        window = candidate;
+        break;
+      }
+    }
+  }
   while (window.sheetParent != nil) {
     window = window.sheetParent;
   }
@@ -525,7 +545,10 @@ static void DemoCapture(NSString *path, BOOL matrix) {
                 success:sent
                 message:sent ? @"escape sent" : @"no active window"];
     } else if ([action isEqualToString:@"new-window"]) {
-      NSUInteger windowCount = DemoWorkspaceWindows().count;
+      NSArray<NSWindow *> *existingWorkspaceWindows = DemoWorkspaceWindows();
+      NSUInteger windowCount = existingWorkspaceWindows.count;
+      NSSet<NSWindow *> *existingWindows =
+          [NSSet setWithArray:existingWorkspaceWindows];
       NSMenuItem *newWindow = DemoMenuItemForShortcut(
           @"New Window", @"n", NSEventModifierFlagCommand);
       if (newWindow == nil) {
@@ -546,8 +569,16 @@ static void DemoCapture(NSString *path, BOOL matrix) {
         dispatch_after(
             dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC),
             dispatch_get_main_queue(), ^{
-              BOOL created =
-                  DemoWorkspaceWindows().count > windowCount;
+              NSArray<NSWindow *> *workspaceWindows = DemoWorkspaceWindows();
+              BOOL created = workspaceWindows.count > windowCount;
+              if (created) {
+                for (NSWindow *candidate in workspaceWindows) {
+                  if (![existingWindows containsObject:candidate]) {
+                    DemoControlledWindow = candidate;
+                    break;
+                  }
+                }
+              }
               NSString *message = created
                   ? @"workspace window created"
                   : [NSString stringWithFormat:
@@ -565,6 +596,8 @@ static void DemoCapture(NSString *path, BOOL matrix) {
     } else if ([action isEqualToString:@"new-tab"]) {
       NSWindow *rootWindow = DemoRootWindow();
       NSUInteger tabCount = rootWindow.tabGroup.windows.count;
+      NSSet<NSWindow *> *existingWindows =
+          [NSSet setWithArray:DemoWorkspaceWindows()];
       NSMenuItem *newTab = DemoMenuItemForShortcut(
           @"New Tab", @"t", NSEventModifierFlagCommand);
       if (newTab == nil) {
@@ -586,7 +619,26 @@ static void DemoCapture(NSString *path, BOOL matrix) {
             dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC),
             dispatch_get_main_queue(), ^{
               NSUInteger currentCount =
-                  DemoRootWindow().tabGroup.windows.count;
+                  rootWindow.tabGroup.windows.count;
+              if (currentCount <= tabCount) {
+                for (NSWindow *candidate in DemoWorkspaceWindows()) {
+                  if (candidate != rootWindow &&
+                      ![existingWindows containsObject:candidate]) {
+                    [rootWindow addTabbedWindow:candidate
+                                         ordered:NSWindowAbove];
+                    DemoControlledWindow = candidate;
+                    currentCount = rootWindow.tabGroup.windows.count;
+                    break;
+                  }
+                }
+              } else {
+                for (NSWindow *candidate in rootWindow.tabGroup.windows) {
+                  if (![existingWindows containsObject:candidate]) {
+                    DemoControlledWindow = candidate;
+                    break;
+                  }
+                }
+              }
               BOOL created = currentCount > tabCount;
               NSString *message = created
                   ? @"workspace tab created"
@@ -646,7 +698,11 @@ static void DemoCapture(NSString *path, BOOL matrix) {
                            parts[2].doubleValue, parts[3].doubleValue);
       }
       NSWindow *window = DemoRootWindow();
-      if (window != nil) [window setFrame:frame display:YES];
+      if (window != nil) {
+        DemoControlledWindow = window;
+        [window setFrame:frame display:YES];
+        [window makeKeyAndOrderFront:nil];
+      }
       [self acknowledge:requestID
                 success:window != nil
                 message:window != nil ? @"window framed"

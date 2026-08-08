@@ -1,3 +1,4 @@
+import GhosthubTransport
 import Foundation
 import GhosthubSettings
 import GhosthubTestSupport
@@ -17,7 +18,7 @@ private actor RemovalPreflightHold {
 
     func verify(
         selection: WorkspaceTmuxSessionSelection,
-        host: TmuxHost
+        host: CommandHost
     ) async throws -> TmuxSessionIdentity {
         callCount += 1
         if callCount == 1 {
@@ -278,8 +279,8 @@ struct WorkspaceWorktreeRemovalTests {
         }
 
         let firstLoads = LockedValue(0)
-        let firstSurfaces = RecordingTmuxSurfaceStore()
-        let secondSurfaces = RecordingTmuxSurfaceStore()
+        let firstSurfaces = RecordingNativeSessionSurfaceStore()
+        let secondSurfaces = RecordingNativeSessionSurfaceStore()
         let firstModel = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
@@ -401,7 +402,7 @@ struct WorkspaceWorktreeRemovalTests {
             including: canonical
         )
         let coordinator = WorktreeMutationCoordinator()
-        let staleSurfaces = RecordingTmuxSurfaceStore()
+        let staleSurfaces = RecordingNativeSessionSurfaceStore()
         let currentModel = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
@@ -699,7 +700,7 @@ struct WorkspaceWorktreeRemovalTests {
         var snapshot = environment.snapshot
         snapshot.worktrees.append(removable)
         let beforeRemoval = inventory(environment, including: removable)
-        let surfaces = RecordingTmuxSurfaceStore()
+        let surfaces = RecordingNativeSessionSurfaceStore()
         let kills = LockedValue(0)
         let model = try makeModel(
             database: environment.database,
@@ -767,7 +768,7 @@ struct WorkspaceWorktreeRemovalTests {
         var snapshot = environment.snapshot
         snapshot.worktrees = [removable]
         let beforeRemoval = inventory(environment, including: removable)
-        let surfaces = RecordingTmuxSurfaceStore()
+        let surfaces = RecordingNativeSessionSurfaceStore()
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
@@ -835,7 +836,7 @@ struct WorkspaceWorktreeRemovalTests {
         var snapshot = environment.snapshot
         snapshot.worktrees.append(removable)
         let beforeRemoval = inventory(environment, including: removable)
-        let surfaces = RecordingTmuxSurfaceStore()
+        let surfaces = RecordingNativeSessionSurfaceStore()
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
@@ -907,7 +908,7 @@ struct WorkspaceWorktreeRemovalTests {
         var snapshot = environment.snapshot
         snapshot.worktrees.append(removable)
         let beforeRemoval = inventory(environment, including: removable)
-        let surfaces = RecordingTmuxSurfaceStore()
+        let surfaces = RecordingNativeSessionSurfaceStore()
         let kills = LockedValue(0)
         let model = try makeModel(
             database: environment.database,
@@ -974,7 +975,7 @@ struct WorkspaceWorktreeRemovalTests {
         var snapshot = environment.snapshot
         snapshot.worktrees = [removable]
         let beforeRemoval = inventory(environment, including: removable)
-        let surfaces = RecordingTmuxSurfaceStore()
+        let surfaces = RecordingNativeSessionSurfaceStore()
         let removerHold = RemovalPreflightHold()
         let originalDestination = try #require(
             environment.host.sshDestination
@@ -1546,7 +1547,7 @@ struct WorkspaceWorktreeRemovalTests {
         snapshot.worktrees = [worktree]
         let beforeRemoval = inventory(environment, including: worktree)
         let killHold = RemovalPreflightHold()
-        let surfaces = RecordingTmuxSurfaceStore()
+        let surfaces = RecordingNativeSessionSurfaceStore()
         let removals = LockedValue(0)
         let model = try makeModel(
             database: environment.database,

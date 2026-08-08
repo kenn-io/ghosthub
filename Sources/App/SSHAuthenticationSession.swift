@@ -1,3 +1,4 @@
+import GhosthubTransport
 import Darwin
 import Dispatch
 import Foundation
@@ -442,7 +443,7 @@ final class SSHAuthenticationSession: ObservableObject {
             )
             let invocation = Self.processInvocation(
                 sshArguments: sshArguments,
-                accountShell: TmuxBinaryResolver.loginShell()
+                accountShell: AccountCommandRunner.loginShell()
             )
             process.executableURL = invocation.executable
             process.arguments = invocation.arguments
@@ -489,7 +490,7 @@ final class SSHAuthenticationSession: ObservableObject {
         launcherEnvironment: [String: String],
         askPassEnvironment: [String: String]
     ) -> [String: String] {
-        TmuxBinaryResolver.sanitizedProcessEnvironment(launcherEnvironment)
+        AccountCommandRunner.sanitizedProcessEnvironment(launcherEnvironment)
             .merging(askPassEnvironment) { _, new in new }
     }
 

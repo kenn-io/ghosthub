@@ -407,6 +407,8 @@ public struct HostSummary: Identifiable, Equatable, Sendable {
     public var remoteCapabilities: RemoteHostCapabilities?
     public var remoteDiagnostics: [RemoteHostDiagnostic]
     public var tmuxSessions: [TmuxSessionSummary]
+    public var herdrSessions: [HerdrSessionSummary]
+    public var herdrAvailable: Bool
     public var decodedConnectionState: HostConnectionState?
     public var transientOverride: HostConnectionState?
     public var operationAvailability:
@@ -429,6 +431,8 @@ public struct HostSummary: Identifiable, Equatable, Sendable {
         remoteCapabilities: RemoteHostCapabilities? = nil,
         remoteDiagnostics: [RemoteHostDiagnostic] = [],
         tmuxSessions: [TmuxSessionSummary] = [],
+        herdrSessions: [HerdrSessionSummary] = [],
+        herdrAvailable: Bool = false,
         decodedConnectionState: HostConnectionState? = nil,
         transientOverride: HostConnectionState? = nil,
         operationAvailability:
@@ -450,6 +454,8 @@ public struct HostSummary: Identifiable, Equatable, Sendable {
         self.remoteCapabilities = remoteCapabilities
         self.remoteDiagnostics = remoteDiagnostics
         self.tmuxSessions = tmuxSessions
+        self.herdrSessions = herdrSessions
+        self.herdrAvailable = herdrAvailable
         self.decodedConnectionState = decodedConnectionState
         self.transientOverride = transientOverride
         self.operationAvailability = operationAvailability

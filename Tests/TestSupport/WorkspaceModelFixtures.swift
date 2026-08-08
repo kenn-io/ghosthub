@@ -131,6 +131,8 @@ public extension HostSummary {
         remoteCapabilities: RemoteHostCapabilities? = nil,
         remoteDiagnostics: [RemoteHostDiagnostic] = [],
         tmuxSessions: [TmuxSessionSummary] = [],
+        herdrSessions: [HerdrSessionSummary] = [],
+        herdrAvailable: Bool = false,
         decodedConnectionState: HostConnectionState? = nil,
         transientOverride: HostConnectionState? = nil,
         operationAvailability:
@@ -151,6 +153,8 @@ public extension HostSummary {
             remoteCapabilities: remoteCapabilities,
             remoteDiagnostics: remoteDiagnostics,
             tmuxSessions: tmuxSessions,
+            herdrSessions: herdrSessions,
+            herdrAvailable: herdrAvailable,
             decodedConnectionState:
             decodedConnectionState,
             transientOverride: transientOverride,

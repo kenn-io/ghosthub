@@ -103,7 +103,10 @@ func waitUntil(
 /// Polls a MainActor-isolated condition until it returns true or the timeout expires.
 @MainActor
 func waitUntilMainActor(
-    timeout: Duration = .seconds(5),
+    // Swift Testing runs suites concurrently, so a package-wide run can spend
+    // several seconds scheduling other MainActor-isolated tests before this
+    // condition is evaluated again.
+    timeout: Duration = .seconds(10),
     pollInterval: Duration = .milliseconds(10),
     sourceLocation: SourceLocation = #_sourceLocation,
     _ condition: @escaping @MainActor () async -> Bool

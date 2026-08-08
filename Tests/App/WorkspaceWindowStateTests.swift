@@ -1,3 +1,4 @@
+import GhosthubTransport
 import Foundation
 import GhosthubUI
 import GhosthubWorkspace
@@ -202,6 +203,206 @@ struct WorkspaceWindowStateTests {
         ) == state)
     }
 
+    @Test("Herdr descriptor round-trips through scene state")
+    func herdrDescriptorRoundTrips() throws {
+        let state = WorkspaceWindowState(
+            windowID: UUID(),
+            navigation: WorkspaceNavigationDescriptor(
+                hostKey: "local",
+                projectKey: nil,
+                worktreeGeneration: nil
+            ),
+            tmux: nil,
+            herdr: WorkspaceHerdrDescriptor(
+                hostKey: "local",
+                sessionName: "editor"
+            )
+        )
+
+        let encoded = try JSONEncoder().encode(state)
+        let decoded = try JSONDecoder().decode(
+            WorkspaceWindowState.self,
+            from: encoded
+        )
+
+        #expect(decoded == state)
+        #expect(decoded.herdr?.sessionName == "editor")
+    }
+
+    @Test("invalid Herdr descriptors are rejected")
+    func invalidHerdrDescriptorsAreRejected() {
+        let fixture = RestorationFixture.local(sessionName: "editor")
+        let invalid = [
+            WorkspaceHerdrDescriptor(hostKey: "local", sessionName: " "),
+            WorkspaceHerdrDescriptor(hostKey: " ", sessionName: "editor"),
+            WorkspaceHerdrDescriptor(hostKey: "remote", sessionName: "editor"),
+        ]
+
+        for descriptor in invalid {
+            let state = WorkspaceWindowState(
+                windowID: UUID(),
+                navigation: WorkspaceNavigationDescriptor(
+                    hostKey: "local",
+                    projectKey: nil,
+                    worktreeGeneration: nil
+                ),
+                tmux: nil,
+                herdr: descriptor
+            )
+            #expect(
+                WorkspaceWindowRestorationResolver.resolve(
+                    state,
+                    in: fixture.snapshot,
+                    herdrFreshHostIDs: [fixture.selection.selectedHostID]
+                ) == .invalid
+            )
+        }
+    }
+
+    @Test("capture persists Herdr only beside matching host navigation")
+    func captureValidatesHerdrNavigation() {
+        let fixture = RestorationFixture.local(sessionName: "editor")
+        let hostID = fixture.selection.selectedHostID
+        let otherHostID = UUID()
+        var snapshot = fixture.snapshot
+        snapshot.hosts.append(HostSummary(
+            id: otherHostID,
+            configKey: "builder",
+            name: "Builder",
+            kind: .remote,
+            platform: .linux,
+            sshDestination: "builder.example.test"
+        ))
+        let hostOnly = WorkspaceSelection(selectedHostID: hostID)
+        let activeHerdr = WorkspaceHerdrSessionSelection(
+            hostID: hostID,
+            name: "editor"
+        )
+
+        let valid = WorkspaceWindowState.capture(
+            windowID: UUID(),
+            selection: hostOnly,
+            activeTmux: nil,
+            activeHerdr: activeHerdr,
+            snapshot: snapshot
+        )
+        let belowHost = WorkspaceWindowState.capture(
+            windowID: UUID(),
+            selection: fixture.selection,
+            activeTmux: nil,
+            activeHerdr: activeHerdr,
+            snapshot: snapshot
+        )
+        let mismatchedHost = WorkspaceWindowState.capture(
+            windowID: UUID(),
+            selection: hostOnly,
+            activeTmux: nil,
+            activeHerdr: WorkspaceHerdrSessionSelection(
+                hostID: otherHostID,
+                name: "editor"
+            ),
+            snapshot: snapshot
+        )
+
+        #expect(valid.herdr == WorkspaceHerdrDescriptor(
+            hostKey: "local",
+            sessionName: "editor"
+        ))
+        #expect(valid.tmux == nil)
+        #expect(belowHost.navigation?.projectKey != nil)
+        #expect(belowHost.herdr == nil)
+        #expect(mismatchedHost.navigation?.hostKey == "local")
+        #expect(mismatchedHost.herdr == nil)
+    }
+
+    @Test("capture refuses contradictory native presentations")
+    func captureRefusesContradictoryPresentations() {
+        let fixture = RestorationFixture.local(sessionName: "editor")
+        let hostID = fixture.selection.selectedHostID
+        let state = WorkspaceWindowState.capture(
+            windowID: UUID(),
+            selection: WorkspaceSelection(selectedHostID: hostID),
+            activeTmux: WorkspaceTmuxSessionSelection(
+                hostID: hostID,
+                name: "editor"
+            ),
+            activeHerdr: WorkspaceHerdrSessionSelection(
+                hostID: hostID,
+                name: "review"
+            ),
+            snapshot: fixture.snapshot
+        )
+
+        #expect(state.navigation?.hostKey == "local")
+        #expect(state.tmux == nil)
+        #expect(state.herdr == nil)
+    }
+
+    @Test("Herdr restoration requires fresh exact inventory")
+    func herdrRestorationRequiresFreshExactInventory() {
+        let fixture = RestorationFixture.local(sessionName: "editor")
+        let hostID = fixture.selection.selectedHostID
+        var snapshot = fixture.snapshot
+        snapshot.hosts[0].herdrSessions = [
+            HerdrSessionSummary(name: "editor", isDefault: false, state: .running),
+        ]
+        let selection = WorkspaceSelection(selectedHostID: hostID)
+        let state = WorkspaceWindowState(
+            windowID: UUID(),
+            navigation: WorkspaceNavigationDescriptor(
+                hostKey: "local",
+                projectKey: nil,
+                worktreeGeneration: nil
+            ),
+            tmux: nil,
+            herdr: WorkspaceHerdrDescriptor(
+                hostKey: "local",
+                sessionName: "editor"
+            )
+        )
+
+        #expect(
+            WorkspaceWindowRestorationResolver.resolve(
+                state,
+                in: snapshot
+            ) == .pending(selection: selection)
+        )
+
+        var absent = snapshot
+        absent.hosts[0].herdrSessions = []
+        #expect(
+            WorkspaceWindowRestorationResolver.resolve(
+                state,
+                in: absent,
+                herdrFreshHostIDs: [hostID]
+            ) == .pending(selection: selection)
+        )
+
+        var stopped = snapshot
+        stopped.hosts[0].herdrSessions[0].state = .stopped
+        #expect(
+            WorkspaceWindowRestorationResolver.resolve(
+                state,
+                in: stopped,
+                herdrFreshHostIDs: [hostID]
+            ) == .pending(selection: selection)
+        )
+
+        #expect(
+            WorkspaceWindowRestorationResolver.resolve(
+                state,
+                in: snapshot,
+                herdrFreshHostIDs: [hostID]
+            ) == .ready(
+                selection: selection,
+                presentation: .herdr(WorkspaceHerdrSessionSelection(
+                    hostID: hostID,
+                    name: "editor"
+                ))
+            )
+        )
+    }
+
     @Test("same-ID stale update payloads are rewritten")
     func staleUpdatePayloadRequiresRewrite() {
         let windowID = UUID()
@@ -323,7 +524,10 @@ struct WorkspaceWindowStateTests {
             WorkspaceWindowRestorationResolver.resolve(
                 state,
                 in: fixture.snapshot
-            ) == .ready(selection: fixture.selection, tmux: nil)
+            ) == .ready(
+                selection: fixture.selection,
+                presentation: nil
+            )
         )
     }
 
@@ -412,7 +616,10 @@ struct WorkspaceWindowStateTests {
             WorkspaceWindowRestorationResolver.resolve(
                 state,
                 in: fixture.snapshot
-            ) == .ready(selection: fixture.selection, tmux: nil)
+            ) == .ready(
+                selection: fixture.selection,
+                presentation: nil
+            )
         )
     }
 
@@ -434,7 +641,7 @@ struct WorkspaceWindowStateTests {
 
         #expect(result == .ready(
             selection: after.selection,
-            tmux: after.tmuxSelection
+            presentation: .tmux(after.tmuxSelection)
         ))
     }
 
@@ -497,7 +704,7 @@ struct WorkspaceWindowStateTests {
         )
         #expect(
             WorkspaceWindowRestorationResolver.resolve(state, in: snapshot)
-                == .ready(selection: selection, tmux: tmux)
+                == .ready(selection: selection, presentation: .tmux(tmux))
         )
     }
 
@@ -619,7 +826,7 @@ struct WorkspaceWindowStateTests {
                         selectedHostID: snapshot.hosts[0].id,
                         selectedProjectID: snapshot.projects[0].id
                     ),
-                    tmux: nil
+                    presentation: nil
                 )
         )
     }

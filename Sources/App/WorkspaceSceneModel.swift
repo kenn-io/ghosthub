@@ -1,5 +1,7 @@
+import GhosthubTransport
 @preconcurrency import Combine
 import Foundation
+import GhosthubHerdr
 import OSLog
 import SwiftUI
 import GhosthubPersistence
@@ -50,16 +52,50 @@ enum TmuxSessionThemeError: Error, Equatable, LocalizedError {
     }
 }
 
-struct WorkspaceInventoryRefreshProgress: Equatable {
-    var kwtCompleted = false
-    var tmuxCompleted = false
+enum HerdrSessionPresentationError: Error, Equatable, LocalizedError {
+    case unavailable
+    case sessionExists(String)
+    case sessionMissing(String)
+    case sessionNotRunning(String)
+    case sessionNotStopped(String)
+    case operationPending(String)
 
-    var isComplete: Bool {
-        kwtCompleted && tmuxCompleted
+    var errorDescription: String? {
+        switch self {
+        case .unavailable:
+            "Herdr is unavailable on this host."
+        case let .sessionExists(name):
+            "A Herdr session named “\(name)” already exists."
+        case let .sessionMissing(name):
+            "Herdr session “\(name)” no longer exists."
+        case let .sessionNotRunning(name):
+            "Herdr session “\(name)” is not running."
+        case let .sessionNotStopped(name):
+            "Herdr session “\(name)” is not stopped."
+        case let .operationPending(name):
+            "Another operation is already changing “\(name)”."
+        }
     }
 }
 
-enum BorrowedTmuxRecoveryState: Equatable {
+enum HerdrSessionLifecycleRequestError: Error, Equatable, LocalizedError {
+    case hostChanged(String)
+
+    var errorDescription: String? {
+        switch self {
+        case let .hostChanged(name):
+            "The connection for the host containing “\(name)” changed."
+        }
+    }
+}
+
+struct WorkspaceInventoryRefreshProgress: Equatable {
+    var kwtCompleted = false
+    var tmuxCompleted = false
+    var herdrCompleted = false
+}
+
+enum NativeSessionRecoveryState: Equatable {
     case reconnecting(message: String)
     case needsAttention(message: String, canReviewConnection: Bool)
 
@@ -196,44 +232,53 @@ final class WorktreeMutationCoordinator {
 @MainActor
 final class WorkspaceSceneModel: ObservableObject {
     typealias KwtInventoryLoader = @Sendable (
-        TmuxHost
+        CommandHost
     ) async throws -> KwtHostInventory
     typealias KwtRemoteProvisioner = @Sendable (
         SSHHost
     ) async throws -> Void
     typealias KwtWorktreeCreator = @Sendable (
-        WorktreeCreateRequest, String, TmuxHost
+        WorktreeCreateRequest, String, CommandHost
     ) async throws -> Void
     typealias KwtWorktreeRemover = @Sendable (
-        String, String, String, TmuxHost
+        String, String, String, CommandHost
     ) async throws -> Void
     typealias KwtBranchLister = @Sendable (
-        String, TmuxHost
+        String, CommandHost
     ) async throws -> [WorktreeBranchCandidate]
     typealias KwtPullRequestLister = @Sendable (
-        String, TmuxHost
+        String, CommandHost
     ) async throws -> [PullRequestCandidate]
     typealias KwtPullRequestImporter = @Sendable (
-        String, String, TmuxHost
+        String, String, CommandHost
     ) async throws -> KwtPullRequestImportResult
     typealias KwtProjectRegistration = @Sendable (
-        String, TmuxHost
+        String, CommandHost
     ) async throws -> KwtProjectRecord
     typealias TmuxSessionDiscovery = @Sendable (
-        TmuxHost
+        CommandHost
     ) -> Result<[DiscoveredTmuxSession], TmuxBinaryError>
+    typealias HerdrSessionDiscovery = @Sendable (
+        CommandHost
+    ) -> HerdrDiscoveryResult
+    typealias HerdrSessionRecordReading = @Sendable (
+        String, CommandHost
+    ) async -> Result<HerdrSessionRecord, HerdrSessionLifecycleError>
+    typealias HerdrSessionMutating = @Sendable (
+        HerdrSessionLifecycleAction, HerdrSessionRecord, CommandHost
+    ) async -> Result<HerdrSessionRecord, HerdrSessionLifecycleError>
     typealias TmuxSessionExactProbe = @Sendable (
         TmuxSessionProbeTarget
     ) -> Result<Bool, TmuxBinaryError>
     typealias TmuxSessionKilling = @Sendable (
-        WorkspaceTmuxSessionSelection, TmuxSessionIdentity, TmuxHost
+        WorkspaceTmuxSessionSelection, TmuxSessionIdentity, CommandHost
     ) async throws -> Void
     typealias TmuxSessionIdentityReading = @Sendable (
-        WorkspaceTmuxSessionSelection, TmuxHost
+        WorkspaceTmuxSessionSelection, CommandHost
     ) async throws -> TmuxSessionIdentity
     typealias TmuxSessionStyling = @Sendable (
         TmuxPresentationStyle, WorkspaceTmuxSessionSelection,
-        TmuxSessionIdentity, TmuxHost
+        TmuxSessionIdentity, CommandHost
     ) async throws -> Void
     typealias SSHHostProbeRunner = @Sendable (
         SSHHostInfo, String
@@ -246,7 +291,7 @@ final class WorkspaceSceneModel: ObservableObject {
     }
     private var tmuxDiscoveryEnabled = false
     private var isApplyingInventoryOverlay = false
-    private var inventoryHosts: [UUID: TmuxHost] = [:]
+    private var inventoryHosts: [UUID: CommandHost] = [:]
     private var tmuxSessionsByHost: [UUID: [TmuxSessionSummary]] = [:]
     private var tmuxReachabilityByHost: [UUID: Bool] = [:]
     private var tmuxLastSeenByHost: [UUID: Date] = [:]
@@ -255,14 +300,24 @@ final class WorkspaceSceneModel: ObservableObject {
     private var inventoryRefreshProgress = WorkspaceInventoryRefreshProgress()
     private var tmuxDiscoveryGeneration = 0
     private var tmuxDiscoveryTask: Task<Void, Never>?
+    private var herdrDiscoveryEnabled = false
+    private var herdrSessionsByHost: [UUID: [HerdrSessionSummary]] = [:]
+    private var herdrAvailabilityByHost: [UUID: Bool] = [:]
+    private var herdrDiscoveryFailuresByHost: [UUID: String] = [:]
+    private var isHerdrDiscoveryLoading = false
+    private var herdrDiscoveryGeneration = 0
+    private var herdrDiscoveryTask: Task<Void, Never>?
+    private var herdrFreshHostIDs: Set<UUID> = []
     private var createdSessionDiscoveryTasks: [UUID: Task<Void, Never>] = [:]
     private var exhaustedCreatedTmuxSessionHandles: Set<UUID> = []
     private var endedCreatedTmuxSessionHandles: Set<UUID> = []
     private var confirmedEndedTmuxSessionHandles: Set<UUID> = []
     private let createdSessionDiscoveryDelays: [Duration]
     private let tmuxSessionProbeBroker: TmuxSessionProbeBroker
+    private let herdrSessionProbeBroker: HerdrSessionProbeBroker
     private let tmuxReconnectIntervals: [Duration]
     private let tmuxReconnectProbeDeadline: Duration
+    private let herdrReconnectSupervisor: SessionReconnectSupervisor
     @Published private(set) var workspaceInventoryState:
         WorkspaceInventoryState = .loading
     @Published private(set) var workspaceInventoryWarning: String?
@@ -277,6 +332,9 @@ final class WorkspaceSceneModel: ObservableObject {
     private var isKwtInventoryLoading = false
     private var ownsWorktreeMutation = false
     private let worktreeMutationCoordinator: WorktreeMutationCoordinator
+    private let herdrLifecycleCoordinator: HerdrSessionLifecycleCoordinator
+    private let herdrSessionRecordReader: HerdrSessionRecordReading
+    private let herdrSessionMutator: HerdrSessionMutating
     private var fencedWorktreeMutationScopes:
         Set<WorktreeMutationCoordinator.Scope> = []
     private var worktreeRemovalTombstones:
@@ -286,11 +344,16 @@ final class WorkspaceSceneModel: ObservableObject {
         ] = [:]
 
     var isWorkspaceInventoryRefreshComplete: Bool {
-        inventoryRefreshProgress.isComplete
+        inventoryRefreshProgress.kwtCompleted
+            && inventoryRefreshProgress.tmuxCompleted
+            && (!herdrDiscoveryEnabled
+                || inventoryRefreshProgress.herdrCompleted)
             && !isKwtInventoryLoading
             && !isTmuxDiscoveryLoading
+            && !isHerdrDiscoveryLoading
             && kwtInventoryFailuresByHost.isEmpty
             && tmuxDiscoveryFailuresByHost.isEmpty
+            && herdrDiscoveryFailuresByHost.isEmpty
     }
 
     var workspaceResourceSummary: WorkspaceResourceSummary {
@@ -345,9 +408,34 @@ final class WorkspaceSceneModel: ObservableObject {
     private(set) var activeBorrowedTmuxLaunchMode:
         TmuxAttachmentLaunchMode?
     @Published private(set) var activeBorrowedTmuxRecoveryState:
-        BorrowedTmuxRecoveryState?
-    @Published private(set) var tmuxConnectionRecoveryRequest:
-        TmuxConnectionRecoveryRequest?
+        NativeSessionRecoveryState?
+    @Published private var borrowedHerdrConnectionStates:
+        [UUID: ConnectionState] = [:]
+    @Published private(set) var activeBorrowedHerdrSelection:
+        WorkspaceHerdrSessionSelection?
+    private var activeBorrowedHerdrHandle: BorrowedHerdrSessionHandle?
+    private var pendingHerdrLaunchOperations:
+        [UUID: HerdrSessionLifecycleCoordinator.Operation] = [:]
+    private var herdrLaunchConfirmationTasks:
+        [UUID: Task<Void, Never>] = [:]
+    private struct FailedHerdrLaunchIntent: Equatable {
+        var selection: WorkspaceHerdrSessionSelection
+        var kind: HerdrSessionLifecycleCoordinator.OperationKind
+    }
+    private var failedHerdrLaunchIntent: FailedHerdrLaunchIntent?
+    @Published private(set) var activeBorrowedHerdrRecoveryState:
+        NativeSessionRecoveryState?
+    private struct SuppressedHerdrStop {
+        var selection: WorkspaceHerdrSessionSelection
+        var reconnectContext: ActiveHerdrReconnectContext?
+    }
+    private var suppressedHerdrStops:
+        [UUID: SuppressedHerdrStop] = [:]
+    var herdrReconnectSupervisorIsRunning: Bool {
+        herdrReconnectSupervisor.isRunning
+    }
+    @Published private(set) var sessionConnectionRecoveryRequest:
+        SessionConnectionRecoveryRequest?
     private enum RemoteTmuxEstablishmentPhase: Equatable {
         case establishingWorkspace
         case establishingProfile(initialCommand: String)
@@ -356,7 +444,7 @@ final class WorkspaceSceneModel: ObservableObject {
     private struct TmuxReconnectContext: Equatable {
         var selection: WorkspaceTmuxSessionSelection
         var handleID: UUID
-        var host: TmuxHost
+        var host: CommandHost
         var phase: RemoteTmuxEstablishmentPhase
         var surfaceExitCode: UInt32?
     }
@@ -376,9 +464,9 @@ final class WorkspaceSceneModel: ObservableObject {
         var handle: BorrowedTmuxSessionHandle
         var launchMode: TmuxAttachmentLaunchMode
         var reconnectContext: TmuxReconnectContext?
-        var recoveryState: BorrowedTmuxRecoveryState?
-        var recoveryRequest: TmuxConnectionRecoveryRequest?
-        let reconnectSupervisor: TmuxSessionReconnectSupervisor
+        var recoveryState: NativeSessionRecoveryState?
+        var recoveryRequest: SessionConnectionRecoveryRequest?
+        let reconnectSupervisor: SessionReconnectSupervisor
         var establishmentConfirmationTask: Task<Void, Never>?
 
         init(
@@ -386,7 +474,7 @@ final class WorkspaceSceneModel: ObservableObject {
             handle: BorrowedTmuxSessionHandle,
             launchMode: TmuxAttachmentLaunchMode,
             reconnectContext: TmuxReconnectContext?,
-            reconnectSupervisor: TmuxSessionReconnectSupervisor
+            reconnectSupervisor: SessionReconnectSupervisor
         ) {
             self.selection = selection
             self.handle = handle
@@ -406,6 +494,13 @@ final class WorkspaceSceneModel: ObservableObject {
         [TmuxPresentationKey: RetainedTmuxPresentation] = [:]
     private var retainedTmuxPresentationKeysByHandle:
         [UUID: TmuxPresentationKey] = [:]
+    private struct ActiveHerdrReconnectContext: Equatable {
+        var selection: WorkspaceHerdrSessionSelection
+        var handleID: UUID
+        var host: CommandHost
+        var surfaceExitCode: UInt32?
+    }
+    private var activeHerdrReconnectContext: ActiveHerdrReconnectContext?
     @Published private(set) var isWorkspaceRestorationPending = false
     @Published private(set) var suppressesAutomaticWorktreeSessionOpen = false
     @Published private var explicitlyDismissedWorktreePresentationIDs:
@@ -470,7 +565,7 @@ final class WorkspaceSceneModel: ObservableObject {
         guard let selection = activeBorrowedTmuxSelection,
               isConnectedActiveTmuxSession(selection),
               let hostSummary = snapshot.host(id: selection.hostID),
-              let host = TmuxHostResolver.resolve(hostSummary),
+              let host = CommandHostResolver.resolve(hostSummary),
               Self.supportsTmuxSessionStyling(host),
               let handle = activeBorrowedTmuxHandle,
               tmuxPresentationStyleProvider(
@@ -626,6 +721,7 @@ final class WorkspaceSceneModel: ObservableObject {
         [UUID: Task<Void, Never>] = [:]
     private let deferredTmuxPresentationRetryDelays: [Duration]
     private var worktreeMutationCancellable: AnyCancellable?
+    private var herdrLifecycleCancellable: AnyCancellable?
     private var activityControllerBacking: ActivityMonitoringController?
     var activityController: ActivityMonitoringController {
         guard let activityControllerBacking else {
@@ -644,6 +740,16 @@ final class WorkspaceSceneModel: ObservableObject {
             )
         }
         return nativeTmuxSessionCoordinatorBacking
+    }
+    private var nativeHerdrSessionCoordinatorBacking:
+        NativeHerdrSessionCoordinator?
+    private var nativeHerdrSessionCoordinator: NativeHerdrSessionCoordinator {
+        guard let nativeHerdrSessionCoordinatorBacking else {
+            preconditionFailure(
+                "native Herdr session coordinator was not initialized"
+            )
+        }
+        return nativeHerdrSessionCoordinatorBacking
     }
     private var activityCancellable: AnyCancellable?
     private var tmuxSessionActivityCancellable: AnyCancellable?
@@ -722,9 +828,12 @@ final class WorkspaceSceneModel: ObservableObject {
         workspaceConfiguration: WorkspaceConfiguration = .defaults(),
         terminalRuntime: LibghosttyRuntime = .shared,
         notificationService: NotificationService,
-        nativeTmuxSurfaceStore: (any TmuxSurfaceStoring)? = nil,
+        nativeTmuxSurfaceStore: (any NativeSessionSurfaceStoring)? = nil,
+        nativeHerdrSurfaceStore: (any NativeSessionSurfaceStoring)? = nil,
         nativeTmuxPathProvider:
         (@Sendable () -> Result<ResolvedTmuxBinary, TmuxBinaryError>)? = nil,
+        nativeHerdrPathProvider: (@Sendable (CommandHost)
+            -> Result<String, HerdrCommandError>)? = nil,
         localKwtPathProvider: @escaping @Sendable () -> String? = {
             KwtBinaryLocator.bundledPath()
         },
@@ -764,6 +873,25 @@ final class WorkspaceSceneModel: ObservableObject {
             )
         },
         worktreeMutationCoordinator: WorktreeMutationCoordinator = .shared,
+        herdrLifecycleCoordinator: HerdrSessionLifecycleCoordinator = .shared,
+        herdrSessionRecordReader:
+        @escaping HerdrSessionRecordReading = { name, host in
+            await Task.detached(priority: .userInitiated) {
+                HerdrSessionLifecycleClient().record(named: name, on: host)
+            }.value
+        },
+        herdrSessionMutator:
+        @escaping HerdrSessionMutating = { action, record, host in
+            await Task.detached(priority: .userInitiated) {
+                let client = HerdrSessionLifecycleClient()
+                return switch action {
+                case .stop:
+                    client.stop(record, on: host)
+                case .delete:
+                    client.delete(record, on: host)
+                }
+            }.value
+        },
         kwtBranchLister: @escaping KwtBranchLister = {
             projectPath, host in
             try await KwtWorktreeClient().branches(
@@ -802,6 +930,9 @@ final class WorkspaceSceneModel: ObservableObject {
                 resolver.discoverSessions(on: info)
             }
         },
+        herdrSessionDiscovery: @escaping HerdrSessionDiscovery = { host in
+            HerdrInventoryClient().discover(on: host)
+        },
         tmuxExactSessionProbe: @escaping TmuxSessionExactProbe = { target in
             TmuxBinaryResolver().sessionExists(
                 name: target.name,
@@ -834,11 +965,12 @@ final class WorkspaceSceneModel: ObservableObject {
             )
         },
         sshHostProbeRunner: @escaping SSHHostProbeRunner = { host, command in
-            TmuxBinaryResolver.runRemoteLoginShellSeparatingStandardError(
+            let output = AccountCommandRunner.runRemoteLoginShellSeparatingStandardError(
                 host: host,
                 command: command,
                 timeout: 10
             )
+            return (output.status, output.stdout, output.stderr)
         },
         sshAuthenticationCoordinator: SSHAuthenticationCoordinator =
             SSHAuthenticationCoordinator(),
@@ -879,7 +1011,7 @@ final class WorkspaceSceneModel: ObservableObject {
             .seconds(16), .seconds(30),
         ],
         tmuxReconnectProbeDeadline: Duration =
-            TmuxSessionReconnectSupervisor.defaultProbeDeadline,
+            SessionReconnectSupervisor.defaultProbeDeadline,
         startServices: Bool = false
     ) throws {
         self.database = database
@@ -889,6 +1021,9 @@ final class WorkspaceSceneModel: ObservableObject {
         )
         self.workspaceConfiguration = workspaceConfiguration
         self.worktreeMutationCoordinator = worktreeMutationCoordinator
+        self.herdrLifecycleCoordinator = herdrLifecycleCoordinator
+        self.herdrSessionRecordReader = herdrSessionRecordReader
+        self.herdrSessionMutator = herdrSessionMutator
         self.sceneSettings = sceneSettings
         self.terminalRuntime = terminalRuntime
         self.kwtInventoryLoader = kwtInventoryLoader
@@ -924,6 +1059,22 @@ final class WorkspaceSceneModel: ObservableObject {
         )
         self.tmuxReconnectIntervals = tmuxReconnectIntervals
         self.tmuxReconnectProbeDeadline = tmuxReconnectProbeDeadline
+        herdrSessionProbeBroker = HerdrSessionProbeBroker(
+            discover: { host in
+                let probe = Task.detached(priority: .utility) {
+                    herdrSessionDiscovery(host)
+                }
+                return await withTaskCancellationHandler {
+                    await probe.value
+                } onCancel: {
+                    probe.cancel()
+                }
+            }
+        )
+        herdrReconnectSupervisor = SessionReconnectSupervisor(
+            intervals: tmuxReconnectIntervals,
+            probeDeadline: tmuxReconnectProbeDeadline
+        )
         self.tmuxSessionKiller = tmuxSessionKiller
         self.tmuxSessionIdentityReader = tmuxSessionIdentityReader
         self.tmuxSessionStyler = tmuxSessionStyler
@@ -1020,6 +1171,25 @@ final class WorkspaceSceneModel: ObservableObject {
             _ = nativeTmuxSessionCoordinator.surface(handle: handle)
             if activeBorrowedTmuxHandle == handle {
                 objectWillChange.send()
+            }
+        }
+        nativeHerdrSessionCoordinatorBacking = NativeHerdrSessionCoordinator(
+            terminalCoordinator: nativeHerdrSurfaceStore
+                ?? terminalCoordinator,
+            herdrPathProvider: nativeHerdrPathProvider ?? {
+                HerdrInventoryClient().resolveExecutable(on: $0)
+            }
+        )
+        nativeHerdrSessionCoordinatorBacking?.onStateChanged = {
+            [weak self] handle, state in
+            self?.nativeHerdrStateChanged(handle: handle, state: state)
+        }
+        nativeHerdrSessionCoordinatorBacking?.onSurfaceReady = {
+            [weak self] handle in
+            guard self?.activeBorrowedHerdrHandle == handle else { return }
+            self?.objectWillChange.send()
+            if self?.activeBorrowedHerdrRecoveryState != nil {
+                self?.prepareActiveBorrowedHerdrSurface()
             }
         }
         activityControllerBacking = ActivityMonitoringController(
@@ -1145,6 +1315,10 @@ final class WorkspaceSceneModel: ObservableObject {
             [weak self] event in
             self?.worktreeMutationEvent(event)
         }
+        herdrLifecycleCancellable = herdrLifecycleCoordinator.events.sink {
+            [weak self] event in
+            self?.herdrLifecycleEvent(event)
+        }
         fencedWorktreeMutationScopes = worktreeMutationCoordinator.scopes
         pendingWorktreeRemovals = worktreeMutationCoordinator.pendingRemovals
         let sshHostsPublisher = configuredSSHHostsPublisher
@@ -1177,6 +1351,7 @@ final class WorkspaceSceneModel: ObservableObject {
             if startServices {
                 startExeHostInventory()
                 startTmuxSessionDiscovery()
+                startHerdrSessionDiscovery()
                 startKwtInventory()
                 syncTerminalConfig()
                 startResourceMonitoringLoop()
@@ -1208,9 +1383,12 @@ final class WorkspaceSceneModel: ObservableObject {
         configuredExeHostsCancellable?.cancel()
         terminalColorsCancellable?.cancel()
         worktreeMutationCancellable?.cancel()
+        herdrLifecycleCancellable?.cancel()
         kwtInventoryTask?.cancel()
         tmuxDiscoveryTask?.cancel()
+        herdrDiscoveryTask?.cancel()
         createdSessionDiscoveryTasks.values.forEach { $0.cancel() }
+        herdrLaunchConfirmationTasks.values.forEach { $0.cancel() }
         deferredTmuxPresentationTasks.values.forEach { $0.cancel() }
         tmuxActivityEnrollmentTasks.values.forEach { $0.cancel() }
         childExitCancellable?.cancel()
@@ -1224,7 +1402,8 @@ final class WorkspaceSceneModel: ObservableObject {
     }
 
     func beginRestoration(_ state: WorkspaceWindowState) {
-        guard state.navigation != nil || state.tmux != nil else { return }
+        guard state.navigation != nil || state.tmux != nil
+            || state.herdr != nil else { return }
         pendingRestoration = state
         isWorkspaceRestorationPending = true
         suppressesAutomaticWorktreeSessionOpen = true
@@ -1250,6 +1429,7 @@ final class WorkspaceSceneModel: ObservableObject {
             windowID: windowID,
             selection: selection,
             activeTmux: activeBorrowedTmuxSelection,
+            activeHerdr: activeBorrowedHerdrSelection,
             snapshot: snapshot
         )
     }
@@ -1305,7 +1485,8 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         switch WorkspaceWindowRestorationResolver.resolve(
             pendingRestoration,
-            in: snapshot
+            in: snapshot,
+            herdrFreshHostIDs: herdrFreshHostIDs
         ) {
         case .invalid:
             cancelPendingRestoration()
@@ -1313,15 +1494,21 @@ final class WorkspaceSceneModel: ObservableObject {
             if let resolvedSelection {
                 applyRestoredSelection(resolvedSelection)
             }
-        case let .ready(resolvedSelection, tmuxSelection):
+        case let .ready(resolvedSelection, presentation):
             applyRestoredSelection(resolvedSelection)
-            if let tmuxSelection {
+            switch presentation {
+            case let .tmux(tmuxSelection):
                 _ = presentTmuxSession(
                     tmuxSelection,
                     launchMode: .attach,
                     intent: .restoreOnly
                 )
                 suppressesAutomaticWorktreeSessionOpen = false
+            case let .herdr(herdrSelection):
+                _ = presentHerdrSession(herdrSelection)
+                suppressesAutomaticWorktreeSessionOpen = false
+            case nil:
+                break
             }
             self.pendingRestoration = nil
             isWorkspaceRestorationPending = false
@@ -1341,7 +1528,7 @@ final class WorkspaceSceneModel: ObservableObject {
     ) {
         guard protectedRestorationProbeTask == nil,
               let hostSummary = snapshot.host(id: tmuxSelection.hostID),
-              let host = TmuxHostResolver.resolve(hostSummary)
+              let host = CommandHostResolver.resolve(hostSummary)
         else { return }
         let probeID = UUID()
         protectedRestorationProbeID = probeID
@@ -1379,7 +1566,7 @@ final class WorkspaceSceneModel: ObservableObject {
                   let currentHostSummary = snapshot.host(
                       id: tmuxSelection.hostID
                   ),
-                  let currentHost = TmuxHostResolver.resolve(
+                  let currentHost = CommandHostResolver.resolve(
                       currentHostSummary
                   )
             else {
@@ -1430,10 +1617,16 @@ final class WorkspaceSceneModel: ObservableObject {
         activeBorrowedTmuxSelection = nil
         activeBorrowedTmuxHandle = nil
         activeBorrowedTmuxLaunchMode = nil
+        cancelHerdrReconnect()
+        failedHerdrLaunchIntent = nil
+        herdrLifecycleCancellable?.cancel()
         kwtInventoryTask?.cancel()
         tmuxDiscoveryTask?.cancel()
+        herdrDiscoveryTask?.cancel()
         createdSessionDiscoveryTasks.values.forEach { $0.cancel() }
         createdSessionDiscoveryTasks.removeAll()
+        herdrLaunchConfirmationTasks.values.forEach { $0.cancel() }
+        herdrLaunchConfirmationTasks.removeAll()
         deferredTmuxPresentationTasks.values.forEach { $0.cancel() }
         deferredTmuxPresentationTasks.removeAll()
         tmuxActivityEnrollmentTasks.values.forEach { $0.cancel() }
@@ -1443,6 +1636,8 @@ final class WorkspaceSceneModel: ObservableObject {
         endedCreatedTmuxSessionHandles.removeAll()
         confirmedEndedTmuxSessionHandles.removeAll()
         nativeTmuxSessionCoordinatorBacking?.shutdown()
+        failPendingHerdrLaunchOperations { _ in true }
+        nativeHerdrSessionCoordinatorBacking?.shutdown()
         sshAuthenticationCoordinator.cancelAll(
             scopeID: sshAuthenticationScopeID
         )
@@ -1458,6 +1653,7 @@ final class WorkspaceSceneModel: ObservableObject {
     func refreshKwtInventory() {
         scheduleKwtInventory()
         scheduleTmuxSessionDiscovery()
+        refreshHerdrSessionDiscovery()
     }
 
     func startKwtInventory() {
@@ -1477,7 +1673,7 @@ final class WorkspaceSceneModel: ObservableObject {
         guard let project = snapshot.project(id: request.projectID),
               snapshot.canCreateWorktree(in: project),
               let hostSummary = snapshot.host(id: project.hostID),
-              let host = TmuxHostResolver.resolve(hostSummary)
+              let host = CommandHostResolver.resolve(hostSummary)
         else {
             throw KwtWorktreeError.projectUnavailable
         }
@@ -1549,7 +1745,7 @@ final class WorkspaceSceneModel: ObservableObject {
         guard let project = snapshot.project(id: projectID),
               snapshot.canCreateWorktree(in: project),
               let hostSummary = snapshot.host(id: project.hostID),
-              let host = TmuxHostResolver.resolve(hostSummary)
+              let host = CommandHostResolver.resolve(hostSummary)
         else {
             throw KwtWorktreeError.projectUnavailable
         }
@@ -1562,7 +1758,7 @@ final class WorkspaceSceneModel: ObservableObject {
         guard let worktree = snapshot.worktree(id: worktreeID),
               let project = snapshot.project(id: worktree.projectID),
               let hostSummary = snapshot.host(id: worktree.hostID),
-              let host = TmuxHostResolver.resolve(hostSummary)
+              let host = CommandHostResolver.resolve(hostSummary)
         else {
             throw KwtWorktreeError.worktreeUnavailable
         }
@@ -1630,12 +1826,12 @@ final class WorkspaceSceneModel: ObservableObject {
             let requestedProject = snapshot.project(id: request.project.id),
             requestedProject.rootPath == request.project.rootPath,
             let hostSummary = snapshot.host(id: requestedWorktree.hostID),
-            let currentHost = TmuxHostResolver.resolve(hostSummary)
+            let currentHost = CommandHostResolver.resolve(hostSummary)
         else {
             throw KwtWorktreeError.worktreeUnavailable
         }
         guard request.confirmedHost.id == requestedWorktree.hostID,
-              let confirmedHost = TmuxHostResolver.resolve(
+              let confirmedHost = CommandHostResolver.resolve(
                   request.confirmedHost
               ),
               currentHost == confirmedHost
@@ -1864,8 +2060,8 @@ final class WorkspaceSceneModel: ObservableObject {
               let currentSummary = snapshot.host(
                   id: request.worktree.hostID
               ),
-              let currentHost = TmuxHostResolver.resolve(currentSummary),
-              let confirmedHost = TmuxHostResolver.resolve(
+              let currentHost = CommandHostResolver.resolve(currentSummary),
+              let confirmedHost = CommandHostResolver.resolve(
                   request.confirmedHost
               )
         else {
@@ -1924,7 +2120,7 @@ final class WorkspaceSceneModel: ObservableObject {
         guard let project = snapshot.project(id: projectID),
               snapshot.canImportPullRequest(in: project),
               let hostSummary = snapshot.host(id: project.hostID),
-              let host = TmuxHostResolver.resolve(hostSummary)
+              let host = CommandHostResolver.resolve(hostSummary)
         else {
             throw KwtPullRequestError.projectUnavailable
         }
@@ -1949,7 +2145,7 @@ final class WorkspaceSceneModel: ObservableObject {
         guard let project = snapshot.project(id: request.projectID),
               snapshot.canImportPullRequest(in: project),
               let hostSummary = snapshot.host(id: project.hostID),
-              let host = TmuxHostResolver.resolve(hostSummary)
+              let host = CommandHostResolver.resolve(hostSummary)
         else {
             throw KwtPullRequestError.projectUnavailable
         }
@@ -2158,7 +2354,7 @@ final class WorkspaceSceneModel: ObservableObject {
         guard !isApplyingInventoryOverlay else { return }
         let resolved = Dictionary(
             uniqueKeysWithValues: snapshot.hosts.compactMap { host in
-                TmuxHostResolver.resolve(host).map { (host.id, $0) }
+                CommandHostResolver.resolve(host).map { (host.id, $0) }
             }
         )
         guard resolved != inventoryHosts else {
@@ -2169,6 +2365,16 @@ final class WorkspaceSceneModel: ObservableObject {
         let retainedHostIDs = Set(resolved.compactMap { hostID, target in
             inventoryHosts[hostID] == target ? hostID : nil
         })
+        let retainedHerdrHostIDs = Set(resolved.compactMap { hostID, target in
+            inventoryHosts[hostID] == target && Self.supportsHerdr(target)
+                ? hostID
+                : nil
+        })
+        for (hostID, previousHost) in inventoryHosts
+            where resolved[hostID] != previousHost
+            && Self.supportsHerdr(previousHost) {
+            herdrSessionProbeBroker.invalidateSessions(on: previousHost)
+        }
         kwtInventoriesByHost = kwtInventoriesByHost.filter {
             retainedHostIDs.contains($0.key)
         }
@@ -2190,6 +2396,19 @@ final class WorkspaceSceneModel: ObservableObject {
         tmuxDiscoveryFailuresByHost = tmuxDiscoveryFailuresByHost.filter {
             retainedHostIDs.contains($0.key)
         }
+        herdrSessionsByHost = herdrSessionsByHost.filter {
+            retainedHerdrHostIDs.contains($0.key)
+        }
+        herdrAvailabilityByHost = herdrAvailabilityByHost.filter {
+            retainedHerdrHostIDs.contains($0.key)
+        }
+        herdrDiscoveryFailuresByHost = herdrDiscoveryFailuresByHost.filter {
+            retainedHerdrHostIDs.contains($0.key)
+        }
+        herdrFreshHostIDs.formIntersection(retainedHerdrHostIDs)
+        for (hostID, target) in resolved where !Self.supportsHerdr(target) {
+            herdrSessionsByHost[hostID] = []
+        }
         worktreeRemovalTombstones = worktreeRemovalTombstones.filter {
             retainedHostIDs.contains($0.key.hostID)
         }
@@ -2197,6 +2416,7 @@ final class WorkspaceSceneModel: ObservableObject {
         applyInventoryOverlayIfNeeded()
         scheduleKwtInventory()
         scheduleTmuxSessionDiscovery()
+        scheduleHerdrSessionDiscovery()
     }
 
     private func applyInventoryOverlayIfNeeded() {
@@ -2376,6 +2596,171 @@ final class WorkspaceSceneModel: ObservableObject {
         if event.phase == .ended {
             scheduleTmuxSessionDiscovery()
         }
+    }
+
+    private func herdrLifecycleEvent(
+        _ event: HerdrSessionLifecycleCoordinator.Event
+    ) {
+        let selection = WorkspaceHerdrSessionSelection(
+            hostID: event.operation.key.hostID,
+            name: event.operation.key.sessionName
+        )
+        switch event.phase {
+        case .began:
+            objectWillChange.send()
+        case .willStop:
+            guard event.operation.kind == .stop,
+                  activeBorrowedHerdrSelection == selection else { return }
+            suppressedHerdrStops[event.operation.id] = SuppressedHerdrStop(
+                selection: selection,
+                reconnectContext: activeHerdrReconnectContext
+            )
+            herdrReconnectSupervisor.cancel()
+            activeBorrowedHerdrRecoveryState = nil
+            sessionConnectionRecoveryRequest = nil
+        case .succeeded:
+            suppressedHerdrStops.removeValue(forKey: event.operation.id)
+            switch event.operation.kind {
+            case .create, .restart:
+                refreshHerdrInventoryAfterConstructiveLifecycle(
+                    hostID: selection.hostID
+                )
+            case .stop, .delete:
+                applyHerdrLifecycleSuccess(
+                    event.operation,
+                    selection: selection
+                )
+            }
+        case .failed:
+            switch event.operation.kind {
+            case .create, .restart:
+                refreshHerdrInventoryAfterConstructiveLifecycle(
+                    hostID: selection.hostID
+                )
+            case .stop, .delete:
+                let suppressed = suppressedHerdrStops[event.operation.id]
+                Task { [weak self] in
+                    await self?.reconcileFailedHerdrLifecycle(
+                        event.operation,
+                        suppressed: suppressed
+                    )
+                }
+            }
+        }
+    }
+
+    private func refreshHerdrInventoryAfterConstructiveLifecycle(
+        hostID: UUID
+    ) {
+        objectWillChange.send()
+        invalidateHerdrProbe(for: hostID)
+        scheduleHerdrSessionDiscovery()
+    }
+
+    private func applyHerdrLifecycleSuccess(
+        _ operation: HerdrSessionLifecycleCoordinator.Operation,
+        selection target: WorkspaceHerdrSessionSelection
+    ) {
+        let wasActive = activeBorrowedHerdrSelection == target
+        if wasActive {
+            closeBorrowedHerdrSession(target)
+        }
+        var sessions = snapshot.host(id: target.hostID)?.herdrSessions ?? []
+        switch operation.kind {
+        case .stop:
+            if let index = sessions.firstIndex(where: {
+                $0.name == target.name
+            }) {
+                sessions[index].state = .stopped
+            }
+        case .delete:
+            sessions.removeAll { $0.name == target.name }
+        case .create, .restart:
+            return
+        }
+        herdrSessionsByHost[target.hostID] = sessions
+        herdrAvailabilityByHost[target.hostID] = true
+        herdrFreshHostIDs.insert(target.hostID)
+        applyInventoryOverlayIfNeeded()
+        updateWorkspaceInventoryState()
+        if wasActive {
+            selection.select(
+                .host(target.hostID),
+                in: snapshot,
+                visibility: worktreeVisibility
+            )
+        }
+        invalidateHerdrProbe(for: target.hostID)
+        scheduleHerdrSessionDiscovery()
+    }
+
+    private func reconcileFailedHerdrLifecycle(
+        _ operation: HerdrSessionLifecycleCoordinator.Operation,
+        suppressed: SuppressedHerdrStop?
+    ) async {
+        defer {
+            suppressedHerdrStops.removeValue(forKey: operation.id)
+            objectWillChange.send()
+        }
+        guard operation.kind == .stop,
+              let suppressed,
+              let hostSummary = snapshot.host(id: operation.key.hostID),
+              let host = CommandHostResolver.resolve(hostSummary)
+        else {
+            scheduleHerdrSessionDiscovery()
+            return
+        }
+        herdrSessionProbeBroker.invalidateSessions(on: host)
+        let outcome = await herdrSessionProbeBroker.session(
+            named: operation.key.sessionName,
+            on: host
+        )
+        guard !Task.isCancelled else { return }
+        switch outcome {
+        case .present:
+            guard activeBorrowedHerdrSelection == suppressed.selection else {
+                return
+            }
+            activeHerdrReconnectContext = suppressed.reconnectContext
+            if let handle = activeBorrowedHerdrHandle,
+               nativeHerdrSessionCoordinator.attachmentClosure(handle) != nil {
+                guard presentHerdrSession(suppressed.selection) != nil else {
+                    return
+                }
+                prepareActiveBorrowedHerdrSurface()
+            }
+        case .absent:
+            if activeBorrowedHerdrSelection == suppressed.selection {
+                closeBorrowedHerdrSession(suppressed.selection)
+            }
+        case .unavailable:
+            if activeBorrowedHerdrSelection == suppressed.selection {
+                closeBorrowedHerdrSession(suppressed.selection)
+            }
+        case let .failure(.commandFailed(status, _)) where status == 255:
+            guard activeBorrowedHerdrSelection == suppressed.selection,
+                  var context = suppressed.reconnectContext
+            else { return }
+            context.surfaceExitCode = 255
+            activeHerdrReconnectContext = context
+            if herdrReconnectDecision(for: context, outcome: outcome) == .retry {
+                startHerdrReconnect(context)
+            }
+        case let .failure(error):
+            if activeBorrowedHerdrSelection == suppressed.selection {
+                stopHerdrReconnectWithUnableToAttach(
+                    error.localizedDescription
+                )
+            }
+        }
+        scheduleHerdrSessionDiscovery()
+    }
+
+    private func invalidateHerdrProbe(for hostID: UUID) {
+        guard let hostSummary = snapshot.host(id: hostID),
+              let host = CommandHostResolver.resolve(hostSummary)
+        else { return }
+        herdrSessionProbeBroker.invalidateSessions(on: host)
     }
 
     private func applyRemovalTombstones(
@@ -2601,6 +2986,8 @@ final class WorkspaceSceneModel: ObservableObject {
             kwtInventoriesByHost: kwtInventoriesByHost,
             kwtAvailabilityByHost: kwtAvailabilityByHost,
             tmuxSessionsByHost: tmuxSessionsByHost,
+            herdrSessionsByHost: herdrSessionsByHost,
+            herdrAvailabilityByHost: herdrAvailabilityByHost,
             tmuxReachabilityByHost: tmuxReachabilityByHost,
             tmuxLastSeenByHost: tmuxLastSeenByHost,
             to: source
@@ -2654,6 +3041,113 @@ final class WorkspaceSceneModel: ObservableObject {
             isTmuxDiscoveryLoading = false
             inventoryRefreshProgress.tmuxCompleted = true
             updateWorkspaceInventoryState()
+        }
+    }
+
+    func startHerdrSessionDiscovery() {
+        guard !herdrDiscoveryEnabled else { return }
+        herdrDiscoveryEnabled = true
+        let generation = herdrDiscoveryGeneration
+        reconcileInventoryHosts()
+        if generation == herdrDiscoveryGeneration {
+            scheduleHerdrSessionDiscovery()
+        }
+    }
+
+    private func refreshHerdrSessionDiscovery() {
+        herdrFreshHostIDs.removeAll()
+        for host in inventoryHosts.values where Self.supportsHerdr(host) {
+            herdrSessionProbeBroker.invalidateSessions(on: host)
+        }
+        scheduleHerdrSessionDiscovery()
+    }
+
+    private func scheduleHerdrSessionDiscovery() {
+        guard herdrDiscoveryEnabled else { return }
+        let targets = inventoryHosts.filter {
+            Self.supportsHerdr($0.value)
+        }
+        herdrDiscoveryGeneration += 1
+        let generation = herdrDiscoveryGeneration
+        let revisions = Dictionary(uniqueKeysWithValues: targets.keys.map {
+            ($0, herdrLifecycleCoordinator.revision(for: $0))
+        })
+        herdrDiscoveryTask?.cancel()
+        inventoryRefreshProgress.herdrCompleted = false
+        isHerdrDiscoveryLoading = true
+        updateWorkspaceInventoryState()
+        let broker = herdrSessionProbeBroker
+        let lifecycleCoordinator = herdrLifecycleCoordinator
+        herdrDiscoveryTask = Task { [weak self] in
+            var needsFreshDiscovery = false
+            await withTaskGroup(
+                of: (UUID, HerdrDiscoveryResult).self
+            ) { group in
+                for (hostID, host) in targets {
+                    group.addTask {
+                        await (hostID, broker.sessions(on: host))
+                    }
+                }
+                for await (hostID, result) in group {
+                    guard let self, !Task.isCancelled,
+                          generation == self.herdrDiscoveryGeneration else {
+                        group.cancelAll()
+                        return
+                    }
+                    guard revisions[hostID]
+                        == lifecycleCoordinator.revision(for: hostID)
+                    else {
+                        needsFreshDiscovery = true
+                        self.herdrFreshHostIDs.remove(hostID)
+                        continue
+                    }
+                    self.applyHerdrDiscoveryResult(result, hostID: hostID)
+                }
+            }
+            guard let self, !Task.isCancelled,
+                  generation == herdrDiscoveryGeneration else { return }
+            isHerdrDiscoveryLoading = false
+            inventoryRefreshProgress.herdrCompleted = true
+            updateWorkspaceInventoryState()
+            if needsFreshDiscovery {
+                Task { @MainActor [weak self] in
+                    self?.scheduleHerdrSessionDiscovery()
+                }
+            }
+        }
+    }
+
+    private func applyHerdrDiscoveryResult(
+        _ result: HerdrDiscoveryResult,
+        hostID: UUID
+    ) {
+        herdrFreshHostIDs.insert(hostID)
+        switch result {
+        case let .available(sessions):
+            herdrSessionsByHost[hostID] = sessions
+            herdrAvailabilityByHost[hostID] = true
+            herdrDiscoveryFailuresByHost.removeValue(forKey: hostID)
+        case .unavailable:
+            herdrSessionsByHost[hostID] = []
+            herdrAvailabilityByHost[hostID] = false
+            herdrDiscoveryFailuresByHost.removeValue(forKey: hostID)
+        case let .failure(error):
+            herdrSessionsByHost[hostID] = []
+            herdrAvailabilityByHost[hostID] = false
+            let hostName = snapshot.host(id: hostID)?.name ?? "Unknown host"
+            herdrDiscoveryFailuresByHost[hostID] =
+                "\(hostName): \(error.localizedDescription)"
+        }
+        applyInventoryOverlayIfNeeded()
+        updateWorkspaceInventoryState()
+    }
+
+    private static func supportsHerdr(_ host: CommandHost) -> Bool {
+        switch host {
+        case .local:
+            true
+        case let .ssh(info):
+            info.platform == .posix
         }
     }
 
@@ -2720,7 +3214,7 @@ final class WorkspaceSceneModel: ObservableObject {
     }
 
     private func fenceTmuxDiscoveryForCreationReconciliation(
-        host: TmuxHost
+        host: CommandHost
     ) {
         tmuxSessionProbeBroker.invalidateSessions(on: host)
         tmuxDiscoveryGeneration += 1
@@ -2758,6 +3252,7 @@ final class WorkspaceSceneModel: ObservableObject {
             .union(tmuxDiscoveryFailuresByHost.keys)
             .union(projectListWarningsByHost.keys)
             .union(directoryWarningsByHost.keys)
+            .union(herdrDiscoveryFailuresByHost.keys)
         workspaceInventoryWarningsByHost = Dictionary(
             uniqueKeysWithValues: hostIDs.compactMap { hostID in
                 let warnings = [
@@ -2765,6 +3260,7 @@ final class WorkspaceSceneModel: ObservableObject {
                     tmuxDiscoveryFailuresByHost[hostID],
                     projectListWarningsByHost[hostID],
                     directoryWarningsByHost[hostID],
+                    herdrDiscoveryFailuresByHost[hostID],
                 ].compactMap { $0 }
                 let unique = Array(Set(warnings)).sorted()
                 guard !unique.isEmpty else { return nil }
@@ -2777,11 +3273,14 @@ final class WorkspaceSceneModel: ObservableObject {
         let hasVisibleInventory = !snapshot.projects.isEmpty
             || !snapshot.directoryWorkspaces.isEmpty
             || snapshot.hosts.contains { !$0.tmuxSessions.isEmpty }
+            || snapshot.hosts.contains { !$0.herdrSessions.isEmpty }
         let hasCachedInventory = hasVisibleInventory
             || !kwtInventoriesByHost.isEmpty
             || !tmuxSessionsByHost.isEmpty
+            || herdrSessionsByHost.values.contains { !$0.isEmpty }
         let hasPendingSources = isKwtInventoryLoading
             || isTmuxDiscoveryLoading
+            || isHerdrDiscoveryLoading
         if hasPendingSources, !hasVisibleInventory {
             workspaceInventoryState = .loading
             return
@@ -2815,7 +3314,7 @@ final class WorkspaceSceneModel: ObservableObject {
             hostID: hostID,
             target: .logViewer
         )
-        let quotedPath = Self.shellQuote(AppLogger.logFilePath)
+        let quotedPath = shellQuotedCommandArgument(AppLogger.logFilePath)
         guard let surface = terminalCoordinator.surface(
             for: key,
             configuration: TerminalSurfaceConfiguration(
@@ -2843,10 +3342,6 @@ final class WorkspaceSceneModel: ObservableObject {
             target: .logViewer
         )
         terminalCoordinator.removeSurface(for: key)
-    }
-
-    private static func shellQuote(_ value: String) -> String {
-        "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
     }
 
     private func recordSelectedWorktreeView() {
@@ -2886,22 +3381,25 @@ final class WorkspaceSceneModel: ObservableObject {
         tmuxSessionActivityController?.reconcile(
             endpointsByHostID: updatedTargets
         )
-        invalidateTmuxAttachments(for: invalidatedHostIDs)
+        invalidateNativeSessionAttachments(for: invalidatedHostIDs)
         return updated
     }
 
     private static func resolvedEndpoints(
         of snapshot: WorkspaceSnapshot
-    ) -> [UUID: TmuxHost] {
+    ) -> [UUID: CommandHost] {
         Dictionary(
             uniqueKeysWithValues: snapshot.hosts.compactMap { host in
-                TmuxHostResolver.resolve(host).map { (host.id, $0) }
+                CommandHostResolver.resolve(host).map { (host.id, $0) }
             }
         )
     }
 
-    private func invalidateTmuxAttachments(for hostIDs: Set<UUID>) {
+    private func invalidateNativeSessionAttachments(for hostIDs: Set<UUID>) {
         guard !hostIDs.isEmpty else { return }
+        failPendingHerdrLaunchOperations {
+            hostIDs.contains($0.key.hostID)
+        }
         for scope in pendingRemovalPresentationRestorations.keys
             where hostIDs.contains(scope.hostID) {
             pendingRemovalPresentationRestorations.removeValue(forKey: scope)
@@ -2938,6 +3436,19 @@ final class WorkspaceSceneModel: ObservableObject {
                 exhaustedCreatedTmuxSessionHandles.remove(handle.id)
                 endedCreatedTmuxSessionHandles.remove(handle.id)
             }
+            let herdrHandles = nativeHerdrSessionCoordinator.detachAll(
+                hostID: hostID
+            )
+            for handle in herdrHandles {
+                borrowedHerdrConnectionStates.removeValue(forKey: handle.id)
+            }
+        }
+        if let activeHerdr = activeBorrowedHerdrSelection,
+           hostIDs.contains(activeHerdr.hostID) {
+            cancelHerdrReconnect()
+            failedHerdrLaunchIntent = nil
+            activeBorrowedHerdrSelection = nil
+            activeBorrowedHerdrHandle = nil
         }
         guard let active = activeBorrowedTmuxSelection,
               hostIDs.contains(active.hostID) else { return }
@@ -2945,7 +3456,22 @@ final class WorkspaceSceneModel: ObservableObject {
         activeBorrowedTmuxHandle = nil
         activeBorrowedTmuxLaunchMode = nil
         activeBorrowedTmuxRecoveryState = nil
-        tmuxConnectionRecoveryRequest = nil
+        sessionConnectionRecoveryRequest = nil
+    }
+
+    private func failPendingHerdrLaunchOperations(
+        where shouldFail: (HerdrSessionLifecycleCoordinator.Operation) -> Bool
+    ) {
+        let matches = pendingHerdrLaunchOperations.filter {
+            shouldFail($0.value)
+        }
+        for (handleID, operation) in matches {
+            herdrLaunchConfirmationTasks.removeValue(
+                forKey: handleID
+            )?.cancel()
+            pendingHerdrLaunchOperations.removeValue(forKey: handleID)
+            herdrLifecycleCoordinator.finish(operation, outcome: .failed)
+        }
     }
 
     func pendingSSHHostKeyConfirmation(
@@ -3333,7 +3859,7 @@ final class WorkspaceSceneModel: ObservableObject {
         let destination = host.sshDestination.trimmingCharacters(
             in: .whitespacesAndNewlines
         )
-        guard let parsed = TmuxHostResolver.parseSSHDestination(
+        guard let parsed = CommandHostResolver.parseSSHDestination(
             destination
         ) else {
             return nil
@@ -3535,7 +4061,7 @@ final class WorkspaceSceneModel: ObservableObject {
         _ projectPath: String,
         on host: SSHHost
     ) async -> Result<String, HostProbeError> {
-        guard let sshHost = TmuxHostResolver.parseSSHDestination(
+        guard let sshHost = CommandHostResolver.parseSSHDestination(
             host.sshDestination
         ) else {
             return .failure(.message("Enter a valid SSH destination."))
@@ -3556,11 +4082,11 @@ final class WorkspaceSceneModel: ObservableObject {
         _ projectPath: String,
         on host: HostSummary
     ) async -> Result<String, HostProbeError> {
-        guard let capturedTarget = TmuxHostResolver.resolve(host) else {
+        guard let capturedTarget = CommandHostResolver.resolve(host) else {
             return .failure(.message("Enter a valid SSH destination."))
         }
         guard let currentHost = snapshot.host(id: host.id),
-              let currentTarget = TmuxHostResolver.resolve(currentHost),
+              let currentTarget = CommandHostResolver.resolve(currentHost),
               currentTarget == capturedTarget
         else {
             return .failure(.message(
@@ -3675,7 +4201,7 @@ final class WorkspaceSceneModel: ObservableObject {
         onReconnectNow: @escaping () -> Void = {},
         onReviewConnection: @escaping () -> Void = {}
     ) -> AnyView? {
-        guard TmuxHostResolver.resolve(host) != nil else {
+        guard CommandHostResolver.resolve(host) != nil else {
             return AnyView(
                 ContentUnavailableView(
                     "SSH unavailable",
@@ -3778,6 +4304,385 @@ final class WorkspaceSceneModel: ObservableObject {
         )
     }
 
+    func borrowedHerdrSessionView(
+        host: HostSummary,
+        sessionName: String,
+        defersTerminalResize: Bool,
+        onReconnectNow: @escaping () -> Void = {},
+        onReviewConnection: @escaping () -> Void = {}
+    ) -> AnyView? {
+        guard CommandHostResolver.resolve(host) != nil else {
+            return AnyView(
+                ContentUnavailableView(
+                    "SSH unavailable",
+                    systemImage: "network.slash",
+                    description: Text(
+                        "Add an SSH address for \(host.name) in Hosts settings."
+                    )
+                )
+            )
+        }
+        guard let selection = activeBorrowedHerdrSelection,
+              selection.hostID == host.id,
+              selection.name == sessionName,
+              let handle = activeBorrowedHerdrHandle
+        else { return nil }
+        return AnyView(
+            BorrowedHerdrSessionView(
+                handle: handle,
+                hostName: host.name,
+                isRemoteHost: host.kind == .remote,
+                connectionState: borrowedHerdrConnectionStates[handle.id],
+                recoveryState: activeBorrowedHerdrRecoveryState,
+                attachmentClosure:
+                nativeHerdrSessionCoordinator.attachmentClosure(handle),
+                defersTerminalResize: defersTerminalResize,
+                surface: { [weak self] in
+                    self?.nativeHerdrSessionCoordinator.surface(handle: handle)
+                },
+                onCloseRequest: {
+                    NotificationCenter.default.post(
+                        name: .ghosthubCloseTab,
+                        object: nil
+                    )
+                },
+                onRetryRequest: { [weak self] in
+                    self?.retryBorrowedHerdrSession(selection)
+                },
+                onReconnectNow: onReconnectNow,
+                onReviewConnection: onReviewConnection,
+                onHostSettingsRequest: { [weak self] in
+                    SettingsStore.shared.selectedDomain = .hosts
+                    self?.isSettingsPresented = true
+                }
+            )
+        )
+    }
+
+    func prepareActiveBorrowedHerdrSurface() {
+        guard let handle = activeBorrowedHerdrHandle else { return }
+        _ = nativeHerdrSessionCoordinator.surface(handle: handle)
+    }
+
+    func openBorrowedHerdrSession(
+        _ selection: WorkspaceHerdrSessionSelection
+    ) {
+        cancelPendingRestoration()
+        guard snapshot.host(id: selection.hostID)?.herdrSessions.contains(
+            where: {
+                $0.name == selection.name && $0.state == .running
+            }
+        ) == true else { return }
+        if failedHerdrLaunchIntent?.selection == selection {
+            failedHerdrLaunchIntent = nil
+        }
+        _ = presentHerdrSession(selection, launchMode: .attachExisting)
+    }
+
+    func createHerdrSession(
+        _ selection: WorkspaceHerdrSessionSelection
+    ) throws {
+        guard let host = snapshot.host(id: selection.hostID),
+              host.herdrAvailable
+        else { throw HerdrSessionPresentationError.unavailable }
+        guard !host.herdrSessions.contains(where: {
+            $0.name == selection.name
+        }) else {
+            throw HerdrSessionPresentationError.sessionExists(selection.name)
+        }
+        try launchHerdrSession(selection, kind: .create)
+    }
+
+    func prepareHerdrSessionLifecycle(
+        _ selection: WorkspaceHerdrSessionSelection,
+        action: HerdrSessionDestructiveAction
+    ) async throws -> HerdrSessionLifecycleRequest {
+        guard let hostSummary = snapshot.host(id: selection.hostID),
+              hostSummary.herdrAvailable,
+              let host = CommandHostResolver.resolve(hostSummary)
+        else { throw HerdrSessionPresentationError.unavailable }
+        guard let summary = hostSummary.herdrSessions.first(where: {
+            $0.name == selection.name
+        }) else {
+            throw HerdrSessionLifecycleError.sessionMissing(selection.name)
+        }
+        try Self.validateHerdrLifecycleState(
+            summary.state,
+            isDefault: summary.isDefault,
+            name: summary.name,
+            action: action
+        )
+        let record = try await herdrSessionRecordReader(
+            selection.name,
+            host
+        ).get()
+        try Self.validateHerdrLifecycleState(
+            record.state,
+            isDefault: record.isDefault,
+            name: record.name,
+            action: action
+        )
+        return HerdrSessionLifecycleRequest(
+            session: selection,
+            confirmedHost: hostSummary,
+            isDefault: record.isDefault,
+            confirmedSessionDirectory: record.sessionDirectory,
+            confirmedSocketPath: record.socketPath,
+            action: action
+        )
+    }
+
+    func performHerdrSessionLifecycle(
+        _ request: HerdrSessionLifecycleRequest
+    ) async throws {
+        let selection = request.session
+        guard request.confirmedHost.id == selection.hostID,
+              let confirmedHost = CommandHostResolver.resolve(
+                  request.confirmedHost
+              ),
+              let currentHostSummary = snapshot.host(id: selection.hostID),
+              currentHostSummary.herdrAvailable,
+              let currentHost = CommandHostResolver.resolve(
+                  currentHostSummary
+              ),
+              currentHost == confirmedHost
+        else {
+            throw HerdrSessionLifecycleRequestError.hostChanged(
+                selection.name
+            )
+        }
+        let key = HerdrSessionLifecycleCoordinator.Key(
+            hostID: selection.hostID,
+            sessionName: selection.name
+        )
+        let kind: HerdrSessionLifecycleCoordinator.OperationKind =
+            request.action == .stop ? .stop : .delete
+        guard let operation = herdrLifecycleCoordinator.begin(kind, key: key)
+        else {
+            throw HerdrSessionPresentationError.operationPending(
+                selection.name
+            )
+        }
+        var outcome = HerdrSessionLifecycleCoordinator.Outcome.failed
+        defer {
+            herdrLifecycleCoordinator.finish(operation, outcome: outcome)
+        }
+
+        let record = try await herdrSessionRecordReader(
+            selection.name,
+            currentHost
+        ).get()
+        guard record.isDefault == request.isDefault,
+              record.sessionDirectory == request.confirmedSessionDirectory,
+              record.socketPath == request.confirmedSocketPath
+        else {
+            throw HerdrSessionLifecycleError.locationChanged(selection.name)
+        }
+        try Self.validateHerdrLifecycleState(
+            record.state,
+            isDefault: record.isDefault,
+            name: record.name,
+            action: request.action
+        )
+        if request.action == .stop {
+            herdrLifecycleCoordinator.willStop(operation)
+        }
+        let lifecycleAction: HerdrSessionLifecycleAction =
+            request.action == .stop ? .stop : .delete
+        _ = try await herdrSessionMutator(
+            lifecycleAction,
+            record,
+            currentHost
+        ).get()
+        outcome = .succeeded
+    }
+
+    private static func validateHerdrLifecycleState(
+        _ state: HerdrSessionState,
+        isDefault: Bool,
+        name: String,
+        action: HerdrSessionDestructiveAction
+    ) throws {
+        switch action {
+        case .stop:
+            guard state == .running else {
+                throw HerdrSessionLifecycleError.stateChanged(
+                    name: name,
+                    expected: .running
+                )
+            }
+        case .delete:
+            guard !isDefault else {
+                throw HerdrSessionLifecycleError
+                    .defaultSessionCannotBeDeleted
+            }
+            guard state == .stopped else {
+                throw HerdrSessionLifecycleError.stateChanged(
+                    name: name,
+                    expected: .stopped
+                )
+            }
+        }
+    }
+
+    func isHerdrSessionLifecyclePending(
+        _ selection: WorkspaceHerdrSessionSelection
+    ) -> Bool {
+        herdrLifecycleCoordinator.isPending(.init(
+            hostID: selection.hostID,
+            sessionName: selection.name
+        ))
+    }
+
+    var pendingHerdrSessionSelections:
+        Set<WorkspaceHerdrSessionSelection> {
+        Set(herdrLifecycleCoordinator.pendingKeys.map {
+            WorkspaceHerdrSessionSelection(
+                hostID: $0.hostID,
+                name: $0.sessionName
+            )
+        })
+    }
+
+    func restartHerdrSession(
+        _ selection: WorkspaceHerdrSessionSelection
+    ) throws {
+        guard let host = snapshot.host(id: selection.hostID),
+              host.herdrAvailable
+        else { throw HerdrSessionPresentationError.unavailable }
+        guard let session = host.herdrSessions.first(where: {
+            $0.name == selection.name
+        }) else {
+            throw HerdrSessionPresentationError.sessionMissing(selection.name)
+        }
+        guard session.state == .stopped else {
+            throw HerdrSessionPresentationError.sessionNotStopped(
+                selection.name
+            )
+        }
+        try launchHerdrSession(selection, kind: .restart)
+    }
+
+    private func launchHerdrSession(
+        _ selection: WorkspaceHerdrSessionSelection,
+        kind: HerdrSessionLifecycleCoordinator.OperationKind
+    ) throws {
+        let key = HerdrSessionLifecycleCoordinator.Key(
+            hostID: selection.hostID,
+            sessionName: selection.name
+        )
+        guard let operation = herdrLifecycleCoordinator.begin(kind, key: key)
+        else {
+            throw HerdrSessionPresentationError.operationPending(
+                selection.name
+            )
+        }
+        if failedHerdrLaunchIntent?.selection == selection {
+            failedHerdrLaunchIntent = nil
+        }
+        guard let handle = presentHerdrSession(
+            selection,
+            launchMode: .launchOrAttach
+        ) else {
+            herdrLifecycleCoordinator.finish(operation, outcome: .failed)
+            scheduleHerdrSessionDiscovery()
+            throw HerdrSessionPresentationError.unavailable
+        }
+        pendingHerdrLaunchOperations[handle.id] = operation
+    }
+
+    @discardableResult
+    private func presentHerdrSession(
+        _ selection: WorkspaceHerdrSessionSelection,
+        launchMode: HerdrAttachmentLaunchMode = .attachExisting
+    ) -> BorrowedHerdrSessionHandle? {
+        if let activeTmux = activeBorrowedTmuxSelection {
+            closeBorrowedTmuxSession(activeTmux)
+        }
+        if let active = activeBorrowedHerdrSelection,
+           active != selection {
+            closeBorrowedHerdrSession(active)
+        }
+        if activeBorrowedHerdrSelection == selection,
+           let handle = activeBorrowedHerdrHandle,
+           nativeHerdrSessionCoordinator.attachmentClosure(handle) == nil {
+            return handle
+        }
+        guard let host = snapshot.host(id: selection.hostID),
+              let attachmentHost = CommandHostResolver.resolve(host)
+        else {
+            activeBorrowedHerdrSelection = selection
+            activeBorrowedHerdrHandle = nil
+            return nil
+        }
+        let handle = nativeHerdrSessionCoordinator.attach(
+            hostID: selection.hostID,
+            name: selection.name,
+            host: attachmentHost,
+            launchMode: launchMode
+        )
+        activeBorrowedHerdrSelection = selection
+        activeBorrowedHerdrHandle = handle
+        borrowedHerdrConnectionStates[handle.id] = .connecting
+        activeHerdrReconnectContext = attachmentHost.isRemote
+            ? ActiveHerdrReconnectContext(
+                selection: selection,
+                handleID: handle.id,
+                host: attachmentHost,
+                surfaceExitCode: nil
+            )
+            : nil
+        return handle
+    }
+
+    func closeBorrowedHerdrSession(
+        _ selection: WorkspaceHerdrSessionSelection
+    ) {
+        cancelPendingRestoration()
+        guard activeBorrowedHerdrSelection == selection else { return }
+        cancelHerdrReconnect()
+        if failedHerdrLaunchIntent?.selection == selection {
+            failedHerdrLaunchIntent = nil
+        }
+        if let handle = activeBorrowedHerdrHandle {
+            borrowedHerdrConnectionStates.removeValue(forKey: handle.id)
+            herdrLaunchConfirmationTasks.removeValue(
+                forKey: handle.id
+            )?.cancel()
+            if let operation = pendingHerdrLaunchOperations.removeValue(
+                forKey: handle.id
+            ) {
+                herdrLifecycleCoordinator.finish(operation, outcome: .failed)
+                scheduleHerdrSessionDiscovery()
+            }
+        }
+        activeBorrowedHerdrSelection = nil
+        activeBorrowedHerdrHandle = nil
+        nativeHerdrSessionCoordinator.detach(
+            hostID: selection.hostID,
+            name: selection.name
+        )
+    }
+
+    func retryBorrowedHerdrSession(
+        _ selection: WorkspaceHerdrSessionSelection
+    ) {
+        guard activeBorrowedHerdrSelection == selection else { return }
+        if let intent = failedHerdrLaunchIntent,
+           intent.selection == selection {
+            do {
+                try launchHerdrSession(selection, kind: intent.kind)
+                prepareActiveBorrowedHerdrSurface()
+            } catch {
+                failedHerdrLaunchIntent = intent
+            }
+            return
+        }
+        closeBorrowedHerdrSession(selection)
+        guard presentHerdrSession(selection) != nil else { return }
+        prepareActiveBorrowedHerdrSurface()
+    }
+
     func createTmuxSession(_ selection: WorkspaceTmuxSessionSelection) {
         createTmuxSession(WorkspaceTmuxSessionCreationRequest(
             selection: selection
@@ -3856,6 +4761,9 @@ final class WorkspaceSceneModel: ObservableObject {
         intent: TmuxPresentationIntent = .userInitiated,
         activatesPresentation: Bool = true
     ) -> BorrowedTmuxSessionHandle? {
+        if let activeHerdr = activeBorrowedHerdrSelection {
+            closeBorrowedHerdrSession(activeHerdr)
+        }
         var selection = selection
         if let worktreeID = selection.worktreeID,
            selection.worktreeGeneration == nil,
@@ -3942,14 +4850,14 @@ final class WorkspaceSceneModel: ObservableObject {
             }
         }
         guard let host = snapshot.host(id: selection.hostID),
-              let attachmentHost = TmuxHostResolver.resolve(host)
+              let attachmentHost = CommandHostResolver.resolve(host)
         else {
             if activatesPresentation {
                 activeBorrowedTmuxSelection = selection
                 activeBorrowedTmuxHandle = nil
                 activeBorrowedTmuxLaunchMode = effectiveLaunchMode
                 activeBorrowedTmuxRecoveryState = nil
-                tmuxConnectionRecoveryRequest = nil
+                sessionConnectionRecoveryRequest = nil
             }
             return nil
         }
@@ -4011,7 +4919,7 @@ final class WorkspaceSceneModel: ObservableObject {
             handle: handle,
             launchMode: effectiveLaunchMode,
             reconnectContext: reconnectContext,
-            reconnectSupervisor: TmuxSessionReconnectSupervisor(
+            reconnectSupervisor: SessionReconnectSupervisor(
                 intervals: tmuxReconnectIntervals,
                 probeDeadline: tmuxReconnectProbeDeadline
             )
@@ -4163,7 +5071,7 @@ final class WorkspaceSceneModel: ObservableObject {
         activeBorrowedTmuxHandle = presentation.handle
         activeBorrowedTmuxLaunchMode = presentation.launchMode
         activeBorrowedTmuxRecoveryState = presentation.recoveryState
-        tmuxConnectionRecoveryRequest = presentation.recoveryRequest
+        sessionConnectionRecoveryRequest = presentation.recoveryRequest
         applyDeferredTmuxPresentationIfReady(presentation)
     }
 
@@ -4173,7 +5081,7 @@ final class WorkspaceSceneModel: ObservableObject {
         guard activeBorrowedTmuxHandle == presentation.handle else { return }
         activeBorrowedTmuxLaunchMode = presentation.launchMode
         activeBorrowedTmuxRecoveryState = presentation.recoveryState
-        tmuxConnectionRecoveryRequest = presentation.recoveryRequest
+        sessionConnectionRecoveryRequest = presentation.recoveryRequest
     }
 
     func hideBorrowedTmuxSession(
@@ -4184,7 +5092,7 @@ final class WorkspaceSceneModel: ObservableObject {
         activeBorrowedTmuxHandle = nil
         activeBorrowedTmuxLaunchMode = nil
         activeBorrowedTmuxRecoveryState = nil
-        tmuxConnectionRecoveryRequest = nil
+        sessionConnectionRecoveryRequest = nil
     }
 
     var retainedBorrowedTmuxPresentationCount: Int {
@@ -4293,7 +5201,7 @@ final class WorkspaceSceneModel: ObservableObject {
             activeBorrowedTmuxHandle = nil
             activeBorrowedTmuxLaunchMode = nil
             activeBorrowedTmuxRecoveryState = nil
-            tmuxConnectionRecoveryRequest = nil
+            sessionConnectionRecoveryRequest = nil
             return
         }
         let handle = presentation.handle
@@ -4324,7 +5232,7 @@ final class WorkspaceSceneModel: ObservableObject {
             activeBorrowedTmuxHandle = nil
             activeBorrowedTmuxLaunchMode = nil
             activeBorrowedTmuxRecoveryState = nil
-            tmuxConnectionRecoveryRequest = nil
+            sessionConnectionRecoveryRequest = nil
         }
         nativeTmuxSessionCoordinator.detach(
             hostID: presentation.selection.hostID,
@@ -4337,7 +5245,7 @@ final class WorkspaceSceneModel: ObservableObject {
         _ selection: WorkspaceTmuxSessionSelection
     ) async throws -> TmuxSessionKillRequest {
         guard let currentHostSummary = snapshot.host(id: selection.hostID),
-              let currentHost = TmuxHostResolver.resolve(currentHostSummary)
+              let currentHost = CommandHostResolver.resolve(currentHostSummary)
         else {
             throw TmuxSessionKillError.hostChanged(
                 session: selection.name
@@ -4377,13 +5285,13 @@ final class WorkspaceSceneModel: ObservableObject {
     ) async throws {
         let tmuxSelection = request.session
         guard request.confirmedHost.id == tmuxSelection.hostID,
-              let confirmedHost = TmuxHostResolver.resolve(
+              let confirmedHost = CommandHostResolver.resolve(
                   request.confirmedHost
               ),
               let currentHostSummary = snapshot.host(
                   id: tmuxSelection.hostID
               ),
-              let currentHost = TmuxHostResolver.resolve(
+              let currentHost = CommandHostResolver.resolve(
                   currentHostSummary
               ),
               currentHost == confirmedHost
@@ -4436,7 +5344,7 @@ final class WorkspaceSceneModel: ObservableObject {
               Self.sameTmuxSession(activeSelection, selection),
               isConnectedActiveTmuxSession(activeSelection),
               let hostSummary = snapshot.host(id: activeSelection.hostID),
-              let host = TmuxHostResolver.resolve(hostSummary),
+              let host = CommandHostResolver.resolve(hostSummary),
               Self.supportsTmuxSessionStyling(host),
               let activeHandle = activeBorrowedTmuxHandle,
               let style = tmuxPresentationStyleProvider(
@@ -4520,7 +5428,7 @@ final class WorkspaceSceneModel: ObservableObject {
     }
 
     private static func supportsTmuxSessionStyling(
-        _ host: TmuxHost
+        _ host: CommandHost
     ) -> Bool {
         if case let .ssh(info) = host, info.platform == .windows {
             return false
@@ -4618,6 +5526,289 @@ final class WorkspaceSceneModel: ObservableObject {
         }
     }
 
+    private func nativeHerdrStateChanged(
+        handle: BorrowedHerdrSessionHandle,
+        state: ConnectionState
+    ) {
+        borrowedHerdrConnectionStates[handle.id] = state
+        if let operation = pendingHerdrLaunchOperations[handle.id] {
+            switch state {
+            case .connected:
+                confirmHerdrLaunch(handle: handle, operation: operation)
+            case .disconnected:
+                herdrLaunchConfirmationTasks.removeValue(
+                    forKey: handle.id
+                )?.cancel()
+                pendingHerdrLaunchOperations.removeValue(forKey: handle.id)
+                herdrLifecycleCoordinator.finish(operation, outcome: .failed)
+                if activeBorrowedHerdrHandle == handle {
+                    failedHerdrLaunchIntent = FailedHerdrLaunchIntent(
+                        selection: WorkspaceHerdrSessionSelection(
+                            hostID: operation.key.hostID,
+                            name: operation.key.sessionName
+                        ),
+                        kind: operation.kind
+                    )
+                }
+            case .connecting, .reconnecting:
+                break
+            }
+        }
+        guard activeBorrowedHerdrHandle == handle else { return }
+        if state == .connected {
+            activeBorrowedHerdrRecoveryState = nil
+            sessionConnectionRecoveryRequest = nil
+            activeHerdrReconnectContext?.surfaceExitCode = nil
+            return
+        }
+        guard case .disconnected = state,
+              nativeHerdrSessionCoordinator.hasLaunched(handle)
+        else { return }
+        if suppressedHerdrStops.values.contains(where: {
+            $0.selection.hostID == handle.hostID
+                && $0.selection.name == handle.name
+        }) {
+            return
+        }
+        switch nativeHerdrSessionCoordinator.attachmentClosure(handle) {
+        case .detached:
+            cancelHerdrReconnect()
+        case let .processExited(code):
+            guard var context = activeHerdrReconnectContext,
+                  context.handleID == handle.id,
+                  context.host.isRemote,
+                  code == 255
+            else {
+                cancelHerdrReconnect()
+                return
+            }
+            context.surfaceExitCode = code
+            activeHerdrReconnectContext = context
+            startHerdrReconnect(context)
+        case .launchFailed, nil:
+            cancelHerdrReconnect()
+        }
+    }
+
+    private func confirmHerdrLaunch(
+        handle: BorrowedHerdrSessionHandle,
+        operation: HerdrSessionLifecycleCoordinator.Operation
+    ) {
+        guard herdrLaunchConfirmationTasks[handle.id] == nil else { return }
+        guard let hostSummary = snapshot.host(id: operation.key.hostID),
+              let host = CommandHostResolver.resolve(hostSummary)
+        else {
+            finishPendingHerdrLaunch(
+                handleID: handle.id,
+                operation: operation,
+                outcome: .failed
+            )
+            return
+        }
+        herdrSessionProbeBroker.invalidateSessions(on: host)
+        let delays = [.zero] + createdSessionDiscoveryDelays
+        herdrLaunchConfirmationTasks[handle.id] = Task { [weak self] in
+            for (index, delay) in delays.enumerated() {
+                do {
+                    try await Task.sleep(for: delay)
+                } catch {
+                    return
+                }
+                guard let self,
+                      pendingHerdrLaunchOperations[handle.id] == operation
+                else { return }
+                let outcome = await herdrSessionProbeBroker.session(
+                    named: operation.key.sessionName,
+                    on: host
+                )
+                guard !Task.isCancelled,
+                      pendingHerdrLaunchOperations[handle.id] == operation
+                else { return }
+                if outcome == .present {
+                    finishPendingHerdrLaunch(
+                        handleID: handle.id,
+                        operation: operation,
+                        outcome: .succeeded
+                    )
+                    return
+                }
+                if index == delays.indices.last {
+                    finishPendingHerdrLaunch(
+                        handleID: handle.id,
+                        operation: operation,
+                        outcome: .failed
+                    )
+                    return
+                }
+            }
+        }
+    }
+
+    private func finishPendingHerdrLaunch(
+        handleID: UUID,
+        operation: HerdrSessionLifecycleCoordinator.Operation,
+        outcome: HerdrSessionLifecycleCoordinator.Outcome
+    ) {
+        guard pendingHerdrLaunchOperations[handleID] == operation else {
+            return
+        }
+        pendingHerdrLaunchOperations.removeValue(forKey: handleID)
+        herdrLaunchConfirmationTasks.removeValue(forKey: handleID)
+        herdrLifecycleCoordinator.finish(operation, outcome: outcome)
+    }
+
+    private func startHerdrReconnect(
+        _ context: ActiveHerdrReconnectContext
+    ) {
+        guard activeHerdrReconnectContext == context,
+              activeBorrowedHerdrHandle?.id == context.handleID
+        else { return }
+        activeBorrowedHerdrRecoveryState = .reconnecting(
+            message: "Waiting for \(hostName(for: context.selection.hostID)). "
+                + "Ghosthub will reconnect automatically."
+        )
+        sessionConnectionRecoveryRequest = nil
+        herdrReconnectSupervisor.start { [weak self] in
+            guard let self else { return .stop }
+            return await attemptHerdrReconnect(context)
+        }
+    }
+
+    private func attemptHerdrReconnect(
+        _ context: ActiveHerdrReconnectContext
+    ) async -> SessionReconnectDecision {
+        guard activeHerdrReconnectContext == context,
+              activeBorrowedHerdrHandle?.id == context.handleID
+        else { return .stop }
+        let outcome = await herdrSessionProbeBroker.session(
+            named: context.selection.name,
+            on: context.host
+        )
+        guard !Task.isCancelled else { return .retry }
+        guard activeHerdrReconnectContext == context,
+              activeBorrowedHerdrHandle?.id == context.handleID,
+              snapshot.host(id: context.selection.hostID)
+              .flatMap(CommandHostResolver.resolve) == context.host
+        else { return .stop }
+        return herdrReconnectDecision(for: context, outcome: outcome)
+    }
+
+    private func herdrReconnectDecision(
+        for context: ActiveHerdrReconnectContext,
+        outcome: HerdrSessionProbeOutcome
+    ) -> SessionReconnectDecision {
+        guard !Task.isCancelled else { return .retry }
+        guard activeHerdrReconnectContext == context,
+              activeBorrowedHerdrHandle?.id == context.handleID
+        else { return .stop }
+        switch outcome {
+        case .present:
+            // SSH reserves 255 for transport failure, but a client could also choose it.
+            // The accepted ambiguity self-corrects because every retry first probes the
+            // exact running Herdr session and stops when that session is absent.
+            guard context.surfaceExitCode == 255 else {
+                stopHerdrReconnectWithUnableToAttach(
+                    "The remote Herdr client exited before it could attach."
+                )
+                return .stop
+            }
+            guard presentHerdrSession(context.selection) != nil else {
+                stopHerdrReconnectWithUnableToAttach(
+                    "The remote host is no longer available."
+                )
+                return .stop
+            }
+            prepareActiveBorrowedHerdrSurface()
+            return .stop
+        case .absent:
+            activeBorrowedHerdrRecoveryState = nil
+            sessionConnectionRecoveryRequest = nil
+            borrowedHerdrConnectionStates[context.handleID] = .disconnected(
+                reason: "The Herdr session is no longer running."
+            )
+            return .stop
+        case .unavailable:
+            activeBorrowedHerdrRecoveryState = nil
+            sessionConnectionRecoveryRequest = nil
+            borrowedHerdrConnectionStates[context.handleID] = .disconnected(
+                reason: "Herdr is no longer available on this host."
+            )
+            return .stop
+        case .failure(.cancelled):
+            return .retry
+        case let .failure(.commandFailed(status, stderr))
+            where status == 255:
+            let classification = SSHConnectionFailure.classify(
+                status: status,
+                output: stderr
+            )
+            switch classification.kind {
+            case .transport:
+                activeBorrowedHerdrRecoveryState = .reconnecting(
+                    message: classification.diagnostic.summary + " "
+                        + "Ghosthub will reconnect automatically."
+                )
+                return .retry
+            case .authenticationRequired, .hostKeyReviewRequired:
+                let message = classification.diagnostic.summary + " "
+                    + classification.diagnostic.recoverySuggestion
+                activeBorrowedHerdrRecoveryState = .needsAttention(
+                    message: message,
+                    canReviewConnection: true
+                )
+                if sessionConnectionRecoveryRequest == nil {
+                    sessionConnectionRecoveryRequest =
+                        SessionConnectionRecoveryRequest(
+                            hostID: context.selection.hostID,
+                            message: message
+                        )
+                }
+                return .stop
+            case .hostKeyChanged:
+                activeBorrowedHerdrRecoveryState = .needsAttention(
+                    message: classification.diagnostic.summary + " "
+                        + classification.diagnostic.recoverySuggestion,
+                    canReviewConnection: false
+                )
+                sessionConnectionRecoveryRequest = nil
+                return .stop
+            }
+        case let .failure(error):
+            stopHerdrReconnectWithUnableToAttach(error.localizedDescription)
+            return .stop
+        }
+    }
+
+    private func stopHerdrReconnectWithUnableToAttach(_ reason: String) {
+        activeBorrowedHerdrRecoveryState = nil
+        sessionConnectionRecoveryRequest = nil
+        guard let handle = activeBorrowedHerdrHandle else { return }
+        borrowedHerdrConnectionStates[handle.id] = .disconnected(
+            reason: reason
+        )
+    }
+
+    func reconnectActiveHerdrSessionNow() {
+        guard let recoveryState = activeBorrowedHerdrRecoveryState,
+              recoveryState.allowsReconnectNow
+        else { return }
+        if recoveryState.isReconnecting {
+            herdrReconnectSupervisor.reconnectNow()
+            return
+        }
+        guard let context = activeHerdrReconnectContext,
+              activeBorrowedHerdrHandle?.id == context.handleID
+        else { return }
+        startHerdrReconnect(context)
+    }
+
+    private func cancelHerdrReconnect() {
+        herdrReconnectSupervisor.cancel()
+        activeHerdrReconnectContext = nil
+        activeBorrowedHerdrRecoveryState = nil
+        sessionConnectionRecoveryRequest = nil
+    }
+
     private func startTmuxReconnect(
         _ presentation: RetainedTmuxPresentation,
         context: TmuxReconnectContext
@@ -4646,7 +5837,7 @@ final class WorkspaceSceneModel: ObservableObject {
     private func attemptTmuxReconnect(
         _ presentation: RetainedTmuxPresentation,
         context: TmuxReconnectContext
-    ) async -> TmuxReconnectDecision {
+    ) async -> SessionReconnectDecision {
         guard presentation.reconnectContext == context,
               presentation.handle.id == context.handleID,
               retainedTmuxPresentation(for: presentation.handle)
@@ -4700,7 +5891,7 @@ final class WorkspaceSceneModel: ObservableObject {
                   retainedTmuxPresentation(for: presentation.handle)
                   === presentation,
                   snapshot.host(id: context.selection.hostID)
-                  .flatMap(TmuxHostResolver.resolve) == context.host
+                  .flatMap(CommandHostResolver.resolve) == context.host
             else {
                 return .failure(.sessionContextUnavailable)
             }
@@ -4734,7 +5925,7 @@ final class WorkspaceSceneModel: ObservableObject {
         for presentation: RetainedTmuxPresentation,
         context: TmuxReconnectContext,
         outcome: TmuxSessionProbeOutcome
-    ) -> TmuxReconnectDecision {
+    ) -> SessionReconnectDecision {
         guard !Task.isCancelled else { return .retry }
         guard presentation.reconnectContext == context,
               presentation.handle.id == context.handleID,
@@ -4810,7 +6001,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 )
                 if presentation.recoveryRequest == nil {
                     presentation.recoveryRequest =
-                        TmuxConnectionRecoveryRequest(
+                        SessionConnectionRecoveryRequest(
                             hostID: context.selection.hostID,
                             message: message
                         )
@@ -4844,7 +6035,7 @@ final class WorkspaceSceneModel: ObservableObject {
     ) {
         let selection = presentation.selection
         guard let host = snapshot.host(id: selection.hostID),
-              let attachmentHost = TmuxHostResolver.resolve(host)
+              let attachmentHost = CommandHostResolver.resolve(host)
         else {
             stopTmuxReconnectWithUnableToAttach(
                 presentation,
@@ -4945,9 +6136,20 @@ final class WorkspaceSceneModel: ObservableObject {
         startTmuxReconnect(presentation, context: context)
     }
 
-    func resumeTmuxReconnectAfterSSHRecovery(
-        _ recoveryRequest: TmuxConnectionRecoveryRequest
+    func resumeSessionReconnectAfterSSHRecovery(
+        _ recoveryRequest: SessionConnectionRecoveryRequest
     ) {
+        if case .needsAttention(_, true) = activeBorrowedHerdrRecoveryState,
+           sessionConnectionRecoveryRequest == recoveryRequest,
+           var context = activeHerdrReconnectContext,
+           context.selection.hostID == recoveryRequest.hostID,
+           activeBorrowedHerdrHandle?.id == context.handleID {
+            context.surfaceExitCode = 255
+            activeHerdrReconnectContext = context
+            sessionConnectionRecoveryRequest = nil
+            startHerdrReconnect(context)
+            return
+        }
         guard let presentation = retainedTmuxPresentations.values.first(
             where: { $0.recoveryRequest?.id == recoveryRequest.id }
         ),
@@ -5029,7 +6231,7 @@ final class WorkspaceSceneModel: ObservableObject {
               .selection,
               !nativeTmuxSessionCoordinator.hasClosedAttachment(handle),
               let hostSummary = snapshot.host(id: selection.hostID),
-              let host = TmuxHostResolver.resolve(hostSummary)
+              let host = CommandHostResolver.resolve(hostSummary)
         else { return }
         tmuxActivityEnrollmentTasks.removeValue(
             forKey: handle.id
@@ -5061,7 +6263,7 @@ final class WorkspaceSceneModel: ObservableObject {
                       let currentHostSummary = snapshot.host(
                           id: currentSelection.hostID
                       ),
-                      TmuxHostResolver.resolve(currentHostSummary) == host
+                      CommandHostResolver.resolve(currentHostSummary) == host
                 else { return }
                 let identity: TmuxSessionIdentity
                 do {
@@ -5178,7 +6380,7 @@ final class WorkspaceSceneModel: ObservableObject {
             pendingCreatedTmuxSessions[handle.id] == nil,
             borrowedTmuxConnectionStates[handle.id] == .connected,
             let hostSummary = snapshot.host(id: selection.hostID),
-            let host = TmuxHostResolver.resolve(hostSummary),
+            let host = CommandHostResolver.resolve(hostSummary),
             Self.supportsTmuxSessionStyling(host),
             let surfaceIdentity = nativeTmuxSessionCoordinator
             .surfaceIdentity(handle: handle),
@@ -5215,7 +6417,7 @@ final class WorkspaceSceneModel: ObservableObject {
                       let currentHostSummary = snapshot.host(
                           id: selection.hostID
                       ),
-                      TmuxHostResolver.resolve(currentHostSummary) == host
+                      CommandHostResolver.resolve(currentHostSummary) == host
                 else { break }
                 do {
                     let identity: TmuxSessionIdentity
@@ -5268,7 +6470,7 @@ final class WorkspaceSceneModel: ObservableObject {
         guard let pending = pendingCreatedTmuxSessions[handleID],
               let host = inventoryHosts[pending.selection.hostID]
               ?? snapshot.host(id: pending.selection.hostID).flatMap(
-                  TmuxHostResolver.resolve
+                  CommandHostResolver.resolve
               )
         else { return }
         createdSessionDiscoveryTasks.removeValue(

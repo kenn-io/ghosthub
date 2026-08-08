@@ -5,17 +5,20 @@ icon: lucide/panels-top-left
 
 # Windows and navigation
 
-Each Ghosthub workspace can keep multiple tmux presentations connected while
-showing one at a time. Native macOS tabs group complete Ghosthub workspaces;
-they do not replace tmux windows or panes inside a session.
+Each Ghosthub workspace can show a tmux or Herdr presentation. It can keep
+multiple tmux presentations connected while showing one at a time; Herdr owns
+the complete internal workspace shown by its client. Native macOS tabs group
+complete Ghosthub workspaces and do not replace either multiplexer's internal
+windows, tabs, or panes.
 
 ## Use the sidebar
 
-The sidebar groups projects, worktrees, and standalone tmux sessions under each
-host. Select an item to attach or return to its retained terminal. Moving to
-another host, worktree, or session hides the previous terminal without
-detaching its local or SSH tmux client. Expand a host to see its current
-inventory and connection diagnostics.
+The sidebar shows standalone tmux sessions, running and stopped Herdr sessions, projects,
+and worktrees under each host. Select an item to attach. Moving among tmux
+targets hides the previous terminal without detaching its local or SSH client;
+moving away from Herdr detaches only its presentation and leaves its server
+running. Stopped Herdr rows are dimmed and labeled **Stopped**. Expand a host
+to see its current inventory and connection diagnostics.
 
 Press ++cmd+b++ to hide or show the sidebar. Hiding it gives the terminal
 the full window while preserving its session attachment.
@@ -24,7 +27,7 @@ the full window while preserving its session attachment.
 
 Press ++shift+cmd+p++ and type to search:
 
-- hosts, projects, worktrees, and standalone sessions
+- hosts, projects, worktrees, and standalone tmux or Herdr sessions
 - settings pages
 - session lifecycle commands
 - appearance and theme commands
@@ -36,7 +39,7 @@ Press Return to perform the selected action.
 - ++cmd+t++ opens a workspace tab in the current window.
 - ++cmd+n++ opens a separate workspace window.
 
-Each can attach to a different local or remote tmux session. Use the macOS
+Each can attach to a different local or remote tmux or Herdr session. Use the macOS
 **Window** menu to move a tab into its own window or merge windows into a native
 tab group.
 
@@ -45,7 +48,8 @@ tab group.
 ++cmd+w++ closes and detaches only the active session presentation. Other
 sessions opened in that workspace remain connected. ++shift+cmd+w++ closes the
 containing workspace window and detaches every presentation it owns. Neither
-action ends a tmux session.
+action ends a tmux session or stops a Herdr server. Use the separately confirmed
+**Kill Session…** or **Stop Session…** action when termination is intentional.
 
 Closing the final workspace leaves Ghosthub running. Use ++cmd+q++ to quit.
 Quit confirmation is enabled by default and can be changed under
@@ -54,8 +58,8 @@ Quit confirmation is enabled by default and can be changed under
 ## Restore workspaces after launch or update
 
 Ghosthub asks macOS to restore native windows and tabs. It reconnects each
-saved presentation only when it can confirm the exact tmux session. Offline SSH
-hosts continue retrying as inventory refreshes.
+saved presentation only when it can confirm the exact tmux or running Herdr
+session. Offline SSH hosts continue retrying as inventory refreshes.
 
 During an update relaunch, Ghosthub recreates saved windows if macOS does not
 return them. A window that previously had no terminal attached restores its
@@ -64,6 +68,7 @@ you are ready to attach.
 
 ## Rearrange navigation
 
-Drag worktrees within a project or standalone tmux sessions within a host. The
-insertion line previews the destination. Ghosthub remembers this display order
-without changing anything in Git, kwt, or tmux.
+Drag worktrees within a project, or reorder standalone tmux and Herdr sessions
+within their host groups. The insertion line previews the destination. Ghosthub
+remembers this display order without changing anything in Git, kwt, tmux, or
+Herdr.

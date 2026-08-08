@@ -7,25 +7,30 @@ the [Threat Model](threat-model.md).
 
 ## Mental Model
 
-- **Host:** a machine that runs tmux sessions. The local Mac is the default
-  host. Remote hosts are reachable over SSH, commonly through a tailnet.
+- **Host:** a machine that runs tmux and optionally Herdr sessions. The local
+  Mac is the default host. Remote hosts are reachable over SSH, commonly
+  through a tailnet.
 - **Project:** a git repository reported by kwt on a host.
 - **Worktree:** a kwt workspace with an exact tmux session name.
 - **Directory workspace:** one kwt-registered plain directory with an exact
   tmux session name and no Git children.
-- **Session:** an ordinary tmux session on a host.
+- **Session:** an ordinary tmux session or running/stopped Herdr session on a host.
 
 The sidebar is a host-wide session navigator. Its **Projects** group shows
 repository hierarchies followed by flat registered-directory rows. It also
-shows directly discovered tmux sessions on each host, including sessions that
-were not created by Ghosthub or kwt. Users may hide matching standalone
-sessions from navigation with case-sensitive wildcard patterns; discovery
-retains the complete inventory so a kwt-owned session confirmed by current
-discovery is indicated on its worktree or directory row. Cached sessions do
-not remain live while a host is unreachable. Kwt-owned sessions are hidden
-from the separate tmux session group by default, with a Worktrees setting that
-exposes those duplicate entries. General tmux sessions are presented as one
-ordinary native tmux client; tmux alone owns and renders their layout.
+shows directly discovered tmux sessions and running or stopped Herdr sessions
+on each host, including sessions that were not created by Ghosthub or kwt. The
+three inventories are independent; kwt worktrees and directory workspaces
+remain tmux-backed. Users may hide matching standalone tmux sessions
+from navigation with case-sensitive wildcard patterns; discovery retains the
+complete inventory so a kwt-owned session confirmed by current discovery is
+indicated on its worktree or directory row. Cached sessions do not remain live
+while a host is unreachable. Kwt-owned sessions are hidden from the separate tmux session
+group by default, with a Worktrees setting that exposes those duplicate
+entries.
+Tmux and Herdr sessions are each presented through their ordinary native
+whole-session client. The selected backend alone owns and renders its internal
+layout, and each scene presents at most one such client.
 
 After an attachment reaches the connected state, Ghosthub keeps that exact
 session warm for the remainder of the app launch. One app-scoped, in-memory
@@ -54,8 +59,8 @@ into native UI.
 
 The workspace `WindowGroup` is data-backed. Each scene continuously captures a
 small logical descriptor containing stable host and project keys, the durable
-kwt worktree generation or registered directory path, and exact tmux session
-and protected-socket identity. Its window UUID exists only for native scene
+kwt worktree generation or registered directory path, and either exact tmux
+session/protected-socket identity or exact Herdr session identity. Its window UUID exists only for native scene
 adoption; runtime model UUIDs and worktree paths are never persisted as host,
 project, or worktree identity. A worktree without a canonical generation
 degrades to project-only navigation and does not persist its worktree-owned
@@ -79,8 +84,8 @@ same token. The manifest remains until every saved descriptor has begun
 restoration in exactly one live assigned scene. Native restoration therefore
 still owns geometry and tab grouping without dropping or duplicating a session.
 After assignment, the scene model owns the complete logical descriptor; delayed
-native payloads that share its window UUID but contain stale navigation or tmux
-data are rewritten before they can become persisted scene state.
+native payloads that share its window UUID but contain stale navigation or
+presentation data are rewritten before they can become persisted scene state.
 Every explicitly opened tmux presentation is retained by that workspace scene,
 keyed by exact host, socket, and session identity. Active selection determines
 which retained surface is mounted in the visible hierarchy; navigation only
@@ -95,7 +100,11 @@ back to live models and reattaches only to the confirmed exact session.
 Missing or offline targets fail soft and remain pending across later inventory
 refreshes. Explicit user navigation cancels pending restoration so a stale
 scene can never take the window back.
-A scene captured without an active tmux presentation restores its navigation
+Herdr restoration requires a completed fresh Herdr probe for the restored host
+and the exact running name; cached pre-refresh rows never authorize attachment.
+A captured scene contains one tmux descriptor, one Herdr descriptor, or neither,
+never both.
+A scene captured without an active native presentation restores its navigation
 without opening or creating the selected worktree or directory session; the
 user explicitly selects the workspace to attach again.
 
@@ -111,8 +120,10 @@ the final workspace window leaves Ghosthub running, matching ordinary macOS
 terminal behavior; Cmd-Q remains the explicit app-termination path. Ghosthub
 confirms app termination by default, and users can disable that confirmation in
 **Settings -> Terminal**. Closing presentations or quitting never terminates a
-tmux session: both detach clients, while Kill Session remains a separate
-confirmed action.
+tmux or Herdr session: both detach clients. Kill Session remains a separate
+confirmed tmux action. Herdr exposes separate Create, Stop, Restart, and Delete
+actions; Stop and Delete require confirmation and are never implied by
+navigation or closing.
 
 ## Process Boundaries
 
@@ -124,7 +135,7 @@ The Swift app owns native presentation and terminal rendering:
 - libghostty surface lifecycle, input, resize, and rendering.
 - Workspace/session selection and presentation state.
 - Local GRDB persistence for app-owned state.
-- SSH host settings and native tmux client presentation.
+- SSH host settings and native tmux/Herdr client presentation.
 
 Swift should stay focused on native app behavior and terminal hosting. Shared
 pure domain models belong in `Sources/Workspace`; external workspace state is
@@ -381,11 +392,13 @@ the environment of an existing session or running pane.
 
 ## Startup and Onboarding
 
-Ghosthub always completes kwt and tmux inventory before deciding which empty
-state to show. Existing users go directly to their host-wide session sidebar;
+Ghosthub starts independent kwt, tmux, and Herdr inventories before deciding
+which empty state to show. Herdr is additive and never blocks the workspace;
+missing Herdr is silent. Existing users go directly to their host-wide session
+sidebar;
 there is no repository-intake interstitial and no first-launch modal.
 
-When both inventories are empty, Ghosthub explains that kwt owns project
+When all visible inventories are empty, Ghosthub explains that kwt owns project
 registration and tmux owns sessions. Ghosthub does not edit kwt's config file
 or present its retired Middleman-backed Add Repository flow. The **+** menu on
 macOS and Linux hosts exposes **Add Project**, which passes one explicit
@@ -402,7 +415,9 @@ repositories.
 | `Sources/Settings/` | Native settings and preferences |
 | `Sources/Terminal/` | libghostty-backed terminal runtime and surface views |
 | `Sources/TerminalSupport/` | libghostty config/bootstrap support that can compile without the linked library |
-| `Sources/TmuxControl/` | Small native tmux/SSH attachment command model |
+| `Sources/Transport/` | Shared local/SSH routing, quoting, and command execution primitives |
+| `Sources/Tmux/` | Native tmux discovery and attachment command model |
+| `Sources/Herdr/` | Native Herdr discovery and attachment command model |
 | `Sources/Workspace/` | Pure workspace, host, project, worktree, and session models |
 | `Sources/Persistence/` | GRDB repositories for app-local state |
 | `tools/` | Python bootstrap and packaging automation |
@@ -415,6 +430,25 @@ last valid configuration. Automatic successes are silent, automatic failures
 remain visible, and explicit reloads publish a user-visible result.
 
 ## Session Attachment
+
+Each scene owns one native presentation slot shared by tmux and Herdr.
+Selecting either backend disposes the other client before opening the new one.
+Herdr discovery and attachment are supported on the local Mac and configured
+remote POSIX hosts, not experimental Windows/psmux hosts. Ghosthub shows
+running and stopped sessions. Ordinary open and restoration are attach-only;
+Create and Restart use Herdr's launch-or-attach path. Ghosthub manages only
+whole-session create, stop, restart, and delete. Herdr still owns themes,
+workspaces, tabs, panes, agents, plugins, configuration, updates, and every
+process inside a session.
+
+Stop terminates every process in the session but preserves Herdr's saved
+workspace/tab/pane shape. Restart restores that shape with new processes.
+Delete is offered only for stopped non-default sessions and permanently removes
+their saved state. Every destructive command revalidates the current host,
+state, and Herdr record immediately before execution. Herdr exposes no stable
+session-generation identifier, so same-name/same-socket replacement cannot
+receive tmux-strength identity protection; this race is documented rather than
+hidden behind a false guarantee.
 
 Kwt workspaces and otherwise-unbound host sessions use the same native tmux
 client. Ghosthub never projects tmux windows or panes into a Swift split tree.
@@ -543,6 +577,10 @@ for the remaining live sessions on each host and for the eventual result of an
 explicit named-session creation request. A worktree open does not infer live
 session state from kwt inventory: it uses kwt's exact-path start-only command
 to converge the session before attachment.
+Herdr's JSON session list is independently authoritative for running and
+stopped Herdr sessions. Exit 127 means optional capability absence and emits no diagnostic;
+malformed output or another failure produces only a host-scoped warning and
+never changes tmux reachability, kwt availability, or blocking workspace state.
 
 Ghosthub local persistence stores app-owned state:
 
@@ -558,6 +596,6 @@ current schema, bootstrap paths, fixtures, and tests directly.
 ## Direction
 
 Ghosthub should remain a native terminal client and session switcher: one
-sidebar for the tmux servers across a user's Macs, Linux hosts, and tailnet.
+sidebar for tmux and Herdr fleets across a user's Macs, Linux hosts, and tailnet.
 The native app owns discovery, native client presentation, and SSH reconnect
-supervision. It does not reconstruct tmux terminal state in Swift.
+supervision. It does not reconstruct tmux or Herdr terminal state in Swift.

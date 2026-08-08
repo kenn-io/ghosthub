@@ -5,8 +5,9 @@ icon: lucide/server
 
 # Remote hosts
 
-Ghosthub can discover and attach to tmux sessions on remote macOS and Linux
-machines over SSH. Native Windows hosts using psmux are experimental.
+Ghosthub can discover tmux plus running and stopped Herdr sessions on remote
+macOS and Linux machines over SSH. Herdr is optional; native Windows hosts
+using psmux are experimental and do not support it.
 
 ## Before you add a host
 
@@ -30,6 +31,11 @@ ssh devbox
 Ghosthub follows OpenSSH configuration for users, ports, identity files,
 agents, host-key policies, and supported jump routing.
 
+If the Herdr CLI is also installed on the remote host, Ghosthub silently adds
+its running and stopped sessions under **Herdr Sessions**. It still uses Ghosthub's OpenSSH
+trust, authentication, pooling, and reconnect path rather than Herdr's remote
+transport.
+
 ## exe.dev hosts
 
 Ghosthub can discover running exe.dev VMs as SSH hosts without adding each VM
@@ -41,7 +47,8 @@ manually. Create and manage VMs through [exe.dev](https://exe.dev/docs), then:
    authentication prompt.
 
 Running VMs appear with the rest of the host fleet. Ghosthub uses each VM's
-exe.dev-provided SSH destination for ordinary tmux and optional kwt discovery.
+exe.dev-provided SSH destination for ordinary tmux, optional Herdr, and optional
+kwt discovery.
 
 ![Ghosthub Integrations settings showing a connected exe.dev account and discovered VM status](assets/guide-exe-dev.png)
 
@@ -54,8 +61,8 @@ exe.dev-provided SSH destination for ordinary tmux and optional kwt discovery.
 4. Select **Test Connection**.
 
 An unreachable host does not block discovery or use of the rest of the fleet.
-An expanded, reachable host with no projects or tmux sessions says so in the
-sidebar.
+An expanded, reachable host with no projects, tmux sessions, or Herdr sessions
+says so in the sidebar.
 
 ## Host-key trust
 
@@ -78,15 +85,15 @@ challenge requires one.
 
 If a host shows a caution icon, select it to review trust, authenticate, or
 retry. A successful ordinary host-inventory authentication refreshes inventory;
-it does not open a tmux session by itself.
+it does not open a tmux or Herdr session by itself.
 
 ## Automatic reconnect
 
 If an active SSH connection drops, Ghosthub shows **Connection interrupted**
 and retries automatically, with no more than 30 seconds between attempts.
 Choose **Reconnect Now** to try immediately. When the connection returns,
-Ghosthub reattaches to the same exact tmux session; the server-side processes
-were never moved into Ghosthub.
+Ghosthub reattaches to the same exact tmux or Herdr session; the server-side
+processes were never moved into Ghosthub.
 
 If SSH needs authentication or host-key review, the presentation changes to
 **Connection needs attention**. Complete the native recovery flow to resume the

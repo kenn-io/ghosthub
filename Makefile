@@ -267,7 +267,7 @@ test-essential-workflows:
 	@set -euo pipefail; \
 	for filter in \
 		KwtInventoryClientTests \
-		TmuxHostResolverTests \
+		CommandHostResolverTests \
 		TmuxAttachmentInfoTests \
 		WorkspaceSidebarModelTests \
 	; do \

@@ -1,3 +1,4 @@
+import GhosthubTransport
 import Foundation
 import GhosthubTerminal
 import GhosthubTmux
@@ -26,7 +27,7 @@ struct NativeTmuxSessionCoordinatorTests {
     @Test("attachment reuses the version from binary resolution")
     func attachmentReusesResolvedVersion() async {
         let runnerCalls = LockedValue(0)
-        let store = RecordingTmuxSurfaceStore()
+        let store = RecordingNativeSessionSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
             tmuxPathProvider: {
@@ -58,7 +59,7 @@ struct NativeTmuxSessionCoordinatorTests {
 
     @Test("creation carries a launch command but attachment drops it")
     func launchCommandIsCreationOnly() async throws {
-        let store = RecordingTmuxSurfaceStore()
+        let store = RecordingNativeSessionSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
             tmuxPathProvider: { successfulTmuxResolution("/opt/homebrew/bin/tmux") }
@@ -104,7 +105,7 @@ struct NativeTmuxSessionCoordinatorTests {
         let splitCommands = LockedValue(0)
         let releaseBinding = DispatchSemaphore(value: 0)
         defer { releaseBinding.signal() }
-        let store = RecordingTmuxSurfaceStore()
+        let store = RecordingNativeSessionSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
             tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
@@ -154,8 +155,8 @@ struct NativeTmuxSessionCoordinatorTests {
 
     @Test("tmux older than 3.4 does not install pane split shortcuts")
     func oldTmuxDoesNotInstallSplitHandler() async {
-        let store = RecordingTmuxSurfaceStore()
-        let host = TmuxHost.ssh(SSHHostInfo(
+        let store = RecordingNativeSessionSurfaceStore()
+        let host = CommandHost.ssh(SSHHostInfo(
             user: "operator",
             hostname: "legacy.example.test",
             port: 2222
@@ -195,7 +196,7 @@ struct NativeTmuxSessionCoordinatorTests {
 
     @Test("new named sessions use tmux create-or-attach mode")
     func namedSessionUsesCreateMode() async throws {
-        let store = RecordingTmuxSurfaceStore()
+        let store = RecordingNativeSessionSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
             tmuxPathProvider: { successfulTmuxResolution("/opt/homebrew/bin/tmux") }
@@ -238,7 +239,7 @@ struct NativeTmuxSessionCoordinatorTests {
 
     @Test("surface reports connected once per attachment generation")
     func surfaceReportsConnectedOncePerAttachmentGeneration() async throws {
-        let store = RecordingTmuxSurfaceStore()
+        let store = RecordingNativeSessionSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
             tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") }
@@ -286,7 +287,7 @@ struct NativeTmuxSessionCoordinatorTests {
 
     @Test("new session launch reads the current terminal presentation style")
     func newSessionLaunchReadsCurrentPresentationStyle() async throws {
-        let store = RecordingTmuxSurfaceStore()
+        let store = RecordingNativeSessionSurfaceStore()
         var style = TmuxPresentationStyle(
             foreground: "#3B4851",
             background: "#FFFFFF"
@@ -323,7 +324,7 @@ struct NativeTmuxSessionCoordinatorTests {
 
     @Test("existing sessions keep their current presentation by default")
     func existingSessionKeepsCurrentPresentation() async throws {
-        let store = RecordingTmuxSurfaceStore()
+        let store = RecordingNativeSessionSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
             tmuxPathProvider: { successfulTmuxResolution("/opt/homebrew/bin/tmux") },
@@ -355,7 +356,7 @@ struct NativeTmuxSessionCoordinatorTests {
 
     @Test("existing sessions accept the shared presentation opt-in")
     func existingSessionAcceptsPresentationOptIn() async throws {
-        let store = RecordingTmuxSurfaceStore()
+        let store = RecordingNativeSessionSurfaceStore()
         var appliesPresentationStyle = true
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
@@ -395,7 +396,7 @@ struct NativeTmuxSessionCoordinatorTests {
 
     @Test("isolated session socket participates in command routing")
     func isolatedSessionUsesReturnedSocket() async throws {
-        let store = RecordingTmuxSurfaceStore()
+        let store = RecordingNativeSessionSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
             tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
@@ -437,7 +438,7 @@ struct NativeTmuxSessionCoordinatorTests {
 
     @Test("ordinary worktree path attaches directly through kwt")
     func ordinaryWorktreeUsesKwtAttachment() async throws {
-        let store = RecordingTmuxSurfaceStore()
+        let store = RecordingNativeSessionSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
             tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
@@ -473,7 +474,7 @@ struct NativeTmuxSessionCoordinatorTests {
 
     @Test("remote attachment uses non-enrolling host-key policy")
     func remoteAttachmentUsesNonEnrollingHostKeyPolicy() async throws {
-        let store = RecordingTmuxSurfaceStore()
+        let store = RecordingNativeSessionSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
             tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
@@ -508,7 +509,7 @@ struct NativeTmuxSessionCoordinatorTests {
 
     @Test("split shortcuts use the attachment's fixed remote route")
     func splitShortcutUsesAttachmentRoute() async throws {
-        let calls = LockedValue<[(TmuxHost, [String], String)]>([])
+        let calls = LockedValue<[(CommandHost, [String], String)]>([])
         let resolutionArguments = LockedValue<[String]?>(nil)
         let routeProviderCalls = LockedValue(0)
         let routeArguments = LockedValue([
@@ -516,8 +517,8 @@ struct NativeTmuxSessionCoordinatorTests {
             "-o", "HostName=attached.example.test",
             "-o", "ControlPath=/tmp/ghosthub-attached",
         ])
-        let store = RecordingTmuxSurfaceStore()
-        let host = TmuxHost.ssh(SSHHostInfo(
+        let store = RecordingNativeSessionSurfaceStore()
+        let host = CommandHost.ssh(SSHHostInfo(
             user: "operator",
             hostname: "build.example.test",
             port: 2222
@@ -597,9 +598,9 @@ struct NativeTmuxSessionCoordinatorTests {
             "-o", "HostName=first.example.test",
         ])
         let resolvedArguments = LockedValue<[[String]]>([])
-        let store = RecordingTmuxSurfaceStore()
+        let store = RecordingNativeSessionSurfaceStore()
         let hostID = UUID()
-        let host = TmuxHost.ssh(SSHHostInfo(
+        let host = CommandHost.ssh(SSHHostInfo(
             user: "operator",
             hostname: "build.example.test",
             port: nil
@@ -652,7 +653,7 @@ struct NativeTmuxSessionCoordinatorTests {
     @Test("keyboard splits require effective terminal focus")
     func keyboardSplitRequiresTerminalFocus() async throws {
         let calls = LockedValue<[String]>([])
-        let store = RecordingTmuxSurfaceStore()
+        let store = RecordingNativeSessionSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
             tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
@@ -702,7 +703,7 @@ struct NativeTmuxSessionCoordinatorTests {
 
     @Test("native Windows surfaces do not intercept pane split shortcuts")
     func windowsSurfaceDoesNotInstallSplitHandler() async {
-        let store = RecordingTmuxSurfaceStore()
+        let store = RecordingNativeSessionSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
             tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
@@ -733,7 +734,7 @@ struct NativeTmuxSessionCoordinatorTests {
         let events = LockedValue<[String]>([])
         let releaseFirst = DispatchSemaphore(value: 0)
         defer { releaseFirst.signal() }
-        let store = RecordingTmuxSurfaceStore()
+        let store = RecordingNativeSessionSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
             tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
@@ -784,7 +785,7 @@ struct NativeTmuxSessionCoordinatorTests {
     @Test("detaching cancels the running split and its queue")
     func detachCancelsSplitQueue() async throws {
         let events = LockedValue<[String]>([])
-        let store = RecordingTmuxSurfaceStore()
+        let store = RecordingNativeSessionSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
             tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
@@ -846,7 +847,7 @@ struct NativeTmuxSessionCoordinatorTests {
     func failedClientBindingCanBeRetried() async throws {
         let clientLookups = LockedValue(0)
         let splitCommands = LockedValue(0)
-        let store = RecordingTmuxSurfaceStore()
+        let store = RecordingNativeSessionSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
             tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
@@ -894,7 +895,7 @@ struct NativeTmuxSessionCoordinatorTests {
     func reusedClientTTYIsRejected() async throws {
         let clientLookups = LockedValue(0)
         let splitCommands = LockedValue(0)
-        let store = RecordingTmuxSurfaceStore()
+        let store = RecordingNativeSessionSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
             tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
@@ -950,7 +951,7 @@ struct NativeTmuxSessionCoordinatorTests {
     func attachedClientPaneMayChange() async throws {
         let clientLookups = LockedValue(0)
         let splitCommands = LockedValue<[String]>([])
-        let store = RecordingTmuxSurfaceStore()
+        let store = RecordingNativeSessionSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
             tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
@@ -1003,7 +1004,7 @@ struct NativeTmuxSessionCoordinatorTests {
 
     @Test("endpoint changes replace provisioning and active handles")
     func endpointChangesReplaceHandles() async throws {
-        let store = RecordingTmuxSurfaceStore()
+        let store = RecordingNativeSessionSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
             tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
@@ -1062,7 +1063,7 @@ struct NativeTmuxSessionCoordinatorTests {
 
     @Test("rejected terminal surfaces never report command launch")
     func rejectedSurfaceDoesNotLaunch() async {
-        let store = RecordingTmuxSurfaceStore(
+        let store = RecordingNativeSessionSurfaceStore(
             launchError: SurfaceLaunchTestError.rejected
         )
         let coordinator = NativeTmuxSessionCoordinator(
@@ -1141,7 +1142,7 @@ struct NativeTmuxSessionCoordinatorTests {
 
     @Test("a detached live client records a closed attachment")
     func detachedLiveClientClosesAttachment() async throws {
-        let store = RecordingTmuxSurfaceStore()
+        let store = RecordingNativeSessionSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
             tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") }
@@ -1172,7 +1173,7 @@ struct NativeTmuxSessionCoordinatorTests {
 
     @Test("a successful tmux client exit records a manual detach")
     func successfulClientExitRecordsDetach() async throws {
-        let store = RecordingTmuxSurfaceStore()
+        let store = RecordingNativeSessionSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
             tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") }
@@ -1200,7 +1201,7 @@ struct NativeTmuxSessionCoordinatorTests {
         let statusDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: statusDirectory) }
-        let store = RecordingTmuxSurfaceStore()
+        let store = RecordingNativeSessionSurfaceStore()
         let coordinator = NativeTmuxSessionCoordinator(
             terminalCoordinator: store,
             tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
@@ -1250,13 +1251,13 @@ private enum SurfaceLaunchTestError: LocalizedError {
 }
 
 @MainActor
-private final class MissingTmuxSurfaceStore: TmuxSurfaceStoring {
+private final class MissingTmuxSurfaceStore: NativeSessionSurfaceStoring {
     private(set) var removedKeyCount = 0
 
     func paneSurface(
         for key: SurfaceKey,
         configuration: TerminalSurfaceConfiguration
-    ) -> (any TmuxPaneSurfacing)? {
+    ) -> (any NativeSessionPaneSurfacing)? {
         nil
     }
 

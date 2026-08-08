@@ -1,3 +1,5 @@
+import GhosthubTransport
+
 /// Colors Ghosthub applies to tmux panes. Tmux otherwise answers OSC 10/11
 /// queries from the first attached client, which can describe another
 /// terminal's theme.

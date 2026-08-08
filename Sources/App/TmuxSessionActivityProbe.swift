@@ -1,4 +1,5 @@
 import Foundation
+import GhosthubTransport
 import GhosthubTmux
 import GhosthubUI
 
@@ -9,9 +10,9 @@ enum TmuxSessionActivityProbeResult: Equatable, Sendable {
 }
 
 struct TmuxSessionActivityProbe: Sendable {
-    typealias PathResolver = @Sendable (TmuxHost)
+    typealias PathResolver = @Sendable (CommandHost)
         -> Result<String, TmuxBinaryError>
-    typealias Runner = @Sendable (TmuxHost, String)
+    typealias Runner = @Sendable (CommandHost, String)
         -> (status: Int32, stdout: String)
 
     private static let identityMarker =
@@ -38,16 +39,18 @@ struct TmuxSessionActivityProbe: Sendable {
         self.pathResolver = { host in
             cache.resolve(on: host)
         }
-        self.runner = runner ?? { host, command in
+        self.runner = runner ?? {
+            (host: CommandHost, command: String)
+            -> (status: Int32, stdout: String) in
             switch host {
             case .local:
-                TmuxBinaryResolver.runLoginShell(
-                    shell: TmuxBinaryResolver.loginShell(),
+                AccountCommandRunner.runLoginShell(
+                    shell: AccountCommandRunner.loginShell(),
                     command: command,
                     timeout: 10
                 )
             case let .ssh(info):
-                TmuxBinaryResolver.runRemoteLoginShell(
+                AccountCommandRunner.runRemoteLoginShell(
                     host: info,
                     command: command,
                     timeout: 10
@@ -59,7 +62,7 @@ struct TmuxSessionActivityProbe: Sendable {
     func sample(
         _ selection: WorkspaceTmuxSessionSelection,
         expectedIdentity: TmuxSessionIdentity,
-        on host: TmuxHost
+        on host: CommandHost
     ) async -> TmuxSessionActivityProbeResult {
         let pathResolver = pathResolver
         let runner = runner
@@ -497,7 +500,7 @@ struct TmuxSessionActivityProbe: Sendable {
     }
 
     private static func platform(
-        for host: TmuxHost
+        for host: CommandHost
     ) -> SSHHostInfo.Platform {
         switch host {
         case .local:
@@ -508,7 +511,7 @@ struct TmuxSessionActivityProbe: Sendable {
     }
 
     private static func resolveTmuxPath(
-        on host: TmuxHost
+        on host: CommandHost
     ) -> Result<String, TmuxBinaryError> {
         let resolver = TmuxBinaryResolver()
         return switch host {
@@ -522,14 +525,14 @@ struct TmuxSessionActivityProbe: Sendable {
 
 private final class TmuxSessionActivityPathCache: @unchecked Sendable {
     private let lock = NSLock()
-    private var paths: [TmuxHost: String] = [:]
+    private var paths: [CommandHost: String] = [:]
     private let resolve: TmuxSessionActivityProbe.PathResolver
 
     init(resolve: @escaping TmuxSessionActivityProbe.PathResolver) {
         self.resolve = resolve
     }
 
-    func resolve(on host: TmuxHost) -> Result<String, TmuxBinaryError> {
+    func resolve(on host: CommandHost) -> Result<String, TmuxBinaryError> {
         lock.lock()
         if let path = paths[host] {
             lock.unlock()

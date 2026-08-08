@@ -57,7 +57,7 @@ enum SSHConnectionFailure {
         }
 
         let summary: String
-        if status == TmuxBinaryResolver.timedOutStatus
+        if status == AccountCommandRunner.timedOutStatus
             || normalized.contains("connection timed out")
             || normalized.contains("operation timed out") {
             summary = "The SSH connection timed out."

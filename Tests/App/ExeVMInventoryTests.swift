@@ -1,3 +1,4 @@
+import GhosthubTransport
 import Combine
 import Dispatch
 import Foundation

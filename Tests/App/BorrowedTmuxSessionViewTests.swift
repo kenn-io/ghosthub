@@ -191,7 +191,7 @@ struct BorrowedTmuxSessionViewTests {
     }
 
     private func makeView(
-        recoveryState: BorrowedTmuxRecoveryState?
+        recoveryState: NativeSessionRecoveryState?
     ) -> BorrowedTmuxSessionView {
         BorrowedTmuxSessionView(
             handle: BorrowedTmuxSessionHandle(

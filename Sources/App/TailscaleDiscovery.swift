@@ -1,3 +1,4 @@
+import GhosthubTransport
 import Foundation
 import GhosthubSettings
 import GhosthubTmux

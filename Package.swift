@@ -73,6 +73,18 @@ var products: [Product] = [
 
 var targets: [Target] = [
     .target(
+        name: "GhosthubTransport",
+        path: "Sources/Transport"
+    ),
+    .target(
+        name: "GhosthubHerdr",
+        dependencies: [
+            "GhosthubTransport",
+            "GhosthubWorkspace",
+        ],
+        path: "Sources/Herdr"
+    ),
+    .target(
         name: "GhosthubWorkspace",
         path: "Sources/Workspace"
     ),
@@ -147,6 +159,9 @@ if hasBootstrappedLibghostty {
 targets.append(
     .target(
         name: "GhosthubTmux",
+        dependencies: [
+            "GhosthubTransport",
+        ],
         path: "Sources/Tmux"
     )
 )
@@ -155,12 +170,14 @@ targets.append(
     .executableTarget(
         name: "GhosthubApp",
         dependencies: [
+            "GhosthubHerdr",
             "GhosthubUI",
             "GhosthubSettings",
             "GhosthubWorkspace",
             "GhosthubTerminal",
             "GhosthubTerminalSupport",
             "GhosthubPersistence",
+            "GhosthubTransport",
             "GhosthubTmux",
             .product(name: "Sparkle", package: "Sparkle"),
         ],
@@ -236,7 +253,10 @@ targets.append(
         name: "GhosthubAppTests",
         dependencies: [
             "GhosthubApp",
+            "GhosthubHerdr",
+            "GhosthubTransport",
             "GhosthubUI",
+            "GhosthubWorkspace",
             "GhosthubTestSupport",
         ],
         path: "Tests/App"
@@ -270,8 +290,29 @@ targets.append(
 )
 targets.append(
     .testTarget(
+        name: "GhosthubHerdrTests",
+        dependencies: [
+            "GhosthubHerdr",
+            "GhosthubTransport",
+            "GhosthubWorkspace",
+        ],
+        path: "Tests/Herdr"
+    )
+)
+targets.append(
+    .testTarget(
+        name: "GhosthubTransportTests",
+        dependencies: [
+            "GhosthubTransport",
+        ],
+        path: "Tests/Transport"
+    )
+)
+targets.append(
+    .testTarget(
         name: "GhosthubTmuxTests",
         dependencies: [
+            "GhosthubTransport",
             "GhosthubTmux",
         ],
         path: "Tests/Tmux"
@@ -286,6 +327,7 @@ if hasBootstrappedLibghostty {
                 "GhosthubTerminal",
                 "GhosthubTerminalSupport",
                 "GhosthubTestSupport",
+                "GhosthubTransport",
                 "GhosthubTmux",
                 "GhosthubUI",
                 "GhosthubWorkspace",

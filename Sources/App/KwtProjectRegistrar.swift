@@ -1,3 +1,4 @@
+import GhosthubTransport
 import Foundation
 import GhosthubTmux
 
@@ -57,17 +58,17 @@ struct KwtProjectRegistrar: Sendable {
         remoteBinaryRevision: String? =
             KwtBinaryLocator.bundledRemoteRevision(),
         loginShellProvider: @escaping @Sendable () -> String =
-            TmuxBinaryResolver.loginShell
+            AccountCommandRunner.loginShell
     ) {
         self.localRunner = localRunner ?? { command in
-            TmuxBinaryResolver.runLoginShell(
+            AccountCommandRunner.runLoginShell(
                 shell: loginShellProvider(),
                 command: command,
                 timeout: processTimeout
             )
         }
         self.remoteRunner = remoteRunner ?? { host, command in
-            TmuxBinaryResolver.runRemoteLoginShell(
+            AccountCommandRunner.runRemoteLoginShell(
                 host: host,
                 command: command,
                 timeout: processTimeout
@@ -79,7 +80,7 @@ struct KwtProjectRegistrar: Sendable {
 
     func register(
         projectPath: String,
-        on host: TmuxHost
+        on host: CommandHost
     ) async throws -> KwtProjectRecord {
         switch host {
         case .local:
