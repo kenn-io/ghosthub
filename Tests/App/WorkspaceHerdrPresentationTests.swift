@@ -792,13 +792,13 @@ struct WorkspaceHerdrPresentationTests {
     }
 
     @Test(
-        "constructive retry revalidates the original launch state",
+        "constructive retry attaches when the target is already running",
         arguments: [
             HerdrSessionLifecycleCoordinator.OperationKind.create,
             .restart,
         ]
     )
-    func constructiveRetryRevalidatesLaunchState(
+    func constructiveRetryAttachesRunningSession(
         kind: HerdrSessionLifecycleCoordinator.OperationKind
     ) async throws {
         var environment = try environment()
@@ -815,16 +815,91 @@ struct WorkspaceHerdrPresentationTests {
         let desiredState: HerdrDiscoveryResult = kind == .create
             ? .available([])
             : .available([stopped])
-        let changedState: HerdrDiscoveryResult = kind == .create
-            ? .available([
-                HerdrSessionSummary(
-                    name: sessionName,
-                    isDefault: false,
-                    state: .running
-                ),
-            ])
+        let running = HerdrSessionSummary(
+            name: sessionName,
+            isDefault: false,
+            state: .running
+        )
+        let discoveries = HerdrDiscoveryQueue([
+            desiredState,
+            .available([running]),
+        ])
+        let store = RecordingNativeSessionSurfaceStore(
+            launchError: HerdrCommandError.unavailable
+        )
+        let coordinator = HerdrSessionLifecycleCoordinator()
+        let model = try makeHerdrModel(
+            environment,
+            store: store,
+            discovery: { _ in discoveries.removeFirst() },
+            coordinator: coordinator
+        )
+        let selection = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID,
+            name: sessionName
+        )
+        let key = HerdrSessionLifecycleCoordinator.Key(
+            hostID: selection.hostID,
+            sessionName: selection.name
+        )
+
+        if kind == .create {
+            try await model.createHerdrSession(selection)
+        } else {
+            try await model.restartHerdrSession(selection)
+        }
+        await launchHerdrSurface(model, store: store)
+        await waitUntilMainActor { !coordinator.isPending(key) }
+        let configurationCount = store.requestedConfigurations.count
+
+        await model.retryBorrowedHerdrSession(selection)
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedHerdrSurface()
+            return store.requestedConfigurations.count
+                == configurationCount + 1
+        }
+
+        #expect(discoveries.callCount == 2)
+        let command = try #require(store.requestedConfigurations.last?.command)
+        #expect(command.contains("'session'"))
+        #expect(command.contains("'attach'"))
+        #expect(!command.contains("--session"))
+        #expect(!coordinator.isPending(key))
+        await model.shutdown()
+    }
+
+    @Test(
+        "invalid constructive retry state is visible and retires the intent",
+        arguments: [
+            HerdrSessionLifecycleCoordinator.OperationKind.create,
+            .restart,
+        ]
+    )
+    func constructiveRetryRetiresInvalidState(
+        kind: HerdrSessionLifecycleCoordinator.OperationKind
+    ) async throws {
+        var environment = try environment()
+        environment.snapshot.hosts[0].herdrAvailable = true
+        let sessionName = kind == .create ? "new-review" : "sleeping"
+        let stopped = HerdrSessionSummary(
+            name: sessionName,
+            isDefault: false,
+            state: .stopped
+        )
+        if kind == .restart {
+            environment.snapshot.hosts[0].herdrSessions.append(stopped)
+        }
+        let desiredState: HerdrDiscoveryResult = kind == .create
+            ? .available([])
+            : .available([stopped])
+        let invalidState: HerdrDiscoveryResult = kind == .create
+            ? .available([stopped])
             : .available([])
-        let discoveries = HerdrDiscoveryQueue([desiredState, changedState])
+        let discoveries = HerdrDiscoveryQueue([
+            desiredState,
+            invalidState,
+            desiredState,
+        ])
         let store = RecordingNativeSessionSurfaceStore(
             launchError: HerdrCommandError.unavailable
         )
@@ -855,7 +930,17 @@ struct WorkspaceHerdrPresentationTests {
 
         await model.retryBorrowedHerdrSession(selection)
 
-        #expect(discoveries.callCount == 2)
+        let expectedError: HerdrSessionPresentationError = kind == .create
+            ? .sessionExists(sessionName)
+            : .sessionMissing(sessionName)
+        #expect(
+            model.activeBorrowedHerdrConnectionState
+                == .disconnected(reason: expectedError.localizedDescription)
+        )
+
+        await model.retryBorrowedHerdrSession(selection)
+
+        #expect(discoveries.callCount == 3)
         #expect(store.requestedConfigurations.count == configurationCount)
         #expect(!coordinator.isPending(key))
         await model.shutdown()

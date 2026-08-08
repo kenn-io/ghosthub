@@ -432,6 +432,10 @@ final class WorkspaceSceneModel: ObservableObject {
     @Published private(set) var activeBorrowedHerdrSelection:
         WorkspaceHerdrSessionSelection?
     private var activeBorrowedHerdrHandle: BorrowedHerdrSessionHandle?
+    var activeBorrowedHerdrConnectionState: ConnectionState? {
+        guard let activeBorrowedHerdrHandle else { return nil }
+        return borrowedHerdrConnectionStates[activeBorrowedHerdrHandle.id]
+    }
     private struct PendingHerdrLaunch {
         let operation: HerdrSessionLifecycleCoordinator.Operation
         var authority: HerdrAttachmentAuthority?
@@ -4981,6 +4985,22 @@ final class WorkspaceSceneModel: ObservableObject {
                 guard activeBorrowedHerdrSelection == selection else {
                     return
                 }
+                if currentSession?.state == .running {
+                    failedHerdrLaunchIntent = nil
+                    closeBorrowedHerdrSession(selection)
+                    guard presentHerdrSession(
+                        selection,
+                        launchMode: .attachExisting
+                    ) != nil else {
+                        stopHerdrReconnectWithUnableToAttach(
+                            HerdrSessionPresentationError.unavailable
+                                .localizedDescription
+                        )
+                        return
+                    }
+                    prepareActiveBorrowedHerdrSurface()
+                    return
+                }
                 switch intent.kind {
                 case .create:
                     guard currentSession == nil else {
@@ -5004,8 +5024,27 @@ final class WorkspaceSceneModel: ObservableObject {
                 }
                 try launchHerdrSession(selection, kind: intent.kind)
                 prepareActiveBorrowedHerdrSurface()
+            } catch is CancellationError {
+                return
             } catch {
-                failedHerdrLaunchIntent = intent
+                let invalidatesIntent = if let error = error as?
+                    HerdrSessionPresentationError {
+                    switch error {
+                    case .sessionExists, .sessionMissing,
+                         .sessionNotRunning, .sessionNotStopped:
+                        true
+                    case .unavailable, .operationPending,
+                         .stateChangedDuringValidation,
+                         .stateValidationFailed:
+                        false
+                    }
+                } else {
+                    false
+                }
+                failedHerdrLaunchIntent = invalidatesIntent ? nil : intent
+                stopHerdrReconnectWithUnableToAttach(
+                    error.localizedDescription
+                )
             }
             return
         }
