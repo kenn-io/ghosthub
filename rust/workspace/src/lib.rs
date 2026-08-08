@@ -574,6 +574,7 @@ struct ActiveAttachment<T> {
     request: T,
     term: AttachTerm,
     generation: u64,
+    fallback: Option<PresentationKey>,
 }
 
 struct AttachmentState<T> {
@@ -590,6 +591,15 @@ impl<T> AttachmentState<T> {
     }
 
     fn reserve(&mut self, request: T, term: AttachTerm) -> Option<u64> {
+        self.reserve_with_fallback(request, term, None)
+    }
+
+    fn reserve_with_fallback(
+        &mut self,
+        request: T,
+        term: AttachTerm,
+        fallback: Option<PresentationKey>,
+    ) -> Option<u64> {
         if self.active.is_some() {
             return None;
         }
@@ -601,6 +611,7 @@ impl<T> AttachmentState<T> {
             request,
             term,
             generation: self.generation,
+            fallback,
         });
         Some(self.generation)
     }
@@ -625,6 +636,16 @@ impl<T> AttachmentState<T> {
             active.term = term;
         }
         true
+    }
+
+    fn fallback_if_current(&self, generation: u64) -> Option<PresentationKey> {
+        self.is_current(generation)
+            .then(|| {
+                self.active
+                    .as_ref()
+                    .and_then(|active| active.fallback.clone())
+            })
+            .flatten()
     }
 
     fn clear_if_current(&mut self, generation: u64) -> bool {
@@ -1127,7 +1148,7 @@ impl Workspace {
             return Ok(());
         }
 
-        self.start_attachment(request)
+        self.start_attachment(request, None)
     }
 
     /// Select another presentation, retaining the current ordinary tmux client.
@@ -1182,8 +1203,15 @@ impl Workspace {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .contains(&key);
         let previous = self.retain_active_presentation()?;
-        if self.activate_retained_presentation(&key)? {
-            return Ok(());
+        match self.activate_retained_presentation(&key) {
+            Ok(true) => return Ok(()),
+            Ok(false) => {}
+            Err(error) => {
+                if let Some(previous) = previous {
+                    let _restored = self.activate_retained_presentation(&previous);
+                }
+                return Err(error);
+            }
         }
         if already_open {
             if let Some(previous) = previous {
@@ -1193,13 +1221,7 @@ impl Workspace {
                 "the retained terminal presentation is no longer available",
             ));
         }
-        if let Err(error) = self.start_attachment(request) {
-            if let Some(previous) = previous {
-                let _restored = self.activate_retained_presentation(&previous);
-            }
-            return Err(error);
-        }
-        Ok(())
+        self.start_attachment(request, previous)
     }
 
     fn retain_active_presentation(&self) -> Result<Option<PresentationKey>, WorkspaceError> {
@@ -1273,73 +1295,14 @@ impl Workspace {
         &self,
         key: &PresentationKey,
     ) -> Result<bool, WorkspaceError> {
-        let Some(presentation) = self
-            .inner
-            .retained_presentations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take(key)
-        else {
-            return Ok(false);
-        };
-        let RetainedPresentation {
-            key: _,
-            selection,
-            attachment: retained_attachment,
-            worker,
-            presentation_id,
-        } = presentation;
-        let request = retained_attachment.request;
-        let term = retained_attachment.term;
-        let surface = worker.surface_handle();
-        let geometry = *self
-            .inner
-            .terminal_geometry
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-
-        let mut attachment = self
-            .inner
-            .attachment
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let generation = attachment
-            .reserve(request, term)
-            .ok_or_else(|| WorkspaceError::new("a terminal presentation is already opening"))?;
-        if let Err(error) =
-            worker.resize_with_metadata(geometry.grid, geometry.sequence, geometry.pixels)
-        {
-            attachment.clear_if_current(generation);
-            return Err(WorkspaceError::from_worker(&error));
-        }
-        let mut workers = self
-            .inner
-            .worker
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if workers.active().is_some() {
-            attachment.clear_if_current(generation);
-            return Err(WorkspaceError::new(
-                "a terminal presentation is already open",
-            ));
-        }
-        workers.publish(worker);
-        drop(workers);
-        drop(attachment);
-
-        clear_pending_paste(&self.inner);
-        set_terminal_notice(&self.inner, term);
-        self.set_state(WorkspaceContent::Terminal {
-            host_id: selection.host_id().to_owned(),
-            endpoint: selection.endpoint().to_owned(),
-            session: selection.session().to_owned(),
-            presentation_id,
-            surface,
-        });
-        Ok(true)
+        activate_retained_presentation(&self.inner, key)
     }
 
-    fn start_attachment(&self, request: AttachRequest) -> Result<(), WorkspaceError> {
+    fn start_attachment(
+        &self,
+        request: AttachRequest,
+        fallback: Option<PresentationKey>,
+    ) -> Result<(), WorkspaceError> {
         let generation;
         {
             let mut attachment = self
@@ -1361,7 +1324,7 @@ impl Workspace {
                 ));
             }
             generation = attachment
-                .reserve(request.clone(), AttachTerm::Xterm256Color)
+                .reserve_with_fallback(request.clone(), AttachTerm::Xterm256Color, fallback.clone())
                 .ok_or_else(|| WorkspaceError::new("a terminal presentation is already opening"))?;
             clear_terminal_notice(&self.inner);
             *state = WorkspaceContent::Attaching {
@@ -1384,7 +1347,9 @@ impl Workspace {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if attachment.clear_if_current(generation) {
+                drop(attachment);
                 self.restore_inventory_state();
+                restore_attach_fallback(&self.inner, fallback);
             }
             return Err(WorkspaceError::new(format!("start attach task: {error}")));
         }
@@ -1879,8 +1844,11 @@ impl Workspace {
                 .attachment
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let fallback = attachment.fallback_if_current(generation);
             if attachment.clear_if_current(generation) {
+                drop(attachment);
                 self.restore_inventory_state();
+                restore_attach_fallback(&self.inner, fallback);
                 emitted.push(WorkspaceEvent::Error(format!(
                     "start TERM=xterm retry: {error}"
                 )));
@@ -1891,6 +1859,96 @@ impl Workspace {
     fn set_state(&self, state: WorkspaceContent) {
         set_inner_state(&self.inner, state);
     }
+}
+
+fn activate_retained_presentation(
+    inner: &Inner,
+    key: &PresentationKey,
+) -> Result<bool, WorkspaceError> {
+    let Some(presentation) = inner
+        .retained_presentations
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take(key)
+    else {
+        return Ok(false);
+    };
+    let geometry = *inner
+        .terminal_geometry
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let request = presentation.attachment.request.clone();
+    let term = presentation.attachment.term;
+    let mut attachment = inner
+        .attachment
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(generation) = attachment.reserve(request, term) else {
+        drop(attachment);
+        reinsert_retained_presentation(inner, presentation);
+        return Err(WorkspaceError::new(
+            "a terminal presentation is already opening",
+        ));
+    };
+    if let Err(error) =
+        presentation
+            .worker
+            .resize_with_metadata(geometry.grid, geometry.sequence, geometry.pixels)
+    {
+        attachment.clear_if_current(generation);
+        drop(attachment);
+        reinsert_retained_presentation(inner, presentation);
+        return Err(WorkspaceError::from_worker(&error));
+    }
+    let mut workers = inner
+        .worker
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if workers.active().is_some() {
+        attachment.clear_if_current(generation);
+        drop(workers);
+        drop(attachment);
+        reinsert_retained_presentation(inner, presentation);
+        return Err(WorkspaceError::new(
+            "a terminal presentation is already open",
+        ));
+    }
+    let RetainedPresentation {
+        key: _,
+        selection,
+        attachment: _,
+        worker,
+        presentation_id,
+    } = presentation;
+    let surface = worker.surface_handle();
+    workers.publish(worker);
+    drop(workers);
+    drop(attachment);
+
+    clear_pending_paste(inner);
+    set_terminal_notice(inner, term);
+    set_inner_state(
+        inner,
+        WorkspaceContent::Terminal {
+            host_id: selection.host_id().to_owned(),
+            endpoint: selection.endpoint().to_owned(),
+            session: selection.session().to_owned(),
+            presentation_id,
+            surface,
+        },
+    );
+    Ok(true)
+}
+
+fn reinsert_retained_presentation(
+    inner: &Inner,
+    presentation: RetainedPresentation<TerminalWorker>,
+) {
+    inner
+        .retained_presentations
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(presentation);
 }
 
 const fn event_drain_may_have_more(processed: usize, exited: bool) -> bool {
@@ -2078,8 +2136,11 @@ fn run_attach(inner: &Inner, request: &AttachRequest, term: AttachTerm, generati
                     worker.resize_with_metadata(geometry.grid, geometry.sequence, geometry.pixels)
                 },
             ) {
+                let fallback = attachment.fallback_if_current(generation);
                 attachment.clear_if_current(generation);
+                drop(attachment);
                 publish_attachment_failure(inner, request.inventory_generation, error);
+                restore_attach_fallback(inner, fallback);
                 return;
             }
             set_terminal_notice(inner, term);
@@ -2100,9 +2161,11 @@ fn run_attach(inner: &Inner, request: &AttachRequest, term: AttachTerm, generati
                 .attachment
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let fallback = attachment.fallback_if_current(generation);
             if !attachment.clear_if_current(generation) {
                 return;
             }
+            drop(attachment);
             match error {
                 AttachFreshError::Host(error) => {
                     publish_attachment_failure(inner, request.inventory_generation, error);
@@ -2111,7 +2174,25 @@ fn run_attach(inner: &Inner, request: &AttachRequest, term: AttachTerm, generati
                     publish_stale_attachment_failure(inner, request, snapshot, &error);
                 }
             }
+            restore_attach_fallback(inner, fallback);
         }
+    }
+}
+
+fn restore_attach_fallback(inner: &Inner, fallback: Option<PresentationKey>) {
+    let Some(fallback) = fallback else {
+        return;
+    };
+    match activate_retained_presentation(inner, &fallback) {
+        Ok(true) => {}
+        Ok(false) => set_local_notice(
+            inner,
+            "the previous terminal presentation is no longer available".to_owned(),
+        ),
+        Err(error) => set_local_notice(
+            inner,
+            format!("could not restore the previous terminal presentation: {error}"),
+        ),
     }
 }
 

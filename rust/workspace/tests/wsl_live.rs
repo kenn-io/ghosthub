@@ -282,6 +282,71 @@ fn switches_between_discovered_sessions_without_destroying_either() {
 
 #[test]
 #[ignore = "requires WSL2 and tmux; creates only an isolated TMUX_TMPDIR server"]
+fn failed_first_switch_restores_the_previous_presentation() {
+    let _serial = WSL_LIVE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let server = IsolatedServer::start("switch-failure");
+    server.run_tmux(["new-session", "-d", "-s", "switch-live"]);
+    let workspace = start_workspace(&server);
+    wait_for_sessions(&workspace, &["workspace-live", "switch-live"]);
+
+    workspace
+        .attach(&session_selection(&workspace, "workspace-live"))
+        .expect("attach first session");
+    wait_for_terminal(&workspace, "workspace-live");
+    let presentation_id = active_presentation_id(&workspace);
+    let missing = session_selection(&workspace, "switch-live");
+    server.run_tmux(["kill-session", "-t", "=switch-live"]);
+
+    workspace
+        .switch_session(&missing)
+        .expect("start guarded switch to stale inventory target");
+    wait_for_terminal(&workspace, "workspace-live");
+    assert_eq!(active_presentation_id(&workspace), presentation_id);
+    assert_session_attached(&server, "workspace-live", 1);
+    workspace.detach();
+}
+
+#[test]
+#[ignore = "requires WSL2 and tmux; creates only an isolated TMUX_TMPDIR server"]
+fn failed_retained_activation_restores_the_previous_presentation() {
+    let _serial = WSL_LIVE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let server = IsolatedServer::start("retained-failure");
+    server.run_tmux(["new-session", "-d", "-s", "switch-live"]);
+    let workspace = start_workspace(&server);
+    wait_for_sessions(&workspace, &["workspace-live", "switch-live"]);
+
+    workspace
+        .attach(&session_selection(&workspace, "workspace-live"))
+        .expect("attach first session");
+    wait_for_terminal(&workspace, "workspace-live");
+    workspace
+        .switch_session(&session_selection(&workspace, "switch-live"))
+        .expect("attach second session");
+    wait_for_terminal(&workspace, "switch-live");
+    let dead_target = session_selection(&workspace, "switch-live");
+    workspace
+        .switch_session(&session_selection(&workspace, "workspace-live"))
+        .expect("restore first session");
+    let presentation_id = active_presentation_id(&workspace);
+
+    server.run_tmux(["kill-session", "-t", "=switch-live"]);
+    thread::sleep(Duration::from_secs(2));
+    assert!(workspace.switch_session(&dead_target).is_err());
+    assert!(matches!(
+        workspace.snapshot().content(),
+        WorkspaceContent::Terminal { session, .. } if session == "workspace-live"
+    ));
+    assert_eq!(active_presentation_id(&workspace), presentation_id);
+    assert_session_attached(&server, "workspace-live", 1);
+    workspace.detach();
+}
+
+#[test]
+#[ignore = "requires WSL2 and tmux; creates only an isolated TMUX_TMPDIR server"]
 fn refuses_to_attach_when_the_discovered_session_was_replaced() {
     let _serial = WSL_LIVE
         .lock()
@@ -437,4 +502,52 @@ fn active_presentation_id(workspace: &Workspace) -> u64 {
         } => *presentation_id,
         _ => panic!("terminal presentation should be active"),
     }
+}
+
+fn start_workspace(server: &IsolatedServer) -> Workspace {
+    let config = WslConfig::configured(None, "/usr/bin/tmux", Some(server.tmpdir.clone()))
+        .expect("valid isolated config");
+    Workspace::start_wsl(config, TerminalAppearance::default())
+}
+
+fn wait_for_sessions(workspace: &Workspace, expected: &[&str]) {
+    wait_until_with_diagnostic(
+        || {
+            matches!(
+                workspace.snapshot().content(),
+                WorkspaceContent::Ready { sessions, .. }
+                    if expected.iter().all(|expected| {
+                        sessions.iter().any(|session| session.name() == *expected)
+                    })
+            )
+        },
+        || workspace_diagnostic(workspace),
+    );
+}
+
+fn wait_for_terminal(workspace: &Workspace, expected: &str) {
+    wait_until_with_diagnostic(
+        || {
+            matches!(
+                workspace.snapshot().content(),
+                WorkspaceContent::Terminal { session, .. } if session == expected
+            )
+        },
+        || workspace_diagnostic(workspace),
+    );
+}
+
+fn assert_session_attached(server: &IsolatedServer, name: &str, expected: u32) {
+    let output = server.run_tmux([
+        "list-sessions",
+        "-F",
+        "#{session_name}\t#{session_attached}",
+    ]);
+    let sessions = String::from_utf8(output.stdout).expect("UTF-8 attached-client count");
+    assert!(
+        sessions
+            .lines()
+            .any(|line| line == format!("{name}\t{expected}")),
+        "expected {name} to have {expected} attached client(s): {sessions:?}"
+    );
 }
