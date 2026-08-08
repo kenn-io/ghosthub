@@ -563,6 +563,7 @@ struct PresentationKey {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct FallbackAuthority {
     presentation: PresentationKey,
+    target: PresentationKey,
     navigation_generation: u64,
 }
 
@@ -1460,6 +1461,7 @@ impl Workspace {
         let previous = in_flight_fallback.or(visible_previous);
         let fallback = previous.clone().map(|presentation| FallbackAuthority {
             presentation,
+            target: key.clone(),
             navigation_generation,
         });
         match self.activate_retained_presentation(&key, fallback.clone()) {
@@ -2071,8 +2073,8 @@ impl Workspace {
         let Some((request, generation, fallback)) = attachment else {
             return;
         };
-        let fallback = fallback
-            .filter(|fallback| fallback_owns_visible_request(&self.inner, fallback, &request));
+        let fallback =
+            fallback.filter(|fallback| fallback_owns_request(&self.inner, fallback, &request));
         {
             let mut attachment = self
                 .inner
@@ -2602,11 +2604,6 @@ fn run_attach(inner: &Inner, request: &AttachRequest, term: AttachTerm, generati
             if let Some(active) = attachment.active_mut() {
                 session.clone_into(&mut active.request.name);
             }
-            let visible_request = attachment
-                .active()
-                .expect("current attachment was checked")
-                .request
-                .clone();
             if let Err(error) = publish_worker_at_latest_geometry(
                 &inner.terminal_geometry,
                 &inner.worker,
@@ -2618,9 +2615,7 @@ fn run_attach(inner: &Inner, request: &AttachRequest, term: AttachTerm, generati
             ) {
                 let fallback = attachment
                     .fallback_if_current(generation)
-                    .filter(|fallback| {
-                        fallback_owns_visible_request(inner, fallback, &visible_request)
-                    });
+                    .filter(|fallback| fallback_owns_request(inner, fallback, request));
                 attachment.clear_if_current(generation);
                 drop(attachment);
                 publish_attachment_failure(inner, request.inventory_generation, error);
@@ -2737,25 +2732,13 @@ fn remove_failed_retained_retry(inner: &Inner, key: &PresentationKey) {
     }
 }
 
-fn fallback_owns_visible_request(
+fn fallback_owns_request(
     inner: &Inner,
     fallback: &FallbackAuthority,
     request: &AttachRequest,
 ) -> bool {
-    if inner.navigation_generation.load(Ordering::Acquire) != fallback.navigation_generation {
-        return false;
-    }
-    matches!(
-        &*inner
-            .state
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner),
-        WorkspaceContent::Attaching { host_id, endpoint, session }
-            | WorkspaceContent::Terminal { host_id, endpoint, session, .. }
-            if host_id == &request.host_id
-                && endpoint == request.endpoint.distro()
-                && session == &request.name
-    )
+    inner.navigation_generation.load(Ordering::Acquire) == fallback.navigation_generation
+        && fallback.target == request.presentation_key()
 }
 
 fn failed_attachment_context(
@@ -2769,7 +2752,7 @@ fn failed_attachment_context(
     let request = attachment.active()?.request.clone();
     let fallback = attachment
         .fallback_if_current(generation)
-        .filter(|fallback| fallback_owns_visible_request(inner, fallback, &request));
+        .filter(|fallback| fallback_owns_request(inner, fallback, &request));
     Some((request, fallback))
 }
 
@@ -3438,8 +3421,10 @@ mod tests {
         identity: session::SessionIdentity,
         navigation_generation: u64,
     ) -> FallbackAuthority {
+        let presentation = presentation_key_fixture(kernel_boot_id, init_start_ticks, identity);
         FallbackAuthority {
-            presentation: presentation_key_fixture(kernel_boot_id, init_start_ticks, identity),
+            target: presentation.clone(),
+            presentation,
             navigation_generation,
         }
     }
@@ -3815,6 +3800,7 @@ mod tests {
                 identity: session::SessionIdentity::new(100, "$2", 201),
                 ..key.clone()
             },
+            target: key.clone(),
             navigation_generation: 7,
         };
         let mut retained = RetainedPresentations::new();
@@ -3857,6 +3843,7 @@ mod tests {
         let mut restored_attachment = AttachmentState::new();
         let rebound_fallback = FallbackAuthority {
             presentation: fallback.presentation.clone(),
+            target: fallback.target.clone(),
             navigation_generation: 8,
         };
         let restored_generation = reserve_retained_attachment(
@@ -4147,6 +4134,7 @@ mod tests {
                 42,
                 session::SessionIdentity::new(100, "$2", 201),
             ),
+            target: request.presentation_key(),
             navigation_generation,
         };
         set_inner_state(
@@ -4158,13 +4146,9 @@ mod tests {
             },
         );
 
-        assert!(fallback_owns_visible_request(
-            &workspace.inner,
-            &fallback,
-            &request
-        ));
+        assert!(fallback_owns_request(&workspace.inner, &fallback, &request));
         workspace.detach();
-        assert!(!fallback_owns_visible_request(
+        assert!(!fallback_owns_request(
             &workspace.inner,
             &fallback,
             &request
@@ -4173,7 +4157,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn failed_attachment_context_uses_the_reconciled_session_name() {
+    fn failed_attachment_context_uses_stable_identity_after_name_reconciliation() {
         let snapshot = HostSnapshot::test_fixture("Ubuntu", "boot-id", 42, Vec::new());
         let request = attach_request_fixture(
             &snapshot,
@@ -4186,12 +4170,13 @@ mod tests {
             Vec::new(),
         ));
         let navigation_generation = workspace.begin_navigation();
-        let fallback = fallback_fixture(
+        let mut fallback = fallback_fixture(
             "boot-id",
             42,
             session::SessionIdentity::new(100, "$2", 201),
             navigation_generation,
         );
+        fallback.target = request.presentation_key();
         let generation = workspace
             .inner
             .attachment
@@ -4212,7 +4197,7 @@ mod tests {
             WorkspaceContent::Attaching {
                 host_id: "wsl".to_owned(),
                 endpoint: "Ubuntu".to_owned(),
-                session: "renamed".to_owned(),
+                session: "original".to_owned(),
             },
         );
 
@@ -4965,12 +4950,13 @@ mod tests {
         )
         .expect("selected request");
         let opening_navigation = workspace.begin_navigation();
-        let fallback = fallback_fixture(
+        let mut fallback = fallback_fixture(
             "boot-id",
             42,
             session::SessionIdentity::new(100, "$3", 202),
             opening_navigation,
         );
+        fallback.target = opening.presentation_key();
         workspace
             .inner
             .attachment
@@ -4993,6 +4979,7 @@ mod tests {
         let selected_navigation = workspace.begin_navigation();
         let carried_fallback = carried_fallback.map(|presentation| FallbackAuthority {
             presentation,
+            target: selected.presentation_key(),
             navigation_generation: selected_navigation,
         });
         let selected_generation = workspace
@@ -5005,11 +4992,11 @@ mod tests {
 
         let attachment = workspace.inner.attachment.lock().expect("attachment");
         let active = attachment.active().expect("selected attachment active");
-        assert_eq!(active.request.name, "selected");
         assert_eq!(
             attachment.fallback_if_current(selected_generation).as_ref(),
             Some(&FallbackAuthority {
                 presentation: fallback.presentation,
+                target: active.request.presentation_key(),
                 navigation_generation: selected_navigation,
             })
         );
