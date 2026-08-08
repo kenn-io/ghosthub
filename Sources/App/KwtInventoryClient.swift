@@ -552,6 +552,11 @@ enum KwtSnapshotMerger {
                 let existing = existingWorktrees.first {
                     normalizedPath($0.path) == normalizedPath(record.path)
                 }
+                let sameGeneration = record.generation.flatMap { generation in
+                    existingWorktrees.first {
+                        $0.projectID == projectID && $0.generation == generation
+                    }
+                }
                 let worktreeID = existing?.id ?? stableID(
                     "worktree|\(hostID.uuidString)|\(record.repository)|\(record.path)"
                 )
@@ -585,6 +590,7 @@ enum KwtSnapshotMerger {
                 // how a protected marker is actually retired.
                 worktree.tmuxSocketName = record.tmuxSocketName
                     ?? existing?.tmuxSocketName
+                    ?? sameGeneration?.tmuxSocketName
                 worktree.sessionBackend = snapshot.host(id: hostID)?.kind == .remote
                     ? .remoteTmux : .localTmux
                 worktrees.append(worktree)
