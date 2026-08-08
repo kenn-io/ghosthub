@@ -854,6 +854,8 @@ public struct RootView: View {
                             selection = Self.finishFailedWorktreeRemoval(
                                 selection,
                                 in: snapshot,
+                                currentSnapshot:
+                                handlers.currentWorkspaceSnapshot,
                                 visibility: worktreeVisibility,
                                 pendingWorktrees: &pendingWorktreeRemovals
                             )
@@ -916,6 +918,7 @@ public struct RootView: View {
                 selection = Self.finishFailedWorktreeRemoval(
                     selection,
                     in: snapshot,
+                    currentSnapshot: handlers.currentWorkspaceSnapshot,
                     visibility: worktreeVisibility,
                     pendingWorktrees: &pendingWorktreeRemovals
                 )
@@ -927,6 +930,7 @@ public struct RootView: View {
                 selection = Self.finishFailedWorktreeRemoval(
                     selection,
                     in: snapshot,
+                    currentSnapshot: handlers.currentWorkspaceSnapshot,
                     visibility: worktreeVisibility,
                     pendingWorktrees: &pendingWorktreeRemovals
                 )
@@ -1018,12 +1022,13 @@ public struct RootView: View {
     static func finishFailedWorktreeRemoval(
         _ current: WorkspaceSelection,
         in snapshot: WorkspaceSnapshot,
+        currentSnapshot: (() -> WorkspaceSnapshot)? = nil,
         visibility: WorktreeVisibility,
         pendingWorktrees: inout [UUID: PendingWorktreeRemovalIdentity]
     ) -> WorkspaceSelection {
         let updated = selectionAfterSnapshotChange(
             current,
-            in: snapshot,
+            in: currentSnapshot?() ?? snapshot,
             visibility: visibility,
             pendingRemovals: pendingWorktrees
         )

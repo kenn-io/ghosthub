@@ -831,6 +831,9 @@ struct WorkspaceWindow: View {
                 createTmuxSession: { [sceneModel] request in
                     sceneModel.createTmuxSession(request)
                 },
+                currentWorkspaceSnapshot: { [sceneModel] in
+                    sceneModel.snapshot
+                },
                 refreshWorkspaceInventory: { [sceneModel] in
                     sceneModel.refreshWorkspaceInventory()
                 },

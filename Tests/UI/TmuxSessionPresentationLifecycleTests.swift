@@ -332,6 +332,25 @@ struct TmuxSessionPresentationLifecycleTests {
         withExtendedLifetime(hostingView) {}
     }
 
+    @Test("asynchronous removal failure uses the latest display snapshot")
+    func asynchronousRemovalFailureUsesLatestSnapshot() {
+        let model = WorktreeRemovalPresentationModel()
+        var requestedSessions: [WorkspaceTmuxSessionSelection] = []
+        let hostingView = hostView(
+            AsynchronousFailedWorktreeRemovalPresentationHarness(
+                model: model,
+                onOpen: { requestedSessions.append($0) }
+            ),
+            size: CGSize(width: 960, height: 640)
+        )
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+
+        #expect(model.selection.selectedProjectID == model.projectID)
+        #expect(model.selection.selectedWorktreeID == nil)
+        #expect(requestedSessions.isEmpty)
+        withExtendedLifetime(hostingView) {}
+    }
+
     @Test("reconfirmation does not open a sibling worktree session")
     func reconfirmationDoesNotOpenSiblingSession() throws {
         let model = WorktreeRemovalPresentationModel()
@@ -988,6 +1007,7 @@ private final class WorktreeRemovalPresentationModel: ObservableObject {
     let projectID: UUID
     let request: WorktreeRemovalRequest
     let removedWorktreeID: UUID
+    var didRunAsynchronousFailure = false
 
     init() {
         let host = HostSummary.fixture()
@@ -1082,6 +1102,11 @@ private final class WorktreeRemovalPresentationModel: ObservableObject {
         )
     }
 
+    func failRemovalAfterSnapshotUpdate() async throws {
+        removeTargetDuringPreparation()
+        throw WorktreeRemovalPresentationFailure.failed
+    }
+
     func reuseRemovedWorktreeID() {
         var snapshot = display.snapshot
         guard let index = snapshot.worktrees.firstIndex(where: {
@@ -1140,5 +1165,43 @@ private struct WorktreeRemovalPresentationHarness: View {
             handlers: InteractionHandlers(openTmuxSession: onOpen),
             selection: $model.selection
         )
+    }
+}
+
+private enum WorktreeRemovalPresentationFailure: Error {
+    case failed
+}
+
+private struct AsynchronousFailedWorktreeRemovalPresentationHarness: View {
+    @ObservedObject var model: WorktreeRemovalPresentationModel
+    let onOpen: (WorkspaceTmuxSessionSelection) -> Void
+
+    var body: some View {
+        let renderedSnapshot = model.display.snapshot
+        let currentSnapshot = { model.display.snapshot }
+        RootView(
+            display: model.display,
+            handlers: InteractionHandlers(
+                openTmuxSession: onOpen,
+                currentWorkspaceSnapshot: currentSnapshot
+            ),
+            selection: $model.selection
+        )
+        .task {
+            guard !model.didRunAsynchronousFailure else { return }
+            model.didRunAsynchronousFailure = true
+            var pending = pendingRemovalIdentities(model.request.worktree)
+            do {
+                try await model.failRemovalAfterSnapshotUpdate()
+            } catch {
+                model.selection = RootView.finishFailedWorktreeRemoval(
+                    model.selection,
+                    in: renderedSnapshot,
+                    currentSnapshot: currentSnapshot,
+                    visibility: .default,
+                    pendingWorktrees: &pending
+                )
+            }
+        }
     }
 }

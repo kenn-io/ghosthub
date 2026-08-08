@@ -277,6 +277,7 @@ public struct InteractionHandlers {
         ((WorkspaceTmuxSessionSelection) async throws -> Void)?
     public let createTmuxSession:
         ((WorkspaceTmuxSessionCreationRequest) -> Void)?
+    public let currentWorkspaceSnapshot: (() -> WorkspaceSnapshot)?
     public let refreshWorkspaceInventory: (() -> Void)?
     public let reconnectActiveTmuxSessionNow: (() -> Void)?
     public let resumeTmuxReconnectAfterSSHRecovery:
@@ -322,6 +323,7 @@ public struct InteractionHandlers {
         ((WorkspaceTmuxSessionSelection) async throws -> Void)? = nil,
         createTmuxSession:
         ((WorkspaceTmuxSessionCreationRequest) -> Void)? = nil,
+        currentWorkspaceSnapshot: (() -> WorkspaceSnapshot)? = nil,
         refreshWorkspaceInventory: (() -> Void)? = nil,
         reconnectActiveTmuxSessionNow: (() -> Void)? = nil,
         resumeTmuxReconnectAfterSSHRecovery:
@@ -361,6 +363,7 @@ public struct InteractionHandlers {
         self.killTmuxSession = killTmuxSession
         self.applyTmuxSessionTheme = applyTmuxSessionTheme
         self.createTmuxSession = createTmuxSession
+        self.currentWorkspaceSnapshot = currentWorkspaceSnapshot
         self.refreshWorkspaceInventory = refreshWorkspaceInventory
         self.reconnectActiveTmuxSessionNow = reconnectActiveTmuxSessionNow
         self.resumeTmuxReconnectAfterSSHRecovery =
