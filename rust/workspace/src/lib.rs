@@ -806,6 +806,19 @@ impl<T> RetainedPresentations<T> {
             || self.restarting.iter().any(|entry| &entry.key == key)
     }
 
+    fn key_for_selection(&self, selection: &SessionSelection) -> Option<PresentationKey> {
+        self.entries
+            .iter()
+            .find(|entry| &entry.selection == selection)
+            .map(|entry| entry.key.clone())
+            .or_else(|| {
+                self.restarting
+                    .iter()
+                    .find(|entry| &entry.selection == selection)
+                    .map(|entry| entry.key.clone())
+            })
+    }
+
     fn selections(&self) -> Vec<SessionSelection> {
         self.entries
             .iter()
@@ -929,21 +942,13 @@ impl RetainedPresentations<TerminalWorker> {
         while index < self.entries.len() && processed < budget {
             let confirmed = self.entries[index].worker.is_confirmed_live();
             match self.entries[index].worker.try_event() {
-                Ok(Some(TerminalEvent::ClipboardWrite(write))) => {
+                Ok(Some(TerminalEvent::ClipboardWrite(_) | TerminalEvent::ClipboardRead(_))) => {
                     processed += 1;
-                    emitted.push(WorkspaceEvent::ClipboardWrite {
-                        text: write.text,
-                        primary: write.target == ClipboardTarget::Selection,
-                    });
                     index += 1;
                 }
                 Ok(Some(TerminalEvent::ConfirmPaste(_))) => {
                     processed += 1;
                     let _cancelled = self.entries[index].worker.cancel_paste();
-                    index += 1;
-                }
-                Ok(Some(TerminalEvent::ClipboardRead(_))) => {
-                    processed += 1;
                     index += 1;
                 }
                 Ok(Some(TerminalEvent::Error(error))) => {
@@ -1348,13 +1353,17 @@ impl Workspace {
                 "a terminal presentation is already open",
             ));
         }
-        let request = capture_attach_request(&self.inner, selection)?;
-        let key = request.presentation_key();
         let navigation_generation = self.begin_navigation();
-        if self.activate_retained_presentation(&key, Some(selection), None)? {
-            return Ok(());
+        if let Some(key) = self.retained_key_for_selection(selection) {
+            if self.activate_retained_presentation(&key, Some(selection), None)? {
+                return Ok(());
+            }
+            return Err(WorkspaceError::new(
+                "the retained terminal presentation is no longer available",
+            ));
         }
 
+        let request = capture_attach_request(&self.inner, selection)?;
         self.start_attachment(request, None, navigation_generation)
     }
 
@@ -1396,8 +1405,12 @@ impl Workspace {
             return Ok(());
         }
 
-        let request = capture_attach_request(&self.inner, selection)?;
-        let key = request.presentation_key();
+        let (key, request) = if let Some(key) = self.retained_key_for_selection(selection) {
+            (key, None)
+        } else {
+            let request = capture_attach_request(&self.inner, selection)?;
+            (request.presentation_key(), Some(request))
+        };
         if self
             .inner
             .attachment
@@ -1440,6 +1453,11 @@ impl Workspace {
                 "the retained terminal presentation is no longer available",
             ));
         }
+        let Some(request) = request else {
+            return Err(WorkspaceError::new(
+                "the retained terminal presentation is no longer available",
+            ));
+        };
         self.start_attachment(request, fallback, navigation_generation)
     }
 
@@ -1449,6 +1467,14 @@ impl Workspace {
             .fetch_add(1, Ordering::AcqRel)
             .checked_add(1)
             .expect("navigation generation exhausted")
+    }
+
+    fn retained_key_for_selection(&self, selection: &SessionSelection) -> Option<PresentationKey> {
+        self.inner
+            .retained_presentations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .key_for_selection(selection)
     }
 
     fn supersede_inflight_attachment(&self) -> Result<Option<PresentationKey>, WorkspaceError> {
@@ -1519,6 +1545,7 @@ impl Workspace {
             ));
         }
         if let Some(active) = worker.active() {
+            active.set_clipboard_writes_enabled(false);
             let _cancelled = active.cancel_paste();
         }
         let active_attachment = attachment
@@ -2089,18 +2116,19 @@ impl Workspace {
                 if task_cancellation.is_cancelled() {
                     return;
                 }
-                publish_refresh(&task_inner, generation, || {
+                let reconciliation = resolved.as_ref().ok().map(|context| {
+                    (
+                        context.snapshot.clone(),
+                        context.host.socket_directory().map(str::to_owned),
+                    )
+                });
+                let published = publish_refresh(&task_inner, generation, || {
                     if task_cancellation.is_cancelled() {
                         return;
                     }
                     match resolved {
                         Ok(context) => {
                             let state = ready_content(&context.snapshot);
-                            reconcile_presentation_session_names(
-                                &task_inner,
-                                &context.snapshot,
-                                context.host.socket_directory(),
-                            );
                             *task_inner
                                 .host
                                 .lock()
@@ -2116,6 +2144,14 @@ impl Workspace {
                         .refresh_finished
                         .store(generation, Ordering::Release);
                 });
+                if published && let Some((snapshot, socket_directory)) = reconciliation {
+                    reconcile_presentation_session_names(
+                        &task_inner,
+                        generation,
+                        &snapshot,
+                        socket_directory.as_deref(),
+                    );
+                }
                 task_cancellation.cancel();
             }),
         );
@@ -2270,8 +2306,9 @@ fn activate_retained_presentation(
         worker,
         presentation_id,
     } = presentation;
+    worker.set_clipboard_writes_enabled(false);
     let surface = worker.surface_handle();
-    workers.publish(worker);
+    let worker_generation = workers.publish(worker);
     drop(workers);
     drop(attachment);
 
@@ -2287,6 +2324,15 @@ fn activate_retained_presentation(
             surface,
         },
     );
+    let workers = inner
+        .worker
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if workers.generation() == worker_generation
+        && let Some(worker) = workers.active()
+    {
+        worker.set_clipboard_writes_enabled(true);
+    }
     Ok(true)
 }
 
@@ -2477,7 +2523,7 @@ fn fail_refresh_start(
 
 fn run_attach(inner: &Inner, request: &AttachRequest, term: AttachTerm, generation: u64) {
     match attach_fresh(inner, request, term) {
-        Ok((worker, snapshot, session, initial_geometry)) => {
+        Ok((worker, snapshot, attached_session, initial_geometry)) => {
             let mut attachment = inner
                 .attachment
                 .lock()
@@ -2489,6 +2535,20 @@ fn run_attach(inner: &Inner, request: &AttachRequest, term: AttachTerm, generati
             let surface = worker.surface_handle();
             let endpoint = snapshot.endpoint().distro().to_owned();
             publish_attach_inventory(inner, request, snapshot);
+            let key = attachment
+                .active()
+                .expect("current attachment was checked")
+                .request
+                .presentation_key();
+            let session = current_inventory_session_name(inner, &key).unwrap_or(attached_session);
+            if let Some(active) = attachment.active_mut() {
+                session.clone_into(&mut active.request.name);
+            }
+            let visible_request = attachment
+                .active()
+                .expect("current attachment was checked")
+                .request
+                .clone();
             if let Err(error) = publish_worker_at_latest_geometry(
                 &inner.terminal_geometry,
                 &inner.worker,
@@ -2500,7 +2560,9 @@ fn run_attach(inner: &Inner, request: &AttachRequest, term: AttachTerm, generati
             ) {
                 let fallback = attachment
                     .fallback_if_current(generation)
-                    .filter(|fallback| fallback_owns_visible_request(inner, fallback, request));
+                    .filter(|fallback| {
+                        fallback_owns_visible_request(inner, fallback, &visible_request)
+                    });
                 attachment.clear_if_current(generation);
                 drop(attachment);
                 publish_attachment_failure(inner, request.inventory_generation, error);
@@ -2545,6 +2607,22 @@ fn run_attach(inner: &Inner, request: &AttachRequest, term: AttachTerm, generati
     }
 }
 
+fn current_inventory_session_name(inner: &Inner, key: &PresentationKey) -> Option<String> {
+    inner
+        .host
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .and_then(|published| {
+            refreshed_session_name(
+                key,
+                &published.value.snapshot,
+                published.value.host.socket_directory(),
+            )
+        })
+        .map(str::to_owned)
+}
+
 fn run_retained_retry(inner: &Inner, retry: &RetainedRetry) {
     match attach_fresh(inner, &retry.request, AttachTerm::Xterm) {
         Ok((worker, snapshot, _, initial_geometry)) => {
@@ -2562,6 +2640,7 @@ fn run_retained_retry(inner: &Inner, retry: &RetainedRetry) {
                 fail_retained_retry(inner, &retry.key, Some(error.to_string()));
                 return;
             }
+            worker.set_clipboard_writes_enabled(false);
             let published = inner
                 .retained_presentations
                 .lock()
@@ -2679,32 +2758,38 @@ fn set_attach_inventory(inner: &Inner, request: &AttachRequest, snapshot: HostSn
 
 fn reconcile_presentation_session_names(
     inner: &Inner,
+    refresh_generation: u64,
     snapshot: &HostSnapshot,
     socket_directory: Option<&str>,
 ) {
+    let mut attachment = inner
+        .attachment
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _publication = inner
+        .refresh_publication
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if inner.refresh_generation.load(Ordering::Acquire) != refresh_generation {
+        return;
+    }
     reconcile_retained_session_names(inner, snapshot, socket_directory);
-    let renamed = {
-        let mut attachment = inner
-            .attachment
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        attachment.active_mut().and_then(|active| {
-            let name = refreshed_session_name(
-                &active.request.presentation_key(),
-                snapshot,
-                socket_directory,
-            )?;
-            if name == active.request.name {
-                return None;
-            }
-            name.clone_into(&mut active.request.name);
-            Some((
-                active.request.host_id.clone(),
-                active.request.endpoint.distro().to_owned(),
-                name.to_owned(),
-            ))
-        })
-    };
+    let renamed = attachment.active_mut().and_then(|active| {
+        let name = refreshed_session_name(
+            &active.request.presentation_key(),
+            snapshot,
+            socket_directory,
+        )?;
+        if name == active.request.name {
+            return None;
+        }
+        name.clone_into(&mut active.request.name);
+        Some((
+            active.request.host_id.clone(),
+            active.request.endpoint.distro().to_owned(),
+            name.to_owned(),
+        ))
+    });
     let Some((renamed_host, renamed_endpoint, renamed_session)) = renamed else {
         return;
     };
@@ -3213,6 +3298,28 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
+    fn attach_request_fixture(
+        snapshot: &HostSnapshot,
+        identity: session::SessionIdentity,
+        name: &str,
+    ) -> AttachRequest {
+        AttachRequest {
+            host_id: "wsl".to_owned(),
+            host: WslHost::new(
+                WslConfig::with_distro("Ubuntu").expect("valid WSL config"),
+                Arc::new(StdCommandRunner) as SharedCommandRunner,
+                WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
+                    .expect("absolute WSL path"),
+            ),
+            endpoint: snapshot.endpoint().clone(),
+            runtime: snapshot.runtime().clone(),
+            identity,
+            name: name.to_owned(),
+            inventory_generation: 1,
+        }
+    }
+
     #[test]
     fn terminal_event_drain_requests_continuation_only_after_exhausting_its_budget() {
         assert!(!event_drain_may_have_more(MAX_EVENTS_PER_DRAIN - 1, false));
@@ -3624,12 +3731,6 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn inventory_rename_updates_the_retained_display_name_without_changing_its_key() {
-        let host = WslHost::new(
-            WslConfig::with_distro("Ubuntu").expect("valid WSL config"),
-            Arc::new(StdCommandRunner) as SharedCommandRunner,
-            WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
-                .expect("absolute WSL path"),
-        );
         let identity = session::SessionIdentity::new(100, "$1", 200);
         let original_snapshot = HostSnapshot::test_fixture(
             "Ubuntu",
@@ -3641,15 +3742,7 @@ mod tests {
                 0,
             )],
         );
-        let request = AttachRequest {
-            host_id: "wsl".to_owned(),
-            host,
-            endpoint: original_snapshot.endpoint().clone(),
-            runtime: original_snapshot.runtime().clone(),
-            identity: identity.clone(),
-            name: "original".to_owned(),
-            inventory_generation: 1,
-        };
+        let request = attach_request_fixture(&original_snapshot, identity.clone(), "original");
         let key = request.presentation_key();
         let mut retained = RetainedPresentations::new();
         retained.insert(RetainedPresentation {
@@ -3676,12 +3769,27 @@ mod tests {
         assert!(retained.contains(&key));
         assert_eq!(retained.selections()[0].session(), "renamed");
         assert_eq!(retained.entries[0].attachment.request.name, "renamed");
+        assert_eq!(
+            retained.key_for_selection(&SessionSelection::new("wsl", "Ubuntu", "renamed")),
+            Some(key.clone())
+        );
 
         let workspace = Workspace::preview(WorkspaceSnapshot::ready(
             Appearance::default(),
             "Ubuntu",
             Vec::new(),
         ));
+        *workspace.inner.host.lock().expect("host") = Some(Published::new(
+            HostContext {
+                host: request.host.clone(),
+                snapshot: renamed_snapshot.clone(),
+            },
+            2,
+        ));
+        assert_eq!(
+            current_inventory_session_name(&workspace.inner, &key).as_deref(),
+            Some("renamed")
+        );
         workspace
             .inner
             .attachment
@@ -3698,7 +3806,7 @@ mod tests {
             },
         );
 
-        reconcile_presentation_session_names(&workspace.inner, &renamed_snapshot, None);
+        reconcile_presentation_session_names(&workspace.inner, 0, &renamed_snapshot, None);
 
         assert_eq!(
             workspace
