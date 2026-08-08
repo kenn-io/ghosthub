@@ -372,6 +372,11 @@ impl<R: CommandRunner> WslHost<R> {
         &self.runner
     }
 
+    #[must_use]
+    pub fn socket_directory(&self) -> Option<&str> {
+        self.config.socket_directory()
+    }
+
     /// Resolve the exact WSL runtime and discover its tmux inventory.
     ///
     /// # Errors
