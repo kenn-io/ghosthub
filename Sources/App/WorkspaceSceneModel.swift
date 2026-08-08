@@ -1802,7 +1802,8 @@ final class WorkspaceSceneModel: ObservableObject {
         do {
             try await removeWorktree(request)
             return .removed
-        } catch TmuxSessionKillError.sessionChanged {
+        } catch TmuxSessionKillError.sessionChanged,
+            TmuxSessionKillError.sessionNotRunning {
             guard removalHostEndpointMatches(request) else {
                 throw KwtWorktreeError.removalHostChanged
             }

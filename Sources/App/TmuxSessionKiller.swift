@@ -106,6 +106,13 @@ struct TmuxSessionKiller: Sendable {
             runner(host, command)
         }.value
         guard result.status == 0 else {
+            if result.status == 1,
+               Self.isConfirmedAbsence(result.stdout) {
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
             throw TmuxSessionKillError.commandFailed(
                 host: host.displayName,
                 session: selection.name,
@@ -202,11 +209,15 @@ struct TmuxSessionKiller: Sendable {
                 "kill-session -t \(expectedIdentity.sessionID)"
             arguments[arguments.count - 1] =
                 "display-message -p \(identityMismatchMarker)"
-            return powerShellCommand(arguments)
+            return powerShellCommand(
+                arguments,
+                captureStandardError: true
+            )
         }
         return arguments
             .map(shellQuotedCommandArgument)
             .joined(separator: " ")
+            + " 2>&1"
     }
 
     private static func identityCommand(

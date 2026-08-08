@@ -590,9 +590,13 @@ enum KwtSnapshotMerger {
                 // may have claimed since the protected target moved.
                 // Deleting the workspace drops the record entirely, which is
                 // how a protected marker is actually retired.
-                worktree.tmuxSocketName = record.tmuxSocketName
-                    ?? sameGeneration?.tmuxSocketName
-                    ?? existing?.tmuxSocketName
+                if let sameGeneration {
+                    worktree.tmuxSocketName = record.tmuxSocketName
+                        ?? sameGeneration.tmuxSocketName
+                } else {
+                    worktree.tmuxSocketName = record.tmuxSocketName
+                        ?? existing?.tmuxSocketName
+                }
                 worktree.sessionBackend = snapshot.host(id: hostID)?.kind == .remote
                     ? .remoteTmux : .localTmux
                 worktrees.append(worktree)

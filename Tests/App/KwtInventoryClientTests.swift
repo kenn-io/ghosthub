@@ -431,8 +431,13 @@ struct KwtInventoryClientTests {
         )
     }
 
-    @Test("canonical generation outranks a reused path for socket identity")
-    func generationOutranksReusedPathForSocketIdentity() {
+    @Test(
+        "canonical generation outranks a reused path for socket identity",
+        arguments: ["same-generation-socket", nil] as [String?]
+    )
+    func generationOutranksReusedPathForSocketIdentity(
+        _ generationSocketName: String?
+    ) {
         let hostID = UUID()
         let unrelatedProjectID = UUID()
         let targetProjectID = UUID()
@@ -476,7 +481,7 @@ struct KwtInventoryClientTests {
                     branch: "feature/target",
                     generation: generation,
                     tmuxSessionName: "kwt-repo-b-target",
-                    tmuxSocketName: "same-generation-socket"
+                    tmuxSocketName: generationSocketName
                 ),
             ]
         )
@@ -510,9 +515,7 @@ struct KwtInventoryClientTests {
         )
 
         #expect(merged.worktrees.count == 1)
-        #expect(
-            merged.worktrees[0].tmuxSocketName == "same-generation-socket"
-        )
+        #expect(merged.worktrees[0].tmuxSocketName == generationSocketName)
     }
 
     @Test("a failed project listing preserves its last successful worktrees")

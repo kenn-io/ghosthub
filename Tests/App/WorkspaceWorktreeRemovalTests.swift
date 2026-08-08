@@ -1974,6 +1974,76 @@ struct WorkspaceWorktreeRemovalTests {
     }
 
     @MainActor
+    @Test("a confirmed session ending requires a fresh removal confirmation")
+    func endedSessionRequiresFreshConfirmation() async throws {
+        let environment = try setupStandardEnvironment()
+        var removable = WorktreeSummary.fixture(
+            hostID: environment.host.id,
+            projectID: environment.project.id,
+            scopedKey: "/tmp/project-a-feature",
+            name: "feature/remove",
+            path: "/tmp/project-a-feature",
+            generation: stableWorktreeGeneration
+        )
+        removable.tmuxSessionName = "kwt-project-a-feature"
+        var snapshot = environment.snapshot
+        snapshot.worktrees.append(removable)
+        snapshot.hosts[0].tmuxSessions = [
+            TmuxSessionSummary(
+                name: "kwt-project-a-feature",
+                managed: true,
+                windows: [],
+                serverPID: "31415",
+                sessionID: "$8",
+                createdAt: "1721552400"
+            ),
+        ]
+        let beforeRemoval = inventory(environment, including: removable)
+        let reads = LockedValue(0)
+        let removals = LockedValue(0)
+        let kills = LockedValue(0)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtInventoryLoader: { _ in beforeRemoval },
+            kwtWorktreeRemover: { _, _, _, _ in
+                removals.withLock { $0 += 1 }
+            },
+            tmuxSessionKiller: { selection, _, host in
+                kills.withLock { $0 += 1 }
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            },
+            tmuxSessionIdentityReader: { selection, host in
+                reads.withLock { $0 += 1 }
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        #expect(request.sessionKillRequest?.serverPID == "31415")
+        let result = try await model.resolveWorktreeRemoval(request)
+        guard case let .confirmationRequired(updatedRequest) = result else {
+            Issue.record("Ended session should require a new confirmation")
+            await model.shutdown()
+            return
+        }
+
+        #expect(updatedRequest.sessionKillRequest == nil)
+        #expect(reads.load() == 1)
+        #expect(kills.load() == 1)
+        #expect(removals.load() == 0)
+        #expect(model.snapshot.worktree(id: removable.id) != nil)
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("refresh failure after removal is a reconciliation warning")
     func refreshFailureDoesNotUndoRemoval() async throws {
         let environment = try setupStandardEnvironment()

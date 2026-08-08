@@ -153,6 +153,7 @@ struct TmuxSessionKillerTests {
         #expect(
             command.contains("GHOSTHUB_TMUX_SESSION_IDENTITY_MISMATCH")
         )
+        #expect(command.hasSuffix(" 2>&1"))
     }
 
     @Test("Windows identity and kill use PowerShell and psmux quoting")
@@ -245,6 +246,7 @@ struct TmuxSessionKillerTests {
         #expect(recorded[2].contains(
             powerShellEncodedArgument("kill-session -t $42")
         ))
+        #expect(recorded[2].contains(" 2>&1"))
         #expect(!recorded.joined().contains("review's session"))
     }
 
@@ -279,6 +281,37 @@ struct TmuxSessionKillerTests {
                 host: "wesm@builder:2222",
                 session: "worker",
                 status: 1
+            )
+        }
+    }
+
+    @Test("kill reports explicit session absence")
+    func killReportsExplicitAbsence() async {
+        let killer = TmuxSessionKiller(
+            pathResolver: { _ in .success("/usr/bin/tmux") },
+            runner: { _, _ in
+                (1, "can't find session: worker\n")
+            }
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: UUID(),
+            name: "worker"
+        )
+
+        await #expect {
+            try await killer.kill(
+                selection,
+                expectedIdentity: TmuxSessionIdentity(
+                    serverPID: "31415",
+                    sessionID: "$42",
+                    createdAt: "1785182057"
+                ),
+                on: .local
+            )
+        } throws: { error in
+            error as? TmuxSessionKillError == .sessionNotRunning(
+                host: "localhost",
+                session: "worker"
             )
         }
     }
