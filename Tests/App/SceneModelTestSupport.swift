@@ -390,6 +390,8 @@ func makeModel(
     WorkspaceSceneModel.TmuxSessionDiscovery = { _ in .success([]) },
     herdrSessionDiscovery: @escaping
     WorkspaceSceneModel.HerdrSessionDiscovery = { _ in .unavailable },
+    herdrSessionExactProbe:
+    WorkspaceSceneModel.HerdrSessionExactProbe? = nil,
     tmuxExactSessionProbe: @escaping
     WorkspaceSceneModel.TmuxSessionExactProbe = { _ in .success(false) },
     tmuxSessionKiller: @escaping
@@ -479,6 +481,13 @@ func makeModel(
         kwtProjectRegistration: kwtProjectRegistration,
         tmuxSessionDiscovery: tmuxSessionDiscovery,
         herdrSessionDiscovery: herdrSessionDiscovery,
+        herdrSessionExactProbe: herdrSessionExactProbe ?? {
+            name, host, _ in
+            HerdrSessionProbeOutcome.exact(
+                name: name,
+                discovery: herdrSessionDiscovery(host)
+            )
+        },
         tmuxExactSessionProbe: tmuxExactSessionProbe,
         tmuxSessionKiller: tmuxSessionKiller,
         tmuxSessionIdentityReader: tmuxSessionIdentityReader,

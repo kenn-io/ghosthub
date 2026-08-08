@@ -7,6 +7,22 @@ enum HerdrSessionProbeOutcome: Equatable, Sendable {
     case absent
     case unavailable
     case failure(HerdrCommandError)
+
+    static func exact(
+        name: String,
+        discovery: HerdrDiscoveryResult
+    ) -> Self {
+        switch discovery {
+        case let .available(sessions):
+            sessions.contains(where: {
+                $0.name == name && $0.state == .running
+            }) ? .present : .absent
+        case .unavailable:
+            .unavailable
+        case let .failure(error):
+            .failure(error)
+        }
+    }
 }
 
 @MainActor
@@ -52,18 +68,7 @@ final class HerdrSessionProbeBroker {
         named name: String,
         on host: CommandHost
     ) async -> HerdrSessionProbeOutcome {
-        switch await sessions(on: host) {
-        case let .available(sessions):
-            sessions.contains(where: {
-                $0.name == name && $0.state == .running
-            })
-                ? .present
-                : .absent
-        case .unavailable:
-            .unavailable
-        case let .failure(error):
-            .failure(error)
-        }
+        await .exact(name: name, discovery: sessions(on: host))
     }
 
     func invalidateSessions(on host: CommandHost) {

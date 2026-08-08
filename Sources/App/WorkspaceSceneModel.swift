@@ -267,6 +267,9 @@ final class WorkspaceSceneModel: ObservableObject {
     typealias HerdrSessionDiscovery = @Sendable (
         CommandHost
     ) -> HerdrDiscoveryResult
+    typealias HerdrSessionExactProbe = @Sendable (
+        String, CommandHost, [String]
+    ) async -> HerdrSessionProbeOutcome
     typealias HerdrSessionRecordReading = @Sendable (
         String, CommandHost, [String]
     ) async -> Result<HerdrSessionRecord, HerdrSessionLifecycleError>
@@ -321,6 +324,7 @@ final class WorkspaceSceneModel: ObservableObject {
     private let createdSessionDiscoveryDelays: [Duration]
     private let tmuxSessionProbeBroker: TmuxSessionProbeBroker
     private let herdrSessionProbeBroker: HerdrSessionProbeBroker
+    private let herdrSessionExactProbe: HerdrSessionExactProbe
     private let tmuxReconnectIntervals: [Duration]
     private let tmuxReconnectProbeDeadline: Duration
     private let herdrReconnectSupervisor: SessionReconnectSupervisor
@@ -428,8 +432,11 @@ final class WorkspaceSceneModel: ObservableObject {
     @Published private(set) var activeBorrowedHerdrSelection:
         WorkspaceHerdrSessionSelection?
     private var activeBorrowedHerdrHandle: BorrowedHerdrSessionHandle?
-    private var pendingHerdrLaunchOperations:
-        [UUID: HerdrSessionLifecycleCoordinator.Operation] = [:]
+    private struct PendingHerdrLaunch {
+        let operation: HerdrSessionLifecycleCoordinator.Operation
+        var authority: HerdrAttachmentAuthority?
+    }
+    private var pendingHerdrLaunchOperations: [UUID: PendingHerdrLaunch] = [:]
     private var herdrLaunchConfirmationTasks:
         [UUID: Task<Void, Never>] = [:]
     private struct FailedHerdrLaunchIntent: Equatable {
@@ -987,6 +994,18 @@ final class WorkspaceSceneModel: ObservableObject {
         herdrSessionDiscovery: @escaping HerdrSessionDiscovery = { host in
             HerdrInventoryClient().discover(on: host)
         },
+        herdrSessionExactProbe: @escaping HerdrSessionExactProbe = {
+            name, host, arguments in
+            await Task.detached(priority: .utility) {
+                HerdrSessionProbeOutcome.exact(
+                    name: name,
+                    discovery: HerdrInventoryClient().discover(
+                        on: host,
+                        sshConnectionArguments: arguments
+                    )
+                )
+            }.value
+        },
         tmuxExactSessionProbe: @escaping TmuxSessionExactProbe = { target in
             TmuxBinaryResolver().sessionExists(
                 name: target.name,
@@ -1127,6 +1146,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 }
             }
         )
+        self.herdrSessionExactProbe = herdrSessionExactProbe
         herdrReconnectSupervisor = SessionReconnectSupervisor(
             intervals: tmuxReconnectIntervals,
             probeDeadline: tmuxReconnectProbeDeadline
@@ -1241,6 +1261,8 @@ final class WorkspaceSceneModel: ObservableObject {
                     sshConnectionArguments: arguments
                 )
             },
+            sshConnectionArgumentsProvider:
+            herdrSSHConnectionSnapshotProvider,
             paneSplitCapabilityProvider:
             herdrPaneSplitCapabilityProvider ?? { host, arguments, path, name in
                 HerdrInventoryClient().paneSplitCapability(
@@ -3569,14 +3591,17 @@ final class WorkspaceSceneModel: ObservableObject {
         where shouldFail: (HerdrSessionLifecycleCoordinator.Operation) -> Bool
     ) {
         let matches = pendingHerdrLaunchOperations.filter {
-            shouldFail($0.value)
+            shouldFail($0.value.operation)
         }
-        for (handleID, operation) in matches {
+        for (handleID, pending) in matches {
             herdrLaunchConfirmationTasks.removeValue(
                 forKey: handleID
             )?.cancel()
             pendingHerdrLaunchOperations.removeValue(forKey: handleID)
-            herdrLifecycleCoordinator.finish(operation, outcome: .failed)
+            herdrLifecycleCoordinator.finish(
+                pending.operation,
+                outcome: .failed
+            )
         }
     }
 
@@ -4841,7 +4866,10 @@ final class WorkspaceSceneModel: ObservableObject {
             scheduleHerdrSessionDiscovery()
             throw HerdrSessionPresentationError.unavailable
         }
-        pendingHerdrLaunchOperations[handle.id] = operation
+        pendingHerdrLaunchOperations[handle.id] = PendingHerdrLaunch(
+            operation: operation,
+            authority: nil
+        )
     }
 
     @discardableResult
@@ -4909,10 +4937,13 @@ final class WorkspaceSceneModel: ObservableObject {
             herdrLaunchConfirmationTasks.removeValue(
                 forKey: handle.id
             )?.cancel()
-            if let operation = pendingHerdrLaunchOperations.removeValue(
+            if let pending = pendingHerdrLaunchOperations.removeValue(
                 forKey: handle.id
             ) {
-                herdrLifecycleCoordinator.finish(operation, outcome: .failed)
+                herdrLifecycleCoordinator.finish(
+                    pending.operation,
+                    outcome: .failed
+                )
                 scheduleHerdrSessionDiscovery()
             }
         }
@@ -5866,23 +5897,44 @@ final class WorkspaceSceneModel: ObservableObject {
     ) {
         guard !isShutDown else { return }
         borrowedHerdrConnectionStates[handle.id] = state
-        if let operation = pendingHerdrLaunchOperations[handle.id] {
+        if var pending = pendingHerdrLaunchOperations[handle.id] {
             switch state {
             case .connected:
-                confirmHerdrLaunch(handle: handle, operation: operation)
+                guard let authority = nativeHerdrSessionCoordinator
+                    .attachmentAuthority(handle),
+                    authority.launchMode == .launchOrAttach
+                else {
+                    finishPendingHerdrLaunch(
+                        handleID: handle.id,
+                        operation: pending.operation,
+                        outcome: .failed
+                    )
+                    scheduleHerdrSessionDiscovery()
+                    return
+                }
+                pending.authority = authority
+                pendingHerdrLaunchOperations[handle.id] = pending
+                confirmHerdrLaunch(
+                    handle: handle,
+                    operation: pending.operation,
+                    authority: authority
+                )
             case .disconnected:
                 herdrLaunchConfirmationTasks.removeValue(
                     forKey: handle.id
                 )?.cancel()
                 pendingHerdrLaunchOperations.removeValue(forKey: handle.id)
-                herdrLifecycleCoordinator.finish(operation, outcome: .failed)
+                herdrLifecycleCoordinator.finish(
+                    pending.operation,
+                    outcome: .failed
+                )
                 if activeBorrowedHerdrHandle == handle {
                     failedHerdrLaunchIntent = FailedHerdrLaunchIntent(
                         selection: WorkspaceHerdrSessionSelection(
-                            hostID: operation.key.hostID,
-                            name: operation.key.sessionName
+                            hostID: pending.operation.key.hostID,
+                            name: pending.operation.key.sessionName
                         ),
-                        kind: operation.kind
+                        kind: pending.operation.kind
                     )
                 }
             case .connecting, .reconnecting:
@@ -5929,13 +5981,12 @@ final class WorkspaceSceneModel: ObservableObject {
 
     private func confirmHerdrLaunch(
         handle: BorrowedHerdrSessionHandle,
-        operation: HerdrSessionLifecycleCoordinator.Operation
+        operation: HerdrSessionLifecycleCoordinator.Operation,
+        authority: HerdrAttachmentAuthority
     ) {
         guard !isShutDown else { return }
         guard herdrLaunchConfirmationTasks[handle.id] == nil else { return }
-        guard let hostSummary = snapshot.host(id: operation.key.hostID),
-              let host = CommandHostResolver.resolve(hostSummary)
-        else {
+        guard let activityGeneration = try? captureSceneActivity() else {
             finishPendingHerdrLaunch(
                 handleID: handle.id,
                 operation: operation,
@@ -5943,7 +5994,6 @@ final class WorkspaceSceneModel: ObservableObject {
             )
             return
         }
-        herdrSessionProbeBroker.invalidateSessions(on: host)
         let delays = [.zero] + createdSessionDiscoveryDelays
         herdrLaunchConfirmationTasks[handle.id] = Task { [weak self] in
             for (index, delay) in delays.enumerated() {
@@ -5953,15 +6003,51 @@ final class WorkspaceSceneModel: ObservableObject {
                     return
                 }
                 guard let self,
-                      pendingHerdrLaunchOperations[handle.id] == operation
+                      let pending = pendingHerdrLaunchOperations[handle.id],
+                      pending.operation == operation,
+                      pending.authority?.sshConnectionSnapshot.cacheKey
+                      == authority.sshConnectionSnapshot.cacheKey,
+                      (try? requireActiveScene(activityGeneration)) != nil,
+                      snapshot.host(id: operation.key.hostID)
+                      .flatMap(CommandHostResolver.resolve) == authority.host
                 else { return }
-                let outcome = await herdrSessionProbeBroker.session(
-                    named: operation.key.sessionName,
-                    on: host
+                let before = await herdrConnectionSnapshot(
+                    on: authority.host
                 )
-                guard !Task.isCancelled,
-                      pendingHerdrLaunchOperations[handle.id] == operation
+                guard before.cacheKey
+                    == authority.sshConnectionSnapshot.cacheKey else {
+                    finishPendingHerdrLaunch(
+                        handleID: handle.id,
+                        operation: operation,
+                        outcome: .failed
+                    )
+                    scheduleHerdrSessionDiscovery()
+                    return
+                }
+                let outcome = await herdrSessionExactProbe(
+                    operation.key.sessionName,
+                    authority.host,
+                    authority.sshConnectionSnapshot.arguments
+                )
+                let after = await herdrConnectionSnapshot(on: authority.host)
+                guard let pending = pendingHerdrLaunchOperations[handle.id],
+                      pending.operation == operation,
+                      pending.authority?.sshConnectionSnapshot.cacheKey
+                      == authority.sshConnectionSnapshot.cacheKey,
+                      (try? requireActiveScene(activityGeneration)) != nil,
+                      snapshot.host(id: operation.key.hostID)
+                      .flatMap(CommandHostResolver.resolve) == authority.host
                 else { return }
+                guard after.cacheKey
+                    == authority.sshConnectionSnapshot.cacheKey else {
+                    finishPendingHerdrLaunch(
+                        handleID: handle.id,
+                        operation: operation,
+                        outcome: .failed
+                    )
+                    scheduleHerdrSessionDiscovery()
+                    return
+                }
                 if outcome == .present {
                     finishPendingHerdrLaunch(
                         handleID: handle.id,
@@ -5987,7 +6073,8 @@ final class WorkspaceSceneModel: ObservableObject {
         operation: HerdrSessionLifecycleCoordinator.Operation,
         outcome: HerdrSessionLifecycleCoordinator.Outcome
     ) {
-        guard pendingHerdrLaunchOperations[handleID] == operation else {
+        guard pendingHerdrLaunchOperations[handleID]?.operation == operation
+        else {
             return
         }
         pendingHerdrLaunchOperations.removeValue(forKey: handleID)

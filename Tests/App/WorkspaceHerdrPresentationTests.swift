@@ -581,6 +581,113 @@ struct WorkspaceHerdrPresentationTests {
         await model.shutdown()
     }
 
+    @Test("constructive confirmation uses the attachment's frozen route")
+    func constructiveConfirmationUsesFrozenRoute() async throws {
+        var environment = try remoteEnvironment()
+        environment.snapshot.hosts[0].herdrAvailable = true
+        environment.snapshot.hosts[0].herdrSessions = [
+            HerdrSessionSummary(
+                name: "api",
+                isDefault: true,
+                state: .stopped
+            ),
+        ]
+        let snapshot = SSHConnectionArgumentsSnapshot(arguments: [
+            "-F", "/tmp/frozen-config", "dev@build.example.test",
+        ])
+        let received = Mutex<(CommandHost, [String])?>(nil)
+        let displayedSessions = environment.snapshot.hosts[0].herdrSessions
+        let store = RecordingNativeSessionSurfaceStore()
+        let coordinator = HerdrSessionLifecycleCoordinator()
+        let model = try makeHerdrModel(
+            environment,
+            store: store,
+            discovery: { _ in
+                .available(displayedSessions)
+            },
+            exactProbe: { _, host, arguments in
+                received.withLock { $0 = (host, arguments) }
+                return .present
+            },
+            sshConnectionSnapshotProvider: { _ in snapshot },
+            coordinator: coordinator,
+            createdSessionDiscoveryDelays: []
+        )
+        let selection = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID,
+            name: "api"
+        )
+        let key = HerdrSessionLifecycleCoordinator.Key(
+            hostID: selection.hostID,
+            sessionName: selection.name
+        )
+
+        try await model.restartHerdrSession(selection)
+        await launchHerdrSurface(model, store: store)
+        await waitUntilMainActor { !coordinator.isPending(key) }
+
+        let route = try #require(received.withLock { $0 })
+        #expect(route.0 == CommandHostResolver.resolve(
+            environment.snapshot.hosts[0]
+        ))
+        #expect(route.1 == snapshot.arguments)
+        await model.shutdown()
+    }
+
+    @Test("constructive confirmation rejects SSH route drift")
+    func constructiveConfirmationRejectsRouteDrift() async throws {
+        var environment = try remoteEnvironment()
+        environment.snapshot.hosts[0].herdrAvailable = true
+        let stopped = HerdrSessionSummary(
+            name: "api",
+            isDefault: true,
+            state: .stopped
+        )
+        environment.snapshot.hosts[0].herdrSessions = [stopped]
+        let frozen = SSHConnectionArgumentsSnapshot(arguments: [
+            "-F", "/tmp/frozen-config", "dev@build.example.test",
+        ])
+        let changed = SSHConnectionArgumentsSnapshot(arguments: [
+            "-F", "/tmp/changed-config", "dev@other.example.test",
+        ])
+        let currentRoute = LockedValue(frozen)
+        let probeGate = BlockingGate()
+        let coordinator = HerdrSessionLifecycleCoordinator()
+        let store = RecordingNativeSessionSurfaceStore()
+        let model = try makeHerdrModel(
+            environment,
+            store: store,
+            discovery: { _ in .available([stopped]) },
+            exactProbe: { _, _, _ in
+                await Task.detached {
+                    probeGate.block()
+                    return HerdrSessionProbeOutcome.present
+                }.value
+            },
+            sshConnectionSnapshotProvider: { _ in currentRoute.load() },
+            coordinator: coordinator,
+            createdSessionDiscoveryDelays: []
+        )
+        let selection = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID,
+            name: "api"
+        )
+        let key = HerdrSessionLifecycleCoordinator.Key(
+            hostID: selection.hostID,
+            sessionName: selection.name
+        )
+
+        try await model.restartHerdrSession(selection)
+        await launchHerdrSurface(model, store: store)
+        await probeGate.waitUntilBlocked()
+        currentRoute.store(changed)
+        probeGate.open()
+        await waitUntilMainActor { !coordinator.isPending(key) }
+
+        #expect(!coordinator.isPending(key))
+        await model.shutdown()
+    }
+
     @Test("create stays pending until discovery confirms it is running")
     func createWaitsForRunningDiscovery() async throws {
         var environment = try environment()
@@ -1229,6 +1336,11 @@ struct WorkspaceHerdrPresentationTests {
         _ environment: Environment,
         store: RecordingNativeSessionSurfaceStore,
         discovery: WorkspaceSceneModel.HerdrSessionDiscovery? = nil,
+        exactProbe: WorkspaceSceneModel.HerdrSessionExactProbe? = nil,
+        sshConnectionSnapshotProvider:
+        @escaping @Sendable (SSHHostInfo) -> SSHConnectionArgumentsSnapshot = {
+            _ in SSHConnectionArgumentsSnapshot(arguments: [])
+        },
         coordinator: HerdrSessionLifecycleCoordinator =
             HerdrSessionLifecycleCoordinator(),
         nativeHerdrPathProvider: @escaping @Sendable (CommandHost)
@@ -1263,9 +1375,12 @@ struct WorkspaceHerdrPresentationTests {
                 successfulTmuxResolution("/usr/bin/tmux")
             },
             herdrLifecycleCoordinator: coordinator,
+            herdrSSHConnectionSnapshotProvider:
+            sshConnectionSnapshotProvider,
             herdrSessionDiscovery: discovery ?? { _ in
                 .available(displayedSessions)
             },
+            herdrSessionExactProbe: exactProbe,
             createdSessionDiscoveryDelays: createdSessionDiscoveryDelays,
             tmuxReconnectIntervals: [.milliseconds(1)]
         )
