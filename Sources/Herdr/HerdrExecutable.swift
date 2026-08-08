@@ -16,7 +16,7 @@ public enum HerdrEnvironment {
         "HERDR_ACTIVE_PANE_CWD",
     ]
 
-    static var unsetCommand: String {
+    public static var unsetCommand: String {
         "unset " + controlVariables.joined(separator: " ")
     }
 }
