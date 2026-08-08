@@ -847,17 +847,17 @@ impl RootView {
         }
         if let Some(button) = terminal_mouse_button(event.button) {
             let cell = self.terminal_cell_at(event.position.x.into(), event.position.y.into());
-            if let Some(cell) = self.pointer.release_cell(button, cell)
-                && self.send_mouse_at_cell(
+            if let Some(cell) = self.pointer.release_cell(button, cell) {
+                if self.send_mouse_at_cell(
                     presentation_id,
                     MouseAction::Release(button),
                     cell,
                     event.modifiers,
-                )
-            {
-                self.pointer.finish_release(button);
+                ) {
+                    self.pointer.finish_release(button);
+                }
+                cx.stop_propagation();
             }
-            cx.stop_propagation();
         }
     }
 
@@ -1717,6 +1717,7 @@ impl RootView {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let selection = selection.clone();
+        let open_selection = selection.clone();
         let name = selection.session().to_owned();
         let mut row = div()
             .id((
@@ -1771,10 +1772,23 @@ impl RootView {
         } else {
             row = row.child(
                 div()
+                    .id((
+                        gpui::ElementId::named_usize("open-tree-session-host", host_index),
+                        index.to_string(),
+                    ))
                     .flex_none()
+                    .px_1()
+                    .py_1()
+                    .rounded_sm()
+                    .cursor_pointer()
                     .text_xs()
                     .text_color(rgb(0x79_aee3))
-                    .child("Open"),
+                    .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xb6_d8_f8)))
+                    .child("Open")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.select_session(&open_selection, window, cx);
+                        cx.stop_propagation();
+                    })),
             );
         }
         row.on_click(cx.listener(move |this, _, window, cx| {
