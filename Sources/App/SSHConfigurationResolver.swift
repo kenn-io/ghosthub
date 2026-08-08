@@ -342,7 +342,7 @@ enum SSHConfigurationResolver {
         for host: SSHHostInfo
     ) -> EffectiveSSHConfiguration? {
         var arguments = ["-G"]
-        arguments.append(contentsOf: tmuxSSHConnectionArguments())
+        arguments.append(contentsOf: demoSSHIsolationArguments())
         if let port = host.port {
             arguments.append(contentsOf: ["-p", String(port)])
         }

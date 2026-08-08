@@ -12,11 +12,7 @@ struct HerdrInventoryClient: Sendable {
     init(
         commandRunner: AccountCommandRunner = AccountCommandRunner(),
         connectionArgumentsProvider: @escaping ConnectionArgumentsProvider = {
-            host in
-            SSHConnectionPool.connectionArguments(for: host)
-                + SSHConfigurationResolver.noninteractiveHostKeyArguments(
-                    for: host
-                )
+            SSHCommandArguments.noninteractive(for: $0)
         },
         processTimeout: TimeInterval = 15
     ) {

@@ -815,7 +815,7 @@ struct TmuxAttachmentInfoTests {
 
     @Test("normal SSH arguments preserve OpenSSH connection sharing")
     func normalSSHArgumentsPreserveOpenSSHConnectionSharing() {
-        let arguments = tmuxSSHConnectionArguments(environment: [:])
+        let arguments = demoSSHIsolationArguments(environment: [:])
 
         #expect(!arguments.contains("ControlMaster=no"))
         #expect(!arguments.contains("ControlPath=none"))
@@ -824,7 +824,7 @@ struct TmuxAttachmentInfoTests {
     @Test("demo SSH arguments isolate config, trust, and routing")
     func demoSSHArguments() {
         let scratch = "/tmp/ghosthub demo"
-        let arguments = tmuxSSHConnectionArguments(environment: [
+        let arguments = demoSSHIsolationArguments(environment: [
             "GHOSTHUB_DEMO_SCRATCH": scratch,
             "GHOSTHUB_DEMO_SSH_DIR": "\(scratch)/ssh",
         ])

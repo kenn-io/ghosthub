@@ -5,6 +5,7 @@ import GhosthubTestSupport
 import GhosthubTransport
 import GhosthubUI
 import GhosthubWorkspace
+import Synchronization
 import Testing
 @testable import GhosthubApp
 
@@ -237,6 +238,82 @@ struct WorkspaceHerdrPresentationTests {
         #expect(command.contains("--session"))
         #expect(!command.contains("session attach"))
         #expect(coordinator.isPending(key))
+        await model.shutdown()
+    }
+
+    @Test(
+        "constructive retry recovers from path-resolution failure",
+        arguments: [
+            HerdrSessionLifecycleCoordinator.OperationKind.create,
+            .restart,
+        ]
+    )
+    func constructiveRetryAfterResolutionFailure(
+        kind: HerdrSessionLifecycleCoordinator.OperationKind
+    ) async throws {
+        var environment = try environment()
+        environment.snapshot.hosts[0].herdrAvailable = true
+        let sessionName = kind == .create ? "new-review" : "sleeping"
+        if kind == .restart {
+            environment.snapshot.hosts[0].herdrSessions.append(
+                HerdrSessionSummary(
+                    name: sessionName,
+                    isDefault: false,
+                    state: .stopped
+                )
+            )
+        }
+        let store = RecordingNativeSessionSurfaceStore()
+        let coordinator = HerdrSessionLifecycleCoordinator()
+        let resolutionCount = Mutex(0)
+        let running = HerdrSessionSummary(
+            name: sessionName,
+            isDefault: false,
+            state: .running
+        )
+        let model = try makeHerdrModel(
+            environment,
+            store: store,
+            discovery: { _ in .available([running]) },
+            coordinator: coordinator,
+            nativeHerdrPathProvider: { _ in
+                let count = resolutionCount.withLock { count in
+                    count += 1
+                    return count
+                }
+                return count == 1
+                    ? .failure(.unavailable)
+                    : .success("/new/bin/herdr")
+            }
+        )
+        let selection = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID,
+            name: sessionName
+        )
+        let key = HerdrSessionLifecycleCoordinator.Key(
+            hostID: selection.hostID,
+            sessionName: selection.name
+        )
+
+        if kind == .create {
+            try model.createHerdrSession(selection)
+        } else {
+            try model.restartHerdrSession(selection)
+        }
+        await waitUntilMainActor { !coordinator.isPending(key) }
+
+        await model.retryBorrowedHerdrSession(selection)
+        await waitUntilMainActor(timeout: .seconds(1)) {
+            model.prepareActiveBorrowedHerdrSurface()
+            return resolutionCount.withLock { $0 } == 2
+                && !store.requestedConfigurations.isEmpty
+        }
+        await waitUntilMainActor { !coordinator.isPending(key) }
+
+        #expect(resolutionCount.withLock { $0 } == 2)
+        let command = try #require(store.requestedConfigurations.last?.command)
+        #expect(command.contains("/new/bin/herdr"))
+        #expect(command.contains("--session"))
         await model.shutdown()
     }
 
@@ -597,6 +674,10 @@ struct WorkspaceHerdrPresentationTests {
         },
         coordinator: HerdrSessionLifecycleCoordinator =
             HerdrSessionLifecycleCoordinator(),
+        nativeHerdrPathProvider: @escaping @Sendable (CommandHost)
+            -> Result<String, HerdrCommandError> = {
+                _ in .success("/usr/bin/herdr")
+            },
         createdSessionDiscoveryDelays: [Duration] = [
             .milliseconds(500),
             .seconds(1),
@@ -613,7 +694,7 @@ struct WorkspaceHerdrPresentationTests {
             nativeTmuxPathProvider: {
                 successfulTmuxResolution("/usr/bin/tmux")
             },
-            nativeHerdrPathProvider: { _ in .success("/usr/bin/herdr") },
+            nativeHerdrPathProvider: nativeHerdrPathProvider,
             remoteTmuxPathProvider: { _, _ in
                 successfulTmuxResolution("/usr/bin/tmux")
             },

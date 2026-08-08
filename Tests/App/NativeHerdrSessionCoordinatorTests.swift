@@ -224,6 +224,56 @@ struct NativeHerdrSessionCoordinatorTests {
         #expect(!states.contains(.connected))
     }
 
+    @Test("path-resolution failure is retryable")
+    func pathResolutionFailureIsRetryable() async {
+        let store = RecordingNativeSessionSurfaceStore()
+        let resolutionCount = Mutex(0)
+        let coordinator = NativeHerdrSessionCoordinator(
+            terminalCoordinator: store,
+            herdrPathProvider: { _ in
+                let count = resolutionCount.withLock { count in
+                    count += 1
+                    return count
+                }
+                return count == 1
+                    ? .failure(.unavailable)
+                    : .success("/new/bin/herdr")
+            }
+        )
+        var disconnected = false
+        var ready = false
+        coordinator.onStateChanged = { _, state in
+            if case .disconnected = state {
+                disconnected = true
+            }
+        }
+        coordinator.onSurfaceReady = { _ in ready = true }
+        let hostID = UUID()
+        let failed = coordinator.attach(
+            hostID: hostID,
+            name: "api",
+            host: .local,
+            launchMode: .launchOrAttach
+        )
+        await waitUntilMainActor { disconnected }
+
+        #expect(coordinator.attachmentClosure(failed) == .launchFailed)
+
+        let retried = coordinator.attach(
+            hostID: hostID,
+            name: "api",
+            host: .local,
+            launchMode: .launchOrAttach
+        )
+        await waitUntilMainActor { ready }
+        _ = coordinator.surface(handle: retried)
+
+        #expect(resolutionCount.withLock { $0 } == 2)
+        #expect((store.requestedConfigurations.last?.command ?? "").contains(
+            "/new/bin/herdr"
+        ))
+    }
+
     @Test("fresh attachment attempts resolve the Herdr executable again")
     func freshAttachmentReresolvesExecutable() async throws {
         let store = RecordingNativeSessionSurfaceStore()

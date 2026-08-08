@@ -551,11 +551,7 @@ struct TmuxBinaryResolver: Sendable {
     private static func remoteConnectionArguments(
         for host: SSHHostInfo
     ) -> [String] {
-        tmuxSSHConnectionArguments()
-            + SSHConnectionPool.connectionArguments(for: host)
-            + SSHConfigurationResolver.noninteractiveHostKeyArguments(
-                for: host
-            )
+        SSHCommandArguments.noninteractive(for: host)
     }
 
 }

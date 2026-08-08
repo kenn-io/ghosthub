@@ -250,7 +250,7 @@ enum SSHConnectionPool {
         if let configurationArguments {
             arguments.append(contentsOf: configurationArguments)
         } else {
-            arguments.append(contentsOf: tmuxSSHConnectionArguments(
+            arguments.append(contentsOf: demoSSHIsolationArguments(
                 environment: environment
             ))
         }

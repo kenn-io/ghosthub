@@ -430,9 +430,7 @@ struct AccountCommandRunner: Sendable {
     private static func defaultConnectionArguments(
         for host: SSHHostInfo
     ) -> [String] {
-        tmuxSSHConnectionArguments()
-            + SSHConnectionPool.connectionArguments(for: host)
-            + SSHConfigurationResolver.noninteractiveHostKeyArguments(for: host)
+        SSHCommandArguments.noninteractive(for: host)
     }
 
     private static func remoteLoginArguments(

@@ -166,7 +166,7 @@ final class NativeTmuxSessionCoordinator {
                         configurationProvider: provider
                     )
                 return connectionSnapshot.replacingArguments(
-                    tmuxSSHConnectionArguments()
+                    demoSSHIsolationArguments()
                         + connectionSnapshot.arguments
                         + SSHConnectionPool.proxyArguments(
                             for: snapshot.target,

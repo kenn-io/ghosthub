@@ -1,28 +1,6 @@
 import Foundation
 import GhosthubTransport
 
-public func tmuxSSHConnectionArguments(
-    environment: [String: String] = ProcessInfo.processInfo.environment
-) -> [String] {
-    // The screenshot app is ad-hoc signed and runs against guarded scratch
-    // state. Keep its SSH isolation explicit without changing normal clients.
-    guard let scratch = environment["GHOSTHUB_DEMO_SCRATCH"],
-          let directory = environment["GHOSTHUB_DEMO_SSH_DIR"],
-          scratch.hasPrefix("/"), directory == "\(scratch)/ssh"
-    else { return [] }
-
-    return [
-        "-F", "\(directory)/config",
-        "-o", "UserKnownHostsFile=\(directory)/known_hosts",
-        "-o", "GlobalKnownHostsFile=/dev/null",
-        "-o", "StrictHostKeyChecking=yes",
-        "-o", "ProxyCommand=none",
-        "-o", "ProxyJump=none",
-        "-o", "ControlMaster=no",
-        "-o", "ControlPath=none",
-    ]
-}
-
 public enum TmuxAttachmentLaunchMode: String, Codable, Equatable, Sendable {
     case attach
     case attachOnly
@@ -67,7 +45,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         remoteKwtCommandPrelude: String? = nil,
         windowsKwtRelativePath: String? = nil,
         workingDirectory: String? = nil,
-        sshConnectionArguments: [String] = tmuxSSHConnectionArguments(),
+        sshConnectionArguments: [String] = demoSSHIsolationArguments(),
         remoteExitStatusPath: String? = nil,
         clientTTYToken: String? = nil
     ) -> String {

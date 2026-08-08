@@ -126,14 +126,8 @@ struct ExeVMClient: Sendable {
             "-o", "ConnectTimeout=10",
             "-o", "ConnectionAttempts=1",
         ]
-        arguments.append(contentsOf: tmuxSSHConnectionArguments())
         arguments.append(contentsOf:
-            SSHConnectionPool.connectionArguments(for: host)
-        )
-        arguments.append(contentsOf:
-            SSHConfigurationResolver.noninteractiveHostKeyArguments(
-                for: host
-            )
+            SSHCommandArguments.noninteractive(for: host)
         )
         if let port = host.port {
             arguments.append(contentsOf: ["-p", String(port)])

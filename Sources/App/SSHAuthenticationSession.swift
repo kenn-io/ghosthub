@@ -247,7 +247,7 @@ struct SSHAuthenticationPreparation: Sendable {
             SSHConnectionPool.proxyArguments(for: $0)
         },
         configurationArgumentsProvider: @Sendable (SSHHostInfo) -> [String] = {
-            _ in tmuxSSHConnectionArguments()
+            _ in demoSSHIsolationArguments()
         }
     ) -> SSHAuthenticationPreparationResult {
         do {

@@ -66,10 +66,7 @@ final class NativeHerdrSessionCoordinator {
             },
         sshConnectionArgumentsProvider:
         @escaping @Sendable (SSHHostInfo) -> [String] = {
-            SSHConnectionPool.connectionArguments(for: $0)
-                + SSHConfigurationResolver.noninteractiveHostKeyArguments(
-                    for: $0
-                )
+            SSHCommandArguments.noninteractive(for: $0)
         },
         remoteExitStatusDirectory: URL = FileManager.default.temporaryDirectory
             .appendingPathComponent(
@@ -187,6 +184,7 @@ final class NativeHerdrSessionCoordinator {
             )
             onSurfaceReady?(handle)
         case let .failure(error):
+            attachmentClosures[handle.id] = .launchFailed
             onStateChanged?(
                 handle,
                 .disconnected(reason: error.localizedDescription)
