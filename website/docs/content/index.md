@@ -11,7 +11,7 @@ project context, it can also create and manage tmux sessions bound to Git
 worktrees.
 
 These docs explain how to operate Ghosthub. For a shorter, visual introduction,
-start with the [five-minute Guide](https://ghosthub.ai/guide/).
+start with the [five-minute Overview](https://ghosthub.ai/overview/).
 
 ## Start here
 
@@ -25,7 +25,7 @@ start with the [five-minute Guide](https://ghosthub.ai/guide/).
 | Change fonts, colors, shell behavior, or tmux themes | [Terminal Configuration](/docs/terminal-configuration/) |
 | Find an application shortcut | [Keyboard Shortcuts](/docs/keyboard-shortcuts/) |
 | Understand anonymous usage reporting and stored data | [Privacy](/docs/privacy/) |
-| Diagnose a connection, tmux, or worktree problem | [Troubleshooting](/docs/troubleshooting/) |
+| Diagnose a connection, tmux, Herdr, or worktree problem | [Troubleshooting](/docs/troubleshooting/) |
 
 ## The important mental model
 

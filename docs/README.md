@@ -3,7 +3,7 @@
 The maintained docs are a Zensical site rooted in this directory. They are for
 Kenn engineers and approved contributors who build, operate, and release
 Ghosthub. Public product guidance lives on
-[ghosthub.ai](https://ghosthub.ai/guide/), and comprehensive public user
+[ghosthub.ai](https://ghosthub.ai/overview/), and comprehensive public user
 documentation lives in [`../website/docs`](../website/docs/README.md) for
 publication at [ghosthub.ai/docs](https://ghosthub.ai/docs/).
 

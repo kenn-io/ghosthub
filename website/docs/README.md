@@ -2,7 +2,7 @@
 
 This directory contains the public, task-oriented documentation published at
 [ghosthub.ai/docs](https://ghosthub.ai/docs/). The visual
-[Guide](https://ghosthub.ai/guide/) remains a short product tour; detailed
+[Overview](https://ghosthub.ai/overview/) is a short product tour; detailed
 instructions belong here.
 
 Build the complete website from `website/`:
