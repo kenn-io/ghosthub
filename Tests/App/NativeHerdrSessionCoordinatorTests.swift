@@ -10,6 +10,59 @@ import Testing
 @Suite("Native Herdr presentation", .serialized)
 @MainActor
 struct NativeHerdrSessionCoordinatorTests {
+    @Test("launch mode is visible while Herdr provisioning is in flight")
+    func provisioningPublishesLaunchMode() async {
+        let started = Mutex(false)
+        let release = DispatchSemaphore(value: 0)
+        let coordinator = NativeHerdrSessionCoordinator(
+            terminalCoordinator: RecordingNativeSessionSurfaceStore(),
+            herdrPathProvider: { _, _ in
+                started.withLock { $0 = true }
+                release.wait()
+                return .success("/usr/bin/herdr")
+            }
+        )
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "api",
+            host: .local,
+            launchMode: .attachExisting
+        )
+        await waitUntilMainActor { started.withLock { $0 } }
+
+        #expect(coordinator.attachmentLaunchMode(handle) == .attachExisting)
+        #expect(coordinator.attachmentAuthority(handle) == nil)
+        release.signal()
+    }
+
+    @Test("completed authority retains the attachment SSH route")
+    func completedAuthorityRetainsRoute() async throws {
+        let snapshot = SSHConnectionArgumentsSnapshot(arguments: [
+            "-F", "/tmp/frozen-config", "build.example.test",
+        ])
+        let coordinator = NativeHerdrSessionCoordinator(
+            terminalCoordinator: RecordingNativeSessionSurfaceStore(),
+            herdrPathProvider: { _, _ in .success("/usr/bin/herdr") },
+            sshConnectionArgumentsProvider: { _ in snapshot }
+        )
+        var ready = false
+        coordinator.onSurfaceReady = { _ in ready = true }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "api",
+            host: remoteHost,
+            launchMode: .launchOrAttach
+        )
+        await waitUntilMainActor { ready }
+
+        let authority = try #require(
+            coordinator.attachmentAuthority(handle)
+        )
+        #expect(authority.host == remoteHost)
+        #expect(authority.launchMode == .launchOrAttach)
+        #expect(authority.sshConnectionSnapshot.cacheKey == snapshot.cacheKey)
+    }
+
     @Test("same route reuses a handle and route changes replace it")
     func handleIdentityTracksRoute() {
         let store = RecordingNativeSessionSurfaceStore()

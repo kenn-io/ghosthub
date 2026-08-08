@@ -33,6 +33,12 @@ private struct NativeHerdrAttachment {
     var remoteExitStatusURL: URL?
 }
 
+struct HerdrAttachmentAuthority: Sendable {
+    let host: CommandHost
+    let launchMode: HerdrAttachmentLaunchMode
+    let sshConnectionSnapshot: SSHConnectionArgumentsSnapshot
+}
+
 /// Hosts disposable Herdr clients. Herdr owns the server, processes, tabs,
 /// panes, history, and keybindings; this coordinator owns only presentation.
 @MainActor
@@ -73,6 +79,7 @@ final class NativeHerdrSessionCoordinator {
         NativeHerdrSessionKey: BorrowedHerdrSessionHandle
     ] = [:]
     private var targetHostsByHandle: [UUID: CommandHost] = [:]
+    private var launchModesByHandle: [UUID: HerdrAttachmentLaunchMode] = [:]
     private var attachments: [UUID: NativeHerdrAttachment] = [:]
     private var attachmentClosures: [
         UUID: BorrowedHerdrAttachmentClosure
@@ -173,6 +180,7 @@ final class NativeHerdrSessionCoordinator {
         }
 
         provisioningHandles.insert(handle.id)
+        launchModesByHandle[handle.id] = launchMode
         let herdrPathProvider = herdrPathProvider
         let sshConnectionArgumentsProvider =
             sshConnectionArgumentsProvider
@@ -276,6 +284,7 @@ final class NativeHerdrSessionCoordinator {
         }
         provisioningTasks.removeValue(forKey: handle.id)?.cancel()
         provisioningHandles.remove(handle.id)
+        launchModesByHandle.removeValue(forKey: handle.id)
         cancelPaneSplits(handleID: handle.id)
         targetHostsByHandle.removeValue(forKey: handle.id)
         remoteExitStatusStore.remove(
@@ -295,6 +304,23 @@ final class NativeHerdrSessionCoordinator {
         _ handle: BorrowedHerdrSessionHandle
     ) -> BorrowedHerdrAttachmentClosure? {
         attachmentClosures[handle.id]
+    }
+
+    func attachmentLaunchMode(
+        _ handle: BorrowedHerdrSessionHandle
+    ) -> HerdrAttachmentLaunchMode? {
+        launchModesByHandle[handle.id]
+    }
+
+    func attachmentAuthority(
+        _ handle: BorrowedHerdrSessionHandle
+    ) -> HerdrAttachmentAuthority? {
+        guard let attachment = attachments[handle.id] else { return nil }
+        return HerdrAttachmentAuthority(
+            host: attachment.host,
+            launchMode: attachment.launchMode,
+            sshConnectionSnapshot: attachment.sshConnectionSnapshot
+        )
     }
 
     func surface(handle: BorrowedHerdrSessionHandle) -> TerminalSurfaceView? {
@@ -622,6 +648,7 @@ final class NativeHerdrSessionCoordinator {
         provisioningTasks.values.forEach { $0.cancel() }
         provisioningTasks.removeAll()
         provisioningHandles.removeAll()
+        launchModesByHandle.removeAll()
         paneSplitCapabilityTasks.values.forEach { $0.task.cancel() }
         paneSplitCapabilityTasks.removeAll()
         paneSplitWorkers.values.forEach { $0.task.cancel() }
