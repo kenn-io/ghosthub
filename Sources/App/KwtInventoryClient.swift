@@ -1,3 +1,4 @@
+import GhosthubTransport
 import CryptoKit
 import Foundation
 import GhosthubTmux
@@ -193,17 +194,17 @@ struct KwtInventoryClient: Sendable {
         remoteBinaryRevision: String? =
             KwtBinaryLocator.bundledRemoteRevision(),
         loginShellProvider: @escaping @Sendable () -> String =
-            TmuxBinaryResolver.loginShell
+            AccountCommandRunner.loginShell
     ) {
         self.localRunner = localRunner ?? { shell, command in
-            TmuxBinaryResolver.runLoginShell(
+            AccountCommandRunner.runLoginShell(
                 shell: shell,
                 command: command,
                 timeout: processTimeout
             )
         }
         self.remoteRunner = remoteRunner ?? { host, command in
-            TmuxBinaryResolver.runRemoteLoginShell(
+            AccountCommandRunner.runRemoteLoginShell(
                 host: host,
                 command: command,
                 timeout: processTimeout
@@ -214,7 +215,7 @@ struct KwtInventoryClient: Sendable {
         self.remoteBinaryRevision = remoteBinaryRevision
     }
 
-    func load(from host: TmuxHost) async throws -> KwtHostInventory {
+    func load(from host: CommandHost) async throws -> KwtHostInventory {
         let hostLabel = switch host {
         case .local: "this Mac"
         case let .ssh(info): info.displayName
@@ -327,7 +328,7 @@ struct KwtInventoryClient: Sendable {
         )
     }
 
-    private func binaryPrelude(for host: TmuxHost) -> String {
+    private func binaryPrelude(for host: CommandHost) -> String {
         switch host {
         case .local:
             KwtBinaryLocator.commandPrelude(exactPath: localBinaryPath)
@@ -339,7 +340,7 @@ struct KwtInventoryClient: Sendable {
     }
 
     private func platform(
-        for host: TmuxHost
+        for host: CommandHost
     ) -> SSHHostInfo.Platform {
         switch host {
         case .local: .posix
@@ -348,7 +349,7 @@ struct KwtInventoryClient: Sendable {
     }
 
     private func run(
-        host: TmuxHost,
+        host: CommandHost,
         command: String
     ) -> (status: Int32, stdout: String) {
         switch host {
@@ -628,6 +629,8 @@ enum HostInventoryOverlay {
         kwtInventoriesByHost: [UUID: KwtHostInventory],
         kwtAvailabilityByHost: [UUID: Bool] = [:],
         tmuxSessionsByHost: [UUID: [TmuxSessionSummary]],
+        herdrSessionsByHost: [UUID: [HerdrSessionSummary]] = [:],
+        herdrAvailabilityByHost: [UUID: Bool] = [:],
         tmuxReachabilityByHost: [UUID: Bool] = [:],
         tmuxLastSeenByHost: [UUID: Date] = [:],
         to source: WorkspaceSnapshot
@@ -644,6 +647,18 @@ enum HostInventoryOverlay {
                 $0.id == hostID
             }) else { continue }
             updated.hosts[index].tmuxSessions = sessions
+        }
+        for (hostID, sessions) in herdrSessionsByHost {
+            guard let index = updated.hosts.firstIndex(where: {
+                $0.id == hostID
+            }) else { continue }
+            updated.hosts[index].herdrSessions = sessions
+        }
+        for (hostID, isAvailable) in herdrAvailabilityByHost {
+            guard let index = updated.hosts.firstIndex(where: {
+                $0.id == hostID
+            }) else { continue }
+            updated.hosts[index].herdrAvailable = isAvailable
         }
         for (hostID, isAvailable) in kwtAvailabilityByHost {
             guard let index = updated.hosts.firstIndex(where: {

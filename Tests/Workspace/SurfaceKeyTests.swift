@@ -106,4 +106,18 @@ struct SurfaceKeyTests {
                 "surface:\(hostID.uuidString):console:console:root"
         )
     }
+
+    @Test("Herdr session keys have their own surface target")
+    func herdrSessionSurfaceTarget() {
+        let key = SurfaceKey(
+            worktreeID: nil,
+            hostID: hostID,
+            target: .herdrSession
+        )
+
+        #expect(
+            key.scopedKey
+                == "surface:\(hostID.uuidString):console:herdrSession:root"
+        )
+    }
 }

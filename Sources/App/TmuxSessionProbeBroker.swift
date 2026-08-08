@@ -1,3 +1,4 @@
+import GhosthubTransport
 import Foundation
 import GhosthubTmux
 
@@ -15,7 +16,7 @@ enum TmuxSessionProbeOutcome: Equatable, Sendable {
 
 @MainActor
 final class TmuxSessionProbeBroker {
-    typealias Discovery = @Sendable (TmuxHost) async
+    typealias Discovery = @Sendable (CommandHost) async
         -> Result<[DiscoveredTmuxSession], TmuxBinaryError>
     typealias ExactProbe = @Sendable (TmuxSessionProbeTarget) async
         -> Result<Bool, TmuxBinaryError>
@@ -45,7 +46,7 @@ final class TmuxSessionProbeBroker {
 
     private let discover: Discovery
     private let exactProbe: ExactProbe
-    private var discoveryEntries = [TmuxHost: DiscoveryEntry]()
+    private var discoveryEntries = [CommandHost: DiscoveryEntry]()
     private var exactProbeEntries = [TmuxSessionProbeTarget: ExactProbeEntry]()
 
     init(
@@ -57,7 +58,7 @@ final class TmuxSessionProbeBroker {
     }
 
     func sessions(
-        on host: TmuxHost
+        on host: CommandHost
     ) async -> Result<[DiscoveredTmuxSession], TmuxBinaryError> {
         let consumerID = UUID()
         return await withTaskCancellationHandler {
@@ -81,7 +82,7 @@ final class TmuxSessionProbeBroker {
         }
     }
 
-    func invalidateSessions(on host: TmuxHost) {
+    func invalidateSessions(on host: CommandHost) {
         guard var entry = discoveryEntries[host] else {
             return
         }
@@ -144,7 +145,7 @@ final class TmuxSessionProbeBroker {
     private func registerDiscoveryConsumer(
         _ continuation: DiscoveryContinuation,
         id consumerID: UUID,
-        host: TmuxHost
+        host: CommandHost
     ) {
         guard var entry = discoveryEntries[host] else {
             startDiscovery(
@@ -162,7 +163,7 @@ final class TmuxSessionProbeBroker {
     }
 
     private func startDiscovery(
-        on host: TmuxHost,
+        on host: CommandHost,
         consumers: [UUID: DiscoveryContinuation]
     ) {
         let id = UUID()
@@ -182,7 +183,7 @@ final class TmuxSessionProbeBroker {
     private func completeDiscovery(
         _ result: DiscoveryResult,
         id: UUID,
-        host: TmuxHost
+        host: CommandHost
     ) {
         guard let entry = discoveryEntries[host], entry.id == id else {
             return
@@ -202,7 +203,7 @@ final class TmuxSessionProbeBroker {
         }
     }
 
-    private func cancelDiscoveryConsumer(id: UUID, host: TmuxHost) {
+    private func cancelDiscoveryConsumer(id: UUID, host: CommandHost) {
         guard var entry = discoveryEntries[host] else { return }
         let failure = DiscoveryResult.failure(
             .probeCancelled(shell: host.displayName)

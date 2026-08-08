@@ -12,16 +12,16 @@ import terminal from '../assets/guide-terminal.png';
 import worktree from '../assets/guide-worktree.png';
 import { RELEASES_URL } from '../config';
 
-const title = 'How to use Ghosthub';
+const title = 'Ghosthub overview';
 const description =
-  'A visual tour of connected tmux sessions, automatic SSH reconnect, '
-  + 'worktrees, the Command Palette, native tabs and windows, and terminal configuration.';
+  'A visual overview of Ghosthub across tmux and Herdr sessions, SSH hosts, '
+  + 'Git worktrees, native tabs and windows, and terminal configuration.';
 
 const imageWidths = [640, 960, 1280, 1600];
 const imageSizes = '(max-width: 900px) calc(100vw - 3rem), 900px';
 const imageAlt = {
   sessions:
-    'Ghosthub workspace showing local sessions, projects, worktrees, and a remote host in the sidebar',
+    'Ghosthub workspace showing Tmux Sessions, Herdr Sessions, Projects, and a remote host in the sidebar',
   hosts: 'Ghosthub Hosts settings with a configured remote GPU host',
   worktree:
     'Ghosthub new worktree sheet listing available local and remote branches',
@@ -35,40 +35,45 @@ const imageAlt = {
 };
 ---
 
-<SiteLayout title={title} description={description} path="/guide/">
+<SiteLayout title={title} description={description} path="/overview/">
   <section class="intro">
     <div class="container narrow">
-      <p class="eyebrow">Five-minute guide</p>
-      <h1>How to use Ghosthub</h1>
+      <p class="eyebrow">Five-minute overview</p>
+      <h1>Meet Ghosthub</h1>
       <p class="lead">
-        Ghosthub creates and attaches to any tmux session across your Mac and
-        SSH hosts, with no Git setup required. It also manages worktree-bound
-        sessions created from branches and GitHub pull requests. If SSH drops,
-        it retries and reattaches to the same exact session automatically.
+        Ghosthub is a native macOS terminal for local and remote multiplexer
+        fleets. It brings tmux sessions, Herdr sessions, and optional
+        tmux-backed worktrees into one sidebar without replacing the tools that
+        own them.
+      </p>
+      <p>
+        Use tmux and Herdr together on the same hosts. Ghosthub handles
+        discovery, presentation, SSH keepalives, and reconnect while each
+        multiplexer keeps its own panes, layout, history, key bindings, and
+        processes.
       </p>
       <p class="docs-callout">
-        Looking for detailed setup and reference material? Visit the{' '}
-        <a href="/docs/">Ghosthub Docs</a>.
+        Ready for setup and operating details? Visit the <a href="/docs/">Docs</a>.
       </p>
-      <p class="promise" aria-label="Automatic SSH reconnect plus tmux reattach">
+      <p class="promise" aria-label="Automatic SSH reconnect plus exact session reattach">
         <span class="promise-icon" aria-hidden="true">↻</span>
         <span>Automatic SSH reconnect</span>
         <i aria-hidden="true">+</i>
-        <span>tmux reattach</span>
+        <span>Exact session reattach</span>
       </p>
       <div class="requirements" aria-label="Requirements">
         <span>Apple Silicon</span>
         <span>macOS 26+</span>
-        <span>tmux 3.2+</span>
+        <span>tmux 3.2+ and/or Herdr 0.8+</span>
       </div>
       <InstallCommand />
     </div>
   </section>
 
   <nav class="contents container" aria-label="On this page">
-    <a href="#sessions"><b>01</b> Open a session</a>
-    <a href="#hosts"><b>02</b> Add a host</a>
-    <a href="#worktrees"><b>03</b> Add worktrees</a>
+    <a href="#sessions"><b>01</b> Session fleet</a>
+    <a href="#hosts"><b>02</b> Mac and SSH</a>
+    <a href="#worktrees"><b>03</b> Project context</a>
     <a href="#command-palette"><b>04</b> Move quickly</a>
     <a href="#command-center"><b>05</b> Command center</a>
     <a href="#terminal"><b>06</b> Make it yours</a>
@@ -79,33 +84,16 @@ const imageAlt = {
       <div class="container step-copy">
         <p class="number">01</p>
         <div>
-          <h2>Open a tmux session</h2>
+          <h2>Your session fleet in one place</h2>
           <p>
-            Launch Ghosthub and expand your Mac under{' '}
-            <strong>Hosts</strong>. Existing tmux sessions appear
-            automatically alongside projects and worktrees. Select one to
-            attach with an ordinary tmux client.
+            Tmux and Herdr sessions appear side by side for every supported
+            host. Open either with its ordinary client, create new sessions
+            where the backend is available, and keep tmux-backed project work
+            visible in the same hierarchy.
           </p>
           <p>
-            Use the <strong>+</strong> menu to create a named session or add
-            an existing project. The command palette offers the same actions,
-            plus commands to open any discovered session.
-          </p>
-          <p>
-            Switching between hosts, worktrees, and sessions keeps each opened
-            terminal connected, so returning picks up where you left off. Press
-            <kbd>⌘W</kbd> to detach only the active terminal; your work keeps
-            running in tmux. After a session connects, a small accent
-            indicator appears beside its row when Ghosthub observes recent
-            tmux scrollback progress. See <a href="/docs/sessions/">Sessions</a>{' '}
-            for session lifecycle, activity indicators, and confirmed kill
-            controls.
-          </p>
-          <p>
-            With tmux 3.4+, use <kbd>⌘D</kbd> to split right or{' '}
-            <kbd>⌘⇧D</kbd> to split down. Both are also in the{' '}
-            <strong>File</strong> menu. See the{' '}
-            <a href="/docs/keyboard-shortcuts/">keyboard shortcuts</a> reference.
+            Ghosthub detaches when you close a presentation. Explicit lifecycle
+            actions remain separate. <a href="/docs/sessions/">Explore session behavior</a>.
           </p>
         </div>
       </div>
@@ -126,46 +114,14 @@ const imageAlt = {
       <div class="container step-copy">
         <p class="number">02</p>
         <div>
-          <h2>Add an SSH host</h2>
+          <h2>One view across Mac and SSH hosts</h2>
           <p>
-            Open <strong>Settings → Hosts</strong> and add any destination
-            accepted by your SSH configuration, such as{' '}
-            <code>devbox</code> or <code>alice@build-server</code>. Ghosthub
-            follows OpenSSH configuration for users, ports, keys, and routing.
+            Add destinations already understood by OpenSSH, including routed
+            hosts and exe.dev VMs. Ghosthub keeps remote presentations alive
+            through ordinary interruptions and reconnects to the exact running
+            session it can confirm.
           </p>
-          <p>
-            Trust and credential prompts name the exact host or jump hop that
-            controls them. Tmux-only hosts need no helper; project context can
-            use Ghosthub’s managed kwt helper. Native Windows support through
-            psmux is experimental. See <a href="/docs/remote-hosts/">Remote Hosts</a>{' '}
-            for requirements, trust, authentication, Tailscale, and helper setup.
-          </p>
-          <p>
-            Ghosthub can also discover running <a href="/docs/remote-hosts/#exedev-hosts">exe.dev</a>{' '}
-            VMs as SSH hosts. Add your account under{' '}
-            <strong>Settings → Integrations</strong> to connect them.
-          </p>
-          <p>
-            For a macOS or Linux host, add reusable <strong>Launch Profiles</strong>{' '}
-            in the same settings pane, then choose one under{' '}
-            <strong>Start with</strong> when creating a session. The command runs
-            only for that new session; reconnecting and opening existing sessions
-            are always attach-only. If creation is interrupted and the session is
-            absent, Ghosthub requires confirmation before running the command
-            again. See <a href="/docs/launch-profiles/">Launch Profiles</a>{' '}
-            for setup, lifecycle, and security guidance.
-          </p>
-          <aside class="reconnect">
-            <span aria-hidden="true">↻</span>
-            <p>
-              <strong>Lose your connection?</strong> Ghosthub shows a calm
-              connection-interrupted screen and keeps trying automatically,
-              with no more than 30 seconds between attempts. Choose
-              <strong>Reconnect Now</strong> to try immediately. When
-              connectivity returns, Ghosthub reattaches to the same exact tmux
-              session with the server-side process state still intact.
-            </p>
-          </aside>
+          <p><a href="/docs/remote-hosts/">Explore remote hosts</a>.</p>
         </div>
       </div>
       <figure class="container window">
@@ -184,23 +140,13 @@ const imageAlt = {
       <div class="container step-copy">
         <p class="number">03</p>
         <div>
-          <h2>Add project and worktree context</h2>
+          <h2>Project context when you want it</h2>
           <p>
-            Open the <strong>+</strong> menu beside your local Mac or a remote
-            macOS or Linux host, choose <strong>Add Project</strong>, and enter
-            the absolute path to an existing checkout. Ghosthub registers that
-            repository through its bundled or managed{' '}
-            <a href="https://kwt.sh">kwt</a> helper without scanning the machine.
+            Register a repository to create tmux-backed worktrees from branches
+            or GitHub pull requests. Git is optional for standalone tmux and
+            Herdr sessions.
           </p>
-          <p>
-            Select a project and press <kbd>⌘⇧N</kbd>. Use
-            <strong>Branch</strong> to search local and remote branches that
-            are not already checked out, or type a new branch name. Use
-            <strong>Pull Request</strong> to find and import an open GitHub
-            pull request. See <a href="/docs/projects-worktrees/">Projects and
-              Worktrees</a> for host-side GitHub CLI setup, branch behavior,
-            and safe worktree removal.
-          </p>
+          <p><a href="/docs/projects-worktrees/">Explore projects and worktrees</a>.</p>
         </div>
       </div>
       <figure class="container window">
@@ -219,20 +165,13 @@ const imageAlt = {
       <div class="container step-copy">
         <p class="number">04</p>
         <div>
-          <h2>Move through the fleet without the mouse</h2>
+          <h2>Move through the fleet quickly</h2>
           <p>
-            Press <kbd>⌘⇧P</kbd> for the Command Palette. Search across hosts,
-            projects, worktrees, appearance, settings, and common actions,
-            then press Return to go. The{' '}
-            <a href="/docs/keyboard-shortcuts/">keyboard shortcut reference</a>{' '}
-            covers the rest of the app.
+            Search sessions, hosts, projects, worktrees, settings, and common
+            actions from the Command Palette instead of navigating the sidebar
+            by hand.
           </p>
-          <div class="shortcuts" aria-label="Useful keyboard shortcuts">
-            <span><kbd>⌘B</kbd> Hide/show sidebar</span>
-            <span><kbd>⌘⌥↑</kbd> Previous worktree</span>
-            <span><kbd>⌘⌥↓</kbd> Next worktree</span>
-            <span><kbd>⌘W</kbd> Detach</span>
-          </div>
+          <p><a href="/docs/keyboard-shortcuts/">Explore keyboard shortcuts</a>.</p>
         </div>
       </div>
       <figure class="container window">
@@ -253,27 +192,11 @@ const imageAlt = {
         <div>
           <h2>Build your command center</h2>
           <p>
-            Ghosthub supports native macOS tabs alongside independent windows.
-            Press <kbd>⌘T</kbd> to open a workspace tab in the current window,
-            or <kbd>⌘N</kbd> to open a separate window. Each one can attach to
-            a different tmux session.
+            Use independent macOS windows and tabs for different tmux or Herdr
+            sessions, then hide each sidebar when the terminal should fill the
+            frame.
           </p>
-          <p>
-            These tabs group complete Ghosthub workspaces; tmux still owns the
-            windows and panes inside each attached session. Use the macOS
-            <strong>Window</strong> menu to move a tab into its own window or
-            merge separate windows into one tab group.
-          </p>
-          <div class="shortcuts" aria-label="Workspace window shortcuts">
-            <span><kbd>⌘T</kbd> New tab</span>
-            <span><kbd>⌘N</kbd> New window</span>
-          </div>
-          <p>
-            Press <kbd>⌘B</kbd> in any window to hide its sidebar and give
-            the terminal the full frame. See{' '}
-            <a href="/docs/windows-navigation/">Windows and Navigation</a> for
-            restoration, detachment, and display ordering.
-          </p>
+          <p><a href="/docs/windows-navigation/">Explore windows and navigation</a>.</p>
         </div>
       </div>
       <figure class="container command-matrix">
@@ -304,19 +227,11 @@ const imageAlt = {
         <div>
           <h2>Make the terminal yours</h2>
           <p>
-            Terminal preferences live in Ghosthub Settings. For the full
-            configuration surface, edit{' '}
-            <code>~/.config/ghosthub/ghostty.conf</code>.
+            Ghosthub uses libghostty with its own isolated configuration. Tune
+            fonts and colors without inheriting Ghostty.app state, and
+            optionally style new tmux sessions created by Ghosthub.
           </p>
-          <p>
-            The file uses Ghostty’s configuration format but is isolated from
-            Ghostty.app.{' '}
-            The Tmux Theme picker supplies colors for new sessions created by
-            Ghosthub. Existing sessions keep their own appearance by default;
-            shared-session styling is explicit. See{' '}
-            <a href="/docs/terminal-configuration/">Terminal Configuration</a>{' '}
-            for shell startup, themes, clipboard behavior, and quit settings.
-          </p>
+          <p><a href="/docs/terminal-configuration/">Explore terminal configuration</a>.</p>
         </div>
       </div>
       <figure class="container window">
@@ -337,15 +252,9 @@ const imageAlt = {
       <p class="eyebrow">Privacy</p>
       <h2>Anonymous usage data</h2>
       <p>
-        Packaged Ghosthub releases send at most one anonymous{' '}
-        <code>application active</code> event per day. The event contains a
-        random installation ID, the Ghosthub version and build number, and no
-        repository, worktree, host, session, path, command, or terminal data.
-        PostHog person profiles and GeoIP enrichment are disabled. Turn
-        reporting off at any time in{' '}
-        <strong>Settings → Privacy → Share anonymous usage data</strong>.
-        The <a href="/docs/privacy/">Privacy docs</a> also describe local and
-        remote state.
+        Packaged builds send at most one anonymous application-active event per
+        day, with no host, repository, session, path, command, or terminal data.
+        Disable it any time in Settings. <a href="/docs/privacy/">Read the privacy details</a>.
       </p>
     </div>
   </section>
@@ -353,12 +262,11 @@ const imageAlt = {
   <section class="finish">
     <div class="container narrow">
       <p class="eyebrow">That’s it</p>
-      <h2>Your sessions keep running</h2>
+      <h2>Bring the tools you already use</h2>
       <p>
-        Ghosthub never replaces tmux windows, panes, history, or plugins.
-        Quit the app or install an update and the sessions remain where you
-        left them. Ghosthub restores each exact session it can confirm and
-        keeps retrying offline SSH hosts as inventory refreshes.
+        Ghosthub works with tmux and Herdr rather than asking you to replace
+        them. Your sessions remain ordinary backend sessions, available from
+        their own clients even when Ghosthub is closed.
       </p>
       <a data-download href={RELEASES_URL}>Download Ghosthub <span aria-hidden="true">&rarr;</span></a>
     </div>

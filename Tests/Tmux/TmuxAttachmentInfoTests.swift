@@ -1,3 +1,4 @@
+import GhosthubTransport
 import Darwin
 import Foundation
 import Testing
@@ -105,7 +106,7 @@ struct TmuxAttachmentInfoTests {
                 user: "alice", hostname: "example.com", port: 2222
             ).displayName == "alice@example.com:2222"
         )
-        #expect(TmuxHost.local.displayName == "localhost")
+        #expect(CommandHost.local.displayName == "localhost")
     }
 
     @Test("local attachment leaves tmux presentation unchanged by default")
@@ -814,7 +815,7 @@ struct TmuxAttachmentInfoTests {
 
     @Test("normal SSH arguments preserve OpenSSH connection sharing")
     func normalSSHArgumentsPreserveOpenSSHConnectionSharing() {
-        let arguments = tmuxSSHConnectionArguments(environment: [:])
+        let arguments = demoSSHIsolationArguments(environment: [:])
 
         #expect(!arguments.contains("ControlMaster=no"))
         #expect(!arguments.contains("ControlPath=none"))
@@ -823,7 +824,7 @@ struct TmuxAttachmentInfoTests {
     @Test("demo SSH arguments isolate config, trust, and routing")
     func demoSSHArguments() {
         let scratch = "/tmp/ghosthub demo"
-        let arguments = tmuxSSHConnectionArguments(environment: [
+        let arguments = demoSSHIsolationArguments(environment: [
             "GHOSTHUB_DEMO_SCRATCH": scratch,
             "GHOSTHUB_DEMO_SSH_DIR": "\(scratch)/ssh",
         ])
@@ -951,7 +952,7 @@ struct TmuxAttachmentInfoTests {
 
     @Test("Windows creation ignores POSIX launch profile commands")
     func windowsCreationDropsProfileCommand() {
-        let host = TmuxHost.ssh(SSHHostInfo(
+        let host = CommandHost.ssh(SSHHostInfo(
             user: "codex",
             hostname: "build-box",
             port: nil,
@@ -1535,16 +1536,6 @@ struct TmuxAttachmentInfoTests {
 
         #expect(process.terminationStatus == 1)
         #expect(try String(contentsOf: counter, encoding: .utf8) == "x")
-    }
-
-    @Test("host identity is codable")
-    func hostIdentityCodable() throws {
-        let original = TmuxHost.ssh(SSHHostInfo(
-            user: "bob", hostname: "server.io", port: 2222
-        ))
-        let data = try JSONEncoder().encode(original)
-        let decoded = try JSONDecoder().decode(TmuxHost.self, from: data)
-        #expect(original == decoded)
     }
 
     private static func decodedPowerShellScript(

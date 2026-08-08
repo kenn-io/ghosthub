@@ -1,3 +1,4 @@
+import GhosthubTransport
 import Foundation
 import GhosthubTmux
 import GhosthubUI
@@ -40,9 +41,9 @@ struct TmuxSessionKiller: Sendable {
     private static let identityMarker =
         "GHOSTHUB_TMUX_SESSION_IDENTITY\t"
 
-    typealias PathResolver = @Sendable (TmuxHost)
+    typealias PathResolver = @Sendable (CommandHost)
         -> Result<String, TmuxBinaryError>
-    typealias Runner = @Sendable (TmuxHost, String)
+    typealias Runner = @Sendable (CommandHost, String)
         -> (status: Int32, stdout: String)
 
     private let pathResolver: PathResolver
@@ -64,13 +65,13 @@ struct TmuxSessionKiller: Sendable {
         self.runner = runner ?? { host, command in
             switch host {
             case .local:
-                TmuxBinaryResolver.runLoginShell(
-                    shell: TmuxBinaryResolver.loginShell(),
+                AccountCommandRunner.runLoginShell(
+                    shell: AccountCommandRunner.loginShell(),
                     command: command,
                     timeout: 15
                 )
             case let .ssh(info):
-                TmuxBinaryResolver.runRemoteLoginShell(
+                AccountCommandRunner.runRemoteLoginShell(
                     host: info,
                     command: command,
                     timeout: 15
@@ -82,7 +83,7 @@ struct TmuxSessionKiller: Sendable {
     func kill(
         _ selection: WorkspaceTmuxSessionSelection,
         expectedIdentity: TmuxSessionIdentity,
-        on host: TmuxHost
+        on host: CommandHost
     ) async throws {
         guard Self.isNumericIdentity(expectedIdentity.serverPID),
               Self.isSessionID(expectedIdentity.sessionID),
@@ -122,7 +123,7 @@ struct TmuxSessionKiller: Sendable {
 
     func sessionIdentity(
         _ selection: WorkspaceTmuxSessionSelection,
-        on host: TmuxHost
+        on host: CommandHost
     ) async throws -> TmuxSessionIdentity {
         let tmuxPath = try pathResolver(host).get()
         let platform = Self.platform(for: host)
@@ -284,7 +285,7 @@ struct TmuxSessionKiller: Sendable {
     }
 
     private static func platform(
-        for host: TmuxHost
+        for host: CommandHost
     ) -> SSHHostInfo.Platform {
         switch host {
         case .local:

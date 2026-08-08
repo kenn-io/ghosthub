@@ -27,19 +27,27 @@ public struct RootView: View {
     @State private var sidePanelAutoCollapsed = false
     @State private var sidePanelUserOverride = false
     @State private var tmuxSelectionBaseline: WorkspaceSelection?
+    @State private var herdrActivationRevision: UInt64 = 0
+    @State private var herdrActivationTask: Task<Void, Never>?
+    @State private var herdrRestartTask: Task<Void, Never>?
     @State private var newWorktreeProject: ProjectSummary?
     @State private var newWorktreeMode: NewWorktreeMode = .branch
     @State private var newTmuxSessionHost: HostSummary?
+    @State private var newHerdrSessionHost: HostSummary?
+    @State private var herdrCreationTask: Task<Void, Never>?
+    @State private var herdrCreationRevision: UInt64 = 0
     @State private var addProjectHost: HostSummary?
     @State private var workspaceAlert: WorkspaceAlert?
-    @State private var tmuxRecoveryRequestRouter =
-        TmuxConnectionRecoveryRequestRouter()
+    @State private var sessionRecoveryRequestRouter =
+        SessionConnectionRecoveryRequestRouter()
     @StateObject private var sshHostKeyReview =
         WorkspaceSSHHostKeyReviewModel()
     @AppStorage(WorkspaceSidebarOrderStorage.worktreeKey)
     private var worktreeOrderRawValue = ""
     @AppStorage(WorkspaceSidebarOrderStorage.tmuxSessionKey)
     private var tmuxSessionOrderRawValue = ""
+    @AppStorage(WorkspaceSidebarOrderStorage.herdrSessionKey)
+    private var herdrSessionOrderRawValue = ""
 
     public init(
         display: WorkspaceDisplayState,
@@ -78,20 +86,23 @@ public struct RootView: View {
     private var activeTmuxSession: WorkspaceTmuxSessionSelection? {
         display.activeTmuxSession
     }
+    private var activeHerdrSession: WorkspaceHerdrSessionSelection? {
+        display.activeHerdrSession
+    }
     public var body: some View {
         contentWithNotifications
             .onAppear {
-                reviewTmuxConnectionRequestIfNeeded()
+                reviewSessionConnectionRequestIfNeeded()
             }
             .onChange(
-                of: display.tmuxConnectionRecoveryRequest?.id
+                of: display.sessionConnectionRecoveryRequest?.id
             ) { _, _ in
-                reviewTmuxConnectionRequestIfNeeded()
+                reviewSessionConnectionRequestIfNeeded()
             }
             .onChange(of: sshHostKeyReview.isPresented) { wasPresented, isPresented in
                 guard wasPresented, !isPresented else { return }
-                tmuxRecoveryRequestRouter.reviewDidDismiss()
-                reviewTmuxConnectionRequestIfNeeded()
+                sessionRecoveryRequestRouter.reviewDidDismiss()
+                reviewSessionConnectionRequestIfNeeded()
             }
             .sheet(isPresented: $isCommandPalettePresented) {
                 CommandPaletteView(
@@ -186,6 +197,22 @@ public struct RootView: View {
                     onCancel: { newTmuxSessionHost = nil }
                 )
             }
+            .sheet(
+                item: $newHerdrSessionHost,
+                onDismiss: {
+                    cancelHerdrCreation(dismissSheet: false)
+                }
+            ) { host in
+                NewHerdrSessionSheet(
+                    host: host,
+                    hosts: snapshot.hosts,
+                    isCreating: herdrCreationTask != nil,
+                    onCreate: { selectedHost, name in
+                        createHerdrSession(on: selectedHost, name: name)
+                    },
+                    onCancel: { cancelHerdrCreation() }
+                )
+            }
             .sheet(item: $addProjectHost) { host in
                 AddProjectSheet(
                     host: host,
@@ -205,6 +232,10 @@ public struct RootView: View {
             }
             .alert(item: $workspaceAlert) { alert in
                 workspaceAlertView(alert)
+            }
+            .onDisappear {
+                cancelHerdrPresentationIntents()
+                cancelHerdrCreation()
             }
     }
 
@@ -238,6 +269,13 @@ public struct RootView: View {
                     selectionBaseline: tmuxSelectionBaseline,
                     activeSession: activeTmuxSession,
                     hide: hideTmuxSession
+                )
+            )
+            .modifier(
+                HerdrSessionPresentationLifecycleModifier(
+                    selection: selection,
+                    activeSession: activeHerdrSession,
+                    deactivate: deactivateHerdrSession
                 )
             )
             .onAppear {
@@ -470,6 +508,7 @@ public struct RootView: View {
             visibility: worktreeVisibility,
             tmuxSessionVisibility: tmuxSessionVisibility,
             activeTmuxSession: activeTmuxSession,
+            activeHerdrSession: activeHerdrSession,
             activeTmuxSessionIsConnected:
             display.activeTmuxSessionIsConnected,
             workingTmuxSessionIDs:
@@ -477,8 +516,15 @@ public struct RootView: View {
             onOpenTmuxSession: { session in
                 activateTmuxSession(session)
             },
-            onNavigateAwayFromTmuxSession: {
+            onOpenHerdrSession: { session in
+                activateHerdrSession(session)
+            },
+            pendingHerdrSessions: display.pendingHerdrSessions,
+            onRestartHerdrSession: restartHerdrSession,
+            onRequestHerdrSessionLifecycle: requestHerdrSessionLifecycle,
+            onNavigateAwayFromSession: {
                 hideTmuxSession()
+                deactivateHerdrSession()
             },
             onRequestKillTmuxSession: requestSessionKill,
             onRequestRemoveWorktree: requestWorktreeRemoval,
@@ -486,6 +532,9 @@ public struct RootView: View {
             onImportPullRequest: openImportPullRequest,
             onNewTmuxSession: { host in
                 newTmuxSessionHost = host
+            },
+            onNewHerdrSession: { host in
+                newHerdrSessionHost = host
             },
             onAddProject: { host in
                 addProjectHost = host
@@ -509,6 +558,7 @@ public struct RootView: View {
             display.isWorkspaceInventoryRefreshComplete,
             worktreeOrderRawValue: $worktreeOrderRawValue,
             tmuxSessionOrderRawValue: $tmuxSessionOrderRawValue,
+            herdrSessionOrderRawValue: $herdrSessionOrderRawValue,
             onOpen: { worktree in
                 selectWorkspace(.worktree(worktree.id))
             }
@@ -520,7 +570,7 @@ public struct RootView: View {
     private func reviewSSHHostKey(
         _ hostID: UUID,
         inventoryWarning: String,
-        tmuxRecoveryRequestID: UUID? = nil
+        sessionRecoveryRequestID: UUID? = nil
     ) {
         guard let review = handlers.reviewSSHHostKey,
               let host = snapshot.host(id: hostID) else {
@@ -531,7 +581,7 @@ public struct RootView: View {
             await sshHostKeyReview.review(
                 hostID: hostID,
                 hostName: host.name,
-                tmuxRecoveryRequestID: tmuxRecoveryRequestID,
+                sessionRecoveryRequestID: sessionRecoveryRequestID,
                 using: {
                     await review(hostID, inventoryWarning)
                 }
@@ -539,27 +589,27 @@ public struct RootView: View {
         }
     }
 
-    private func tmuxRecoveryWarning(for hostID: UUID) -> String {
-        if let request = display.tmuxConnectionRecoveryRequest,
+    private func sessionRecoveryWarning(for hostID: UUID) -> String {
+        if let request = display.sessionConnectionRecoveryRequest,
            request.hostID == hostID {
             return request.message
         }
         return display.workspaceInventoryWarningsByHost[hostID]
-            ?? "The remote tmux connection needs attention."
+            ?? "The remote session connection needs attention."
     }
 
-    private func reviewTmuxConnectionRequestIfNeeded() {
+    private func reviewSessionConnectionRequestIfNeeded() {
         Task { @MainActor in
             await Task.yield()
-            guard let request = tmuxRecoveryRequestRouter.take(
-                display.tmuxConnectionRecoveryRequest,
+            guard let request = sessionRecoveryRequestRouter.take(
+                display.sessionConnectionRecoveryRequest,
                 whileReviewIsPresented: sshHostKeyReview.isPresented
             )
             else { return }
             reviewSSHHostKey(
                 request.hostID,
                 inventoryWarning: request.message,
-                tmuxRecoveryRequestID: request.id
+                sessionRecoveryRequestID: request.id
             )
         }
     }
@@ -567,15 +617,16 @@ public struct RootView: View {
     private func retrySSHRecovery() {
         let recoveryRequest =
             sshHostKeyReview.presentation == .inventoryIssue
-                ? tmuxRecoveryRequestRouter.recoveryRequestToResume(
+                ? sessionRecoveryRequestRouter.recoveryRequestToResume(
                     reviewedHostID: sshHostKeyReview.hostID,
-                    reviewRequestID: sshHostKeyReview.tmuxRecoveryRequestID
+                    reviewRequestID:
+                    sshHostKeyReview.sessionRecoveryRequestID
                 )
                 : nil
         cancelSSHAuthenticationIfNeeded()
         sshHostKeyReview.dismiss()
         if let recoveryRequest {
-            handlers.resumeTmuxReconnectAfterSSHRecovery?(recoveryRequest)
+            handlers.resumeSessionReconnectAfterSSHRecovery?(recoveryRequest)
         }
         handlers.refreshWorkspaceInventory?()
     }
@@ -624,20 +675,21 @@ public struct RootView: View {
                     inventoryWarning:
                     display.workspaceInventoryWarningsByHost[hostID]
                         ?? "Remote inventory is unavailable.",
-                    tmuxRecoveryRequestID:
-                    sshHostKeyReview.tmuxRecoveryRequestID
+                    sessionRecoveryRequestID:
+                    sshHostKeyReview.sessionRecoveryRequestID
                 )
                 return
             case .connected:
                 let recoveryRequest =
-                    tmuxRecoveryRequestRouter.recoveryRequestToResume(
+                    sessionRecoveryRequestRouter.recoveryRequestToResume(
                         reviewedHostID: hostID,
-                        reviewRequestID: sshHostKeyReview.tmuxRecoveryRequestID
+                        reviewRequestID:
+                        sshHostKeyReview.sessionRecoveryRequestID
                     )
                 handlers.cancelSSHAuthentication?(hostID)
                 sshHostKeyReview.authenticationSucceeded {
                     if let recoveryRequest {
-                        handlers.resumeTmuxReconnectAfterSSHRecovery?(
+                        handlers.resumeSessionReconnectAfterSSHRecovery?(
                             recoveryRequest
                         )
                     }
@@ -670,6 +722,7 @@ public struct RootView: View {
     }
 
     private func activateTmuxSession(_ session: WorkspaceTmuxSessionSelection) {
+        deactivateHerdrSession()
         if activeTmuxSession == session {
             tmuxSelectionBaseline = selection
             handlers.openTmuxSession?(session)
@@ -677,6 +730,49 @@ public struct RootView: View {
         }
         tmuxSelectionBaseline = selection
         handlers.openTmuxSession?(session)
+    }
+
+    private func activateHerdrSession(
+        _ session: WorkspaceHerdrSessionSelection
+    ) {
+        herdrActivationTask?.cancel()
+        herdrActivationRevision &+= 1
+        let activationRevision = herdrActivationRevision
+        let replacedTmuxSession = activeTmuxSession
+        herdrActivationTask = Task { @MainActor in
+            defer {
+                if herdrActivationRevision == activationRevision {
+                    herdrActivationTask = nil
+                }
+            }
+            do {
+                guard let open = handlers.openHerdrSession else {
+                    throw HerdrLifecycleUnavailableError()
+                }
+                let didActivate = try await Self.openHerdrSession(
+                    session,
+                    replacing: replacedTmuxSession,
+                    open: open,
+                    isCurrent: {
+                        !Task.isCancelled
+                            && herdrActivationRevision == activationRevision
+                    },
+                    closeTmux: { replaced in
+                        handlers.closeTmuxSession?(replaced)
+                    }
+                )
+                guard didActivate, !Task.isCancelled else { return }
+            } catch {
+                guard herdrActivationRevision == activationRevision,
+                      !(error is CancellationError)
+                else { return }
+                workspaceAlert = .herdrLifecycleFailure(
+                    session: session.name,
+                    action: "open",
+                    message: error.localizedDescription
+                )
+            }
+        }
     }
 
     private func initializeTmuxSelectionBaselineIfNeeded() {
@@ -705,6 +801,119 @@ public struct RootView: View {
             selection: session,
             initialCommand: initialCommand
         ))
+    }
+
+    private func createHerdrSession(
+        on host: HostSummary,
+        name: String
+    ) {
+        guard herdrCreationTask == nil else { return }
+        let session = WorkspaceHerdrSessionSelection(
+            hostID: host.id,
+            name: name
+        )
+        herdrCreationRevision &+= 1
+        let creationRevision = herdrCreationRevision
+        herdrCreationTask = Task { @MainActor in
+            do {
+                guard let create = handlers.createHerdrSession else {
+                    throw HerdrLifecycleUnavailableError()
+                }
+                try await create(session)
+                guard herdrCreationRevision == creationRevision else {
+                    return
+                }
+                herdrCreationTask = nil
+                newHerdrSessionHost = nil
+                selectWorkspace(.herdrSession(hostID: host.id, name: name))
+            } catch {
+                guard herdrCreationRevision == creationRevision else {
+                    return
+                }
+                herdrCreationTask = nil
+                guard !(error is CancellationError) else { return }
+                workspaceAlert = .herdrLifecycleFailure(
+                    session: name,
+                    action: "create",
+                    message: error.localizedDescription
+                )
+            }
+        }
+    }
+
+    private func cancelHerdrCreation(dismissSheet: Bool = true) {
+        herdrCreationRevision &+= 1
+        herdrCreationTask?.cancel()
+        herdrCreationTask = nil
+        if dismissSheet {
+            newHerdrSessionHost = nil
+        }
+    }
+
+    private func restartHerdrSession(
+        _ session: WorkspaceHerdrSessionSelection
+    ) {
+        herdrRestartTask?.cancel()
+        herdrActivationRevision &+= 1
+        let activationRevision = herdrActivationRevision
+        herdrRestartTask = Task { @MainActor in
+            defer {
+                if herdrActivationRevision == activationRevision {
+                    herdrRestartTask = nil
+                }
+            }
+            do {
+                guard let restart = handlers.restartHerdrSession else {
+                    throw HerdrLifecycleUnavailableError()
+                }
+                try await restart(session)
+                guard !Task.isCancelled,
+                      herdrActivationRevision == activationRevision else {
+                    return
+                }
+                herdrRestartTask = nil
+                selectWorkspace(.herdrSession(
+                    hostID: session.hostID,
+                    name: session.name
+                ))
+            } catch {
+                guard herdrActivationRevision == activationRevision,
+                      !(error is CancellationError)
+                else { return }
+                workspaceAlert = .herdrLifecycleFailure(
+                    session: session.name,
+                    action: "restart",
+                    message: error.localizedDescription
+                )
+            }
+        }
+    }
+
+    private func requestHerdrSessionLifecycle(
+        _ session: WorkspaceHerdrSessionSelection,
+        action: HerdrSessionDestructiveAction
+    ) {
+        guard let prepare = handlers.prepareHerdrSessionLifecycle else {
+            workspaceAlert = .herdrLifecycleFailure(
+                session: session.name,
+                action: action == .stop ? "stop" : "delete",
+                message: "Herdr session lifecycle actions are unavailable."
+            )
+            return
+        }
+        Task {
+            do {
+                workspaceAlert = await .herdrLifecycleConfirmation(
+                    try prepare(session, action)
+                )
+            } catch {
+                workspaceAlert = .herdrLifecycleFailure(
+                    session: session.name,
+                    action: action == .stop ? "stop" : "delete",
+                    message: error.localizedDescription
+                )
+            }
+        }
     }
 
     private func requestSessionKill(
@@ -788,6 +997,44 @@ public struct RootView: View {
         case let .sessionKillFailure(session, message):
             return Alert(
                 title: Text("Could Not Kill “\(session)”"),
+                message: Text(message),
+                dismissButton: .default(Text("OK"))
+            )
+        case let .herdrLifecycleConfirmation(request):
+            let actionName = request.action == .stop ? "Stop" : "Delete"
+            let message: String
+            if request.action == .stop {
+                message = "This terminates shells, agents, servers, tests, and every other process in this Herdr session on \(request.confirmedHost.sidebarTitle). Herdr keeps only the saved shape for a later restart."
+            } else {
+                message = "This permanently removes the saved layout and state for this stopped Herdr session on \(request.confirmedHost.sidebarTitle)."
+            }
+            return Alert(
+                title: Text("\(actionName) “\(request.session.name)”?”"),
+                message: Text(message),
+                primaryButton: .destructive(Text("\(actionName) Session")) {
+                    Task {
+                        do {
+                            guard let perform =
+                                handlers.performHerdrSessionLifecycle
+                            else { throw HerdrLifecycleUnavailableError() }
+                            try await perform(request)
+                        } catch {
+                            workspaceAlert = .herdrLifecycleFailure(
+                                session: request.session.name,
+                                action: request.action == .stop
+                                    ? "stop" : "delete",
+                                message: error.localizedDescription
+                            )
+                        }
+                    }
+                },
+                secondaryButton: .cancel {
+                    handlers.cancelHerdrSessionLifecycle?(request)
+                }
+            )
+        case let .herdrLifecycleFailure(session, action, message):
+            return Alert(
+                title: Text("Could Not \(action.capitalized) “\(session)”"),
                 message: Text(message),
                 dismissButton: .default(Text("OK"))
             )
@@ -885,6 +1132,19 @@ public struct RootView: View {
         handlers.hideTmuxSession?(previous)
     }
 
+    private func deactivateHerdrSession() {
+        cancelHerdrPresentationIntents()
+        guard let previous = activeHerdrSession else { return }
+        handlers.closeHerdrSession?(previous)
+    }
+
+    private func cancelHerdrPresentationIntents() {
+        herdrActivationRevision &+= 1
+        herdrActivationTask?.cancel()
+        herdrActivationTask = nil
+        herdrRestartTask?.cancel()
+        herdrRestartTask = nil
+    }
     private var selectedWorktreeTmuxSession:
         WorkspaceTmuxSessionSelection? {
         let selected = WorkspaceSidebarModel.tmuxSessionSelection(
@@ -924,34 +1184,63 @@ public struct RootView: View {
 
     @ViewBuilder
     private var terminalWorkspaceContent: some View {
-        if let presentedSession = selectedWorktreeTmuxSession
-            ?? activeTmuxSession,
-            let host = snapshot.host(id: presentedSession.hostID),
-            activeTmuxSession == presentedSession,
-            let view = content.tmuxSessionContentBuilder?(
-                host,
-                presentedSession.name,
-                isSidebarTransitioning,
-                TmuxSessionContentActions(
-                    reconnectNow: {
-                        handlers.reconnectActiveTmuxSessionNow?()
-                    },
-                    reviewConnection: {
-                        reviewSSHHostKey(
-                            host.id,
-                            inventoryWarning: tmuxRecoveryWarning(
-                                for: host.id
-                            ),
-                            tmuxRecoveryRequestID:
-                            tmuxRecoveryRequestRouter.recoveryRequestID(
-                                for: host.id,
-                                activeRequest:
-                                display.tmuxConnectionRecoveryRequest
-                            )
-                        )
-                    }
-                )
-            ) {
+        if activeTmuxSession == nil,
+           let activeHerdrSession,
+           let host = snapshot.host(id: activeHerdrSession.hostID),
+           let view = content.herdrSessionContentBuilder?(
+               host,
+               activeHerdrSession.name,
+               isSidebarTransitioning,
+               NativeSessionContentActions(
+                   reconnectNow: {
+                       handlers.reconnectActiveHerdrSessionNow?()
+                   },
+                   reviewConnection: {
+                       reviewSSHHostKey(
+                           host.id,
+                           inventoryWarning: sessionRecoveryWarning(
+                               for: host.id
+                           ),
+                           sessionRecoveryRequestID:
+                           sessionRecoveryRequestRouter.recoveryRequestID(
+                               for: host.id,
+                               activeRequest:
+                               display.sessionConnectionRecoveryRequest
+                           )
+                       )
+                   }
+               )
+           ) {
+            view
+        } else if activeHerdrSession == nil,
+                  let presentedSession = selectedWorktreeTmuxSession
+                  ?? activeTmuxSession,
+                  let host = snapshot.host(id: presentedSession.hostID),
+                  activeTmuxSession == presentedSession,
+                  let view = content.tmuxSessionContentBuilder?(
+                      host,
+                      presentedSession.name,
+                      isSidebarTransitioning,
+                      NativeSessionContentActions(
+                          reconnectNow: {
+                              handlers.reconnectActiveTmuxSessionNow?()
+                          },
+                          reviewConnection: {
+                              reviewSSHHostKey(
+                                  host.id,
+                                  inventoryWarning: sessionRecoveryWarning(
+                                      for: host.id
+                                  ),
+                                  sessionRecoveryRequestID:
+                                  sessionRecoveryRequestRouter.recoveryRequestID(
+                                      for: host.id,
+                                      activeRequest:
+                                      display.sessionConnectionRecoveryRequest
+                                  )
+                              )
+                          }
+                      )
+                  ) {
             view
         } else if display.suppressesAutomaticWorktreeSessionOpen,
                   !display.isWorkspaceRestorationPending,
@@ -1057,7 +1346,9 @@ public struct RootView: View {
             tmuxSessionVisibility: tmuxSessionVisibility,
             supportsSettings: content.settingsSheetBuilder != nil,
             worktreeOrderRawValue: worktreeOrderRawValue,
-            tmuxSessionOrderRawValue: tmuxSessionOrderRawValue
+            tmuxSessionOrderRawValue: tmuxSessionOrderRawValue,
+            herdrSessionOrderRawValue: herdrSessionOrderRawValue,
+            pendingHerdrSessions: display.pendingHerdrSessions
         )
     }
 
@@ -1119,6 +1410,10 @@ public struct RootView: View {
         case let .newTmuxSession(hostID):
             guard let host = snapshot.host(id: hostID) else { return }
             newTmuxSessionHost = host
+        case let .newHerdrSession(hostID):
+            guard let host = snapshot.host(id: hostID),
+                  host.herdrAvailable else { return }
+            newHerdrSessionHost = host
         case let .addProject(hostID):
             guard let host = snapshot.host(id: hostID) else { return }
             addProjectHost = host
@@ -1136,6 +1431,18 @@ public struct RootView: View {
                 ))
             }
             activateTmuxSession(tmuxSession)
+        case let .openHerdrSession(herdrSession):
+            selectWorkspace(.herdrSession(
+                hostID: herdrSession.hostID,
+                name: herdrSession.name
+            ))
+            activateHerdrSession(herdrSession)
+        case let .restartHerdrSession(herdrSession):
+            restartHerdrSession(herdrSession)
+        case let .stopHerdrSession(herdrSession):
+            requestHerdrSessionLifecycle(herdrSession, action: .stop)
+        case let .deleteHerdrSession(herdrSession):
+            requestHerdrSessionLifecycle(herdrSession, action: .delete)
         case let .killTmuxSession(tmuxSession):
             requestSessionKill(tmuxSession)
         case let .applyThemeToCurrentTmuxSession(tmuxSession):
@@ -1153,6 +1460,8 @@ public struct RootView: View {
         case let .setInterfaceAppearance(appearance):
             settingsStore.setInterfaceAppearance(appearance)
         case let .select(target):
+            hideTmuxSession()
+            deactivateHerdrSession()
             selectWorkspace(target)
         case .showLogViewer:
             isLogViewerPresented = true
@@ -1255,6 +1564,10 @@ public struct RootView: View {
     }
 
     private func selectWorkspace(_ updatedSelection: WorkspaceSelection) {
+        if herdrCreationTask != nil {
+            cancelHerdrCreation()
+        }
+        cancelHerdrPresentationIntents()
         if let selectWorkspace = handlers.selectWorkspace {
             selectWorkspace(updatedSelection)
         } else {
@@ -1301,8 +1614,30 @@ public struct RootView: View {
     }
 
     private func handleCommandPalette() {
-        guard controlActiveState == .key else { return }
+        guard controlActiveState == .key || permitsBackgroundDemoControl else {
+            return
+        }
         isCommandPalettePresented = true
+    }
+
+    private var permitsBackgroundDemoControl: Bool {
+        let environment = ProcessInfo.processInfo.environment
+        guard let root = environment["GHOSTHUB_DEMO_ROOT"],
+              let scratch = environment["GHOSTHUB_DEMO_SCRATCH"]
+        else { return false }
+        guard root.hasPrefix("/"), scratch.hasPrefix("/"),
+              root != "/", scratch != "/"
+        else { return false }
+        var rootIsDirectory = ObjCBool(false)
+        var scratchIsDirectory = ObjCBool(false)
+        return FileManager.default.fileExists(
+            atPath: root,
+            isDirectory: &rootIsDirectory
+        ) && rootIsDirectory.boolValue
+            && FileManager.default.fileExists(
+                atPath: scratch,
+                isDirectory: &scratchIsDirectory
+            ) && scratchIsDirectory.boolValue
     }
 
     private func handleToggleSidebar() {
@@ -1319,6 +1654,11 @@ public struct RootView: View {
     }
 
     private func handleCloseTab() {
+        cancelHerdrPresentationIntents()
+        if activeHerdrSession != nil {
+            deactivateHerdrSession()
+            return
+        }
         if Self.closeBorrowedSessionIfActive(
             activeTmuxSession,
             deactivate: deactivateTmuxSession
@@ -1338,6 +1678,21 @@ public struct RootView: View {
     ) -> Bool {
         guard activeSession != nil else { return false }
         deactivate()
+        return true
+    }
+
+    static func openHerdrSession(
+        _ session: WorkspaceHerdrSessionSelection,
+        replacing tmuxSession: WorkspaceTmuxSessionSelection?,
+        open: (WorkspaceHerdrSessionSelection) async throws -> Void,
+        isCurrent: () -> Bool = { true },
+        closeTmux: (WorkspaceTmuxSessionSelection) -> Void
+    ) async throws -> Bool {
+        try await open(session)
+        guard isCurrent() else { return false }
+        if let tmuxSession {
+            closeTmux(tmuxSession)
+        }
         return true
     }
 
@@ -1365,9 +1720,36 @@ struct TmuxSessionPresentationLifecycleModifier: ViewModifier {
     }
 }
 
+/// Closes an active Herdr presentation only when navigation leaves the
+/// host-level route used by Herdr sessions.
+struct HerdrSessionPresentationLifecycleModifier: ViewModifier {
+    let selection: WorkspaceSelection
+    let activeSession: WorkspaceHerdrSessionSelection?
+    let deactivate: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: selection) { _, newSelection in
+                guard let activeSession,
+                      newSelection.selectedHostID != activeSession.hostID
+                      || newSelection.selectedProjectID != nil
+                      || newSelection.selectedWorktreeID != nil
+                      || newSelection.selectedDirectoryWorkspaceID != nil
+                else { return }
+                deactivate()
+            }
+    }
+}
+
 enum WorkspaceAlert: Identifiable {
     case sessionKillConfirmation(TmuxSessionKillRequest)
     case sessionKillFailure(session: String, message: String)
+    case herdrLifecycleConfirmation(HerdrSessionLifecycleRequest)
+    case herdrLifecycleFailure(
+        session: String,
+        action: String,
+        message: String
+    )
     case sessionThemeFailure(session: String, message: String)
     case worktreeRemovalConfirmation(WorktreeRemovalRequest)
     case worktreeRemovalFailure(worktree: String, message: String)
@@ -1378,6 +1760,10 @@ enum WorkspaceAlert: Identifiable {
             return "session:confirm:\(request.session.id)"
         case let .sessionKillFailure(session, message):
             return "session:failure:\(session):\(message)"
+        case let .herdrLifecycleConfirmation(request):
+            return "herdr:confirm:\(request.session.id):\(request.action)"
+        case let .herdrLifecycleFailure(session, action, message):
+            return "herdr:failure:\(action):\(session):\(message)"
         case let .sessionThemeFailure(session, message):
             return "session-theme:failure:\(session):\(message)"
         case let .worktreeRemovalConfirmation(request):
@@ -1397,6 +1783,12 @@ private struct SessionKillUnavailableError: LocalizedError {
 private struct SessionThemeUnavailableError: LocalizedError {
     var errorDescription: String? {
         "Theme application is unavailable."
+    }
+}
+
+private struct HerdrLifecycleUnavailableError: LocalizedError {
+    var errorDescription: String? {
+        "Herdr session lifecycle actions are unavailable."
     }
 }
 

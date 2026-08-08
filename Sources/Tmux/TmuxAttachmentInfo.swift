@@ -1,174 +1,5 @@
 import Foundation
-
-public func tmuxSSHConnectionArguments(
-    environment: [String: String] = ProcessInfo.processInfo.environment
-) -> [String] {
-    // The screenshot app is ad-hoc signed and runs against guarded scratch
-    // state. Keep its SSH isolation explicit without changing normal clients.
-    guard let scratch = environment["GHOSTHUB_DEMO_SCRATCH"],
-          let directory = environment["GHOSTHUB_DEMO_SSH_DIR"],
-          scratch.hasPrefix("/"), directory == "\(scratch)/ssh"
-    else { return [] }
-
-    return [
-        "-F", "\(directory)/config",
-        "-o", "UserKnownHostsFile=\(directory)/known_hosts",
-        "-o", "GlobalKnownHostsFile=/dev/null",
-        "-o", "StrictHostKeyChecking=yes",
-        "-o", "ProxyCommand=none",
-        "-o", "ProxyJump=none",
-        "-o", "ControlMaster=no",
-        "-o", "ControlPath=none",
-    ]
-}
-
-public func shellQuotedCommandArgument(_ value: String) -> String {
-    "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
-}
-
-private func accountShellCommandArgument(_ value: String) -> String {
-    value.split(separator: "`", omittingEmptySubsequences: false)
-        .map { segment in
-            let escaped = String(segment)
-                .replacingOccurrences(of: "\\", with: "\\\\")
-                .replacingOccurrences(of: "\"", with: "\\\"")
-                .replacingOccurrences(of: "$", with: "\\$")
-            return "\"\(escaped)\""
-        }
-        .joined(separator: "'`'")
-}
-
-public func accountShellCommand(_ command: String) -> String {
-    "exec /bin/sh -c " + accountShellCommandArgument(command)
-}
-
-/// Keeps caller-controlled text out of PowerShell source. The generated
-/// expression contains only a Base64 alphabet in an ASCII-delimited literal.
-public func powerShellEncodedArgument(_ value: String) -> String {
-    let encoded = Data(value.utf8).base64EncodedString()
-    return "([System.Text.Encoding]::UTF8.GetString("
-        + "[System.Convert]::FromBase64String('\(encoded)')))"
-}
-
-public func powerShellEncodedCommand(_ command: String) -> String {
-    let data = command.data(using: .utf16LittleEndian) ?? Data()
-    return [
-        "powershell.exe",
-        "-NoLogo",
-        "-NoProfile",
-        "-NonInteractive",
-        "-EncodedCommand",
-        data.base64EncodedString(),
-    ].joined(separator: " ")
-}
-
-public func powerShellKwtResolutionPrelude(
-    managedRelativePath: String?
-) -> String {
-    guard let managedRelativePath else {
-        return "throw 'Ghosthub managed kwt is unavailable'"
-    }
-    return """
-    $ghosthubKwt = Join-Path $env:USERPROFILE \(
-        powerShellEncodedArgument(managedRelativePath)
-    )
-    if (-not (Test-Path -LiteralPath $ghosthubKwt -PathType Leaf)) {
-        throw 'Ghosthub managed kwt is unavailable'
-    }
-    """
-}
-
-public func powerShellKwtAvailabilityPrelude(
-    managedRelativePath: String?
-) -> String {
-    guard let managedRelativePath else {
-        return "$ghosthubKwtAvailable = $false"
-    }
-    return """
-    $ghosthubManagedKwt = Join-Path $env:USERPROFILE \(
-        powerShellEncodedArgument(managedRelativePath)
-    )
-    $ghosthubKwtAvailable = Test-Path -LiteralPath $ghosthubManagedKwt -PathType Leaf
-    """
-}
-
-/// Initializes an account's login environment, then delegates
-/// Ghosthub-owned POSIX command text to `/bin/sh`. The outer command argument
-/// is accepted by POSIX shells and non-POSIX account shells such as fish.
-private func accountLoginCommand(_ command: String) -> String {
-    let posixCommand = accountShellCommand(command)
-    return "exec \"${SHELL:-/bin/sh}\" -lc "
-        + shellQuotedCommandArgument(posixCommand)
-}
-
-public func accountLoginShellCommand(_ command: String) -> String {
-    accountShellCommand(accountLoginCommand(command))
-}
-
-/// Libghostty's macOS surface startup prepends `exec -l` to custom commands,
-/// so its command must begin with the executable rather than the `exec`
-/// shell builtin. The nested account login and POSIX handoffs remain the same.
-public func surfaceAccountLoginShellCommand(_ command: String) -> String {
-    "/bin/sh -c " + accountShellCommandArgument(accountLoginCommand(command))
-}
-
-public enum ConnectionState: Codable, Equatable, Sendable {
-    case connecting
-    case reconnecting(reason: String?)
-    case connected
-    case disconnected(reason: String?)
-}
-
-public struct SSHHostInfo: Codable, Hashable, Sendable {
-    public enum Platform: String, Codable, Hashable, Sendable {
-        case posix
-        case windows
-    }
-
-    public let user: String?
-    public let hostname: String
-    public let port: Int?
-    public let platform: Platform
-
-    public init(
-        user: String?,
-        hostname: String,
-        port: Int?,
-        platform: Platform = .posix
-    ) {
-        self.user = user
-        self.hostname = hostname
-        self.port = port
-        self.platform = platform
-    }
-
-    public var displayName: String {
-        let destination = user.map { "\($0)@\(hostname)" } ?? hostname
-        guard let port, port != 22 else { return destination }
-        return "\(destination):\(port)"
-    }
-}
-
-public enum TmuxHost: Codable, Hashable, Sendable {
-    case local
-    case ssh(SSHHostInfo)
-
-    public var displayName: String {
-        switch self {
-        case .local:
-            "localhost"
-        case let .ssh(info):
-            info.displayName
-        }
-    }
-
-    public var isRemote: Bool {
-        if case .ssh = self {
-            return true
-        }
-        return false
-    }
-}
+import GhosthubTransport
 
 public enum TmuxAttachmentLaunchMode: String, Codable, Equatable, Sendable {
     case attach
@@ -180,7 +11,7 @@ public enum TmuxAttachmentLaunchMode: String, Codable, Equatable, Sendable {
 /// Tmux owns rendering, windows, panes, history, input, and process lifetime.
 public struct TmuxAttachmentInfo: Equatable, Sendable {
     public let sessionName: String
-    public let host: TmuxHost
+    public let host: CommandHost
     public let socketName: String?
     public let workspacePath: String?
     public let protectedWorkspacePath: String?
@@ -190,7 +21,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
 
     public init(
         sessionName: String,
-        host: TmuxHost,
+        host: CommandHost,
         socketName: String? = nil,
         workspacePath: String? = nil,
         protectedWorkspacePath: String? = nil,
@@ -214,7 +45,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
         remoteKwtCommandPrelude: String? = nil,
         windowsKwtRelativePath: String? = nil,
         workingDirectory: String? = nil,
-        sshConnectionArguments: [String] = tmuxSSHConnectionArguments(),
+        sshConnectionArguments: [String] = demoSSHIsolationArguments(),
         remoteExitStatusPath: String? = nil,
         clientTTYToken: String? = nil
     ) -> String {

@@ -1,16 +1,17 @@
+import GhosthubTransport
 import Foundation
 import GhosthubTmux
 import GhosthubWorkspace
 
-enum TmuxHostResolver {
-    static func resolve(_ host: HostSummary) -> TmuxHost? {
+enum CommandHostResolver {
+    static func resolve(_ host: HostSummary) -> CommandHost? {
         guard host.kind == .remote else { return .local }
         guard let destination = host.sshDestination?
             .trimmingCharacters(in: .whitespacesAndNewlines),
             !destination.isEmpty
         else { return nil }
         return parseSSHDestination(destination).map { info in
-            TmuxHost.ssh(
+            CommandHost.ssh(
                 SSHHostInfo(
                     user: info.user,
                     hostname: info.hostname,

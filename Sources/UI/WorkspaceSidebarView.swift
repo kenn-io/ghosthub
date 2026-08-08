@@ -2,7 +2,7 @@ import Foundation
 import GhosthubWorkspace
 import SwiftUI
 
-struct WorkspaceTmuxSessionActionPresentation: Equatable {
+struct WorkspaceSessionActionPresentation: Equatable {
     static let controlWidth: CGFloat = 30
 
     let isVisible: Bool
@@ -10,14 +10,15 @@ struct WorkspaceTmuxSessionActionPresentation: Equatable {
     let hitTargetWidth: CGFloat
 
     init(
-        hasTmuxSession: Bool,
+        hasActions: Bool,
         isRowHovered: Bool,
-        isActionHovered: Bool
+        isActionHovered: Bool,
+        isSelected: Bool
     ) {
-        isVisible = hasTmuxSession
-            && (isRowHovered || isActionHovered)
-        reservedWidth = hasTmuxSession ? Self.controlWidth : 0
-        hitTargetWidth = hasTmuxSession ? Self.controlWidth : 0
+        isVisible = hasActions
+            && (isRowHovered || isActionHovered || isSelected)
+        reservedWidth = hasActions ? Self.controlWidth : 0
+        hitTargetWidth = hasActions ? Self.controlWidth : 0
     }
 }
 
@@ -40,6 +41,59 @@ struct WorkspaceWorktreeRemovalActionPresentation: Equatable {
     }
 }
 
+enum WorkspaceSidebarRowAction: Hashable {
+    case killTmuxSession(WorkspaceTmuxSessionSelection)
+    case stopHerdrSession(WorkspaceHerdrSessionSelection)
+    case restartHerdrSession(WorkspaceHerdrSessionSelection)
+    case deleteHerdrSession(WorkspaceHerdrSessionSelection)
+}
+
+enum WorkspaceSidebarRowActionModel {
+    static func actions(
+        for row: WorkspaceSidebarRow,
+        in snapshot: WorkspaceSnapshot,
+        activeTmuxSession: WorkspaceTmuxSessionSelection? = nil,
+        activeTmuxSessionIsConnected: Bool = false,
+        pendingHerdrSessions: Set<WorkspaceHerdrSessionSelection> = []
+    ) -> [WorkspaceSidebarRowAction] {
+        if case let .herdrSession(hostID, name) = row.target {
+            let selection = WorkspaceHerdrSessionSelection(
+                hostID: hostID,
+                name: name
+            )
+            guard !pendingHerdrSessions.contains(selection),
+                  let session = snapshot.host(id: hostID)?.herdrSessions
+                  .first(where: { $0.name == name })
+            else { return [] }
+            switch session.state {
+            case .running:
+                return [.stopHerdrSession(selection)]
+            case .stopped:
+                return session.isDefault
+                    ? [.restartHerdrSession(selection)]
+                    : [
+                        .restartHerdrSession(selection),
+                        .deleteHerdrSession(selection),
+                    ]
+            }
+        }
+        guard case let .tmuxSession(hostID, name) = row.target else {
+            return []
+        }
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: hostID,
+            name: name
+        )
+        guard WorkspaceSidebarModel.canRequestKill(
+            selection,
+            in: snapshot,
+            activeSelection: activeTmuxSession,
+            activeSelectionIsConnected: activeTmuxSessionIsConnected
+        ) else { return [] }
+        return [.killTmuxSession(selection)]
+    }
+}
+
 enum WorkspaceSidebarHierarchy {
     private static let step: CGFloat = 14
 
@@ -51,6 +105,7 @@ enum WorkspaceSidebarHierarchy {
 private enum WorkspaceSidebarDragItem: Equatable {
     case worktree(UUID)
     case tmuxSession(hostID: UUID, name: String)
+    case herdrSession(hostID: UUID, name: String)
 
     init?(rawValue: String) {
         let parts = rawValue.split(
@@ -73,6 +128,14 @@ private enum WorkspaceSidebarDragItem: Equatable {
                 hostID: hostID,
                 name: String(parts[2])
             )
+        case "herdr":
+            guard parts.count == 3,
+                  let hostID = UUID(uuidString: String(parts[1]))
+            else { return nil }
+            self = .herdrSession(
+                hostID: hostID,
+                name: String(parts[2])
+            )
         default:
             return nil
         }
@@ -84,6 +147,8 @@ private enum WorkspaceSidebarDragItem: Equatable {
             return "worktree:\(id.uuidString)"
         case let .tmuxSession(hostID, name):
             return "tmux:\(hostID.uuidString):\(name)"
+        case let .herdrSession(hostID, name):
+            return "herdr:\(hostID.uuidString):\(name)"
         }
     }
 
@@ -96,6 +161,11 @@ private enum WorkspaceSidebarDragItem: Equatable {
                 hostID: hostID,
                 name: name
             )
+        case let .herdrSession(hostID, name):
+            return WorkspaceSidebarModel.herdrSessionOrderID(
+                hostID: hostID,
+                name: name
+            )
         }
     }
 }
@@ -103,6 +173,76 @@ private enum WorkspaceSidebarDragItem: Equatable {
 private struct WorkspaceSidebarReorderIndicator: Equatable {
     let item: WorkspaceSidebarDragItem
     let placement: WorkspaceSidebarDropPlacement
+}
+
+enum WorkspaceSidebarInventorySection: Hashable {
+    case tmuxSessions
+    case herdrSessions
+    case projects
+}
+
+struct WorkspaceSidebarSectionAction {
+    let accessibilityIdentifier: String
+    let accessibilityLabel: String
+    let help: String
+    let perform: () -> Void
+}
+
+enum WorkspaceSidebarSectionActionModel {
+    static func isVisible(
+        _ section: WorkspaceSidebarInventorySection,
+        host: HostSummary,
+        hasProjects: Bool
+    ) -> Bool {
+        switch section {
+        case .tmuxSessions:
+            true
+        case .herdrSessions:
+            host.herdrAvailable
+        case .projects:
+            hasProjects || host.canRegisterProjects
+        }
+    }
+
+    static func action(
+        for section: WorkspaceSidebarInventorySection,
+        host: HostSummary,
+        onNewTmuxSession: @escaping (HostSummary) -> Void,
+        onNewHerdrSession: @escaping (HostSummary) -> Void,
+        onAddProject: @escaping (HostSummary) -> Void
+    ) -> WorkspaceSidebarSectionAction? {
+        switch section {
+        case .tmuxSessions:
+            return WorkspaceSidebarSectionAction(
+                accessibilityIdentifier:
+                "sidebar-section-action-tmux-\(host.id.uuidString)",
+                accessibilityLabel:
+                "New tmux session on \(host.sidebarTitle)",
+                help: "New tmux session…",
+                perform: { onNewTmuxSession(host) }
+            )
+        case .herdrSessions:
+            guard host.herdrAvailable else { return nil }
+            return WorkspaceSidebarSectionAction(
+                accessibilityIdentifier:
+                "sidebar-section-action-herdr-\(host.id.uuidString)",
+                accessibilityLabel:
+                "New Herdr session on \(host.sidebarTitle)",
+                help: "New Herdr session…",
+                perform: { onNewHerdrSession(host) }
+            )
+        case .projects:
+            guard host.canRegisterProjects else { return nil }
+            return WorkspaceSidebarSectionAction(
+                accessibilityIdentifier:
+                "sidebar-section-action-projects-\(host.id.uuidString)",
+                accessibilityLabel:
+                "Add project on \(host.sidebarTitle)",
+                help: "Add Project…",
+                perform: { onAddProject(host) }
+            )
+        }
+    }
 }
 
 // MARK: - WorkspaceSidebarView
@@ -117,15 +257,22 @@ struct WorkspaceSidebarView: View {
     let tmuxSessionVisibility: TmuxSessionVisibility
     let onOpen: (WorktreeSummary) -> Void
     let activeTmuxSession: WorkspaceTmuxSessionSelection?
+    let activeHerdrSession: WorkspaceHerdrSessionSelection?
     let activeTmuxSessionIsConnected: Bool
     let workingTmuxSessionIDs: Set<String>
     let onOpenTmuxSession: (WorkspaceTmuxSessionSelection) -> Void
-    let onNavigateAwayFromTmuxSession: () -> Void
+    let onOpenHerdrSession: (WorkspaceHerdrSessionSelection) -> Void
+    let pendingHerdrSessions: Set<WorkspaceHerdrSessionSelection>
+    let onRestartHerdrSession: (WorkspaceHerdrSessionSelection) -> Void
+    let onRequestHerdrSessionLifecycle:
+        (WorkspaceHerdrSessionSelection, HerdrSessionDestructiveAction) -> Void
+    let onNavigateAwayFromSession: () -> Void
     let onRequestKillTmuxSession: (WorkspaceTmuxSessionSelection) -> Void
     let onRequestRemoveWorktree: (WorktreeSummary) -> Void
     let onNewWorktree: (ProjectSummary) -> Void
     let onImportPullRequest: (ProjectSummary) -> Void
     let onNewTmuxSession: (HostSummary) -> Void
+    let onNewHerdrSession: (HostSummary) -> Void
     let onAddProject: (HostSummary) -> Void
     let onRefreshInventory: () -> Void
     let onOpenHostSettings: () -> Void
@@ -135,9 +282,10 @@ struct WorkspaceSidebarView: View {
     let inventoryRefreshComplete: Bool
     @State private var presentedInventoryWarning:
         PresentedInventoryWarning?
-    @State private var hoveredTmuxSessionID: String?
-    @State private var hoveredTmuxSessionActionID: String?
-    @State private var tmuxSessionHoverDismissTask: Task<Void, Never>?
+    @State private var hoveredSessionActionRowID: WorkspaceNavigationTarget?
+    @State private var hoveredSessionActionControlRowID:
+        WorkspaceNavigationTarget?
+    @State private var sessionActionHoverDismissTask: Task<Void, Never>?
     @State private var hoveredWorktreeID: UUID?
     @State private var hoveredWorktreeActionID: UUID?
     @State private var worktreeHoverDismissTask: Task<Void, Never>?
@@ -150,6 +298,7 @@ struct WorkspaceSidebarView: View {
     private var legacyCollapsedItems = ""
     @Binding private var worktreeOrderRawValue: String
     @Binding private var tmuxSessionOrderRawValue: String
+    @Binding private var herdrSessionOrderRawValue: String
 
     init(
         snapshot: WorkspaceSnapshot,
@@ -157,12 +306,24 @@ struct WorkspaceSidebarView: View {
         visibility: WorktreeVisibility,
         tmuxSessionVisibility: TmuxSessionVisibility = TmuxSessionVisibility(),
         activeTmuxSession: WorkspaceTmuxSessionSelection? = nil,
+        activeHerdrSession: WorkspaceHerdrSessionSelection? = nil,
         activeTmuxSessionIsConnected: Bool = false,
         workingTmuxSessionIDs: Set<String> = [],
         onOpenTmuxSession: @escaping (
             WorkspaceTmuxSessionSelection
         ) -> Void = { _ in },
-        onNavigateAwayFromTmuxSession: @escaping () -> Void = {},
+        onOpenHerdrSession: @escaping (
+            WorkspaceHerdrSessionSelection
+        ) -> Void = { _ in },
+        pendingHerdrSessions: Set<WorkspaceHerdrSessionSelection> = [],
+        onRestartHerdrSession: @escaping (
+            WorkspaceHerdrSessionSelection
+        ) -> Void = { _ in },
+        onRequestHerdrSessionLifecycle: @escaping (
+            WorkspaceHerdrSessionSelection,
+            HerdrSessionDestructiveAction
+        ) -> Void = { _, _ in },
+        onNavigateAwayFromSession: @escaping () -> Void = {},
         onRequestKillTmuxSession: @escaping (
             WorkspaceTmuxSessionSelection
         ) -> Void = { _ in },
@@ -172,6 +333,7 @@ struct WorkspaceSidebarView: View {
         onNewWorktree: @escaping (ProjectSummary) -> Void = { _ in },
         onImportPullRequest: @escaping (ProjectSummary) -> Void = { _ in },
         onNewTmuxSession: @escaping (HostSummary) -> Void = { _ in },
+        onNewHerdrSession: @escaping (HostSummary) -> Void = { _ in },
         onAddProject: @escaping (HostSummary) -> Void = { _ in },
         onRefreshInventory: @escaping () -> Void = {},
         onOpenHostSettings: @escaping () -> Void = {},
@@ -181,6 +343,7 @@ struct WorkspaceSidebarView: View {
         inventoryRefreshComplete: Bool = false,
         worktreeOrderRawValue: Binding<String> = .constant(""),
         tmuxSessionOrderRawValue: Binding<String> = .constant(""),
+        herdrSessionOrderRawValue: Binding<String> = .constant(""),
         onOpen: @escaping (WorktreeSummary) -> Void = { _ in }
     ) {
         self.snapshot = snapshot
@@ -188,15 +351,21 @@ struct WorkspaceSidebarView: View {
         self.visibility = visibility
         self.tmuxSessionVisibility = tmuxSessionVisibility
         self.activeTmuxSession = activeTmuxSession
+        self.activeHerdrSession = activeHerdrSession
         self.activeTmuxSessionIsConnected = activeTmuxSessionIsConnected
         self.workingTmuxSessionIDs = workingTmuxSessionIDs
         self.onOpenTmuxSession = onOpenTmuxSession
-        self.onNavigateAwayFromTmuxSession = onNavigateAwayFromTmuxSession
+        self.onOpenHerdrSession = onOpenHerdrSession
+        self.pendingHerdrSessions = pendingHerdrSessions
+        self.onRestartHerdrSession = onRestartHerdrSession
+        self.onRequestHerdrSessionLifecycle = onRequestHerdrSessionLifecycle
+        self.onNavigateAwayFromSession = onNavigateAwayFromSession
         self.onRequestKillTmuxSession = onRequestKillTmuxSession
         self.onRequestRemoveWorktree = onRequestRemoveWorktree
         self.onNewWorktree = onNewWorktree
         self.onImportPullRequest = onImportPullRequest
         self.onNewTmuxSession = onNewTmuxSession
+        self.onNewHerdrSession = onNewHerdrSession
         self.onAddProject = onAddProject
         self.onRefreshInventory = onRefreshInventory
         self.onOpenHostSettings = onOpenHostSettings
@@ -206,6 +375,7 @@ struct WorkspaceSidebarView: View {
         self.inventoryRefreshComplete = inventoryRefreshComplete
         _worktreeOrderRawValue = worktreeOrderRawValue
         _tmuxSessionOrderRawValue = tmuxSessionOrderRawValue
+        _herdrSessionOrderRawValue = herdrSessionOrderRawValue
         self.onOpen = onOpen
     }
 
@@ -217,7 +387,8 @@ struct WorkspaceSidebarView: View {
             visibility: visibility,
             tmuxSessionVisibility: tmuxSessionVisibility,
             worktreeOrderRawValue: worktreeOrderRawValue,
-            tmuxSessionOrderRawValue: tmuxSessionOrderRawValue
+            tmuxSessionOrderRawValue: tmuxSessionOrderRawValue,
+            herdrSessionOrderRawValue: herdrSessionOrderRawValue
         )
     }
 
@@ -291,7 +462,7 @@ struct WorkspaceSidebarView: View {
         hierarchyRow(
             section.row,
             disclosureKey: disclosureKey,
-            actionHost: section.host,
+            host: section.host,
             inventoryWarning: inventoryWarningsByHost[section.host.id]
         )
         .padding(.vertical, 1)
@@ -312,16 +483,6 @@ struct WorkspaceSidebarView: View {
                 )
                 .frame(height: 0.5)
         }
-        .contextMenu {
-            Button("New tmux session…") {
-                onNewTmuxSession(section.host)
-            }
-            if section.host.canRegisterProjects {
-                Button("Add Project…") {
-                    onAddProject(section.host)
-                }
-            }
-        }
     }
 
     @ViewBuilder
@@ -331,32 +492,63 @@ struct WorkspaceSidebarView: View {
     ) -> some View {
         if isExpanded(disclosureKey) {
             VStack(alignment: .leading, spacing: 2) {
-                if section.isEmpty {
-                    emptyHostRow(section.host)
-                }
-                if !section.tmuxSessionRows.isEmpty {
-                    let sessionsKey = WorkspaceSidebarDisclosureState
-                        .sessions(section.host.id)
-                    sidebarGroupLabel(
-                        "Tmux Sessions",
-                        disclosureKey: sessionsKey
+                let sessionsKey = WorkspaceSidebarDisclosureState
+                    .sessions(section.host.id)
+                sidebarGroupLabel(
+                    "Tmux Sessions",
+                    disclosureKey: sessionsKey,
+                    action: sectionAction(
+                        for: .tmuxSessions,
+                        host: section.host
                     )
-                    if isExpanded(sessionsKey) {
-                        ForEach(section.tmuxSessionRows) { row in
-                            tmuxSessionButton(
+                )
+                if isExpanded(sessionsKey) {
+                    ForEach(section.tmuxSessionRows) { row in
+                        tmuxSessionButton(
+                            row,
+                            orderedRows: section.tmuxSessionRows
+                        )
+                    }
+                }
+                if WorkspaceSidebarSectionActionModel.isVisible(
+                    .herdrSessions,
+                    host: section.host,
+                    hasProjects: !section.projects.isEmpty
+                ) {
+                    let herdrSessionsKey = WorkspaceSidebarDisclosureState
+                        .herdrSessions(section.host.id)
+                    sidebarGroupLabel(
+                        "Herdr Sessions",
+                        disclosureKey: herdrSessionsKey,
+                        action: sectionAction(
+                            for: .herdrSessions,
+                            host: section.host
+                        )
+                    )
+                    if isExpanded(herdrSessionsKey) {
+                        ForEach(section.herdrSessionRows) { row in
+                            herdrSessionButton(
                                 row,
-                                orderedRows: section.tmuxSessionRows
+                                orderedRows: section.herdrSessionRows
                             )
                         }
                     }
                 }
-                if !section.projects.isEmpty
-                    || !section.directoryWorkspaceRows.isEmpty {
+                if WorkspaceSidebarSectionActionModel.isVisible(
+                    .projects,
+                    host: section.host,
+                    hasProjects: !section.projects.isEmpty
+                        || !section.directoryWorkspaceRows.isEmpty
+                ) {
                     let projectsKey = WorkspaceSidebarDisclosureState
                         .projects(section.host.id)
                     sidebarGroupLabel(
                         "Projects",
-                        disclosureKey: projectsKey
+                        disclosureKey: projectsKey,
+                        action: sectionAction(
+                            for: .projects,
+                            host: section.host
+                        )
                     )
                     if isExpanded(projectsKey) {
                         VStack(alignment: .leading, spacing: 2) {
@@ -468,66 +660,9 @@ struct WorkspaceSidebarView: View {
                 .accessibilityLabel("Show workspace inventory issue")
                 .accessibilityValue(inventoryWarning)
             }
-            NativePopupMenuButton(
-                groups: [
-                    preferredNewSessionHost.map {
-                        hostActionMenuItems(for: $0)
-                    } ?? [],
-                    [
-                        NativePopupMenuAction(
-                            "New worktree…",
-                            isEnabled: selectedProject != nil
-                        ) {
-                            guard let project = selectedProject else {
-                                return
-                            }
-                            onNewWorktree(project)
-                        },
-                        NativePopupMenuAction(
-                            "Import pull request…",
-                            isEnabled: selectedImportProject != nil
-                        ) {
-                            guard let project = selectedImportProject else {
-                                return
-                            }
-                            onImportPullRequest(project)
-                        },
-                    ],
-                ]
-            ) {
-                Image(systemName: "plus")
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel("Create workspace")
-            }
-            .buttonStyle(.plain)
-            .help("Create a tmux session or kwt worktree")
-            .accessibilityHint("Create a tmux session or kwt worktree.")
-            .disabled(preferredNewSessionHost == nil)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-    }
-
-    private var selectedProject: ProjectSummary? {
-        guard let project = WorkspaceSelectionResolver.selectedProject(
-            in: snapshot,
-            selection: selection
-        ), snapshot.canCreateWorktree(in: project) else { return nil }
-        return project
-    }
-
-    private var selectedImportProject: ProjectSummary? {
-        guard let project = WorkspaceSelectionResolver.selectedProject(
-            in: snapshot,
-            selection: selection
-        ), snapshot.canImportPullRequest(in: project) else { return nil }
-        return project
-    }
-
-    private var preferredNewSessionHost: HostSummary? {
-        snapshot.host(id: selection.selectedHostID)
-            ?? snapshot.hosts.first(where: { $0.kind == .selfHost })
-            ?? snapshot.hosts.first
     }
 
     // MARK: - Empty state
@@ -550,24 +685,6 @@ struct WorkspaceSidebarView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(18)
-    }
-
-    private func emptyHostRow(_ host: HostSummary) -> some View {
-        HStack(spacing: 7) {
-            Image(systemName: "tray")
-                .font(.system(size: 11, weight: .medium))
-            Text("No projects, directories, or tmux sessions yet")
-                .font(.system(size: 11))
-            Spacer(minLength: 0)
-        }
-        .foregroundStyle(.secondary.opacity(0.78))
-        .padding(.leading, 28)
-        .padding(.trailing, 8)
-        .padding(.vertical, 7)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(
-            "No projects, directories, or tmux sessions on \(host.sidebarTitle)"
-        )
     }
 
     // MARK: - Row builders
@@ -605,6 +722,39 @@ struct WorkspaceSidebarView: View {
         )
     }
 
+    private func herdrSessionButton(
+        _ row: WorkspaceSidebarRow,
+        orderedRows: [WorkspaceSidebarRow]
+    ) -> some View {
+        guard case let .herdrSession(hostID, name) = row.target else {
+            return AnyView(sidebarButton(row))
+        }
+        let item = WorkspaceSidebarDragItem.herdrSession(
+            hostID: hostID,
+            name: name
+        )
+        let groupItems: [WorkspaceSidebarDragItem] = orderedRows.compactMap {
+            orderedRow in
+            guard case let .herdrSession(orderedHostID, orderedName) =
+                orderedRow.target
+            else { return nil }
+            return WorkspaceSidebarDragItem.herdrSession(
+                hostID: orderedHostID,
+                name: orderedName
+            )
+        }
+        return AnyView(
+            reorderableRow(
+                sidebarButton(row),
+                item: item,
+                groupItems: groupItems,
+                orderRawValue: herdrSessionOrderRawValue
+            ) { updatedRawValue in
+                herdrSessionOrderRawValue = updatedRawValue
+            }
+        )
+    }
+
     private func sidebarButton(
         _ row: WorkspaceSidebarRow,
         reservedTrailingActionWidth: CGFloat = 0
@@ -619,30 +769,30 @@ struct WorkspaceSidebarView: View {
                 activeTmuxSessionIsConnected
             ) ? $0 : nil
         }
-        let isSelected: Bool
-        if case let .tmuxSession(hostID, name) = row.target {
-            isSelected = activeTmuxSession
-                == WorkspaceTmuxSessionSelection(hostID: hostID, name: name)
-        } else if case let .worktree(worktreeID) = row.target,
-                  activeTmuxSession?.worktreeID == worktreeID {
-            isSelected = true
-        } else if case let .directoryWorkspace(directoryWorkspaceID) =
-            row.target,
-            activeTmuxSession?.directoryWorkspaceID == directoryWorkspaceID {
-            isSelected = true
-        } else {
-            isSelected = activeTmuxSession == nil
-                && selection.navigationTarget == row.target
+        let herdrActions = WorkspaceSidebarRowActionModel.actions(
+            for: row,
+            in: snapshot,
+            pendingHerdrSessions: pendingHerdrSessions
+        ).filter {
+            if case .killTmuxSession = $0 {
+                return false
+            }
+            return true
         }
-        let isActionHovered = runningTmuxSession.map {
-            hoveredTmuxSessionActionID == $0.id
+        let herdrSelection: WorkspaceHerdrSessionSelection? = {
+            guard case let .herdrSession(hostID, name) = row.target else {
+                return nil
+            }
+            return WorkspaceHerdrSessionSelection(hostID: hostID, name: name)
+        }()
+        let herdrOperationIsPending = herdrSelection.map {
+            pendingHerdrSessions.contains($0)
         } ?? false
-        let actionPresentation = WorkspaceTmuxSessionActionPresentation(
-            hasTmuxSession: runningTmuxSession != nil,
-            isRowHovered: runningTmuxSession.map {
-                hoveredTmuxSessionID == $0.id
-            } ?? false,
-            isActionHovered: isActionHovered
+        let isSelected = Self.isRowSelected(
+            row,
+            selection: selection,
+            activeTmuxSession: activeTmuxSession,
+            activeHerdrSession: activeHerdrSession
         )
         let isTmuxSessionWorking = tmuxSession.map {
             workingTmuxSessionIDs.contains($0.id)
@@ -653,8 +803,35 @@ struct WorkspaceSidebarView: View {
         } else {
             usesDirectKillAction = false
         }
+        let hasSessionActions = runningTmuxSession != nil
+            || !herdrActions.isEmpty
+        let isActionHovered = hasSessionActions
+            && hoveredSessionActionControlRowID == row.id
+        let actionPresentation = WorkspaceSessionActionPresentation(
+            hasActions: hasSessionActions,
+            isRowHovered: hoveredSessionActionRowID == row.id,
+            isActionHovered: isActionHovered,
+            isSelected: herdrSelection != nil && isSelected
+        )
         return HStack(spacing: 0) {
             Button {
+                if case let .herdrSession(hostID, name) = row.target {
+                    let herdrSelection = WorkspaceHerdrSessionSelection(
+                        hostID: hostID,
+                        name: name
+                    )
+                    selection.select(
+                        row.target,
+                        in: snapshot,
+                        visibility: visibility
+                    )
+                    if row.herdrSessionState == .stopped {
+                        onRestartHerdrSession(herdrSelection)
+                    } else {
+                        onOpenHerdrSession(herdrSelection)
+                    }
+                    return
+                }
                 if case let .tmuxSession(hostID, name) = row.target {
                     let tmuxSelection = WorkspaceTmuxSessionSelection(
                         hostID: hostID,
@@ -697,7 +874,7 @@ struct WorkspaceSidebarView: View {
                     )
                     return
                 }
-                onNavigateAwayFromTmuxSession()
+                onNavigateAwayFromSession()
                 selection.select(
                     row.target,
                     in: snapshot,
@@ -768,6 +945,10 @@ struct WorkspaceSidebarView: View {
                 }
             }
             .buttonStyle(.plain)
+            .disabled(herdrOperationIsPending)
+            .opacity(
+                row.herdrSessionState == .stopped && !isSelected ? 0.68 : 1
+            )
             .frame(maxWidth: .infinity, alignment: .leading)
             .workspaceAccessibility(
                 WorkspaceAccessibilityModel.descriptor(
@@ -779,13 +960,14 @@ struct WorkspaceSidebarView: View {
             .accessibilityAddTraits(isSelected ? .isSelected : [])
         }
         .overlay(alignment: .trailing) {
-            if let tmuxSession = runningTmuxSession {
+            if hasSessionActions {
                 Group {
-                    if usesDirectKillAction {
+                    if let tmuxSession = runningTmuxSession,
+                       usesDirectKillAction {
                         Button {
                             onRequestKillTmuxSession(tmuxSession)
                         } label: {
-                            tmuxSessionActionLabel(
+                            sessionActionLabel(
                                 actionPresentation,
                                 isActionHovered: isActionHovered,
                                 imageName: "xmark"
@@ -797,7 +979,7 @@ struct WorkspaceSidebarView: View {
                         .accessibilityIdentifier(
                             "kill-tmux-session-\(tmuxSession.id)"
                         )
-                    } else {
+                    } else if let tmuxSession = runningTmuxSession {
                         NativePopupMenuButton(
                             groups: [
                                 [
@@ -810,7 +992,7 @@ struct WorkspaceSidebarView: View {
                                 ],
                             ]
                         ) {
-                            tmuxSessionActionLabel(
+                            sessionActionLabel(
                                 actionPresentation,
                                 isActionHovered: isActionHovered,
                                 imageName: "ellipsis"
@@ -823,16 +1005,35 @@ struct WorkspaceSidebarView: View {
                         .accessibilityHint(
                             "Includes the option to kill this session."
                         )
+                    } else {
+                        NativePopupMenuButton(
+                            groups: [herdrActions.compactMap(
+                                herdrPopupMenuAction
+                            )]
+                        ) {
+                            sessionActionLabel(
+                                actionPresentation,
+                                isActionHovered: isActionHovered,
+                                imageName: "ellipsis"
+                            )
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel(
+                                "Session actions for \(row.title)"
+                            )
+                        }
+                        .accessibilityHint(
+                            "Includes Herdr lifecycle actions."
+                        )
                     }
                 }
                 .buttonStyle(.plain)
                 .onHover { isHovered in
                     if isHovered {
-                        tmuxSessionHoverDismissTask?.cancel()
-                        hoveredTmuxSessionActionID = tmuxSession.id
-                    } else if hoveredTmuxSessionActionID == tmuxSession.id {
-                        hoveredTmuxSessionActionID = nil
-                        scheduleTmuxSessionHoverDismiss(tmuxSession.id)
+                        sessionActionHoverDismissTask?.cancel()
+                        hoveredSessionActionControlRowID = row.id
+                    } else if hoveredSessionActionControlRowID == row.id {
+                        hoveredSessionActionControlRowID = nil
+                        scheduleSessionActionHoverDismiss(row.id)
                     }
                 }
                 .help(
@@ -842,12 +1043,12 @@ struct WorkspaceSidebarView: View {
             }
         }
         .onHover { isHovered in
-            guard let tmuxSession = runningTmuxSession else { return }
+            guard hasSessionActions else { return }
             if isHovered {
-                tmuxSessionHoverDismissTask?.cancel()
-                hoveredTmuxSessionID = tmuxSession.id
+                sessionActionHoverDismissTask?.cancel()
+                hoveredSessionActionRowID = row.id
             } else {
-                scheduleTmuxSessionHoverDismiss(tmuxSession.id)
+                scheduleSessionActionHoverDismiss(row.id)
             }
         }
         .contextMenu {
@@ -856,16 +1057,120 @@ struct WorkspaceSidebarView: View {
                     onRequestKillTmuxSession(tmuxSession)
                 }
             }
+            ForEach(herdrActions, id: \.self) { action in
+                herdrContextMenuButton(action)
+            }
         }
-        .accessibilityAction(named: "Kill Session") {
+        .accessibilityActions {
             if let tmuxSession = runningTmuxSession {
-                onRequestKillTmuxSession(tmuxSession)
+                Button("Kill Session") {
+                    onRequestKillTmuxSession(tmuxSession)
+                }
+            }
+            ForEach(herdrActions, id: \.self) { action in
+                herdrAccessibilityButton(action)
             }
         }
     }
 
-    private func tmuxSessionActionLabel(
-        _ presentation: WorkspaceTmuxSessionActionPresentation,
+    @ViewBuilder
+    private func herdrContextMenuButton(
+        _ action: WorkspaceSidebarRowAction
+    ) -> some View {
+        switch action {
+        case let .stopHerdrSession(selection):
+            Button("Stop Session…", role: .destructive) {
+                onRequestHerdrSessionLifecycle(selection, .stop)
+            }
+        case let .restartHerdrSession(selection):
+            Button("Restart") {
+                onRestartHerdrSession(selection)
+            }
+        case let .deleteHerdrSession(selection):
+            Button("Delete Session…", role: .destructive) {
+                onRequestHerdrSessionLifecycle(selection, .delete)
+            }
+        case .killTmuxSession:
+            EmptyView()
+        }
+    }
+
+    private func herdrPopupMenuAction(
+        _ action: WorkspaceSidebarRowAction
+    ) -> NativePopupMenuAction? {
+        switch action {
+        case let .stopHerdrSession(selection):
+            NativePopupMenuAction("Stop Session…", role: .destructive) {
+                onRequestHerdrSessionLifecycle(selection, .stop)
+            }
+        case let .restartHerdrSession(selection):
+            NativePopupMenuAction("Restart") {
+                onRestartHerdrSession(selection)
+            }
+        case let .deleteHerdrSession(selection):
+            NativePopupMenuAction("Delete Session…", role: .destructive) {
+                onRequestHerdrSessionLifecycle(selection, .delete)
+            }
+        case .killTmuxSession:
+            nil
+        }
+    }
+
+    @ViewBuilder
+    private func herdrAccessibilityButton(
+        _ action: WorkspaceSidebarRowAction
+    ) -> some View {
+        switch action {
+        case let .stopHerdrSession(selection):
+            Button("Stop Session") {
+                onRequestHerdrSessionLifecycle(selection, .stop)
+            }
+        case let .restartHerdrSession(selection):
+            Button("Restart") {
+                onRestartHerdrSession(selection)
+            }
+        case let .deleteHerdrSession(selection):
+            Button("Delete Session") {
+                onRequestHerdrSessionLifecycle(selection, .delete)
+            }
+        case .killTmuxSession:
+            EmptyView()
+        }
+    }
+
+    static func isRowSelected(
+        _ row: WorkspaceSidebarRow,
+        selection: WorkspaceSelection,
+        activeTmuxSession: WorkspaceTmuxSessionSelection?,
+        activeHerdrSession: WorkspaceHerdrSessionSelection?
+    ) -> Bool {
+        if case let .herdrSession(hostID, name) = row.target {
+            return activeHerdrSession == WorkspaceHerdrSessionSelection(
+                hostID: hostID,
+                name: name
+            )
+        }
+        if case let .tmuxSession(hostID, name) = row.target {
+            return activeTmuxSession == WorkspaceTmuxSessionSelection(
+                hostID: hostID,
+                name: name
+            )
+        }
+        if case let .worktree(worktreeID) = row.target,
+           activeTmuxSession?.worktreeID == worktreeID {
+            return true
+        }
+        if case let .directoryWorkspace(directoryWorkspaceID) = row.target,
+           activeTmuxSession?.directoryWorkspaceID == directoryWorkspaceID {
+            return true
+        }
+        return activeTmuxSession == nil
+            && activeHerdrSession == nil
+            && selection.navigationTarget == row.target
+    }
+
+    private func sessionActionLabel(
+        _ presentation: WorkspaceSessionActionPresentation,
         isActionHovered: Bool,
         imageName: String
     ) -> some View {
@@ -893,15 +1198,17 @@ struct WorkspaceSidebarView: View {
         .contentShape(Rectangle())
     }
 
-    private func scheduleTmuxSessionHoverDismiss(_ sessionID: String) {
-        tmuxSessionHoverDismissTask?.cancel()
-        tmuxSessionHoverDismissTask = Task { @MainActor in
+    private func scheduleSessionActionHoverDismiss(
+        _ rowID: WorkspaceNavigationTarget
+    ) {
+        sessionActionHoverDismissTask?.cancel()
+        sessionActionHoverDismissTask = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(150))
             guard !Task.isCancelled,
-                  hoveredTmuxSessionActionID != sessionID,
-                  hoveredTmuxSessionID == sessionID
+                  hoveredSessionActionControlRowID != rowID,
+                  hoveredSessionActionRowID == rowID
             else { return }
-            hoveredTmuxSessionID = nil
+            hoveredSessionActionRowID = nil
         }
     }
 
@@ -924,7 +1231,7 @@ struct WorkspaceSidebarView: View {
                 id: directoryWorkspaceID
             ) else { return nil }
             return WorkspaceSidebarModel.tmuxSessionSelection(for: workspace)
-        case .host, .project:
+        case .host, .project, .herdrSession:
             return nil
         }
     }
@@ -1189,7 +1496,7 @@ struct WorkspaceSidebarView: View {
     private func hierarchyRow(
         _ row: WorkspaceSidebarRow,
         disclosureKey: String,
-        actionHost: HostSummary? = nil,
+        host: HostSummary? = nil,
         inventoryWarning: String? = nil
     ) -> some View {
         return HStack(spacing: 0) {
@@ -1203,51 +1510,12 @@ struct WorkspaceSidebarView: View {
             if let inventoryWarning {
                 inventoryWarningButton(
                     inventoryWarning,
-                    host: actionHost,
+                    host: host,
                     accessibilityLabel:
                     "Show connection issue for \(row.title)"
                 )
             }
-
-            if let actionHost {
-                NativePopupMenuButton(
-                    groups: [
-                        hostActionMenuItems(for: actionHost),
-                    ]
-                ) {
-                    Image(systemName: "plus")
-                        .font(.system(size: 11, weight: .semibold))
-                        .frame(width: 24, height: 28)
-                        .contentShape(Rectangle())
-                        .accessibilityElement(children: .ignore)
-                        .accessibilityLabel(
-                            "Actions for \(actionHost.sidebarTitle)"
-                        )
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .help("Actions for \(actionHost.sidebarTitle)")
-                .accessibilityIdentifier("host-actions")
-            }
         }
-    }
-
-    private func hostActionMenuItems(
-        for host: HostSummary
-    ) -> [NativePopupMenuAction] {
-        var actions = [
-            NativePopupMenuAction("New tmux session…") {
-                onNewTmuxSession(host)
-            },
-        ]
-        if host.canRegisterProjects {
-            actions.append(
-                NativePopupMenuAction("Add Project…") {
-                    onAddProject(host)
-                }
-            )
-        }
-        return actions
     }
 
     private func projectHierarchyRow(
@@ -1402,43 +1670,76 @@ struct WorkspaceSidebarView: View {
 
     // MARK: - Row content
 
+    private func sectionAction(
+        for section: WorkspaceSidebarInventorySection,
+        host: HostSummary
+    ) -> WorkspaceSidebarSectionAction? {
+        WorkspaceSidebarSectionActionModel.action(
+            for: section,
+            host: host,
+            onNewTmuxSession: onNewTmuxSession,
+            onNewHerdrSession: onNewHerdrSession,
+            onAddProject: onAddProject
+        )
+    }
+
     private func sidebarGroupLabel(
         _ title: String,
-        disclosureKey: String
+        disclosureKey: String,
+        action: WorkspaceSidebarSectionAction? = nil
     ) -> some View {
         let expanded = isExpanded(disclosureKey)
-        return Button {
-            toggle(disclosureKey)
-        } label: {
-            HStack(spacing: 5) {
-                Image(
-                    systemName: expanded
-                        ? "chevron.down" : "chevron.right"
-                )
-                .font(.system(size: 10, weight: .bold))
-                .frame(width: 12)
-                Text(title.uppercased())
-                    .tracking(0.35)
-                Spacer(minLength: 0)
+        return HStack(spacing: 0) {
+            Button {
+                toggle(disclosureKey)
+            } label: {
+                HStack(spacing: 5) {
+                    Image(
+                        systemName: expanded
+                            ? "chevron.down" : "chevron.right"
+                    )
+                    .font(.system(size: 10, weight: .bold))
+                    .frame(width: 12)
+                    Text(title.uppercased())
+                        .tracking(0.35)
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+                .padding(.leading, 8)
+                .frame(minHeight: 30)
             }
-            .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(
-                colorSchemeContrast == .increased
-                    ? Color.primary : Color.secondary
+            .buttonStyle(.plain)
+            .workspaceAccessibility(
+                WorkspaceAccessibilityModel.disclosureDescriptor(
+                    title: title,
+                    isExpanded: expanded
+                )
             )
-            .contentShape(Rectangle())
-            .padding(.horizontal, 8)
-            .padding(.top, 9)
-            .padding(.bottom, 4)
-            .frame(minHeight: 30)
+            .accessibilityIdentifier(
+                "sidebar-section-disclosure-\(disclosureKey)"
+            )
+
+            if let action {
+                Button(action: action.perform) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 28, height: 30)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(action.help)
+                .accessibilityLabel(action.accessibilityLabel)
+                .accessibilityIdentifier(
+                    action.accessibilityIdentifier
+                )
+            }
         }
-        .buttonStyle(.plain)
-        .workspaceAccessibility(
-            WorkspaceAccessibilityModel.disclosureDescriptor(
-                title: title,
-                isExpanded: expanded
-            )
+        .font(.system(size: 11, weight: .semibold))
+        .foregroundStyle(
+            colorSchemeContrast == .increased
+                ? Color.primary : Color.secondary
         )
+        .padding(.top, 5)
     }
 
     private func isExpanded(_ key: String) -> Bool {
@@ -1503,6 +1804,21 @@ struct WorkspaceSidebarView: View {
         })
         if tmuxSessionOrder.prune(keeping: tmuxSessionIDs) {
             tmuxSessionOrderRawValue = tmuxSessionOrder.rawValue
+        }
+
+        var herdrSessionOrder = WorkspaceSidebarOrder(
+            rawValue: herdrSessionOrderRawValue
+        )
+        let herdrSessionIDs = Set(snapshot.hosts.flatMap { host in
+            host.herdrSessions.map {
+                WorkspaceSidebarModel.herdrSessionOrderID(
+                    hostID: host.id,
+                    name: $0.name
+                )
+            }
+        })
+        if herdrSessionOrder.prune(keeping: herdrSessionIDs) {
+            herdrSessionOrderRawValue = herdrSessionOrder.rawValue
         }
     }
 

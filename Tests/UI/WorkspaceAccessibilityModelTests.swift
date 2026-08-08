@@ -66,6 +66,28 @@ struct WorkspaceAccessibilityModelTests {
         )
     }
 
+    @Test("stopped Herdr rows announce state and restart behavior")
+    func stoppedHerdrDescriptor() {
+        let row = WorkspaceSidebarRow(
+            target: .herdrSession(hostID: UUID(), name: "review"),
+            icon: .herdrSession,
+            title: "review",
+            subtitle: "Stopped",
+            herdrSessionState: .stopped,
+            herdrSessionIsDefault: false
+        )
+
+        expectAccessibilityDescriptor(
+            WorkspaceAccessibilityModel.descriptor(
+                for: row,
+                isSelected: false
+            ),
+            label: "review",
+            value: "Stopped",
+            hint: "Restart and attach to this Herdr session."
+        )
+    }
+
     @Test("worktree rows announce visible status and select-only behavior")
     func worktreeStatusDescriptor() {
         let row = WorkspaceSidebarRow(

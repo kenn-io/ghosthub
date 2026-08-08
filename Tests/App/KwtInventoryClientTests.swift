@@ -1,3 +1,4 @@
+import GhosthubTransport
 import Foundation
 import Testing
 @testable import GhosthubApp
@@ -239,7 +240,7 @@ struct KwtInventoryClientTests {
         guard ProcessInfo.processInfo.environment[
             "GHOSTHUB_RUN_LIVE_INTEGRATION_TESTS"
         ] == "1" else { return }
-        let availability = TmuxBinaryResolver.runLoginShell(
+        let availability = AccountCommandRunner.runLoginShell(
             shell: "/bin/zsh",
             command: "command -v kwt >/dev/null",
             timeout: 5
@@ -841,5 +842,44 @@ struct KwtInventoryClientTests {
         )
 
         #expect(overlaid.hosts[0].tmuxSessions == [discoveredSession])
+    }
+
+    @Test("Herdr inventory overlays only Herdr sessions")
+    func herdrInventoryIsAdditive() {
+        let hostID = UUID()
+        let tmux = TmuxSessionSummary(
+            name: "tmux-kept",
+            managed: false,
+            windows: []
+        )
+        let diagnostic = RemoteHostDiagnostic.missingKwtCapability
+        let stored = WorkspaceSnapshot(
+            hosts: [HostSummary(
+                id: hostID,
+                name: "build-box",
+                kind: .remote,
+                platform: .linux,
+                lastKnownReachable: true,
+                remoteDiagnostics: [diagnostic],
+                tmuxSessions: [tmux]
+            )],
+            projects: [],
+            worktrees: []
+        )
+        let herdr = HerdrSessionSummary(name: "api", isDefault: true, state: .running)
+
+        let overlaid = HostInventoryOverlay.apply(
+            kwtInventoriesByHost: [:],
+            tmuxSessionsByHost: [:],
+            herdrSessionsByHost: [hostID: [herdr]],
+            herdrAvailabilityByHost: [hostID: true],
+            to: stored
+        )
+
+        #expect(overlaid.hosts[0].herdrSessions == [herdr])
+        #expect(overlaid.hosts[0].herdrAvailable)
+        #expect(overlaid.hosts[0].tmuxSessions == [tmux])
+        #expect(overlaid.hosts[0].lastKnownReachable)
+        #expect(overlaid.hosts[0].remoteDiagnostics == [diagnostic])
     }
 }

@@ -1,3 +1,4 @@
+import GhosthubTransport
 import Foundation
 import GhosthubTmux
 import GhosthubUI
@@ -23,9 +24,9 @@ enum TmuxSessionStyleError: Error, Equatable, LocalizedError {
 }
 
 struct TmuxSessionStyler: Sendable {
-    typealias PathResolver = @Sendable (TmuxHost)
+    typealias PathResolver = @Sendable (CommandHost)
         -> Result<String, TmuxBinaryError>
-    typealias Runner = @Sendable (TmuxHost, String)
+    typealias Runner = @Sendable (CommandHost, String)
         -> (status: Int32, stdout: String)
 
     private let pathResolver: PathResolver
@@ -47,13 +48,13 @@ struct TmuxSessionStyler: Sendable {
         self.runner = runner ?? { host, command in
             switch host {
             case .local:
-                TmuxBinaryResolver.runLoginShell(
-                    shell: TmuxBinaryResolver.loginShell(),
+                AccountCommandRunner.runLoginShell(
+                    shell: AccountCommandRunner.loginShell(),
                     command: command,
                     timeout: 15
                 )
             case let .ssh(info):
-                TmuxBinaryResolver.runRemoteLoginShell(
+                AccountCommandRunner.runRemoteLoginShell(
                     host: info,
                     command: command,
                     timeout: 15
@@ -66,7 +67,7 @@ struct TmuxSessionStyler: Sendable {
         _ style: TmuxPresentationStyle,
         to selection: WorkspaceTmuxSessionSelection,
         expectedIdentity: TmuxSessionIdentity,
-        on host: TmuxHost
+        on host: CommandHost
     ) async throws {
         if case let .ssh(info) = host, info.platform == .windows {
             throw TmuxSessionStyleError.unsupportedHost(

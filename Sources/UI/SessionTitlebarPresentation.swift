@@ -21,6 +21,23 @@ public struct SessionTitlebarPresentation: Equatable, Sendable {
     }
 
     public static func resolve(
+        activeTmuxSession: WorkspaceTmuxSessionSelection?,
+        activeHerdrSession: WorkspaceHerdrSessionSelection?,
+        in snapshot: WorkspaceSnapshot
+    ) -> SessionTitlebarPresentation? {
+        guard activeTmuxSession == nil || activeHerdrSession == nil else {
+            return nil
+        }
+        if let activeHerdrSession {
+            return resolve(
+                activeHerdrSession: activeHerdrSession,
+                in: snapshot
+            )
+        }
+        return resolve(activeSession: activeTmuxSession, in: snapshot)
+    }
+
+    public static func resolve(
         activeSession: WorkspaceTmuxSessionSelection?,
         in snapshot: WorkspaceSnapshot
     ) -> SessionTitlebarPresentation? {
@@ -43,6 +60,20 @@ public struct SessionTitlebarPresentation: Equatable, Sendable {
             sessionName: activeSession.name,
             hostname: hostname(for: host),
             icon: icon
+        )
+    }
+
+    public static func resolve(
+        activeHerdrSession: WorkspaceHerdrSessionSelection?,
+        in snapshot: WorkspaceSnapshot
+    ) -> SessionTitlebarPresentation? {
+        guard let activeHerdrSession,
+              let host = snapshot.host(id: activeHerdrSession.hostID)
+        else { return nil }
+        return SessionTitlebarPresentation(
+            sessionName: activeHerdrSession.name,
+            hostname: hostname(for: host),
+            icon: .herdrSession
         )
     }
 

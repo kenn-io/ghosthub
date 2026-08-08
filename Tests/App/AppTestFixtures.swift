@@ -103,7 +103,10 @@ func waitUntil(
 /// Polls a MainActor-isolated condition until it returns true or the timeout expires.
 @MainActor
 func waitUntilMainActor(
-    timeout: Duration = .seconds(5),
+    // Swift Testing runs suites concurrently, so a package-wide run can spend
+    // several seconds scheduling other MainActor-isolated tests before this
+    // condition is evaluated again.
+    timeout: Duration = .seconds(10),
     pollInterval: Duration = .milliseconds(10),
     sourceLocation: SourceLocation = #_sourceLocation,
     _ condition: @escaping @MainActor () async -> Bool
@@ -183,6 +186,24 @@ final class LockedValue<T>: @unchecked Sendable {
         lock.lock()
         update(&value)
         lock.unlock()
+    }
+}
+
+final class BlockingGate: @unchecked Sendable {
+    private let started = LockedValue(false)
+    private let release = DispatchSemaphore(value: 0)
+
+    func block() {
+        started.store(true)
+        release.wait()
+    }
+
+    func waitUntilBlocked() async {
+        await waitUntil { self.started.load() }
+    }
+
+    func open() {
+        release.signal()
     }
 }
 

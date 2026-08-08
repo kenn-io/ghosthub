@@ -1,3 +1,4 @@
+import GhosthubTransport
 import Combine
 import Foundation
 import GhosthubSettings
@@ -124,7 +125,7 @@ struct WorkspaceTmuxThemeTests {
         )
         await connectActiveTmuxSession(windowsModel, store: windowsStore)
         #expect(!windowsModel.canApplyThemeToActiveTmuxSession)
-        #expect(!windowsModel.canSplitActiveTmuxPane)
+        #expect(!windowsModel.canSplitActivePane)
         await windowsModel.shutdown()
     }
 
@@ -158,7 +159,7 @@ struct WorkspaceTmuxThemeTests {
             TmuxPresentationStyle,
             WorkspaceTmuxSessionSelection,
             TmuxSessionIdentity,
-            TmuxHost
+            CommandHost
         )]>([])
         let gate = StylerGate()
         let scene = try makeThemedScene(
@@ -905,7 +906,7 @@ private func connectActiveTmuxSession(
 }
 
 @MainActor
-private final class ThemeTmuxPaneSurfaceStub: TmuxPaneSurfacing {
+private final class ThemeTmuxPaneSurfaceStub: NativeSessionPaneSurfacing {
     var blocksClipboardReads = false
     var launchError: Error? { nil }
     var childExitCode: UInt32?
@@ -917,7 +918,7 @@ private final class ThemeTmuxPaneSurfaceStub: TmuxPaneSurfacing {
 }
 
 @MainActor
-private final class ThemeTmuxSurfaceStoreStub: TmuxSurfaceStoring {
+private final class ThemeTmuxSurfaceStoreStub: NativeSessionSurfaceStoring {
     private let surface = ThemeTmuxPaneSurfaceStub()
     private(set) var requestCount = 0
     private let surfaceIdentities: [UInt?]
@@ -935,7 +936,7 @@ private final class ThemeTmuxSurfaceStoreStub: TmuxSurfaceStoring {
     func paneSurface(
         for key: SurfaceKey,
         configuration _: TerminalSurfaceConfiguration
-    ) -> (any TmuxPaneSurfacing)? {
+    ) -> (any NativeSessionPaneSurfacing)? {
         guard !retainedKeys.contains(key) else { return surface }
         retainedKeys.insert(key)
         let identityIndex = min(requestCount, surfaceIdentities.count - 1)

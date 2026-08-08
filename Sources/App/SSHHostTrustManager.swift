@@ -1,3 +1,4 @@
+import GhosthubTransport
 import Foundation
 import GhosthubSettings
 import GhosthubTmux
@@ -543,11 +544,11 @@ struct SSHHostTrustManager: Sendable {
             environment["GHOSTHUB_SSH_EXPECTED_KEY_PATH"] =
                 expectedKeyIdentity.path
         }
-        _ = TmuxBinaryResolver.runProcessInLoginShell(
+        _ = AccountCommandRunner.runProcessInLoginShell(
             executable: "/usr/bin/ssh",
             arguments: arguments,
             timeout: 12,
-            accountShell: TmuxBinaryResolver.loginShell(),
+            accountShell: AccountCommandRunner.loginShell(),
             environmentOverrides: environment
         )
     }

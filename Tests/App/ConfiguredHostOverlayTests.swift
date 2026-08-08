@@ -81,7 +81,15 @@ struct ConfiguredHostOverlayTests {
             sshDestination: "old-builder",
             tmuxSessions: [
                 .init(name: "old-session", managed: false, windows: []),
-            ]
+            ],
+            herdrSessions: [
+                .init(
+                    name: "old-herdr",
+                    isDefault: false,
+                    state: .running
+                ),
+            ],
+            herdrAvailable: true
         )
         let project = ProjectSummary.fixture(hostID: host.id)
         let worktree = WorktreeSummary.fixture(
@@ -112,6 +120,8 @@ struct ConfiguredHostOverlayTests {
 
         #expect(result.hosts[0].id == host.id)
         #expect(result.hosts[0].tmuxSessions.isEmpty)
+        #expect(result.hosts[0].herdrSessions.isEmpty)
+        #expect(!result.hosts[0].herdrAvailable)
         #expect(result.projects.isEmpty)
         #expect(result.worktrees.isEmpty)
         #expect(result.sessions.isEmpty)
@@ -167,7 +177,15 @@ struct ConfiguredHostOverlayTests {
             sshDestination: "builder",
             tmuxSessions: [
                 .init(name: "old-session", managed: false, windows: []),
-            ]
+            ],
+            herdrSessions: [
+                .init(
+                    name: "old-herdr",
+                    isDefault: false,
+                    state: .running
+                ),
+            ],
+            herdrAvailable: true
         )
         let project = ProjectSummary.fixture(hostID: host.id)
         let worktree = WorktreeSummary.fixture(
@@ -199,9 +217,46 @@ struct ConfiguredHostOverlayTests {
         #expect(result.hosts[0].id == host.id)
         #expect(result.hosts[0].platform == to)
         #expect(result.hosts[0].tmuxSessions.isEmpty)
+        #expect(result.hosts[0].herdrSessions.isEmpty)
+        #expect(!result.hosts[0].herdrAvailable)
         #expect(result.projects.isEmpty)
         #expect(result.worktrees.isEmpty)
         #expect(result.sessions.isEmpty)
+    }
+
+    @Test("Windows hosts discard stale Herdr capability")
+    func windowsHostsDiscardStaleHerdrCapability() {
+        let host = HostSummary.fixture(
+            configKey: "windows-builder",
+            name: "Windows Builder",
+            kind: .remote,
+            platform: .windows,
+            sshDestination: "builder",
+            tmuxSessions: [
+                .init(name: "powershell", managed: false, windows: []),
+            ],
+            herdrSessions: [
+                .init(
+                    name: "stale-herdr",
+                    isDefault: false,
+                    state: .running
+                ),
+            ],
+            herdrAvailable: true
+        )
+
+        let result = ConfiguredHostOverlay.apply([
+            SSHHost(
+                configKey: host.configKey,
+                name: host.name,
+                platform: .windows,
+                sshDestination: "builder"
+            ),
+        ], to: .fixture(hosts: [host]))
+
+        #expect(result.hosts[0].tmuxSessions == host.tmuxSessions)
+        #expect(result.hosts[0].herdrSessions.isEmpty)
+        #expect(!result.hosts[0].herdrAvailable)
     }
 
     @Test("duplicate destinations receive distinct host identities")

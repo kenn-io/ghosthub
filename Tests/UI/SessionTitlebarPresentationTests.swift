@@ -121,4 +121,43 @@ struct SessionTitlebarPresentationTests {
             ) == nil
         )
     }
+
+    @Test("Herdr sessions use their own icon and host title")
+    func herdrSession() {
+        let hostID = UUID()
+        let snapshot = WorkspaceSnapshot.fixture(hosts: [
+            .fixture(id: hostID, name: "studio-mac", kind: .selfHost),
+        ])
+
+        let presentation = SessionTitlebarPresentation.resolve(
+            activeHerdrSession: WorkspaceHerdrSessionSelection(
+                hostID: hostID,
+                name: "api"
+            ),
+            in: snapshot
+        )
+
+        #expect(presentation?.title == "api · studio-mac")
+        #expect(presentation?.icon == .herdrSession)
+    }
+
+    @Test("mutually exclusive titlebar refuses contradictory sessions")
+    func contradictorySessions() {
+        let hostID = UUID()
+        let snapshot = WorkspaceSnapshot.fixture(hosts: [
+            .fixture(id: hostID),
+        ])
+
+        #expect(SessionTitlebarPresentation.resolve(
+            activeTmuxSession: WorkspaceTmuxSessionSelection(
+                hostID: hostID,
+                name: "tmux"
+            ),
+            activeHerdrSession: WorkspaceHerdrSessionSelection(
+                hostID: hostID,
+                name: "herdr"
+            ),
+            in: snapshot
+        ) == nil)
+    }
 }

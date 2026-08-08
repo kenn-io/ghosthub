@@ -1,4 +1,6 @@
+import GhosthubTransport
 import Foundation
+import GhosthubHerdr
 import GhosthubTerminal
 import GhosthubTmux
 import GhosthubUI
@@ -36,7 +38,7 @@ final class RestorationInventoryState: @unchecked Sendable {
     }
 
     func discover(
-        _ host: TmuxHost
+        _ host: CommandHost
     ) -> Result<[DiscoveredTmuxSession], TmuxBinaryError> {
         lock.lock()
         attempts += 1
@@ -63,11 +65,37 @@ final class RestorationInventoryState: @unchecked Sendable {
     }
 }
 
+private final class HerdrRestorationInventoryState: @unchecked Sendable {
+    private let lock = NSLock()
+    private let sessionName: String
+    private var publishesExactSession = false
+    private var attempts = 0
+
+    init(sessionName: String) {
+        self.sessionName = sessionName
+    }
+
+    func publishExactSession() {
+        lock.withLock { publishesExactSession = true }
+    }
+
+    var attemptCount: Int { lock.withLock { attempts } }
+
+    func discover(_ host: CommandHost) -> HerdrDiscoveryResult {
+        lock.withLock {
+            attempts += 1
+            return .available(publishesExactSession ? [
+                HerdrSessionSummary(name: sessionName, isDefault: false, state: .running),
+            ] : [])
+        }
+    }
+}
+
 @MainActor
 private struct RemoteRestorationHarness {
     let model: WorkspaceSceneModel
     let inventory: RestorationInventoryState
-    let surfaceStore: RecordingTmuxSurfaceStore
+    let surfaceStore: RecordingNativeSessionSurfaceStore
     let savedState: WorkspaceWindowState
 
     static func make(
@@ -88,7 +116,7 @@ private struct RemoteRestorationHarness {
         if publishSession {
             inventory.publishExactSession()
         }
-        let surfaceStore = RecordingTmuxSurfaceStore()
+        let surfaceStore = RecordingNativeSessionSurfaceStore()
         let model = try makeModel(
             database: environment.database,
             localHostID: UUID(),
@@ -158,7 +186,7 @@ private final class ProtectedProbeSpy: @unchecked Sendable {
 
     func read(
         _ selection: WorkspaceTmuxSessionSelection,
-        _ host: TmuxHost
+        _ host: CommandHost
     ) async throws -> TmuxSessionIdentity {
         let current = record(selection)
         defer { recordCompletion() }
@@ -201,13 +229,13 @@ private final class ProtectedProbeSpy: @unchecked Sendable {
 
 private final class ControlledProtectedProbe: @unchecked Sendable {
     private let lock = NSLock()
-    private var recordedHosts: [TmuxHost] = []
+    private var recordedHosts: [CommandHost] = []
     private var recordedSelections: [WorkspaceTmuxSessionSelection] = []
     private var continuations:
         [Int: CheckedContinuation<TmuxSessionIdentity, any Error>] = [:]
     private var completedReads = 0
 
-    var hosts: [TmuxHost] {
+    var hosts: [CommandHost] {
         lock.lock()
         defer { lock.unlock() }
         return recordedHosts
@@ -227,7 +255,7 @@ private final class ControlledProtectedProbe: @unchecked Sendable {
 
     func read(
         _ selection: WorkspaceTmuxSessionSelection,
-        _ host: TmuxHost
+        _ host: CommandHost
     ) async throws -> TmuxSessionIdentity {
         defer { recordCompletion() }
         return try await withCheckedThrowingContinuation {
@@ -319,6 +347,177 @@ private struct ProtectedRestorationHarness {
 @MainActor
 @Suite("Workspace restoration", .serialized)
 struct WorkspaceRestorationTests {
+    @Test("Herdr restoration waits for fresh exact discovery")
+    func herdrRestorationWaitsForFreshExactDiscovery() async throws {
+        let environment = try setupStandardEnvironment()
+        var snapshot = environment.snapshot
+        snapshot.hosts[0].herdrSessions = [
+            HerdrSessionSummary(name: "editor", isDefault: false, state: .running),
+        ]
+        let inventory = HerdrRestorationInventoryState(
+            sessionName: "editor"
+        )
+        let store = RecordingNativeSessionSurfaceStore()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeHerdrSurfaceStore: store,
+            nativeHerdrPathProvider: { _ in .success("/usr/bin/herdr") },
+            herdrSessionDiscovery: inventory.discover
+        )
+        let state = WorkspaceWindowState(
+            windowID: UUID(),
+            navigation: WorkspaceNavigationDescriptor(
+                hostKey: environment.host.configKey,
+                projectKey: nil,
+                worktreeGeneration: nil
+            ),
+            tmux: nil,
+            herdr: WorkspaceHerdrDescriptor(
+                hostKey: environment.host.configKey,
+                sessionName: "editor"
+            )
+        )
+
+        model.startHerdrSessionDiscovery()
+        model.beginRestoration(state)
+        #expect(model.activeBorrowedHerdrSelection == nil)
+        await waitUntilMainActor {
+            inventory.attemptCount >= 1
+                && model.snapshot.host(id: environment.host.id)?
+                .herdrSessions.isEmpty == true
+        }
+        #expect(model.activeBorrowedHerdrSelection == nil)
+        #expect(model.restorationState(windowID: state.windowID) == state)
+
+        inventory.publishExactSession()
+        model.refreshKwtInventory()
+        await waitUntilMainActor {
+            model.activeBorrowedHerdrSelection?.name == "editor"
+        }
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedHerdrSurface()
+            return store.lastCommand != nil
+        }
+
+        let command = try #require(store.lastCommand)
+        let expectedCommand = try HerdrAttachmentInfo(
+            sessionName: "editor",
+            host: .local
+        ).attachCommand(herdrPath: "/usr/bin/herdr")
+        #expect(command == expectedCommand)
+        #expect(!model.isWorkspaceRestorationPending)
+        await model.shutdown()
+    }
+
+    @Test("Herdr restoration waits for lifecycle completion and rediscovery")
+    func herdrRestorationWaitsForLifecycleCompletion() async throws {
+        let environment = try setupStandardEnvironment()
+        var snapshot = environment.snapshot
+        snapshot.hosts[0].herdrSessions = [
+            HerdrSessionSummary(
+                name: "editor",
+                isDefault: false,
+                state: .running
+            ),
+        ]
+        let inventory = HerdrRestorationInventoryState(
+            sessionName: "editor"
+        )
+        inventory.publishExactSession()
+        let coordinator = HerdrSessionLifecycleCoordinator()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeHerdrPathProvider: { _ in .success("/usr/bin/herdr") },
+            herdrLifecycleCoordinator: coordinator,
+            herdrSessionDiscovery: inventory.discover
+        )
+        let target = WorkspaceHerdrSessionSelection(
+            hostID: environment.host.id,
+            name: "editor"
+        )
+        let state = WorkspaceWindowState(
+            windowID: UUID(),
+            navigation: WorkspaceNavigationDescriptor(
+                hostKey: environment.host.configKey,
+                projectKey: nil,
+                worktreeGeneration: nil
+            ),
+            tmux: nil,
+            herdr: WorkspaceHerdrDescriptor(
+                hostKey: environment.host.configKey,
+                sessionName: target.name
+            )
+        )
+
+        model.startHerdrSessionDiscovery()
+        model.beginRestoration(state)
+        await waitUntilMainActor {
+            model.activeBorrowedHerdrSelection == target
+        }
+        model.closeBorrowedHerdrSession(target)
+        let operation = try #require(coordinator.begin(.stop, key: .init(
+            hostID: target.hostID,
+            sessionName: target.name
+        )))
+
+        model.beginRestoration(state)
+        #expect(model.activeBorrowedHerdrSelection == nil)
+        let attemptsBeforeCompletion = inventory.attemptCount
+
+        coordinator.finish(operation, outcome: .failed)
+        await waitUntilMainActor {
+            model.activeBorrowedHerdrSelection == target
+        }
+        #expect(inventory.attemptCount > attemptsBeforeCompletion)
+        await model.shutdown()
+    }
+
+    @Test("explicit navigation cancels pending Herdr restoration")
+    func navigationCancelsPendingHerdrRestoration() async throws {
+        let environment = try setupStandardEnvironment()
+        let inventory = HerdrRestorationInventoryState(
+            sessionName: "editor"
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeHerdrPathProvider: { _ in .success("/usr/bin/herdr") },
+            herdrSessionDiscovery: inventory.discover
+        )
+        let state = WorkspaceWindowState(
+            windowID: UUID(),
+            navigation: WorkspaceNavigationDescriptor(
+                hostKey: environment.host.configKey,
+                projectKey: nil,
+                worktreeGeneration: nil
+            ),
+            tmux: nil,
+            herdr: WorkspaceHerdrDescriptor(
+                hostKey: environment.host.configKey,
+                sessionName: "editor"
+            )
+        )
+
+        model.startHerdrSessionDiscovery()
+        model.beginRestoration(state)
+        await waitUntil { inventory.attemptCount >= 1 }
+        model.selectFromUser(WorkspaceSelection(
+            selectedHostID: environment.host.id
+        ))
+        inventory.publishExactSession()
+        model.refreshKwtInventory()
+        await waitUntil { inventory.attemptCount >= 2 }
+
+        #expect(model.activeBorrowedHerdrSelection == nil)
+        #expect(!model.isWorkspaceRestorationPending)
+        await model.shutdown()
+    }
+
     @Test("ordinary restoration waits for exact direct discovery then attaches only")
     func ordinaryRestorationIsAttachOnly() async throws {
         let inventory = RestorationInventoryState(sessionName: "editor")
@@ -326,7 +525,7 @@ struct WorkspaceRestorationTests {
         var snapshot = environment.snapshot
         snapshot.worktrees[0].tmuxSessionName = "editor"
         snapshot.worktrees[0].generation = restorationWorktreeGeneration
-        let store = RecordingTmuxSurfaceStore()
+        let store = RecordingNativeSessionSurfaceStore()
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,

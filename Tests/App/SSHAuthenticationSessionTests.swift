@@ -1,3 +1,4 @@
+import GhosthubTransport
 import Darwin
 import Foundation
 import GhosthubTmux
@@ -375,7 +376,7 @@ struct SSHAuthenticationSessionTests {
         }
         let invocation = SSHAuthenticationSession.processInvocation(
             sshArguments: ["30"],
-            accountShell: TmuxBinaryResolver.loginShell(),
+            accountShell: AccountCommandRunner.loginShell(),
             sshExecutable: "/bin/sleep"
         )
         process.executableURL = invocation.executable
@@ -447,7 +448,7 @@ struct SSHAuthenticationSessionTests {
             environment["GHOSTHUB_SSH_INTEGRATION_DESTINATION"]
         )
         let host = try #require(
-            TmuxHostResolver.parseSSHDestination(destination)
+            CommandHostResolver.parseSSHDestination(destination)
         )
 
         let snapshot = SSHConnectionPool.configurationSnapshot(for: host)

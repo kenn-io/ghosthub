@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# Faux Herdr inventory for the isolated website screenshot environment.
+set -euo pipefail
+
+scratch="${GHOSTHUB_DEMO_SCRATCH:?GHOSTHUB_DEMO_SCRATCH is not set}"
+if [[ ! -f "$scratch/.ghosthub-demo-scratch" ]]; then
+  echo "faux herdr: demo scratch is not staged" >&2
+  exit 64
+fi
+
+if [[ "${1:-}" == "session" && "${2:-}" == "list" \
+  && "${3:-}" == "--json" && "$#" -eq 3 ]]; then
+  sessions=()
+  if [[ ! -f "$scratch/herdr-deleted-default" ]]; then
+    default_running=true
+    [[ -f "$scratch/herdr-stopped-default" ]] && default_running=false
+    sessions+=("{\"name\":\"default\",\"default\":true,\"running\":$default_running,\"session_dir\":\"/tmp/ghosthub-demo/herdr/default\",\"socket_path\":\"/tmp/ghosthub-demo/herdr/default/herdr.sock\"}")
+  fi
+  if [[ ! -f "$scratch/herdr-deleted-release-review" ]]; then
+    review_running=true
+    [[ -f "$scratch/herdr-stopped-release-review" ]] && review_running=false
+    sessions+=("{\"name\":\"release-review\",\"default\":false,\"running\":$review_running,\"session_dir\":\"/tmp/ghosthub-demo/herdr/release-review\",\"socket_path\":\"/tmp/ghosthub-demo/herdr/release-review/herdr.sock\"}")
+  fi
+  if [[ ! -f "$scratch/herdr-deleted-archived" ]]; then
+    sessions+=("{\"name\":\"archived\",\"default\":false,\"running\":false,\"session_dir\":\"/tmp/ghosthub-demo/herdr/archived\",\"socket_path\":\"/tmp/ghosthub-demo/herdr/archived/herdr.sock\"}")
+  fi
+  joined=$(IFS=,; echo "${sessions[*]}")
+  printf '{"sessions":[%s]}\n' "$joined"
+  exit 0
+fi
+
+if [[ "${1:-}" == "session" && "${2:-}" == "attach" \
+  && "$#" -eq 3 ]]; then
+  name="$3"
+  if [[ -f "$scratch/herdr-stopped-$name" \
+    || -f "$scratch/herdr-deleted-$name" ]]; then
+    printf 'faux herdr: session is not running\n' >&2
+    exit 1
+  fi
+  printf '\033[2J\033[HHerdr demo session: %s\n\n' "$name"
+  printf 'Session content remains owned by Herdr.\n'
+  while true; do sleep 3600; done
+fi
+
+if [[ "${1:-}" == "session" && "${2:-}" == "stop" \
+  && "${4:-}" == "--json" && "$#" -eq 4 ]]; then
+  name="$3"
+  if [[ "$name" != "default" && "$name" != "release-review" ]]; then
+    printf '{"error":{"code":"session_stop_failed","message":"Session is not running"}}\n'
+    exit 1
+  fi
+  touch "$scratch/herdr-stopped-$name"
+  is_default=false
+  [[ "$name" == "default" ]] && is_default=true
+  printf '{"session":{"name":"%s","default":%s,"running":false,"session_dir":"/tmp/ghosthub-demo/herdr/%s","socket_path":"/tmp/ghosthub-demo/herdr/%s/herdr.sock"},"stopped":true}\n' "$name" "$is_default" "$name" "$name"
+  exit 0
+fi
+
+if [[ "${1:-}" == "session" && "${2:-}" == "delete" \
+  && "${4:-}" == "--json" && "$#" -eq 4 ]]; then
+  name="$3"
+  if [[ "$name" == "default" || ( "$name" != "archived" \
+    && ! -f "$scratch/herdr-stopped-$name" ) ]]; then
+    printf '{"error":{"code":"session_delete_failed","message":"Delete requires a stopped non-default session"}}\n'
+    exit 1
+  fi
+  touch "$scratch/herdr-deleted-$name"
+  printf '{"session":{"name":"%s","default":false,"running":false,"session_dir":"/tmp/ghosthub-demo/herdr/%s","socket_path":"/tmp/ghosthub-demo/herdr/%s/herdr.sock"},"deleted":true}\n' "$name" "$name" "$name"
+  exit 0
+fi
+
+echo "faux herdr: unsupported command" >&2
+exit 64

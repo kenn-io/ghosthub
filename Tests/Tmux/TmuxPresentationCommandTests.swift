@@ -1,3 +1,4 @@
+import GhosthubTransport
 import Foundation
 import Testing
 @testable import GhosthubTmux

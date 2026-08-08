@@ -1,3 +1,4 @@
+import GhosthubTransport
 import Foundation
 import GhosthubTmux
 import Testing
@@ -8,15 +9,15 @@ struct KwtProjectRegistrarTests {
     @Test(
         "registration rejects relative paths before invoking kwt",
         arguments: [
-            TmuxHost.local,
-            TmuxHost.ssh(SSHHostInfo(
+            CommandHost.local,
+            CommandHost.ssh(SSHHostInfo(
                 user: "wesm",
                 hostname: "spark",
                 port: nil
             )),
         ]
     )
-    func rejectsRelativeProjectPath(host: TmuxHost) async {
+    func rejectsRelativeProjectPath(host: CommandHost) async {
         let invoked = LockedValue(false)
         let client = KwtProjectRegistrar(
             localRunner: { _ in

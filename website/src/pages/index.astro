@@ -1,17 +1,17 @@
 ---
 import Features from '../components/Features.astro';
-import GuideCTA from '../components/GuideCTA.astro';
+import OverviewCTA from '../components/OverviewCTA.astro';
 import Hero from '../components/Hero.astro';
 import SiteLayout from '../layouts/SiteLayout.astro';
 
-const title = 'Ghosthub: a native power terminal for your tmux fleet';
+const title = 'Ghosthub: a multiplexer-native power terminal for your fleet';
 const description =
-  'Ghosthub is a free and open source macOS power terminal for any local or SSH tmux '
-  + 'session, with built-in Git worktree management and GitHub pull request import.';
+  'Ghosthub is a free and open source macOS terminal for local and SSH tmux and '
+  + 'Herdr sessions, with Git worktree management, keepalives, and automatic reconnect.';
 ---
 
 <SiteLayout title={title} description={description} path="/">
   <Hero />
   <Features />
-  <GuideCTA />
+  <OverviewCTA />
 </SiteLayout>
