@@ -1523,7 +1523,8 @@ final class WorkspaceSceneModel: ObservableObject {
         switch WorkspaceWindowRestorationResolver.resolve(
             pendingRestoration,
             in: snapshot,
-            herdrFreshHostIDs: herdrFreshHostIDs
+            herdrFreshHostIDs: herdrFreshHostIDs,
+            pendingHerdrSessions: pendingHerdrSessionSelections
         ) {
         case .invalid:
             cancelPendingRestoration()
@@ -2644,6 +2645,8 @@ final class WorkspaceSceneModel: ObservableObject {
         )
         switch event.phase {
         case .began:
+            herdrFreshHostIDs.remove(selection.hostID)
+            invalidateHerdrProbe(for: selection.hostID)
             objectWillChange.send()
         case .willStop:
             guard event.operation.kind == .stop,
@@ -2717,7 +2720,6 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         herdrSessionsByHost[target.hostID] = sessions
         herdrAvailabilityByHost[target.hostID] = true
-        herdrFreshHostIDs.insert(target.hostID)
         applyInventoryOverlayIfNeeded()
         updateWorkspaceInventoryState()
         if wasActive {
@@ -3148,6 +3150,12 @@ final class WorkspaceSceneModel: ObservableObject {
                         == lifecycleCoordinator.revision(for: hostID)
                     else {
                         needsFreshDiscovery = true
+                        self.herdrFreshHostIDs.remove(hostID)
+                        continue
+                    }
+                    guard !lifecycleCoordinator.pendingKeys.contains(
+                        where: { $0.hostID == hostID }
+                    ) else {
                         self.herdrFreshHostIDs.remove(hostID)
                         continue
                     }
@@ -4419,6 +4427,7 @@ final class WorkspaceSceneModel: ObservableObject {
     func openBorrowedHerdrSession(
         _ selection: WorkspaceHerdrSessionSelection
     ) async throws {
+        let navigationRevision = userNavigationRevision
         guard snapshot.host(id: selection.hostID)?.herdrSessions.contains(
             where: {
                 $0.name == selection.name && $0.state == .running
@@ -4429,6 +4438,9 @@ final class WorkspaceSceneModel: ObservableObject {
             )
         }
         let session = try await revalidatedHerdrSession(selection)
+        guard navigationRevision == userNavigationRevision else {
+            throw CancellationError()
+        }
         guard session?.state == .running else {
             throw session == nil
                 ? HerdrSessionPresentationError.sessionMissing(selection.name)

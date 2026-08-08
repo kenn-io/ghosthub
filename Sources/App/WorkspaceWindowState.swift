@@ -264,7 +264,8 @@ enum WorkspaceWindowRestorationResolver {
     static func resolve(
         _ state: WorkspaceWindowState,
         in snapshot: WorkspaceSnapshot,
-        herdrFreshHostIDs: Set<UUID> = []
+        herdrFreshHostIDs: Set<UUID> = [],
+        pendingHerdrSessions: Set<WorkspaceHerdrSessionSelection> = []
     ) -> WorkspaceRestorationResolution {
         guard let navigation = state.navigation,
               isNonblank(navigation.hostKey),
@@ -361,7 +362,12 @@ enum WorkspaceWindowRestorationResolver {
         }
 
         if let herdr = state.herdr {
+            let herdrSelection = WorkspaceHerdrSessionSelection(
+                hostID: host.id,
+                name: herdr.sessionName
+            )
             guard herdrFreshHostIDs.contains(host.id),
+                  !pendingHerdrSessions.contains(herdrSelection),
                   host.herdrSessions.contains(where: {
                       $0.name == herdr.sessionName
                           && $0.state == .running
@@ -369,10 +375,7 @@ enum WorkspaceWindowRestorationResolver {
             else { return .pending(selection: selection) }
             return .ready(
                 selection: selection,
-                presentation: .herdr(WorkspaceHerdrSessionSelection(
-                    hostID: host.id,
-                    name: herdr.sessionName
-                ))
+                presentation: .herdr(herdrSelection)
             )
         }
 

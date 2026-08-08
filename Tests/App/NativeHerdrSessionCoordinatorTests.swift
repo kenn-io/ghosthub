@@ -276,7 +276,7 @@ struct NativeHerdrSessionCoordinatorTests {
     }
 
     @Test("fresh attachment attempts resolve the Herdr executable again")
-    func freshAttachmentReresolvesExecutable() async throws {
+    func freshAttachmentReresolvesExecutable() async {
         let store = RecordingNativeSessionSurfaceStore()
         let resolutionCount = Mutex(0)
         let coordinator = NativeHerdrSessionCoordinator(
@@ -301,8 +301,7 @@ struct NativeHerdrSessionCoordinatorTests {
         )
         await waitUntilMainActor { readyCount == 1 }
         _ = coordinator.surface(handle: first)
-        let close = try #require(store.surface.closeObservers[first.id])
-        close(false, 9)
+        coordinator.detach(hostID: hostID, name: "api")
 
         let retry = coordinator.attach(
             hostID: hostID,

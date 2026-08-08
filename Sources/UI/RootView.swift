@@ -27,6 +27,7 @@ public struct RootView: View {
     @State private var sidePanelAutoCollapsed = false
     @State private var sidePanelUserOverride = false
     @State private var tmuxSelectionBaseline: WorkspaceSelection?
+    @State private var herdrActivationRevision: UInt64 = 0
     @State private var newWorktreeProject: ProjectSummary?
     @State private var newWorktreeMode: NewWorktreeMode = .branch
     @State private var newTmuxSessionHost: HostSummary?
@@ -720,21 +721,30 @@ public struct RootView: View {
     private func activateHerdrSession(
         _ session: WorkspaceHerdrSessionSelection
     ) {
+        herdrActivationRevision &+= 1
+        let activationRevision = herdrActivationRevision
         let replacedTmuxSession = activeTmuxSession
         Task { @MainActor in
             do {
                 guard let open = handlers.openHerdrSession else {
                     throw HerdrLifecycleUnavailableError()
                 }
-                try await Self.openHerdrSession(
+                let didActivate = try await Self.openHerdrSession(
                     session,
                     replacing: replacedTmuxSession,
                     open: open,
+                    isCurrent: {
+                        herdrActivationRevision == activationRevision
+                    },
                     closeTmux: { replaced in
                         handlers.closeTmuxSession?(replaced)
                     }
                 )
+                guard didActivate else { return }
             } catch {
+                guard herdrActivationRevision == activationRevision,
+                      !(error is CancellationError)
+                else { return }
                 workspaceAlert = .herdrLifecycleFailure(
                     session: session.name,
                     action: "open",
@@ -1485,6 +1495,7 @@ public struct RootView: View {
     }
 
     private func selectWorkspace(_ updatedSelection: WorkspaceSelection) {
+        herdrActivationRevision &+= 1
         if let selectWorkspace = handlers.selectWorkspace {
             selectWorkspace(updatedSelection)
         } else {
@@ -1601,12 +1612,15 @@ public struct RootView: View {
         _ session: WorkspaceHerdrSessionSelection,
         replacing tmuxSession: WorkspaceTmuxSessionSelection?,
         open: (WorkspaceHerdrSessionSelection) async throws -> Void,
+        isCurrent: () -> Bool = { true },
         closeTmux: (WorkspaceTmuxSessionSelection) -> Void
-    ) async throws {
+    ) async throws -> Bool {
         try await open(session)
+        guard isCurrent() else { return false }
         if let tmuxSession {
             closeTmux(tmuxSession)
         }
+        return true
     }
 
 }

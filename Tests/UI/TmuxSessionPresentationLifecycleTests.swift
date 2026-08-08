@@ -79,12 +79,23 @@ struct TmuxSessionPresentationLifecycleTests {
         )
         var closedTmuxSessions: [WorkspaceTmuxSessionSelection] = []
 
-        try await RootView.openHerdrSession(
+        let didActivate = try await RootView.openHerdrSession(
             herdr,
             replacing: tmux,
             open: { _ in },
             closeTmux: { closedTmuxSessions.append($0) }
         )
+        #expect(didActivate)
+        #expect(closedTmuxSessions == [tmux])
+
+        let staleActivation = try await RootView.openHerdrSession(
+            herdr,
+            replacing: tmux,
+            open: { _ in },
+            isCurrent: { false },
+            closeTmux: { closedTmuxSessions.append($0) }
+        )
+        #expect(!staleActivation)
         #expect(closedTmuxSessions == [tmux])
 
         await #expect(throws: CancellationError.self) {

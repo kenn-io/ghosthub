@@ -411,6 +411,71 @@ struct WorkspaceRestorationTests {
         await model.shutdown()
     }
 
+    @Test("Herdr restoration waits for lifecycle completion and rediscovery")
+    func herdrRestorationWaitsForLifecycleCompletion() async throws {
+        let environment = try setupStandardEnvironment()
+        var snapshot = environment.snapshot
+        snapshot.hosts[0].herdrSessions = [
+            HerdrSessionSummary(
+                name: "editor",
+                isDefault: false,
+                state: .running
+            ),
+        ]
+        let inventory = HerdrRestorationInventoryState(
+            sessionName: "editor"
+        )
+        inventory.publishExactSession()
+        let coordinator = HerdrSessionLifecycleCoordinator()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeHerdrPathProvider: { _ in .success("/usr/bin/herdr") },
+            herdrLifecycleCoordinator: coordinator,
+            herdrSessionDiscovery: inventory.discover
+        )
+        let target = WorkspaceHerdrSessionSelection(
+            hostID: environment.host.id,
+            name: "editor"
+        )
+        let state = WorkspaceWindowState(
+            windowID: UUID(),
+            navigation: WorkspaceNavigationDescriptor(
+                hostKey: environment.host.configKey,
+                projectKey: nil,
+                worktreeGeneration: nil
+            ),
+            tmux: nil,
+            herdr: WorkspaceHerdrDescriptor(
+                hostKey: environment.host.configKey,
+                sessionName: target.name
+            )
+        )
+
+        model.startHerdrSessionDiscovery()
+        model.beginRestoration(state)
+        await waitUntilMainActor {
+            model.activeBorrowedHerdrSelection == target
+        }
+        model.closeBorrowedHerdrSession(target)
+        let operation = try #require(coordinator.begin(.stop, key: .init(
+            hostID: target.hostID,
+            sessionName: target.name
+        )))
+
+        model.beginRestoration(state)
+        #expect(model.activeBorrowedHerdrSelection == nil)
+        let attemptsBeforeCompletion = inventory.attemptCount
+
+        coordinator.finish(operation, outcome: .failed)
+        await waitUntilMainActor {
+            model.activeBorrowedHerdrSelection == target
+        }
+        #expect(inventory.attemptCount > attemptsBeforeCompletion)
+        await model.shutdown()
+    }
+
     @Test("explicit navigation cancels pending Herdr restoration")
     func navigationCancelsPendingHerdrRestoration() async throws {
         let environment = try setupStandardEnvironment()

@@ -1,3 +1,4 @@
+@preconcurrency import Dispatch
 import Foundation
 import GhosthubHerdr
 import GhosthubPersistence
@@ -12,6 +13,11 @@ import Testing
 @Suite("Workspace Herdr presentation", .serialized)
 @MainActor
 struct WorkspaceHerdrPresentationTests {
+    enum SupersedingIntent: Sendable {
+        case anotherHerdrSession
+        case navigationAway
+    }
+
     @Test("tmux and Herdr replace one another symmetrically")
     func presentationsAreExclusive() async throws {
         let environment = try environment()
@@ -156,6 +162,90 @@ struct WorkspaceHerdrPresentationTests {
         #expect(discoveries.callCount == 1)
         #expect(model.activeBorrowedHerdrSelection == nil)
         #expect(store.requestedKeys.isEmpty)
+        await model.shutdown()
+    }
+
+    @Test(
+        "a delayed Herdr activation cannot override newer navigation",
+        arguments: [
+            SupersedingIntent.anotherHerdrSession,
+            .navigationAway,
+        ]
+    )
+    func delayedActivationRespectsNewerIntent(
+        intent: SupersedingIntent
+    ) async throws {
+        var environment = try environment()
+        let otherHostID = UUID()
+        environment.snapshot.hosts.append(.fixture(
+            id: otherHostID,
+            name: "Build Box",
+            kind: .remote,
+            platform: .linux,
+            sshDestination: "dev@build.example.test",
+            herdrSessions: [
+                HerdrSessionSummary(
+                    name: "review",
+                    isDefault: false,
+                    state: .running
+                ),
+            ],
+            herdrAvailable: true
+        ))
+        let store = RecordingNativeSessionSurfaceStore()
+        let localProbeStarted = Mutex(false)
+        let releaseLocalProbe = DispatchSemaphore(value: 0)
+        let model = try makeHerdrModel(
+            environment,
+            store: store,
+            discovery: { host in
+                if host == .local {
+                    localProbeStarted.withLock { $0 = true }
+                    releaseLocalProbe.wait()
+                    return .available([
+                        HerdrSessionSummary(
+                            name: "api",
+                            isDefault: true,
+                            state: .running
+                        ),
+                    ])
+                }
+                return .available([
+                    HerdrSessionSummary(
+                        name: "review",
+                        isDefault: false,
+                        state: .running
+                    ),
+                ])
+            }
+        )
+        let delayed = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID,
+            name: "api"
+        )
+        let replacement = WorkspaceHerdrSessionSelection(
+            hostID: otherHostID,
+            name: "review"
+        )
+
+        let delayedActivation = Task {
+            try? await model.openBorrowedHerdrSession(delayed)
+        }
+        await waitUntilMainActor {
+            localProbeStarted.withLock { $0 }
+        }
+        model.selectFromUser(WorkspaceSelection(selectedHostID: otherHostID))
+        if intent == .anotherHerdrSession {
+            try await model.openBorrowedHerdrSession(replacement)
+            #expect(model.activeBorrowedHerdrSelection == replacement)
+        }
+
+        releaseLocalProbe.signal()
+        await delayedActivation.value
+
+        #expect(model.activeBorrowedHerdrSelection == (
+            intent == .anotherHerdrSession ? replacement : nil
+        ))
         await model.shutdown()
     }
 
