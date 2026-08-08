@@ -282,6 +282,49 @@ struct WorkspaceHerdrDiscoveryTests {
     }
 
     @MainActor
+    @Test("exact validation cancellation does not clear Herdr inventory")
+    func validationCancellationPreservesInventory() async throws {
+        let environment = try setupStandardEnvironment()
+        var snapshot = environment.snapshot
+        snapshot.hosts[0].herdrSessions = [
+            HerdrSessionSummary(
+                name: "replacement",
+                isDefault: false,
+                state: .running
+            ),
+        ]
+        snapshot.hosts[0].herdrAvailable = true
+        let discovery = HerdrCancellationDiscovery()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            herdrSessionDiscovery: { _ in discovery.discover() }
+        )
+        let selection = WorkspaceHerdrSessionSelection(
+            hostID: environment.host.id,
+            name: "replacement"
+        )
+
+        model.startHerdrSessionDiscovery()
+        await waitUntilMainActor { discovery.count == 1 }
+        try await model.openBorrowedHerdrSession(selection)
+        await waitUntilMainActor {
+            discovery.count >= 2
+                && model.snapshot.host(id: environment.host.id)?
+                .herdrSessions.map(\.name) == ["replacement"]
+                && model.workspaceInventoryWarningsByHost[environment.host.id]
+                == nil
+        }
+
+        let host = try #require(model.snapshot.host(id: environment.host.id))
+        #expect(host.herdrAvailable)
+        #expect(host.herdrSessions.map(\.name) == ["replacement"])
+        #expect(model.workspaceInventoryWarningsByHost[environment.host.id] == nil)
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("Herdr failure cannot rescue an otherwise blocking local inventory")
     func failureDoesNotChangeBlockingState() async throws {
         let database = try WorkspaceDatabase.inMemory()

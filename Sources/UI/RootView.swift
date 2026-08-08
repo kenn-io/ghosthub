@@ -811,17 +811,25 @@ public struct RootView: View {
     private func restartHerdrSession(
         _ session: WorkspaceHerdrSessionSelection
     ) {
+        herdrActivationRevision &+= 1
+        let activationRevision = herdrActivationRevision
         Task { @MainActor in
             do {
                 guard let restart = handlers.restartHerdrSession else {
                     throw HerdrLifecycleUnavailableError()
                 }
                 try await restart(session)
+                guard herdrActivationRevision == activationRevision else {
+                    return
+                }
                 selectWorkspace(.herdrSession(
                     hostID: session.hostID,
                     name: session.name
                 ))
             } catch {
+                guard herdrActivationRevision == activationRevision,
+                      !(error is CancellationError)
+                else { return }
                 workspaceAlert = .herdrLifecycleFailure(
                     session: session.name,
                     action: "restart",

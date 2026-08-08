@@ -3159,6 +3159,11 @@ final class WorkspaceSceneModel: ObservableObject {
                         self.herdrFreshHostIDs.remove(hostID)
                         continue
                     }
+                    if case .failure(.cancelled) = result {
+                        needsFreshDiscovery = true
+                        self.herdrFreshHostIDs.remove(hostID)
+                        continue
+                    }
                     self.applyHerdrDiscoveryResult(result, hostID: hostID)
                 }
             }
@@ -4626,6 +4631,7 @@ final class WorkspaceSceneModel: ObservableObject {
     func restartHerdrSession(
         _ selection: WorkspaceHerdrSessionSelection
     ) async throws {
+        let navigationRevision = userNavigationRevision
         guard let host = snapshot.host(id: selection.hostID),
               host.herdrAvailable
         else { throw HerdrSessionPresentationError.unavailable }
@@ -4642,6 +4648,9 @@ final class WorkspaceSceneModel: ObservableObject {
         guard let currentSession = try await revalidatedHerdrSession(selection)
         else {
             throw HerdrSessionPresentationError.sessionMissing(selection.name)
+        }
+        guard navigationRevision == userNavigationRevision else {
+            throw CancellationError()
         }
         guard currentSession.state == .stopped else {
             throw HerdrSessionPresentationError.sessionNotStopped(

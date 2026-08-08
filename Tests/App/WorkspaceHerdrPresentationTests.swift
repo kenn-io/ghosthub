@@ -311,6 +311,52 @@ struct WorkspaceHerdrPresentationTests {
         await model.shutdown()
     }
 
+    @Test("a delayed restart cannot replace newer tmux navigation")
+    func delayedRestartRespectsNewerNavigation() async throws {
+        var environment = try environment()
+        let stopped = HerdrSessionSummary(
+            name: "sleeping",
+            isDefault: false,
+            state: .stopped
+        )
+        environment.snapshot.hosts[0].herdrAvailable = true
+        environment.snapshot.hosts[0].herdrSessions.append(stopped)
+        let store = RecordingNativeSessionSurfaceStore()
+        let probeStarted = Mutex(false)
+        let releaseProbe = DispatchSemaphore(value: 0)
+        let model = try makeHerdrModel(
+            environment,
+            store: store,
+            discovery: { _ in
+                probeStarted.withLock { $0 = true }
+                releaseProbe.wait()
+                return .available([stopped])
+            }
+        )
+        let restartTarget = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID,
+            name: stopped.name
+        )
+        let newerTmux = WorkspaceTmuxSessionSelection(
+            hostID: environment.hostID,
+            name: "tmux-work"
+        )
+
+        let restart = Task {
+            try await model.restartHerdrSession(restartTarget)
+        }
+        await waitUntilMainActor { probeStarted.withLock { $0 } }
+        model.openBorrowedTmuxSession(newerTmux)
+        releaseProbe.signal()
+
+        await #expect(throws: CancellationError.self) {
+            try await restart.value
+        }
+        #expect(model.activeBorrowedTmuxSelection == newerTmux)
+        #expect(model.activeBorrowedHerdrSelection == nil)
+        await model.shutdown()
+    }
+
     @Test("create rejects collisions and restart launches stopped sessions")
     func createAndRestartPreconditions() async throws {
         var environment = try environment()
