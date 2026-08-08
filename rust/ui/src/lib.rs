@@ -21,7 +21,7 @@ use workspace::{
 
 pub const WINDOW_TITLE: &str = "Ghosthub";
 const APP_NAVIGATION_WIDTH: f32 = 260.0;
-const APP_TITLEBAR_HEIGHT: f32 = 36.0;
+const APP_TITLEBAR_HEIGHT: f32 = 32.0;
 const APP_CHROME_BACKGROUND: u32 = 0x0f_1116;
 const NAVIGATION_HEADER_HEIGHT: f32 = 36.0;
 const HOST_ROW_HEIGHT: f32 = 42.0;
