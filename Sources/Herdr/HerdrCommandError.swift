@@ -7,6 +7,7 @@ public enum HerdrCommandError:
     case commandFailed(status: Int32, stderr: String)
     case missingMarker
     case malformedJSON
+    case malformedVersion
     case unsupportedPlatform
 
     public var errorDescription: String? {
@@ -24,6 +25,8 @@ public enum HerdrCommandError:
             return "Herdr returned output without Ghosthub's JSON marker."
         case .malformedJSON:
             return "Herdr returned malformed session inventory JSON."
+        case .malformedVersion:
+            return "Herdr returned an unrecognized version."
         case .unsupportedPlatform:
             return "Native Herdr sessions are unavailable on Windows hosts."
         }

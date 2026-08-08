@@ -158,6 +158,7 @@ struct HerdrSessionLifecycleClient: Sendable {
                 )
         case .missingMarker: .missingMarker
         case .malformedJSON: .malformedJSON
+        case .malformedVersion: .malformedJSON
         case let .cancelled(host): .commandFailed(
                 status: AccountCommandRunner.cancelledStatus,
                 code: nil,
