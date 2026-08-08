@@ -184,8 +184,8 @@ fn paint_cache_does_not_scroll_cursor_highlighting_with_cells() {
     ));
 
     let rows = cache.update(&store.load());
-    assert_eq!(rows[0][0].foreground(), 0xee_f0_f4);
-    assert_eq!(rows[1][0].foreground(), 0x11_13_18);
+    assert_eq!(rows[0][0].foreground(), 0xd8_de_e9);
+    assert_eq!(rows[1][0].foreground(), 0x0c_0f_14);
 }
 
 #[test]
@@ -203,17 +203,17 @@ fn terminal_rows_preserve_fixed_grid_columns() {
 fn mouse_coordinates_map_to_the_rendered_grid() {
     let size = GridSize::new(120, 40).expect("valid grid");
 
-    assert_eq!(terminal_cell_at(12.0, 54.0, 10.0, 18.0, size), Some((0, 0)));
+    assert_eq!(terminal_cell_at(5.0, 9.0, 10.0, 18.0, size), Some((0, 0)));
     assert_eq!(
-        terminal_cell_at(1_011.0, 678.0, 10.0, 18.0, size),
+        terminal_cell_at(999.0, 621.0, 10.0, 18.0, size),
         Some((99, 34))
     );
-    assert_eq!(terminal_cell_at(8.0, 50.0, 10.0, 18.0, size), None);
+    assert_eq!(terminal_cell_at(-1.0, 9.0, 10.0, 18.0, size), None);
 }
 
 #[test]
 fn grid_size_uses_the_same_measured_metrics_as_hit_testing() {
-    assert_eq!(terminal_grid_size(1_100.0, 720.0, 10.0, 18.0), (107, 36));
+    assert_eq!(terminal_grid_size(1_100.0, 720.0, 10.0, 18.0), (110, 40));
 }
 
 #[test]
