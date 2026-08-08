@@ -1,8 +1,8 @@
 name: CI
 
-# The PR dispatcher always calls the main-pinned workflow. That workflow
-# independently routes same-repository macOS jobs to the managed public runner
-# and fork jobs to GitHub-hosted runners.
+# The PR dispatcher always calls the main-pinned workflow. Repository admins
+# can opt same-repository PRs into the additional validation lane, while the
+# called workflow keeps fork jobs on GitHub-hosted runners.
 on:
   pull_request:
 
@@ -15,3 +15,5 @@ concurrency:
 jobs:
   run:
     uses: kenn-io/ghosthub/.github/workflows/ci.yml@main
+    with:
+      self_hosted_validation: ${{ vars.GHOSTHUB_SELF_HOSTED_VALIDATION == 'true' }}
