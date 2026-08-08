@@ -7,8 +7,8 @@ import ZoomableImage from './ZoomableImage.astro';
 import hero from '../assets/hero.png';
 
 const heroAlt =
-  'Ghosthub main window: sidebar with local and remote tmux sessions and kwt '
-  + 'worktrees, and an attached session running a Claude Code investigation';
+  'Ghosthub main window with local and remote tmux sessions, Herdr sessions, '
+  + 'and tmux-backed worktrees in the sidebar';
 ---
 
 <section class="hero">
@@ -17,15 +17,15 @@ const heroAlt =
       <AppIcon prefix="gh-ic-hero" />
       <span class="wordmark">Ghosthub</span>
     </p>
-    <h1>A native power terminal for your tmux fleet</h1>
+    <h1>A multiplexer-native power terminal for your fleet</h1>
     <p class="sub">
-      Create or attach to any tmux session on your Mac or over SSH, or manage
-      worktree-bound sessions from Git branches and GitHub pull requests, with
-      keepalives and automatic reconnect.
+      Create or attach to tmux and Herdr sessions on your Mac or over SSH. Run
+      both side by side with tmux-backed worktrees, keepalives, and automatic
+      reconnect in one native terminal.
     </p>
     <div class="install-action">
       <InstallCommand>
-        <a href="/guide/" slot="secondary">
+        <a href="/overview/" slot="secondary">
           Learn More
         </a>
       </InstallCommand>
