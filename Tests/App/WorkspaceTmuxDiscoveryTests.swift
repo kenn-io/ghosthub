@@ -65,15 +65,19 @@ struct WorkspaceTmuxDiscoveryTests {
         )
 
         await kwtGate.waitUntilStarted()
-        await waitUntilMainActor { tmuxGate.didStart }
+        await waitUntilMainActor(timeout: .seconds(15)) {
+            tmuxGate.didStart
+        }
         #expect(!model.isWorkspaceInventoryRefreshComplete)
 
         await kwtGate.release()
-        await waitUntilMainActor { kwtCompletions.count == 1 }
+        await waitUntilMainActor(timeout: .seconds(15)) {
+            kwtCompletions.count == 1
+        }
         #expect(!model.isWorkspaceInventoryRefreshComplete)
 
         tmuxGate.release()
-        await waitUntilMainActor {
+        await waitUntilMainActor(timeout: .seconds(15)) {
             model.isWorkspaceInventoryRefreshComplete
         }
         #expect(model.isWorkspaceInventoryRefreshComplete)

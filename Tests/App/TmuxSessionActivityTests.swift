@@ -1161,6 +1161,8 @@ struct TmuxSessionActivityControllerTests {
 
     @Test("a slow quiet probe still reports fresh activity")
     func slowProbeCountsChangesFromItsStart() async {
+        let start = Date(timeIntervalSince1970: 1_720_000_000)
+        let clock = LockedValue(start)
         let sampleCount = LockedValue(0)
         let controller = TmuxSessionActivityController(
             sampler: { _, _, _ in
@@ -1176,26 +1178,33 @@ struct TmuxSessionActivityControllerTests {
                         fingerprint: "baseline"
                     )
                 }
-                try? await Task.sleep(for: .milliseconds(700))
+                clock.withLock { $0 = $0.addingTimeInterval(40) }
                 return .sample(
                     paneID: "%2",
                     dimensions: "120x30",
                     fingerprint: "changed"
                 )
             },
-            activityDuration: 0.5,
-            workingSampleInterval: 0,
-            quietSampleInterval: 0,
+            activityDuration: 30,
+            workingSampleInterval: 5,
+            quietSampleInterval: 20,
+            now: { clock.load() },
             automaticallyPolls: false
         )
         let selection = WorkspaceTmuxSessionSelection(
             hostID: UUID(),
             name: "build"
         )
-        controller.warm(selection, identity: activityIdentity, on: .local)
+        controller.warm(
+            selection,
+            identity: activityIdentity,
+            on: .local,
+            at: start
+        )
         await controller.sampleWarmSessions()
         #expect(controller.workingSessionIDs.isEmpty)
 
+        clock.store(start.addingTimeInterval(25))
         await controller.sampleWarmSessions()
 
         #expect(controller.workingSessionIDs == [selection.id])

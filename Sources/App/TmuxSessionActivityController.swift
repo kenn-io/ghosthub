@@ -35,6 +35,7 @@ final class TmuxSessionActivityController: ObservableObject {
     private let workingSampleInterval: TimeInterval
     private let quietSampleInterval: TimeInterval
     private let failureSampleInterval: TimeInterval
+    private let now: @Sendable () -> Date
     private let automaticallyPolls: Bool
     private var entries: [String: Entry] = [:]
     private var inFlightSamples: [String: InFlightSample] = [:]
@@ -46,6 +47,7 @@ final class TmuxSessionActivityController: ObservableObject {
         workingSampleInterval: TimeInterval = 5,
         quietSampleInterval: TimeInterval = 20,
         failureSampleInterval: TimeInterval = 30,
+        now: @escaping @Sendable () -> Date = { .now },
         automaticallyPolls: Bool = true
     ) {
         let probe = TmuxSessionActivityProbe()
@@ -60,6 +62,7 @@ final class TmuxSessionActivityController: ObservableObject {
         self.workingSampleInterval = workingSampleInterval
         self.quietSampleInterval = quietSampleInterval
         self.failureSampleInterval = failureSampleInterval
+        self.now = now
         self.automaticallyPolls = automaticallyPolls
     }
 
@@ -115,7 +118,7 @@ final class TmuxSessionActivityController: ObservableObject {
     private func scheduleWarmSessionSamples(
         at date: Date? = nil
     ) -> [Task<Void, Never>] {
-        let startedAt = date ?? .now
+        let startedAt = date ?? now()
         for (id, entry) in entries {
             if !isWorking(entry, at: startedAt) {
                 setWorking(false, sessionID: id)
@@ -126,6 +129,7 @@ final class TmuxSessionActivityController: ObservableObject {
                 && inFlightSamples[id] == nil ? (id, entry) : nil
         }
         let sampler = sampler
+        let now = now
         return dueEntries.map { id, entry in
             let requestID = UUID()
             let task = Task { [weak self] in
@@ -142,7 +146,7 @@ final class TmuxSessionActivityController: ObservableObject {
                     host: entry.host,
                     requestID: requestID,
                     startedAt: startedAt,
-                    completedAt: date ?? .now
+                    completedAt: date ?? now()
                 )
             }
             inFlightSamples[id] = InFlightSample(
