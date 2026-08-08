@@ -1,4 +1,5 @@
 import Foundation
+@preconcurrency import Dispatch
 import GhosthubHerdr
 import GhosthubTransport
 import GhosthubWorkspace
@@ -374,6 +375,143 @@ struct NativeHerdrSessionCoordinatorTests {
         })
     }
 
+    @Test("capability binding installs a frozen-socket split handler")
+    func paneSplitCapability() async throws {
+        let store = RecordingNativeSessionSurfaceStore()
+        let receivedRoute = Mutex<(
+            CommandHost,
+            [String],
+            String,
+            String
+        )?>(nil)
+        let splitCommands = Mutex<[String]>([])
+        let coordinator = makeCoordinator(
+            store: store,
+            capabilityProvider: { host, arguments, path, name in
+                receivedRoute.withLock {
+                    $0 = (host, arguments, path, name)
+                }
+                return .success(testHerdrPaneSplitCapability(name: name))
+            },
+            paneSplitter: HerdrPaneSplitter { _, _, command in
+                splitCommands.withLock { $0.append(command) }
+                return (0, "")
+            }
+        )
+        var ready = false
+        coordinator.onSurfaceReady = { _ in ready = true }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "api",
+            host: remoteHost
+        )
+        await waitUntilMainActor { ready }
+        _ = coordinator.surface(handle: handle)
+        await waitUntilMainActor {
+            coordinator.supportsPaneSplitting(handle)
+        }
+
+        let route = try #require(receivedRoute.withLock { $0 })
+        #expect(route.0 == remoteHost)
+        #expect(route.1.contains("ControlPath=/tmp/ghosthub-test-control"))
+        #expect(route.2 == "/opt/homebrew/bin/herdr")
+        #expect(route.3 == "api")
+        #expect(store.surface.paneSplitShortcutHandler != nil)
+
+        store.surface.hasEffectiveKeyboardFocus = false
+        coordinator.requestPaneSplit(
+            .right,
+            handle: handle,
+            requiresKeyboardFocus: true
+        )
+        #expect(splitCommands.withLock(\.count) == 0)
+        store.surface.hasEffectiveKeyboardFocus = true
+        coordinator.requestPaneSplit(
+            .right,
+            handle: handle,
+            requiresKeyboardFocus: true
+        )
+        await waitUntilMainActor { splitCommands.withLock(\.count) == 1 }
+        #expect(splitCommands.withLock { $0[0] }.contains(
+            "HERDR_SOCKET_PATH='/tmp/api/herdr.sock'"
+        ))
+    }
+
+    @Test("incapable probes do not block ordinary attachment")
+    func incapableProbeStillAttaches() async {
+        let store = RecordingNativeSessionSurfaceStore()
+        let coordinator = makeCoordinator(
+            store: store,
+            capabilityProvider: { _, _, _, _ in
+                .failure(.malformedVersion)
+            }
+        )
+        var states: [ConnectionState] = []
+        var ready = false
+        coordinator.onStateChanged = { _, state in states.append(state) }
+        coordinator.onSurfaceReady = { _ in ready = true }
+        let handle = coordinator.attach(
+            hostID: UUID(),
+            name: "api",
+            host: .local
+        )
+        await waitUntilMainActor { ready }
+        _ = coordinator.surface(handle: handle)
+        await waitUntilMainActor { states.contains(.connected) }
+
+        #expect(!coordinator.supportsPaneSplitting(handle))
+        #expect(store.surface.paneSplitShortcutHandler == nil)
+    }
+
+    @Test("split requests serialize and detaching abandons queued work")
+    func splitQueueCancellation() async throws {
+        let store = RecordingNativeSessionSurfaceStore()
+        let starts = Mutex(0)
+        let firstFinished = Mutex(false)
+        let firstRelease = DispatchSemaphore(value: 0)
+        let coordinator = makeCoordinator(
+            store: store,
+            capabilityProvider: { _, _, _, name in
+                .success(testHerdrPaneSplitCapability(name: name))
+            },
+            paneSplitter: HerdrPaneSplitter { _, _, _ in
+                let index = starts.withLock { value in
+                    value += 1
+                    return value
+                }
+                if index == 1 {
+                    firstRelease.wait()
+                    firstFinished.withLock { $0 = true }
+                }
+                return (9, "socket closed")
+            }
+        )
+        var ready = false
+        coordinator.onSurfaceReady = { _ in ready = true }
+        let hostID = UUID()
+        let handle = coordinator.attach(
+            hostID: hostID,
+            name: "api",
+            host: .local
+        )
+        await waitUntilMainActor { ready }
+        _ = coordinator.surface(handle: handle)
+        await waitUntilMainActor {
+            coordinator.supportsPaneSplitting(handle)
+        }
+        let handler = try #require(store.surface.paneSplitShortcutHandler)
+
+        handler(.right)
+        handler(.down)
+        await waitUntilMainActor { starts.withLock { $0 } == 1 }
+        coordinator.detach(hostID: hostID, name: "api")
+        firstRelease.signal()
+        await waitUntilMainActor { firstFinished.withLock { $0 } }
+
+        #expect(starts.withLock { $0 } == 1)
+        #expect(store.surface.paneSplitErrorMessage == nil)
+    }
+
     private var remoteHost: CommandHost {
         .ssh(.init(
             user: "dev",
@@ -384,6 +522,9 @@ struct NativeHerdrSessionCoordinatorTests {
 
     private func makeCoordinator(
         store: RecordingNativeSessionSurfaceStore,
+        capabilityProvider: @escaping NativeHerdrSessionCoordinator
+            .PaneSplitCapabilityProvider = { _, _, _, _ in .success(nil) },
+        paneSplitter: HerdrPaneSplitter = HerdrPaneSplitter(),
         statusDirectory: URL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
     ) -> NativeHerdrSessionCoordinator {
@@ -396,6 +537,8 @@ struct NativeHerdrSessionCoordinatorTests {
                     "-o", "StrictHostKeyChecking=yes",
                 ]
             },
+            paneSplitCapabilityProvider: capabilityProvider,
+            paneSplitter: paneSplitter,
             remoteExitStatusDirectory: statusDirectory
         )
     }
@@ -420,6 +563,21 @@ struct NativeHerdrSessionCoordinatorTests {
         )
         return (attributes[.posixPermissions] as? NSNumber)?.intValue ?? -1
     }
+}
+
+private func testHerdrPaneSplitCapability(
+    name: String
+) -> HerdrPaneSplitCapability {
+    HerdrPaneSplitCapability(
+        version: .paneSplitting,
+        session: HerdrSessionRecord(
+            name: name,
+            isDefault: false,
+            state: .running,
+            sessionDirectory: "/tmp/\(name)",
+            socketPath: "/tmp/\(name)/herdr.sock"
+        )
+    )
 }
 
 private enum HerdrSurfaceTestError: LocalizedError {

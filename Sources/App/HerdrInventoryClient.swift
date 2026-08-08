@@ -64,6 +64,28 @@ struct HerdrInventoryClient: Sendable {
         )
     }
 
+    func paneSplitCapability(
+        on host: CommandHost,
+        herdrPath: String,
+        sessionName: String,
+        sshConnectionArguments: [String]
+    ) -> Result<HerdrPaneSplitCapability?, HerdrCommandError> {
+        guard supportsHerdr(host) else {
+            return .failure(.unsupportedPlatform)
+        }
+        let output = run(
+            HerdrPaneSplitCapabilityProbe.command(herdrPath: herdrPath),
+            on: host,
+            sshConnectionArguments: sshConnectionArguments
+        )
+        return HerdrPaneSplitCapabilityProbe.parse(
+            status: output.status,
+            stdout: output.stdout,
+            stderr: output.stderr,
+            sessionName: sessionName
+        )
+    }
+
     private func supportsHerdr(_ host: CommandHost) -> Bool {
         switch host {
         case .local:
@@ -75,7 +97,8 @@ struct HerdrInventoryClient: Sendable {
 
     private func run(
         _ command: String,
-        on host: CommandHost
+        on host: CommandHost,
+        sshConnectionArguments: [String]? = nil
     ) -> AccountCommandOutput {
         switch host {
         case .local:
@@ -86,7 +109,8 @@ struct HerdrInventoryClient: Sendable {
         case let .ssh(info):
             commandRunner.runRemoteLoginShell(
                 host: info,
-                connectionArguments: connectionArgumentsProvider(info),
+                connectionArguments: sshConnectionArguments
+                    ?? connectionArgumentsProvider(info),
                 command: command,
                 timeout: processTimeout
             )
