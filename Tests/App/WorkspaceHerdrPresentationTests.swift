@@ -526,6 +526,61 @@ struct WorkspaceHerdrPresentationTests {
         await model.shutdown()
     }
 
+    @Test("restart replaces a stale attach-only presentation")
+    func restartReplacesStaleAttachOnlyPresentation() async throws {
+        var environment = try environment()
+        environment.snapshot.hosts[0].herdrAvailable = true
+        let running = HerdrSessionSummary(
+            name: "api",
+            isDefault: true,
+            state: .running
+        )
+        let stopped = HerdrSessionSummary(
+            name: "api",
+            isDefault: true,
+            state: .stopped
+        )
+        let discoveries = HerdrDiscoveryQueue([
+            .available([running]),
+            .available([stopped]),
+            .available([stopped]),
+            .available([running]),
+        ])
+        let store = RecordingNativeSessionSurfaceStore()
+        let coordinator = HerdrSessionLifecycleCoordinator()
+        let model = try makeHerdrModel(
+            environment,
+            store: store,
+            discovery: { _ in discoveries.removeFirst() },
+            coordinator: coordinator,
+            createdSessionDiscoveryDelays: []
+        )
+        let selection = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID,
+            name: "api"
+        )
+
+        try await model.openBorrowedHerdrSession(selection)
+        await launchHerdrSurface(model, store: store)
+        model.startHerdrSessionDiscovery()
+        await waitUntilMainActor {
+            model.snapshot.host(id: environment.hostID)?
+                .herdrSessions.first?.state == .stopped
+        }
+
+        try await model.restartHerdrSession(selection)
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedHerdrSurface()
+            return store.requestedConfigurations.count == 2
+        }
+
+        #expect(store.requestedConfigurations.count == 2)
+        #expect(store.requestedConfigurations.last?.command?.contains(
+            "--session"
+        ) == true)
+        await model.shutdown()
+    }
+
     @Test("create stays pending until discovery confirms it is running")
     func createWaitsForRunningDiscovery() async throws {
         var environment = try environment()

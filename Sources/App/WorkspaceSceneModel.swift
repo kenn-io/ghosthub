@@ -4860,7 +4860,13 @@ final class WorkspaceSceneModel: ObservableObject {
         if activeBorrowedHerdrSelection == selection,
            let handle = activeBorrowedHerdrHandle,
            nativeHerdrSessionCoordinator.attachmentClosure(handle) == nil {
-            return handle
+            let existingMode = nativeHerdrSessionCoordinator
+                .attachmentLaunchMode(handle)
+            if launchMode == .attachExisting
+                || existingMode == .launchOrAttach {
+                return handle
+            }
+            closeBorrowedHerdrSession(selection)
         }
         guard let host = snapshot.host(id: selection.hostID),
               let attachmentHost = CommandHostResolver.resolve(host)
