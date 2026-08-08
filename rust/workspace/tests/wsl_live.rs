@@ -209,6 +209,7 @@ fn switches_between_discovered_sessions_without_destroying_either() {
             WorkspaceContent::Terminal { session, .. } if session == "workspace-live"
         )
     });
+    let first_presentation = active_presentation_id(&workspace);
 
     workspace
         .switch_session(&session_selection(&workspace, "switch-live"))
@@ -222,13 +223,53 @@ fn switches_between_discovered_sessions_without_destroying_either() {
         },
         || workspace_diagnostic(&workspace),
     );
+    let second_presentation = active_presentation_id(&workspace);
 
     let sessions = server.run_tmux(["list-sessions", "-F", "#{session_name}:#{session_attached}"]);
     let sessions = String::from_utf8(sessions.stdout).expect("UTF-8 session inventory");
-    assert!(sessions.lines().any(|line| line == "workspace-live:0"));
+    assert!(sessions.lines().any(|line| line == "workspace-live:1"));
     assert!(sessions.lines().any(|line| line == "switch-live:1"));
 
+    workspace
+        .switch_session(&session_selection(&workspace, "workspace-live"))
+        .expect("restore retained first presentation");
+    assert!(matches!(
+        workspace.snapshot().content(),
+        WorkspaceContent::Terminal {
+            session,
+            presentation_id,
+            ..
+        } if session == "workspace-live" && *presentation_id == first_presentation
+    ));
+
     workspace.detach();
+    wait_until(|| {
+        let sessions =
+            server.run_tmux(["list-sessions", "-F", "#{session_name}:#{session_attached}"]);
+        let sessions = String::from_utf8(sessions.stdout).expect("UTF-8 session inventory");
+        sessions.lines().any(|line| line == "workspace-live:0")
+            && sessions.lines().any(|line| line == "switch-live:1")
+    });
+
+    workspace
+        .attach(&session_selection(&workspace, "switch-live"))
+        .expect("restore retained second presentation");
+    assert!(matches!(
+        workspace.snapshot().content(),
+        WorkspaceContent::Terminal {
+            session,
+            presentation_id,
+            ..
+        } if session == "switch-live" && *presentation_id == second_presentation
+    ));
+    workspace.detach();
+    wait_until(|| {
+        let sessions =
+            server.run_tmux(["list-sessions", "-F", "#{session_name}:#{session_attached}"]);
+        let sessions = String::from_utf8(sessions.stdout).expect("UTF-8 session inventory");
+        sessions.lines().any(|line| line == "workspace-live:0")
+            && sessions.lines().any(|line| line == "switch-live:0")
+    });
     wait_until(|| {
         matches!(
             workspace.snapshot().content(),
@@ -387,4 +428,13 @@ fn session_selection(workspace: &Workspace, session: &str) -> SessionSelection {
     let snapshot = workspace.snapshot();
     let host = &snapshot.hosts()[0];
     SessionSelection::new(host.id(), host.endpoint(), session)
+}
+
+fn active_presentation_id(workspace: &Workspace) -> u64 {
+    match workspace.snapshot().content() {
+        WorkspaceContent::Terminal {
+            presentation_id, ..
+        } => *presentation_id,
+        _ => panic!("terminal presentation should be active"),
+    }
 }

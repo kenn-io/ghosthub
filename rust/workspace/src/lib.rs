@@ -541,6 +541,27 @@ struct AttachRequest {
     inventory_generation: u64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PresentationKey {
+    host_id: String,
+    endpoint: String,
+    socket_directory: Option<String>,
+    session: String,
+    identity: session::SessionIdentity,
+}
+
+impl AttachRequest {
+    fn presentation_key(&self) -> PresentationKey {
+        PresentationKey {
+            host_id: self.host_id.clone(),
+            endpoint: self.endpoint.distro().to_owned(),
+            socket_directory: self.host.socket_directory().map(str::to_owned),
+            session: self.name.clone(),
+            identity: self.identity.clone(),
+        }
+    }
+}
+
 enum AttachFreshError {
     Host(WorkspaceError),
     SessionChanged {
@@ -621,6 +642,14 @@ impl<T> AttachmentState<T> {
             .expect("attachment generation exhausted");
         self.active = None;
     }
+
+    fn take_active(&mut self) -> Option<ActiveAttachment<T>> {
+        self.generation = self
+            .generation
+            .checked_add(1)
+            .expect("attachment generation exhausted");
+        self.active.take()
+    }
 }
 
 struct WorkerState<T> {
@@ -664,6 +693,81 @@ impl<T> WorkerState<T> {
             .generation
             .checked_add(1)
             .expect("worker generation exhausted");
+    }
+}
+
+struct RetainedPresentation<T> {
+    key: PresentationKey,
+    selection: SessionSelection,
+    attachment: ActiveAttachment<AttachRequest>,
+    worker: T,
+    presentation_id: u64,
+}
+
+struct RetainedPresentations<T> {
+    entries: Vec<RetainedPresentation<T>>,
+}
+
+impl<T> RetainedPresentations<T> {
+    const fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    fn insert(&mut self, presentation: RetainedPresentation<T>) {
+        if let Some(index) = self
+            .entries
+            .iter()
+            .position(|entry| entry.key == presentation.key)
+        {
+            self.entries.remove(index);
+        }
+        self.entries.push(presentation);
+    }
+
+    fn take(&mut self, key: &PresentationKey) -> Option<RetainedPresentation<T>> {
+        let index = self.entries.iter().position(|entry| &entry.key == key)?;
+        Some(self.entries.remove(index))
+    }
+
+    fn contains(&self, key: &PresentationKey) -> bool {
+        self.entries.iter().any(|entry| &entry.key == key)
+    }
+}
+
+impl RetainedPresentations<TerminalWorker> {
+    fn drain_events(&mut self, budget: usize) -> (Vec<WorkspaceEvent>, usize) {
+        let mut emitted = Vec::new();
+        let mut processed = 0;
+        let mut index = 0;
+        while index < self.entries.len() && processed < budget {
+            match self.entries[index].worker.try_event() {
+                Ok(Some(TerminalEvent::ClipboardWrite(write))) => {
+                    processed += 1;
+                    emitted.push(WorkspaceEvent::ClipboardWrite {
+                        text: write.text,
+                        primary: write.target == ClipboardTarget::Selection,
+                    });
+                    index += 1;
+                }
+                Ok(Some(TerminalEvent::ConfirmPaste(_))) => {
+                    processed += 1;
+                    let _cancelled = self.entries[index].worker.cancel_paste();
+                    index += 1;
+                }
+                Ok(Some(TerminalEvent::ClipboardRead(_) | TerminalEvent::Error(_))) => {
+                    processed += 1;
+                    index += 1;
+                }
+                Ok(Some(TerminalEvent::Exited { .. })) | Err(_) => {
+                    processed += 1;
+                    self.entries.remove(index);
+                }
+                Ok(None) => index += 1,
+            }
+        }
+        (emitted, processed)
     }
 }
 
@@ -746,6 +850,7 @@ struct Inner {
     discovery_cancel: Mutex<Option<CancellationToken>>,
     event_drain: Mutex<()>,
     worker: Mutex<WorkerState<TerminalWorker>>,
+    retained_presentations: Mutex<RetainedPresentations<TerminalWorker>>,
     pending_paste: Mutex<Option<PendingPaste>>,
     terminal_geometry: Mutex<TerminalGeometry>,
     allow_remote_clipboard_write: bool,
@@ -802,6 +907,7 @@ impl Workspace {
                 discovery_cancel: Mutex::new(None),
                 event_drain: Mutex::new(()),
                 worker: Mutex::new(WorkerState::new()),
+                retained_presentations: Mutex::new(RetainedPresentations::new()),
                 pending_paste: Mutex::new(None),
                 terminal_geometry: Mutex::new(default_terminal_geometry()),
                 allow_remote_clipboard_write: true,
@@ -857,6 +963,7 @@ impl Workspace {
                 discovery_cancel: Mutex::new(None),
                 event_drain: Mutex::new(()),
                 worker: Mutex::new(WorkerState::new()),
+                retained_presentations: Mutex::new(RetainedPresentations::new()),
                 pending_paste: Mutex::new(None),
                 terminal_geometry: Mutex::new(default_terminal_geometry()),
                 allow_remote_clipboard_write,
@@ -896,6 +1003,7 @@ impl Workspace {
                 discovery_cancel: Mutex::new(None),
                 event_drain: Mutex::new(()),
                 worker: Mutex::new(WorkerState::new()),
+                retained_presentations: Mutex::new(RetainedPresentations::new()),
                 pending_paste: Mutex::new(None),
                 terminal_geometry: Mutex::new(default_terminal_geometry()),
                 allow_remote_clipboard_write,
@@ -1014,22 +1122,26 @@ impl Workspace {
             ));
         }
         let request = capture_attach_request(&self.inner, selection)?;
+        let key = request.presentation_key();
+        if self.activate_retained_presentation(&key)? {
+            return Ok(());
+        }
 
         self.start_attachment(request)
     }
 
-    /// Detach the active ordinary client and attach to another discovered session.
+    /// Select another presentation, retaining the current ordinary tmux client.
     ///
-    /// The target is captured before the current presentation is detached, so an
-    /// invalid selection cannot close the working terminal. The fresh identity
-    /// check still runs immediately before the replacement client launches.
+    /// A presentation that has already been opened is restored synchronously.
+    /// The first visit still performs a fresh identity check immediately before
+    /// launching its ordinary client.
     ///
     /// # Errors
     ///
     /// Returns an error if the requested session is absent from the latest
     /// inventory or the replacement attachment cannot be started.
     pub fn switch_session(&self, selection: &SessionSelection) -> Result<(), WorkspaceError> {
-        if matches!(
+        let same_visible_selection = matches!(
             self.inner
                 .state
                 .read()
@@ -1039,13 +1151,192 @@ impl Workspace {
                 if host_id == selection.host_id()
                     && endpoint == selection.endpoint()
                     && session == selection.session()
-        ) {
+        );
+        let has_active_attachment = self
+            .inner
+            .attachment
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .active()
+            .is_some();
+        if same_visible_selection && !has_active_attachment {
             return Ok(());
         }
 
         let request = capture_attach_request(&self.inner, selection)?;
-        self.detach();
-        self.start_attachment(request)
+        let key = request.presentation_key();
+        if self
+            .inner
+            .attachment
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .active()
+            .is_some_and(|active| active.request.presentation_key() == key)
+        {
+            return Ok(());
+        }
+        let already_open = self
+            .inner
+            .retained_presentations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(&key);
+        let previous = self.retain_active_presentation()?;
+        if self.activate_retained_presentation(&key)? {
+            return Ok(());
+        }
+        if already_open {
+            if let Some(previous) = previous {
+                let _restored = self.activate_retained_presentation(&previous);
+            }
+            return Err(WorkspaceError::new(
+                "the retained terminal presentation is no longer available",
+            ));
+        }
+        if let Err(error) = self.start_attachment(request) {
+            if let Some(previous) = previous {
+                let _restored = self.activate_retained_presentation(&previous);
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn retain_active_presentation(&self) -> Result<Option<PresentationKey>, WorkspaceError> {
+        let presentation = {
+            let state = self
+                .inner
+                .state
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match &*state {
+                WorkspaceContent::Terminal {
+                    host_id,
+                    endpoint,
+                    session,
+                    presentation_id,
+                    ..
+                } => Some((
+                    SessionSelection::new(host_id, endpoint, session),
+                    *presentation_id,
+                )),
+                _ => None,
+            }
+        };
+        let Some((selection, presentation_id)) = presentation else {
+            return Ok(None);
+        };
+
+        let mut attachment = self
+            .inner
+            .attachment
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut worker = self
+            .inner
+            .worker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if attachment.active().is_none() || worker.active().is_none() {
+            return Err(WorkspaceError::new(
+                "the active terminal presentation is not available",
+            ));
+        }
+        if let Some(active) = worker.active() {
+            let _cancelled = active.cancel_paste();
+        }
+        let active_attachment = attachment
+            .take_active()
+            .expect("active attachment was checked");
+        let key = active_attachment.request.presentation_key();
+        let active_worker = worker.invalidate().expect("active worker was checked");
+        drop(worker);
+        drop(attachment);
+        clear_pending_paste(&self.inner);
+        clear_terminal_notice(&self.inner);
+        self.inner
+            .retained_presentations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(RetainedPresentation {
+                key: key.clone(),
+                selection: selection.clone(),
+                attachment: active_attachment,
+                worker: active_worker,
+                presentation_id,
+            });
+        self.restore_inventory_state();
+        Ok(Some(key))
+    }
+
+    fn activate_retained_presentation(
+        &self,
+        key: &PresentationKey,
+    ) -> Result<bool, WorkspaceError> {
+        let Some(presentation) = self
+            .inner
+            .retained_presentations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take(key)
+        else {
+            return Ok(false);
+        };
+        let RetainedPresentation {
+            key: _,
+            selection,
+            attachment: retained_attachment,
+            worker,
+            presentation_id,
+        } = presentation;
+        let request = retained_attachment.request;
+        let term = retained_attachment.term;
+        let surface = worker.surface_handle();
+        let geometry = *self
+            .inner
+            .terminal_geometry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        let mut attachment = self
+            .inner
+            .attachment
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let generation = attachment
+            .reserve(request, term)
+            .ok_or_else(|| WorkspaceError::new("a terminal presentation is already opening"))?;
+        if let Err(error) =
+            worker.resize_with_metadata(geometry.grid, geometry.sequence, geometry.pixels)
+        {
+            attachment.clear_if_current(generation);
+            return Err(WorkspaceError::from_worker(&error));
+        }
+        let mut workers = self
+            .inner
+            .worker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if workers.active().is_some() {
+            attachment.clear_if_current(generation);
+            return Err(WorkspaceError::new(
+                "a terminal presentation is already open",
+            ));
+        }
+        workers.publish(worker);
+        drop(workers);
+        drop(attachment);
+
+        clear_pending_paste(&self.inner);
+        set_terminal_notice(&self.inner, term);
+        self.set_state(WorkspaceContent::Terminal {
+            host_id: selection.host_id().to_owned(),
+            endpoint: selection.endpoint().to_owned(),
+            session: selection.session().to_owned(),
+            presentation_id,
+            surface,
+        });
+        Ok(true)
     }
 
     fn start_attachment(&self, request: AttachRequest) -> Result<(), WorkspaceError> {
@@ -1383,7 +1674,20 @@ impl Workspace {
                 &mut emitted,
             );
         }
+        let retained_budget = retained_event_budget(processed, exited);
+        processed += self.drain_retained_events(retained_budget, &mut emitted);
         (emitted, event_drain_may_have_more(processed, exited))
+    }
+
+    fn drain_retained_events(&self, budget: usize, emitted: &mut Vec<WorkspaceEvent>) -> usize {
+        let (hidden_events, processed) = self
+            .inner
+            .retained_presentations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .drain_events(budget);
+        emitted.extend(hidden_events);
+        processed
     }
 
     fn attachment_for_worker(
@@ -1591,6 +1895,14 @@ impl Workspace {
 
 const fn event_drain_may_have_more(processed: usize, exited: bool) -> bool {
     !exited && processed == MAX_EVENTS_PER_DRAIN
+}
+
+const fn retained_event_budget(processed: usize, exited: bool) -> usize {
+    if exited {
+        0
+    } else {
+        MAX_EVENTS_PER_DRAIN.saturating_sub(processed)
+    }
 }
 
 fn capture_attach_request(
