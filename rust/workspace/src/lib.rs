@@ -359,6 +359,8 @@ pub enum WorkspaceEvent {
 }
 
 const MAX_EVENTS_PER_DRAIN: usize = 32;
+const RETAINED_EVENT_RESERVE: usize = 8;
+const ACTIVE_EVENT_BUDGET: usize = MAX_EVENTS_PER_DRAIN - RETAINED_EVENT_RESERVE;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkspaceError {
@@ -970,7 +972,9 @@ impl RetainedPresentations<TerminalWorker> {
         while index < self.entries.len() && processed < budget {
             let confirmed = self.entries[index].worker.is_confirmed_live();
             match self.entries[index].worker.try_event() {
-                Ok(Some(TerminalEvent::ClipboardWrite(_) | TerminalEvent::ClipboardRead(_))) => {
+                Ok(Some(
+                    TerminalEvent::ClipboardWrite { .. } | TerminalEvent::ClipboardRead(_),
+                )) => {
                     processed += 1;
                     index += 1;
                 }
@@ -1385,17 +1389,14 @@ impl Workspace {
             ));
         }
         let navigation_generation = self.begin_navigation();
-        if let Some(key) = self.retained_key_for_selection(selection) {
-            if self.activate_retained_presentation(&key, None)? {
-                return Ok(());
-            }
-            return Err(WorkspaceError::new(
+        let (key, request) = self.navigation_target(selection)?;
+        match request {
+            None if self.activate_retained_presentation(&key, None)? => Ok(()),
+            None => Err(WorkspaceError::new(
                 "the retained terminal presentation is no longer available",
-            ));
+            )),
+            Some(request) => self.start_attachment(request, None, navigation_generation),
         }
-
-        let request = capture_attach_request(&self.inner, selection)?;
-        self.start_attachment(request, None, navigation_generation)
     }
 
     /// Select another presentation, retaining the current ordinary tmux client.
@@ -1436,12 +1437,7 @@ impl Workspace {
             return Ok(());
         }
 
-        let (key, request) = if let Some(key) = self.retained_key_for_selection(selection) {
-            (key, None)
-        } else {
-            let request = capture_attach_request(&self.inner, selection)?;
-            (request.presentation_key(), Some(request))
-        };
+        let (key, request) = self.navigation_target(selection)?;
         if self
             .inner
             .attachment
@@ -1509,6 +1505,14 @@ impl Workspace {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .key_for_selection(selection)
+    }
+
+    fn navigation_target(
+        &self,
+        selection: &SessionSelection,
+    ) -> Result<(PresentationKey, Option<AttachRequest>), WorkspaceError> {
+        let retained = self.retained_key_for_selection(selection);
+        choose_navigation_target(retained, capture_attach_request(&self.inner, selection))
     }
 
     fn supersede_inflight_attachment(&self) -> Result<Option<PresentationKey>, WorkspaceError> {
@@ -1879,14 +1883,14 @@ impl Workspace {
         let mut exit_error = None;
         let mut retry_term = false;
         let mut processed = 0;
-        for _ in 0..MAX_EVENTS_PER_DRAIN {
+        for _ in 0..ACTIVE_EVENT_BUDGET {
             let Some((event, source_worker_generation, client_confirmed_live)) =
                 self.next_terminal_event()
             else {
                 break;
             };
             match event {
-                Ok(Some(TerminalEvent::ClipboardWrite(write))) => {
+                Ok(Some(TerminalEvent::ClipboardWrite { write, .. })) => {
                     processed += 1;
                     emitted.push(WorkspaceEvent::ClipboardWrite {
                         text: write.text,
@@ -1958,9 +1962,13 @@ impl Workspace {
                 &mut emitted,
             );
         }
+        let active_processed = processed;
         let retained_budget = retained_event_budget(processed, exited);
-        processed += self.drain_retained_events(retained_budget, &mut emitted);
-        (emitted, event_drain_may_have_more(processed, exited))
+        let retained_processed = self.drain_retained_events(retained_budget, &mut emitted);
+        let may_have_more =
+            event_source_may_have_more(active_processed, ACTIVE_EVENT_BUDGET, exited)
+                || event_source_may_have_more(retained_processed, retained_budget, false);
+        (emitted, may_have_more)
     }
 
     fn next_terminal_event(
@@ -2392,8 +2400,8 @@ fn reinsert_retained_presentation(
         .insert(presentation);
 }
 
-const fn event_drain_may_have_more(processed: usize, exited: bool) -> bool {
-    !exited && processed == MAX_EVENTS_PER_DRAIN
+const fn event_source_may_have_more(processed: usize, budget: usize, exited: bool) -> bool {
+    budget > 0 && !exited && processed == budget
 }
 
 const fn retained_event_budget(processed: usize, exited: bool) -> usize {
@@ -2444,6 +2452,23 @@ fn capture_attach_request(
             inventory_generation,
         })
     })
+}
+
+fn choose_navigation_target(
+    retained: Option<PresentationKey>,
+    current: Result<AttachRequest, WorkspaceError>,
+) -> Result<(PresentationKey, Option<AttachRequest>), WorkspaceError> {
+    match current {
+        Ok(request) => {
+            let key = request.presentation_key();
+            if retained.as_ref() == Some(&key) {
+                Ok((key, None))
+            } else {
+                Ok((key, Some(request)))
+            }
+        }
+        Err(error) => retained.map_or(Err(error), |key| Ok((key, None))),
+    }
 }
 
 fn begin_refresh(inner: &Inner, cancellation: &CancellationToken) -> u64 {
@@ -3442,10 +3467,27 @@ mod tests {
     }
 
     #[test]
-    fn terminal_event_drain_requests_continuation_only_after_exhausting_its_budget() {
-        assert!(!event_drain_may_have_more(MAX_EVENTS_PER_DRAIN - 1, false));
-        assert!(event_drain_may_have_more(MAX_EVENTS_PER_DRAIN, false));
-        assert!(!event_drain_may_have_more(MAX_EVENTS_PER_DRAIN, true));
+    fn terminal_event_drain_reserves_progress_for_retained_workers() {
+        assert_eq!(ACTIVE_EVENT_BUDGET, MAX_EVENTS_PER_DRAIN - 8);
+        assert_eq!(
+            retained_event_budget(ACTIVE_EVENT_BUDGET, false),
+            RETAINED_EVENT_RESERVE
+        );
+        assert!(!event_source_may_have_more(
+            ACTIVE_EVENT_BUDGET - 1,
+            ACTIVE_EVENT_BUDGET,
+            false
+        ));
+        assert!(event_source_may_have_more(
+            ACTIVE_EVENT_BUDGET,
+            ACTIVE_EVENT_BUDGET,
+            false
+        ));
+        assert!(!event_source_may_have_more(
+            ACTIVE_EVENT_BUDGET,
+            ACTIVE_EVENT_BUDGET,
+            true
+        ));
     }
 
     #[test]
@@ -3885,6 +3927,32 @@ mod tests {
 
         assert_eq!(original, renamed);
         assert_ne!(original, restarted);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn current_inventory_identity_wins_over_a_same_name_retained_session() {
+        let snapshot = HostSnapshot::test_fixture("Ubuntu", "boot-id", 42, Vec::new());
+        let stale = attach_request_fixture(
+            &snapshot,
+            session::SessionIdentity::new(100, "$1", 200),
+            "demo",
+        );
+        let current = attach_request_fixture(
+            &snapshot,
+            session::SessionIdentity::new(100, "$2", 201),
+            "demo",
+        );
+
+        let (selected, request) =
+            choose_navigation_target(Some(stale.presentation_key()), Ok(current.clone()))
+                .expect("current session remains selectable");
+
+        assert_eq!(selected, current.presentation_key());
+        assert_eq!(
+            request.map(|request| request.identity),
+            Some(current.identity)
+        );
     }
 
     #[cfg(windows)]

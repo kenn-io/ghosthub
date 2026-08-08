@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::fmt;
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -30,10 +30,16 @@ const REAP_ATTEMPTS: usize = 20;
 const REAP_POLL_DELAY: Duration = Duration::from_millis(25);
 
 pub enum TerminalEvent {
-    ClipboardWrite(ClipboardWrite),
+    ClipboardWrite {
+        write: ClipboardWrite,
+        visibility: u64,
+    },
     ClipboardRead(ClipboardReadRequest),
     ConfirmPaste(EncodedInput),
-    Exited { code: u32, output_tail: String },
+    Exited {
+        code: u32,
+        output_tail: String,
+    },
     Error(String),
 }
 
@@ -220,7 +226,7 @@ pub struct TerminalWorker {
     deferred_events: Mutex<VecDeque<TerminalEvent>>,
     surface: Arc<SurfaceStore>,
     confirmed_live: Arc<AtomicBool>,
-    clipboard_writes_enabled: Arc<AtomicBool>,
+    clipboard_visibility: Arc<AtomicU64>,
     thread: Option<thread::JoinHandle<()>>,
 }
 
@@ -347,8 +353,8 @@ impl TerminalWorker {
         let (write_complete_sender, write_complete_receiver) = bounded(1);
         let confirmed_live = Arc::new(AtomicBool::new(false));
         let worker_confirmed_live = Arc::clone(&confirmed_live);
-        let clipboard_writes_enabled = Arc::new(AtomicBool::new(true));
-        let worker_clipboard_writes_enabled = Arc::clone(&clipboard_writes_enabled);
+        let clipboard_visibility = Arc::new(AtomicU64::new(1));
+        let worker_clipboard_visibility = Arc::clone(&clipboard_visibility);
 
         thread::Builder::new()
             .name("ghosthub-pty-writer".to_owned())
@@ -380,7 +386,7 @@ impl TerminalWorker {
                     &write_complete_receiver,
                     &events_sender,
                     &worker_confirmed_live,
-                    &worker_clipboard_writes_enabled,
+                    &worker_clipboard_visibility,
                 );
             })
             .map_err(|error| WorkerError::new("spawn terminal worker", error))?;
@@ -395,7 +401,7 @@ impl TerminalWorker {
             deferred_events: Mutex::new(VecDeque::new()),
             surface,
             confirmed_live,
-            clipboard_writes_enabled,
+            clipboard_visibility,
             thread: Some(worker_thread),
         })
     }
@@ -421,8 +427,7 @@ impl TerminalWorker {
     /// Disabling also discards writes already queued for the UI while retaining
     /// lifecycle and diagnostic events for normal processing.
     pub fn set_clipboard_writes_enabled(&self, enabled: bool) {
-        self.clipboard_writes_enabled
-            .store(enabled, Ordering::Release);
+        advance_clipboard_visibility(&self.clipboard_visibility, enabled);
         if enabled {
             return;
         }
@@ -547,21 +552,54 @@ impl TerminalWorker {
     ///
     /// Returns an error after the terminal event channel has disconnected.
     pub fn try_event(&self) -> Result<Option<TerminalEvent>, WorkerError> {
-        if let Some(event) = self
-            .deferred_events
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .pop_front()
-        {
-            return Ok(Some(event));
-        }
-        match self.events.try_recv() {
-            Ok(event) => Ok(Some(event)),
-            Err(TryRecvError::Empty) => Ok(None),
-            Err(error @ TryRecvError::Disconnected) => {
-                Err(WorkerError::new("receive terminal event", error))
+        loop {
+            let deferred = self
+                .deferred_events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .pop_front();
+            let event = match deferred {
+                Some(event) => event,
+                None => match self.events.try_recv() {
+                    Ok(event) => event,
+                    Err(TryRecvError::Empty) => return Ok(None),
+                    Err(error @ TryRecvError::Disconnected) => {
+                        return Err(WorkerError::new("receive terminal event", error));
+                    }
+                },
+            };
+            if clipboard_event_is_visible(&event, self.clipboard_visibility.load(Ordering::Acquire))
+            {
+                return Ok(Some(event));
             }
         }
+    }
+}
+
+const fn clipboard_visibility_is_enabled(visibility: u64) -> bool {
+    visibility & 1 == 1
+}
+
+fn advance_clipboard_visibility(visibility: &AtomicU64, enabled: bool) -> u64 {
+    let mut current = visibility.load(Ordering::Acquire);
+    loop {
+        let next = (current.wrapping_add(2) & !1) | u64::from(enabled);
+        match visibility.compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return next,
+            Err(observed) => current = observed,
+        }
+    }
+}
+
+fn clipboard_event_is_visible(event: &TerminalEvent, current_visibility: u64) -> bool {
+    match event {
+        TerminalEvent::ClipboardWrite { visibility, .. } => {
+            clipboard_visibility_is_enabled(current_visibility) && *visibility == current_visibility
+        }
+        TerminalEvent::ClipboardRead(_)
+        | TerminalEvent::ConfirmPaste(_)
+        | TerminalEvent::Exited { .. }
+        | TerminalEvent::Error(_) => true,
     }
 }
 
@@ -569,9 +607,9 @@ fn discard_clipboard_events(
     events: &Receiver<TerminalEvent>,
     deferred: &mut VecDeque<TerminalEvent>,
 ) {
-    deferred.retain(|event| !matches!(event, TerminalEvent::ClipboardWrite(_)));
+    deferred.retain(|event| !matches!(event, TerminalEvent::ClipboardWrite { .. }));
     while let Ok(event) = events.try_recv() {
-        if !matches!(event, TerminalEvent::ClipboardWrite(_)) {
+        if !matches!(event, TerminalEvent::ClipboardWrite { .. }) {
             deferred.push_back(event);
         }
     }
@@ -643,7 +681,7 @@ fn run_worker(
     write_completions: &Receiver<WriterMessage>,
     events: &Sender<TerminalEvent>,
     confirmed_live: &AtomicBool,
-    clipboard_writes_enabled: &AtomicBool,
+    clipboard_visibility: &AtomicU64,
 ) {
     let mut report_exit = false;
     let mut observed_exit = None;
@@ -817,8 +855,13 @@ fn run_worker(
                         }
                     }
                     for write in output.clipboard_writes {
-                        if clipboard_writes_enabled.load(Ordering::Acquire)
-                            && !emit_event(events, shutdown, TerminalEvent::ClipboardWrite(write))
+                        let visibility = clipboard_visibility.load(Ordering::Acquire);
+                        if clipboard_visibility_is_enabled(visibility)
+                            && !emit_event(
+                                events,
+                                shutdown,
+                                TerminalEvent::ClipboardWrite { write, visibility },
+                            )
                         {
                             break 'worker;
                         }
@@ -1367,10 +1410,13 @@ mod tests {
     fn hiding_a_presentation_discards_queued_clipboard_writes_only() {
         let (sender, receiver) = bounded(4);
         sender
-            .send(TerminalEvent::ClipboardWrite(ClipboardWrite {
-                target: ClipboardTarget::Clipboard,
-                text: "hidden".to_owned(),
-            }))
+            .send(TerminalEvent::ClipboardWrite {
+                write: ClipboardWrite {
+                    target: ClipboardTarget::Clipboard,
+                    text: "hidden".to_owned(),
+                },
+                visibility: 1,
+            })
             .expect("queue clipboard write");
         sender
             .send(TerminalEvent::Error("preserved".to_owned()))
@@ -1385,6 +1431,34 @@ mod tests {
         ));
         assert!(deferred.is_empty());
         assert!(receiver.is_empty());
+    }
+
+    #[test]
+    fn clipboard_visibility_rejects_writes_enqueued_after_hiding() {
+        let visibility = AtomicU64::new(1);
+        let stale = TerminalEvent::ClipboardWrite {
+            write: ClipboardWrite {
+                target: ClipboardTarget::Clipboard,
+                text: "stale".to_owned(),
+            },
+            visibility: visibility.load(Ordering::Acquire),
+        };
+
+        let hidden = advance_clipboard_visibility(&visibility, false);
+        assert!(!clipboard_event_is_visible(&stale, hidden));
+
+        let visible_again = advance_clipboard_visibility(&visibility, true);
+        assert!(!clipboard_event_is_visible(&stale, visible_again));
+        assert!(clipboard_event_is_visible(
+            &TerminalEvent::ClipboardWrite {
+                write: ClipboardWrite {
+                    target: ClipboardTarget::Clipboard,
+                    text: "current".to_owned(),
+                },
+                visibility: visible_again,
+            },
+            visible_again,
+        ));
     }
 
     impl Write for RecordingWriter {
