@@ -19,7 +19,10 @@ use workspace::{
 };
 
 pub const WINDOW_TITLE: &str = "Ghosthub";
-const APP_NAVIGATION_WIDTH: f32 = 280.0;
+const APP_NAVIGATION_WIDTH: f32 = 260.0;
+const NAVIGATION_HEADER_HEIGHT: f32 = 36.0;
+const HOST_ROW_HEIGHT: f32 = 42.0;
+const SESSION_ROW_HEIGHT: f32 = 30.0;
 const CELL_LINE_GAP: f32 = 4.0;
 const UI_INPUT_CAPACITY: usize = 512;
 const MOUSE_RELEASE_RESERVE: usize = 3;
@@ -844,17 +847,17 @@ impl RootView {
         }
         if let Some(button) = terminal_mouse_button(event.button) {
             let cell = self.terminal_cell_at(event.position.x.into(), event.position.y.into());
-            if let Some(cell) = self.pointer.release_cell(button, cell)
-                && self.send_mouse_at_cell(
+            if let Some(cell) = self.pointer.release_cell(button, cell) {
+                if self.send_mouse_at_cell(
                     presentation_id,
                     MouseAction::Release(button),
                     cell,
                     event.modifiers,
-                )
-            {
-                self.pointer.finish_release(button);
+                ) {
+                    self.pointer.finish_release(button);
+                }
+                cx.stop_propagation();
             }
-            cx.stop_propagation();
         }
     }
 
@@ -1460,6 +1463,7 @@ impl RootView {
                 host,
                 snapshot.selected_host() == Some(host.id()),
                 snapshot.content(),
+                snapshot.retained_selections(),
                 cx,
             ));
         }
@@ -1475,15 +1479,15 @@ impl RootView {
             .border_color(rgb(0x25_2932))
             .child(
                 div()
-                    .h(px(44.0))
+                    .h(px(NAVIGATION_HEADER_HEIGHT))
                     .flex_none()
                     .flex()
                     .items_center()
-                    .px_3()
+                    .px_2()
                     .border_b_1()
                     .border_color(rgb(0x1d_2028))
                     .text_xs()
-                    .font_weight(FontWeight::BOLD)
+                    .font_weight(FontWeight::SEMIBOLD)
                     .text_color(rgb(0xa5_ac_b8))
                     .child("WORKSPACES"),
             )
@@ -1496,6 +1500,7 @@ impl RootView {
         host: &HostItem,
         is_selected: bool,
         content: &WorkspaceContent,
+        retained: &[SessionSelection],
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let mut host_tree =
@@ -1535,7 +1540,7 @@ impl RootView {
             HostConnectionState::Ready => {}
         }
 
-        let sessions = tree_sessions(host, content);
+        let sessions = tree_sessions(host, content, retained);
         if host.connection() == HostConnectionState::Ready || !sessions.is_empty() {
             host_tree = host_tree.child(Self::session_tree(host_index, &sessions, cx));
         }
@@ -1556,14 +1561,27 @@ impl RootView {
         };
         let mut host_header = div()
             .id(("host", host_index))
-            .h(px(46.0))
+            .h(px(HOST_ROW_HEIGHT))
             .flex()
             .items_center()
-            .gap_2()
-            .px_3()
+            .gap_1()
+            .px_2()
             .bg(rgb(if is_selected { 0x16_1920 } else { 0x0f_1116 }))
-            .child(div().text_color(rgb(0x6f_7682)).child("▾"))
-            .child(div().text_color(rgb(status_color)).child("●"))
+            .child(
+                div()
+                    .w(px(12.0))
+                    .flex_none()
+                    .text_center()
+                    .text_color(rgb(0x6f_7682))
+                    .child("▾"),
+            )
+            .child(
+                div()
+                    .size(px(7.0))
+                    .flex_none()
+                    .rounded_full()
+                    .bg(rgb(status_color)),
+            )
             .child(
                 div()
                     .min_w_0()
@@ -1574,7 +1592,7 @@ impl RootView {
                         div()
                             .truncate()
                             .text_sm()
-                            .font_weight(FontWeight::BOLD)
+                            .font_weight(FontWeight::SEMIBOLD)
                             .text_color(rgb(0xd2_d7_df))
                             .child(host.name().to_owned()),
                     )
@@ -1591,14 +1609,16 @@ impl RootView {
                 div()
                     .id(("refresh-host", host_index))
                     .flex_none()
-                    .px_2()
-                    .py_1()
+                    .size(px(24.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
                     .rounded_sm()
                     .cursor_pointer()
                     .text_xs()
                     .text_color(rgb(0x8f_96_a3))
                     .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xd2_d7_df)))
-                    .child("Refresh")
+                    .child("↻")
                     .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
             );
         }
@@ -1610,23 +1630,30 @@ impl RootView {
         sessions: &[TreeSession],
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let mut tree = div().flex().flex_col().child(
-            div()
-                .h(px(28.0))
-                .flex()
-                .items_center()
-                .pl(px(35.0))
-                .text_xs()
-                .font_weight(FontWeight::BOLD)
-                .text_color(rgb(0x73_7a87))
-                .child("TMUX SESSIONS"),
-        );
+        let mut tree = div()
+            .ml(px(18.0))
+            .border_l_1()
+            .border_color(rgb(0x25_2932))
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .h(px(24.0))
+                    .flex()
+                    .items_center()
+                    .pl(px(17.0))
+                    .text_xs()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(rgb(0x73_7a87))
+                    .child("TMUX SESSIONS"),
+            );
         if sessions.is_empty() {
             tree = tree.child(
                 div()
-                    .px_3()
-                    .pl(px(51.0))
-                    .py_2()
+                    .h(px(SESSION_ROW_HEIGHT))
+                    .flex()
+                    .items_center()
+                    .pl(px(31.0))
                     .text_xs()
                     .text_color(rgb(0x73_7a87))
                     .child("No sessions"),
@@ -1637,8 +1664,8 @@ impl RootView {
                 host_index,
                 session_index,
                 &session.selection,
-                session.attached_clients,
                 session.active,
+                session.show_endpoint,
                 cx,
             ));
         }
@@ -1689,58 +1716,54 @@ impl RootView {
         host_index: usize,
         index: usize,
         selection: &SessionSelection,
-        attached_clients: Option<u32>,
         is_active: bool,
+        show_endpoint: bool,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let selection = selection.clone();
+        let open_selection = selection.clone();
         let name = selection.session().to_owned();
-        let detail = if is_active {
-            "open".to_owned()
-        } else if attached_clients == Some(0) {
-            "detached".to_owned()
-        } else if attached_clients == Some(1) {
-            "1 client".to_owned()
-        } else {
-            format!("{} clients", attached_clients.unwrap_or_default())
-        };
         let mut row = div()
             .id((
                 gpui::ElementId::named_usize("tree-session-host", host_index),
                 index.to_string(),
             ))
-            .mx_2()
-            .h(px(40.0))
+            .mr_1()
+            .h(px(SESSION_ROW_HEIGHT))
             .flex()
             .items_center()
-            .gap_2()
-            .pl(px(27.0))
+            .gap_1()
+            .pl(px(14.0))
             .pr_2()
-            .rounded_sm()
             .cursor_pointer()
             .bg(rgb(if is_active { 0x13_3d6a } else { 0x0f_1116 }))
             .hover(|style| style.bg(rgb(if is_active { 0x17_477a } else { 0x1b_1f27 })))
-            .child(div().flex_none().text_color(rgb(0x7f_8794)).child("›_"))
+            .child(
+                div()
+                    .w(px(18.0))
+                    .flex_none()
+                    .text_xs()
+                    .text_color(rgb(if is_active { 0x9d_c7ed } else { 0x7f_8794 }))
+                    .child(">_"),
+            )
             .child(
                 div()
                     .min_w_0()
                     .flex_1()
-                    .flex()
-                    .flex_col()
-                    .child(
-                        div()
-                            .truncate()
-                            .text_sm()
-                            .text_color(rgb(if is_active { 0xe5_ed_f7 } else { 0xc4_c9_d2 }))
-                            .child(name.clone()),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(if is_active { 0xa9_c9_ea } else { 0x6f_7682 }))
-                            .child(detail),
-                    ),
+                    .truncate()
+                    .text_sm()
+                    .text_color(rgb(if is_active { 0xe5_ed_f7 } else { 0xc4_c9_d2 }))
+                    .child(name.clone()),
             );
+        if show_endpoint {
+            row = row.child(
+                div()
+                    .flex_none()
+                    .text_xs()
+                    .text_color(rgb(0x73_7a87))
+                    .child(format!("· {}", selection.endpoint())),
+            );
+        }
         if is_active {
             row = row.child(
                 div()
@@ -1756,6 +1779,27 @@ impl RootView {
                     .child("×")
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.detach(cx);
+                        cx.stop_propagation();
+                    })),
+            );
+        } else {
+            row = row.child(
+                div()
+                    .id((
+                        gpui::ElementId::named_usize("open-tree-session-host", host_index),
+                        index.to_string(),
+                    ))
+                    .flex_none()
+                    .px_1()
+                    .py_1()
+                    .rounded_sm()
+                    .cursor_pointer()
+                    .text_xs()
+                    .text_color(rgb(0x79_aee3))
+                    .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xb6_d8_f8)))
+                    .child("Open")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.select_session(&open_selection, window, cx);
                         cx.stop_propagation();
                     })),
             );
@@ -1950,8 +1994,8 @@ fn terminal_presentation_id(content: &WorkspaceContent) -> Option<u64> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct TreeSession {
     selection: SessionSelection,
-    attached_clients: Option<u32>,
     active: bool,
+    show_endpoint: bool,
 }
 
 fn active_session_selection(content: &WorkspaceContent) -> Option<SessionSelection> {
@@ -1974,50 +2018,41 @@ fn active_session_selection(content: &WorkspaceContent) -> Option<SessionSelecti
     }
 }
 
-fn tree_sessions(host: &HostItem, content: &WorkspaceContent) -> Vec<TreeSession> {
+fn tree_sessions(
+    host: &HostItem,
+    content: &WorkspaceContent,
+    retained: &[SessionSelection],
+) -> Vec<TreeSession> {
     let active = active_session_selection(content);
     let active_for_host = active
         .as_ref()
         .filter(|active| active.host_id() == host.id());
-    if host.connection() != HostConnectionState::Ready {
-        return active_for_host.map_or_else(Vec::new, |active| {
-            let attached_clients = host
-                .sessions()
-                .iter()
-                .find(|session| {
-                    host.endpoint() == active.endpoint() && session.name() == active.session()
-                })
-                .map(workspace::SessionItem::attached_clients);
-            vec![TreeSession {
-                selection: active.clone(),
-                attached_clients,
-                active: true,
-            }]
-        });
-    }
 
-    let mut sessions = host
-        .sessions()
+    let mut selections = if host.connection() == HostConnectionState::Ready {
+        host.sessions()
+            .iter()
+            .map(|session| SessionSelection::new(host.id(), host.endpoint(), session.name()))
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    for selection in retained
         .iter()
-        .map(|session| {
-            let selection = SessionSelection::new(host.id(), host.endpoint(), session.name());
-            TreeSession {
-                active: active.as_ref() == Some(&selection),
-                selection,
-                attached_clients: Some(session.attached_clients()),
-            }
-        })
-        .collect::<Vec<_>>();
-    if let Some(active) = active_for_host
-        && !sessions.iter().any(|session| session.active)
+        .filter(|selection| selection.host_id() == host.id())
+        .chain(active_for_host)
     {
-        sessions.push(TreeSession {
-            selection: active.clone(),
-            attached_clients: None,
-            active: true,
-        });
+        if !selections.contains(selection) {
+            selections.push(selection.clone());
+        }
     }
-    sessions
+    selections
+        .into_iter()
+        .map(|selection| TreeSession {
+            active: active.as_ref() == Some(&selection),
+            show_endpoint: selection.endpoint() != host.endpoint(),
+            selection,
+        })
+        .collect()
 }
 
 fn workspace_window_title(content: &WorkspaceContent) -> String {
@@ -2590,7 +2625,7 @@ mod tests {
                 None,
             );
 
-            let rows = tree_sessions(&host, &terminal);
+            let rows = tree_sessions(&host, &terminal, &[]);
             assert_eq!(rows.len(), 1);
             assert_eq!(rows[0].selection.session(), "demo");
             assert!(rows[0].active);
@@ -2615,12 +2650,56 @@ mod tests {
             None,
         );
 
-        let rows = tree_sessions(&host, &terminal);
+        let rows = tree_sessions(&host, &terminal, &[]);
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].selection.endpoint(), "Debian");
         assert!(!rows[0].active);
+        assert!(!rows[0].show_endpoint);
         assert_eq!(rows[1].selection.endpoint(), "Ubuntu");
         assert!(rows[1].active);
+        assert!(rows[1].show_endpoint);
+    }
+
+    #[test]
+    fn retained_session_from_a_previous_default_distro_is_endpoint_qualified() {
+        let host = HostItem::wsl(
+            "Debian",
+            None,
+            HostConnectionState::Ready,
+            vec![SessionItem::new("demo", 0)],
+            None,
+        );
+        let retained = vec![SessionSelection::new("wsl", "Ubuntu", "demo")];
+
+        let rows = tree_sessions(&host, &WorkspaceContent::Shell, &retained);
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].selection.endpoint(), "Debian");
+        assert!(!rows[0].show_endpoint);
+        assert_eq!(rows[1].selection.endpoint(), "Ubuntu");
+        assert!(rows[1].show_endpoint);
+    }
+
+    #[test]
+    fn retained_sessions_stay_in_the_tree_while_the_host_is_unavailable() {
+        let host = HostItem::wsl(
+            "Ubuntu",
+            None,
+            HostConnectionState::Unavailable,
+            Vec::new(),
+            None,
+        );
+        let retained = vec![
+            SessionSelection::new("wsl", "Ubuntu", "one"),
+            SessionSelection::new("wsl", "Ubuntu", "two"),
+        ];
+
+        let rows = tree_sessions(&host, &WorkspaceContent::Shell, &retained);
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].selection.session(), "one");
+        assert_eq!(rows[1].selection.session(), "two");
+        assert!(rows.iter().all(|row| !row.active));
     }
 
     #[test]
