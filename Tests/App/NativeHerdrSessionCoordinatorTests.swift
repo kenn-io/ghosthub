@@ -2,6 +2,7 @@ import Foundation
 import GhosthubHerdr
 import GhosthubTransport
 import GhosthubWorkspace
+import Synchronization
 import Testing
 @testable import GhosthubApp
 
@@ -221,6 +222,49 @@ struct NativeHerdrSessionCoordinatorTests {
         }
         #expect(coordinator.attachmentClosure(handle) == .launchFailed)
         #expect(!states.contains(.connected))
+    }
+
+    @Test("fresh attachment attempts resolve the Herdr executable again")
+    func freshAttachmentReresolvesExecutable() async throws {
+        let store = RecordingNativeSessionSurfaceStore()
+        let resolutionCount = Mutex(0)
+        let coordinator = NativeHerdrSessionCoordinator(
+            terminalCoordinator: store,
+            herdrPathProvider: { _ in
+                let count = resolutionCount.withLock { count in
+                    count += 1
+                    return count
+                }
+                return .success(count == 1
+                    ? "/old/bin/herdr"
+                    : "/new/bin/herdr")
+            }
+        )
+        var readyCount = 0
+        coordinator.onSurfaceReady = { _ in readyCount += 1 }
+        let hostID = UUID()
+        let first = coordinator.attach(
+            hostID: hostID,
+            name: "api",
+            host: .local
+        )
+        await waitUntilMainActor { readyCount == 1 }
+        _ = coordinator.surface(handle: first)
+        let close = try #require(store.surface.closeObservers[first.id])
+        close(false, 9)
+
+        let retry = coordinator.attach(
+            hostID: hostID,
+            name: "api",
+            host: .local
+        )
+        await waitUntilMainActor { readyCount == 2 }
+        _ = coordinator.surface(handle: retry)
+
+        #expect(resolutionCount.withLock { $0 } == 2)
+        #expect((store.requestedConfigurations.last?.command ?? "").contains(
+            "/new/bin/herdr"
+        ))
     }
 
     @Test("Windows is rejected before surface creation")

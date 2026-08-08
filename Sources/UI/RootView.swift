@@ -1618,6 +1618,7 @@ struct HerdrSessionPresentationLifecycleModifier: ViewModifier {
                       newSelection.selectedHostID != activeSession.hostID
                       || newSelection.selectedProjectID != nil
                       || newSelection.selectedWorktreeID != nil
+                      || newSelection.selectedDirectoryWorkspaceID != nil
                 else { return }
                 deactivate()
             }

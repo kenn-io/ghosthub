@@ -51,7 +51,6 @@ final class NativeHerdrSessionCoordinator {
     ] = [:]
     private var launchedHandles: Set<UUID> = []
     private var reportedConnectedAttachmentIDs: [UUID: UUID] = [:]
-    private var herdrPathsByHost: [CommandHost: String] = [:]
     private var provisioningHandles: Set<UUID> = []
     private var provisioningTasks: [UUID: Task<Void, Never>] = [:]
     private var isShuttingDown = false
@@ -127,14 +126,12 @@ final class NativeHerdrSessionCoordinator {
         }
 
         provisioningHandles.insert(handle.id)
-        let cachedPath = herdrPathsByHost[host]
         let herdrPathProvider = herdrPathProvider
         let sshConnectionArgumentsProvider =
             sshConnectionArgumentsProvider
         provisioningTasks[handle.id] = Task { [weak self] in
             let probe = Task.detached(priority: .userInitiated) {
-                let resolution = cachedPath.map(Result.success)
-                    ?? herdrPathProvider(host)
+                let resolution = herdrPathProvider(host)
                 let sshConnectionArguments: [String]
                 if case let .ssh(info) = host {
                     sshConnectionArguments =
@@ -178,7 +175,6 @@ final class NativeHerdrSessionCoordinator {
 
         switch resolution {
         case let .success(path):
-            herdrPathsByHost[host] = path
             attachments[handle.id] = NativeHerdrAttachment(
                 id: UUID(),
                 host: host,

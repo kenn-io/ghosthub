@@ -315,6 +315,57 @@ struct WorkspaceWindowStateTests {
         #expect(mismatchedHost.herdr == nil)
     }
 
+    @Test("directory navigation never captures or restores Herdr")
+    func directoryNavigationRejectsHerdr() {
+        let fixture = RestorationFixture.local(sessionName: "editor")
+        let hostID = fixture.selection.selectedHostID
+        let directoryID = UUID()
+        var snapshot = fixture.snapshot
+        snapshot.directoryWorkspaces = [DirectoryWorkspaceSummary(
+            id: directoryID,
+            hostID: hostID,
+            name: "review",
+            path: "/workspaces/review",
+            tmuxSessionName: "review",
+            sessionLive: true
+        )]
+        let selection = WorkspaceSelection(
+            selectedHostID: hostID,
+            selectedDirectoryWorkspaceID: directoryID
+        )
+        let activeHerdr = WorkspaceHerdrSessionSelection(
+            hostID: hostID,
+            name: "editor"
+        )
+
+        let captured = WorkspaceWindowState.capture(
+            windowID: UUID(),
+            selection: selection,
+            activeTmux: nil,
+            activeHerdr: activeHerdr,
+            snapshot: snapshot
+        )
+        let contradictory = WorkspaceWindowState(
+            windowID: UUID(),
+            navigation: WorkspaceNavigationDescriptor(
+                hostKey: "local",
+                directoryWorkspacePath: "/workspaces/review"
+            ),
+            tmux: nil,
+            herdr: WorkspaceHerdrDescriptor(
+                hostKey: "local",
+                sessionName: "editor"
+            )
+        )
+
+        #expect(captured.herdr == nil)
+        #expect(WorkspaceWindowRestorationResolver.resolve(
+            contradictory,
+            in: snapshot,
+            herdrFreshHostIDs: [hostID]
+        ) == .invalid)
+    }
+
     @Test("capture refuses contradictory native presentations")
     func captureRefusesContradictoryPresentations() {
         let fixture = RestorationFixture.local(sessionName: "editor")

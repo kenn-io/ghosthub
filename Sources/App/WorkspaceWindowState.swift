@@ -169,6 +169,7 @@ struct WorkspaceWindowState: Codable, Hashable, Sendable {
                   activeHost.configKey == navigation.hostKey,
                   selection.selectedProjectID == nil,
                   selection.selectedWorktreeID == nil,
+                  selection.selectedDirectoryWorkspaceID == nil,
                   !active.name.trimmingCharacters(
                       in: .whitespacesAndNewlines
                   ).isEmpty
@@ -315,7 +316,8 @@ enum WorkspaceWindowRestorationResolver {
                   isNonblank(herdr.sessionName),
                   herdr.hostKey == navigation.hostKey,
                   navigation.projectKey == nil,
-                  navigation.worktreeGeneration == nil
+                  navigation.worktreeGeneration == nil,
+                  navigation.directoryWorkspacePath == nil
             else { return .invalid }
         }
 

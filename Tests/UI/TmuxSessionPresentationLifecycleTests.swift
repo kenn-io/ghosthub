@@ -124,7 +124,12 @@ struct TmuxSessionPresentationLifecycleTests {
 
     @Test(
         "navigation away from a Herdr host route closes its presentation",
-        arguments: [HerdrRouteNavigation.project, .worktree, .anotherHost]
+        arguments: [
+            HerdrRouteNavigation.project,
+            .worktree,
+            .directoryWorkspace,
+            .anotherHost,
+        ]
     )
     func navigationAwayClosesHerdr(
         navigation: HerdrRouteNavigation
@@ -686,6 +691,7 @@ private struct EndpointChangePresentationHarness: View {
 enum HerdrRouteNavigation: Sendable {
     case project
     case worktree
+    case directoryWorkspace
     case anotherHost
 }
 
@@ -699,12 +705,14 @@ private final class HerdrRoutePresentationModel: ObservableObject {
     private let alternateHostID: UUID
     private let projectID: UUID
     private let worktreeID: UUID
+    private let directoryWorkspaceID: UUID
 
     init() {
         hostID = UUID()
         alternateHostID = UUID()
         projectID = UUID()
         worktreeID = UUID()
+        directoryWorkspaceID = UUID()
         activeSession = WorkspaceHerdrSessionSelection(
             hostID: hostID,
             name: "agent"
@@ -732,6 +740,11 @@ private final class HerdrRoutePresentationModel: ObservableObject {
                 selectedHostID: hostID,
                 selectedProjectID: projectID,
                 selectedWorktreeID: worktreeID
+            )
+        case .directoryWorkspace:
+            selection = WorkspaceSelection(
+                selectedHostID: hostID,
+                selectedDirectoryWorkspaceID: directoryWorkspaceID
             )
         case .anotherHost:
             selection = WorkspaceSelection(selectedHostID: alternateHostID)
