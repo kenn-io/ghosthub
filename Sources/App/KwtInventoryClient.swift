@@ -586,11 +586,13 @@ enum KwtSnapshotMerger {
                 // config and routes attachment through kwt's protected
                 // command. A refresh that omits it is never evidence that the
                 // workspace stopped being protected, so it cannot clear it.
+                // Canonical generation outranks a path that another worktree
+                // may have claimed since the protected target moved.
                 // Deleting the workspace drops the record entirely, which is
                 // how a protected marker is actually retired.
                 worktree.tmuxSocketName = record.tmuxSocketName
-                    ?? existing?.tmuxSocketName
                     ?? sameGeneration?.tmuxSocketName
+                    ?? existing?.tmuxSocketName
                 worktree.sessionBackend = snapshot.host(id: hostID)?.kind == .remote
                     ? .remoteTmux : .localTmux
                 worktrees.append(worktree)

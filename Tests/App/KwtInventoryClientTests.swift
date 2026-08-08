@@ -431,6 +431,90 @@ struct KwtInventoryClientTests {
         )
     }
 
+    @Test("canonical generation outranks a reused path for socket identity")
+    func generationOutranksReusedPathForSocketIdentity() {
+        let hostID = UUID()
+        let unrelatedProjectID = UUID()
+        let targetProjectID = UUID()
+        let generation = "0123456789abcdef0123456789abcdef"
+        let snapshot = WorkspaceSnapshot(
+            hosts: [.fixture(id: hostID)],
+            projects: [
+                ProjectSummary(
+                    id: unrelatedProjectID,
+                    hostID: hostID,
+                    scopedKey: "repo-a",
+                    name: "repo-a",
+                    rootPath: "/repo-a"
+                ),
+                ProjectSummary(
+                    id: targetProjectID,
+                    hostID: hostID,
+                    scopedKey: "repo-b",
+                    name: "repo-b",
+                    rootPath: "/repo-b"
+                ),
+            ],
+            worktrees: [
+                WorktreeSummary(
+                    id: UUID(),
+                    hostID: hostID,
+                    projectID: unrelatedProjectID,
+                    name: "unrelated",
+                    path: "/reused-path",
+                    branch: "feature/unrelated",
+                    generation: "fedcba9876543210fedcba9876543210",
+                    tmuxSessionName: "kwt-repo-a-unrelated",
+                    tmuxSocketName: "same-path-socket"
+                ),
+                WorktreeSummary(
+                    id: UUID(),
+                    hostID: hostID,
+                    projectID: targetProjectID,
+                    name: "target",
+                    path: "/old-path",
+                    branch: "feature/target",
+                    generation: generation,
+                    tmuxSessionName: "kwt-repo-b-target",
+                    tmuxSocketName: "same-generation-socket"
+                ),
+            ]
+        )
+        let inventory = KwtHostInventory(projects: [
+            KwtProjectInventory(
+                project: KwtProjectRecord(
+                    repository: "repo-b",
+                    name: "repo-b",
+                    path: "/repo-b",
+                    lastTouched: nil
+                ),
+                worktrees: [KwtWorktreeRecord(
+                    path: "/reused-path",
+                    branch: "feature/target",
+                    commitHash: "abc",
+                    isMain: false,
+                    createdAt: nil,
+                    generation: generation,
+                    repository: "repo-b",
+                    sessionName: "kwt-repo-b-target",
+                    tmuxSocketName: nil
+                )],
+                warning: nil
+            ),
+        ])
+
+        let merged = KwtSnapshotMerger.merge(
+            inventory,
+            hostID: hostID,
+            into: snapshot
+        )
+
+        #expect(merged.worktrees.count == 1)
+        #expect(
+            merged.worktrees[0].tmuxSocketName == "same-generation-socket"
+        )
+    }
+
     @Test("a failed project listing preserves its last successful worktrees")
     func preservesProjectWorktreesAcrossTransientFailure() {
         let hostID = UUID()
