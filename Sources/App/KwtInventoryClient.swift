@@ -506,16 +506,34 @@ enum KwtSnapshotMerger {
             return workspace
         }
 
+        var reconciledProjectIDs = Set<UUID>()
         for item in inventory.projects {
             let record = item.project
-            let existingProject = existingProjects.first {
-                normalizedPath($0.rootPath) == normalizedPath(record.path)
-                    || (!$0.scopedKey.isEmpty
-                        && $0.scopedKey == record.repository)
+            let repositoryMatch = existingProjects.first {
+                !record.repository.isEmpty
+                    && !$0.scopedKey.isEmpty
+                    && $0.scopedKey == record.repository
+                    && !reconciledProjectIDs.contains($0.id)
             }
+            let pathMatch = existingProjects.first { candidate in
+                normalizedPath(candidate.rootPath) == normalizedPath(record.path)
+                    && ((candidate.registryID != nil
+                            && !inventory.projects.contains(where: {
+                                $0.project.repository == candidate.scopedKey
+                            }))
+                        || candidate.scopedKey.isEmpty
+                        || candidate.scopedKey == record.repository)
+                    && !reconciledProjectIDs.contains(candidate.id)
+            }
+            // Repository identity survives a move. Path is only a legacy
+            // fallback for transitional records or when it does not belong to
+            // a different repository, and an existing runtime ID can be
+            // consumed at most once.
+            let existingProject = repositoryMatch ?? pathMatch
             let projectID = existingProject?.id ?? stableID(
                 "project|\(hostID.uuidString)|\(record.repository)|\(record.path)"
             )
+            reconciledProjectIDs.insert(projectID)
             var project = existingProject ?? ProjectSummary(
                 id: projectID,
                 hostID: hostID,
@@ -550,7 +568,21 @@ enum KwtSnapshotMerger {
 
             for record in item.worktrees {
                 let existing = existingWorktrees.first {
-                    normalizedPath($0.path) == normalizedPath(record.path)
+                    $0.projectID == projectID
+                        && normalizedPath($0.path) == normalizedPath(record.path)
+                }
+                let consistentExisting = existing.flatMap { candidate in
+                    candidate.branch == record.branch
+                        && candidate.isPrimary == record.isMain
+                        && candidate.tmuxSessionName == record.sessionName
+                        ? candidate : nil
+                }
+                let sameGeneration = WorktreeGeneration.canonical(
+                    record.generation
+                ).flatMap { generation in
+                    existingWorktrees.first {
+                        $0.projectID == projectID && $0.generation == generation
+                    }
                 }
                 let worktreeID = existing?.id ?? stableID(
                     "worktree|\(hostID.uuidString)|\(record.repository)|\(record.path)"
@@ -575,16 +607,28 @@ enum KwtSnapshotMerger {
                 worktree.isStale = false
                 worktree.createdAt = record.createdAt
                 worktree.generation = record.generation
+                    ?? WorktreeGeneration.canonical(
+                        consistentExisting?.generation
+                    )
                 worktree.tmuxSessionName = record.sessionName
                 // The protected socket is a fail-closed marker: it keeps
                 // contributor-authored terminal configuration out of the app
                 // config and routes attachment through kwt's protected
-                // command. A refresh that omits it is never evidence that the
-                // workspace stopped being protected, so it cannot clear it.
+                // command. A refresh can omit it without unprotecting the same
+                // workspace. Its last canonical generation is retained when
+                // that same incomplete record also omits identity, but a new
+                // canonical generation must not inherit the socket from the
+                // prior owner of a reused path. Canonical generation therefore
+                // outranks path identity.
                 // Deleting the workspace drops the record entirely, which is
                 // how a protected marker is actually retired.
-                worktree.tmuxSocketName = record.tmuxSocketName
-                    ?? existing?.tmuxSocketName
+                if WorktreeGeneration.isCanonical(record.generation) {
+                    worktree.tmuxSocketName = record.tmuxSocketName
+                        ?? sameGeneration?.tmuxSocketName
+                } else {
+                    worktree.tmuxSocketName = record.tmuxSocketName
+                        ?? consistentExisting?.tmuxSocketName
+                }
                 worktree.sessionBackend = snapshot.host(id: hostID)?.kind == .remote
                     ? .remoteTmux : .localTmux
                 worktrees.append(worktree)

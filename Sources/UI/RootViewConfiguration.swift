@@ -163,6 +163,11 @@ public struct WorktreeRemovalRequest: Equatable, Sendable {
     }
 }
 
+public enum WorktreeRemovalResult: Equatable, Sendable {
+    case removed
+    case confirmationRequired(WorktreeRemovalRequest)
+}
+
 public enum SSHConnectionRecoveryResult: Equatable, Sendable {
     case hostKey(SSHHostKeyConfirmation)
     case authenticationRequired
@@ -272,6 +277,7 @@ public struct InteractionHandlers {
         ((WorkspaceTmuxSessionSelection) async throws -> Void)?
     public let createTmuxSession:
         ((WorkspaceTmuxSessionCreationRequest) -> Void)?
+    public let currentWorkspaceSnapshot: (() -> WorkspaceSnapshot)?
     public let refreshWorkspaceInventory: (() -> Void)?
     public let reconnectActiveTmuxSessionNow: (() -> Void)?
     public let resumeTmuxReconnectAfterSSHRecovery:
@@ -298,7 +304,7 @@ public struct InteractionHandlers {
     public let prepareWorktreeRemoval:
         ((UUID) async throws -> WorktreeRemovalRequest)?
     public let removeWorktree:
-        ((WorktreeRemovalRequest) async throws -> Void)?
+        ((WorktreeRemovalRequest) async throws -> WorktreeRemovalResult)?
 
     public init(
         closeWindow: (() -> Void)? = nil,
@@ -317,6 +323,7 @@ public struct InteractionHandlers {
         ((WorkspaceTmuxSessionSelection) async throws -> Void)? = nil,
         createTmuxSession:
         ((WorkspaceTmuxSessionCreationRequest) -> Void)? = nil,
+        currentWorkspaceSnapshot: (() -> WorkspaceSnapshot)? = nil,
         refreshWorkspaceInventory: (() -> Void)? = nil,
         reconnectActiveTmuxSessionNow: (() -> Void)? = nil,
         resumeTmuxReconnectAfterSSHRecovery:
@@ -343,7 +350,7 @@ public struct InteractionHandlers {
         prepareWorktreeRemoval:
         ((UUID) async throws -> WorktreeRemovalRequest)? = nil,
         removeWorktree:
-        ((WorktreeRemovalRequest) async throws -> Void)? = nil
+        ((WorktreeRemovalRequest) async throws -> WorktreeRemovalResult)? = nil
     ) {
         self.closeWindow = closeWindow
         self.dismissLogViewer = dismissLogViewer
@@ -356,6 +363,7 @@ public struct InteractionHandlers {
         self.killTmuxSession = killTmuxSession
         self.applyTmuxSessionTheme = applyTmuxSessionTheme
         self.createTmuxSession = createTmuxSession
+        self.currentWorkspaceSnapshot = currentWorkspaceSnapshot
         self.refreshWorkspaceInventory = refreshWorkspaceInventory
         self.reconnectActiveTmuxSessionNow = reconnectActiveTmuxSessionNow
         self.resumeTmuxReconnectAfterSSHRecovery =

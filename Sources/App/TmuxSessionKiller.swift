@@ -39,6 +39,7 @@ struct TmuxSessionKiller: Sendable {
         "GHOSTHUB_TMUX_SESSION_IDENTITY_MISMATCH"
     private static let identityMarker =
         "GHOSTHUB_TMUX_SESSION_IDENTITY\t"
+    static let diagnosticMarker = "GHOSTHUB_TMUX_DIAGNOSTIC\t"
 
     typealias PathResolver = @Sendable (TmuxHost)
         -> Result<String, TmuxBinaryError>
@@ -106,6 +107,13 @@ struct TmuxSessionKiller: Sendable {
             runner(host, command)
         }.value
         guard result.status == 0 else {
+            if result.status == 1,
+               Self.isConfirmedAbsence(result.stdout) {
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
             throw TmuxSessionKillError.commandFailed(
                 host: host.displayName,
                 session: selection.name,
@@ -202,11 +210,13 @@ struct TmuxSessionKiller: Sendable {
                 "kill-session -t \(expectedIdentity.sessionID)"
             arguments[arguments.count - 1] =
                 "display-message -p \(identityMismatchMarker)"
-            return powerShellCommand(arguments)
+            return powerShellCommand(
+                arguments,
+                captureStandardError: true,
+                frameOutput: true
+            )
         }
-        return arguments
-            .map(shellQuotedCommandArgument)
-            .joined(separator: " ")
+        return framedPOSIXCommand(arguments)
     }
 
     private static func identityCommand(
@@ -252,34 +262,80 @@ struct TmuxSessionKiller: Sendable {
         if platform == .windows {
             return powerShellCommand(
                 arguments,
-                captureStandardError: true
+                captureStandardError: true,
+                frameOutput: true
             )
         }
-        return arguments
-            .map(shellQuotedCommandArgument)
-            .joined(separator: " ")
-            + " 2>&1"
+        return framedPOSIXCommand(arguments)
     }
 
     static func isConfirmedAbsence(_ output: String) -> Bool {
-        let normalized = output.lowercased()
-        return normalized.contains("can't find session:")
-            || normalized.contains("no server running on ")
+        output.split(whereSeparator: \.isNewline).contains { rawLine in
+            guard rawLine.hasPrefix(diagnosticMarker) else { return false }
+            let line = rawLine.dropFirst(diagnosticMarker.count)
+                .trimmingCharacters(in: .whitespaces)
+                .lowercased()
+            return line.hasPrefix("can't find session:")
+                || line.hasPrefix("no server running on ")
+                || line ==
+                "failed to connect to server: no such file or directory"
+                || (line.hasPrefix("error connecting to ")
+                    && line.hasSuffix("(no such file or directory)"))
+        }
+    }
+
+    private static func framedPOSIXCommand(
+        _ arguments: [String]
+    ) -> String {
+        let invocation = arguments
+            .map(shellQuotedCommandArgument)
+            .joined(separator: " ")
+        let marker = shellQuotedCommandArgument(diagnosticMarker)
+        return """
+        GHOSTHUB_TMUX_OUTPUT=$(\(invocation) 2>&1)
+        GHOSTHUB_TMUX_STATUS=$?
+        if [ -n "$GHOSTHUB_TMUX_OUTPUT" ]; then
+            printf '%s\\n' "$GHOSTHUB_TMUX_OUTPUT" |
+                while IFS= read -r GHOSTHUB_TMUX_LINE; do
+                    printf '%s%s\\n' \(marker) "$GHOSTHUB_TMUX_LINE"
+                done
+        fi
+        exit "$GHOSTHUB_TMUX_STATUS"
+        """
     }
 
     private static func powerShellCommand(
         _ arguments: [String],
-        captureStandardError: Bool = false
+        captureStandardError: Bool = false,
+        frameOutput: Bool = false
     ) -> String {
         let invocation = "& "
             + arguments.map(powerShellEncodedArgument).joined(separator: " ")
             + (captureStandardError ? " 2>&1" : "")
+        let body: String
+        if frameOutput {
+            body = """
+            $GhosthubTmuxOutput = \(invocation)
+            $GhosthubTmuxStatus = $LASTEXITCODE
+            foreach ($GhosthubTmuxLine in $GhosthubTmuxOutput) {
+                [Console]::Out.WriteLine(
+                    \(powerShellEncodedArgument(diagnosticMarker))
+                        + [string]$GhosthubTmuxLine
+                )
+            }
+            exit $GhosthubTmuxStatus
+            """
+        } else {
+            body = """
+            \(invocation)
+            exit $LASTEXITCODE
+            """
+        }
         return """
         $ErrorActionPreference = 'Stop'
         [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
         $OutputEncoding = [Console]::OutputEncoding
-        \(invocation)
-        exit $LASTEXITCODE
+        \(body)
         """
     }
 

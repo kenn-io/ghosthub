@@ -153,6 +153,8 @@ struct TmuxSessionKillerTests {
         #expect(
             command.contains("GHOSTHUB_TMUX_SESSION_IDENTITY_MISMATCH")
         )
+        #expect(command.contains("GHOSTHUB_TMUX_DIAGNOSTIC"))
+        #expect(command.contains(" 2>&1"))
     }
 
     @Test("Windows identity and kill use PowerShell and psmux quoting")
@@ -245,6 +247,7 @@ struct TmuxSessionKillerTests {
         #expect(recorded[2].contains(
             powerShellEncodedArgument("kill-session -t $42")
         ))
+        #expect(recorded[2].contains(" 2>&1"))
         #expect(!recorded.joined().contains("review's session"))
     }
 
@@ -283,12 +286,51 @@ struct TmuxSessionKillerTests {
         }
     }
 
+    @Test("kill reports explicit session absence")
+    func killReportsExplicitAbsence() async {
+        let killer = TmuxSessionKiller(
+            pathResolver: { _ in .success("/usr/bin/tmux") },
+            runner: { _, _ in
+                (
+                    1,
+                    TmuxSessionKiller.diagnosticMarker
+                        + "can't find session: worker\n"
+                )
+            }
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: UUID(),
+            name: "worker"
+        )
+
+        await #expect {
+            try await killer.kill(
+                selection,
+                expectedIdentity: TmuxSessionIdentity(
+                    serverPID: "31415",
+                    sessionID: "$42",
+                    createdAt: "1785182057"
+                ),
+                on: .local
+            )
+        } throws: { error in
+            error as? TmuxSessionKillError == .sessionNotRunning(
+                host: "localhost",
+                session: "worker"
+            )
+        }
+    }
+
     @Test("identity mismatch preserves the replacement session")
     func identityMismatch() async {
         let killer = TmuxSessionKiller(
             pathResolver: { _ in .success("/usr/bin/tmux") },
             runner: { _, _ in
-                (0, "GHOSTHUB_TMUX_SESSION_IDENTITY_MISMATCH\n")
+                (
+                    0,
+                    TmuxSessionKiller.diagnosticMarker
+                        + "GHOSTHUB_TMUX_SESSION_IDENTITY_MISMATCH\n"
+                )
             }
         )
         let selection = WorkspaceTmuxSessionSelection(
@@ -358,7 +400,8 @@ struct TmuxSessionKillerTests {
             "'/usr/bin/tmux' '-L' 'protected' 'has-session'"
                 + " '-t' '=worker:'"
         ))
-        #expect(commands[0].hasSuffix(" 2>&1"))
+        #expect(commands[0].contains("GHOSTHUB_TMUX_DIAGNOSTIC"))
+        #expect(commands[0].contains(" 2>&1"))
         #expect(commands[1].contains(
             "'/usr/bin/tmux' '-L' 'protected' 'display-message'"
                 + " '-p' '-t' '=worker:'"
@@ -382,6 +425,43 @@ struct TmuxSessionKillerTests {
             try await killer.sessionIdentity(selection, on: .local)
         } throws: { error in
             error as? TmuxSessionKillError == .identityCommandFailed(
+                host: "localhost",
+                session: "worker",
+                status: 1
+            )
+        }
+    }
+
+    @Test("kill ignores unframed shell absence diagnostics")
+    func killIgnoresUnframedShellAbsence() async {
+        let killer = TmuxSessionKiller(
+            pathResolver: { _ in .success("/usr/bin/tmux") },
+            runner: { _, _ in
+                (
+                    1,
+                    "can't find session: shell-helper\n"
+                        + "error connecting to /tmp/tmux-501/kwt "
+                        + "(Permission denied)"
+                )
+            }
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: UUID(),
+            name: "worker"
+        )
+
+        await #expect {
+            try await killer.kill(
+                selection,
+                expectedIdentity: TmuxSessionIdentity(
+                    serverPID: "31415",
+                    sessionID: "$42",
+                    createdAt: "1785182057"
+                ),
+                on: .local
+            )
+        } throws: { error in
+            error as? TmuxSessionKillError == .commandFailed(
                 host: "localhost",
                 session: "worker",
                 status: 1
@@ -415,7 +495,11 @@ struct TmuxSessionKillerTests {
         let killer = TmuxSessionKiller(
             pathResolver: { _ in .success("/usr/bin/tmux") },
             runner: { _, _ in
-                (1, "can't find session: worker\n")
+                (
+                    1,
+                    TmuxSessionKiller.diagnosticMarker
+                        + "can't find session: worker\n"
+                )
             }
         )
         let selection = WorkspaceTmuxSessionSelection(
@@ -434,11 +518,80 @@ struct TmuxSessionKillerTests {
     }
 
     @Test(
+        "kill treats missing socket diagnostics as session absence",
+        arguments: [
+            "error connecting to /tmp/tmux-501/kwt (No such file or directory)",
+            "failed to connect to server: No such file or directory",
+        ]
+    )
+    func missingSocketDuringKill(output: String) async {
+        let killer = TmuxSessionKiller(
+            pathResolver: { _ in .success("/usr/bin/tmux") },
+            runner: { _, _ in
+                (1, TmuxSessionKiller.diagnosticMarker + output)
+            }
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: UUID(),
+            name: "worker",
+            socketName: "kwt"
+        )
+
+        await #expect {
+            try await killer.kill(
+                selection,
+                expectedIdentity: TmuxSessionIdentity(
+                    serverPID: "31415",
+                    sessionID: "$42",
+                    createdAt: "1785182057"
+                ),
+                on: .local
+            )
+        } throws: { error in
+            error as? TmuxSessionKillError == .sessionNotRunning(
+                host: "localhost",
+                session: "worker"
+            )
+        }
+    }
+
+    @Test(
         "only missing session or server diagnostics confirm absence",
         arguments: [
-            ("can't find session: worker", true),
-            ("no server running on /tmp/tmux-501/default", true),
+            (
+                "GHOSTHUB_TMUX_DIAGNOSTIC\tcan't find session: worker",
+                true
+            ),
+            (
+                "GHOSTHUB_TMUX_DIAGNOSTIC\t"
+                    + "no server running on /tmp/tmux-501/default",
+                true
+            ),
+            (
+                "GHOSTHUB_TMUX_DIAGNOSTIC\t"
+                    + "error connecting to /tmp/tmux-501/kwt "
+                    + "(No such file or directory)",
+                true
+            ),
+            (
+                "GHOSTHUB_TMUX_DIAGNOSTIC\t"
+                    + "failed to connect to server: No such file or directory",
+                true
+            ),
             ("error connecting to socket (Permission denied)", false),
+            (
+                "shell: error connecting to startup helper\n"
+                    + "error connecting to /tmp/tmux-501/kwt "
+                    + "(Permission denied)\n"
+                    + "shell: (No such file or directory)",
+                false
+            ),
+            (
+                "can't find session: shell-helper\n"
+                    + "error connecting to /tmp/tmux-501/kwt "
+                    + "(Permission denied)",
+                false
+            ),
             ("", false),
         ]
     )
