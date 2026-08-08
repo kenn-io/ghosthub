@@ -95,6 +95,43 @@ impl SessionItem {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionSelection {
+    host_id: String,
+    endpoint: String,
+    session: String,
+}
+
+impl SessionSelection {
+    #[must_use]
+    pub fn new(
+        host_id: impl Into<String>,
+        endpoint: impl Into<String>,
+        session: impl Into<String>,
+    ) -> Self {
+        Self {
+            host_id: host_id.into(),
+            endpoint: endpoint.into(),
+            session: session.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn host_id(&self) -> &str {
+        &self.host_id
+    }
+
+    #[must_use]
+    pub fn endpoint(&self) -> &str {
+        &self.endpoint
+    }
+
+    #[must_use]
+    pub fn session(&self) -> &str {
+        &self.session
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HostConnectionState {
     Disconnected,
@@ -205,10 +242,12 @@ pub enum WorkspaceContent {
         sessions: Vec<SessionItem>,
     },
     Attaching {
+        host_id: String,
         endpoint: String,
         session: String,
     },
     Terminal {
+        host_id: String,
         endpoint: String,
         session: String,
         presentation_id: u64,
@@ -493,6 +532,7 @@ struct PendingPaste {
 
 #[derive(Clone)]
 struct AttachRequest {
+    host_id: String,
     host: RuntimeHost,
     endpoint: host::WslEndpoint,
     runtime: host::WslRuntimeIdentity,
@@ -960,7 +1000,7 @@ impl Workspace {
     ///
     /// Returns an error if another presentation is active or the requested
     /// session is not in the latest resolved inventory.
-    pub fn attach(&self, session_name: &str) -> Result<(), WorkspaceError> {
+    pub fn attach(&self, selection: &SessionSelection) -> Result<(), WorkspaceError> {
         if self
             .inner
             .worker
@@ -973,7 +1013,7 @@ impl Workspace {
                 "a terminal presentation is already open",
             ));
         }
-        let request = capture_attach_request(&self.inner, session_name)?;
+        let request = capture_attach_request(&self.inner, selection)?;
 
         self.start_attachment(request)
     }
@@ -988,19 +1028,22 @@ impl Workspace {
     ///
     /// Returns an error if the requested session is absent from the latest
     /// inventory or the replacement attachment cannot be started.
-    pub fn switch_session(&self, session_name: &str) -> Result<(), WorkspaceError> {
+    pub fn switch_session(&self, selection: &SessionSelection) -> Result<(), WorkspaceError> {
         if matches!(
             self.inner
                 .state
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone(),
-            WorkspaceContent::Terminal { session, .. } if session == session_name
+            WorkspaceContent::Terminal { host_id, endpoint, session, .. }
+                if host_id == selection.host_id()
+                    && endpoint == selection.endpoint()
+                    && session == selection.session()
         ) {
             return Ok(());
         }
 
-        let request = capture_attach_request(&self.inner, session_name)?;
+        let request = capture_attach_request(&self.inner, selection)?;
         self.detach();
         self.start_attachment(request)
     }
@@ -1031,6 +1074,7 @@ impl Workspace {
                 .ok_or_else(|| WorkspaceError::new("a terminal presentation is already opening"))?;
             clear_terminal_notice(&self.inner);
             *state = WorkspaceContent::Attaching {
+                host_id: request.host_id.clone(),
                 endpoint: request.endpoint.distro().to_owned(),
                 session: request.name.clone(),
             };
@@ -1403,6 +1447,7 @@ impl Workspace {
             if retry_term {
                 publish_terminfo_retry_boundary(
                     &self.inner,
+                    &request.host_id,
                     request.endpoint.distro(),
                     &request.name,
                 );
@@ -1550,8 +1595,15 @@ const fn event_drain_may_have_more(processed: usize, exited: bool) -> bool {
 
 fn capture_attach_request(
     inner: &Inner,
-    session_name: &str,
+    selection: &SessionSelection,
 ) -> Result<AttachRequest, WorkspaceError> {
+    let selected_host = inner
+        .selected_host
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if selected_host.as_deref() != Some(selection.host_id()) {
+        return Err(WorkspaceError::new("host is not selected"));
+    }
     let host = inner
         .host
         .lock()
@@ -1560,13 +1612,19 @@ fn capture_attach_request(
         .as_ref()
         .ok_or_else(|| WorkspaceError::new("WSL inventory is not ready"))?;
     context.map(|context, inventory_generation| {
+        if context.snapshot.endpoint().distro() != selection.endpoint() {
+            return Err(WorkspaceError::new(
+                "host endpoint changed; refresh the session selection",
+            ));
+        }
         let session = context
             .snapshot
             .sessions()
             .iter()
-            .find(|session| session.name() == session_name)
+            .find(|session| session.name() == selection.session())
             .ok_or_else(|| WorkspaceError::new("session is not in the current inventory"))?;
         Ok(AttachRequest {
+            host_id: selection.host_id().to_owned(),
             host: context.host.clone(),
             endpoint: context.snapshot.endpoint().clone(),
             runtime: context.snapshot.runtime().clone(),
@@ -1717,6 +1775,7 @@ fn run_attach(inner: &Inner, request: &AttachRequest, term: AttachTerm, generati
             set_inner_state(
                 inner,
                 WorkspaceContent::Terminal {
+                    host_id: request.host_id.clone(),
                     endpoint,
                     session,
                     presentation_id,
@@ -2020,11 +2079,12 @@ fn clear_pending_paste(inner: &Inner) {
         .take();
 }
 
-fn publish_terminfo_retry_boundary(inner: &Inner, endpoint: &str, session: &str) {
+fn publish_terminfo_retry_boundary(inner: &Inner, host_id: &str, endpoint: &str, session: &str) {
     clear_pending_paste(inner);
     set_inner_state(
         inner,
         WorkspaceContent::Attaching {
+            host_id: host_id.to_owned(),
             endpoint: endpoint.to_owned(),
             session: session.to_owned(),
         },
@@ -2233,6 +2293,7 @@ mod tests {
         set_inner_state(
             &workspace.inner,
             WorkspaceContent::Attaching {
+                host_id: "wsl".to_owned(),
                 endpoint: "Ubuntu".to_owned(),
                 session: "work".to_owned(),
             },
@@ -2266,6 +2327,7 @@ mod tests {
         set_inner_state(
             &workspace.inner,
             WorkspaceContent::Attaching {
+                host_id: "wsl".to_owned(),
                 endpoint: "Ubuntu".to_owned(),
                 session: "stale".to_owned(),
             },
@@ -2326,7 +2388,11 @@ mod tests {
                 sessions: vec![SessionItem::new("work", 0)],
             },
         );
-        let request = capture_attach_request(&workspace.inner, "work").expect("attach request");
+        let request = capture_attach_request(
+            &workspace.inner,
+            &SessionSelection::new("wsl", "Ubuntu", "work"),
+        )
+        .expect("attach request");
         let replacement = HostSnapshot::test_fixture(
             "Ubuntu",
             "boot-id",
@@ -2404,6 +2470,7 @@ mod tests {
             revision: 1,
             appearance: Appearance::default(),
             content: WorkspaceContent::Terminal {
+                host_id: "wsl".to_owned(),
                 endpoint: "Ubuntu".to_owned(),
                 session: "work".to_owned(),
                 presentation_id: 7,
@@ -2421,7 +2488,7 @@ mod tests {
             ),
         });
 
-        publish_terminfo_retry_boundary(&workspace.inner, "Ubuntu", "work");
+        publish_terminfo_retry_boundary(&workspace.inner, "wsl", "Ubuntu", "work");
 
         assert!(
             workspace
@@ -2433,8 +2500,8 @@ mod tests {
         );
         assert!(matches!(
             workspace.snapshot().content(),
-            WorkspaceContent::Attaching { endpoint, session }
-                if endpoint == "Ubuntu" && session == "work"
+            WorkspaceContent::Attaching { host_id, endpoint, session }
+                if host_id == "wsl" && endpoint == "Ubuntu" && session == "work"
         ));
         assert_eq!(next_presentation_id(&workspace.inner), 8);
     }
@@ -2519,9 +2586,15 @@ mod tests {
             HostContext { host, snapshot },
             context_generation,
         ));
+        *workspace
+            .inner
+            .selected_host
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some("wsl".to_owned());
         set_inner_state(
             &workspace.inner,
             WorkspaceContent::Terminal {
+                host_id: "wsl".to_owned(),
                 endpoint: "Ubuntu".to_owned(),
                 session: "work".to_owned(),
                 presentation_id: 1,
@@ -2533,7 +2606,11 @@ mod tests {
         );
 
         let refresh_generation = begin_refresh(&workspace.inner, &CancellationToken::new());
-        let request = capture_attach_request(&workspace.inner, "work").expect("capture request");
+        let request = capture_attach_request(
+            &workspace.inner,
+            &SessionSelection::new("wsl", "Ubuntu", "work"),
+        )
+        .expect("capture request");
         assert_eq!(request.inventory_generation, context_generation);
         assert!(refresh_generation > request.inventory_generation);
         assert!(publish_refresh(
@@ -2950,6 +3027,7 @@ mod tests {
         set_inner_state(
             &workspace.inner,
             WorkspaceContent::Terminal {
+                host_id: "wsl".to_owned(),
                 endpoint: "Ubuntu".to_owned(),
                 session: "work".to_owned(),
                 presentation_id: 1,
@@ -2992,6 +3070,7 @@ mod tests {
         set_inner_state(
             &workspace.inner,
             WorkspaceContent::Terminal {
+                host_id: "wsl".to_owned(),
                 endpoint: "Ubuntu".to_owned(),
                 session: "work".to_owned(),
                 presentation_id: 1,
@@ -3000,13 +3079,20 @@ mod tests {
         );
 
         workspace
-            .switch_session("work")
+            .switch_session(&SessionSelection::new("wsl", "Ubuntu", "work"))
             .expect("active session remains selected");
 
         assert!(matches!(
             workspace.snapshot().content(),
             WorkspaceContent::Terminal { session, .. } if session == "work"
         ));
+
+        assert!(
+            workspace
+                .switch_session(&SessionSelection::new("wsl", "Debian", "work"))
+                .is_err(),
+            "an equal name on a different endpoint is not the active selection"
+        );
     }
 
     #[test]
@@ -3020,6 +3106,7 @@ mod tests {
         set_inner_state(
             &workspace.inner,
             WorkspaceContent::Terminal {
+                host_id: "wsl".to_owned(),
                 endpoint: "Ubuntu".to_owned(),
                 session: "work".to_owned(),
                 presentation_id: 1,
@@ -3027,7 +3114,11 @@ mod tests {
             },
         );
 
-        assert!(workspace.switch_session("missing").is_err());
+        assert!(
+            workspace
+                .switch_session(&SessionSelection::new("wsl", "Ubuntu", "missing"))
+                .is_err()
+        );
         assert!(matches!(
             workspace.snapshot().content(),
             WorkspaceContent::Terminal { session, .. } if session == "work"
@@ -3045,6 +3136,7 @@ mod tests {
         set_inner_state(
             &workspace.inner,
             WorkspaceContent::Terminal {
+                host_id: "wsl".to_owned(),
                 endpoint: "Ubuntu".to_owned(),
                 session: "work".to_owned(),
                 presentation_id: 1,

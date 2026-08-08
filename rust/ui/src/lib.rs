@@ -14,8 +14,8 @@ use model::PortStatus;
 use surface::{CellStyle, Damage, GridSize, Rgb, SurfaceFrame, SurfaceStore};
 use workspace::{
     HostConnectionState, HostItem, KeyEvent as InputKeyEvent, KeyInput,
-    Modifiers as InputModifiers, MouseAction, MouseButton, MouseInput, NamedKey, Workspace,
-    WorkspaceContent, WorkspaceEvent,
+    Modifiers as InputModifiers, MouseAction, MouseButton, MouseInput, NamedKey, SessionSelection,
+    Workspace, WorkspaceContent, WorkspaceEvent,
 };
 
 pub const WINDOW_TITLE: &str = "Ghosthub";
@@ -586,8 +586,13 @@ impl RootView {
         headline_text(&self.status)
     }
 
-    fn attach(&mut self, session: &str, window: &mut Window, cx: &mut Context<Self>) {
-        if let Err(error) = self.workspace.attach(session) {
+    fn attach(
+        &mut self,
+        selection: &SessionSelection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Err(error) = self.workspace.attach(selection) {
             self.diagnostic = Some(error.to_string());
         } else {
             self.diagnostic = None;
@@ -596,9 +601,14 @@ impl RootView {
         cx.notify();
     }
 
-    fn select_session(&mut self, session: &str, window: &mut Window, cx: &mut Context<Self>) {
+    fn select_session(
+        &mut self,
+        selection: &SessionSelection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let snapshot = self.workspace.snapshot();
-        if active_session_name(snapshot.content()) == Some(session) {
+        if active_session_selection(snapshot.content()).as_ref() == Some(selection) {
             if matches!(snapshot.content(), WorkspaceContent::Terminal { .. }) {
                 window.focus(&self.focus);
             }
@@ -610,9 +620,9 @@ impl RootView {
             WorkspaceContent::Attaching { .. } | WorkspaceContent::Terminal { .. }
         );
         let result = if switching {
-            self.workspace.switch_session(session)
+            self.workspace.switch_session(selection)
         } else {
-            self.workspace.attach(session)
+            self.workspace.attach(selection)
         };
         if let Err(error) = result {
             self.diagnostic = Some(error.to_string());
@@ -1378,9 +1388,9 @@ impl RootView {
                         .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
                 )
                 .into_any_element(),
-            WorkspaceContent::Attaching { endpoint, session } => {
-                centered(format!("Attaching to {endpoint} · {session}…"))
-            }
+            WorkspaceContent::Attaching {
+                endpoint, session, ..
+            } => centered(format!("Attaching to {endpoint} · {session}…")),
             WorkspaceContent::Ready { endpoint, sessions } => {
                 Self::ready_element(endpoint, sessions, None, cx)
             }
@@ -1389,6 +1399,7 @@ impl RootView {
                 session: _,
                 presentation_id,
                 surface,
+                ..
             } => self
                 .terminal_element(*presentation_id, surface, snapshot, cx)
                 .into_any_element(),
@@ -1411,12 +1422,13 @@ impl RootView {
                 session: _,
                 presentation_id,
                 surface,
+                ..
             } => self
                 .terminal_element(*presentation_id, surface, snapshot, cx)
                 .into_any_element(),
-            WorkspaceContent::Attaching { endpoint, session } => {
-                centered(format!("Attaching to {endpoint} · {session}…"))
-            }
+            WorkspaceContent::Attaching {
+                endpoint, session, ..
+            } => centered(format!("Attaching to {endpoint} · {session}…")),
             WorkspaceContent::Loading => centered("Starting WSL and discovering tmux sessions…"),
             WorkspaceContent::Error { message } => centered(message.clone()),
             WorkspaceContent::Shell | WorkspaceContent::Ready { .. } => selected.map_or_else(
@@ -1624,7 +1636,7 @@ impl RootView {
             tree = tree.child(Self::tree_session_row(
                 host_index,
                 session_index,
-                &session.name,
+                &session.selection,
                 session.attached_clients,
                 session.active,
                 cx,
@@ -1676,12 +1688,13 @@ impl RootView {
     fn tree_session_row(
         host_index: usize,
         index: usize,
-        session_name: &str,
+        selection: &SessionSelection,
         attached_clients: Option<u32>,
         is_active: bool,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let name = session_name.to_owned();
+        let selection = selection.clone();
+        let name = selection.session().to_owned();
         let detail = if is_active {
             "open".to_owned()
         } else if attached_clients == Some(0) {
@@ -1748,7 +1761,7 @@ impl RootView {
             );
         }
         row.on_click(cx.listener(move |this, _, window, cx| {
-            this.select_session(&name, window, cx);
+            this.select_session(&selection, window, cx);
         }))
         .into_any_element()
     }
@@ -1878,6 +1891,8 @@ impl RootView {
         }
         for (index, session) in sessions.iter().enumerate() {
             let name = session.name().to_owned();
+            let selection =
+                SessionSelection::new(host.map_or("wsl", HostItem::id), endpoint, session.name());
             let detail = if session.attached_clients() == 0 {
                 "detached".to_owned()
             } else {
@@ -1897,7 +1912,7 @@ impl RootView {
                     .child(name.clone())
                     .child(div().text_sm().text_color(rgb(0x8f_96_a3)).child(detail))
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.attach(&name, window, cx);
+                        this.attach(&selection, window, cx);
                     })),
             );
         }
@@ -1932,58 +1947,49 @@ fn terminal_presentation_id(content: &WorkspaceContent) -> Option<u64> {
     }
 }
 
-fn active_session_name(content: &WorkspaceContent) -> Option<&str> {
-    match content {
-        WorkspaceContent::Attaching { session, .. }
-        | WorkspaceContent::Terminal { session, .. } => Some(session),
-        WorkspaceContent::Shell
-        | WorkspaceContent::Loading
-        | WorkspaceContent::Ready { .. }
-        | WorkspaceContent::Error { .. } => None,
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct TreeSession {
-    name: String,
+    selection: SessionSelection,
     attached_clients: Option<u32>,
     active: bool,
 }
 
-fn active_session_for_endpoint<'a>(
-    content: &'a WorkspaceContent,
-    endpoint: &str,
-) -> Option<&'a str> {
+fn active_session_selection(content: &WorkspaceContent) -> Option<SessionSelection> {
     match content {
         WorkspaceContent::Attaching {
-            endpoint: active_endpoint,
+            host_id,
+            endpoint,
             session,
         }
         | WorkspaceContent::Terminal {
-            endpoint: active_endpoint,
+            host_id,
+            endpoint,
             session,
             ..
-        } if active_endpoint == endpoint => Some(session),
+        } => Some(SessionSelection::new(host_id, endpoint, session)),
         WorkspaceContent::Shell
         | WorkspaceContent::Loading
         | WorkspaceContent::Ready { .. }
-        | WorkspaceContent::Attaching { .. }
-        | WorkspaceContent::Terminal { .. }
         | WorkspaceContent::Error { .. } => None,
     }
 }
 
 fn tree_sessions(host: &HostItem, content: &WorkspaceContent) -> Vec<TreeSession> {
-    let active = active_session_for_endpoint(content, host.endpoint());
+    let active = active_session_selection(content);
+    let active_for_host = active
+        .as_ref()
+        .filter(|active| active.host_id() == host.id());
     if host.connection() != HostConnectionState::Ready {
-        return active.map_or_else(Vec::new, |name| {
+        return active_for_host.map_or_else(Vec::new, |active| {
             let attached_clients = host
                 .sessions()
                 .iter()
-                .find(|session| session.name() == name)
+                .find(|session| {
+                    host.endpoint() == active.endpoint() && session.name() == active.session()
+                })
                 .map(workspace::SessionItem::attached_clients);
             vec![TreeSession {
-                name: name.to_owned(),
+                selection: active.clone(),
                 attached_clients,
                 active: true,
             }]
@@ -1993,17 +1999,20 @@ fn tree_sessions(host: &HostItem, content: &WorkspaceContent) -> Vec<TreeSession
     let mut sessions = host
         .sessions()
         .iter()
-        .map(|session| TreeSession {
-            name: session.name().to_owned(),
-            attached_clients: Some(session.attached_clients()),
-            active: active == Some(session.name()),
+        .map(|session| {
+            let selection = SessionSelection::new(host.id(), host.endpoint(), session.name());
+            TreeSession {
+                active: active.as_ref() == Some(&selection),
+                selection,
+                attached_clients: Some(session.attached_clients()),
+            }
         })
         .collect::<Vec<_>>();
-    if let Some(name) = active
+    if let Some(active) = active_for_host
         && !sessions.iter().any(|session| session.active)
     {
         sessions.push(TreeSession {
-            name: name.to_owned(),
+            selection: active.clone(),
             attached_clients: None,
             active: true,
         });
@@ -2013,7 +2022,9 @@ fn tree_sessions(host: &HostItem, content: &WorkspaceContent) -> Vec<TreeSession
 
 fn workspace_window_title(content: &WorkspaceContent) -> String {
     match content {
-        WorkspaceContent::Attaching { endpoint, session }
+        WorkspaceContent::Attaching {
+            endpoint, session, ..
+        }
         | WorkspaceContent::Terminal {
             endpoint, session, ..
         } => format!("{session} — {endpoint} — {WINDOW_TITLE}"),
@@ -2451,18 +2462,19 @@ mod tests {
     use super::{
         APP_NAVIGATION_WIDTH, INPUT_BUFFER_FULL_DIAGNOSTIC, INPUT_BUFFERED_DIAGNOSTIC,
         InputRefusal, PendingUiInput, QueuedUiInput, TerminalKeyboard, TerminalPointer,
-        TerminalResize, UI_INPUT_BYTE_CAPACITY, UI_INPUT_CAPACITY, WheelBatch, active_session_name,
-        clear_terminal_input_state, clears_after_input_delivery, clears_when_input_queue_is_empty,
-        coalesce_last_resize, coalesce_last_wheel, input_queue_has_capacity, named_key,
-        normalize_cell_width, queued_input_matches_presentation, terminal_cell_at_with_offset,
-        terminal_key_input, terminal_line_height, terminal_wheel_steps, transitioned_presentation,
-        tree_sessions, workspace_window_title,
+        TerminalResize, UI_INPUT_BYTE_CAPACITY, UI_INPUT_CAPACITY, WheelBatch,
+        active_session_selection, clear_terminal_input_state, clears_after_input_delivery,
+        clears_when_input_queue_is_empty, coalesce_last_resize, coalesce_last_wheel,
+        input_queue_has_capacity, named_key, normalize_cell_width,
+        queued_input_matches_presentation, terminal_cell_at_with_offset, terminal_key_input,
+        terminal_line_height, terminal_wheel_steps, transitioned_presentation, tree_sessions,
+        workspace_window_title,
     };
     use std::sync::Arc;
     use surface::{GridSize, SurfaceFrame, SurfaceStore};
     use workspace::{
         HostConnectionState, HostItem, KeyEvent, KeyInput, Modifiers, MouseAction, MouseButton,
-        MouseInput, NamedKey, SessionItem, WorkspaceContent,
+        MouseInput, NamedKey, SessionItem, SessionSelection, WorkspaceContent,
     };
 
     #[test]
@@ -2503,34 +2515,44 @@ mod tests {
     }
 
     #[test]
-    fn terminal_and_attaching_states_expose_the_active_session() {
+    fn terminal_and_attaching_states_expose_the_active_selection() {
         let size = GridSize::new(80, 24).expect("valid grid");
         let terminal = WorkspaceContent::Terminal {
+            host_id: "wsl".to_owned(),
             endpoint: "Ubuntu".to_owned(),
             session: "work".to_owned(),
             presentation_id: 1,
             surface: Arc::new(SurfaceStore::new(SurfaceFrame::blank(1, size))),
         };
         let attaching = WorkspaceContent::Attaching {
+            host_id: "wsl".to_owned(),
             endpoint: "Ubuntu".to_owned(),
             session: "other".to_owned(),
         };
 
-        assert_eq!(active_session_name(&terminal), Some("work"));
-        assert_eq!(active_session_name(&attaching), Some("other"));
-        assert_eq!(active_session_name(&WorkspaceContent::Shell), None);
+        assert_eq!(
+            active_session_selection(&terminal),
+            Some(SessionSelection::new("wsl", "Ubuntu", "work"))
+        );
+        assert_eq!(
+            active_session_selection(&attaching),
+            Some(SessionSelection::new("wsl", "Ubuntu", "other"))
+        );
+        assert_eq!(active_session_selection(&WorkspaceContent::Shell), None);
     }
 
     #[test]
     fn active_terminal_context_moves_into_the_native_window_title() {
         let size = GridSize::new(80, 24).expect("valid grid");
         let terminal = WorkspaceContent::Terminal {
+            host_id: "wsl".to_owned(),
             endpoint: "Ubuntu".to_owned(),
             session: "demo".to_owned(),
             presentation_id: 1,
             surface: Arc::new(SurfaceStore::new(SurfaceFrame::blank(1, size))),
         };
         let attaching = WorkspaceContent::Attaching {
+            host_id: "wsl".to_owned(),
             endpoint: "Ubuntu".to_owned(),
             session: "demo".to_owned(),
         };
@@ -2550,6 +2572,7 @@ mod tests {
     fn active_session_stays_in_the_tree_while_its_host_refreshes_or_fails() {
         let size = GridSize::new(80, 24).expect("valid grid");
         let terminal = WorkspaceContent::Terminal {
+            host_id: "wsl".to_owned(),
             endpoint: "Ubuntu".to_owned(),
             session: "demo".to_owned(),
             presentation_id: 1,
@@ -2569,9 +2592,35 @@ mod tests {
 
             let rows = tree_sessions(&host, &terminal);
             assert_eq!(rows.len(), 1);
-            assert_eq!(rows[0].name, "demo");
+            assert_eq!(rows[0].selection.session(), "demo");
             assert!(rows[0].active);
         }
+    }
+
+    #[test]
+    fn refreshed_endpoint_does_not_alias_an_active_session_with_the_same_name() {
+        let size = GridSize::new(80, 24).expect("valid grid");
+        let terminal = WorkspaceContent::Terminal {
+            host_id: "wsl".to_owned(),
+            endpoint: "Ubuntu".to_owned(),
+            session: "demo".to_owned(),
+            presentation_id: 1,
+            surface: Arc::new(SurfaceStore::new(SurfaceFrame::blank(1, size))),
+        };
+        let host = HostItem::wsl(
+            "Debian",
+            None,
+            HostConnectionState::Ready,
+            vec![SessionItem::new("demo", 0)],
+            None,
+        );
+
+        let rows = tree_sessions(&host, &terminal);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].selection.endpoint(), "Debian");
+        assert!(!rows[0].active);
+        assert_eq!(rows[1].selection.endpoint(), "Ubuntu");
+        assert!(rows[1].active);
     }
 
     #[test]
