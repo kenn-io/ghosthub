@@ -48,7 +48,7 @@ struct WorkspaceTmuxDiscoveryTests {
         let environment = try setupStandardEnvironment()
         let kwtGate = KillGate()
         let kwtCompletions = Counter()
-        let tmuxGate = BlockingGate()
+        let tmuxGate = KillGate()
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
@@ -58,16 +58,14 @@ struct WorkspaceTmuxDiscoveryTests {
                 return KwtHostInventory(projects: [])
             },
             tmuxSessionDiscovery: { _ in
-                tmuxGate.wait()
+                await tmuxGate.suspend()
                 return .success([])
             },
             startServices: true
         )
 
         await kwtGate.waitUntilStarted()
-        await waitUntilMainActor(timeout: .seconds(15)) {
-            tmuxGate.didStart
-        }
+        await tmuxGate.waitUntilStarted()
         #expect(!model.isWorkspaceInventoryRefreshComplete)
 
         await kwtGate.release()
@@ -76,7 +74,7 @@ struct WorkspaceTmuxDiscoveryTests {
         }
         #expect(!model.isWorkspaceInventoryRefreshComplete)
 
-        tmuxGate.release()
+        await tmuxGate.release()
         await waitUntilMainActor(timeout: .seconds(15)) {
             model.isWorkspaceInventoryRefreshComplete
         }

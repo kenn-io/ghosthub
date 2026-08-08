@@ -11,6 +11,8 @@ enum KwtWorktreeError: Error, Equatable, LocalizedError {
     case removalInProgress
     case removalIdentityUnavailable
     case removalTargetChanged
+    case removalHostChanged
+    case removalPreflightUnavailable(host: String, message: String)
     case sessionStartedAfterConfirmation(session: String)
     case commandFailed(host: String, status: Int32)
     case removalFailed(host: String, status: Int32)
@@ -37,6 +39,11 @@ enum KwtWorktreeError: Error, Equatable, LocalizedError {
         case .removalTargetChanged:
             "The worktree or its tmux session changed after confirmation."
                 + " Review the refreshed workspace and try again."
+        case .removalHostChanged:
+            "The host destination changed after confirmation. Review the host"
+                + " settings and try again."
+        case let .removalPreflightUnavailable(host, message):
+            "kwt could not verify the worktree on \(host): \(message)"
         case let .sessionStartedAfterConfirmation(session):
             "Tmux session “\(session)” started after confirmation. Review the"
                 + " updated removal warning and try again."

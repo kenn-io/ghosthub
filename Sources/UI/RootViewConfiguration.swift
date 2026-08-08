@@ -163,6 +163,11 @@ public struct WorktreeRemovalRequest: Equatable, Sendable {
     }
 }
 
+public enum WorktreeRemovalResult: Equatable, Sendable {
+    case removed
+    case confirmationRequired(WorktreeRemovalRequest)
+}
+
 public enum SSHConnectionRecoveryResult: Equatable, Sendable {
     case hostKey(SSHHostKeyConfirmation)
     case authenticationRequired
@@ -298,7 +303,7 @@ public struct InteractionHandlers {
     public let prepareWorktreeRemoval:
         ((UUID) async throws -> WorktreeRemovalRequest)?
     public let removeWorktree:
-        ((WorktreeRemovalRequest) async throws -> Void)?
+        ((WorktreeRemovalRequest) async throws -> WorktreeRemovalResult)?
 
     public init(
         closeWindow: (() -> Void)? = nil,
@@ -343,7 +348,7 @@ public struct InteractionHandlers {
         prepareWorktreeRemoval:
         ((UUID) async throws -> WorktreeRemovalRequest)? = nil,
         removeWorktree:
-        ((WorktreeRemovalRequest) async throws -> Void)? = nil
+        ((WorktreeRemovalRequest) async throws -> WorktreeRemovalResult)? = nil
     ) {
         self.closeWindow = closeWindow
         self.dismissLogViewer = dismissLogViewer

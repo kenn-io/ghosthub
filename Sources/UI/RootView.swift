@@ -32,6 +32,8 @@ public struct RootView: View {
     @State private var newTmuxSessionHost: HostSummary?
     @State private var addProjectHost: HostSummary?
     @State private var workspaceAlert: WorkspaceAlert?
+    @State private var pendingWorktreeRemoval: WorktreeRemovalRequest?
+    @State private var pendingWorktreeRemovalID: UUID?
     @State private var tmuxRecoveryRequestRouter =
         TmuxConnectionRecoveryRequestRouter()
     @StateObject private var sshHostKeyReview =
@@ -226,9 +228,11 @@ public struct RootView: View {
                 )
             }
             .onChange(of: snapshot) { _, updatedSnapshot in
-                selection = selection.normalizedBySelectingVisibleFallback(
+                selection = Self.selectionAfterSnapshotChange(
+                    selection,
                     in: updatedSnapshot,
-                    visibility: worktreeVisibility
+                    visibility: worktreeVisibility,
+                    pendingRemovalWorktreeID: pendingWorktreeRemovalID
                 )
                 synchronizeSelectedWorktreeSession()
             }
@@ -711,22 +715,22 @@ public struct RootView: View {
         _ tmuxSession: WorkspaceTmuxSessionSelection
     ) {
         guard let prepare = handlers.prepareTmuxSessionKill else {
-            workspaceAlert = .sessionKillFailure(
+            presentNonWorktreeWorkspaceAlert(.sessionKillFailure(
                 session: tmuxSession.name,
                 message: "Session termination is unavailable."
-            )
+            ))
             return
         }
         Task {
             do {
-                workspaceAlert = await .sessionKillConfirmation(
+                await presentNonWorktreeWorkspaceAlert(.sessionKillConfirmation(
                     try prepare(tmuxSession)
-                )
+                ))
             } catch {
-                workspaceAlert = .sessionKillFailure(
+                presentNonWorktreeWorkspaceAlert(.sessionKillFailure(
                     session: tmuxSession.name,
                     message: error.localizedDescription
-                )
+                ))
             }
         }
     }
@@ -743,12 +747,21 @@ public struct RootView: View {
                 }
                 try await applyTheme(tmuxSession)
             } catch {
-                workspaceAlert = .sessionThemeFailure(
+                presentNonWorktreeWorkspaceAlert(.sessionThemeFailure(
                     session: tmuxSession.name,
                     message: error.localizedDescription
-                )
+                ))
             }
         }
+    }
+
+    private func presentNonWorktreeWorkspaceAlert(_ alert: WorkspaceAlert) {
+        Self.presentNonWorktreeWorkspaceAlert(
+            alert,
+            workspaceAlert: &workspaceAlert,
+            pendingWorktreeRemoval: &pendingWorktreeRemoval,
+            pendingWorktreeID: &pendingWorktreeRemovalID
+        )
     }
 
     private func workspaceAlertView(
@@ -776,10 +789,10 @@ public struct RootView: View {
                             }
                             try await kill(request)
                         } catch {
-                            workspaceAlert = .sessionKillFailure(
+                            presentNonWorktreeWorkspaceAlert(.sessionKillFailure(
                                 session: tmuxSession.name,
                                 message: error.localizedDescription
-                            )
+                            ))
                         }
                     }
                 },
@@ -811,13 +824,29 @@ public struct RootView: View {
                         + " The Git branch will be kept."
                 ),
                 primaryButton: .destructive(Text("Remove Worktree")) {
+                    Self.beginWorktreeRemovalResolution(
+                        pendingWorktreeRemoval: &pendingWorktreeRemoval
+                    )
                     Task {
                         do {
                             guard let remove = handlers.removeWorktree else {
                                 throw WorktreeRemovalUnavailableError()
                             }
-                            try await remove(request)
+                            switch try await remove(request) {
+                            case .removed:
+                                pendingWorktreeRemoval = nil
+                                pendingWorktreeRemovalID = nil
+                            case let .confirmationRequired(updatedRequest):
+                                pendingWorktreeRemoval = updatedRequest
+                                pendingWorktreeRemovalID =
+                                    updatedRequest.worktree.id
+                                workspaceAlert = .worktreeRemovalConfirmation(
+                                    updatedRequest
+                                )
+                            }
                         } catch {
+                            pendingWorktreeRemoval = nil
+                            pendingWorktreeRemovalID = nil
                             workspaceAlert = .worktreeRemovalFailure(
                                 worktree: request.worktree.name,
                                 message: error.localizedDescription
@@ -825,7 +854,10 @@ public struct RootView: View {
                         }
                     }
                 },
-                secondaryButton: .cancel()
+                secondaryButton: .cancel(Text("Cancel")) {
+                    pendingWorktreeRemoval = nil
+                    pendingWorktreeRemovalID = nil
+                }
             )
         case let .worktreeRemovalFailure(worktree, message):
             return Alert(
@@ -837,7 +869,15 @@ public struct RootView: View {
     }
 
     private func requestWorktreeRemoval(_ worktree: WorktreeSummary) {
+        guard Self.reserveWorktreeRemovalPreparation(
+            worktree.id,
+            pendingWorktreeID: &pendingWorktreeRemovalID
+        ) else { return }
         guard let prepare = handlers.prepareWorktreeRemoval else {
+            Self.clearWorktreeRemovalPreparation(
+                worktree.id,
+                pendingWorktreeID: &pendingWorktreeRemovalID
+            )
             workspaceAlert = .worktreeRemovalFailure(
                 worktree: worktree.name,
                 message: "Worktree removal is unavailable."
@@ -846,16 +886,83 @@ public struct RootView: View {
         }
         Task {
             do {
-                workspaceAlert = await .worktreeRemovalConfirmation(
-                    try prepare(worktree.id)
+                let request = try await Self.prepareWorktreeRemoval(
+                    worktree,
+                    using: prepare
                 )
+                guard pendingWorktreeRemovalID == worktree.id else { return }
+                pendingWorktreeRemoval = request
+                workspaceAlert = .worktreeRemovalConfirmation(
+                    request
+                )
+            } catch is CancellationError {
+                guard Self.clearWorktreeRemovalPreparation(
+                    worktree.id,
+                    pendingWorktreeID: &pendingWorktreeRemovalID
+                ) else { return }
+                pendingWorktreeRemoval = nil
             } catch {
+                guard Self.clearWorktreeRemovalPreparation(
+                    worktree.id,
+                    pendingWorktreeID: &pendingWorktreeRemovalID
+                ) else { return }
+                pendingWorktreeRemoval = nil
                 workspaceAlert = .worktreeRemovalFailure(
                     worktree: worktree.name,
                     message: error.localizedDescription
                 )
             }
         }
+    }
+
+    @MainActor
+    static func prepareWorktreeRemoval(
+        _ worktree: WorktreeSummary,
+        using prepare: (UUID) async throws -> WorktreeRemovalRequest
+    ) async throws -> WorktreeRemovalRequest {
+        try await prepare(worktree.id)
+    }
+
+    @MainActor
+    static func reserveWorktreeRemovalPreparation(
+        _ worktreeID: UUID,
+        pendingWorktreeID: inout UUID?
+    ) -> Bool {
+        guard pendingWorktreeID == nil else { return false }
+        pendingWorktreeID = worktreeID
+        return true
+    }
+
+    @MainActor
+    @discardableResult
+    static func clearWorktreeRemovalPreparation(
+        _ worktreeID: UUID,
+        pendingWorktreeID: inout UUID?
+    ) -> Bool {
+        guard pendingWorktreeID == worktreeID else { return false }
+        pendingWorktreeID = nil
+        return true
+    }
+
+    @MainActor
+    static func presentNonWorktreeWorkspaceAlert(
+        _ alert: WorkspaceAlert,
+        workspaceAlert: inout WorkspaceAlert?,
+        pendingWorktreeRemoval: inout WorktreeRemovalRequest?,
+        pendingWorktreeID: inout UUID?
+    ) {
+        if pendingWorktreeRemoval != nil {
+            pendingWorktreeRemoval = nil
+            pendingWorktreeID = nil
+        }
+        workspaceAlert = alert
+    }
+
+    @MainActor
+    static func beginWorktreeRemovalResolution(
+        pendingWorktreeRemoval: inout WorktreeRemovalRequest?
+    ) {
+        pendingWorktreeRemoval = nil
     }
 
     static func selectionForHostTmuxSession(
@@ -1229,6 +1336,31 @@ public struct RootView: View {
         selection = selection.normalizedBySelectingVisibleFallback(
             in: snapshot,
             visibility: worktreeVisibility
+        )
+    }
+
+    static func selectionAfterSnapshotChange(
+        _ current: WorkspaceSelection,
+        in snapshot: WorkspaceSnapshot,
+        visibility: WorktreeVisibility,
+        pendingRemovalWorktreeID: UUID?
+    ) -> WorkspaceSelection {
+        if let pendingRemovalWorktreeID,
+           current.selectedWorktreeID == pendingRemovalWorktreeID,
+           snapshot.worktree(id: pendingRemovalWorktreeID) == nil,
+           let projectID = current.selectedProjectID,
+           snapshot.project(id: projectID) != nil {
+            var updated = current
+            updated.select(
+                .project(projectID),
+                in: snapshot,
+                visibility: visibility
+            )
+            return updated
+        }
+        return current.normalizedBySelectingVisibleFallback(
+            in: snapshot,
+            visibility: visibility
         )
     }
 

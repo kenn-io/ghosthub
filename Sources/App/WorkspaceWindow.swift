@@ -884,7 +884,7 @@ struct WorkspaceWindow: View {
                     try await sceneModel.prepareWorktreeRemoval(worktreeID)
                 },
                 removeWorktree: { [sceneModel] request in
-                    try await sceneModel.removeWorktree(request)
+                    try await sceneModel.resolveWorktreeRemoval(request)
                 }
             ),
             sidebarToggleTarget: sceneModel,
