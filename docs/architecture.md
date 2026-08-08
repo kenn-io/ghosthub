@@ -206,10 +206,13 @@ Host command capture is bounded and descendant-contained so inherited output
 pipes cannot outlive a cancelled or completed refresh.
 
 The Rust application keeps its host rail and discovered-session rail visible
-around an active terminal. Switching sessions is an explicit workspace action:
-it validates the selected inventory target before detaching the current
-ordinary client, then launches the replacement through the same atomic live-
-identity check as an initial attachment. This presentation navigation never
+around an active terminal. Each workspace retains every tmux presentation it
+explicitly opens, including its ordinary client, worker, and surface. Switching
+sessions changes only the selected presentation; returning to an open session
+remounts that same surface synchronously without reconnecting. The first visit
+still validates the current inventory target and launches through the atomic
+live-identity check. Explicit close detaches only the selected presentation,
+while application shutdown detaches all retained clients. Navigation never
 destroys server state and does not grant the UI direct host, session, or
 terminal dependencies.
 
