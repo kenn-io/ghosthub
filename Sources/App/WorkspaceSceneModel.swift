@@ -2744,6 +2744,11 @@ final class WorkspaceSceneModel: ObservableObject {
                 }
             }
         let uniqueProjectWarnings = Array(Set(projectWarnings)).sorted()
+        let projectListWarningsByHost = kwtInventoriesByHost.compactMapValues {
+            $0.projectsWarning.map {
+                "Projects: \($0)"
+            }
+        }
         let directoryWarningsByHost = kwtInventoriesByHost.compactMapValues {
             $0.directoryWorkspaceWarning.map {
                 "Directory workspaces: \($0)"
@@ -2751,12 +2756,14 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         let hostIDs = Set(kwtInventoryFailuresByHost.keys)
             .union(tmuxDiscoveryFailuresByHost.keys)
+            .union(projectListWarningsByHost.keys)
             .union(directoryWarningsByHost.keys)
         workspaceInventoryWarningsByHost = Dictionary(
             uniqueKeysWithValues: hostIDs.compactMap { hostID in
                 let warnings = [
                     kwtInventoryFailuresByHost[hostID],
                     tmuxDiscoveryFailuresByHost[hostID],
+                    projectListWarningsByHost[hostID],
                     directoryWarningsByHost[hostID],
                 ].compactMap { $0 }
                 let unique = Array(Set(warnings)).sorted()

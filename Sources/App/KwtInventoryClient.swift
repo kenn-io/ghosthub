@@ -64,15 +64,18 @@ struct KwtProjectInventory: Equatable, Sendable {
 
 struct KwtHostInventory: Equatable, Sendable {
     var projects: [KwtProjectInventory]
+    var projectsWarning: String?
     var directoryWorkspaces: [KwtDirectoryWorkspaceRecord]
     var directoryWorkspaceWarning: String?
 
     init(
         projects: [KwtProjectInventory],
+        projectsWarning: String? = nil,
         directoryWorkspaces: [KwtDirectoryWorkspaceRecord] = [],
         directoryWorkspaceWarning: String? = nil
     ) {
         self.projects = projects
+        self.projectsWarning = projectsWarning
         self.directoryWorkspaces = directoryWorkspaces
         self.directoryWorkspaceWarning = directoryWorkspaceWarning
     }
@@ -81,6 +84,12 @@ struct KwtHostInventory: Equatable, Sendable {
         from previous: KwtHostInventory?,
         excludingWorktrees: Set<KwtWorktreeIdentity> = []
     ) -> KwtHostInventory {
+        var retainedProjects = projects
+        if projectsWarning != nil,
+           retainedProjects.isEmpty,
+           let previous {
+            retainedProjects = previous.projects
+        }
         var retainedDirectories = directoryWorkspaces
         if directoryWorkspaceWarning != nil,
            retainedDirectories.isEmpty,
@@ -88,7 +97,7 @@ struct KwtHostInventory: Equatable, Sendable {
             retainedDirectories = previous.directoryWorkspaces
         }
         return KwtHostInventory(
-            projects: projects.map { item in
+            projects: retainedProjects.map { item in
                 var retained = item
                 if item.warning != nil,
                    item.worktrees.isEmpty,
@@ -108,6 +117,7 @@ struct KwtHostInventory: Equatable, Sendable {
                 }
                 return retained
             },
+            projectsWarning: projectsWarning,
             directoryWorkspaces: retainedDirectories,
             directoryWorkspaceWarning: directoryWorkspaceWarning
         )
@@ -120,6 +130,7 @@ struct KwtHostInventory: Equatable, Sendable {
                 updated.worktrees.removeAll { $0.path == path }
                 return updated
             },
+            projectsWarning: projectsWarning,
             directoryWorkspaces: directoryWorkspaces,
             directoryWorkspaceWarning: directoryWorkspaceWarning
         )
@@ -230,10 +241,21 @@ struct KwtInventoryClient: Sendable {
                 windowsKwtRelativePath: windowsKwtRelativePath
             )
         )
-        let projects: [KwtProjectRecord] = try decode(
-            projectsResult,
-            hostLabel: hostLabel
-        )
+        let projects: [KwtProjectRecord]
+        let projectsWarning: String?
+        let projectsError: Error?
+        do {
+            projects = try decode(
+                projectsResult,
+                hostLabel: hostLabel
+            )
+            projectsWarning = nil
+            projectsError = nil
+        } catch {
+            projects = []
+            projectsWarning = error.localizedDescription
+            projectsError = error
+        }
         let directoryWorkspaces: [KwtDirectoryWorkspaceRecord]
         let directoryWorkspaceWarning: String?
         do {
@@ -245,6 +267,10 @@ struct KwtInventoryClient: Sendable {
         } catch {
             directoryWorkspaces = []
             directoryWorkspaceWarning = error.localizedDescription
+        }
+        if let projectsError,
+           directoryWorkspaceWarning != nil {
+            throw projectsError
         }
 
         let indexed = await withTaskGroup(
@@ -295,6 +321,7 @@ struct KwtInventoryClient: Sendable {
         }
         return KwtHostInventory(
             projects: indexed.sorted { $0.0 < $1.0 }.map(\.1),
+            projectsWarning: projectsWarning,
             directoryWorkspaces: directoryWorkspaces,
             directoryWorkspaceWarning: directoryWorkspaceWarning
         )
@@ -429,6 +456,19 @@ enum KwtSnapshotMerger {
         let existingWorktrees = snapshot.worktrees.filter { $0.hostID == hostID }
         var projects: [ProjectSummary] = []
         var worktrees: [WorktreeSummary] = []
+        if inventory.projectsWarning != nil,
+           inventory.projects.isEmpty {
+            projects = existingProjects.map { existing in
+                var retained = existing
+                retained.isStale = false
+                return retained
+            }
+            worktrees = existingWorktrees.map { existing in
+                var retained = existing
+                retained.isStale = false
+                return retained
+            }
+        }
         let existingDirectoryWorkspaces = snapshot.directoryWorkspaces.filter {
             $0.hostID == hostID
         }

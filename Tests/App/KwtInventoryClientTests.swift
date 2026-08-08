@@ -111,6 +111,46 @@ struct KwtInventoryClientTests {
         #expect(inventory.directoryWorkspaceWarning != nil)
     }
 
+    @Test("project inventory failure does not hide registered directories")
+    func projectFailureIsPartial() async throws {
+        let client = KwtInventoryClient(
+            localRunner: { _, command in
+                if command.contains("projects --json") {
+                    return (42, "")
+                }
+                if command.contains("workspace list --json") {
+                    return (
+                        0,
+                        "GHOSTHUB_KWT_JSON\n" +
+                            #"[{"name":"jibot","path":"/workspaces/jibot","session_name":"kwt-workspace-dir-jibot-abc","session_live":true}]"#
+                    )
+                }
+                return (0, "GHOSTHUB_KWT_JSON\n[]")
+            }
+        )
+
+        let inventory = try await client.load(from: .local)
+
+        #expect(inventory.projects.isEmpty)
+        #expect(inventory.projectsWarning != nil)
+        #expect(inventory.directoryWorkspaces.map(\.name) == ["jibot"])
+        #expect(inventory.directoryWorkspaceWarning == nil)
+    }
+
+    @Test("complete inventory failure remains fatal")
+    func completeFailureThrows() async {
+        let client = KwtInventoryClient(
+            localRunner: { _, _ in (127, "") }
+        )
+
+        await #expect(throws: KwtInventoryError.commandFailed(
+            host: "this Mac",
+            status: 127
+        )) {
+            try await client.load(from: .local)
+        }
+    }
+
     @Test("remote inventory resolves kwt on the remote host")
     func remoteInventoryDoesNotUseBundledPath() async throws {
         let ssh = SSHHostInfo(user: "wesm", hostname: "builder", port: nil)
@@ -480,6 +520,83 @@ struct KwtInventoryClientTests {
 
         #expect(retained.projects[0].worktrees == [worktree])
         #expect(retained.projects[0].warning == "temporary failure")
+    }
+
+    @Test("failed project list refresh retains cached projects")
+    func retainsCachedProjectsWhenProjectListFails() {
+        let project = KwtProjectRecord(
+            repository: "repo",
+            name: "repo",
+            path: "/repo",
+            lastTouched: nil
+        )
+        let previous = KwtHostInventory(projects: [
+            KwtProjectInventory(
+                project: project,
+                worktrees: [],
+                warning: nil
+            ),
+        ])
+        let failed = KwtHostInventory(
+            projects: [],
+            projectsWarning: "temporary failure"
+        )
+
+        let retained = failed.retainingFailedProjectWorktrees(from: previous)
+
+        #expect(retained.projects.map(\.project) == [project])
+        #expect(retained.projectsWarning == "temporary failure")
+    }
+
+    @Test("failed initial project list preserves persisted project rows")
+    func failedProjectListPreservesStoredOverlay() {
+        let hostID = UUID()
+        let projectID = UUID()
+        let worktreeID = UUID()
+        let snapshot = WorkspaceSnapshot(
+            hosts: [.init(
+                id: hostID,
+                name: "This Mac",
+                kind: .selfHost,
+                platform: .macOS
+            )],
+            projects: [.init(
+                id: projectID,
+                hostID: hostID,
+                scopedKey: "repo",
+                name: "repo",
+                rootPath: "/repo"
+            )],
+            worktrees: [.init(
+                id: worktreeID,
+                hostID: hostID,
+                projectID: projectID,
+                scopedKey: "/repo",
+                name: "main",
+                path: "/repo",
+                branch: "main"
+            )]
+        )
+        let inventory = KwtHostInventory(
+            projects: [],
+            projectsWarning: "temporary failure",
+            directoryWorkspaces: [.init(
+                name: "jibot",
+                path: "/workspaces/jibot",
+                sessionName: "kwt-workspace-dir-jibot-abc",
+                sessionLive: true
+            )]
+        )
+
+        let merged = KwtSnapshotMerger.merge(
+            inventory,
+            hostID: hostID,
+            into: snapshot
+        )
+
+        #expect(merged.projects.map(\.id) == [projectID])
+        #expect(merged.worktrees.map(\.id) == [worktreeID])
+        #expect(merged.directoryWorkspaces.map(\.name) == ["jibot"])
     }
 
     @Test("failed directory refresh retains its cached records")
