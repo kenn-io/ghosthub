@@ -291,15 +291,15 @@ struct NativeHerdrSessionCoordinatorTests {
                     : "/new/bin/herdr")
             }
         )
-        var readyCount = 0
-        coordinator.onSurfaceReady = { _ in readyCount += 1 }
+        var readyHandles: Set<UUID> = []
+        coordinator.onSurfaceReady = { readyHandles.insert($0.id) }
         let hostID = UUID()
         let first = coordinator.attach(
             hostID: hostID,
             name: "api",
             host: .local
         )
-        await waitUntilMainActor { readyCount == 1 }
+        await waitUntilMainActor { readyHandles.contains(first.id) }
         _ = coordinator.surface(handle: first)
         coordinator.detach(hostID: hostID, name: "api")
 
@@ -308,7 +308,7 @@ struct NativeHerdrSessionCoordinatorTests {
             name: "api",
             host: .local
         )
-        await waitUntilMainActor { readyCount == 2 }
+        await waitUntilMainActor { readyHandles.contains(retry.id) }
         _ = coordinator.surface(handle: retry)
 
         #expect(resolutionCount.withLock { $0 } == 2)
