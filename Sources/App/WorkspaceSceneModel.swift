@@ -1842,6 +1842,12 @@ final class WorkspaceSceneModel: ObservableObject {
         request: WorktreeRemovalRequest
     ) throws -> (WorktreeSummary, ProjectSummary)? {
         let hostID = request.project.hostID
+        if let warning = inventory.projectsWarning {
+            throw KwtWorktreeError.removalPreflightUnavailable(
+                host: request.confirmedHost.name,
+                message: warning
+            )
+        }
         guard let item = inventory.projects.first(where: {
             $0.project.repository == request.project.scopedKey
                 || $0.project.path == request.project.rootPath

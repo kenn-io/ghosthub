@@ -2626,6 +2626,54 @@ struct WorkspaceWorktreeRemovalTests {
     }
 
     @MainActor
+    @Test("a failed project-list preflight cannot trigger reconfirmation")
+    func projectListWarningPreflightRemainsAnError() async throws {
+        let environment = try setupStandardEnvironment()
+        var removable = WorktreeSummary.fixture(
+            hostID: environment.host.id,
+            projectID: environment.project.id,
+            scopedKey: "/tmp/project-a-feature",
+            name: "feature/remove",
+            path: "/tmp/project-a-feature",
+            branch: "feature/remove",
+            generation: stableWorktreeGeneration
+        )
+        removable.tmuxSessionName = "kwt-project-a-feature"
+        var snapshot = environment.snapshot
+        snapshot.worktrees.append(removable)
+        let hostSummary = try #require(snapshot.host(id: environment.host.id))
+        let warning = "Project listing is temporarily unavailable."
+        let preflight = KwtHostInventory(
+            projects: [],
+            projectsWarning: warning
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtInventoryLoader: { _ in preflight },
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+        let expected = KwtWorktreeError.removalPreflightUnavailable(
+            host: hostSummary.name,
+            message: warning
+        )
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        await #expect(throws: expected) {
+            try await model.resolveWorktreeRemoval(request)
+        }
+
+        #expect(model.snapshot.worktree(id: removable.id) != nil)
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("a changed project path refreshes removal confirmation")
     func changedProjectPathRefreshesConfirmation() async throws {
         let environment = try setupStandardEnvironment()
