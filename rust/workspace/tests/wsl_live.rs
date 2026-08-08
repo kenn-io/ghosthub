@@ -316,6 +316,13 @@ fn failed_first_switch_restores_the_previous_presentation() {
         .expect("start guarded switch to stale inventory target");
     wait_for_terminal(&workspace, "workspace-live");
     assert_eq!(active_presentation_id(&workspace), presentation_id);
+    assert!(
+        workspace
+            .snapshot()
+            .notice()
+            .is_some_and(|notice| notice.contains("no longer exists")),
+        "restoring the prior terminal must preserve the switch failure diagnostic"
+    );
     assert_session_attached(&server, "workspace-live", 1);
     workspace.detach();
 }

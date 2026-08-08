@@ -743,14 +743,34 @@ struct RetainedPresentation<T> {
     presentation_id: u64,
 }
 
+struct RetainedRestart {
+    key: PresentationKey,
+    selection: SessionSelection,
+    attachment: ActiveAttachment<AttachRequest>,
+    presentation_id: u64,
+}
+
+struct RetainedRetry {
+    key: PresentationKey,
+    request: AttachRequest,
+}
+
+struct RetainedDrain {
+    emitted: Vec<WorkspaceEvent>,
+    retries: Vec<RetainedRetry>,
+    processed: usize,
+}
+
 struct RetainedPresentations<T> {
     entries: Vec<RetainedPresentation<T>>,
+    restarting: Vec<RetainedRestart>,
 }
 
 impl<T> RetainedPresentations<T> {
     const fn new() -> Self {
         Self {
             entries: Vec::new(),
+            restarting: Vec::new(),
         }
     }
 
@@ -772,22 +792,85 @@ impl<T> RetainedPresentations<T> {
 
     fn contains(&self, key: &PresentationKey) -> bool {
         self.entries.iter().any(|entry| &entry.key == key)
+            || self.restarting.iter().any(|entry| &entry.key == key)
     }
 
     fn selections(&self) -> Vec<SessionSelection> {
         self.entries
             .iter()
             .map(|entry| entry.selection.clone())
+            .chain(self.restarting.iter().map(|entry| entry.selection.clone()))
             .collect()
+    }
+
+    fn finish_restart(&mut self, key: &PresentationKey, worker: T) -> bool {
+        let Some(index) = self.restarting.iter().position(|entry| &entry.key == key) else {
+            return false;
+        };
+        let restart = self.restarting.remove(index);
+        self.insert(RetainedPresentation {
+            key: restart.key,
+            selection: restart.selection,
+            attachment: restart.attachment,
+            worker,
+            presentation_id: restart.presentation_id,
+        });
+        true
+    }
+
+    fn fail_restart(&mut self, key: &PresentationKey) -> Option<RetainedRestart> {
+        let index = self.restarting.iter().position(|entry| &entry.key == key)?;
+        Some(self.restarting.remove(index))
+    }
+
+    fn handle_exit(
+        &mut self,
+        index: usize,
+        code: u32,
+        output_tail: &str,
+        confirmed: bool,
+        emitted: &mut Vec<WorkspaceEvent>,
+        retries: &mut Vec<RetainedRetry>,
+    ) {
+        let term = self.entries[index].attachment.term;
+        let (retry, diagnostic) = classify_terminal_exit_event(code, output_tail, term, confirmed);
+        if retry {
+            let presentation = self.entries.remove(index);
+            let RetainedPresentation {
+                key,
+                selection,
+                mut attachment,
+                worker: _,
+                presentation_id,
+            } = presentation;
+            attachment.term = AttachTerm::Xterm;
+            retries.push(RetainedRetry {
+                key: key.clone(),
+                request: attachment.request.clone(),
+            });
+            self.restarting.push(RetainedRestart {
+                key,
+                selection,
+                attachment,
+                presentation_id,
+            });
+        } else {
+            self.entries.remove(index);
+            if let Some(diagnostic) = diagnostic {
+                emitted.push(WorkspaceEvent::Error(diagnostic));
+            }
+        }
     }
 }
 
 impl RetainedPresentations<TerminalWorker> {
-    fn drain_events(&mut self, budget: usize) -> (Vec<WorkspaceEvent>, usize) {
+    fn drain_events(&mut self, budget: usize) -> RetainedDrain {
         let mut emitted = Vec::new();
+        let mut retries = Vec::new();
         let mut processed = 0;
         let mut index = 0;
         while index < self.entries.len() && processed < budget {
+            let confirmed = self.entries[index].worker.is_confirmed_live();
             match self.entries[index].worker.try_event() {
                 Ok(Some(TerminalEvent::ClipboardWrite(write))) => {
                     processed += 1;
@@ -802,18 +885,39 @@ impl RetainedPresentations<TerminalWorker> {
                     let _cancelled = self.entries[index].worker.cancel_paste();
                     index += 1;
                 }
-                Ok(Some(TerminalEvent::ClipboardRead(_) | TerminalEvent::Error(_))) => {
+                Ok(Some(TerminalEvent::ClipboardRead(_))) => {
                     processed += 1;
                     index += 1;
                 }
-                Ok(Some(TerminalEvent::Exited { .. })) | Err(_) => {
+                Ok(Some(TerminalEvent::Error(error))) => {
+                    processed += 1;
+                    emitted.push(WorkspaceEvent::Error(error));
+                    index += 1;
+                }
+                Ok(Some(TerminalEvent::Exited { code, output_tail })) => {
+                    processed += 1;
+                    self.handle_exit(
+                        index,
+                        code,
+                        &output_tail,
+                        confirmed,
+                        &mut emitted,
+                        &mut retries,
+                    );
+                }
+                Err(error) => {
                     processed += 1;
                     self.entries.remove(index);
+                    emitted.push(WorkspaceEvent::Error(error.to_string()));
                 }
                 Ok(None) => index += 1,
             }
         }
-        (emitted, processed)
+        RetainedDrain {
+            emitted,
+            retries,
+            processed,
+        }
     }
 }
 
@@ -1693,14 +1797,17 @@ impl Workspace {
     }
 
     fn drain_retained_events(&self, budget: usize, emitted: &mut Vec<WorkspaceEvent>) -> usize {
-        let (hidden_events, processed) = self
+        let drain = self
             .inner
             .retained_presentations
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .drain_events(budget);
-        emitted.extend(hidden_events);
-        processed
+        emitted.extend(drain.emitted);
+        for retry in drain.retries {
+            self.retry_retained_with_xterm(retry, emitted);
+        }
+        drain.processed
     }
 
     fn attachment_for_worker(
@@ -1929,6 +2036,20 @@ impl Workspace {
                     "start TERM=xterm retry: {error}"
                 )));
             }
+        }
+    }
+
+    fn retry_retained_with_xterm(&self, retry: RetainedRetry, emitted: &mut Vec<WorkspaceEvent>) {
+        let inner = Arc::clone(&self.inner);
+        let key = retry.key.clone();
+        if let Err(error) = thread::Builder::new()
+            .name("ghosthub-retained-terminal-terminfo-retry".to_owned())
+            .spawn(move || run_retained_retry(&inner, &retry))
+        {
+            fail_retained_retry(&self.inner, &key, None);
+            emitted.push(WorkspaceEvent::Error(format!(
+                "start retained TERM=xterm retry: {error}"
+            )));
         }
     }
 
@@ -2255,12 +2376,88 @@ fn run_attach(inner: &Inner, request: &AttachRequest, term: AttachTerm, generati
     }
 }
 
+fn run_retained_retry(inner: &Inner, retry: &RetainedRetry) {
+    match attach_fresh(inner, &retry.request, AttachTerm::Xterm) {
+        Ok((worker, snapshot, _, initial_geometry)) => {
+            let latest_geometry = *inner
+                .terminal_geometry
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if latest_geometry != initial_geometry
+                && let Err(error) = worker.resize_with_metadata(
+                    latest_geometry.grid,
+                    latest_geometry.sequence,
+                    latest_geometry.pixels,
+                )
+            {
+                fail_retained_retry(inner, &retry.key, Some(error.to_string()));
+                return;
+            }
+            let published = inner
+                .retained_presentations
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .finish_restart(&retry.key, worker);
+            if published {
+                publish_attach_inventory(inner, &retry.request, snapshot);
+                inner.revision.fetch_add(1, Ordering::Release);
+            }
+        }
+        Err(AttachFreshError::Host(error)) => {
+            fail_retained_retry(inner, &retry.key, Some(error.to_string()));
+        }
+        Err(AttachFreshError::SessionChanged { error, snapshot }) => {
+            let fallback = take_failed_retained_retry(inner, &retry.key);
+            publish_stale_attachment_failure(inner, &retry.request, snapshot, &error);
+            restore_retry_fallback_if_idle(inner, fallback);
+        }
+    }
+}
+
+fn fail_retained_retry(inner: &Inner, key: &PresentationKey, diagnostic: Option<String>) {
+    let fallback = take_failed_retained_retry(inner, key);
+    if let Some(diagnostic) = diagnostic {
+        publish_local_notice(inner, diagnostic);
+    }
+    restore_retry_fallback_if_idle(inner, fallback);
+}
+
+fn take_failed_retained_retry(inner: &Inner, key: &PresentationKey) -> Option<PresentationKey> {
+    inner
+        .retained_presentations
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .fail_restart(key)
+        .and_then(|restart| restart.attachment.fallback)
+}
+
+fn restore_retry_fallback_if_idle(inner: &Inner, fallback: Option<PresentationKey>) {
+    let has_active_worker = inner
+        .worker
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .active()
+        .is_some();
+    if !has_active_worker {
+        restore_attach_fallback(inner, fallback);
+    }
+}
+
 fn restore_attach_fallback(inner: &Inner, fallback: Option<PresentationKey>) {
     let Some(fallback) = fallback else {
         return;
     };
+    let preserved_notice = inner
+        .terminal_notice
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
     match activate_retained_presentation(inner, &fallback) {
-        Ok(true) => {}
+        Ok(true) => {
+            if let Some(notice) = preserved_notice {
+                set_local_notice(inner, notice);
+            }
+        }
         Ok(false) => set_local_notice(
             inner,
             "the previous terminal presentation is no longer available".to_owned(),
@@ -2399,6 +2596,11 @@ fn set_local_notice(inner: &Inner, message: String) {
         .terminal_notice
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(message);
+}
+
+fn publish_local_notice(inner: &Inner, message: String) {
+    set_local_notice(inner, message);
+    inner.revision.fetch_add(1, Ordering::Release);
 }
 
 fn clear_terminal_notice(inner: &Inner) {
@@ -2930,6 +3132,70 @@ mod tests {
 
         assert!(retry_term);
         assert_eq!(diagnostic, None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn hidden_unconfirmed_client_keeps_its_identity_and_fallback_during_terminfo_retry() {
+        let host = WslHost::new(
+            WslConfig::with_distro("Ubuntu").expect("valid WSL config"),
+            Arc::new(StdCommandRunner) as SharedCommandRunner,
+            WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
+                .expect("absolute WSL path"),
+        );
+        let snapshot = HostSnapshot::test_fixture("Ubuntu", "boot-id", 42, Vec::new());
+        let identity = session::SessionIdentity::new(100, "$1", 200);
+        let request = AttachRequest {
+            host_id: "wsl".to_owned(),
+            host,
+            endpoint: snapshot.endpoint().clone(),
+            runtime: snapshot.runtime().clone(),
+            identity: identity.clone(),
+            name: "replacement".to_owned(),
+            inventory_generation: 1,
+        };
+        let key = request.presentation_key();
+        let fallback = PresentationKey {
+            session: "previous".to_owned(),
+            identity: session::SessionIdentity::new(100, "$2", 201),
+            ..key.clone()
+        };
+        let mut retained = RetainedPresentations::new();
+        retained.insert(RetainedPresentation {
+            key: key.clone(),
+            selection: SessionSelection::new("wsl", "Ubuntu", "replacement"),
+            attachment: ActiveAttachment {
+                request,
+                term: AttachTerm::Xterm256Color,
+                generation: 1,
+                fallback: Some(fallback.clone()),
+            },
+            worker: (),
+            presentation_id: 7,
+        });
+        let mut emitted = Vec::new();
+        let mut retries = Vec::new();
+
+        retained.handle_exit(
+            0,
+            1,
+            "missing or unsuitable terminal: xterm-256color\r\n",
+            false,
+            &mut emitted,
+            &mut retries,
+        );
+
+        let retry = retries.pop().expect("retained xterm retry");
+
+        assert!(emitted.is_empty());
+        assert_eq!(retry.key, key);
+        assert!(retained.contains(&key));
+        assert_eq!(retained.selections()[0].session(), "replacement");
+        assert_eq!(retained.restarting[0].attachment.term, AttachTerm::Xterm);
+        assert_eq!(
+            retained.restarting[0].attachment.fallback.as_ref(),
+            Some(&fallback)
+        );
     }
 
     #[test]
