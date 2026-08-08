@@ -554,8 +554,14 @@ struct PresentationKey {
     host_id: String,
     endpoint: String,
     socket_directory: Option<String>,
-    session: String,
+    runtime: host::WslRuntimeIdentity,
     identity: session::SessionIdentity,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct FallbackAuthority {
+    presentation: PresentationKey,
+    navigation_generation: u64,
 }
 
 impl AttachRequest {
@@ -564,7 +570,7 @@ impl AttachRequest {
             host_id: self.host_id.clone(),
             endpoint: self.endpoint.distro().to_owned(),
             socket_directory: self.host.socket_directory().map(str::to_owned),
-            session: self.name.clone(),
+            runtime: self.runtime.clone(),
             identity: self.identity.clone(),
         }
     }
@@ -582,7 +588,7 @@ struct ActiveAttachment<T> {
     request: T,
     term: AttachTerm,
     generation: u64,
-    fallback: Option<PresentationKey>,
+    fallback: Option<FallbackAuthority>,
 }
 
 struct AttachmentState<T> {
@@ -607,7 +613,7 @@ impl<T> AttachmentState<T> {
         &mut self,
         request: T,
         term: AttachTerm,
-        fallback: Option<PresentationKey>,
+        fallback: Option<FallbackAuthority>,
     ) -> Option<u64> {
         if self.active.is_some() {
             return None;
@@ -629,6 +635,10 @@ impl<T> AttachmentState<T> {
         self.active.as_ref()
     }
 
+    fn active_mut(&mut self) -> Option<&mut ActiveAttachment<T>> {
+        self.active.as_mut()
+    }
+
     fn is_current(&self, generation: u64) -> bool {
         self.generation == generation
             && self
@@ -647,7 +657,7 @@ impl<T> AttachmentState<T> {
         true
     }
 
-    fn fallback_if_current(&self, generation: u64) -> Option<PresentationKey> {
+    fn fallback_if_current(&self, generation: u64) -> Option<FallbackAuthority> {
         self.is_current(generation)
             .then(|| {
                 self.active
@@ -804,6 +814,33 @@ impl<T> RetainedPresentations<T> {
             .collect()
     }
 
+    fn reconcile_session_names(&mut self, snapshot: &HostSnapshot, socket_directory: Option<&str>) {
+        for presentation in &mut self.entries {
+            if let Some(name) =
+                refreshed_session_name(&presentation.key, snapshot, socket_directory)
+            {
+                presentation.selection = SessionSelection::new(
+                    &presentation.key.host_id,
+                    presentation.key.endpoint.clone(),
+                    name,
+                );
+                presentation.attachment.request.name = name.to_owned();
+            }
+        }
+        for presentation in &mut self.restarting {
+            if let Some(name) =
+                refreshed_session_name(&presentation.key, snapshot, socket_directory)
+            {
+                presentation.selection = SessionSelection::new(
+                    &presentation.key.host_id,
+                    presentation.key.endpoint.clone(),
+                    name,
+                );
+                presentation.attachment.request.name = name.to_owned();
+            }
+        }
+    }
+
     fn finish_restart(&mut self, key: &PresentationKey, worker: T) -> bool {
         let Some(index) = self.restarting.iter().position(|entry| &entry.key == key) else {
             return false;
@@ -862,6 +899,25 @@ impl<T> RetainedPresentations<T> {
             }
         }
     }
+}
+
+fn refreshed_session_name<'a>(
+    key: &PresentationKey,
+    snapshot: &'a HostSnapshot,
+    socket_directory: Option<&str>,
+) -> Option<&'a str> {
+    (key.host_id == "wsl"
+        && key.endpoint == snapshot.endpoint().distro()
+        && key.socket_directory.as_deref() == socket_directory
+        && key.runtime == *snapshot.runtime())
+    .then(|| {
+        snapshot
+            .sessions()
+            .iter()
+            .find(|session| session.identity() == &key.identity)
+            .map(session::DiscoveredSession::name)
+    })
+    .flatten()
 }
 
 impl RetainedPresentations<TerminalWorker> {
@@ -997,6 +1053,8 @@ struct Inner {
     inventory_state: Mutex<WorkspaceContent>,
     revision: AtomicU64,
     presentation_generation: AtomicU64,
+    navigation_generation: AtomicU64,
+    navigation: Mutex<()>,
     host: Mutex<Option<Published<HostContext>>>,
     discovery_cancel: Mutex<Option<CancellationToken>>,
     event_drain: Mutex<()>,
@@ -1055,6 +1113,8 @@ impl Workspace {
                 inventory_state: Mutex::new(snapshot.content),
                 revision: AtomicU64::new(snapshot.revision),
                 presentation_generation: AtomicU64::new(presentation_generation),
+                navigation_generation: AtomicU64::new(0),
+                navigation: Mutex::new(()),
                 host: Mutex::new(None),
                 discovery_cancel: Mutex::new(None),
                 event_drain: Mutex::new(()),
@@ -1111,6 +1171,8 @@ impl Workspace {
                 inventory_state: Mutex::new(WorkspaceContent::Shell),
                 revision: AtomicU64::new(0),
                 presentation_generation: AtomicU64::new(0),
+                navigation_generation: AtomicU64::new(0),
+                navigation: Mutex::new(()),
                 host: Mutex::new(None),
                 discovery_cancel: Mutex::new(None),
                 event_drain: Mutex::new(()),
@@ -1151,6 +1213,8 @@ impl Workspace {
                 inventory_state: Mutex::new(WorkspaceContent::Loading),
                 revision: AtomicU64::new(0),
                 presentation_generation: AtomicU64::new(0),
+                navigation_generation: AtomicU64::new(0),
+                navigation: Mutex::new(()),
                 host: Mutex::new(None),
                 discovery_cancel: Mutex::new(None),
                 event_drain: Mutex::new(()),
@@ -1267,6 +1331,11 @@ impl Workspace {
     /// Returns an error if another presentation is active or the requested
     /// session is not in the latest resolved inventory.
     pub fn attach(&self, selection: &SessionSelection) -> Result<(), WorkspaceError> {
+        let _navigation = self
+            .inner
+            .navigation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if self
             .inner
             .worker
@@ -1281,11 +1350,12 @@ impl Workspace {
         }
         let request = capture_attach_request(&self.inner, selection)?;
         let key = request.presentation_key();
-        if self.activate_retained_presentation(&key)? {
+        let navigation_generation = self.begin_navigation();
+        if self.activate_retained_presentation(&key, Some(selection), None)? {
             return Ok(());
         }
 
-        self.start_attachment(request, None)
+        self.start_attachment(request, None, navigation_generation)
     }
 
     /// Select another presentation, retaining the current ordinary tmux client.
@@ -1299,6 +1369,11 @@ impl Workspace {
     /// Returns an error if the requested session is absent from the latest
     /// inventory or the replacement attachment cannot be started.
     pub fn switch_session(&self, selection: &SessionSelection) -> Result<(), WorkspaceError> {
+        let _navigation = self
+            .inner
+            .navigation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let same_visible_selection = matches!(
             self.inner
                 .state
@@ -1333,6 +1408,7 @@ impl Workspace {
         {
             return Ok(());
         }
+        let navigation_generation = self.begin_navigation();
         let already_open = self
             .inner
             .retained_presentations
@@ -1342,25 +1418,37 @@ impl Workspace {
         let in_flight_fallback = self.supersede_inflight_attachment()?;
         let visible_previous = self.retain_active_presentation()?;
         let previous = in_flight_fallback.or(visible_previous);
-        match self.activate_retained_presentation(&key) {
+        let fallback = previous.clone().map(|presentation| FallbackAuthority {
+            presentation,
+            navigation_generation,
+        });
+        match self.activate_retained_presentation(&key, Some(selection), fallback.clone()) {
             Ok(true) => return Ok(()),
             Ok(false) => {}
             Err(error) => {
                 if let Some(previous) = previous {
-                    let _restored = self.activate_retained_presentation(&previous);
+                    let _restored = self.activate_retained_presentation(&previous, None, None);
                 }
                 return Err(error);
             }
         }
         if already_open {
             if let Some(previous) = previous {
-                let _restored = self.activate_retained_presentation(&previous);
+                let _restored = self.activate_retained_presentation(&previous, None, None);
             }
             return Err(WorkspaceError::new(
                 "the retained terminal presentation is no longer available",
             ));
         }
-        self.start_attachment(request, previous)
+        self.start_attachment(request, fallback, navigation_generation)
+    }
+
+    fn begin_navigation(&self) -> u64 {
+        self.inner
+            .navigation_generation
+            .fetch_add(1, Ordering::AcqRel)
+            .checked_add(1)
+            .expect("navigation generation exhausted")
     }
 
     fn supersede_inflight_attachment(&self) -> Result<Option<PresentationKey>, WorkspaceError> {
@@ -1383,7 +1471,7 @@ impl Workspace {
         let active = attachment.take_active().ok_or_else(|| {
             WorkspaceError::new("the in-flight terminal presentation is not available")
         })?;
-        let fallback = active.fallback;
+        let fallback = active.fallback.map(|fallback| fallback.presentation);
         drop(attachment);
         clear_pending_paste(&self.inner);
         self.restore_inventory_state();
@@ -1460,14 +1548,17 @@ impl Workspace {
     fn activate_retained_presentation(
         &self,
         key: &PresentationKey,
+        selection: Option<&SessionSelection>,
+        fallback: Option<FallbackAuthority>,
     ) -> Result<bool, WorkspaceError> {
-        activate_retained_presentation(&self.inner, key)
+        activate_retained_presentation(&self.inner, key, selection, fallback)
     }
 
     fn start_attachment(
         &self,
         request: AttachRequest,
-        fallback: Option<PresentationKey>,
+        fallback: Option<FallbackAuthority>,
+        navigation_generation: u64,
     ) -> Result<(), WorkspaceError> {
         let generation;
         {
@@ -1501,6 +1592,7 @@ impl Workspace {
         }
         self.inner.revision.fetch_add(1, Ordering::Release);
         let inner = Arc::clone(&self.inner);
+        let failure_request = request.clone();
         if let Err(error) = thread::Builder::new()
             .name("ghosthub-terminal-attach".to_owned())
             .spawn(move || {
@@ -1513,9 +1605,13 @@ impl Workspace {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if attachment.clear_if_current(generation) {
+                let fallback = fallback.filter(|fallback| {
+                    fallback_owns_visible_request(&self.inner, fallback, &failure_request)
+                        && fallback.navigation_generation == navigation_generation
+                });
                 drop(attachment);
                 self.restore_inventory_state();
-                restore_attach_fallback(&self.inner, fallback);
+                restore_attach_fallback_locked(&self.inner, fallback);
             }
             return Err(WorkspaceError::new(format!("start attach task: {error}")));
         }
@@ -1691,6 +1787,12 @@ impl Workspace {
     }
 
     pub fn detach(&self) {
+        let _navigation = self
+            .inner
+            .navigation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.begin_navigation();
         self.inner
             .attachment
             .lock()
@@ -1843,7 +1945,7 @@ impl Workspace {
     fn attachment_for_worker(
         &self,
         worker_generation: u64,
-    ) -> Option<(AttachRequest, AttachTerm, u64, Option<PresentationKey>)> {
+    ) -> Option<(AttachRequest, AttachTerm, u64, Option<FallbackAuthority>)> {
         let attachment = self
             .inner
             .attachment
@@ -1892,7 +1994,7 @@ impl Workspace {
 
     fn handle_terminal_exit(
         &self,
-        attachment: Option<(AttachRequest, u64, Option<PresentationKey>)>,
+        attachment: Option<(AttachRequest, u64, Option<FallbackAuthority>)>,
         worker_generation: u64,
         retry_term: bool,
         exit_error: Option<String>,
@@ -1901,6 +2003,8 @@ impl Workspace {
         let Some((request, generation, fallback)) = attachment else {
             return;
         };
+        let fallback = fallback
+            .filter(|fallback| fallback_owns_visible_request(&self.inner, fallback, &request));
         {
             let mut attachment = self
                 .inner
@@ -1992,6 +2096,11 @@ impl Workspace {
                     match resolved {
                         Ok(context) => {
                             let state = ready_content(&context.snapshot);
+                            reconcile_presentation_session_names(
+                                &task_inner,
+                                &context.snapshot,
+                                context.host.socket_directory(),
+                            );
                             *task_inner
                                 .host
                                 .lock()
@@ -2048,6 +2157,7 @@ impl Workspace {
             }
         }
         let inner = Arc::clone(&self.inner);
+        let failure_request = request.clone();
         if let Err(error) = thread::Builder::new()
             .name("ghosthub-terminal-terminfo-retry".to_owned())
             .spawn(move || run_attach(&inner, &request, AttachTerm::Xterm, generation))
@@ -2057,7 +2167,11 @@ impl Workspace {
                 .attachment
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let fallback = attachment.fallback_if_current(generation);
+            let fallback = attachment
+                .fallback_if_current(generation)
+                .filter(|fallback| {
+                    fallback_owns_visible_request(&self.inner, fallback, &failure_request)
+                });
             if attachment.clear_if_current(generation) {
                 drop(attachment);
                 self.restore_inventory_state();
@@ -2091,8 +2205,10 @@ impl Workspace {
 fn activate_retained_presentation(
     inner: &Inner,
     key: &PresentationKey,
+    selection: Option<&SessionSelection>,
+    fallback: Option<FallbackAuthority>,
 ) -> Result<bool, WorkspaceError> {
-    let Some(presentation) = inner
+    let Some(mut presentation) = inner
         .retained_presentations
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -2100,6 +2216,12 @@ fn activate_retained_presentation(
     else {
         return Ok(false);
     };
+    if let Some(selection) = selection {
+        presentation.selection = selection.clone();
+        selection
+            .session()
+            .clone_into(&mut presentation.attachment.request.name);
+    }
     let geometry = *inner
         .terminal_geometry
         .lock()
@@ -2109,7 +2231,8 @@ fn activate_retained_presentation(
         .attachment
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let Some(generation) = reserve_retained_attachment(&mut attachment, &presentation.attachment)
+    let Some(generation) =
+        reserve_retained_attachment(&mut attachment, &presentation.attachment, fallback)
     else {
         drop(attachment);
         reinsert_retained_presentation(inner, presentation);
@@ -2170,11 +2293,12 @@ fn activate_retained_presentation(
 fn reserve_retained_attachment(
     state: &mut AttachmentState<AttachRequest>,
     retained: &ActiveAttachment<AttachRequest>,
+    fallback: Option<FallbackAuthority>,
 ) -> Option<u64> {
     state.reserve_with_fallback(
         retained.request.clone(),
         retained.term,
-        retained.fallback.clone(),
+        fallback.or_else(|| retained.fallback.clone()),
     )
 }
 
@@ -2374,7 +2498,9 @@ fn run_attach(inner: &Inner, request: &AttachRequest, term: AttachTerm, generati
                     worker.resize_with_metadata(geometry.grid, geometry.sequence, geometry.pixels)
                 },
             ) {
-                let fallback = attachment.fallback_if_current(generation);
+                let fallback = attachment
+                    .fallback_if_current(generation)
+                    .filter(|fallback| fallback_owns_visible_request(inner, fallback, request));
                 attachment.clear_if_current(generation);
                 drop(attachment);
                 publish_attachment_failure(inner, request.inventory_generation, error);
@@ -2399,7 +2525,9 @@ fn run_attach(inner: &Inner, request: &AttachRequest, term: AttachTerm, generati
                 .attachment
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let fallback = attachment.fallback_if_current(generation);
+            let fallback = attachment
+                .fallback_if_current(generation)
+                .filter(|fallback| fallback_owns_visible_request(inner, fallback, request));
             if !attachment.clear_if_current(generation) {
                 return;
             }
@@ -2448,52 +2576,69 @@ fn run_retained_retry(inner: &Inner, retry: &RetainedRetry) {
             fail_retained_retry(inner, &retry.key, Some(error.to_string()));
         }
         Err(AttachFreshError::SessionChanged { error, snapshot }) => {
-            let fallback = take_failed_retained_retry(inner, &retry.key);
+            remove_failed_retained_retry(inner, &retry.key);
             publish_retained_stale_failure(inner, &retry.request, snapshot, &error);
-            restore_retry_fallback_if_idle(inner, fallback);
         }
     }
 }
 
 fn fail_retained_retry(inner: &Inner, key: &PresentationKey, diagnostic: Option<String>) {
-    let fallback = take_failed_retained_retry(inner, key);
+    remove_failed_retained_retry(inner, key);
     if let Some(diagnostic) = diagnostic {
         publish_local_notice(inner, diagnostic);
     }
-    restore_retry_fallback_if_idle(inner, fallback);
 }
 
-fn take_failed_retained_retry(inner: &Inner, key: &PresentationKey) -> Option<PresentationKey> {
-    inner
+fn remove_failed_retained_retry(inner: &Inner, key: &PresentationKey) {
+    let _removed = inner
         .retained_presentations
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .fail_restart(key)
-        .and_then(|restart| restart.attachment.fallback)
+        .fail_restart(key);
 }
 
-fn restore_retry_fallback_if_idle(inner: &Inner, fallback: Option<PresentationKey>) {
-    let has_active_worker = inner
-        .worker
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .active()
-        .is_some();
-    if !has_active_worker {
-        restore_attach_fallback(inner, fallback);
+fn fallback_owns_visible_request(
+    inner: &Inner,
+    fallback: &FallbackAuthority,
+    request: &AttachRequest,
+) -> bool {
+    if inner.navigation_generation.load(Ordering::Acquire) != fallback.navigation_generation {
+        return false;
     }
+    matches!(
+        &*inner
+            .state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+        WorkspaceContent::Attaching { host_id, endpoint, session }
+            | WorkspaceContent::Terminal { host_id, endpoint, session, .. }
+            if host_id == &request.host_id
+                && endpoint == request.endpoint.distro()
+                && session == &request.name
+    )
 }
 
-fn restore_attach_fallback(inner: &Inner, fallback: Option<PresentationKey>) {
+fn restore_attach_fallback(inner: &Inner, fallback: Option<FallbackAuthority>) {
+    let _navigation = inner
+        .navigation
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    restore_attach_fallback_locked(inner, fallback);
+}
+
+fn restore_attach_fallback_locked(inner: &Inner, fallback: Option<FallbackAuthority>) {
     let Some(fallback) = fallback else {
         return;
     };
+    if inner.navigation_generation.load(Ordering::Acquire) != fallback.navigation_generation {
+        return;
+    }
     let preserved_notice = inner
         .terminal_notice
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
-    match activate_retained_presentation(inner, &fallback) {
+    match activate_retained_presentation(inner, &fallback.presentation, None, None) {
         Ok(true) => {
             if let Some(notice) = preserved_notice {
                 set_local_notice(inner, notice);
@@ -2518,6 +2663,7 @@ fn publish_attach_inventory(inner: &Inner, request: &AttachRequest, snapshot: Ho
 
 fn set_attach_inventory(inner: &Inner, request: &AttachRequest, snapshot: HostSnapshot) {
     let inventory_state = ready_content(&snapshot);
+    reconcile_retained_session_names(inner, &snapshot, request.host.socket_directory());
     *inner
         .host
         .lock()
@@ -2529,6 +2675,77 @@ fn set_attach_inventory(inner: &Inner, request: &AttachRequest, snapshot: HostSn
         request.inventory_generation,
     ));
     set_inventory_state(inner, inventory_state);
+}
+
+fn reconcile_presentation_session_names(
+    inner: &Inner,
+    snapshot: &HostSnapshot,
+    socket_directory: Option<&str>,
+) {
+    reconcile_retained_session_names(inner, snapshot, socket_directory);
+    let renamed = {
+        let mut attachment = inner
+            .attachment
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        attachment.active_mut().and_then(|active| {
+            let name = refreshed_session_name(
+                &active.request.presentation_key(),
+                snapshot,
+                socket_directory,
+            )?;
+            if name == active.request.name {
+                return None;
+            }
+            name.clone_into(&mut active.request.name);
+            Some((
+                active.request.host_id.clone(),
+                active.request.endpoint.distro().to_owned(),
+                name.to_owned(),
+            ))
+        })
+    };
+    let Some((renamed_host, renamed_endpoint, renamed_session)) = renamed else {
+        return;
+    };
+    let changed = {
+        let mut state = inner
+            .state
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match &mut *state {
+            WorkspaceContent::Attaching {
+                host_id,
+                endpoint,
+                session,
+            }
+            | WorkspaceContent::Terminal {
+                host_id,
+                endpoint,
+                session,
+                ..
+            } if host_id == &renamed_host && endpoint == &renamed_endpoint => {
+                session.clone_from(&renamed_session);
+                true
+            }
+            _ => false,
+        }
+    };
+    if changed {
+        inner.revision.fetch_add(1, Ordering::Release);
+    }
+}
+
+fn reconcile_retained_session_names(
+    inner: &Inner,
+    snapshot: &HostSnapshot,
+    socket_directory: Option<&str>,
+) {
+    inner
+        .retained_presentations
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .reconcile_session_names(snapshot, socket_directory);
 }
 
 fn publish_stale_attachment_failure(
@@ -2968,6 +3185,34 @@ mod tests {
         }
     }
 
+    fn presentation_key_fixture(
+        kernel_boot_id: &str,
+        init_start_ticks: u64,
+        identity: session::SessionIdentity,
+    ) -> PresentationKey {
+        let snapshot =
+            HostSnapshot::test_fixture("Ubuntu", kernel_boot_id, init_start_ticks, Vec::new());
+        PresentationKey {
+            host_id: "wsl".to_owned(),
+            endpoint: "Ubuntu".to_owned(),
+            socket_directory: None,
+            runtime: snapshot.runtime().clone(),
+            identity,
+        }
+    }
+
+    fn fallback_fixture(
+        kernel_boot_id: &str,
+        init_start_ticks: u64,
+        identity: session::SessionIdentity,
+        navigation_generation: u64,
+    ) -> FallbackAuthority {
+        FallbackAuthority {
+            presentation: presentation_key_fixture(kernel_boot_id, init_start_ticks, identity),
+            navigation_generation,
+        }
+    }
+
     #[test]
     fn terminal_event_drain_requests_continuation_only_after_exhausting_its_budget() {
         assert!(!event_drain_may_have_more(MAX_EVENTS_PER_DRAIN - 1, false));
@@ -3295,10 +3540,12 @@ mod tests {
             inventory_generation: 1,
         };
         let key = request.presentation_key();
-        let fallback = PresentationKey {
-            session: "previous".to_owned(),
-            identity: session::SessionIdentity::new(100, "$2", 201),
-            ..key.clone()
+        let fallback = FallbackAuthority {
+            presentation: PresentationKey {
+                identity: session::SessionIdentity::new(100, "$2", 201),
+                ..key.clone()
+            },
+            navigation_generation: 7,
         };
         let mut retained = RetainedPresentations::new();
         retained.insert(RetainedPresentation {
@@ -3338,9 +3585,14 @@ mod tests {
         );
 
         let mut restored_attachment = AttachmentState::new();
+        let rebound_fallback = FallbackAuthority {
+            presentation: fallback.presentation.clone(),
+            navigation_generation: 8,
+        };
         let restored_generation = reserve_retained_attachment(
             &mut restored_attachment,
             &retained.restarting[0].attachment,
+            Some(rebound_fallback.clone()),
         )
         .expect("reactivate retained attachment");
         let mut restored_worker = WorkerState::new();
@@ -3355,7 +3607,170 @@ mod tests {
             worker_generation,
             false,
         ));
-        assert_eq!(fallback_after_reactivation.as_ref(), Some(&fallback));
+        assert_eq!(fallback_after_reactivation, Some(rebound_fallback));
+    }
+
+    #[test]
+    fn presentation_identity_survives_rename_but_not_a_wsl_runtime_restart() {
+        let identity = session::SessionIdentity::new(100, "$1", 200);
+        let original = presentation_key_fixture("boot-a", 42, identity.clone());
+        let renamed = presentation_key_fixture("boot-a", 42, identity.clone());
+        let restarted = presentation_key_fixture("boot-b", 7, identity);
+
+        assert_eq!(original, renamed);
+        assert_ne!(original, restarted);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn inventory_rename_updates_the_retained_display_name_without_changing_its_key() {
+        let host = WslHost::new(
+            WslConfig::with_distro("Ubuntu").expect("valid WSL config"),
+            Arc::new(StdCommandRunner) as SharedCommandRunner,
+            WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
+                .expect("absolute WSL path"),
+        );
+        let identity = session::SessionIdentity::new(100, "$1", 200);
+        let original_snapshot = HostSnapshot::test_fixture(
+            "Ubuntu",
+            "boot-id",
+            42,
+            vec![session::DiscoveredSession::new(
+                "original",
+                identity.clone(),
+                0,
+            )],
+        );
+        let request = AttachRequest {
+            host_id: "wsl".to_owned(),
+            host,
+            endpoint: original_snapshot.endpoint().clone(),
+            runtime: original_snapshot.runtime().clone(),
+            identity: identity.clone(),
+            name: "original".to_owned(),
+            inventory_generation: 1,
+        };
+        let key = request.presentation_key();
+        let mut retained = RetainedPresentations::new();
+        retained.insert(RetainedPresentation {
+            key: key.clone(),
+            selection: SessionSelection::new("wsl", "Ubuntu", "original"),
+            attachment: ActiveAttachment {
+                request: request.clone(),
+                term: AttachTerm::Xterm256Color,
+                generation: 1,
+                fallback: None,
+            },
+            worker: (),
+            presentation_id: 7,
+        });
+        let renamed_snapshot = HostSnapshot::test_fixture(
+            "Ubuntu",
+            "boot-id",
+            42,
+            vec![session::DiscoveredSession::new("renamed", identity, 0)],
+        );
+
+        retained.reconcile_session_names(&renamed_snapshot, None);
+
+        assert!(retained.contains(&key));
+        assert_eq!(retained.selections()[0].session(), "renamed");
+        assert_eq!(retained.entries[0].attachment.request.name, "renamed");
+
+        let workspace = Workspace::preview(WorkspaceSnapshot::ready(
+            Appearance::default(),
+            "Ubuntu",
+            Vec::new(),
+        ));
+        workspace
+            .inner
+            .attachment
+            .lock()
+            .expect("attachment")
+            .reserve(request, AttachTerm::Xterm256Color)
+            .expect("reserve visible attachment");
+        set_inner_state(
+            &workspace.inner,
+            WorkspaceContent::Attaching {
+                host_id: "wsl".to_owned(),
+                endpoint: "Ubuntu".to_owned(),
+                session: "original".to_owned(),
+            },
+        );
+
+        reconcile_presentation_session_names(&workspace.inner, &renamed_snapshot, None);
+
+        assert_eq!(
+            workspace
+                .inner
+                .attachment
+                .lock()
+                .expect("attachment")
+                .active()
+                .expect("visible attachment")
+                .request
+                .name,
+            "renamed"
+        );
+        assert!(matches!(
+            workspace.snapshot().content(),
+            WorkspaceContent::Attaching { session, .. } if session == "renamed"
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn detach_invalidates_fallback_authority_before_an_async_failure() {
+        let host = WslHost::new(
+            WslConfig::with_distro("Ubuntu").expect("valid WSL config"),
+            Arc::new(StdCommandRunner) as SharedCommandRunner,
+            WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
+                .expect("absolute WSL path"),
+        );
+        let snapshot = HostSnapshot::test_fixture("Ubuntu", "boot-id", 42, Vec::new());
+        let request = AttachRequest {
+            host_id: "wsl".to_owned(),
+            host,
+            endpoint: snapshot.endpoint().clone(),
+            runtime: snapshot.runtime().clone(),
+            identity: session::SessionIdentity::new(100, "$1", 200),
+            name: "replacement".to_owned(),
+            inventory_generation: 1,
+        };
+        let workspace = Workspace::preview(WorkspaceSnapshot::ready(
+            Appearance::default(),
+            "Ubuntu",
+            Vec::new(),
+        ));
+        let navigation_generation = workspace.begin_navigation();
+        let fallback = FallbackAuthority {
+            presentation: presentation_key_fixture(
+                "boot-id",
+                42,
+                session::SessionIdentity::new(100, "$2", 201),
+            ),
+            navigation_generation,
+        };
+        set_inner_state(
+            &workspace.inner,
+            WorkspaceContent::Attaching {
+                host_id: "wsl".to_owned(),
+                endpoint: "Ubuntu".to_owned(),
+                session: "replacement".to_owned(),
+            },
+        );
+
+        assert!(fallback_owns_visible_request(
+            &workspace.inner,
+            &fallback,
+            &request
+        ));
+        workspace.detach();
+        assert!(!fallback_owns_visible_request(
+            &workspace.inner,
+            &fallback,
+            &request
+        ));
     }
 
     #[test]
@@ -3783,13 +4198,12 @@ mod tests {
 
     #[test]
     fn replacement_fallback_survives_publication_until_the_client_is_confirmed() {
-        let fallback = PresentationKey {
-            host_id: "wsl".to_owned(),
-            endpoint: "Ubuntu".to_owned(),
-            socket_directory: None,
-            session: "previous".to_owned(),
-            identity: session::SessionIdentity::new(100, "$1", 200),
-        };
+        let fallback = fallback_fixture(
+            "boot-id",
+            42,
+            session::SessionIdentity::new(100, "$1", 200),
+            1,
+        );
         let mut attachment = AttachmentState::new();
         let attachment_generation = attachment
             .reserve_with_fallback(
@@ -3804,7 +4218,7 @@ mod tests {
         let fallback_for_exit = attachment.fallback_if_current(attachment_generation);
         assert_eq!(
             fallback_for_exit,
-            Some(fallback),
+            Some(fallback.clone()),
             "publishing the replacement must not consume its fallback"
         );
 
@@ -3815,21 +4229,17 @@ mod tests {
             worker_generation,
             false,
         ));
-        assert_eq!(
-            fallback_for_exit.as_ref().map(|key| key.session.as_str()),
-            Some("previous")
-        );
+        assert_eq!(fallback_for_exit, Some(fallback));
     }
 
     #[test]
     fn confirmed_replacement_releases_its_fallback() {
-        let fallback = PresentationKey {
-            host_id: "wsl".to_owned(),
-            endpoint: "Ubuntu".to_owned(),
-            socket_directory: None,
-            session: "previous".to_owned(),
-            identity: session::SessionIdentity::new(100, "$1", 200),
-        };
+        let fallback = fallback_fixture(
+            "boot-id",
+            42,
+            session::SessionIdentity::new(100, "$1", 200),
+            1,
+        );
         let mut attachment = AttachmentState::new();
         let generation = attachment
             .reserve_with_fallback("replacement", AttachTerm::Xterm256Color, Some(fallback))
@@ -4102,13 +4512,13 @@ mod tests {
             &SessionSelection::new("wsl", "Ubuntu", "selected"),
         )
         .expect("selected request");
-        let fallback = PresentationKey {
-            host_id: "wsl".to_owned(),
-            endpoint: "Ubuntu".to_owned(),
-            socket_directory: None,
-            session: "previous".to_owned(),
-            identity: session::SessionIdentity::new(100, "$3", 202),
-        };
+        let opening_navigation = workspace.begin_navigation();
+        let fallback = fallback_fixture(
+            "boot-id",
+            42,
+            session::SessionIdentity::new(100, "$3", 202),
+            opening_navigation,
+        );
         workspace
             .inner
             .attachment
@@ -4128,6 +4538,11 @@ mod tests {
         let carried_fallback = workspace
             .supersede_inflight_attachment()
             .expect("supersede opening attachment");
+        let selected_navigation = workspace.begin_navigation();
+        let carried_fallback = carried_fallback.map(|presentation| FallbackAuthority {
+            presentation,
+            navigation_generation: selected_navigation,
+        });
         let selected_generation = workspace
             .inner
             .attachment
@@ -4141,12 +4556,11 @@ mod tests {
         assert_eq!(active.request.name, "selected");
         assert_eq!(
             attachment.fallback_if_current(selected_generation).as_ref(),
-            Some(&fallback)
+            Some(&FallbackAuthority {
+                presentation: fallback.presentation,
+                navigation_generation: selected_navigation,
+            })
         );
-        assert!(matches!(
-            workspace.snapshot().content(),
-            WorkspaceContent::Ready { .. } | WorkspaceContent::Shell
-        ));
     }
 
     #[test]
