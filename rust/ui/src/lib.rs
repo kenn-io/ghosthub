@@ -6,9 +6,10 @@ use std::time::Duration;
 
 use gpui::{
     App, Application, Bounds, ClipboardItem, Context, FocusHandle, Focusable, FontWeight,
-    IntoElement, KeyDownEvent, KeyUpEvent, MouseButton as GpuiMouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Render, ScrollWheelEvent, TitlebarOptions, Window, WindowBounds,
-    WindowOptions, div, font, prelude::*, px, rgb, size,
+    IntoElement, KeyBinding, KeyDownEvent, KeyUpEvent, MouseButton as GpuiMouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Render, ScrollWheelEvent, TitlebarOptions,
+    Window, WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowDecorations,
+    WindowOptions, actions, div, font, prelude::*, px, rgb, size,
 };
 use model::PortStatus;
 use surface::{CellStyle, Damage, GridSize, Rgb, SurfaceFrame, SurfaceStore};
@@ -20,6 +21,8 @@ use workspace::{
 
 pub const WINDOW_TITLE: &str = "Ghosthub";
 const APP_NAVIGATION_WIDTH: f32 = 260.0;
+const APP_TITLEBAR_HEIGHT: f32 = 36.0;
+const APP_CHROME_BACKGROUND: u32 = 0x0f_1116;
 const NAVIGATION_HEADER_HEIGHT: f32 = 36.0;
 const HOST_ROW_HEIGHT: f32 = 42.0;
 const SESSION_ROW_HEIGHT: f32 = 30.0;
@@ -31,6 +34,8 @@ const UI_INPUT_BYTE_CAPACITY: usize = 512 * 1024;
 const INPUT_BUFFERED_DIAGNOSTIC: &str = "Terminal is busy; input is buffered.";
 const INPUT_BUFFER_FULL_DIAGNOSTIC: &str =
     "Terminal input buffer is full; wait for pending input to be delivered.";
+
+actions!(ghosthub, [ToggleSidebar]);
 
 #[must_use]
 pub fn headline_text(status: &PortStatus) -> String {
@@ -290,6 +295,7 @@ pub struct RootView {
     wheel_remainder: f32,
     keyboard: TerminalKeyboard,
     pointer: TerminalPointer,
+    sidebar_visible: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -579,6 +585,7 @@ impl RootView {
             wheel_remainder: 0.0,
             keyboard: TerminalKeyboard::default(),
             pointer: TerminalPointer::default(),
+            sidebar_visible: true,
         };
         view.resize_for_window(window);
         view
@@ -647,6 +654,22 @@ impl RootView {
             self.diagnostic = None;
         }
         cx.notify();
+    }
+
+    fn toggle_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sidebar_visible = !self.sidebar_visible;
+        self.resize_for_window(window);
+        if matches!(
+            self.workspace.snapshot().content(),
+            WorkspaceContent::Terminal { .. }
+        ) {
+            window.focus(&self.focus);
+        }
+        cx.notify();
+    }
+
+    fn navigation_width(&self, snapshot: &workspace::WorkspaceSnapshot) -> f32 {
+        application_navigation_width(self.sidebar_visible, !snapshot.hosts().is_empty())
     }
 
     fn cancel_refresh(&mut self, cx: &mut Context<Self>) {
@@ -936,12 +959,8 @@ impl RootView {
         terminal_cell_at_with_offset(
             x,
             y,
-            if snapshot.hosts().is_empty() {
-                0.0
-            } else {
-                APP_NAVIGATION_WIDTH
-            },
-            0.0,
+            self.navigation_width(&snapshot),
+            APP_TITLEBAR_HEIGHT,
             self.terminal_metrics.cell_width,
             self.terminal_metrics.line_height,
             size,
@@ -1174,13 +1193,8 @@ impl RootView {
     fn resize_for_window(&mut self, window: &Window) {
         let bounds = window.bounds();
         let snapshot = self.workspace.snapshot();
-        let width = f32::from(bounds.size.width)
-            - if snapshot.hosts().is_empty() {
-                0.0
-            } else {
-                APP_NAVIGATION_WIDTH
-            };
-        let height = f32::from(bounds.size.height);
+        let width = f32::from(bounds.size.width) - self.navigation_width(&snapshot);
+        let height = f32::from(bounds.size.height) - APP_TITLEBAR_HEIGHT;
         let (columns, rows) = terminal_grid_size(
             width,
             height,
@@ -1418,7 +1432,6 @@ impl RootView {
         let selected = snapshot
             .selected_host()
             .and_then(|id| hosts.iter().find(|host| host.id() == id));
-        let navigator = Self::workspace_tree(snapshot, cx);
         let main = match snapshot.content() {
             WorkspaceContent::Terminal {
                 endpoint: _,
@@ -1439,11 +1452,91 @@ impl RootView {
                 |host| Self::host_landing_element(host, cx),
             ),
         };
+        let mut shell = div().size_full().flex().min_w_0();
+        if self.sidebar_visible {
+            shell = shell.child(Self::workspace_tree(snapshot, cx));
+        }
+        shell
+            .child(div().flex_1().min_w_0().h_full().child(main))
+            .into_any_element()
+    }
+
+    fn title_bar(&self, title: String, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let toggle_label = if self.sidebar_visible {
+            "Hide sidebar (Ctrl+Shift+B)"
+        } else {
+            "Show sidebar (Ctrl+Shift+B)"
+        };
+
         div()
-            .size_full()
+            .h(px(APP_TITLEBAR_HEIGHT))
+            .w_full()
+            .flex_none()
             .flex()
-            .child(navigator)
-            .child(div().flex_1().h_full().child(main))
+            .items_center()
+            .bg(rgb(APP_CHROME_BACKGROUND))
+            .border_b_1()
+            .border_color(rgb(0x20_242c))
+            .child(
+                div()
+                    .id("toggle-sidebar")
+                    .w(px(APP_TITLEBAR_HEIGHT))
+                    .h_full()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .text_size(px(16.0))
+                    .text_color(rgb(0xa5_acb8))
+                    .hover(|style| style.bg(rgb(0x24_2933)).text_color(rgb(0xe5_e9f0)))
+                    .child("☰")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.toggle_sidebar(window, cx);
+                    })),
+            )
+            .child(
+                div()
+                    .id("window-drag-region")
+                    .h_full()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .window_control_area(WindowControlArea::Drag)
+                    .on_mouse_down(GpuiMouseButton::Left, |_, window, _| {
+                        window.start_window_move();
+                    })
+                    .text_sm()
+                    .text_color(rgb(0xc4_c9d2))
+                    .child(title),
+            )
+            .child(window_control(
+                "window-minimize",
+                "−",
+                WindowControlArea::Min,
+            ))
+            .child(window_control(
+                "window-maximize",
+                "□",
+                WindowControlArea::Max,
+            ))
+            .child(window_control(
+                "window-close",
+                "×",
+                WindowControlArea::Close,
+            ))
+            .on_mouse_down(GpuiMouseButton::Right, |event, window, _| {
+                window.show_window_menu(event.position);
+            })
+            .child(
+                div()
+                    .id("sidebar-shortcut-description")
+                    .absolute()
+                    .invisible()
+                    .child(toggle_label),
+            )
             .into_any_element()
     }
 
@@ -1474,7 +1567,7 @@ impl RootView {
             .flex_none()
             .flex()
             .flex_col()
-            .bg(rgb(0x0f_1116))
+            .bg(rgb(APP_CHROME_BACKGROUND))
             .border_r_1()
             .border_color(rgb(0x25_2932))
             .child(
@@ -2070,6 +2163,14 @@ fn workspace_window_title(content: &WorkspaceContent) -> String {
     }
 }
 
+const fn application_navigation_width(sidebar_visible: bool, has_hosts: bool) -> f32 {
+    if sidebar_visible && has_hosts {
+        APP_NAVIGATION_WIDTH
+    } else {
+        0.0
+    }
+}
+
 fn transitioned_presentation(observed: &mut Option<u64>, current: Option<u64>) -> bool {
     if *observed == current {
         false
@@ -2144,20 +2245,27 @@ impl Render for RootView {
         let _scope_changed = self.sync_terminal_scope();
         let _handled = self.handle_events(cx);
         let snapshot = self.workspace.snapshot();
-        window.set_window_title(&workspace_window_title(snapshot.content()));
+        let title = workspace_window_title(snapshot.content());
+        window.set_window_title(&title);
         self.observed_revision = snapshot.revision();
         if !matches!(snapshot.content(), WorkspaceContent::Terminal { .. }) {
             self.observed_surface_identity = None;
             self.observed_surface_generation = 0;
             self.paint_cache.clear();
         }
+        let title_bar = self.title_bar(title, cx);
+        let content = self.content_element(&snapshot, cx);
         let mut root = div()
             .flex()
             .flex_col()
             .size_full()
             .bg(rgb(snapshot.appearance().background()))
             .text_color(rgb(snapshot.appearance().foreground()))
-            .child(self.content_element(&snapshot, cx));
+            .on_action(cx.listener(|this, _: &ToggleSidebar, window, cx| {
+                this.toggle_sidebar(window, cx);
+            }))
+            .child(title_bar)
+            .child(div().flex_1().min_h_0().w_full().child(content));
 
         if let Some(notice) = snapshot.notice() {
             root = root.child(
@@ -2246,6 +2354,40 @@ fn centered(text: impl Into<String>) -> gpui::AnyElement {
         .text_color(rgb(0xb7_bc_c6))
         .child(text.into())
         .into_any_element()
+}
+
+fn window_control(
+    id: &'static str,
+    label: &'static str,
+    area: WindowControlArea,
+) -> gpui::AnyElement {
+    let control = div()
+        .id(id)
+        .w(px(46.0))
+        .h_full()
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .window_control_area(area)
+        .text_size(px(16.0))
+        .text_color(rgb(0xb7_bcc6))
+        .child(label)
+        .on_click(move |_, window, _| match area {
+            WindowControlArea::Min => window.minimize_window(),
+            WindowControlArea::Max => window.zoom_window(),
+            WindowControlArea::Close => window.remove_window(),
+            WindowControlArea::Drag => {}
+        });
+    if area == WindowControlArea::Close {
+        control
+            .hover(|style| style.bg(rgb(0xc4_2b1c)).text_color(rgb(0xff_ffff)))
+            .into_any_element()
+    } else {
+        control
+            .hover(|style| style.bg(rgb(0x24_2933)).text_color(rgb(0xe5_e9f0)))
+            .into_any_element()
+    }
 }
 
 fn paint_run_element(run: PaintRun, cell_width: f32) -> gpui::AnyElement {
@@ -2473,13 +2615,18 @@ pub fn run(status: PortStatus, workspace: Workspace) {
     Application::new().run(move |cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(1100.0), px(720.0)), cx);
 
+        cx.bind_keys([KeyBinding::new("ctrl-shift-b", ToggleSidebar, None)]);
+
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: Some(TitlebarOptions {
                     title: Some(WINDOW_TITLE.into()),
+                    appears_transparent: true,
                     ..Default::default()
                 }),
+                window_background: WindowBackgroundAppearance::Opaque,
+                window_decorations: Some(WindowDecorations::Client),
                 ..Default::default()
             },
             move |window, cx| cx.new(|cx| RootView::new(status, workspace.clone(), window, cx)),
@@ -2495,12 +2642,12 @@ mod tests {
     use std::collections::VecDeque;
 
     use super::{
-        APP_NAVIGATION_WIDTH, INPUT_BUFFER_FULL_DIAGNOSTIC, INPUT_BUFFERED_DIAGNOSTIC,
-        InputRefusal, PendingUiInput, QueuedUiInput, TerminalKeyboard, TerminalPointer,
-        TerminalResize, UI_INPUT_BYTE_CAPACITY, UI_INPUT_CAPACITY, WheelBatch,
-        active_session_selection, clear_terminal_input_state, clears_after_input_delivery,
-        clears_when_input_queue_is_empty, coalesce_last_resize, coalesce_last_wheel,
-        input_queue_has_capacity, named_key, normalize_cell_width,
+        APP_NAVIGATION_WIDTH, APP_TITLEBAR_HEIGHT, INPUT_BUFFER_FULL_DIAGNOSTIC,
+        INPUT_BUFFERED_DIAGNOSTIC, InputRefusal, PendingUiInput, QueuedUiInput, TerminalKeyboard,
+        TerminalPointer, TerminalResize, UI_INPUT_BYTE_CAPACITY, UI_INPUT_CAPACITY, WheelBatch,
+        active_session_selection, application_navigation_width, clear_terminal_input_state,
+        clears_after_input_delivery, clears_when_input_queue_is_empty, coalesce_last_resize,
+        coalesce_last_wheel, input_queue_has_capacity, named_key, normalize_cell_width,
         queued_input_matches_presentation, terminal_cell_at_with_offset, terminal_key_input,
         terminal_line_height, terminal_wheel_steps, transitioned_presentation, tree_sessions,
         workspace_window_title,
@@ -2703,15 +2850,20 @@ mod tests {
     }
 
     #[test]
-    fn terminal_hit_testing_accounts_for_persistent_navigation() {
+    fn terminal_hit_testing_accounts_for_titlebar_and_collapsible_navigation() {
         let size = GridSize::new(80, 24).expect("valid grid");
 
+        assert!(
+            (application_navigation_width(true, true) - APP_NAVIGATION_WIDTH).abs() < f32::EPSILON
+        );
+        assert!(application_navigation_width(false, true).abs() < f32::EPSILON);
+        assert!(application_navigation_width(true, false).abs() < f32::EPSILON);
         assert_eq!(
             terminal_cell_at_with_offset(
                 APP_NAVIGATION_WIDTH + 12.0,
-                8.0,
+                APP_TITLEBAR_HEIGHT + 8.0,
                 APP_NAVIGATION_WIDTH,
-                0.0,
+                APP_TITLEBAR_HEIGHT,
                 8.0,
                 16.0,
                 size
@@ -2721,9 +2873,21 @@ mod tests {
         assert_eq!(
             terminal_cell_at_with_offset(
                 APP_NAVIGATION_WIDTH - 1.0,
-                8.0,
+                APP_TITLEBAR_HEIGHT + 8.0,
                 APP_NAVIGATION_WIDTH,
-                0.0,
+                APP_TITLEBAR_HEIGHT,
+                8.0,
+                16.0,
+                size
+            ),
+            None
+        );
+        assert_eq!(
+            terminal_cell_at_with_offset(
+                APP_NAVIGATION_WIDTH + 12.0,
+                APP_TITLEBAR_HEIGHT - 1.0,
+                APP_NAVIGATION_WIDTH,
+                APP_TITLEBAR_HEIGHT,
                 8.0,
                 16.0,
                 size
