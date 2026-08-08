@@ -7,7 +7,8 @@ icon: lucide/square-terminal
 
 Ghosthub discovers every tmux session on each reachable configured host.
 Sessions that are not bound to a kwt workspace appear directly under the host.
-Worktree-backed sessions appear inside their project.
+Worktree-backed sessions appear inside their repository. Registered directory
+sessions appear as flat rows in the same **Projects** group.
 
 ## Create a standalone session
 
@@ -64,8 +65,8 @@ open or reopen it.
 ## End a session deliberately
 
 To end a standalone session that Ghosthub knows is running, hover over its
-sidebar row and choose the subtle **×** control. For a worktree-backed session,
-use **Kill Session…** in the worktree action menu.
+sidebar row and choose the subtle **×** control. For a kwt-backed session, use
+**Kill Session…** in its workspace action menu.
 
 Ghosthub confirms the host and exact tmux session before it sends
 `kill-session`. Ending a session terminates all of its windows, panes, and

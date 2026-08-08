@@ -149,7 +149,8 @@ public struct WorkspaceTmuxSessionSelection:
     public var hostID: UUID
     public var name: String
     public var worktreeID: UUID?
-    public var worktreePath: String?
+    public var directoryWorkspaceID: UUID?
+    public var workspacePath: String?
     public var worktreeGeneration: String?
     public var socketName: String?
 
@@ -157,16 +158,38 @@ public struct WorkspaceTmuxSessionSelection:
         hostID: UUID,
         name: String,
         worktreeID: UUID? = nil,
-        worktreePath: String? = nil,
+        directoryWorkspaceID: UUID? = nil,
+        workspacePath: String? = nil,
         worktreeGeneration: String? = nil,
         socketName: String? = nil
     ) {
         self.hostID = hostID
         self.name = name
         self.worktreeID = worktreeID
-        self.worktreePath = worktreePath
+        self.directoryWorkspaceID = directoryWorkspaceID
+        self.workspacePath = workspacePath
         self.worktreeGeneration = worktreeGeneration
         self.socketName = socketName
+    }
+
+    /// Compatibility for callers that still construct a worktree-owned
+    /// selection with the previous argument label.
+    public init(
+        hostID: UUID,
+        name: String,
+        worktreeID: UUID? = nil,
+        worktreePath: String?,
+        worktreeGeneration: String? = nil,
+        socketName: String? = nil
+    ) {
+        self.init(
+            hostID: hostID,
+            name: name,
+            worktreeID: worktreeID,
+            workspacePath: worktreePath,
+            worktreeGeneration: worktreeGeneration,
+            socketName: socketName
+        )
     }
 
     public var id: String {
@@ -175,6 +198,12 @@ public struct WorkspaceTmuxSessionSelection:
             socketName ?? "default",
             name,
         ].joined(separator: ":")
+    }
+
+    @available(*, deprecated, renamed: "workspacePath")
+    public var worktreePath: String? {
+        get { workspacePath }
+        set { workspacePath = newValue }
     }
 }
 
@@ -185,6 +214,7 @@ public enum WorkspaceSidebarRowIcon: Equatable, Sendable {
     case project
     case primaryWorktree
     case worktree
+    case directoryWorkspace
     case tmuxSession
 
     public var systemImageName: String {
@@ -201,6 +231,8 @@ public enum WorkspaceSidebarRowIcon: Equatable, Sendable {
             return "square.stack.3d.up"
         case .worktree:
             return "point.3.connected.trianglepath.dotted"
+        case .directoryWorkspace:
+            return "folder.badge.gearshape"
         case .tmuxSession:
             return "terminal"
         }
@@ -215,6 +247,8 @@ public struct WorkspaceSidebarRow: Equatable, Identifiable, Sendable {
     public var indentLevel: Int
     /// Populated only for worktree rows; nil for host and project rows.
     public var worktreeStatus: WorktreeRowStatus?
+    /// Direct tmux discovery state for non-worktree workspace rows.
+    public var sessionIsRunning: Bool
 
     public var id: WorkspaceNavigationTarget { target }
 
@@ -224,7 +258,8 @@ public struct WorkspaceSidebarRow: Equatable, Identifiable, Sendable {
         title: String,
         subtitle: String? = nil,
         indentLevel: Int = 0,
-        worktreeStatus: WorktreeRowStatus? = nil
+        worktreeStatus: WorktreeRowStatus? = nil,
+        sessionIsRunning: Bool = false
     ) {
         self.target = target
         self.icon = icon
@@ -232,17 +267,21 @@ public struct WorkspaceSidebarRow: Equatable, Identifiable, Sendable {
         self.subtitle = subtitle
         self.indentLevel = indentLevel
         self.worktreeStatus = worktreeStatus
+        self.sessionIsRunning = sessionIsRunning
     }
 }
 
 public struct WorkspaceSidebarSection: Equatable, Identifiable, Sendable {
     public var host: HostSummary
     public var projects: [WorkspaceSidebarProject]
+    public var directoryWorkspaceRows: [WorkspaceSidebarRow]
     public var tmuxSessionRows: [WorkspaceSidebarRow]
 
     public var id: UUID { host.id }
     public var isEmpty: Bool {
-        projects.isEmpty && tmuxSessionRows.isEmpty
+        projects.isEmpty
+            && directoryWorkspaceRows.isEmpty
+            && tmuxSessionRows.isEmpty
     }
 
     public var row: WorkspaceSidebarRow {
@@ -281,6 +320,12 @@ public enum WorkspaceSidebarModel {
         for selection: WorkspaceSelection,
         in snapshot: WorkspaceSnapshot
     ) -> WorkspaceTmuxSessionSelection? {
+        if let directoryWorkspaceID = selection.selectedDirectoryWorkspaceID,
+           let workspace = snapshot.directoryWorkspace(
+               id: directoryWorkspaceID
+           ) {
+            return tmuxSessionSelection(for: workspace)
+        }
         guard let worktreeID = selection.selectedWorktreeID,
               let worktree = snapshot.worktree(id: worktreeID)
         else { return nil }
@@ -298,9 +343,20 @@ public enum WorkspaceSidebarModel {
             hostID: worktree.hostID,
             name: name,
             worktreeID: worktree.id,
-            worktreePath: worktree.path,
+            workspacePath: worktree.path,
             worktreeGeneration: worktree.generation,
             socketName: worktree.tmuxSocketName
+        )
+    }
+
+    public static func tmuxSessionSelection(
+        for workspace: DirectoryWorkspaceSummary
+    ) -> WorkspaceTmuxSessionSelection {
+        WorkspaceTmuxSessionSelection(
+            hostID: workspace.hostID,
+            name: workspace.tmuxSessionName,
+            directoryWorkspaceID: workspace.id,
+            workspacePath: workspace.path
         )
     }
 
@@ -361,6 +417,9 @@ public enum WorkspaceSidebarModel {
                 snapshot.worktrees.compactMap { worktree in
                     worktree.hostID == host.id && worktree.tmuxSocketName == nil
                         ? worktree.tmuxSessionName : nil
+                } + snapshot.directoryWorkspaces.compactMap { workspace in
+                    workspace.hostID == host.id
+                        ? workspace.tmuxSessionName : nil
                 }
             )
             let projects = snapshot.projects
@@ -391,6 +450,9 @@ public enum WorkspaceSidebarModel {
             return WorkspaceSidebarSection(
                 host: host,
                 projects: projects,
+                directoryWorkspaceRows: snapshot.directoryWorkspaces
+                    .filter { $0.hostID == host.id }
+                    .map { directoryWorkspaceRow($0, host: host) },
                 tmuxSessionRows: tmuxSessionOrder.ordered(
                     host.tmuxSessions
                         .filter {
@@ -412,6 +474,21 @@ public enum WorkspaceSidebarModel {
                 .map { tmuxSessionRow($0, hostID: host.id) }
             )
         }
+    }
+
+    private static func directoryWorkspaceRow(
+        _ workspace: DirectoryWorkspaceSummary,
+        host: HostSummary
+    ) -> WorkspaceSidebarRow {
+        WorkspaceSidebarRow(
+            target: .directoryWorkspace(workspace.id),
+            icon: .directoryWorkspace,
+            title: workspace.name,
+            subtitle: workspace.path,
+            sessionIsRunning: host.tmuxSessions.contains {
+                $0.name == workspace.tmuxSessionName
+            }
+        )
     }
 
     static func tmuxSessionOrderID(

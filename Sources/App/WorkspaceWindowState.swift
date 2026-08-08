@@ -28,11 +28,25 @@ struct WorkspaceNavigationDescriptor: Codable, Hashable, Sendable {
     var hostKey: String
     var projectKey: String?
     var worktreeGeneration: String?
+    var directoryWorkspacePath: String?
+
+    init(
+        hostKey: String,
+        projectKey: String? = nil,
+        worktreeGeneration: String? = nil,
+        directoryWorkspacePath: String? = nil
+    ) {
+        self.hostKey = hostKey
+        self.projectKey = projectKey
+        self.worktreeGeneration = worktreeGeneration
+        self.directoryWorkspacePath = directoryWorkspacePath
+    }
 }
 
 enum WorkspaceTmuxOwnerDescriptor: Codable, Hashable, Sendable {
     case unbound
     case worktree(generation: String)
+    case directoryWorkspace(path: String)
 }
 
 struct WorkspaceTmuxDescriptor: Codable, Hashable, Sendable {
@@ -64,6 +78,8 @@ struct WorkspaceWindowState: Codable, Hashable, Sendable {
         let worktree = selection.selectedWorktreeID.flatMap {
             snapshot.worktree(id: $0)
         }
+        let directoryWorkspace = selection.selectedDirectoryWorkspaceID
+            .flatMap { snapshot.directoryWorkspace(id: $0) }
         let observedGeneration = activeTmux.flatMap { active -> String? in
             guard active.worktreeID == selection.selectedWorktreeID,
                   active.worktreeGeneration != nil
@@ -83,7 +99,8 @@ struct WorkspaceWindowState: Codable, Hashable, Sendable {
             WorkspaceNavigationDescriptor(
                 hostKey: $0.configKey,
                 projectKey: project?.scopedKey,
-                worktreeGeneration: worktreeGeneration
+                worktreeGeneration: worktreeGeneration,
+                directoryWorkspacePath: directoryWorkspace?.path
             )
         }
         // A session can outlive navigation elsewhere for one frame before
@@ -97,7 +114,17 @@ struct WorkspaceWindowState: Codable, Hashable, Sendable {
                   activeHost.configKey == navigation.hostKey
             else { return nil }
             let owner: WorkspaceTmuxOwnerDescriptor
-            if let worktreeID = active.worktreeID {
+            if let directoryWorkspaceID = active.directoryWorkspaceID {
+                guard let workspace = snapshot.directoryWorkspace(
+                    id: directoryWorkspaceID
+                ),
+                    workspace.id == selection.selectedDirectoryWorkspaceID,
+                    workspace.path == navigation.directoryWorkspacePath,
+                    active.workspacePath == workspace.path,
+                    active.socketName == nil
+                else { return nil }
+                owner = .directoryWorkspace(path: workspace.path)
+            } else if let worktreeID = active.worktreeID {
                 let generation = active.worktreeGeneration == nil
                     ? WorktreeGeneration.canonical(
                         snapshot.worktree(id: worktreeID)?.generation
@@ -112,6 +139,7 @@ struct WorkspaceWindowState: Codable, Hashable, Sendable {
             } else {
                 guard selection.selectedProjectID == nil,
                       selection.selectedWorktreeID == nil,
+                      selection.selectedDirectoryWorkspaceID == nil,
                       active.socketName == nil
                 else { return nil }
                 owner = .unbound
@@ -206,7 +234,11 @@ enum WorkspaceWindowRestorationResolver {
                   navigation.worktreeGeneration
               ),
               navigation.worktreeGeneration == nil
-              || navigation.projectKey != nil
+              || navigation.projectKey != nil,
+              navigation.directoryWorkspacePath == nil
+              || (navigation.projectKey == nil
+                  && navigation.worktreeGeneration == nil),
+              isValidOptional(navigation.directoryWorkspacePath)
         else { return .invalid }
 
         if let tmux = state.tmux {
@@ -218,11 +250,20 @@ enum WorkspaceWindowRestorationResolver {
             switch tmux.owner {
             case .unbound:
                 guard navigation.worktreeGeneration == nil,
+                      navigation.directoryWorkspacePath == nil,
                       tmux.socketName == nil
                 else { return .invalid }
             case let .worktree(generation):
                 guard WorktreeGeneration.canonical(generation) != nil,
-                      generation == navigation.worktreeGeneration
+                      generation == navigation.worktreeGeneration,
+                      navigation.directoryWorkspacePath == nil
+                else { return .invalid }
+            case let .directoryWorkspace(path):
+                guard isNonblank(path),
+                      path == navigation.directoryWorkspacePath,
+                      navigation.projectKey == nil,
+                      navigation.worktreeGeneration == nil,
+                      tmux.socketName == nil
                 else { return .invalid }
             }
         }
@@ -255,6 +296,15 @@ enum WorkspaceWindowRestorationResolver {
                 }
                 selection.selectedWorktreeID = worktree.id
             }
+        } else if let directoryWorkspacePath =
+            navigation.directoryWorkspacePath {
+            guard let workspace = snapshot.directoryWorkspaces.first(where: {
+                $0.hostID == host.id
+                    && $0.path == directoryWorkspacePath
+            }) else {
+                return .pending(selection: selection)
+            }
+            selection.selectedDirectoryWorkspaceID = workspace.id
         }
 
         guard let tmux = state.tmux else {
@@ -269,6 +319,8 @@ enum WorkspaceWindowRestorationResolver {
             worktreeGeneration = nil
         case let .worktree(generation):
             worktreeGeneration = generation
+        case .directoryWorkspace:
+            worktreeGeneration = nil
         }
         let owner = worktreeGeneration.flatMap { worktreeGeneration in
             snapshot.worktrees.first {
@@ -286,11 +338,25 @@ enum WorkspaceWindowRestorationResolver {
            || owner.tmuxSocketName != tmux.socketName {
             return .pending(selection: selection)
         }
+        let directoryOwner: DirectoryWorkspaceSummary?
+        if case let .directoryWorkspace(path) = tmux.owner {
+            directoryOwner = snapshot.directoryWorkspaces.first {
+                $0.hostID == host.id
+                    && $0.id == selection.selectedDirectoryWorkspaceID
+                    && $0.path == path
+            }
+            guard directoryOwner?.tmuxSessionName == tmux.sessionName else {
+                return .pending(selection: selection)
+            }
+        } else {
+            directoryOwner = nil
+        }
         let tmuxSelection = WorkspaceTmuxSessionSelection(
             hostID: host.id,
             name: tmux.sessionName,
             worktreeID: owner?.id,
-            worktreePath: owner?.path,
+            directoryWorkspaceID: directoryOwner?.id,
+            workspacePath: owner?.path ?? directoryOwner?.path,
             worktreeGeneration: worktreeGeneration,
             socketName: tmux.socketName
         )

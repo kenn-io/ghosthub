@@ -46,6 +46,9 @@ enum WorkspaceAccessibilityModel {
         if let status = row.worktreeStatus {
             values.append(contentsOf: worktreeStatusValues(status))
         }
+        if row.sessionIsRunning {
+            values.append("Session running")
+        }
         if hasRecentTmuxOutput {
             values.append("Recent tmux output")
         }
@@ -60,6 +63,8 @@ enum WorkspaceAccessibilityModel {
             hint = "Select this project."
         case .worktree:
             hint = "Select this worktree."
+        case .directoryWorkspace:
+            hint = "Open this directory workspace."
         case .tmuxSession:
             hint = "Attach to this tmux session."
         }

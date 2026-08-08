@@ -1,9 +1,9 @@
 ---
-description: Register Git projects and create, import, use, and remove worktrees.
+description: Register Git projects or plain directories and open their workspaces.
 icon: lucide/git-branch
 ---
 
-# Projects and worktrees
+# Projects, worktrees, and directories
 
 Projects and worktrees add Git context to Ghosthub's ordinary tmux workflow.
 They are optional.
@@ -31,6 +31,24 @@ Windows hosts.
 
 If the SSH destination changes while the Add Project sheet is open, close the
 sheet and start again so the confirmation applies to the current host.
+
+## Register a plain directory
+
+A hub, notes tree, or other directory that is not a Git checkout can still use
+the same kwt layouts and Ghosthub terminal flow. Register it on the target host:
+
+```sh
+kwt workspace add /absolute/path/to/directory
+```
+
+Refresh Ghosthub. The directory appears as one flat row in **Projects**, after
+the repository rows. It has no expandable worktree children because one
+registered directory owns one workspace session.
+
+Select the row to let kwt create or repair its configured layout and attach the
+ordinary tmux client. Removing the registration with `kwt workspace remove`
+does not end a live session; after refresh, that session remains available
+under **Tmux Sessions**.
 
 ## Open a project checkout
 

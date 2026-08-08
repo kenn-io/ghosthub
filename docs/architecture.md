@@ -11,19 +11,21 @@ the [Threat Model](threat-model.md).
   host. Remote hosts are reachable over SSH, commonly through a tailnet.
 - **Project:** a git repository reported by kwt on a host.
 - **Worktree:** a kwt workspace with an exact tmux session name.
+- **Directory workspace:** one kwt-registered plain directory with an exact
+  tmux session name and no Git children.
 - **Session:** an ordinary tmux session on a host.
 
-The sidebar is a host-wide session navigator. It shows registered worktrees and
-directly discovered tmux sessions on each host, including sessions that were
-not created by Ghosthub or kwt. Users may hide matching standalone sessions
-from navigation with case-sensitive wildcard patterns; discovery retains the
-complete inventory so a kwt-owned session confirmed by current discovery is
-indicated on its worktree row. Cached sessions do not remain live while a host
-is unreachable. Kwt-owned sessions are hidden from the separate tmux session
-group by default, with a Worktrees setting that exposes those duplicate
-entries.
-General tmux sessions are presented as one ordinary native tmux client; tmux
-alone owns and renders their layout.
+The sidebar is a host-wide session navigator. Its **Projects** group shows
+repository hierarchies followed by flat registered-directory rows. It also
+shows directly discovered tmux sessions on each host, including sessions that
+were not created by Ghosthub or kwt. Users may hide matching standalone
+sessions from navigation with case-sensitive wildcard patterns; discovery
+retains the complete inventory so a kwt-owned session confirmed by current
+discovery is indicated on its worktree or directory row. Cached sessions do
+not remain live while a host is unreachable. Kwt-owned sessions are hidden
+from the separate tmux session group by default, with a Worktrees setting that
+exposes those duplicate entries. General tmux sessions are presented as one
+ordinary native tmux client; tmux alone owns and renders their layout.
 
 After an attachment reaches the connected state, Ghosthub keeps that exact
 session warm for the remainder of the app launch. One app-scoped, in-memory
@@ -52,11 +54,13 @@ into native UI.
 
 The workspace `WindowGroup` is data-backed. Each scene continuously captures a
 small logical descriptor containing stable host and project keys, the durable
-kwt worktree generation, and exact tmux session and protected-socket identity.
-Its window UUID exists only for native scene adoption; runtime model UUIDs and
-paths are never persisted as host, project, or worktree identity. A worktree
-without a canonical generation degrades to project-only navigation and does
-not persist its worktree-owned tmux presentation. SwiftUI and macOS normally
+kwt worktree generation or registered directory path, and exact tmux session
+and protected-socket identity. Its window UUID exists only for native scene
+adoption; runtime model UUIDs and worktree paths are never persisted as host,
+project, or worktree identity. A worktree without a canonical generation
+degrades to project-only navigation and does not persist its worktree-owned
+tmux presentation. A directory workspace resolves by its authoritative kwt
+registry path on the same host. SwiftUI and macOS normally
 remain responsible for restoring scene count, native tab groups, and window
 geometry. Before a Sparkle relaunch, Ghosthub also atomically records the
 ordered logical descriptors in a one-shot manifest under `~/.ghosthub/`. The
@@ -92,8 +96,8 @@ Missing or offline targets fail soft and remain pending across later inventory
 refreshes. Explicit user navigation cancels pending restoration so a stale
 scene can never take the window back.
 A scene captured without an active tmux presentation restores its navigation
-without opening or creating the worktree session; the user explicitly selects
-the worktree to attach again.
+without opening or creating the selected worktree or directory session; the
+user explicitly selects the workspace to attach again.
 
 The host-scoped console panel is not part of workspace scene restoration. Its
 existing global visibility preference is unchanged, and the user reopens the
@@ -118,12 +122,12 @@ The Swift app owns native presentation and terminal rendering:
 
 - SwiftUI and AppKit window shell.
 - libghostty surface lifecycle, input, resize, and rendering.
-- Worktree/session selection and presentation state.
+- Workspace/session selection and presentation state.
 - Local GRDB persistence for app-owned state.
 - SSH host settings and native tmux client presentation.
 
 Swift should stay focused on native app behavior and terminal hosting. Shared
-pure domain models belong in `Sources/Workspace`; external worktree state is
+pure domain models belong in `Sources/Workspace`; external workspace state is
 consumed through kwt's machine-readable CLI surfaces.
 
 ### Application Updates

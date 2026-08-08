@@ -154,6 +154,162 @@ struct WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("directory unregistration closes its retained presentation")
+    func directoryUnregistrationClosesRetainedPresentation() async throws {
+        let environment = try setupStandardEnvironment()
+        let directoryID = UUID()
+        let directoryPath = "/srv/hub"
+        let sessionName = "kwt-workspace-dir-hub"
+        let inventoryRemoved = LockedValue(false)
+        var snapshot = environment.snapshot
+        snapshot.directoryWorkspaces = [.init(
+            id: directoryID,
+            hostID: environment.host.id,
+            name: "hub",
+            path: directoryPath,
+            tmuxSessionName: sessionName,
+            sessionLive: true
+        )]
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            kwtInventoryLoader: { _ in
+                KwtHostInventory(
+                    projects: [],
+                    directoryWorkspaces: inventoryRemoved.load() ? [] : [
+                        .init(
+                            name: "hub",
+                            path: directoryPath,
+                            sessionName: sessionName,
+                            sessionLive: true
+                        ),
+                    ]
+                )
+            },
+            tmuxSessionDiscovery: { _ in .success([]) },
+            startServices: true
+        )
+        await waitUntilMainActor {
+            model.isWorkspaceInventoryRefreshComplete
+                && model.snapshot.directoryWorkspaces.count == 1
+        }
+        let directory = try #require(
+            model.snapshot.directoryWorkspace(id: directoryID)
+        )
+        let tmuxSelection = WorkspaceSidebarModel.tmuxSessionSelection(
+            for: directory
+        )
+        model.openBorrowedTmuxSession(tmuxSelection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+
+        inventoryRemoved.withLock { $0 = true }
+        model.refreshKwtInventory()
+
+        await waitUntilMainActor {
+            model.snapshot.directoryWorkspaces.isEmpty
+                && model.retainedBorrowedTmuxPresentationCount == 0
+        }
+        #expect(surfaceStore.removedKeys.count == 1)
+        #expect(model.activeBorrowedTmuxSelection == nil)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("directory endpoint replacement waits for explicit reselection")
+    func directoryEndpointReplacementWaitsForReselection() async throws {
+        let environment = try setupStandardEnvironment()
+        let directoryID = UUID()
+        let directoryPath = "/srv/hub"
+        let originalSession = "kwt-workspace-dir-hub"
+        let replacementSession = "kwt-workspace-dir-renamed-hub"
+        let replacementActive = LockedValue(false)
+        var snapshot = environment.snapshot
+        snapshot.directoryWorkspaces = [.init(
+            id: directoryID,
+            hostID: environment.host.id,
+            name: "hub",
+            path: directoryPath,
+            tmuxSessionName: originalSession,
+            sessionLive: true
+        )]
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            kwtInventoryLoader: { _ in
+                KwtHostInventory(
+                    projects: [],
+                    directoryWorkspaces: [.init(
+                        name: "hub",
+                        path: directoryPath,
+                        sessionName: replacementActive.load()
+                            ? replacementSession
+                            : originalSession,
+                        sessionLive: true
+                    )]
+                )
+            },
+            tmuxSessionDiscovery: { _ in .success([]) },
+            startServices: true
+        )
+        await waitUntilMainActor {
+            model.isWorkspaceInventoryRefreshComplete
+                && model.snapshot.directoryWorkspaces.count == 1
+        }
+        var userSelection = model.selection
+        userSelection.select(
+            .directoryWorkspace(directoryID),
+            in: model.snapshot
+        )
+        model.selectFromUser(userSelection)
+        let original = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(
+                for: userSelection,
+                in: model.snapshot
+            )
+        )
+        model.openBorrowedTmuxSession(original)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+
+        replacementActive.withLock { $0 = true }
+        model.refreshKwtInventory()
+        await waitUntilMainActor {
+            model.snapshot.directoryWorkspace(id: directoryID)?
+                .tmuxSessionName == replacementSession
+                && model.retainedBorrowedTmuxPresentationCount == 0
+        }
+
+        #expect(model.suppressesSelectedWorktreeSessionOpen)
+        #expect(surfaceStore.requestCount == 1)
+
+        model.selectFromUser(userSelection)
+        #expect(!model.suppressesSelectedWorktreeSessionOpen)
+        let replacement = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(
+                for: userSelection,
+                in: model.snapshot
+            )
+        )
+        model.openBorrowedTmuxSession(replacement)
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedTmuxSurface()
+            return surfaceStore.requestCount == 2
+        }
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("authoritative inventory latches a retained canonical generation")
     func authoritativeInventoryLatchesRetainedGeneration() async throws {
         let environment = try setupStandardEnvironment()
@@ -831,6 +987,132 @@ struct WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("duplicate directory endpoint rebinds retained ownership")
+    func duplicateDirectoryEndpointRebindsRetainedOwnership() async throws {
+        let environment = try setupHostEnvironment()
+        let sessionName = "kwt-workspace-dir-hub"
+        let directory = DirectoryWorkspaceSummary(
+            id: UUID(),
+            hostID: environment.host.id,
+            name: "hub",
+            path: "/srv/hub",
+            tmuxSessionName: sessionName,
+            sessionLive: true
+        )
+        var snapshot = environment.snapshot
+        snapshot.directoryWorkspaces = [directory]
+        snapshot.hosts[0].tmuxSessions = [.init(
+            name: sessionName,
+            managed: false,
+            windows: []
+        )]
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            }
+        )
+        let canonical = WorkspaceSidebarModel.tmuxSessionSelection(
+            for: directory
+        )
+        let duplicate = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: sessionName
+        )
+
+        model.openBorrowedTmuxSession(canonical)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        let handle = try #require(
+            model.retainedBorrowedTmuxHandle(for: canonical)
+        )
+
+        model.openBorrowedTmuxSession(duplicate)
+        model.prepareActiveBorrowedTmuxSurface()
+
+        #expect(model.activeBorrowedTmuxSelection == duplicate)
+        #expect(model.retainedBorrowedTmuxHandle(for: duplicate) == handle)
+        #expect(model.retainedBorrowedTmuxPresentationCount == 1)
+        #expect(surfaceStore.requestCount == 1)
+        #expect(surfaceStore.removedKeys.isEmpty)
+
+        model.openBorrowedTmuxSession(canonical)
+        #expect(model.activeBorrowedTmuxSelection == canonical)
+        #expect(model.retainedBorrowedTmuxHandle(for: canonical) == handle)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("directory ownership rebind restarts an active reconnect")
+    func directoryOwnershipRebindRestartsActiveReconnect() async throws {
+        let discoveries = TmuxDiscoveryResultQueue([
+            .failure(.probeTimedOut(shell: "build-box")),
+            .success([
+                DiscoveredTmuxSession(
+                    name: "release-work",
+                    windowCount: 1,
+                    createdAt: nil,
+                    managed: false
+                ),
+            ]),
+        ])
+        let environment = try setupRemoteTmuxEnvironment()
+        let directory = DirectoryWorkspaceSummary(
+            id: UUID(),
+            hostID: environment.remoteHost.id,
+            name: "hub",
+            path: "/srv/hub",
+            tmuxSessionName: "release-work",
+            sessionLive: true
+        )
+        var snapshot = environment.snapshot
+        snapshot.directoryWorkspaces = [directory]
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.localHostID,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            tmuxSessionDiscovery: { _ in discoveries.removeFirst() },
+            tmuxReconnectIntervals: [.seconds(10)]
+        )
+        let canonical = WorkspaceSidebarModel.tmuxSessionSelection(
+            for: directory
+        )
+        let duplicate = WorkspaceTmuxSessionSelection(
+            hostID: environment.remoteHost.id,
+            name: "release-work"
+        )
+
+        model.openBorrowedTmuxSession(canonical)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        surfaceStore.surface.closeObservers.values.first?(false, 255)
+        await waitUntilMainActor {
+            discoveries.count == 1
+                && model.activeBorrowedTmuxRecoveryState?.isReconnecting
+                == true
+        }
+
+        model.openBorrowedTmuxSession(duplicate)
+        model.reconnectActiveTmuxSessionNow()
+
+        await waitUntilMainActor {
+            discoveries.count == 2
+                && surfaceStore.requestCount == 2
+                && model.activeBorrowedTmuxSessionIsConnected
+        }
+        #expect(model.activeBorrowedTmuxSelection == duplicate)
+        #expect(model.activeBorrowedTmuxRecoveryState == nil)
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("switching between remote hosts retains both presentations")
     func switchingRemoteHostsRetainsPresentations() async throws {
         let environment = try setupRemoteTmuxEnvironment()
@@ -964,6 +1246,62 @@ struct WorkspaceTmuxDiscoveryTests {
         model.openBorrowedTmuxSession(tmuxSelection)
         await waitUntilMainActor { surfaceStore.requestCount == 2 }
         #expect(model.retainedBorrowedTmuxPresentationCount == 1)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("closed directory waits for explicit selection before reopening")
+    func closedDirectoryWaitsForExplicitSelection() async throws {
+        let environment = try setupStandardEnvironment()
+        let directoryID = UUID()
+        var snapshot = environment.snapshot
+        snapshot.directoryWorkspaces = [.init(
+            id: directoryID,
+            hostID: environment.host.id,
+            name: "hub",
+            path: "/srv/hub",
+            tmuxSessionName: "kwt-workspace-dir-hub",
+            sessionLive: true
+        )]
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            }
+        )
+        var userSelection = model.selection
+        userSelection.select(
+            .directoryWorkspace(directoryID),
+            in: model.snapshot
+        )
+        model.selectFromUser(userSelection)
+        let tmuxSelection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(
+                for: userSelection,
+                in: model.snapshot
+            )
+        )
+        model.openBorrowedTmuxSession(tmuxSelection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+
+        model.closeBorrowedTmuxSession(tmuxSelection)
+
+        #expect(model.activeBorrowedTmuxSelection == nil)
+        #expect(model.retainedBorrowedTmuxPresentationCount == 0)
+        #expect(model.suppressesSelectedWorktreeSessionOpen)
+
+        model.synchronizeSelection(userSelection)
+        #expect(model.suppressesSelectedWorktreeSessionOpen)
+        #expect(surfaceStore.requestCount == 1)
+
+        model.selectFromUser(userSelection)
+        #expect(!model.suppressesSelectedWorktreeSessionOpen)
+        model.openBorrowedTmuxSession(tmuxSelection)
+        await waitUntilMainActor { surfaceStore.requestCount == 2 }
         await model.shutdown()
     }
 
@@ -3062,7 +3400,7 @@ struct WorkspaceTmuxDiscoveryTests {
         _ model: WorkspaceSceneModel,
         store: SceneTmuxSurfaceStoreStub
     ) async {
-        await waitUntilMainActor {
+        await waitUntilMainActor(timeout: .seconds(15)) {
             model.prepareActiveBorrowedTmuxSurface()
             return store.requestCount > 0
         }

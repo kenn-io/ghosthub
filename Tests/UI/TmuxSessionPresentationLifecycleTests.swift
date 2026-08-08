@@ -401,6 +401,34 @@ struct TmuxSessionPresentationLifecycleTests {
         #expect(model.closedSessions.isEmpty)
         withExtendedLifetime(hostingView) {}
     }
+
+    @Test("navigation hides an initially restored directory workspace")
+    func navigationHidesInitiallyRestoredDirectoryWorkspace() {
+        let hostID = UUID()
+        let directoryID = UUID()
+        let model = EndpointChangePresentationModel(
+            hostID: hostID,
+            activeSession: WorkspaceTmuxSessionSelection(
+                hostID: hostID,
+                name: "kwt-workspace-dir-hub",
+                directoryWorkspaceID: directoryID,
+                workspacePath: "/srv/hub"
+            )
+        )
+        let hostingView = hostView(
+            EndpointChangePresentationHarness(model: model),
+            size: CGSize(width: 960, height: 640)
+        )
+
+        model.navigateToAnotherHost()
+        hostingView.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+
+        #expect(model.hiddenSessions.count == 1)
+        #expect(model.hiddenSessions.first?.directoryWorkspaceID == directoryID)
+        #expect(model.closedSessions.isEmpty)
+        withExtendedLifetime(hostingView) {}
+    }
 }
 
 @MainActor
@@ -410,6 +438,7 @@ private final class EndpointChangePresentationModel: ObservableObject {
     private(set) var hiddenSessions: [WorkspaceTmuxSessionSelection] = []
     private(set) var closedSessions: [WorkspaceTmuxSessionSelection] = []
     private let alternateHostID = UUID()
+    private let directoryWorkspace: DirectoryWorkspaceSummary?
     let hostID: UUID
 
     init(
@@ -417,12 +446,30 @@ private final class EndpointChangePresentationModel: ObservableObject {
         activeSession: WorkspaceTmuxSessionSelection
     ) {
         self.hostID = hostID
-        selection = WorkspaceSelection(selectedHostID: hostID)
+        directoryWorkspace = if let directoryID =
+            activeSession.directoryWorkspaceID,
+            let workspacePath = activeSession.workspacePath {
+            DirectoryWorkspaceSummary(
+                id: directoryID,
+                hostID: hostID,
+                name: "hub",
+                path: workspacePath,
+                tmuxSessionName: activeSession.name,
+                sessionLive: true
+            )
+        } else {
+            nil
+        }
+        selection = WorkspaceSelection(
+            selectedHostID: hostID,
+            selectedDirectoryWorkspaceID: activeSession.directoryWorkspaceID
+        )
         display = Self.display(
             hostID: hostID,
             alternateHostID: alternateHostID,
             destination: "old-builder",
-            activeSession: activeSession
+            activeSession: activeSession,
+            directoryWorkspace: directoryWorkspace
         )
     }
 
@@ -431,7 +478,8 @@ private final class EndpointChangePresentationModel: ObservableObject {
             hostID: hostID,
             alternateHostID: alternateHostID,
             destination: "new-builder",
-            activeSession: nil
+            activeSession: nil,
+            directoryWorkspace: directoryWorkspace
         )
     }
 
@@ -449,7 +497,8 @@ private final class EndpointChangePresentationModel: ObservableObject {
             hostID: hostID,
             alternateHostID: alternateHostID,
             destination: "old-builder",
-            activeSession: nil
+            activeSession: nil,
+            directoryWorkspace: directoryWorkspace
         )
     }
 
@@ -457,7 +506,8 @@ private final class EndpointChangePresentationModel: ObservableObject {
         hostID: UUID,
         alternateHostID: UUID,
         destination: String,
-        activeSession: WorkspaceTmuxSessionSelection?
+        activeSession: WorkspaceTmuxSessionSelection?,
+        directoryWorkspace: DirectoryWorkspaceSummary?
     ) -> WorkspaceDisplayState {
         let host = HostSummary(
             id: hostID,
@@ -480,7 +530,8 @@ private final class EndpointChangePresentationModel: ObservableObject {
             snapshot: WorkspaceSnapshot(
                 hosts: [host, .fixture(id: alternateHostID)],
                 projects: [],
-                worktrees: []
+                worktrees: [],
+                directoryWorkspaces: directoryWorkspace.map { [$0] } ?? []
             ),
             activeTmuxSession: activeSession
         )

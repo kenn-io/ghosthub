@@ -4,6 +4,7 @@ public enum WorkspaceNavigationTarget: Hashable, Sendable {
     case host(UUID)
     case project(UUID)
     case worktree(UUID)
+    case directoryWorkspace(UUID)
     /// A host-scoped tmux session discovered independently of the project
     /// registry. Selection keeps the host current; the App layer owns one
     /// ordinary native tmux client presentation.
@@ -12,6 +13,9 @@ public enum WorkspaceNavigationTarget: Hashable, Sendable {
 
 public extension WorkspaceSelection {
     var navigationTarget: WorkspaceNavigationTarget {
+        if let selectedDirectoryWorkspaceID {
+            return .directoryWorkspace(selectedDirectoryWorkspaceID)
+        }
         if let selectedWorktreeID {
             return .worktree(selectedWorktreeID)
         }
@@ -41,6 +45,7 @@ public extension WorkspaceSelection {
             selectedHostID = hostID
             selectedProjectID = nil
             selectedWorktreeID = nil
+            selectedDirectoryWorkspaceID = nil
         case let .project(projectID):
             guard let project = snapshot.project(id: projectID) else {
                 return
@@ -52,6 +57,7 @@ public extension WorkspaceSelection {
             selectedHostID = project.hostID
             selectedProjectID = project.id
             selectedWorktreeID = nil
+            selectedDirectoryWorkspaceID = nil
         case let .worktree(worktreeID):
             guard let worktree = snapshot.worktree(id: worktreeID) else {
                 return
@@ -63,6 +69,17 @@ public extension WorkspaceSelection {
             selectedHostID = worktree.hostID
             selectedProjectID = worktree.projectID
             selectedWorktreeID = worktree.id
+            selectedDirectoryWorkspaceID = nil
+        case let .directoryWorkspace(directoryWorkspaceID):
+            guard let workspace = snapshot.directoryWorkspace(
+                id: directoryWorkspaceID
+            ) else {
+                return
+            }
+            selectedHostID = workspace.hostID
+            selectedProjectID = nil
+            selectedWorktreeID = nil
+            selectedDirectoryWorkspaceID = workspace.id
         case let .tmuxSession(hostID, _):
             guard snapshot.host(id: hostID) != nil else {
                 return
@@ -70,6 +87,7 @@ public extension WorkspaceSelection {
             selectedHostID = hostID
             selectedProjectID = nil
             selectedWorktreeID = nil
+            selectedDirectoryWorkspaceID = nil
         }
 
         self = normalized(in: snapshot, visibility: visibility)
@@ -95,9 +113,13 @@ public extension WorkspaceSelection {
         } else {
             selectedWorktree = nil
         }
+        let selectedDirectoryWorkspace = selectedDirectoryWorkspaceID
+            .flatMap(snapshot.directoryWorkspace(id:))
 
         let resolvedHostID: UUID
-        if let selectedWorktree {
+        if let selectedDirectoryWorkspace {
+            resolvedHostID = selectedDirectoryWorkspace.hostID
+        } else if let selectedWorktree {
             resolvedHostID = selectedWorktree.hostID
         } else if let selectedProject {
             resolvedHostID = selectedProject.hostID
@@ -111,8 +133,15 @@ public extension WorkspaceSelection {
 
         var resolvedProjectID: UUID?
         var resolvedWorktreeID: UUID?
+        var resolvedDirectoryWorkspaceID: UUID?
 
-        if let selectedWorktree,
+        if let selectedDirectoryWorkspace,
+           selectedDirectoryWorkspace.hostID == resolvedHostID {
+            resolvedDirectoryWorkspaceID = selectedDirectoryWorkspace.id
+        }
+
+        if resolvedDirectoryWorkspaceID == nil,
+           let selectedWorktree,
            selectedWorktree.hostID == resolvedHostID {
             resolvedWorktreeID = selectedWorktree.id
 
@@ -123,7 +152,8 @@ public extension WorkspaceSelection {
             }
         }
 
-        if resolvedProjectID == nil,
+        if resolvedDirectoryWorkspaceID == nil,
+           resolvedProjectID == nil,
            let selectedProject,
            selectedProject.hostID == resolvedHostID {
             resolvedProjectID = selectedProject.id
@@ -135,6 +165,7 @@ public extension WorkspaceSelection {
             selectedHostID: resolvedHostID,
             selectedProjectID: resolvedProjectID,
             selectedWorktreeID: resolvedWorktreeID,
+            selectedDirectoryWorkspaceID: resolvedDirectoryWorkspaceID,
             consoleBindingMode: resolvedConsoleBinding.mode,
             pinnedConsoleHostID: resolvedConsoleBinding.pinnedHostID
         )

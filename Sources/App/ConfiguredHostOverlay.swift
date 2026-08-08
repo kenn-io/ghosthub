@@ -104,6 +104,10 @@ enum ConfiguredHostOverlay {
             !hostIDs.contains($0.hostID)
                 || invalidatedHostIDs.contains($0.hostID)
         }
+        snapshot.directoryWorkspaces.removeAll {
+            !hostIDs.contains($0.hostID)
+                || invalidatedHostIDs.contains($0.hostID)
+        }
         let worktreeIDs = Set(snapshot.worktrees.map(\.id))
         snapshot.sessions.removeAll { session in
             if invalidatedHostIDs.contains(session.hostID) {

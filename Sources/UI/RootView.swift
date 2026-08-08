@@ -917,12 +917,7 @@ public struct RootView: View {
 
     private func synchronizeSelectedWorktreeSession() {
         guard !display.suppressesAutomaticWorktreeSessionOpen else { return }
-        guard let session = selectedWorktreeTmuxSession else {
-            if activeTmuxSession?.worktreeID != nil {
-                hideTmuxSession()
-            }
-            return
-        }
+        guard let session = selectedWorktreeTmuxSession else { return }
         guard activeTmuxSession != session else { return }
         activateTmuxSession(session)
     }
@@ -964,12 +959,13 @@ public struct RootView: View {
             ContentUnavailableView {
                 Label("Session detached", systemImage: "terminal")
             } description: {
-                Text("Select this worktree to attach its tmux session.")
+                Text("Select this workspace to attach its tmux session.")
             }
         } else if let pendingSession = selectedWorktreeTmuxSession {
             ProgressView("Opening \(displayName(for: pendingSession))…")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if selection.selectedWorktreeID != nil {
+        } else if selection.selectedWorktreeID != nil
+            || selection.selectedDirectoryWorkspaceID != nil {
             ContentUnavailableView {
                 Label("No tmux session", systemImage: "terminal")
             } description: {
@@ -1079,10 +1075,17 @@ public struct RootView: View {
     private func displayName(
         for session: WorkspaceTmuxSessionSelection
     ) -> String {
-        guard let worktreeID = session.worktreeID,
-              let worktree = snapshot.worktree(id: worktreeID)
-        else { return session.name }
-        return worktree.name
+        if let worktreeID = session.worktreeID,
+           let worktree = snapshot.worktree(id: worktreeID) {
+            return worktree.name
+        }
+        if let directoryWorkspaceID = session.directoryWorkspaceID,
+           let workspace = snapshot.directoryWorkspace(
+               id: directoryWorkspaceID
+           ) {
+            return workspace.name
+        }
+        return session.name
     }
 
     private func perform(_ action: WorkspaceCommandAction) {
@@ -1122,6 +1125,8 @@ public struct RootView: View {
         case let .openTmuxSession(tmuxSession):
             if let worktreeID = tmuxSession.worktreeID {
                 selectWorkspace(.worktree(worktreeID))
+            } else if let directoryID = tmuxSession.directoryWorkspaceID {
+                selectWorkspace(.directoryWorkspace(directoryID))
             } else {
                 selectWorkspace(Self.selectionForHostTmuxSession(
                     tmuxSession,

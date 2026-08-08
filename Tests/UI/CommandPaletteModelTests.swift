@@ -740,6 +740,98 @@ struct CommandPaletteModelTests {
         #expect(kill.action == .killTmuxSession(expected))
     }
 
+    @Test("directory workspace supplies canonical lifecycle commands")
+    func directoryWorkspaceSuppliesCanonicalLifecycleCommands() throws {
+        let host = HostSummary.fixture(tmuxSessions: [.init(
+            name: "kwt-workspace-dir-hub",
+            managed: false,
+            windows: [],
+            serverPID: "4242",
+            sessionID: "$3",
+            createdAt: "1785190000"
+        )])
+        let directory = DirectoryWorkspaceSummary(
+            id: UUID(),
+            hostID: host.id,
+            name: "hub",
+            path: "/srv/hub",
+            tmuxSessionName: "kwt-workspace-dir-hub",
+            sessionLive: true
+        )
+        let commands = makeCommandPaletteCommands(
+            snapshot: WorkspaceSnapshot(
+                hosts: [host],
+                projects: [],
+                worktrees: [],
+                directoryWorkspaces: [directory]
+            ),
+            selection: WorkspaceSelection(selectedHostID: host.id)
+        )
+
+        let expected = WorkspaceSidebarModel.tmuxSessionSelection(
+            for: directory
+        )
+        let open = try #require(commands.first {
+            $0.action == .openTmuxSession(expected)
+        })
+        let kill = try #require(commands.first {
+            $0.action == .killTmuxSession(expected)
+        })
+        #expect(open.title == "Open tmux session: kwt-workspace-dir-hub")
+        #expect(kill.title == "Kill tmux session: kwt-workspace-dir-hub")
+    }
+
+    @Test("exposed directory session keeps one workspace-aware command")
+    func exposedDirectorySessionDeduplicatesLifecycleCommands() {
+        let sessionName = "kwt-workspace-dir-hub"
+        let host = HostSummary.fixture(tmuxSessions: [.init(
+            name: sessionName,
+            managed: false,
+            windows: [],
+            serverPID: "4242",
+            sessionID: "$3",
+            createdAt: "1785190000"
+        )])
+        let directory = DirectoryWorkspaceSummary(
+            id: UUID(),
+            hostID: host.id,
+            name: "hub",
+            path: "/srv/hub",
+            tmuxSessionName: sessionName,
+            sessionLive: true
+        )
+        let commands = makeCommandPaletteCommands(
+            snapshot: WorkspaceSnapshot(
+                hosts: [host],
+                projects: [],
+                worktrees: [],
+                directoryWorkspaces: [directory]
+            ),
+            selection: WorkspaceSelection(selectedHostID: host.id),
+            tmuxSessionVisibility: TmuxSessionVisibility(
+                hideKwtManagedSessions: false
+            )
+        )
+        let expected = WorkspaceSidebarModel.tmuxSessionSelection(
+            for: directory
+        )
+        let openCommands = commands.filter {
+            if case let .openTmuxSession(session) = $0.action {
+                return session.name == sessionName
+            }
+            return false
+        }
+        let killCommands = commands.filter {
+            if case let .killTmuxSession(session) = $0.action {
+                return session.name == sessionName
+            }
+            return false
+        }
+
+        #expect(openCommands.map(\.action) == [.openTmuxSession(expected)])
+        #expect(killCommands.map(\.action) == [.killTmuxSession(expected)])
+    }
+
     @Test("import PR command hidden without GitHub-linked projects")
     func importPRCommandHiddenWithoutGitHubLink() {
         let host = HostSummary.fixture(

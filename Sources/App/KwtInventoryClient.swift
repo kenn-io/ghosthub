@@ -43,6 +43,19 @@ struct KwtWorktreeRecord: Codable, Equatable, Sendable {
     }
 }
 
+struct KwtDirectoryWorkspaceRecord: Codable, Equatable, Sendable {
+    var name: String
+    var path: String
+    var sessionName: String
+    var sessionLive: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case name, path
+        case sessionName = "session_name"
+        case sessionLive = "session_live"
+    }
+}
+
 struct KwtProjectInventory: Equatable, Sendable {
     var project: KwtProjectRecord
     var worktrees: [KwtWorktreeRecord]
@@ -51,39 +64,65 @@ struct KwtProjectInventory: Equatable, Sendable {
 
 struct KwtHostInventory: Equatable, Sendable {
     var projects: [KwtProjectInventory]
+    var directoryWorkspaces: [KwtDirectoryWorkspaceRecord]
+    var directoryWorkspaceWarning: String?
+
+    init(
+        projects: [KwtProjectInventory],
+        directoryWorkspaces: [KwtDirectoryWorkspaceRecord] = [],
+        directoryWorkspaceWarning: String? = nil
+    ) {
+        self.projects = projects
+        self.directoryWorkspaces = directoryWorkspaces
+        self.directoryWorkspaceWarning = directoryWorkspaceWarning
+    }
 
     func retainingFailedProjectWorktrees(
         from previous: KwtHostInventory?,
         excludingWorktrees: Set<KwtWorktreeIdentity> = []
     ) -> KwtHostInventory {
-        KwtHostInventory(projects: projects.map { item in
-            var retained = item
-            if item.warning != nil,
-               item.worktrees.isEmpty,
-               let prior = previous?.projects.first(where: {
-                   $0.project.repository == item.project.repository
-                       || $0.project.path == item.project.path
-               }) {
-                retained.worktrees = prior.worktrees
-            }
-            retained.worktrees.removeAll { worktree in
-                excludingWorktrees.contains {
-                    $0.matches(
-                        path: worktree.path,
-                        generation: worktree.generation
-                    )
+        var retainedDirectories = directoryWorkspaces
+        if directoryWorkspaceWarning != nil,
+           retainedDirectories.isEmpty,
+           let previous {
+            retainedDirectories = previous.directoryWorkspaces
+        }
+        return KwtHostInventory(
+            projects: projects.map { item in
+                var retained = item
+                if item.warning != nil,
+                   item.worktrees.isEmpty,
+                   let prior = previous?.projects.first(where: {
+                       $0.project.repository == item.project.repository
+                           || $0.project.path == item.project.path
+                   }) {
+                    retained.worktrees = prior.worktrees
                 }
-            }
-            return retained
-        })
+                retained.worktrees.removeAll { worktree in
+                    excludingWorktrees.contains {
+                        $0.matches(
+                            path: worktree.path,
+                            generation: worktree.generation
+                        )
+                    }
+                }
+                return retained
+            },
+            directoryWorkspaces: retainedDirectories,
+            directoryWorkspaceWarning: directoryWorkspaceWarning
+        )
     }
 
     func removingWorktree(atPath path: String) -> KwtHostInventory {
-        KwtHostInventory(projects: projects.map { item in
-            var updated = item
-            updated.worktrees.removeAll { $0.path == path }
-            return updated
-        })
+        KwtHostInventory(
+            projects: projects.map { item in
+                var updated = item
+                updated.worktrees.removeAll { $0.path == path }
+                return updated
+            },
+            directoryWorkspaces: directoryWorkspaces,
+            directoryWorkspaceWarning: directoryWorkspaceWarning
+        )
     }
 }
 
@@ -117,8 +156,9 @@ enum KwtInventoryError: Error, Equatable, LocalizedError {
 }
 
 /// Reads kwt's supported machine-readable surfaces without interpreting its
-/// configuration files. Project order follows `kwt projects --json`; each
-/// project is then asked for its own authoritative worktree/session list.
+/// configuration files. Directory workspaces are independent of project
+/// inventory. Project order follows `kwt projects --json`; each project is
+/// then asked for its own authoritative worktree/session list.
 struct KwtInventoryClient: Sendable {
     typealias LocalRunner = @Sendable (
         _ shell: String, _ command: String
@@ -172,17 +212,40 @@ struct KwtInventoryClient: Sendable {
             KwtBinaryLocator.windowsRemoteManagedRelativePath(
                 revision: remoteBinaryRevision
             )
+        let hostPlatform = platform(for: host)
+        let prelude = binaryPrelude(for: host)
+        let projectsResult = run(
+            host: host,
+            command: Self.projectsCommand(
+                platform: hostPlatform,
+                binaryPrelude: prelude,
+                windowsKwtRelativePath: windowsKwtRelativePath
+            )
+        )
+        let directoriesResult = run(
+            host: host,
+            command: Self.directoryWorkspacesCommand(
+                platform: hostPlatform,
+                binaryPrelude: prelude,
+                windowsKwtRelativePath: windowsKwtRelativePath
+            )
+        )
         let projects: [KwtProjectRecord] = try decode(
-            run(
-                host: host,
-                command: Self.projectsCommand(
-                    platform: platform(for: host),
-                    binaryPrelude: binaryPrelude(for: host),
-                    windowsKwtRelativePath: windowsKwtRelativePath
-                )
-            ),
+            projectsResult,
             hostLabel: hostLabel
         )
+        let directoryWorkspaces: [KwtDirectoryWorkspaceRecord]
+        let directoryWorkspaceWarning: String?
+        do {
+            directoryWorkspaces = try decode(
+                directoriesResult,
+                hostLabel: hostLabel
+            )
+            directoryWorkspaceWarning = nil
+        } catch {
+            directoryWorkspaces = []
+            directoryWorkspaceWarning = error.localizedDescription
+        }
 
         let indexed = await withTaskGroup(
             of: (Int, KwtProjectInventory).self,
@@ -231,7 +294,9 @@ struct KwtInventoryClient: Sendable {
             return values
         }
         return KwtHostInventory(
-            projects: indexed.sorted { $0.0 < $1.0 }.map(\.1)
+            projects: indexed.sorted { $0.0 < $1.0 }.map(\.1),
+            directoryWorkspaces: directoryWorkspaces,
+            directoryWorkspaceWarning: directoryWorkspaceWarning
         )
     }
 
@@ -334,6 +399,23 @@ struct KwtInventoryClient: Sendable {
             + "printf 'GHOSTHUB_KWT_JSON\\n'; "
             + "exec \"$ghosthub_kwt_path\" list --json"
     }
+
+    private static func directoryWorkspacesCommand(
+        platform: SSHHostInfo.Platform,
+        binaryPrelude: String,
+        windowsKwtRelativePath: String?
+    ) -> String {
+        if platform == .windows {
+            return KwtPowerShellCommand.run(
+                arguments: ["workspace", "list", "--json"],
+                marker: "GHOSTHUB_KWT_JSON",
+                managedRelativePath: windowsKwtRelativePath
+            )
+        }
+        return binaryPrelude
+            + "printf 'GHOSTHUB_KWT_JSON\\n'; "
+            + "exec \"$ghosthub_kwt_path\" workspace list --json"
+    }
 }
 
 enum KwtSnapshotMerger {
@@ -347,6 +429,42 @@ enum KwtSnapshotMerger {
         let existingWorktrees = snapshot.worktrees.filter { $0.hostID == hostID }
         var projects: [ProjectSummary] = []
         var worktrees: [WorktreeSummary] = []
+        let existingDirectoryWorkspaces = snapshot.directoryWorkspaces.filter {
+            $0.hostID == hostID
+        }
+        let directoryRecords = inventory.directoryWorkspaceWarning != nil
+            && inventory.directoryWorkspaces.isEmpty
+            ? existingDirectoryWorkspaces.map {
+                KwtDirectoryWorkspaceRecord(
+                    name: $0.name,
+                    path: $0.path,
+                    sessionName: $0.tmuxSessionName,
+                    sessionLive: $0.sessionLive
+                )
+            }
+            : inventory.directoryWorkspaces
+        let directoryWorkspaces = directoryRecords.map { record in
+            let existing = existingDirectoryWorkspaces.first {
+                normalizedPath($0.path) == normalizedPath(record.path)
+            }
+            var workspace = existing ?? DirectoryWorkspaceSummary(
+                id: stableID(
+                    "directory-workspace|\(hostID.uuidString)"
+                        + "|\(normalizedPath(record.path))"
+                ),
+                hostID: hostID,
+                name: record.name,
+                path: record.path,
+                tmuxSessionName: record.sessionName,
+                sessionLive: record.sessionLive
+            )
+            workspace.hostID = hostID
+            workspace.name = record.name
+            workspace.path = record.path
+            workspace.tmuxSessionName = record.sessionName
+            workspace.sessionLive = record.sessionLive
+            return workspace
+        }
 
         for item in inventory.projects {
             let record = item.project
@@ -439,6 +557,8 @@ enum KwtSnapshotMerger {
         updated.projects.append(contentsOf: projects)
         updated.worktrees.removeAll { $0.hostID == hostID }
         updated.worktrees.append(contentsOf: worktrees)
+        updated.directoryWorkspaces.removeAll { $0.hostID == hostID }
+        updated.directoryWorkspaces.append(contentsOf: directoryWorkspaces)
         updated.sessions.removeAll {
             $0.hostID == hostID
                 && $0.worktreeID.map(removedWorktreeIDs.contains) == true
