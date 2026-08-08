@@ -1927,15 +1927,16 @@ final class WorkspaceSceneModel: ObservableObject {
     private func currentRemovalTarget(
         for request: WorktreeRemovalRequest
     ) -> WorktreeSummary? {
-        if let worktree = snapshot.worktree(id: request.worktree.id) {
-            return worktree
+        if let generation = WorktreeGeneration.canonical(
+            request.worktree.generation
+        ) {
+            return snapshot.worktrees.first {
+                $0.hostID == request.worktree.hostID
+                    && $0.projectID == request.project.id
+                    && $0.generation == generation
+            }
         }
-        guard let generation = request.worktree.generation else { return nil }
-        return snapshot.worktrees.first {
-            $0.hostID == request.worktree.hostID
-                && $0.projectID == request.project.id
-                && $0.generation == generation
-        }
+        return snapshot.worktree(id: request.worktree.id)
     }
 
     private func currentRemovalTmuxEndpointOwner(

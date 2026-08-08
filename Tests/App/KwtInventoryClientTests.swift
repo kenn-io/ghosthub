@@ -604,6 +604,64 @@ struct KwtInventoryClientTests {
         #expect(merged.worktrees[0].tmuxSocketName == nil)
     }
 
+    @Test("a canonical replacement cannot inherit a reused path socket")
+    func canonicalReplacementDoesNotInheritPathSocket() {
+        let hostID = UUID()
+        let projectID = UUID()
+        let replacementGeneration = "fedcba9876543210fedcba9876543210"
+        let snapshot = WorkspaceSnapshot(
+            hosts: [.fixture(id: hostID)],
+            projects: [ProjectSummary(
+                id: projectID,
+                hostID: hostID,
+                scopedKey: "repo",
+                name: "repo",
+                rootPath: "/repo"
+            )],
+            worktrees: [WorktreeSummary(
+                id: UUID(),
+                hostID: hostID,
+                projectID: projectID,
+                name: "old-generation",
+                path: "/reused-path",
+                branch: "feature/old",
+                generation: "0123456789abcdef0123456789abcdef",
+                tmuxSessionName: "kwt-repo-old",
+                tmuxSocketName: "protected-socket"
+            )]
+        )
+        let inventory = KwtHostInventory(projects: [KwtProjectInventory(
+            project: KwtProjectRecord(
+                repository: "repo",
+                name: "repo",
+                path: "/repo",
+                lastTouched: nil
+            ),
+            worktrees: [KwtWorktreeRecord(
+                path: "/reused-path",
+                branch: "feature/replacement",
+                commitHash: "abc",
+                isMain: false,
+                createdAt: nil,
+                generation: replacementGeneration,
+                repository: "repo",
+                sessionName: "kwt-repo-replacement",
+                tmuxSocketName: nil
+            )],
+            warning: nil
+        )])
+
+        let merged = KwtSnapshotMerger.merge(
+            inventory,
+            hostID: hostID,
+            into: snapshot
+        )
+
+        #expect(merged.worktrees.count == 1)
+        #expect(merged.worktrees[0].generation == replacementGeneration)
+        #expect(merged.worktrees[0].tmuxSocketName == nil)
+    }
+
     @Test("a failed project listing preserves its last successful worktrees")
     func preservesProjectWorktreesAcrossTransientFailure() {
         let hostID = UUID()

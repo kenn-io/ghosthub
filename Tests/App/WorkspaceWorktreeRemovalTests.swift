@@ -2238,7 +2238,7 @@ struct WorkspaceWorktreeRemovalTests {
     }
 
     @MainActor
-    @Test("a moved worktree requires a refreshed confirmation")
+    @Test("a moved worktree outranks a replacement reusing its runtime ID")
     func movedWorktreeRequiresConfirmation() async throws {
         let environment = try setupStandardEnvironment()
         var removable = WorktreeSummary.fixture(
@@ -2256,7 +2256,20 @@ struct WorkspaceWorktreeRemovalTests {
         var moved = removable
         moved.path = "/tmp/project-a-moved"
         moved.scopedKey = moved.path
-        let movedInventory = inventory(environment, including: moved)
+        let replacementGeneration = "fedcba9876543210fedcba9876543210"
+        var inventoryAfterMove = inventory(environment, including: moved)
+        inventoryAfterMove.projects[0].worktrees.append(KwtWorktreeRecord(
+            path: removable.path,
+            branch: "feature/replacement",
+            commitHash: "",
+            isMain: false,
+            createdAt: nil,
+            generation: replacementGeneration,
+            repository: environment.project.scopedKey,
+            sessionName: "kwt-project-a-replacement",
+            tmuxSocketName: nil
+        ))
+        let movedInventory = inventoryAfterMove
         let removals = LockedValue(0)
         let kills = LockedValue(0)
         let identity = TmuxSessionIdentity(
@@ -2294,7 +2307,10 @@ struct WorkspaceWorktreeRemovalTests {
         )
         #expect(kills.load() == 0)
         #expect(removals.load() == 0)
-        #expect(model.snapshot.worktree(id: removable.id) == nil)
+        #expect(
+            model.snapshot.worktree(id: removable.id)?.generation
+                == replacementGeneration
+        )
         #expect(model.snapshot.worktree(id: updatedRequest.worktree.id) != nil)
         await model.shutdown()
     }
