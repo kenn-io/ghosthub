@@ -431,6 +431,73 @@ struct KwtInventoryClientTests {
         )
     }
 
+    @Test("an incomplete refresh retains protected generation evidence")
+    func retainsProtectedGenerationAcrossIncompleteRefresh() {
+        let hostID = UUID()
+        let projectID = UUID()
+        let generation = "0123456789abcdef0123456789abcdef"
+        let socketName = "kwt-pr-0123456789abcdef"
+        let snapshot = WorkspaceSnapshot(
+            hosts: [.fixture(id: hostID)],
+            projects: [ProjectSummary(
+                id: projectID,
+                hostID: hostID,
+                scopedKey: "repo",
+                name: "repo",
+                rootPath: "/repo"
+            )],
+            worktrees: [WorktreeSummary(
+                id: UUID(),
+                hostID: hostID,
+                projectID: projectID,
+                name: "feature",
+                path: "/repo-feature",
+                branch: "feature/protected",
+                generation: generation,
+                tmuxSessionName: "kwt-repo-feature",
+                tmuxSocketName: socketName
+            )]
+        )
+        func inventory(generation: String?) -> KwtHostInventory {
+            KwtHostInventory(projects: [KwtProjectInventory(
+                project: KwtProjectRecord(
+                    repository: "repo",
+                    name: "repo",
+                    path: "/repo",
+                    lastTouched: nil
+                ),
+                worktrees: [KwtWorktreeRecord(
+                    path: "/repo-feature",
+                    branch: "feature/protected",
+                    commitHash: "abc",
+                    isMain: false,
+                    createdAt: nil,
+                    generation: generation,
+                    repository: "repo",
+                    sessionName: "kwt-repo-feature",
+                    tmuxSocketName: nil
+                )],
+                warning: nil
+            )])
+        }
+
+        let incomplete = KwtSnapshotMerger.merge(
+            inventory(generation: nil),
+            hostID: hostID,
+            into: snapshot
+        )
+        let restored = KwtSnapshotMerger.merge(
+            inventory(generation: generation),
+            hostID: hostID,
+            into: incomplete
+        )
+
+        #expect(incomplete.worktrees[0].generation == generation)
+        #expect(incomplete.worktrees[0].tmuxSocketName == socketName)
+        #expect(restored.worktrees[0].generation == generation)
+        #expect(restored.worktrees[0].tmuxSocketName == socketName)
+    }
+
     @Test(
         "canonical generation outranks a reused path for socket identity",
         arguments: ["same-generation-socket", nil] as [String?]

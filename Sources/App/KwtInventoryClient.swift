@@ -601,14 +601,17 @@ enum KwtSnapshotMerger {
                 worktree.isStale = false
                 worktree.createdAt = record.createdAt
                 worktree.generation = record.generation
+                    ?? WorktreeGeneration.canonical(existing?.generation)
                 worktree.tmuxSessionName = record.sessionName
                 // The protected socket is a fail-closed marker: it keeps
                 // contributor-authored terminal configuration out of the app
                 // config and routes attachment through kwt's protected
                 // command. A refresh can omit it without unprotecting the same
-                // workspace, but a new canonical generation must not inherit
-                // it from the prior owner of a reused path. Canonical
-                // generation therefore outranks path identity.
+                // workspace. Its last canonical generation is retained when
+                // that same incomplete record also omits identity, but a new
+                // canonical generation must not inherit the socket from the
+                // prior owner of a reused path. Canonical generation therefore
+                // outranks path identity.
                 // Deleting the workspace drops the record entirely, which is
                 // how a protected marker is actually retired.
                 if WorktreeGeneration.isCanonical(record.generation) {
