@@ -282,6 +282,69 @@ fn switches_between_discovered_sessions_without_destroying_either() {
     });
 }
 
+#[test]
+#[ignore = "requires WSL2 and tmux; creates only an isolated TMUX_TMPDIR server"]
+fn rename_during_switch_keeps_retained_navigation_consistent() {
+    let _serial = WSL_LIVE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let server = IsolatedServer::start("rename-switch");
+    server.run_tmux(["new-session", "-d", "-s", "switch-live"]);
+    let workspace = start_workspace(&server);
+    wait_for_sessions(&workspace, &["workspace-live", "switch-live"]);
+
+    workspace
+        .attach(&session_selection(&workspace, "workspace-live"))
+        .expect("attach first session");
+    wait_for_terminal(&workspace, "workspace-live");
+    let switch_target = session_selection(&workspace, "switch-live");
+
+    server.run_tmux(["rename-session", "-t", "=workspace-live", "renamed-live"]);
+    workspace.refresh().expect("start rename refresh");
+    workspace
+        .switch_session(&switch_target)
+        .expect("switch while rename refresh is active");
+    wait_for_terminal(&workspace, "switch-live");
+    wait_until(|| {
+        let snapshot = workspace.snapshot();
+        snapshot
+            .hosts()
+            .iter()
+            .flat_map(workspace::HostItem::sessions)
+            .any(|session| session.name() == "renamed-live")
+            && snapshot
+                .retained_selections()
+                .iter()
+                .any(|selection| selection.session() == "renamed-live")
+            && !snapshot
+                .retained_selections()
+                .iter()
+                .any(|selection| selection.session() == "workspace-live")
+    });
+
+    workspace
+        .switch_session(&session_selection(&workspace, "renamed-live"))
+        .expect("reactivate renamed retained presentation");
+    wait_for_terminal(&workspace, "renamed-live");
+    workspace
+        .switch_session(&switch_target)
+        .expect("retain renamed presentation again");
+    wait_for_terminal(&workspace, "switch-live");
+
+    let revision_before_exit = workspace.snapshot().revision();
+    server.run_tmux(["kill-session", "-t", "=renamed-live"]);
+    wait_until(|| {
+        let _events = workspace.drain_events();
+        let snapshot = workspace.snapshot();
+        snapshot.revision() > revision_before_exit
+            && !snapshot
+                .retained_selections()
+                .iter()
+                .any(|selection| selection.session() == "renamed-live")
+    });
+    workspace.detach();
+}
+
 fn assert_retained(workspace: &Workspace, expected_session: &str) {
     assert!(
         workspace

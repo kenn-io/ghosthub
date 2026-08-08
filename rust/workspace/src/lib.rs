@@ -770,6 +770,7 @@ struct RetainedDrain {
     emitted: Vec<WorkspaceEvent>,
     retries: Vec<RetainedRetry>,
     processed: usize,
+    changed: bool,
 }
 
 struct RetainedPresentations<T> {
@@ -827,10 +828,16 @@ impl<T> RetainedPresentations<T> {
             .collect()
     }
 
-    fn reconcile_session_names(&mut self, snapshot: &HostSnapshot, socket_directory: Option<&str>) {
+    fn reconcile_session_names(
+        &mut self,
+        snapshot: &HostSnapshot,
+        socket_directory: Option<&str>,
+    ) -> bool {
+        let mut changed = false;
         for presentation in &mut self.entries {
             if let Some(name) =
                 refreshed_session_name(&presentation.key, snapshot, socket_directory)
+                && name != presentation.attachment.request.name
             {
                 presentation.selection = SessionSelection::new(
                     &presentation.key.host_id,
@@ -838,11 +845,13 @@ impl<T> RetainedPresentations<T> {
                     name,
                 );
                 presentation.attachment.request.name = name.to_owned();
+                changed = true;
             }
         }
         for presentation in &mut self.restarting {
             if let Some(name) =
                 refreshed_session_name(&presentation.key, snapshot, socket_directory)
+                && name != presentation.attachment.request.name
             {
                 presentation.selection = SessionSelection::new(
                     &presentation.key.host_id,
@@ -850,8 +859,10 @@ impl<T> RetainedPresentations<T> {
                     name,
                 );
                 presentation.attachment.request.name = name.to_owned();
+                changed = true;
             }
         }
+        changed
     }
 
     fn finish_restart(&mut self, key: &PresentationKey, worker: T) -> bool {
@@ -938,6 +949,7 @@ impl RetainedPresentations<TerminalWorker> {
         let mut emitted = Vec::new();
         let mut retries = Vec::new();
         let mut processed = 0;
+        let mut changed = false;
         let mut index = 0;
         while index < self.entries.len() && processed < budget {
             let confirmed = self.entries[index].worker.is_confirmed_live();
@@ -958,6 +970,7 @@ impl RetainedPresentations<TerminalWorker> {
                 }
                 Ok(Some(TerminalEvent::Exited { code, output_tail })) => {
                     processed += 1;
+                    changed = true;
                     self.handle_exit(
                         index,
                         code,
@@ -970,6 +983,7 @@ impl RetainedPresentations<TerminalWorker> {
                 Err(error) => {
                     processed += 1;
                     self.entries.remove(index);
+                    changed = true;
                     emitted.push(WorkspaceEvent::Error(error.to_string()));
                 }
                 Ok(None) => index += 1,
@@ -979,6 +993,7 @@ impl RetainedPresentations<TerminalWorker> {
             emitted,
             retries,
             processed,
+            changed,
         }
     }
 }
@@ -1505,7 +1520,20 @@ impl Workspace {
     }
 
     fn retain_active_presentation(&self) -> Result<Option<PresentationKey>, WorkspaceError> {
-        let presentation = {
+        let mut attachment = self
+            .inner
+            .attachment
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(active_attachment) = attachment.active() else {
+            return Ok(None);
+        };
+        let selection = SessionSelection::new(
+            &active_attachment.request.host_id,
+            active_attachment.request.endpoint.distro(),
+            &active_attachment.request.name,
+        );
+        let presentation_id = {
             let state = self
                 .inner
                 .state
@@ -1513,33 +1541,17 @@ impl Workspace {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             match &*state {
                 WorkspaceContent::Terminal {
-                    host_id,
-                    endpoint,
-                    session,
-                    presentation_id,
-                    ..
-                } => Some((
-                    SessionSelection::new(host_id, endpoint, session),
-                    *presentation_id,
-                )),
-                _ => None,
+                    presentation_id, ..
+                } => *presentation_id,
+                _ => return Ok(None),
             }
         };
-        let Some((selection, presentation_id)) = presentation else {
-            return Ok(None);
-        };
-
-        let mut attachment = self
-            .inner
-            .attachment
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut worker = self
             .inner
             .worker
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if attachment.active().is_none() || worker.active().is_none() {
+        if worker.active().is_none() {
             return Err(WorkspaceError::new(
                 "the active terminal presentation is not available",
             ));
@@ -1554,7 +1566,6 @@ impl Workspace {
         let key = active_attachment.request.presentation_key();
         let active_worker = worker.invalidate().expect("active worker was checked");
         drop(worker);
-        drop(attachment);
         clear_pending_paste(&self.inner);
         clear_terminal_notice(&self.inner);
         self.inner
@@ -1569,6 +1580,7 @@ impl Workspace {
                 presentation_id,
             });
         self.restore_inventory_state();
+        drop(attachment);
         Ok(Some(key))
     }
 
@@ -1961,6 +1973,9 @@ impl Workspace {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .drain_events(budget);
+        if drain.changed {
+            self.inner.revision.fetch_add(1, Ordering::Release);
+        }
         emitted.extend(drain.emitted);
         for retry in drain.retries {
             self.retry_retained_with_xterm(retry, emitted);
@@ -2239,6 +2254,10 @@ fn activate_retained_presentation(
     key: &PresentationKey,
     fallback: Option<FallbackAuthority>,
 ) -> Result<bool, WorkspaceError> {
+    let mut attachment = inner
+        .attachment
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some(presentation) = inner
         .retained_presentations
         .lock()
@@ -2252,10 +2271,6 @@ fn activate_retained_presentation(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let term = presentation.attachment.term;
-    let mut attachment = inner
-        .attachment
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some(generation) =
         reserve_retained_attachment(&mut attachment, &presentation.attachment, fallback)
     else {
@@ -2288,9 +2303,19 @@ fn activate_retained_presentation(
             "a terminal presentation is already open",
         ));
     }
+    let selection = attachment
+        .active()
+        .map(|active| {
+            SessionSelection::new(
+                &active.request.host_id,
+                active.request.endpoint.distro(),
+                &active.request.name,
+            )
+        })
+        .expect("retained attachment was just reserved");
     let RetainedPresentation {
         key: _,
-        selection,
+        selection: _,
         attachment: _,
         worker,
         presentation_id,
@@ -2299,7 +2324,6 @@ fn activate_retained_presentation(
     let surface = worker.surface_handle();
     let worker_generation = workers.publish(worker);
     drop(workers);
-    drop(attachment);
 
     clear_pending_paste(inner);
     set_terminal_notice(inner, term);
@@ -2313,6 +2337,7 @@ fn activate_retained_presentation(
             surface,
         },
     );
+    drop(attachment);
     let workers = inner
         .worker
         .lock()
@@ -2658,11 +2683,14 @@ fn fail_retained_retry(inner: &Inner, key: &PresentationKey, diagnostic: Option<
 }
 
 fn remove_failed_retained_retry(inner: &Inner, key: &PresentationKey) {
-    let _removed = inner
+    let removed = inner
         .retained_presentations
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .fail_restart(key);
+    if removed.is_some() {
+        inner.revision.fetch_add(1, Ordering::Release);
+    }
 }
 
 fn fallback_owns_visible_request(
@@ -2830,11 +2858,14 @@ fn reconcile_retained_session_names(
     snapshot: &HostSnapshot,
     socket_directory: Option<&str>,
 ) {
-    inner
+    let changed = inner
         .retained_presentations
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .reconcile_session_names(snapshot, socket_directory);
+    if changed {
+        inner.revision.fetch_add(1, Ordering::Release);
+    }
 }
 
 fn publish_stale_attachment_failure(
@@ -3771,7 +3802,7 @@ mod tests {
             vec![session::DiscoveredSession::new("renamed", identity, 0)],
         );
 
-        retained.reconcile_session_names(&renamed_snapshot, None);
+        assert!(retained.reconcile_session_names(&renamed_snapshot, None));
 
         assert!(retained.contains(&key));
         assert_eq!(retained.selections()[0].session(), "renamed");
@@ -3836,6 +3867,61 @@ mod tests {
             workspace.snapshot().content(),
             WorkspaceContent::Attaching { session, .. } if session == "renamed"
         ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn retained_rename_advances_the_workspace_revision_once() {
+        let identity = session::SessionIdentity::new(100, "$1", 200);
+        let original_snapshot = HostSnapshot::test_fixture(
+            "Ubuntu",
+            "boot-id",
+            42,
+            vec![session::DiscoveredSession::new(
+                "original",
+                identity.clone(),
+                0,
+            )],
+        );
+        let request = attach_request_fixture(&original_snapshot, identity.clone(), "original");
+        let renamed_snapshot = HostSnapshot::test_fixture(
+            "Ubuntu",
+            "boot-id",
+            42,
+            vec![session::DiscoveredSession::new("renamed", identity, 0)],
+        );
+        let workspace = Workspace::preview(WorkspaceSnapshot::ready(
+            Appearance::default(),
+            "Ubuntu",
+            Vec::new(),
+        ));
+        workspace
+            .inner
+            .retained_presentations
+            .lock()
+            .expect("retained presentations")
+            .restarting
+            .push(RetainedRestart {
+                key: request.presentation_key(),
+                selection: SessionSelection::new("wsl", "Ubuntu", "original"),
+                attachment: ActiveAttachment {
+                    request,
+                    term: AttachTerm::Xterm256Color,
+                    generation: 1,
+                    fallback: None,
+                },
+                presentation_id: 7,
+            });
+        let revision = workspace.snapshot().revision();
+
+        reconcile_retained_session_names(&workspace.inner, &renamed_snapshot, None);
+        let renamed = workspace.snapshot();
+
+        assert_eq!(renamed.revision(), revision + 1);
+        assert_eq!(renamed.retained_selections()[0].session(), "renamed");
+
+        reconcile_retained_session_names(&workspace.inner, &renamed_snapshot, None);
+        assert_eq!(workspace.snapshot().revision(), renamed.revision());
     }
 
     #[cfg(windows)]
