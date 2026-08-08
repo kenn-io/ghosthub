@@ -236,7 +236,7 @@ private struct NativeTmuxTerminalView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .textBackgroundColor))
         .overlay(alignment: .top) {
-            if let message = surfaceView.tmuxSplitErrorMessage {
+            if let message = surfaceView.paneSplitErrorMessage {
                 Label(message, systemImage: "exclamationmark.triangle.fill")
                     .font(.callout)
                     .padding(10)
@@ -262,7 +262,7 @@ private struct NativeTmuxTerminalView: View {
             surfaceView.unregisterPaneFocusObserver(id: observerID)
         }
         .focusedSceneValue(
-            \.tmuxTerminalHasEffectiveKeyboardFocus,
+            \.terminalHasEffectiveKeyboardFocus,
             surfaceView.hasEffectiveKeyboardFocus
         )
     }

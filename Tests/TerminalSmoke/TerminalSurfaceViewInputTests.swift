@@ -827,8 +827,8 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             app: appHandle,
             configuration: TerminalSurfaceConfiguration()
         )
-        var shortcuts: [TerminalTmuxSplitShortcut] = []
-        view.tmuxSplitShortcutHandler = { shortcuts.append($0) }
+        var shortcuts: [TerminalPaneSplitShortcut] = []
+        view.paneSplitShortcutHandler = { shortcuts.append($0) }
 
         for event in [
             makeKeyEvent(
@@ -846,7 +846,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
                 windowNumber: 0
             ),
         ] {
-            XCTAssertTrue(view.handleTmuxSplitShortcutForTesting(event))
+            XCTAssertTrue(view.handlePaneSplitShortcutForTesting(event))
         }
 
         XCTAssertEqual(shortcuts, [.right, .down])
@@ -858,8 +858,8 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             app: appHandle,
             configuration: TerminalSurfaceConfiguration()
         )
-        var shortcuts: [TerminalTmuxSplitShortcut] = []
-        view.tmuxSplitShortcutHandler = { shortcuts.append($0) }
+        var shortcuts: [TerminalPaneSplitShortcut] = []
+        view.paneSplitShortcutHandler = { shortcuts.append($0) }
         let event = makeKeyEvent(
             characters: "d",
             charactersIgnoringModifiers: "d",
@@ -868,7 +868,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             isARepeat: true
         )
 
-        XCTAssertTrue(view.handleTmuxSplitShortcutForTesting(event))
+        XCTAssertTrue(view.handlePaneSplitShortcutForTesting(event))
         XCTAssertEqual(shortcuts, [])
     }
 
@@ -878,7 +878,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             app: appHandle,
             configuration: TerminalSurfaceConfiguration()
         )
-        view.tmuxSplitShortcutHandler = { _ in }
+        view.paneSplitShortcutHandler = { _ in }
         let keyDown = makeKeyEvent(
             characters: "d",
             charactersIgnoringModifiers: "d",
@@ -892,7 +892,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             keyCode: 2
         )
 
-        XCTAssertTrue(view.handleTmuxSplitShortcutForTesting(keyDown))
+        XCTAssertTrue(view.handlePaneSplitShortcutForTesting(keyDown))
         XCTAssertNil(view.processLocalEventForTesting(keyUp))
     }
 

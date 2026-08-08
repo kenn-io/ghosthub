@@ -548,7 +548,7 @@ final class WorkspaceSceneModel: ObservableObject {
     }
 
     func splitActiveTmuxPane(
-        _ shortcut: TerminalTmuxSplitShortcut,
+        _ shortcut: TerminalPaneSplitShortcut,
         requiresKeyboardFocus: Bool = false
     ) {
         guard canSplitActiveTmuxPane,

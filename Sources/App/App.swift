@@ -27,11 +27,11 @@ enum PaneSplitCommand {
 
     @MainActor
     static func requiresKeyboardFocus(
-        _ shortcut: TerminalTmuxSplitShortcut,
+        _ shortcut: TerminalPaneSplitShortcut,
         currentEvent: NSEvent? = NSApplication.shared.currentEvent
     ) -> Bool {
         guard currentEvent?.type == .keyDown else { return false }
-        return TerminalTmuxSplitShortcut.matching(
+        return TerminalPaneSplitShortcut.matching(
             flags: currentEvent?.modifierFlags ?? [],
             charactersIgnoringModifiers:
             currentEvent?.charactersIgnoringModifiers
@@ -50,8 +50,8 @@ struct GhosthubApp: App {
     private let updateRelaunchRestorer = UpdateRelaunchRestorer()
     #endif
     @FocusedValue(\.sceneModel) private var focusedSceneModel
-    @FocusedValue(\.tmuxTerminalHasEffectiveKeyboardFocus)
-    private var tmuxTerminalHasEffectiveKeyboardFocus
+    @FocusedValue(\.terminalHasEffectiveKeyboardFocus)
+    private var terminalHasEffectiveKeyboardFocus
     @Environment(\.openWindow) private var openWindow
     @State private var didRequestLaunchActivation = false
     #if canImport(AppKit)
@@ -317,7 +317,7 @@ struct GhosthubApp: App {
                     canSplit:
                     focusedSceneModel?.canSplitActiveTmuxPane == true,
                     hasEffectiveKeyboardFocus:
-                    tmuxTerminalHasEffectiveKeyboardFocus == true
+                    terminalHasEffectiveKeyboardFocus == true
                 ) ? KeyboardShortcut("d") : nil
             )
             .disabled(focusedSceneModel?.canSplitActiveTmuxPane != true)
@@ -334,7 +334,7 @@ struct GhosthubApp: App {
                     canSplit:
                     focusedSceneModel?.canSplitActiveTmuxPane == true,
                     hasEffectiveKeyboardFocus:
-                    tmuxTerminalHasEffectiveKeyboardFocus == true
+                    terminalHasEffectiveKeyboardFocus == true
                 ) ? KeyboardShortcut(
                     "d",
                     modifiers: [.command, .shift]

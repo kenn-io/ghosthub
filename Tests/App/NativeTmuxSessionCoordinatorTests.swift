@@ -140,10 +140,10 @@ struct NativeTmuxSessionCoordinatorTests {
         let bindingCommand = try #require(identityCommands.load().first)
         #expect(bindingCommand.contains("'list-clients' '-F'"))
         #expect(coordinator.supportsPaneSplitting(handle))
-        let handler = try #require(store.surface.tmuxSplitShortcutHandler)
+        let handler = try #require(store.surface.paneSplitShortcutHandler)
         handler(.right)
         #expect(splitCommands.load() == 0)
-        #expect(store.surface.tmuxSplitErrorMessage?.contains(
+        #expect(store.surface.paneSplitErrorMessage?.contains(
             "client identity is unavailable"
         ) == true)
 
@@ -190,7 +190,7 @@ struct NativeTmuxSessionCoordinatorTests {
         await waitUntilMainActor { isReady }
         _ = coordinator.surface(handle: handle)
 
-        #expect(store.surface.tmuxSplitShortcutHandler == nil)
+        #expect(store.surface.paneSplitShortcutHandler == nil)
         #expect(!coordinator.supportsPaneSplitting(handle))
     }
 
@@ -562,11 +562,11 @@ struct NativeTmuxSessionCoordinatorTests {
         ])
         _ = coordinator.surface(handle: handle)
         await waitUntilMainActor { readyCount == 2 }
-        let handler = try #require(store.surface.tmuxSplitShortcutHandler)
+        let handler = try #require(store.surface.paneSplitShortcutHandler)
         handler(.down)
         await waitUntilMainActor { calls.load().count == 1 }
         await waitUntilMainActor {
-            store.surface.tmuxSplitErrorMessage != nil
+            store.surface.paneSplitErrorMessage != nil
         }
 
         let call = try #require(calls.load().first)
@@ -583,10 +583,10 @@ struct NativeTmuxSessionCoordinatorTests {
         #expect(call.2.contains("split-window"))
         #expect(call.2.contains("-v"))
         #expect(!call.2.contains("=release-work:"))
-        #expect(store.surface.tmuxSplitErrorMessage?.contains(
+        #expect(store.surface.paneSplitErrorMessage?.contains(
             "release-work"
         ) == true)
-        #expect(store.surface.tmuxSplitErrorMessage?.contains(
+        #expect(store.surface.paneSplitErrorMessage?.contains(
             "no space for new pane"
         ) == true)
     }
@@ -726,7 +726,7 @@ struct NativeTmuxSessionCoordinatorTests {
         await waitUntilMainActor { isReady }
         _ = coordinator.surface(handle: handle)
 
-        #expect(store.surface.tmuxSplitShortcutHandler == nil)
+        #expect(store.surface.paneSplitShortcutHandler == nil)
     }
 
     @Test("split requests run in attachment order")
@@ -765,7 +765,7 @@ struct NativeTmuxSessionCoordinatorTests {
         await waitUntilMainActor { readyCount == 1 }
         _ = coordinator.surface(handle: handle)
         await waitUntilMainActor { readyCount == 2 }
-        let handler = try #require(store.surface.tmuxSplitShortcutHandler)
+        let handler = try #require(store.surface.paneSplitShortcutHandler)
         handler(.right)
         await waitUntilMainActor { events.load() == ["start-right"] }
         handler(.down)
@@ -831,7 +831,7 @@ struct NativeTmuxSessionCoordinatorTests {
         await waitUntilMainActor { readyCount == 1 }
         _ = coordinator.surface(handle: handle)
         await waitUntilMainActor { readyCount == 2 }
-        let handler = try #require(store.surface.tmuxSplitShortcutHandler)
+        let handler = try #require(store.surface.paneSplitShortcutHandler)
         handler(.right)
         await waitUntilMainActor { events.load() == ["start-right"] }
         handler(.down)
@@ -880,15 +880,15 @@ struct NativeTmuxSessionCoordinatorTests {
         _ = coordinator.surface(handle: handle)
         await waitUntilMainActor { clientLookups.load() == 1 }
         #expect(coordinator.supportsPaneSplitting(handle))
-        let handler = try #require(store.surface.tmuxSplitShortcutHandler)
+        let handler = try #require(store.surface.paneSplitShortcutHandler)
         handler(.right)
         await waitUntilMainActor { readyCount == 2 }
-        #expect(store.surface.tmuxSplitErrorMessage == nil)
+        #expect(store.surface.paneSplitErrorMessage == nil)
         #expect(splitCommands.load() == 0)
         handler(.down)
         await waitUntilMainActor { splitCommands.load() == 1 }
         #expect(clientLookups.load() == 3)
-        #expect(store.surface.tmuxSplitErrorMessage == nil)
+        #expect(store.surface.paneSplitErrorMessage == nil)
     }
 
     @Test("a replacement client reusing the attachment TTY is rejected")
@@ -931,18 +931,18 @@ struct NativeTmuxSessionCoordinatorTests {
         await waitUntilMainActor { readyCount == 1 }
         _ = coordinator.surface(handle: handle)
         await waitUntilMainActor { readyCount == 2 }
-        let handler = try #require(store.surface.tmuxSplitShortcutHandler)
+        let handler = try #require(store.surface.paneSplitShortcutHandler)
         handler(.right)
         await waitUntilMainActor { splitCommands.load() == 1 }
         handler(.down)
         await waitUntilMainActor {
-            store.surface.tmuxSplitErrorMessage != nil
+            store.surface.paneSplitErrorMessage != nil
                 || splitCommands.load() == 2
         }
 
         #expect(clientLookups.load() == 3)
         #expect(splitCommands.load() == 1)
-        #expect(store.surface.tmuxSplitErrorMessage?.contains(
+        #expect(store.surface.paneSplitErrorMessage?.contains(
             "attached tmux session changed"
         ) == true)
     }
@@ -987,19 +987,19 @@ struct NativeTmuxSessionCoordinatorTests {
         await waitUntilMainActor { readyCount == 1 }
         _ = coordinator.surface(handle: handle)
         await waitUntilMainActor { readyCount == 2 }
-        let handler = try #require(store.surface.tmuxSplitShortcutHandler)
+        let handler = try #require(store.surface.paneSplitShortcutHandler)
         handler(.right)
         await waitUntilMainActor { splitCommands.load().count == 1 }
         handler(.down)
         await waitUntilMainActor {
-            store.surface.tmuxSplitErrorMessage != nil
+            store.surface.paneSplitErrorMessage != nil
                 || splitCommands.load().count == 2
         }
 
         #expect(clientLookups.load() == 3)
         #expect(splitCommands.load().count == 2)
         #expect(splitCommands.load().last?.contains("'%10'") == true)
-        #expect(store.surface.tmuxSplitErrorMessage == nil)
+        #expect(store.surface.paneSplitErrorMessage == nil)
     }
 
     @Test("endpoint changes replace provisioning and active handles")

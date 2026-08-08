@@ -92,7 +92,7 @@ struct TmuxPaneSplitter: Sendable {
     }
 
     func split(
-        _ shortcut: TerminalTmuxSplitShortcut,
+        _ shortcut: TerminalPaneSplitShortcut,
         target: TmuxPaneSplitTarget
     ) async -> TmuxPaneSplitFailure? {
         guard Self.platform(for: target.host) == .posix,
@@ -179,7 +179,7 @@ struct TmuxPaneSplitter: Sendable {
     static func command(
         tmuxPath: String,
         socketName: String?,
-        shortcut: TerminalTmuxSplitShortcut,
+        shortcut: TerminalPaneSplitShortcut,
         expectedClient: TmuxPaneSplitClientIdentity,
         mismatchMarker: String,
         hookIndex: Int

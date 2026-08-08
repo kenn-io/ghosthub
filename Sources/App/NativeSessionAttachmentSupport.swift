@@ -6,10 +6,10 @@ import GhosthubWorkspace
 @MainActor
 protocol NativeSessionPaneSurfacing: AnyObject {
     var blocksClipboardReads: Bool { get set }
-    var tmuxSplitShortcutHandler: ((TerminalTmuxSplitShortcut) -> Void)? {
+    var paneSplitShortcutHandler: ((TerminalPaneSplitShortcut) -> Void)? {
         get set
     }
-    var tmuxSplitErrorMessage: String? { get set }
+    var paneSplitErrorMessage: String? { get set }
     var hasEffectiveKeyboardFocus: Bool { get }
     var launchError: Error? { get }
     var childExitCode: UInt32? { get }
@@ -20,12 +20,12 @@ protocol NativeSessionPaneSurfacing: AnyObject {
 }
 
 extension NativeSessionPaneSurfacing {
-    var tmuxSplitShortcutHandler: ((TerminalTmuxSplitShortcut) -> Void)? {
+    var paneSplitShortcutHandler: ((TerminalPaneSplitShortcut) -> Void)? {
         get { nil }
         set {}
     }
 
-    var tmuxSplitErrorMessage: String? {
+    var paneSplitErrorMessage: String? {
         get { nil }
         set {}
     }

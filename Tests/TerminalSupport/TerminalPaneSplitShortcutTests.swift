@@ -2,13 +2,13 @@ import AppKit
 import Testing
 @testable import GhosthubTerminalSupport
 
-@Suite("Tmux pane split shortcuts")
-struct TerminalTmuxSplitShortcutTests {
+@Suite("Pane split shortcuts")
+struct TerminalPaneSplitShortcutTests {
     @Test("Ghostty split chords map to semantic directions")
     func splitDirections() throws {
         let cases: [(
             flags: NSEvent.ModifierFlags,
-            shortcut: TerminalTmuxSplitShortcut
+            shortcut: TerminalPaneSplitShortcut
         )] = [
             (NSEvent.ModifierFlags.command, .right),
             ([.command, .capsLock], .right),
@@ -18,7 +18,7 @@ struct TerminalTmuxSplitShortcutTests {
 
         for testCase in cases {
             let shortcut = try #require(
-                TerminalTmuxSplitShortcut.matching(
+                TerminalPaneSplitShortcut.matching(
                     flags: testCase.flags,
                     charactersIgnoringModifiers: "d"
                 )
@@ -30,11 +30,11 @@ struct TerminalTmuxSplitShortcutTests {
 
     @Test("other Command chords remain terminal input")
     func unrelatedInput() {
-        #expect(TerminalTmuxSplitShortcut.matching(
+        #expect(TerminalPaneSplitShortcut.matching(
             flags: [.command, .option],
             charactersIgnoringModifiers: "d"
         ) == nil)
-        #expect(TerminalTmuxSplitShortcut.matching(
+        #expect(TerminalPaneSplitShortcut.matching(
             flags: .command,
             charactersIgnoringModifiers: "k"
         ) == nil)

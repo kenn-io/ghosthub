@@ -70,7 +70,7 @@ private struct NativeTmuxAttachment {
 @MainActor
 final class NativeTmuxSessionCoordinator {
     private struct PaneSplitRequest {
-        var shortcut: TerminalTmuxSplitShortcut
+        var shortcut: TerminalPaneSplitShortcut
         var target: TmuxPaneSplitTarget
         var surface: any NativeSessionPaneSurfacing
         var attachmentID: UUID
@@ -516,7 +516,7 @@ final class NativeTmuxSessionCoordinator {
             expectedClient: paneSplitClients[handle.id]
         )
         if attachment.supportsPaneSplitting {
-            surface.tmuxSplitShortcutHandler = {
+            surface.paneSplitShortcutHandler = {
                 [weak self, weak surface] shortcut in
                 guard let self, let surface else { return }
                 enqueuePaneSplit(
@@ -556,14 +556,14 @@ final class NativeTmuxSessionCoordinator {
     }
 
     private func enqueuePaneSplit(
-        _ shortcut: TerminalTmuxSplitShortcut,
+        _ shortcut: TerminalPaneSplitShortcut,
         target: TmuxPaneSplitTarget,
         surface: any NativeSessionPaneSurfacing,
         handle: BorrowedTmuxSessionHandle,
         attachmentID: UUID
     ) {
         guard let client = paneSplitClients[handle.id] else {
-            surface.tmuxSplitErrorMessage = TmuxPaneSplitFailure(
+            surface.paneSplitErrorMessage = TmuxPaneSplitFailure(
                 host: target.host.displayName,
                 sessionName: target.sessionName,
                 status: 75,
@@ -622,7 +622,7 @@ final class NativeTmuxSessionCoordinator {
                   launchedHandles.contains(handle.id)
             else { continue }
 
-            request.surface.tmuxSplitErrorMessage = nil
+            request.surface.paneSplitErrorMessage = nil
             var target = request.target
             let expectedClient = target.expectedClient
                 ?? paneSplitClients[handle.id]
@@ -639,7 +639,7 @@ final class NativeTmuxSessionCoordinator {
                         status: 75,
                         diagnostic: "The attached tmux session changed."
                     )
-                    request.surface.tmuxSplitErrorMessage =
+                    request.surface.paneSplitErrorMessage =
                         failure.localizedDescription
                     continue
                 }
@@ -651,7 +651,7 @@ final class NativeTmuxSessionCoordinator {
                       paneSplitWorkers[handle.id]?.id == workerID,
                       attachments[handle.id]?.id == request.attachmentID
                 else { return }
-                request.surface.tmuxSplitErrorMessage =
+                request.surface.paneSplitErrorMessage =
                     failure.localizedDescription
                 continue
             }
@@ -663,7 +663,7 @@ final class NativeTmuxSessionCoordinator {
                   paneSplitWorkers[handle.id]?.id == workerID,
                   attachments[handle.id]?.id == request.attachmentID
             else { return }
-            request.surface.tmuxSplitErrorMessage = failure?.localizedDescription
+            request.surface.paneSplitErrorMessage = failure?.localizedDescription
             if let failure {
                 AppLogger.shared.error(
                     "tmux pane split: \(failure.localizedDescription)"
@@ -697,7 +697,7 @@ final class NativeTmuxSessionCoordinator {
             paneSplitClients[handle.id] = client
             terminalCoordinator.paneSurfaceIfPresent(
                 for: surfaceKey(handle)
-            )?.tmuxSplitErrorMessage = nil
+            )?.paneSplitErrorMessage = nil
             onSurfaceReady?(handle)
         }
         paneSplitClientBindings[handle.id] = PaneSplitClientBinding(
@@ -740,7 +740,7 @@ final class NativeTmuxSessionCoordinator {
     }
 
     func requestPaneSplit(
-        _ shortcut: TerminalTmuxSplitShortcut,
+        _ shortcut: TerminalPaneSplitShortcut,
         handle: BorrowedTmuxSessionHandle,
         requiresKeyboardFocus: Bool
     ) {
@@ -749,7 +749,7 @@ final class NativeTmuxSessionCoordinator {
         ),
             !requiresKeyboardFocus || surface.hasEffectiveKeyboardFocus
         else { return }
-        surface.tmuxSplitShortcutHandler?(shortcut)
+        surface.paneSplitShortcutHandler?(shortcut)
     }
 
     private func reportSurfaceStateLater(

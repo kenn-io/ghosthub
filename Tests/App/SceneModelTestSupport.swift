@@ -530,9 +530,9 @@ final class RecordingNativeSessionSurfaceStore: NativeSessionSurfaceStoring {
 @MainActor
 final class RecordingNativeSessionPaneSurface: NativeSessionPaneSurfacing {
     var blocksClipboardReads = false
-    var tmuxSplitErrorMessage: String?
+    var paneSplitErrorMessage: String?
     var hasEffectiveKeyboardFocus = false
-    var tmuxSplitShortcutHandler: ((TerminalTmuxSplitShortcut) -> Void)?
+    var paneSplitShortcutHandler: ((TerminalPaneSplitShortcut) -> Void)?
     let launchError: Error?
     var childExitCode: UInt32?
     private(set) var closeObservers: [UUID: (Bool, UInt32?) -> Void] = [:]
