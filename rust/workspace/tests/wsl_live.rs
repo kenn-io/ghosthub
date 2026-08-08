@@ -178,6 +178,69 @@ fn discovers_attaches_renders_and_detaches_through_workspace() {
 
 #[test]
 #[ignore = "requires WSL2 and tmux; creates only an isolated TMUX_TMPDIR server"]
+fn switches_between_discovered_sessions_without_destroying_either() {
+    let _serial = WSL_LIVE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let server = IsolatedServer::start("switch");
+    server.run_tmux(["new-session", "-d", "-s", "switch-live"]);
+    let config = WslConfig::configured(None, "/usr/bin/tmux", Some(server.tmpdir.clone()))
+        .expect("valid isolated config");
+    let workspace = Workspace::start_wsl(config, TerminalAppearance::default());
+
+    wait_until_with_diagnostic(
+        || {
+            matches!(
+                workspace.snapshot().content(),
+                WorkspaceContent::Ready { sessions, .. }
+                    if sessions.iter().any(|session| session.name() == "workspace-live")
+                        && sessions.iter().any(|session| session.name() == "switch-live")
+            )
+        },
+        || workspace_diagnostic(&workspace),
+    );
+
+    workspace
+        .attach(&session_selection(&workspace, "workspace-live"))
+        .expect("attach first session");
+    wait_until(|| {
+        matches!(
+            workspace.snapshot().content(),
+            WorkspaceContent::Terminal { session, .. } if session == "workspace-live"
+        )
+    });
+
+    workspace
+        .switch_session(&session_selection(&workspace, "switch-live"))
+        .expect("begin session switch");
+    wait_until_with_diagnostic(
+        || {
+            matches!(
+                workspace.snapshot().content(),
+                WorkspaceContent::Terminal { session, .. } if session == "switch-live"
+            )
+        },
+        || workspace_diagnostic(&workspace),
+    );
+
+    let sessions = server.run_tmux(["list-sessions", "-F", "#{session_name}:#{session_attached}"]);
+    let sessions = String::from_utf8(sessions.stdout).expect("UTF-8 session inventory");
+    assert!(sessions.lines().any(|line| line == "workspace-live:0"));
+    assert!(sessions.lines().any(|line| line == "switch-live:1"));
+
+    workspace.detach();
+    wait_until(|| {
+        matches!(
+            workspace.snapshot().content(),
+            WorkspaceContent::Ready { sessions, .. }
+                if sessions.iter().any(|session| session.name() == "workspace-live")
+                    && sessions.iter().any(|session| session.name() == "switch-live")
+        )
+    });
+}
+
+#[test]
+#[ignore = "requires WSL2 and tmux; creates only an isolated TMUX_TMPDIR server"]
 fn refuses_to_attach_when_the_discovered_session_was_replaced() {
     let _serial = WSL_LIVE
         .lock()

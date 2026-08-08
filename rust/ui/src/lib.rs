@@ -1662,7 +1662,6 @@ impl RootView {
                 host_index,
                 session_index,
                 &session.selection,
-                session.attached_clients,
                 session.active,
                 cx,
             ));
@@ -1714,13 +1713,11 @@ impl RootView {
         host_index: usize,
         index: usize,
         selection: &SessionSelection,
-        attached_clients: Option<u32>,
         is_active: bool,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let selection = selection.clone();
         let name = selection.session().to_owned();
-        let detail = session_status_label(attached_clients, is_active);
         let mut row = div()
             .id((
                 gpui::ElementId::named_usize("tree-session-host", host_index),
@@ -1752,13 +1749,6 @@ impl RootView {
                     .text_sm()
                     .text_color(rgb(if is_active { 0xe5_ed_f7 } else { 0xc4_c9_d2 }))
                     .child(name.clone()),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .text_xs()
-                    .text_color(rgb(if is_active { 0xa9_c9_ea } else { 0x6f_7682 }))
-                    .child(detail),
             );
         if is_active {
             row = row.child(
@@ -1777,6 +1767,14 @@ impl RootView {
                         this.detach(cx);
                         cx.stop_propagation();
                     })),
+            );
+        } else {
+            row = row.child(
+                div()
+                    .flex_none()
+                    .text_xs()
+                    .text_color(rgb(0x79_aee3))
+                    .child("Open"),
             );
         }
         row.on_click(cx.listener(move |this, _, window, cx| {
@@ -1969,21 +1967,7 @@ fn terminal_presentation_id(content: &WorkspaceContent) -> Option<u64> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct TreeSession {
     selection: SessionSelection,
-    attached_clients: Option<u32>,
     active: bool,
-}
-
-fn session_status_label(attached_clients: Option<u32>, is_active: bool) -> String {
-    if is_active {
-        "open".to_owned()
-    } else {
-        match attached_clients {
-            Some(0) => "detached".to_owned(),
-            Some(1) => "1 client".to_owned(),
-            Some(count) => format!("{count} clients"),
-            None => "unknown".to_owned(),
-        }
-    }
 }
 
 fn active_session_selection(content: &WorkspaceContent) -> Option<SessionSelection> {
@@ -2013,16 +1997,8 @@ fn tree_sessions(host: &HostItem, content: &WorkspaceContent) -> Vec<TreeSession
         .filter(|active| active.host_id() == host.id());
     if host.connection() != HostConnectionState::Ready {
         return active_for_host.map_or_else(Vec::new, |active| {
-            let attached_clients = host
-                .sessions()
-                .iter()
-                .find(|session| {
-                    host.endpoint() == active.endpoint() && session.name() == active.session()
-                })
-                .map(workspace::SessionItem::attached_clients);
             vec![TreeSession {
                 selection: active.clone(),
-                attached_clients,
                 active: true,
             }]
         });
@@ -2036,7 +2012,6 @@ fn tree_sessions(host: &HostItem, content: &WorkspaceContent) -> Vec<TreeSession
             TreeSession {
                 active: active.as_ref() == Some(&selection),
                 selection,
-                attached_clients: Some(session.attached_clients()),
             }
         })
         .collect::<Vec<_>>();
@@ -2045,7 +2020,6 @@ fn tree_sessions(host: &HostItem, content: &WorkspaceContent) -> Vec<TreeSession
     {
         sessions.push(TreeSession {
             selection: active.clone(),
-            attached_clients: None,
             active: true,
         });
     }
@@ -2498,9 +2472,9 @@ mod tests {
         active_session_selection, clear_terminal_input_state, clears_after_input_delivery,
         clears_when_input_queue_is_empty, coalesce_last_resize, coalesce_last_wheel,
         input_queue_has_capacity, named_key, normalize_cell_width,
-        queued_input_matches_presentation, session_status_label, terminal_cell_at_with_offset,
-        terminal_key_input, terminal_line_height, terminal_wheel_steps, transitioned_presentation,
-        tree_sessions, workspace_window_title,
+        queued_input_matches_presentation, terminal_cell_at_with_offset, terminal_key_input,
+        terminal_line_height, terminal_wheel_steps, transitioned_presentation, tree_sessions,
+        workspace_window_title,
     };
     use std::sync::Arc;
     use surface::{GridSize, SurfaceFrame, SurfaceStore};
@@ -2627,15 +2601,6 @@ mod tests {
             assert_eq!(rows[0].selection.session(), "demo");
             assert!(rows[0].active);
         }
-    }
-
-    #[test]
-    fn session_status_is_compact_and_explicit() {
-        assert_eq!(session_status_label(Some(0), false), "detached");
-        assert_eq!(session_status_label(Some(1), false), "1 client");
-        assert_eq!(session_status_label(Some(3), false), "3 clients");
-        assert_eq!(session_status_label(None, false), "unknown");
-        assert_eq!(session_status_label(Some(3), true), "open");
     }
 
     #[test]
