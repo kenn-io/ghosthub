@@ -273,14 +273,16 @@ struct TmuxSessionKiller: Sendable {
     }
 
     static func isConfirmedAbsence(_ output: String) -> Bool {
-        let normalized = output.lowercased()
-        return normalized.contains("can't find session:")
-            || normalized.contains("no server running on ")
-            || normalized.contains(
-                "failed to connect to server: no such file or directory"
-            )
-            || (normalized.contains("error connecting to ")
-                && normalized.contains("(no such file or directory)"))
+        output.split(whereSeparator: \.isNewline).contains { rawLine in
+            let line = rawLine.lowercased()
+            return line.contains("can't find session:")
+                || line.contains("no server running on ")
+                || line.contains(
+                    "failed to connect to server: no such file or directory"
+                )
+                || (line.contains("error connecting to ")
+                    && line.contains("(no such file or directory)"))
+        }
     }
 
     private static func powerShellCommand(

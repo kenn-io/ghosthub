@@ -513,6 +513,13 @@ struct TmuxSessionKillerTests {
             ),
             ("failed to connect to server: No such file or directory", true),
             ("error connecting to socket (Permission denied)", false),
+            (
+                "shell: error connecting to startup helper\n"
+                    + "error connecting to /tmp/tmux-501/kwt "
+                    + "(Permission denied)\n"
+                    + "shell: (No such file or directory)",
+                false
+            ),
             ("", false),
         ]
     )
