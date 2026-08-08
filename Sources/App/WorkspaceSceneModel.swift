@@ -1963,7 +1963,10 @@ final class WorkspaceSceneModel: ObservableObject {
             $0.hostID == request.worktree.hostID
                 && $0.projectID == request.project.id
                 && $0.tmuxSessionName == sessionName
-                && $0.tmuxSocketName == request.worktree.tmuxSocketName
+                && removalTmuxSocket(
+                    request.worktree.tmuxSocketName,
+                    matches: $0.tmuxSocketName
+                )
         }
     }
 
@@ -1973,7 +1976,20 @@ final class WorkspaceSceneModel: ObservableObject {
     ) -> Bool {
         guard let sessionName = worktree.tmuxSessionName else { return false }
         return record.sessionName == sessionName
-            && record.tmuxSocketName == worktree.tmuxSocketName
+            && removalTmuxSocket(
+                worktree.tmuxSocketName,
+                matches: record.tmuxSocketName
+            )
+    }
+
+    private func removalTmuxSocket(
+        _ confirmedSocket: String?,
+        matches candidateSocket: String?
+    ) -> Bool {
+        // Missing inventory metadata cannot prove that a same-name session
+        // moved away from the confirmed protected server.
+        candidateSocket == confirmedSocket
+            || (confirmedSocket != nil && candidateSocket == nil)
     }
 
     private func removalRequest(

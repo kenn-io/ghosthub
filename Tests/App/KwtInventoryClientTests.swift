@@ -498,6 +498,83 @@ struct KwtInventoryClientTests {
         #expect(restored.worktrees[0].tmuxSocketName == socketName)
     }
 
+    @Test("generationless replacements do not inherit protected identity")
+    func generationlessReplacementsDoNotInheritProtectedIdentity() {
+        let hostID = UUID()
+        let projectID = UUID()
+        let generation = "0123456789abcdef0123456789abcdef"
+        let snapshot = WorkspaceSnapshot(
+            hosts: [.fixture(id: hostID)],
+            projects: [ProjectSummary(
+                id: projectID,
+                hostID: hostID,
+                scopedKey: "repo",
+                name: "repo",
+                rootPath: "/repo"
+            )],
+            worktrees: [WorktreeSummary(
+                id: UUID(),
+                hostID: hostID,
+                projectID: projectID,
+                name: "feature",
+                path: "/repo-feature",
+                branch: "feature/original",
+                generation: generation,
+                tmuxSessionName: "kwt-repo-original",
+                tmuxSocketName: "protected-socket"
+            )]
+        )
+        let replacements = [
+            (
+                branch: "feature/replacement",
+                isMain: false,
+                session: "kwt-repo-original"
+            ),
+            (
+                branch: "feature/original",
+                isMain: true,
+                session: "kwt-repo-original"
+            ),
+            (
+                branch: "feature/original",
+                isMain: false,
+                session: "kwt-repo-replacement"
+            ),
+        ]
+
+        for replacement in replacements {
+            let inventory = KwtHostInventory(projects: [KwtProjectInventory(
+                project: KwtProjectRecord(
+                    repository: "repo",
+                    name: "repo",
+                    path: "/repo",
+                    lastTouched: nil
+                ),
+                worktrees: [KwtWorktreeRecord(
+                    path: "/repo-feature",
+                    branch: replacement.branch,
+                    commitHash: "def",
+                    isMain: replacement.isMain,
+                    createdAt: nil,
+                    generation: nil,
+                    repository: "repo",
+                    sessionName: replacement.session,
+                    tmuxSocketName: nil
+                )],
+                warning: nil
+            )])
+
+            let merged = KwtSnapshotMerger.merge(
+                inventory,
+                hostID: hostID,
+                into: snapshot
+            )
+
+            #expect(merged.worktrees[0].generation == nil)
+            #expect(merged.worktrees[0].tmuxSocketName == nil)
+        }
+    }
+
     @Test(
         "canonical generation outranks a reused path for socket identity",
         arguments: ["same-generation-socket", nil] as [String?]

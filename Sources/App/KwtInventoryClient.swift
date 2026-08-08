@@ -571,6 +571,12 @@ enum KwtSnapshotMerger {
                     $0.projectID == projectID
                         && normalizedPath($0.path) == normalizedPath(record.path)
                 }
+                let consistentExisting = existing.flatMap { candidate in
+                    candidate.branch == record.branch
+                        && candidate.isPrimary == record.isMain
+                        && candidate.tmuxSessionName == record.sessionName
+                        ? candidate : nil
+                }
                 let sameGeneration = WorktreeGeneration.canonical(
                     record.generation
                 ).flatMap { generation in
@@ -601,7 +607,9 @@ enum KwtSnapshotMerger {
                 worktree.isStale = false
                 worktree.createdAt = record.createdAt
                 worktree.generation = record.generation
-                    ?? WorktreeGeneration.canonical(existing?.generation)
+                    ?? WorktreeGeneration.canonical(
+                        consistentExisting?.generation
+                    )
                 worktree.tmuxSessionName = record.sessionName
                 // The protected socket is a fail-closed marker: it keeps
                 // contributor-authored terminal configuration out of the app
@@ -619,7 +627,7 @@ enum KwtSnapshotMerger {
                         ?? sameGeneration?.tmuxSocketName
                 } else {
                     worktree.tmuxSocketName = record.tmuxSocketName
-                        ?? existing?.tmuxSocketName
+                        ?? consistentExisting?.tmuxSocketName
                 }
                 worktree.sessionBackend = snapshot.host(id: hostID)?.kind == .remote
                     ? .remoteTmux : .localTmux

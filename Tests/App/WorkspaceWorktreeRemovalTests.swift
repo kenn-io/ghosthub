@@ -2379,8 +2379,13 @@ struct WorkspaceWorktreeRemovalTests {
     }
 
     @MainActor
-    @Test("a replacement claiming the confirmed tmux endpoint requires confirmation")
-    func replacementClaimingTmuxEndpointRequiresConfirmation() async throws {
+    @Test(
+        "a replacement claiming the confirmed tmux endpoint requires confirmation",
+        arguments: ["protected", nil] as [String?]
+    )
+    func replacementClaimingTmuxEndpointRequiresConfirmation(
+        replacementSocket: String?
+    ) async throws {
         let environment = try setupStandardEnvironment()
         var removable = WorktreeSummary.fixture(
             hostID: environment.host.id,
@@ -2403,7 +2408,7 @@ struct WorkspaceWorktreeRemovalTests {
             generation: "fedcba9876543210fedcba9876543210"
         )
         replacement.tmuxSessionName = removable.tmuxSessionName
-        replacement.tmuxSocketName = removable.tmuxSocketName
+        replacement.tmuxSocketName = replacementSocket
         var snapshot = environment.snapshot
         snapshot.worktrees.append(removable)
         let replacementInventory = inventory(
@@ -2442,7 +2447,7 @@ struct WorkspaceWorktreeRemovalTests {
 
         #expect(updatedRequest.worktree.path == replacement.path)
         #expect(updatedRequest.worktree.generation == replacement.generation)
-        #expect(updatedRequest.worktree.tmuxSocketName == "protected")
+        #expect(updatedRequest.worktree.tmuxSocketName == replacementSocket)
         #expect(kills.load() == 0)
         #expect(removals.load() == 0)
         await model.shutdown()
