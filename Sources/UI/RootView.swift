@@ -28,6 +28,8 @@ public struct RootView: View {
     @State private var sidePanelUserOverride = false
     @State private var tmuxSelectionBaseline: WorkspaceSelection?
     @State private var herdrActivationRevision: UInt64 = 0
+    @State private var herdrActivationTask: Task<Void, Never>?
+    @State private var herdrRestartTask: Task<Void, Never>?
     @State private var newWorktreeProject: ProjectSummary?
     @State private var newWorktreeMode: NewWorktreeMode = .branch
     @State private var newTmuxSessionHost: HostSummary?
@@ -230,6 +232,10 @@ public struct RootView: View {
             }
             .alert(item: $workspaceAlert) { alert in
                 workspaceAlertView(alert)
+            }
+            .onDisappear {
+                cancelHerdrPresentationIntents()
+                cancelHerdrCreation()
             }
     }
 
@@ -729,10 +735,16 @@ public struct RootView: View {
     private func activateHerdrSession(
         _ session: WorkspaceHerdrSessionSelection
     ) {
+        herdrActivationTask?.cancel()
         herdrActivationRevision &+= 1
         let activationRevision = herdrActivationRevision
         let replacedTmuxSession = activeTmuxSession
-        Task { @MainActor in
+        herdrActivationTask = Task { @MainActor in
+            defer {
+                if herdrActivationRevision == activationRevision {
+                    herdrActivationTask = nil
+                }
+            }
             do {
                 guard let open = handlers.openHerdrSession else {
                     throw HerdrLifecycleUnavailableError()
@@ -742,13 +754,14 @@ public struct RootView: View {
                     replacing: replacedTmuxSession,
                     open: open,
                     isCurrent: {
-                        herdrActivationRevision == activationRevision
+                        !Task.isCancelled
+                            && herdrActivationRevision == activationRevision
                     },
                     closeTmux: { replaced in
                         handlers.closeTmuxSession?(replaced)
                     }
                 )
-                guard didActivate else { return }
+                guard didActivate, !Task.isCancelled else { return }
             } catch {
                 guard herdrActivationRevision == activationRevision,
                       !(error is CancellationError)
@@ -840,17 +853,25 @@ public struct RootView: View {
     private func restartHerdrSession(
         _ session: WorkspaceHerdrSessionSelection
     ) {
+        herdrRestartTask?.cancel()
         herdrActivationRevision &+= 1
         let activationRevision = herdrActivationRevision
-        Task { @MainActor in
+        herdrRestartTask = Task { @MainActor in
+            defer {
+                if herdrActivationRevision == activationRevision {
+                    herdrRestartTask = nil
+                }
+            }
             do {
                 guard let restart = handlers.restartHerdrSession else {
                     throw HerdrLifecycleUnavailableError()
                 }
                 try await restart(session)
-                guard herdrActivationRevision == activationRevision else {
+                guard !Task.isCancelled,
+                      herdrActivationRevision == activationRevision else {
                     return
                 }
+                herdrRestartTask = nil
                 selectWorkspace(.herdrSession(
                     hostID: session.hostID,
                     name: session.name
@@ -1112,8 +1133,17 @@ public struct RootView: View {
     }
 
     private func deactivateHerdrSession() {
+        cancelHerdrPresentationIntents()
         guard let previous = activeHerdrSession else { return }
         handlers.closeHerdrSession?(previous)
+    }
+
+    private func cancelHerdrPresentationIntents() {
+        herdrActivationRevision &+= 1
+        herdrActivationTask?.cancel()
+        herdrActivationTask = nil
+        herdrRestartTask?.cancel()
+        herdrRestartTask = nil
     }
     private var selectedWorktreeTmuxSession:
         WorkspaceTmuxSessionSelection? {
@@ -1537,7 +1567,7 @@ public struct RootView: View {
         if herdrCreationTask != nil {
             cancelHerdrCreation()
         }
-        herdrActivationRevision &+= 1
+        cancelHerdrPresentationIntents()
         if let selectWorkspace = handlers.selectWorkspace {
             selectWorkspace(updatedSelection)
         } else {
@@ -1624,6 +1654,7 @@ public struct RootView: View {
     }
 
     private func handleCloseTab() {
+        cancelHerdrPresentationIntents()
         if activeHerdrSession != nil {
             deactivateHerdrSession()
             return
