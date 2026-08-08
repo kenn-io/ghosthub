@@ -1665,6 +1665,7 @@ impl RootView {
                 session_index,
                 &session.selection,
                 session.active,
+                session.show_endpoint,
                 cx,
             ));
         }
@@ -1716,6 +1717,7 @@ impl RootView {
         index: usize,
         selection: &SessionSelection,
         is_active: bool,
+        show_endpoint: bool,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let selection = selection.clone();
@@ -1753,6 +1755,15 @@ impl RootView {
                     .text_color(rgb(if is_active { 0xe5_ed_f7 } else { 0xc4_c9_d2 }))
                     .child(name.clone()),
             );
+        if show_endpoint {
+            row = row.child(
+                div()
+                    .flex_none()
+                    .text_xs()
+                    .text_color(rgb(0x73_7a87))
+                    .child(format!("· {}", selection.endpoint())),
+            );
+        }
         if is_active {
             row = row.child(
                 div()
@@ -1984,6 +1995,7 @@ fn terminal_presentation_id(content: &WorkspaceContent) -> Option<u64> {
 struct TreeSession {
     selection: SessionSelection,
     active: bool,
+    show_endpoint: bool,
 }
 
 fn active_session_selection(content: &WorkspaceContent) -> Option<SessionSelection> {
@@ -2037,6 +2049,7 @@ fn tree_sessions(
         .into_iter()
         .map(|selection| TreeSession {
             active: active.as_ref() == Some(&selection),
+            show_endpoint: selection.endpoint() != host.endpoint(),
             selection,
         })
         .collect()
@@ -2641,8 +2654,30 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].selection.endpoint(), "Debian");
         assert!(!rows[0].active);
+        assert!(!rows[0].show_endpoint);
         assert_eq!(rows[1].selection.endpoint(), "Ubuntu");
         assert!(rows[1].active);
+        assert!(rows[1].show_endpoint);
+    }
+
+    #[test]
+    fn retained_session_from_a_previous_default_distro_is_endpoint_qualified() {
+        let host = HostItem::wsl(
+            "Debian",
+            None,
+            HostConnectionState::Ready,
+            vec![SessionItem::new("demo", 0)],
+            None,
+        );
+        let retained = vec![SessionSelection::new("wsl", "Ubuntu", "demo")];
+
+        let rows = tree_sessions(&host, &WorkspaceContent::Shell, &retained);
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].selection.endpoint(), "Debian");
+        assert!(!rows[0].show_endpoint);
+        assert_eq!(rows[1].selection.endpoint(), "Ubuntu");
+        assert!(rows[1].show_endpoint);
     }
 
     #[test]
