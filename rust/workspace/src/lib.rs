@@ -865,11 +865,27 @@ impl<T> RetainedPresentations<T> {
         changed
     }
 
-    fn finish_restart(&mut self, key: &PresentationKey, worker: T) -> bool {
+    fn finish_restart(
+        &mut self,
+        key: &PresentationKey,
+        worker: T,
+        original_name: &str,
+        resolved_request: &AttachRequest,
+    ) -> bool {
         let Some(index) = self.restarting.iter().position(|entry| &entry.key == key) else {
             return false;
         };
-        let restart = self.restarting.remove(index);
+        let mut restart = self.restarting.remove(index);
+        if restart.attachment.request.name == original_name {
+            restart.selection = SessionSelection::new(
+                &restart.key.host_id,
+                restart.key.endpoint.clone(),
+                &resolved_request.name,
+            );
+            resolved_request
+                .name
+                .clone_into(&mut restart.attachment.request.name);
+        }
         self.insert(RetainedPresentation {
             key: restart.key,
             selection: restart.selection,
@@ -1469,6 +1485,9 @@ impl Workspace {
             ));
         }
         let Some(request) = request else {
+            if let Some(previous) = previous {
+                let _restored = self.activate_retained_presentation(&previous, None);
+            }
             return Err(WorkspaceError::new(
                 "the retained terminal presentation is no longer available",
             ));
@@ -2638,8 +2657,8 @@ fn current_inventory_session_name(inner: &Inner, key: &PresentationKey) -> Optio
 }
 
 fn run_retained_retry(inner: &Inner, retry: &RetainedRetry) {
-    match attach_fresh(inner, &retry.request, AttachTerm::Xterm) {
-        Ok((worker, snapshot, _, initial_geometry)) => {
+    match attach_fresh_retained(inner, retry) {
+        Ok((worker, snapshot, resolved_request, initial_geometry)) => {
             let latest_geometry = *inner
                 .terminal_geometry
                 .lock()
@@ -2659,9 +2678,9 @@ fn run_retained_retry(inner: &Inner, retry: &RetainedRetry) {
                 .retained_presentations
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .finish_restart(&retry.key, worker);
+                .finish_restart(&retry.key, worker, &retry.request.name, &resolved_request);
             if published {
-                publish_attach_inventory(inner, &retry.request, snapshot);
+                publish_attach_inventory(inner, &resolved_request, snapshot);
                 inner.revision.fetch_add(1, Ordering::Release);
             }
         }
@@ -2921,18 +2940,7 @@ fn attach_fresh(
     request: &AttachRequest,
     term: AttachTerm,
 ) -> Result<(TerminalWorker, HostSnapshot, String, TerminalGeometry), AttachFreshError> {
-    let fresh = request
-        .host
-        .discover(&ConptyAdmissionAttacher::new())
-        .map_err(|error| AttachFreshError::Host(WorkspaceError::new(error.to_string())))?;
-    if fresh.endpoint() != &request.endpoint || fresh.runtime() != &request.runtime {
-        return Err(AttachFreshError::SessionChanged {
-            error: WorkspaceError::new(
-                "WSL runtime changed since session discovery; refresh and try again",
-            ),
-            snapshot: fresh,
-        });
-    }
+    let fresh = discover_fresh_runtime(request)?;
     let session = fresh
         .sessions()
         .iter()
@@ -2954,9 +2962,82 @@ fn attach_fresh(
             snapshot: fresh,
         });
     }
+    launch_fresh_session(inner, request, term, &fresh, &session)
+}
+
+fn attach_fresh_retained(
+    inner: &Inner,
+    retry: &RetainedRetry,
+) -> Result<
+    (
+        TerminalWorker,
+        HostSnapshot,
+        AttachRequest,
+        TerminalGeometry,
+    ),
+    AttachFreshError,
+> {
+    let fresh = discover_fresh_runtime(&retry.request)?;
+    let Some(resolved_request) = resolve_retained_retry_request(retry, &fresh) else {
+        return Err(AttachFreshError::SessionChanged {
+            error: WorkspaceError::new(
+                "session identity changed since discovery; refusing stale attachment",
+            ),
+            snapshot: fresh,
+        });
+    };
+    let session = fresh
+        .sessions()
+        .iter()
+        .find(|session| session.identity() == &retry.key.identity)
+        .cloned()
+        .expect("resolved retained request has a matching session");
+    let (worker, snapshot, _, geometry) = launch_fresh_session(
+        inner,
+        &resolved_request,
+        AttachTerm::Xterm,
+        &fresh,
+        &session,
+    )?;
+    Ok((worker, snapshot, resolved_request, geometry))
+}
+
+fn discover_fresh_runtime(request: &AttachRequest) -> Result<HostSnapshot, AttachFreshError> {
+    let fresh = request
+        .host
+        .discover(&ConptyAdmissionAttacher::new())
+        .map_err(|error| AttachFreshError::Host(WorkspaceError::new(error.to_string())))?;
+    if fresh.endpoint() != &request.endpoint || fresh.runtime() != &request.runtime {
+        return Err(AttachFreshError::SessionChanged {
+            error: WorkspaceError::new(
+                "WSL runtime changed since session discovery; refresh and try again",
+            ),
+            snapshot: fresh,
+        });
+    }
+    Ok(fresh)
+}
+
+fn resolve_retained_retry_request(
+    retry: &RetainedRetry,
+    fresh: &HostSnapshot,
+) -> Option<AttachRequest> {
+    let name = refreshed_session_name(&retry.key, fresh, retry.request.host.socket_directory())?;
+    let mut request = retry.request.clone();
+    name.clone_into(&mut request.name);
+    Some(request)
+}
+
+fn launch_fresh_session(
+    inner: &Inner,
+    request: &AttachRequest,
+    term: AttachTerm,
+    fresh: &HostSnapshot,
+    session: &session::DiscoveredSession,
+) -> Result<(TerminalWorker, HostSnapshot, String, TerminalGeometry), AttachFreshError> {
     let plan = request
         .host
-        .attach_plan_with_term(fresh.endpoint(), &session, term);
+        .attach_plan_with_term(fresh.endpoint(), session, term);
     let geometry = *inner
         .terminal_geometry
         .lock()
@@ -2970,7 +3051,12 @@ fn attach_fresh(
         default_colors(&inner.appearance),
     )
     .map_err(|error| AttachFreshError::Host(WorkspaceError::new(error.to_string())))?;
-    Ok((worker, fresh, plan.target_name().to_owned(), geometry))
+    Ok((
+        worker,
+        fresh.clone(),
+        plan.target_name().to_owned(),
+        geometry,
+    ))
 }
 
 fn set_terminal_notice(inner: &Inner, term: AttachTerm) {
@@ -3750,6 +3836,44 @@ mod tests {
             false,
         ));
         assert_eq!(fallback_after_reactivation, Some(rebound_fallback));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn retained_terminfo_retry_resolves_a_renamed_session_by_identity() {
+        let identity = session::SessionIdentity::new(100, "$1", 200);
+        let original_snapshot = HostSnapshot::test_fixture("Ubuntu", "boot-id", 42, Vec::new());
+        let request = attach_request_fixture(&original_snapshot, identity.clone(), "original");
+        let key = request.presentation_key();
+        let retry = RetainedRetry {
+            key: key.clone(),
+            request: request.clone(),
+        };
+        let renamed_snapshot = HostSnapshot::test_fixture(
+            "Ubuntu",
+            "boot-id",
+            42,
+            vec![session::DiscoveredSession::new("renamed", identity, 0)],
+        );
+        let resolved_request = resolve_retained_retry_request(&retry, &renamed_snapshot)
+            .expect("stable retained identity survives a rename");
+        let mut retained = RetainedPresentations::new();
+        retained.restarting.push(RetainedRestart {
+            key: key.clone(),
+            selection: SessionSelection::new("wsl", "Ubuntu", "original"),
+            attachment: ActiveAttachment {
+                request,
+                term: AttachTerm::Xterm,
+                generation: 1,
+                fallback: None,
+            },
+            presentation_id: 7,
+        });
+
+        assert_eq!(resolved_request.name, "renamed");
+        assert!(retained.finish_restart(&key, (), &retry.request.name, &resolved_request));
+        assert_eq!(retained.entries[0].selection.session(), "renamed");
+        assert_eq!(retained.entries[0].attachment.request.name, "renamed");
     }
 
     #[test]
