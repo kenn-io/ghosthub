@@ -3016,6 +3016,92 @@ struct WorkspaceWorktreeRemovalTests {
     }
 
     @MainActor
+    @Test("project path reuse refreshes confirmation for the moved repository")
+    func projectPathReuseRefreshesMovedRepositoryConfirmation() async throws {
+        let environment = try setupStandardEnvironment()
+        var removable = WorktreeSummary.fixture(
+            hostID: environment.host.id,
+            projectID: environment.project.id,
+            scopedKey: "/tmp/project-a-feature",
+            name: "feature/remove",
+            path: "/tmp/project-a-feature",
+            branch: "feature/remove",
+            generation: stableWorktreeGeneration
+        )
+        removable.tmuxSessionName = "kwt-project-a-feature"
+        var snapshot = environment.snapshot
+        snapshot.worktrees.append(removable)
+
+        let movedPath = "/tmp/project-a-moved"
+        var movedProject = inventory(
+            environment,
+            including: removable
+        ).projects[0]
+        movedProject.project.path = movedPath
+        let replacementRepository = "example.com/acme/replacement"
+        let replacementProject = KwtProjectInventory(
+            project: KwtProjectRecord(
+                repository: replacementRepository,
+                name: "replacement",
+                path: environment.project.rootPath,
+                lastTouched: nil
+            ),
+            worktrees: [
+                KwtWorktreeRecord(
+                    path: environment.project.rootPath,
+                    branch: "main",
+                    commitHash: "",
+                    isMain: true,
+                    createdAt: nil,
+                    generation: nil,
+                    repository: replacementRepository,
+                    sessionName: "kwt-replacement-main",
+                    tmuxSocketName: nil
+                ),
+            ],
+            warning: nil
+        )
+        let preflight = KwtHostInventory(projects: [
+            replacementProject,
+            movedProject,
+        ])
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtInventoryLoader: { _ in preflight },
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        let result = try await model.resolveWorktreeRemoval(request)
+        guard case let .confirmationRequired(updatedRequest) = result else {
+            Issue.record("Removal should require a new confirmation")
+            await model.shutdown()
+            return
+        }
+
+        #expect(updatedRequest.project.id == environment.project.id)
+        #expect(updatedRequest.project.scopedKey == environment.project.scopedKey)
+        #expect(updatedRequest.project.rootPath == movedPath)
+        #expect(updatedRequest.worktree.generation == stableWorktreeGeneration)
+        let hostProjects = model.snapshot.projects.filter {
+            $0.hostID == environment.host.id
+        }
+        #expect(Set(hostProjects.map(\.id)).count == hostProjects.count)
+        #expect(
+            hostProjects.first { $0.scopedKey == replacementRepository }?.id
+                != environment.project.id
+        )
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("removal completion keeps the owning project selected")
     func removalKeepsOwningProjectSelected() throws {
         let environment = try setupStandardEnvironment()

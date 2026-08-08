@@ -1861,10 +1861,19 @@ final class WorkspaceSceneModel: ObservableObject {
                 message: warning
             )
         }
-        guard let item = inventory.projects.first(where: {
+        let repositoryItem = inventory.projects.first {
             $0.project.repository == request.project.scopedKey
-                || $0.project.path == request.project.rootPath
-        }) else {
+        }
+        let pathItem = inventory.projects.first {
+            $0.project.path == request.project.rootPath
+        }
+        if let repositoryItem,
+           let pathItem,
+           repositoryItem.project.repository != pathItem.project.repository {
+            applyAuthoritativeKwtInventory(inventory, hostID: hostID)
+            throw KwtWorktreeError.removalTargetChanged
+        }
+        guard let item = repositoryItem ?? pathItem else {
             applyAuthoritativeKwtInventory(inventory, hostID: hostID)
             throw KwtWorktreeError.removalTargetChanged
         }

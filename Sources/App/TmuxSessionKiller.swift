@@ -276,6 +276,11 @@ struct TmuxSessionKiller: Sendable {
         let normalized = output.lowercased()
         return normalized.contains("can't find session:")
             || normalized.contains("no server running on ")
+            || normalized.contains(
+                "failed to connect to server: no such file or directory"
+            )
+            || (normalized.contains("error connecting to ")
+                && normalized.contains("(no such file or directory)"))
     }
 
     private static func powerShellCommand(

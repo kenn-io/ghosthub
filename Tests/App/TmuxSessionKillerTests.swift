@@ -467,10 +467,51 @@ struct TmuxSessionKillerTests {
     }
 
     @Test(
+        "kill treats missing socket diagnostics as session absence",
+        arguments: [
+            "error connecting to /tmp/tmux-501/kwt (No such file or directory)",
+            "failed to connect to server: No such file or directory",
+        ]
+    )
+    func missingSocketDuringKill(output: String) async {
+        let killer = TmuxSessionKiller(
+            pathResolver: { _ in .success("/usr/bin/tmux") },
+            runner: { _, _ in (1, output) }
+        )
+        let selection = WorkspaceTmuxSessionSelection(
+            hostID: UUID(),
+            name: "worker",
+            socketName: "kwt"
+        )
+
+        await #expect {
+            try await killer.kill(
+                selection,
+                expectedIdentity: TmuxSessionIdentity(
+                    serverPID: "31415",
+                    sessionID: "$42",
+                    createdAt: "1785182057"
+                ),
+                on: .local
+            )
+        } throws: { error in
+            error as? TmuxSessionKillError == .sessionNotRunning(
+                host: "localhost",
+                session: "worker"
+            )
+        }
+    }
+
+    @Test(
         "only missing session or server diagnostics confirm absence",
         arguments: [
             ("can't find session: worker", true),
             ("no server running on /tmp/tmux-501/default", true),
+            (
+                "error connecting to /tmp/tmux-501/kwt (No such file or directory)",
+                true
+            ),
+            ("failed to connect to server: No such file or directory", true),
             ("error connecting to socket (Permission denied)", false),
             ("", false),
         ]

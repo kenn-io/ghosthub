@@ -506,16 +506,34 @@ enum KwtSnapshotMerger {
             return workspace
         }
 
+        var reconciledProjectIDs = Set<UUID>()
         for item in inventory.projects {
             let record = item.project
-            let existingProject = existingProjects.first {
-                normalizedPath($0.rootPath) == normalizedPath(record.path)
-                    || (!$0.scopedKey.isEmpty
-                        && $0.scopedKey == record.repository)
+            let repositoryMatch = existingProjects.first {
+                !record.repository.isEmpty
+                    && !$0.scopedKey.isEmpty
+                    && $0.scopedKey == record.repository
+                    && !reconciledProjectIDs.contains($0.id)
             }
+            let pathMatch = existingProjects.first { candidate in
+                normalizedPath(candidate.rootPath) == normalizedPath(record.path)
+                    && ((candidate.registryID != nil
+                            && !inventory.projects.contains(where: {
+                                $0.project.repository == candidate.scopedKey
+                            }))
+                        || candidate.scopedKey.isEmpty
+                        || candidate.scopedKey == record.repository)
+                    && !reconciledProjectIDs.contains(candidate.id)
+            }
+            // Repository identity survives a move. Path is only a legacy
+            // fallback for transitional records or when it does not belong to
+            // a different repository, and an existing runtime ID can be
+            // consumed at most once.
+            let existingProject = repositoryMatch ?? pathMatch
             let projectID = existingProject?.id ?? stableID(
                 "project|\(hostID.uuidString)|\(record.repository)|\(record.path)"
             )
+            reconciledProjectIDs.insert(projectID)
             var project = existingProject ?? ProjectSummary(
                 id: projectID,
                 hostID: hostID,
