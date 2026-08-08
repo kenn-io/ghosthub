@@ -303,11 +303,12 @@ public struct InteractionHandlers {
     public let selectWorkspace: ((WorkspaceSelection) -> Void)?
     public let openTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)?
     public let hideTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)?
-    public let openHerdrSession: ((WorkspaceHerdrSessionSelection) -> Void)?
+    public let openHerdrSession:
+        ((WorkspaceHerdrSessionSelection) async throws -> Void)?
     public let createHerdrSession:
-        ((WorkspaceHerdrSessionSelection) throws -> Void)?
+        ((WorkspaceHerdrSessionSelection) async throws -> Void)?
     public let restartHerdrSession:
-        ((WorkspaceHerdrSessionSelection) throws -> Void)?
+        ((WorkspaceHerdrSessionSelection) async throws -> Void)?
     public let closeTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)?
     public let closeHerdrSession: ((WorkspaceHerdrSessionSelection) -> Void)?
     public let prepareHerdrSessionLifecycle:
@@ -360,11 +361,12 @@ public struct InteractionHandlers {
         selectWorkspace: ((WorkspaceSelection) -> Void)? = nil,
         openTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)? = nil,
         hideTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)? = nil,
-        openHerdrSession: ((WorkspaceHerdrSessionSelection) -> Void)? = nil,
+        openHerdrSession:
+        ((WorkspaceHerdrSessionSelection) async throws -> Void)? = nil,
         createHerdrSession:
-        ((WorkspaceHerdrSessionSelection) throws -> Void)? = nil,
+        ((WorkspaceHerdrSessionSelection) async throws -> Void)? = nil,
         restartHerdrSession:
-        ((WorkspaceHerdrSessionSelection) throws -> Void)? = nil,
+        ((WorkspaceHerdrSessionSelection) async throws -> Void)? = nil,
         closeTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)? = nil,
         closeHerdrSession: ((WorkspaceHerdrSessionSelection) -> Void)? = nil,
         prepareHerdrSessionLifecycle:

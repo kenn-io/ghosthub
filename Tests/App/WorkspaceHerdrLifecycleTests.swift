@@ -34,8 +34,8 @@ struct WorkspaceHerdrLifecycleTests {
             hostID: environment.hostID,
             name: "agent"
         )
-        first.openBorrowedHerdrSession(selection)
-        second.openBorrowedHerdrSession(selection)
+        try await first.openBorrowedHerdrSession(selection)
+        try await second.openBorrowedHerdrSession(selection)
 
         let request = try await first.prepareHerdrSessionLifecycle(
             selection,
@@ -121,7 +121,7 @@ struct WorkspaceHerdrLifecycleTests {
             hostID: environment.hostID,
             name: "agent"
         )
-        model.openBorrowedHerdrSession(selection)
+        try await model.openBorrowedHerdrSession(selection)
         let request = try await model.prepareHerdrSessionLifecycle(
             selection,
             action: .stop
@@ -270,7 +270,7 @@ struct WorkspaceHerdrLifecycleTests {
             sessionName: selection.name
         )
 
-        try model.createHerdrSession(selection)
+        try await model.createHerdrSession(selection)
         #expect(coordinator.isPending(key))
 
         await model.shutdown()
@@ -309,6 +309,7 @@ struct WorkspaceHerdrLifecycleTests {
             snapshot: .fixture(hosts: [host]),
             nativeHerdrPathProvider: { _ in .success("/usr/bin/herdr") },
             herdrLifecycleCoordinator: coordinator,
+            herdrSessionDiscovery: { _ in .available([]) },
             configuredSSHHostsProvider: { configuredHosts.value },
             configuredSSHHostsPublisher: configuredHosts.eraseToAnyPublisher()
         )
@@ -324,7 +325,7 @@ struct WorkspaceHerdrLifecycleTests {
             coordinator.begin(.create, key: otherKey)
         )
 
-        try model.createHerdrSession(.init(
+        try await model.createHerdrSession(.init(
             hostID: host.id,
             name: invalidatedKey.sessionName
         ))
@@ -377,11 +378,11 @@ struct WorkspaceHerdrLifecycleTests {
         coordinator: HerdrSessionLifecycleCoordinator =
             HerdrSessionLifecycleCoordinator(),
         client: LifecycleClientStub,
-        discovery: @escaping WorkspaceSceneModel.HerdrSessionDiscovery = {
-            _ in .available([])
-        }
+        discovery: WorkspaceSceneModel.HerdrSessionDiscovery? = nil
     ) throws -> WorkspaceSceneModel {
-        try makeModel(
+        let displayedSessions = environment.snapshot.host(id: environment.hostID)?
+            .herdrSessions ?? []
+        return try makeModel(
             database: environment.database,
             localHostID: environment.hostID,
             snapshot: environment.snapshot,
@@ -393,7 +394,9 @@ struct WorkspaceHerdrLifecycleTests {
             herdrSessionMutator: { action, confirmed, _ in
                 client.mutate(action, confirmed: confirmed)
             },
-            herdrSessionDiscovery: discovery
+            herdrSessionDiscovery: discovery ?? { _ in
+                .available(displayedSessions)
+            }
         )
     }
 

@@ -27,7 +27,7 @@ struct WorkspaceHerdrPresentationTests {
         )
 
         model.openBorrowedTmuxSession(tmux)
-        model.openBorrowedHerdrSession(herdr)
+        try await model.openBorrowedHerdrSession(herdr)
         #expect(model.activeBorrowedTmuxSelection == nil)
         #expect(model.activeBorrowedHerdrSelection == herdr)
 
@@ -51,16 +51,16 @@ struct WorkspaceHerdrPresentationTests {
             hostID: environment.hostID,
             name: "worker"
         )
-        model.openBorrowedHerdrSession(first)
+        try await model.openBorrowedHerdrSession(first)
         await launchHerdrSurface(model, store: store)
         let firstKey = try #require(store.requestedKeys.last)
 
-        model.openBorrowedHerdrSession(first)
+        try await model.openBorrowedHerdrSession(first)
         model.prepareActiveBorrowedHerdrSurface()
         #expect(store.requestedKeys.last == firstKey)
         #expect(!store.removedKeys.contains(firstKey))
 
-        model.openBorrowedHerdrSession(second)
+        try await model.openBorrowedHerdrSession(second)
         #expect(model.activeBorrowedHerdrSelection == second)
         #expect(store.removedKeys.contains(firstKey))
         await model.shutdown()
@@ -78,11 +78,104 @@ struct WorkspaceHerdrPresentationTests {
         )
         let store = RecordingNativeSessionSurfaceStore()
         let model = try makeHerdrModel(environment, store: store)
-        model.openBorrowedHerdrSession(.init(
-            hostID: environment.hostID,
-            name: "sleeping"
-        ))
+        await #expect(throws: HerdrSessionPresentationError.self) {
+            try await model.openBorrowedHerdrSession(.init(
+                hostID: environment.hostID,
+                name: "sleeping"
+            ))
+        }
 
+        #expect(model.activeBorrowedHerdrSelection == nil)
+        #expect(store.requestedKeys.isEmpty)
+        await model.shutdown()
+    }
+
+    @Test("open revalidates running state after the displayed snapshot")
+    func openRevalidatesRunningState() async throws {
+        let environment = try environment()
+        let store = RecordingNativeSessionSurfaceStore()
+        let stopped = HerdrSessionSummary(
+            name: "api",
+            isDefault: true,
+            state: .stopped
+        )
+        let discoveries = HerdrDiscoveryQueue([.available([stopped])])
+        let model = try makeHerdrModel(
+            environment,
+            store: store,
+            discovery: { _ in discoveries.removeFirst() }
+        )
+
+        await #expect(throws: HerdrSessionPresentationError.self) {
+            try await model.openBorrowedHerdrSession(.init(
+                hostID: environment.hostID,
+                name: "api"
+            ))
+        }
+
+        #expect(discoveries.callCount == 1)
+        #expect(model.activeBorrowedHerdrSelection == nil)
+        #expect(store.requestedKeys.isEmpty)
+        await model.shutdown()
+    }
+
+    @Test("create revalidates absence after the displayed snapshot")
+    func createRevalidatesAbsence() async throws {
+        var environment = try environment()
+        environment.snapshot.hosts[0].herdrAvailable = true
+        let store = RecordingNativeSessionSurfaceStore()
+        let replacement = HerdrSessionSummary(
+            name: "new-review",
+            isDefault: false,
+            state: .running
+        )
+        let discoveries = HerdrDiscoveryQueue([.available([replacement])])
+        let model = try makeHerdrModel(
+            environment,
+            store: store,
+            discovery: { _ in discoveries.removeFirst() }
+        )
+
+        await #expect(throws: HerdrSessionPresentationError.self) {
+            try await model.createHerdrSession(.init(
+                hostID: environment.hostID,
+                name: "new-review"
+            ))
+        }
+
+        #expect(discoveries.callCount == 1)
+        #expect(model.activeBorrowedHerdrSelection == nil)
+        #expect(store.requestedKeys.isEmpty)
+        await model.shutdown()
+    }
+
+    @Test("restart revalidates stopped state after the displayed snapshot")
+    func restartRevalidatesStoppedState() async throws {
+        var environment = try environment()
+        environment.snapshot.hosts[0].herdrAvailable = true
+        environment.snapshot.hosts[0].herdrSessions.append(
+            HerdrSessionSummary(
+                name: "sleeping",
+                isDefault: false,
+                state: .stopped
+            )
+        )
+        let store = RecordingNativeSessionSurfaceStore()
+        let discoveries = HerdrDiscoveryQueue([.available([])])
+        let model = try makeHerdrModel(
+            environment,
+            store: store,
+            discovery: { _ in discoveries.removeFirst() }
+        )
+
+        await #expect(throws: HerdrSessionPresentationError.self) {
+            try await model.restartHerdrSession(.init(
+                hostID: environment.hostID,
+                name: "sleeping"
+            ))
+        }
+
+        #expect(discoveries.callCount == 1)
         #expect(model.activeBorrowedHerdrSelection == nil)
         #expect(store.requestedKeys.isEmpty)
         await model.shutdown()
@@ -102,13 +195,13 @@ struct WorkspaceHerdrPresentationTests {
         let store = RecordingNativeSessionSurfaceStore()
         let model = try makeHerdrModel(environment, store: store)
 
-        #expect(throws: HerdrSessionPresentationError.self) {
-            try model.createHerdrSession(.init(
+        await #expect(throws: HerdrSessionPresentationError.self) {
+            try await model.createHerdrSession(.init(
                 hostID: environment.hostID,
                 name: "api"
             ))
         }
-        try model.restartHerdrSession(.init(
+        try await model.restartHerdrSession(.init(
             hostID: environment.hostID,
             name: "sleeping"
         ))
@@ -126,7 +219,7 @@ struct WorkspaceHerdrPresentationTests {
         let store = RecordingNativeSessionSurfaceStore()
         let model = try makeHerdrModel(environment, store: store)
 
-        try model.createHerdrSession(.init(
+        try await model.createHerdrSession(.init(
             hostID: environment.hostID,
             name: "new-review"
         ))
@@ -170,7 +263,7 @@ struct WorkspaceHerdrPresentationTests {
             sessionName: selection.name
         )
 
-        try model.createHerdrSession(selection)
+        try await model.createHerdrSession(selection)
         await launchHerdrSurface(model, store: store)
         await waitUntilMainActor { discoveries.callCount == 1 }
 
@@ -221,9 +314,9 @@ struct WorkspaceHerdrPresentationTests {
         )
 
         if kind == .create {
-            try model.createHerdrSession(selection)
+            try await model.createHerdrSession(selection)
         } else {
-            try model.restartHerdrSession(selection)
+            try await model.restartHerdrSession(selection)
         }
         await launchHerdrSurface(model, store: store)
         await waitUntilMainActor { !coordinator.isPending(key) }
@@ -271,10 +364,20 @@ struct WorkspaceHerdrPresentationTests {
             isDefault: false,
             state: .running
         )
+        let discoveries = HerdrDiscoveryQueue([
+            .available(kind == .create ? [] : [
+                HerdrSessionSummary(
+                    name: sessionName,
+                    isDefault: false,
+                    state: .stopped
+                ),
+            ]),
+            .available([running]),
+        ])
         let model = try makeHerdrModel(
             environment,
             store: store,
-            discovery: { _ in .available([running]) },
+            discovery: { _ in discoveries.removeFirst() },
             coordinator: coordinator,
             nativeHerdrPathProvider: { _ in
                 let count = resolutionCount.withLock { count in
@@ -296,9 +399,9 @@ struct WorkspaceHerdrPresentationTests {
         )
 
         if kind == .create {
-            try model.createHerdrSession(selection)
+            try await model.createHerdrSession(selection)
         } else {
-            try model.restartHerdrSession(selection)
+            try await model.restartHerdrSession(selection)
         }
         await waitUntilMainActor { !coordinator.isPending(key) }
 
@@ -325,7 +428,15 @@ struct WorkspaceHerdrPresentationTests {
         let model = try makeHerdrModel(
             environment,
             store: store,
-            discovery: { _ in .failure(.cancelled(host: "Local Mac")) },
+            discovery: { _ in
+                .available([
+                    HerdrSessionSummary(
+                        name: "api",
+                        isDefault: true,
+                        state: .running
+                    ),
+                ])
+            },
             coordinator: coordinator
         )
         let selection = WorkspaceHerdrSessionSelection(
@@ -336,7 +447,7 @@ struct WorkspaceHerdrPresentationTests {
             hostID: selection.hostID,
             sessionName: selection.name
         )
-        model.openBorrowedHerdrSession(selection)
+        try await model.openBorrowedHerdrSession(selection)
         await launchHerdrSurface(model, store: store)
         let close = try #require(store.surface.closeObservers.values.first)
         close(false, 9)
@@ -356,7 +467,16 @@ struct WorkspaceHerdrPresentationTests {
     func manualRetryRequiresRunningSession() async throws {
         let environment = try environment()
         let store = RecordingNativeSessionSurfaceStore()
-        let discoveries = HerdrDiscoveryQueue([.available([])])
+        let discoveries = HerdrDiscoveryQueue([
+            .available([
+                HerdrSessionSummary(
+                    name: "api",
+                    isDefault: true,
+                    state: .running
+                ),
+            ]),
+            .available([]),
+        ])
         let model = try makeHerdrModel(
             environment,
             store: store,
@@ -366,14 +486,14 @@ struct WorkspaceHerdrPresentationTests {
             hostID: environment.hostID,
             name: "api"
         )
-        model.openBorrowedHerdrSession(selection)
+        try await model.openBorrowedHerdrSession(selection)
         await launchHerdrSurface(model, store: store)
         let close = try #require(store.surface.closeObservers.values.first)
         close(false, 9)
 
         await model.retryBorrowedHerdrSession(selection)
 
-        #expect(discoveries.callCount == 1)
+        #expect(discoveries.callCount == 2)
         #expect(store.removedKeys.count == 1)
         await model.shutdown()
     }
@@ -387,7 +507,7 @@ struct WorkspaceHerdrPresentationTests {
             hostID: environment.hostID,
             name: "api"
         )
-        model.openBorrowedHerdrSession(herdr)
+        try await model.openBorrowedHerdrSession(herdr)
 
         model.closeBorrowedHerdrSession(herdr)
         model.selectFromUser(WorkspaceSelection(
@@ -410,7 +530,7 @@ struct WorkspaceHerdrPresentationTests {
             hostID: environment.hostID,
             name: "api"
         )
-        model.openBorrowedHerdrSession(herdr)
+        try await model.openBorrowedHerdrSession(herdr)
         await launchHerdrSurface(model, store: store)
 
         let close = try #require(store.surface.closeObservers.values.first)
@@ -433,6 +553,7 @@ struct WorkspaceHerdrPresentationTests {
         )
         let discoveries = HerdrDiscoveryQueue([
             .available([running]),
+            .available([running]),
             .available([]),
         ])
         let model = try makeHerdrModel(
@@ -446,14 +567,14 @@ struct WorkspaceHerdrPresentationTests {
             hostID: environment.hostID,
             name: "api"
         )
-        model.openBorrowedHerdrSession(selection)
+        try await model.openBorrowedHerdrSession(selection)
         await launchHerdrSurface(model, store: store)
         let close = try #require(store.surface.closeObservers.values.first)
 
         close(false, 9)
 
         await waitUntilMainActor(timeout: .seconds(1)) {
-            discoveries.callCount == 2
+            discoveries.callCount == 3
         }
         #expect(model.snapshot.host(id: environment.hostID)?
             .herdrSessions.contains(where: { $0.name == "api" }) == false)
@@ -468,6 +589,9 @@ struct WorkspaceHerdrPresentationTests {
             .available([
                 HerdrSessionSummary(name: "api", isDefault: true, state: .running),
             ]),
+            .available([
+                HerdrSessionSummary(name: "api", isDefault: true, state: .running),
+            ]),
         ])
         let model = try makeHerdrModel(
             environment,
@@ -478,7 +602,7 @@ struct WorkspaceHerdrPresentationTests {
             hostID: environment.hostID,
             name: "api"
         )
-        model.openBorrowedHerdrSession(herdr)
+        try await model.openBorrowedHerdrSession(herdr)
         await launchHerdrSurface(model, store: store)
 
         let close = try #require(store.surface.closeObservers.values.first)
@@ -487,7 +611,7 @@ struct WorkspaceHerdrPresentationTests {
             store.requestedKeys.count == 2
         }
 
-        #expect(discoveries.callCount == 1)
+        #expect(discoveries.callCount == 2)
         #expect(model.activeBorrowedHerdrSelection == herdr)
         await model.shutdown()
     }
@@ -509,6 +633,7 @@ struct WorkspaceHerdrPresentationTests {
         )
         let discoveries = HerdrDiscoveryQueue([
             .available([running]),
+            .available([running]),
             result,
             result,
         ])
@@ -523,7 +648,7 @@ struct WorkspaceHerdrPresentationTests {
             hostID: environment.hostID,
             name: "api"
         )
-        model.openBorrowedHerdrSession(herdr)
+        try await model.openBorrowedHerdrSession(herdr)
         await launchHerdrSurface(model, store: store)
 
         let close = try #require(store.surface.closeObservers.values.first)
@@ -532,7 +657,7 @@ struct WorkspaceHerdrPresentationTests {
             model.activeBorrowedHerdrRecoveryState == nil
         }
         await waitUntilMainActor(timeout: .seconds(1)) {
-            discoveries.callCount == 3
+            discoveries.callCount == 4
         }
 
         #expect(store.requestedKeys.count == 1)
@@ -553,21 +678,28 @@ struct WorkspaceHerdrPresentationTests {
     func authenticationRecovery() async throws {
         let environment = try remoteEnvironment()
         let store = RecordingNativeSessionSurfaceStore()
+        let running = HerdrSessionSummary(
+            name: "api",
+            isDefault: true,
+            state: .running
+        )
+        let discoveries = HerdrDiscoveryQueue([
+            .available([running]),
+            .failure(.commandFailed(
+                status: 255,
+                stderr: "Permission denied (publickey,password)."
+            )),
+        ])
         let model = try makeHerdrModel(
             environment,
             store: store,
-            discovery: { _ in
-                .failure(.commandFailed(
-                    status: 255,
-                    stderr: "Permission denied (publickey,password)."
-                ))
-            }
+            discovery: { _ in discoveries.removeFirst() }
         )
         let herdr = WorkspaceHerdrSessionSelection(
             hostID: environment.hostID,
             name: "api"
         )
-        model.openBorrowedHerdrSession(herdr)
+        try await model.openBorrowedHerdrSession(herdr)
         await launchHerdrSurface(model, store: store)
 
         let close = try #require(store.surface.closeObservers.values.first)
@@ -591,7 +723,7 @@ struct WorkspaceHerdrPresentationTests {
         let environment = try environment()
         let store = RecordingNativeSessionSurfaceStore()
         let model = try makeHerdrModel(environment, store: store)
-        model.openBorrowedHerdrSession(WorkspaceHerdrSessionSelection(
+        try await model.openBorrowedHerdrSession(WorkspaceHerdrSessionSelection(
             hostID: environment.hostID,
             name: "api"
         ))
@@ -669,9 +801,7 @@ struct WorkspaceHerdrPresentationTests {
     private func makeHerdrModel(
         _ environment: Environment,
         store: RecordingNativeSessionSurfaceStore,
-        discovery: @escaping WorkspaceSceneModel.HerdrSessionDiscovery = {
-            _ in .available([])
-        },
+        discovery: WorkspaceSceneModel.HerdrSessionDiscovery? = nil,
         coordinator: HerdrSessionLifecycleCoordinator =
             HerdrSessionLifecycleCoordinator(),
         nativeHerdrPathProvider: @escaping @Sendable (CommandHost)
@@ -685,7 +815,9 @@ struct WorkspaceHerdrPresentationTests {
             .seconds(4),
         ]
     ) throws -> WorkspaceSceneModel {
-        try makeModel(
+        let displayedSessions = environment.snapshot.host(id: environment.hostID)?
+            .herdrSessions ?? []
+        return try makeModel(
             database: environment.database,
             localHostID: environment.hostID,
             snapshot: environment.snapshot,
@@ -699,7 +831,9 @@ struct WorkspaceHerdrPresentationTests {
                 successfulTmuxResolution("/usr/bin/tmux")
             },
             herdrLifecycleCoordinator: coordinator,
-            herdrSessionDiscovery: discovery,
+            herdrSessionDiscovery: discovery ?? { _ in
+                .available(displayedSessions)
+            },
             createdSessionDiscoveryDelays: createdSessionDiscoveryDelays,
             tmuxReconnectIntervals: [.milliseconds(1)]
         )

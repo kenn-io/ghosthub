@@ -59,6 +59,8 @@ enum HerdrSessionPresentationError: Error, Equatable, LocalizedError {
     case sessionNotRunning(String)
     case sessionNotStopped(String)
     case operationPending(String)
+    case stateChangedDuringValidation(String)
+    case stateValidationFailed(name: String, detail: String)
 
     var errorDescription: String? {
         switch self {
@@ -74,6 +76,10 @@ enum HerdrSessionPresentationError: Error, Equatable, LocalizedError {
             "Herdr session “\(name)” is not stopped."
         case let .operationPending(name):
             "Another operation is already changing “\(name)”."
+        case let .stateChangedDuringValidation(name):
+            "Herdr session “\(name)” changed while Ghosthub was checking it. Try again."
+        case let .stateValidationFailed(name, detail):
+            "Ghosthub could not confirm the current state of Herdr session “\(name)”: \(detail)"
         }
     }
 }
@@ -4368,13 +4374,25 @@ final class WorkspaceSceneModel: ObservableObject {
 
     func openBorrowedHerdrSession(
         _ selection: WorkspaceHerdrSessionSelection
-    ) {
-        cancelPendingRestoration()
+    ) async throws {
         guard snapshot.host(id: selection.hostID)?.herdrSessions.contains(
             where: {
                 $0.name == selection.name && $0.state == .running
             }
-        ) == true else { return }
+        ) == true else {
+            throw HerdrSessionPresentationError.sessionNotRunning(
+                selection.name
+            )
+        }
+        let session = try await revalidatedHerdrSession(selection)
+        guard session?.state == .running else {
+            throw session == nil
+                ? HerdrSessionPresentationError.sessionMissing(selection.name)
+                : HerdrSessionPresentationError.sessionNotRunning(
+                    selection.name
+                )
+        }
+        cancelPendingRestoration()
         if failedHerdrLaunchIntent?.selection == selection {
             failedHerdrLaunchIntent = nil
         }
@@ -4383,13 +4401,16 @@ final class WorkspaceSceneModel: ObservableObject {
 
     func createHerdrSession(
         _ selection: WorkspaceHerdrSessionSelection
-    ) throws {
+    ) async throws {
         guard let host = snapshot.host(id: selection.hostID),
               host.herdrAvailable
         else { throw HerdrSessionPresentationError.unavailable }
         guard !host.herdrSessions.contains(where: {
             $0.name == selection.name
         }) else {
+            throw HerdrSessionPresentationError.sessionExists(selection.name)
+        }
+        guard try await revalidatedHerdrSession(selection) == nil else {
             throw HerdrSessionPresentationError.sessionExists(selection.name)
         }
         try launchHerdrSession(selection, kind: .create)
@@ -4548,7 +4569,7 @@ final class WorkspaceSceneModel: ObservableObject {
 
     func restartHerdrSession(
         _ selection: WorkspaceHerdrSessionSelection
-    ) throws {
+    ) async throws {
         guard let host = snapshot.host(id: selection.hostID),
               host.herdrAvailable
         else { throw HerdrSessionPresentationError.unavailable }
@@ -4562,7 +4583,60 @@ final class WorkspaceSceneModel: ObservableObject {
                 selection.name
             )
         }
+        guard let currentSession = try await revalidatedHerdrSession(selection)
+        else {
+            throw HerdrSessionPresentationError.sessionMissing(selection.name)
+        }
+        guard currentSession.state == .stopped else {
+            throw HerdrSessionPresentationError.sessionNotStopped(
+                selection.name
+            )
+        }
         try launchHerdrSession(selection, kind: .restart)
+    }
+
+    private func revalidatedHerdrSession(
+        _ selection: WorkspaceHerdrSessionSelection
+    ) async throws -> HerdrSessionSummary? {
+        guard let originalHost = snapshot.host(id: selection.hostID),
+              let route = CommandHostResolver.resolve(originalHost)
+        else { throw HerdrSessionPresentationError.unavailable }
+        let key = HerdrSessionLifecycleCoordinator.Key(
+            hostID: selection.hostID,
+            sessionName: selection.name
+        )
+        guard !herdrLifecycleCoordinator.isPending(key) else {
+            throw HerdrSessionPresentationError.operationPending(
+                selection.name
+            )
+        }
+        let lifecycleRevision = herdrLifecycleCoordinator.revision(
+            for: selection.hostID
+        )
+        herdrSessionProbeBroker.invalidateSessions(on: route)
+        let result = await herdrSessionProbeBroker.sessions(on: route)
+        guard !Task.isCancelled,
+              snapshot.host(id: selection.hostID)
+              .flatMap(CommandHostResolver.resolve) == route,
+              herdrLifecycleCoordinator.revision(for: selection.hostID)
+              == lifecycleRevision,
+              !herdrLifecycleCoordinator.isPending(key)
+        else {
+            throw HerdrSessionPresentationError.stateChangedDuringValidation(
+                selection.name
+            )
+        }
+        switch result {
+        case let .available(sessions):
+            return sessions.first { $0.name == selection.name }
+        case .unavailable:
+            throw HerdrSessionPresentationError.unavailable
+        case let .failure(error):
+            throw HerdrSessionPresentationError.stateValidationFailed(
+                name: selection.name,
+                detail: error.localizedDescription
+            )
+        }
     }
 
     private func launchHerdrSession(

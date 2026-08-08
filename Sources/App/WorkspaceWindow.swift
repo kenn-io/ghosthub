@@ -832,13 +832,13 @@ struct WorkspaceWindow: View {
                     sceneModel.hideBorrowedTmuxSession(selection)
                 },
                 openHerdrSession: { [sceneModel] selection in
-                    sceneModel.openBorrowedHerdrSession(selection)
+                    try await sceneModel.openBorrowedHerdrSession(selection)
                 },
                 createHerdrSession: { [sceneModel] selection in
-                    try sceneModel.createHerdrSession(selection)
+                    try await sceneModel.createHerdrSession(selection)
                 },
                 restartHerdrSession: { [sceneModel] selection in
-                    try sceneModel.restartHerdrSession(selection)
+                    try await sceneModel.restartHerdrSession(selection)
                 },
                 closeTmuxSession: { [sceneModel] selection in
                     sceneModel.closeBorrowedTmuxSession(selection)

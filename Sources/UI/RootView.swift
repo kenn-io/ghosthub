@@ -720,15 +720,20 @@ public struct RootView: View {
     private func activateHerdrSession(
         _ session: WorkspaceHerdrSessionSelection
     ) {
-        if activeHerdrSession == session {
-            handlers.openHerdrSession?(session)
-            return
+        Task { @MainActor in
+            do {
+                guard let open = handlers.openHerdrSession else {
+                    throw HerdrLifecycleUnavailableError()
+                }
+                try await open(session)
+            } catch {
+                workspaceAlert = .herdrLifecycleFailure(
+                    session: session.name,
+                    action: "open",
+                    message: error.localizedDescription
+                )
+            }
         }
-        deactivateTmuxSession()
-        if let previous = activeHerdrSession {
-            handlers.closeHerdrSession?(previous)
-        }
-        handlers.openHerdrSession?(session)
     }
 
     private func initializeTmuxSelectionBaselineIfNeeded() {
@@ -767,40 +772,44 @@ public struct RootView: View {
             hostID: host.id,
             name: name
         )
-        do {
-            guard let create = handlers.createHerdrSession else {
-                throw HerdrLifecycleUnavailableError()
+        Task { @MainActor in
+            do {
+                guard let create = handlers.createHerdrSession else {
+                    throw HerdrLifecycleUnavailableError()
+                }
+                try await create(session)
+                selectWorkspace(.herdrSession(hostID: host.id, name: name))
+                newHerdrSessionHost = nil
+            } catch {
+                workspaceAlert = .herdrLifecycleFailure(
+                    session: name,
+                    action: "create",
+                    message: error.localizedDescription
+                )
             }
-            try create(session)
-            selectWorkspace(.herdrSession(hostID: host.id, name: name))
-            newHerdrSessionHost = nil
-        } catch {
-            workspaceAlert = .herdrLifecycleFailure(
-                session: name,
-                action: "create",
-                message: error.localizedDescription
-            )
         }
     }
 
     private func restartHerdrSession(
         _ session: WorkspaceHerdrSessionSelection
     ) {
-        do {
-            guard let restart = handlers.restartHerdrSession else {
-                throw HerdrLifecycleUnavailableError()
+        Task { @MainActor in
+            do {
+                guard let restart = handlers.restartHerdrSession else {
+                    throw HerdrLifecycleUnavailableError()
+                }
+                try await restart(session)
+                selectWorkspace(.herdrSession(
+                    hostID: session.hostID,
+                    name: session.name
+                ))
+            } catch {
+                workspaceAlert = .herdrLifecycleFailure(
+                    session: session.name,
+                    action: "restart",
+                    message: error.localizedDescription
+                )
             }
-            try restart(session)
-            selectWorkspace(.herdrSession(
-                hostID: session.hostID,
-                name: session.name
-            ))
-        } catch {
-            workspaceAlert = .herdrLifecycleFailure(
-                session: session.name,
-                action: "restart",
-                message: error.localizedDescription
-            )
         }
     }
 
