@@ -66,6 +66,38 @@ struct TmuxSessionPresentationLifecycleTests {
         #expect(!didDetach)
     }
 
+    @Test("validated Herdr activation closes the tmux presentation it replaced")
+    func herdrActivationClosesReplacedTmuxAfterValidation() async throws {
+        let hostID = UUID()
+        let herdr = WorkspaceHerdrSessionSelection(
+            hostID: hostID,
+            name: "agents"
+        )
+        let tmux = WorkspaceTmuxSessionSelection(
+            hostID: hostID,
+            name: "editor"
+        )
+        var closedTmuxSessions: [WorkspaceTmuxSessionSelection] = []
+
+        try await RootView.openHerdrSession(
+            herdr,
+            replacing: tmux,
+            open: { _ in },
+            closeTmux: { closedTmuxSessions.append($0) }
+        )
+        #expect(closedTmuxSessions == [tmux])
+
+        await #expect(throws: CancellationError.self) {
+            try await RootView.openHerdrSession(
+                herdr,
+                replacing: tmux,
+                open: { _ in throw CancellationError() },
+                closeTmux: { closedTmuxSessions.append($0) }
+            )
+        }
+        #expect(closedTmuxSessions == [tmux])
+    }
+
     @Test("Root presents only the active Herdr backend")
     func rootPresentsHerdrOnly() {
         let host = HostSummary.fixture()

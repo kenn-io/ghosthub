@@ -1,4 +1,5 @@
 import Combine
+@preconcurrency import Dispatch
 import Foundation
 import GhosthubHerdr
 import GhosthubPersistence
@@ -7,6 +8,7 @@ import GhosthubTestSupport
 import GhosthubTransport
 import GhosthubUI
 import GhosthubWorkspace
+import Synchronization
 import Testing
 @testable import GhosthubApp
 
@@ -134,6 +136,99 @@ struct WorkspaceHerdrLifecycleTests {
         #expect(model.snapshot.host(id: environment.hostID)?
             .herdrSessions.first(where: { $0.name == "agent" })?.state
             == .running)
+        await model.shutdown()
+    }
+
+    @Test("a newer stop fences failed-stop reconciliation")
+    func newerStopFencesFailedStopReconciliation() async throws {
+        let environment = try environment()
+        let coordinator = HerdrSessionLifecycleCoordinator()
+        let client = LifecycleClientStub(
+            records: [
+                "agent": Self.record(name: "agent", state: .running),
+            ],
+            mutationResult: .failure(.commandFailed(
+                status: 1,
+                code: "session_stop_failed",
+                message: "still busy"
+            ))
+        )
+        let store = RecordingNativeSessionSurfaceStore()
+        let calls = Mutex(0)
+        let reconciliationStarted = Mutex(false)
+        let releaseReconciliation = DispatchSemaphore(value: 0)
+        let reconciliationReturned = Mutex(false)
+        let running = HerdrSessionSummary(
+            name: "agent",
+            isDefault: false,
+            state: .running
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.hostID,
+            snapshot: environment.snapshot,
+            nativeHerdrSurfaceStore: store,
+            nativeHerdrPathProvider: { _ in .success("/usr/bin/herdr") },
+            herdrLifecycleCoordinator: coordinator,
+            herdrSessionRecordReader: { name, _ in
+                client.record(named: name)
+            },
+            herdrSessionMutator: { action, confirmed, _ in
+                client.mutate(action, confirmed: confirmed)
+            },
+            herdrSessionDiscovery: { _ in
+                let call = calls.withLock { value in
+                    value += 1
+                    return value
+                }
+                if call == 3 {
+                    reconciliationStarted.withLock { $0 = true }
+                    releaseReconciliation.wait()
+                    reconciliationReturned.withLock { $0 = true }
+                    return .available([])
+                }
+                return .available([running])
+            }
+        )
+        model.startHerdrSessionDiscovery()
+        await waitUntilMainActor { calls.withLock { $0 } == 1 }
+        let selection = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID,
+            name: "agent"
+        )
+        let key = HerdrSessionLifecycleCoordinator.Key(
+            hostID: selection.hostID,
+            sessionName: selection.name
+        )
+        try await model.openBorrowedHerdrSession(selection)
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedHerdrSurface()
+            return store.requestedConfigurations.count == 1
+        }
+        let request = try await model.prepareHerdrSessionLifecycle(
+            selection,
+            action: .stop
+        )
+
+        await #expect(throws: HerdrSessionLifecycleError.self) {
+            try await model.performHerdrSessionLifecycle(request)
+        }
+        await waitUntilMainActor {
+            reconciliationStarted.withLock { $0 }
+        }
+        let newerStop = try #require(coordinator.begin(.stop, key: key))
+        coordinator.willStop(newerStop)
+        releaseReconciliation.signal()
+        await waitUntilMainActor {
+            reconciliationReturned.withLock { $0 }
+        }
+        for _ in 0 ..< 20 {
+            await Task.yield()
+        }
+
+        #expect(store.requestedConfigurations.count == 1)
+        #expect(model.activeBorrowedHerdrSelection == selection)
+        coordinator.finish(newerStop, outcome: .failed)
         await model.shutdown()
     }
 

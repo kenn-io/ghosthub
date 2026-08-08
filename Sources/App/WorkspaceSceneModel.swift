@@ -2747,12 +2747,25 @@ final class WorkspaceSceneModel: ObservableObject {
             scheduleHerdrSessionDiscovery()
             return
         }
+        let lifecycleRevision = herdrLifecycleCoordinator.revision(
+            for: operation.key.hostID
+        )
+        guard !herdrLifecycleCoordinator.isPending(operation.key) else {
+            return
+        }
         herdrSessionProbeBroker.invalidateSessions(on: host)
         let outcome = await herdrSessionProbeBroker.session(
             named: operation.key.sessionName,
             on: host
         )
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled,
+              herdrLifecycleCoordinator.revision(
+                  for: operation.key.hostID
+              ) == lifecycleRevision,
+              !herdrLifecycleCoordinator.isPending(operation.key),
+              snapshot.host(id: operation.key.hostID)
+              .flatMap(CommandHostResolver.resolve) == host
+        else { return }
         switch outcome {
         case .present:
             guard activeBorrowedHerdrSelection == suppressed.selection else {
@@ -4787,6 +4800,33 @@ final class WorkspaceSceneModel: ObservableObject {
         if let intent = failedHerdrLaunchIntent,
            intent.selection == selection {
             do {
+                let currentSession = try await revalidatedHerdrSession(
+                    selection
+                )
+                guard activeBorrowedHerdrSelection == selection else {
+                    return
+                }
+                switch intent.kind {
+                case .create:
+                    guard currentSession == nil else {
+                        throw HerdrSessionPresentationError.sessionExists(
+                            selection.name
+                        )
+                    }
+                case .restart:
+                    guard let currentSession else {
+                        throw HerdrSessionPresentationError.sessionMissing(
+                            selection.name
+                        )
+                    }
+                    guard currentSession.state == .stopped else {
+                        throw HerdrSessionPresentationError.sessionNotStopped(
+                            selection.name
+                        )
+                    }
+                case .stop, .delete:
+                    return
+                }
                 try launchHerdrSession(selection, kind: intent.kind)
                 prepareActiveBorrowedHerdrSurface()
             } catch {

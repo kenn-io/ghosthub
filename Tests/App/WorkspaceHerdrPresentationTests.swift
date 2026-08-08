@@ -375,6 +375,76 @@ struct WorkspaceHerdrPresentationTests {
     }
 
     @Test(
+        "constructive retry revalidates the original launch state",
+        arguments: [
+            HerdrSessionLifecycleCoordinator.OperationKind.create,
+            .restart,
+        ]
+    )
+    func constructiveRetryRevalidatesLaunchState(
+        kind: HerdrSessionLifecycleCoordinator.OperationKind
+    ) async throws {
+        var environment = try environment()
+        environment.snapshot.hosts[0].herdrAvailable = true
+        let sessionName = kind == .create ? "new-review" : "sleeping"
+        let stopped = HerdrSessionSummary(
+            name: sessionName,
+            isDefault: false,
+            state: .stopped
+        )
+        if kind == .restart {
+            environment.snapshot.hosts[0].herdrSessions.append(stopped)
+        }
+        let desiredState: HerdrDiscoveryResult = kind == .create
+            ? .available([])
+            : .available([stopped])
+        let changedState: HerdrDiscoveryResult = kind == .create
+            ? .available([
+                HerdrSessionSummary(
+                    name: sessionName,
+                    isDefault: false,
+                    state: .running
+                ),
+            ])
+            : .available([])
+        let discoveries = HerdrDiscoveryQueue([desiredState, changedState])
+        let store = RecordingNativeSessionSurfaceStore(
+            launchError: HerdrCommandError.unavailable
+        )
+        let coordinator = HerdrSessionLifecycleCoordinator()
+        let model = try makeHerdrModel(
+            environment,
+            store: store,
+            discovery: { _ in discoveries.removeFirst() },
+            coordinator: coordinator
+        )
+        let selection = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID,
+            name: sessionName
+        )
+        let key = HerdrSessionLifecycleCoordinator.Key(
+            hostID: selection.hostID,
+            sessionName: selection.name
+        )
+
+        if kind == .create {
+            try await model.createHerdrSession(selection)
+        } else {
+            try await model.restartHerdrSession(selection)
+        }
+        await launchHerdrSurface(model, store: store)
+        await waitUntilMainActor { !coordinator.isPending(key) }
+        let configurationCount = store.requestedConfigurations.count
+
+        await model.retryBorrowedHerdrSession(selection)
+
+        #expect(discoveries.callCount == 2)
+        #expect(store.requestedConfigurations.count == configurationCount)
+        #expect(!coordinator.isPending(key))
+        await model.shutdown()
+    }
+
+    @Test(
         "constructive retry recovers from path-resolution failure",
         arguments: [
             HerdrSessionLifecycleCoordinator.OperationKind.create,
@@ -405,6 +475,13 @@ struct WorkspaceHerdrPresentationTests {
             state: .running
         )
         let discoveries = HerdrDiscoveryQueue([
+            .available(kind == .create ? [] : [
+                HerdrSessionSummary(
+                    name: sessionName,
+                    isDefault: false,
+                    state: .stopped
+                ),
+            ]),
             .available(kind == .create ? [] : [
                 HerdrSessionSummary(
                     name: sessionName,

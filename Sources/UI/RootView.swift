@@ -720,12 +720,20 @@ public struct RootView: View {
     private func activateHerdrSession(
         _ session: WorkspaceHerdrSessionSelection
     ) {
+        let replacedTmuxSession = activeTmuxSession
         Task { @MainActor in
             do {
                 guard let open = handlers.openHerdrSession else {
                     throw HerdrLifecycleUnavailableError()
                 }
-                try await open(session)
+                try await Self.openHerdrSession(
+                    session,
+                    replacing: replacedTmuxSession,
+                    open: open,
+                    closeTmux: { replaced in
+                        handlers.closeTmuxSession?(replaced)
+                    }
+                )
             } catch {
                 workspaceAlert = .herdrLifecycleFailure(
                     session: session.name,
@@ -1587,6 +1595,18 @@ public struct RootView: View {
         guard activeSession != nil else { return false }
         deactivate()
         return true
+    }
+
+    static func openHerdrSession(
+        _ session: WorkspaceHerdrSessionSelection,
+        replacing tmuxSession: WorkspaceTmuxSessionSelection?,
+        open: (WorkspaceHerdrSessionSelection) async throws -> Void,
+        closeTmux: (WorkspaceTmuxSessionSelection) -> Void
+    ) async throws {
+        try await open(session)
+        if let tmuxSession {
+            closeTmux(tmuxSession)
+        }
     }
 
 }
