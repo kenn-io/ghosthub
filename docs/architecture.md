@@ -205,6 +205,14 @@ records, never probe or kill server state.
 Host command capture is bounded and descendant-contained so inherited output
 pipes cannot outlive a cancelled or completed refresh.
 
+The Rust application keeps its host rail and discovered-session rail visible
+around an active terminal. Switching sessions is an explicit workspace action:
+it validates the selected inventory target before detaching the current
+ordinary client, then launches the replacement through the same atomic live-
+identity check as an initial attachment. This presentation navigation never
+destroys server state and does not grant the UI direct host, session, or
+terminal dependencies.
+
 ### Application Updates
 
 Packaged releases embed Sparkle 2 and select exactly one update channel at
