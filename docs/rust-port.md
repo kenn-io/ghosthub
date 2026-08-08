@@ -676,17 +676,22 @@ The first executable milestone opens a native Windows GPUI shell independently
 of WSL, then discovers and attaches to an existing tmux session in one resolved
 WSL2 distro when the system WSL launcher is present. It detaches without
 destroying the session. The shell contains a synthetic host list, a minimal
-discovered-session view, one terminal presentation, a visible cancellable WSL
-startup state, and host-scoped retryable diagnostics.
+discovered-session view, one visible terminal presentation, a visible
+cancellable WSL startup state, and host-scoped retryable diagnostics.
 
 The Windows application shell keeps host and session navigation mounted while
-a terminal presentation is active. Selecting a different discovered session
-captures that target from the current inventory, detaches the existing
-ordinary client, and performs the normal fresh-identity attachment check for
-the replacement. Selecting the active session focuses its existing
-presentation. Navigation never sends a mux kill command. The chrome is shaped
-for additional admitted local mux hosts, but Slice 1 exposes only WSL tmux;
-psmux remains rejection evidence until it satisfies the same capability bar.
+a terminal presentation is active. A workspace retains the ordinary client,
+worker, and surface for every presentation it explicitly opens. Selecting a
+different discovered session hides the current surface without detaching its
+client. A first visit captures the target from current inventory and performs
+the normal fresh-identity attachment check; returning to an open session
+remounts the retained surface synchronously. Retained entries are keyed by the
+exact host, resolved endpoint, socket directory, session, and live identity.
+Explicit close detaches only the selected presentation, and application
+shutdown detaches every retained client. Navigation never sends a mux kill
+command. The chrome is shaped for additional admitted local mux hosts, but
+Slice 1 exposes only WSL tmux; psmux remains rejection evidence until it
+satisfies the same capability bar.
 
 The flow resolves and verifies the exact mux binary, discovers live identity,
 reserves the presentation, and launches an AttachPlan whose single tmux
