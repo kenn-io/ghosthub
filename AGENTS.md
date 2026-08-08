@@ -56,6 +56,9 @@ layer, as subject to direct iteration.
 - Commit every turn when you make changes.
 - Commit before responding without asking whether to commit; committing is the
   expected default after every change.
+- Push completed task-branch commits to their configured remote before
+  responding. Force-push only when the user explicitly requests a history
+  rewrite.
 - Ending a completed turn with task-related uncommitted work is forbidden. A
   clean task worktree is a precondition for handoff and for any roborev
   interaction.
@@ -97,8 +100,8 @@ layer, as subject to direct iteration.
   navel-gazing sections such as "Changes", "Validation", "Tests", or
   "Verification". Mention unusual validation only inline when it is genuinely
   useful reviewer context.
-- The canonical repository is `https://github.com/kenn-io/ghosthub`. Only push
-  or open pull requests when the user explicitly asks.
+- The canonical repository is `https://github.com/kenn-io/ghosthub`. Open pull
+  requests only when the user explicitly asks.
 - The public repository does not accept unsolicited pull requests. Direct bug
   reports and feature requests to GitHub issues. Prospective code contributors
   must coordinate privately with Kenn Software and sign the CLA before their

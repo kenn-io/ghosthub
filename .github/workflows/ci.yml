@@ -14,12 +14,25 @@ concurrency:
 
 jobs:
   macos-arm64:
-    name: macOS (Apple Silicon)
-    runs-on: macos-26
+    name: macOS (Apple Silicon, ${{ matrix.lane }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include: >-
+          ${{ fromJSON(
+            vars.GHOSTHUB_SELF_HOSTED_VALIDATION == 'true' &&
+            github.repository == 'kenn-io/ghosthub' &&
+            github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name == github.repository &&
+            github.event.pull_request.base.repo.full_name == github.repository &&
+            '[{"lane":"hosted","runner":"macos-26"},{"lane":"self-hosted","runner":"kenn-macos-arm64-public"}]' ||
+            '[{"lane":"hosted","runner":"macos-26"}]'
+          ) }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     env:
       # The bootstrap default is intentionally arm64 for developer Macs.
-      # `native` builds the arm64 libghostty slice on the hosted runner.
+      # `native` builds the arm64 libghostty slice on each validation runner.
       LIBGHOSTTY_XCFRAMEWORK_TARGET: native
 
     steps:
@@ -86,9 +99,11 @@ jobs:
           mkdir -p "$foundation_home/Library/Caches" "$foundation_tmp"
           chmod 700 "$state_root" "$foundation_home" "$foundation_home/Library" \
             "$foundation_home/Library/Caches" "$foundation_tmp"
-          echo "GHOSTHUB_CI_STATE_ROOT=$state_root" >> "$GITHUB_ENV"
-          echo "CFFIXED_USER_HOME=$foundation_home" >> "$GITHUB_ENV"
-          echo "TMPDIR=$foundation_tmp" >> "$GITHUB_ENV"
+          {
+            echo "GHOSTHUB_CI_STATE_ROOT=$state_root"
+            echo "CFFIXED_USER_HOME=$foundation_home"
+            echo "TMPDIR=$foundation_tmp"
+          } >> "$GITHUB_ENV"
 
       - name: Install Zig 0.15.2
         shell: bash
@@ -142,6 +157,8 @@ jobs:
         # NSPasteboard.general, which is shared across worker processes.
         shell: bash
         run: |
+          windowserver_log="$RUNNER_TEMP/windowserver-tests.log"
+          : > "$windowserver_log"
           test_workers=2
           if [[ "${RUNNER_ENVIRONMENT:-}" == "self-hosted" ]]; then
             test_workers=8
@@ -151,13 +168,28 @@ jobs:
             swift test --skip-build --disable-swift-testing \
             --filter GhosthubTerminalSmokeTests \
             --skip 'Clipboard|Paste' \
-            --parallel --num-workers "$test_workers"
+            --parallel --num-workers "$test_workers" \
+            2>&1 | tee -a "$windowserver_log"
 
       - name: Run pasteboard terminal smoke tests
-        run: >-
-          sh tools/run_swift_tests.sh
-          swift test --skip-build --disable-swift-testing
-          --filter 'Clipboard|Paste' --no-parallel
+        shell: bash
+        run: |
+          sh tools/run_swift_tests.sh \
+            swift test --skip-build --disable-swift-testing \
+            --filter 'Clipboard|Paste' --no-parallel \
+            2>&1 | tee -a "$RUNNER_TEMP/windowserver-tests.log"
+
+      - name: Verify WindowServer coverage
+        shell: bash
+        run: |
+          windowserver_log="$RUNNER_TEMP/windowserver-tests.log"
+          skip_count="$(grep -c \
+            'Test skipped - Test requires window server' \
+            "$windowserver_log" || true)"
+          if [[ "$skip_count" -ne 2 ]]; then
+            echo "Expected 2 WindowServer skips; found $skip_count." >&2
+            exit 1
+          fi
 
       - name: Run remaining XCTest suites
         # Keep deadline-sensitive monitor and lifecycle tests serialized.

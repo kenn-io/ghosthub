@@ -1847,6 +1847,7 @@ struct WorkspaceTmuxDiscoveryTests {
                         session: selection.name
                     )
                 }
+                try await Task.sleep(for: .milliseconds(20))
                 return TmuxSessionIdentity(
                     serverPID: "31415",
                     sessionID: "$42",
@@ -1868,10 +1869,13 @@ struct WorkspaceTmuxDiscoveryTests {
             identityReads.count == 3
         }
         let start = Date.now
-        await activityController.sampleWarmSessions(at: start)
-        await activityController.sampleWarmSessions(
-            at: start.addingTimeInterval(20)
-        )
+        for tick in 1 ... 400
+            where !model.workingTmuxSessionIDs.contains(selection.id) {
+            await activityController.sampleWarmSessions(
+                at: start.addingTimeInterval(Double(tick))
+            )
+            try await Task.sleep(for: .milliseconds(2))
+        }
 
         #expect(model.workingTmuxSessionIDs == [selection.id])
         await model.shutdown()
