@@ -224,6 +224,7 @@ fn switches_between_discovered_sessions_without_destroying_either() {
         || workspace_diagnostic(&workspace),
     );
     let second_presentation = active_presentation_id(&workspace);
+    assert_retained(&workspace, "workspace-live");
 
     let sessions = server.run_tmux(["list-sessions", "-F", "#{session_name}:#{session_attached}"]);
     let sessions = String::from_utf8(sessions.stdout).expect("UTF-8 session inventory");
@@ -241,6 +242,7 @@ fn switches_between_discovered_sessions_without_destroying_either() {
             ..
         } if session == "workspace-live" && *presentation_id == first_presentation
     ));
+    assert_retained(&workspace, "switch-live");
 
     workspace.detach();
     wait_until(|| {
@@ -278,6 +280,16 @@ fn switches_between_discovered_sessions_without_destroying_either() {
                     && sessions.iter().any(|session| session.name() == "switch-live")
         )
     });
+}
+
+fn assert_retained(workspace: &Workspace, expected_session: &str) {
+    assert!(
+        workspace
+            .snapshot()
+            .retained_selections()
+            .iter()
+            .any(|selection| selection.session() == expected_session)
+    );
 }
 
 #[test]

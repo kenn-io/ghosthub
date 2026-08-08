@@ -266,6 +266,7 @@ pub struct WorkspaceSnapshot {
     hosts: Vec<HostItem>,
     selected_host: Option<String>,
     notice: Option<String>,
+    retained_selections: Vec<SessionSelection>,
 }
 
 impl WorkspaceSnapshot {
@@ -285,6 +286,7 @@ impl WorkspaceSnapshot {
             hosts: Vec::new(),
             selected_host: None,
             notice: None,
+            retained_selections: Vec::new(),
         }
     }
 
@@ -298,6 +300,7 @@ impl WorkspaceSnapshot {
             hosts,
             selected_host,
             notice: None,
+            retained_selections: Vec::new(),
         }
     }
 
@@ -329,6 +332,11 @@ impl WorkspaceSnapshot {
     #[must_use]
     pub fn notice(&self) -> Option<&str> {
         self.notice.as_deref()
+    }
+
+    #[must_use]
+    pub fn retained_selections(&self) -> &[SessionSelection] {
+        &self.retained_selections
     }
 }
 
@@ -648,6 +656,16 @@ impl<T> AttachmentState<T> {
             .flatten()
     }
 
+    fn confirm_if_current(&mut self, generation: u64) -> bool {
+        if !self.is_current(generation) {
+            return false;
+        }
+        if let Some(active) = &mut self.active {
+            active.fallback = None;
+        }
+        true
+    }
+
     fn clear_if_current(&mut self, generation: u64) -> bool {
         if !self.is_current(generation) {
             return false;
@@ -754,6 +772,13 @@ impl<T> RetainedPresentations<T> {
 
     fn contains(&self, key: &PresentationKey) -> bool {
         self.entries.iter().any(|entry| &entry.key == key)
+    }
+
+    fn selections(&self) -> Vec<SessionSelection> {
+        self.entries
+            .iter()
+            .map(|entry| entry.selection.clone())
+            .collect()
     }
 }
 
@@ -901,6 +926,7 @@ impl Workspace {
             hosts: Vec::new(),
             selected_host: None,
             notice: None,
+            retained_selections: Vec::new(),
         })
     }
 
@@ -1120,6 +1146,12 @@ impl Workspace {
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone(),
+            retained_selections: self
+                .inner
+                .retained_presentations
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .selections(),
         }
     }
 
@@ -1555,16 +1587,10 @@ impl Workspace {
         let mut retry_term = false;
         let mut processed = 0;
         for _ in 0..MAX_EVENTS_PER_DRAIN {
-            let (event, source_worker_generation, client_confirmed_live) = {
-                let worker = self
-                    .inner
-                    .worker
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let Some((worker, generation)) = worker.active_with_generation() else {
-                    break;
-                };
-                (worker.try_event(), generation, worker.is_confirmed_live())
+            let Some((event, source_worker_generation, client_confirmed_live)) =
+                self.next_terminal_event()
+            else {
+                break;
             };
             match event {
                 Ok(Some(TerminalEvent::ClipboardWrite(write))) => {
@@ -1595,7 +1621,7 @@ impl Workspace {
                 }
                 Ok(Some(TerminalEvent::Exited { code, output_tail })) => {
                     processed += 1;
-                    let Some((request, term, generation)) =
+                    let Some((request, term, generation, fallback)) =
                         self.attachment_for_worker(source_worker_generation)
                     else {
                         break;
@@ -1606,7 +1632,7 @@ impl Workspace {
                         term,
                         client_confirmed_live,
                     );
-                    exited_attachment = Some((request, generation));
+                    exited_attachment = Some((request, generation, fallback));
                     exited_worker_generation = Some(source_worker_generation);
                     exited = true;
                     break;
@@ -1617,13 +1643,13 @@ impl Workspace {
                 }
                 Ok(None) => break,
                 Err(error) => {
-                    let Some((request, _, generation)) =
+                    let Some((request, _, generation, fallback)) =
                         self.attachment_for_worker(source_worker_generation)
                     else {
                         break;
                     };
                     exit_error = Some(error.to_string());
-                    exited_attachment = Some((request, generation));
+                    exited_attachment = Some((request, generation, fallback));
                     exited_worker_generation = Some(source_worker_generation);
                     exited = true;
                     break;
@@ -1644,6 +1670,28 @@ impl Workspace {
         (emitted, event_drain_may_have_more(processed, exited))
     }
 
+    fn next_terminal_event(
+        &self,
+    ) -> Option<(
+        Result<Option<TerminalEvent>, terminal::WorkerError>,
+        u64,
+        bool,
+    )> {
+        let (event, worker_generation, confirmed) = {
+            let worker = self
+                .inner
+                .worker
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let (worker, generation) = worker.active_with_generation()?;
+            (worker.try_event(), generation, worker.is_confirmed_live())
+        };
+        if confirmed {
+            self.mark_attachment_confirmed(worker_generation);
+        }
+        Some((event, worker_generation, confirmed))
+    }
+
     fn drain_retained_events(&self, budget: usize, emitted: &mut Vec<WorkspaceEvent>) -> usize {
         let (hidden_events, processed) = self
             .inner
@@ -1658,7 +1706,7 @@ impl Workspace {
     fn attachment_for_worker(
         &self,
         worker_generation: u64,
-    ) -> Option<(AttachRequest, AttachTerm, u64)> {
+    ) -> Option<(AttachRequest, AttachTerm, u64, Option<PresentationKey>)> {
         let attachment = self
             .inner
             .attachment
@@ -1674,20 +1722,46 @@ impl Workspace {
         {
             return None;
         }
-        attachment
-            .active()
-            .map(|active| (active.request.clone(), active.term, active.generation))
+        attachment.active().map(|active| {
+            (
+                active.request.clone(),
+                active.term,
+                active.generation,
+                active.fallback.clone(),
+            )
+        })
+    }
+
+    fn mark_attachment_confirmed(&self, worker_generation: u64) {
+        let mut attachment = self
+            .inner
+            .attachment
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self
+            .inner
+            .worker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .generation()
+            != worker_generation
+        {
+            return;
+        }
+        if let Some(generation) = attachment.active().map(|active| active.generation) {
+            attachment.confirm_if_current(generation);
+        }
     }
 
     fn handle_terminal_exit(
         &self,
-        attachment: Option<(AttachRequest, u64)>,
+        attachment: Option<(AttachRequest, u64, Option<PresentationKey>)>,
         worker_generation: u64,
         retry_term: bool,
         exit_error: Option<String>,
         emitted: &mut Vec<WorkspaceEvent>,
     ) {
-        let Some((request, generation)) = attachment else {
+        let Some((request, generation, fallback)) = attachment else {
             return;
         };
         {
@@ -1728,6 +1802,8 @@ impl Workspace {
         }
         if retry_term {
             self.retry_with_xterm(request, generation, emitted);
+        } else {
+            restore_attach_fallback(&self.inner, fallback);
         }
     }
 
@@ -2872,6 +2948,7 @@ mod tests {
             hosts: Vec::new(),
             selected_host: None,
             notice: None,
+            retained_selections: Vec::new(),
         });
         *workspace.inner.pending_paste.lock().expect("pending paste") = Some(PendingPaste {
             worker_generation: 1,
@@ -3276,6 +3353,64 @@ mod tests {
 
         assert!(geometry_was_locked, "geometry lock was released too early");
         assert!(worker_was_locked, "worker lock was released too early");
+    }
+
+    #[test]
+    fn replacement_fallback_survives_publication_until_the_client_is_confirmed() {
+        let fallback = PresentationKey {
+            host_id: "wsl".to_owned(),
+            endpoint: "Ubuntu".to_owned(),
+            socket_directory: None,
+            session: "previous".to_owned(),
+            identity: session::SessionIdentity::new(100, "$1", 200),
+        };
+        let mut attachment = AttachmentState::new();
+        let attachment_generation = attachment
+            .reserve_with_fallback(
+                "replacement",
+                AttachTerm::Xterm256Color,
+                Some(fallback.clone()),
+            )
+            .expect("reserve replacement attachment");
+        let mut worker = WorkerState::new();
+        let worker_generation = worker.publish("replacement client");
+
+        let fallback_for_exit = attachment.fallback_if_current(attachment_generation);
+        assert_eq!(
+            fallback_for_exit,
+            Some(fallback),
+            "publishing the replacement must not consume its fallback"
+        );
+
+        assert!(claim_terminal_exit(
+            &mut attachment,
+            &mut worker,
+            attachment_generation,
+            worker_generation,
+            false,
+        ));
+        assert_eq!(
+            fallback_for_exit.as_ref().map(|key| key.session.as_str()),
+            Some("previous")
+        );
+    }
+
+    #[test]
+    fn confirmed_replacement_releases_its_fallback() {
+        let fallback = PresentationKey {
+            host_id: "wsl".to_owned(),
+            endpoint: "Ubuntu".to_owned(),
+            socket_directory: None,
+            session: "previous".to_owned(),
+            identity: session::SessionIdentity::new(100, "$1", 200),
+        };
+        let mut attachment = AttachmentState::new();
+        let generation = attachment
+            .reserve_with_fallback("replacement", AttachTerm::Xterm256Color, Some(fallback))
+            .expect("reserve replacement attachment");
+
+        assert!(attachment.confirm_if_current(generation));
+        assert_eq!(attachment.fallback_if_current(generation), None);
     }
 
     #[test]
@@ -3707,6 +3842,7 @@ mod tests {
             )],
             selected_host: Some("wsl".to_owned()),
             notice: None,
+            retained_selections: Vec::new(),
         });
 
         set_inventory_state(

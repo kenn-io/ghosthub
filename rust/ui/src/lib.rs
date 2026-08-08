@@ -1463,6 +1463,7 @@ impl RootView {
                 host,
                 snapshot.selected_host() == Some(host.id()),
                 snapshot.content(),
+                snapshot.retained_selections(),
                 cx,
             ));
         }
@@ -1499,6 +1500,7 @@ impl RootView {
         host: &HostItem,
         is_selected: bool,
         content: &WorkspaceContent,
+        retained: &[SessionSelection],
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let mut host_tree =
@@ -1538,7 +1540,7 @@ impl RootView {
             HostConnectionState::Ready => {}
         }
 
-        let sessions = tree_sessions(host, content);
+        let sessions = tree_sessions(host, content, retained);
         if host.connection() == HostConnectionState::Ready || !sessions.is_empty() {
             host_tree = host_tree.child(Self::session_tree(host_index, &sessions, cx));
         }
@@ -2004,40 +2006,40 @@ fn active_session_selection(content: &WorkspaceContent) -> Option<SessionSelecti
     }
 }
 
-fn tree_sessions(host: &HostItem, content: &WorkspaceContent) -> Vec<TreeSession> {
+fn tree_sessions(
+    host: &HostItem,
+    content: &WorkspaceContent,
+    retained: &[SessionSelection],
+) -> Vec<TreeSession> {
     let active = active_session_selection(content);
     let active_for_host = active
         .as_ref()
         .filter(|active| active.host_id() == host.id());
-    if host.connection() != HostConnectionState::Ready {
-        return active_for_host.map_or_else(Vec::new, |active| {
-            vec![TreeSession {
-                selection: active.clone(),
-                active: true,
-            }]
-        });
-    }
 
-    let mut sessions = host
-        .sessions()
+    let mut selections = if host.connection() == HostConnectionState::Ready {
+        host.sessions()
+            .iter()
+            .map(|session| SessionSelection::new(host.id(), host.endpoint(), session.name()))
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    for selection in retained
         .iter()
-        .map(|session| {
-            let selection = SessionSelection::new(host.id(), host.endpoint(), session.name());
-            TreeSession {
-                active: active.as_ref() == Some(&selection),
-                selection,
-            }
-        })
-        .collect::<Vec<_>>();
-    if let Some(active) = active_for_host
-        && !sessions.iter().any(|session| session.active)
+        .filter(|selection| selection.host_id() == host.id())
+        .chain(active_for_host)
     {
-        sessions.push(TreeSession {
-            selection: active.clone(),
-            active: true,
-        });
+        if !selections.contains(selection) {
+            selections.push(selection.clone());
+        }
     }
-    sessions
+    selections
+        .into_iter()
+        .map(|selection| TreeSession {
+            active: active.as_ref() == Some(&selection),
+            selection,
+        })
+        .collect()
 }
 
 fn workspace_window_title(content: &WorkspaceContent) -> String {
@@ -2610,7 +2612,7 @@ mod tests {
                 None,
             );
 
-            let rows = tree_sessions(&host, &terminal);
+            let rows = tree_sessions(&host, &terminal, &[]);
             assert_eq!(rows.len(), 1);
             assert_eq!(rows[0].selection.session(), "demo");
             assert!(rows[0].active);
@@ -2635,12 +2637,34 @@ mod tests {
             None,
         );
 
-        let rows = tree_sessions(&host, &terminal);
+        let rows = tree_sessions(&host, &terminal, &[]);
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].selection.endpoint(), "Debian");
         assert!(!rows[0].active);
         assert_eq!(rows[1].selection.endpoint(), "Ubuntu");
         assert!(rows[1].active);
+    }
+
+    #[test]
+    fn retained_sessions_stay_in_the_tree_while_the_host_is_unavailable() {
+        let host = HostItem::wsl(
+            "Ubuntu",
+            None,
+            HostConnectionState::Unavailable,
+            Vec::new(),
+            None,
+        );
+        let retained = vec![
+            SessionSelection::new("wsl", "Ubuntu", "one"),
+            SessionSelection::new("wsl", "Ubuntu", "two"),
+        ];
+
+        let rows = tree_sessions(&host, &WorkspaceContent::Shell, &retained);
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].selection.session(), "one");
+        assert_eq!(rows[1].selection.session(), "two");
+        assert!(rows.iter().all(|row| !row.active));
     }
 
     #[test]
