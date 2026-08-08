@@ -27,6 +27,7 @@ public struct WorkspaceDisplayState {
     public let activeTmuxSessionCanApplyTheme: Bool
     public let tmuxConnectionRecoveryRequest:
         TmuxConnectionRecoveryRequest?
+    public let workingTmuxSessionIDs: Set<String>
 
     public init(
         snapshot: WorkspaceSnapshot,
@@ -50,7 +51,8 @@ public struct WorkspaceDisplayState {
         activeTmuxSessionIsConnected: Bool = false,
         activeTmuxSessionCanApplyTheme: Bool = false,
         tmuxConnectionRecoveryRequest:
-        TmuxConnectionRecoveryRequest? = nil
+        TmuxConnectionRecoveryRequest? = nil,
+        workingTmuxSessionIDs: Set<String> = []
     ) {
         self.snapshot = snapshot
         self.workspaceResourceSummary = workspaceResourceSummary
@@ -80,6 +82,7 @@ public struct WorkspaceDisplayState {
             activeTmuxSessionCanApplyTheme
         self.tmuxConnectionRecoveryRequest =
             tmuxConnectionRecoveryRequest
+        self.workingTmuxSessionIDs = workingTmuxSessionIDs
     }
 }
 

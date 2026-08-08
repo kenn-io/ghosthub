@@ -25,6 +25,21 @@ entries.
 General tmux sessions are presented as one ordinary native tmux client; tmux
 alone owns and renders their layout.
 
+After an attachment reaches the connected state, Ghosthub keeps that exact
+session warm for the remainder of the app launch. One app-scoped, in-memory
+activity controller serves every workspace window. It samples only warm
+endpoints, never the complete discovered fleet, and binds each target to its
+tmux server PID, session ID, and creation time. A bounded tail of the active
+pane's scrollback, excluding its visible screen, is checksummed on the host
+without discarding trailing blank output. Only the checksum, byte count,
+scrollback line count, pane identity, and session identity return to the app.
+The first sample for each active pane, and the first after a pane resize,
+establishes a quiet baseline. A later scrollback change on that pane at
+unchanged dimensions publishes a short-lived passive activity state to both
+worktree and standalone session rows. Warm state is not
+persisted, and a missing or same-named replacement session stops sampling that
+identity.
+
 ## Window Model
 
 Each Ghosthub workspace is an independent SwiftUI scene with its own scene
@@ -350,6 +365,9 @@ through encoded, noninteractive PowerShell commands, then creates and attaches
 to sessions using the same exact-target and attach-only reconnect model as
 POSIX tmux hosts. Windows 11 build 22523 or newer is the initial interactive
 target because its ConPTY path supports ordinary OpenSSH TTY allocation.
+Passive activity sampling additionally requires psmux 3.3.4 or newer; earlier
+versions remain attachable but cannot provide the scrollback-only capture
+contract.
 
 When Ghosthub creates a native Windows session, it passes the SSH account
 process's `PATH` through psmux's session-environment argument so the initial

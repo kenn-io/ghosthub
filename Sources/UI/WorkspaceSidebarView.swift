@@ -118,6 +118,7 @@ struct WorkspaceSidebarView: View {
     let onOpen: (WorktreeSummary) -> Void
     let activeTmuxSession: WorkspaceTmuxSessionSelection?
     let activeTmuxSessionIsConnected: Bool
+    let workingTmuxSessionIDs: Set<String>
     let onOpenTmuxSession: (WorkspaceTmuxSessionSelection) -> Void
     let onNavigateAwayFromTmuxSession: () -> Void
     let onRequestKillTmuxSession: (WorkspaceTmuxSessionSelection) -> Void
@@ -157,6 +158,7 @@ struct WorkspaceSidebarView: View {
         tmuxSessionVisibility: TmuxSessionVisibility = TmuxSessionVisibility(),
         activeTmuxSession: WorkspaceTmuxSessionSelection? = nil,
         activeTmuxSessionIsConnected: Bool = false,
+        workingTmuxSessionIDs: Set<String> = [],
         onOpenTmuxSession: @escaping (
             WorkspaceTmuxSessionSelection
         ) -> Void = { _ in },
@@ -187,6 +189,7 @@ struct WorkspaceSidebarView: View {
         self.tmuxSessionVisibility = tmuxSessionVisibility
         self.activeTmuxSession = activeTmuxSession
         self.activeTmuxSessionIsConnected = activeTmuxSessionIsConnected
+        self.workingTmuxSessionIDs = workingTmuxSessionIDs
         self.onOpenTmuxSession = onOpenTmuxSession
         self.onNavigateAwayFromTmuxSession = onNavigateAwayFromTmuxSession
         self.onRequestKillTmuxSession = onRequestKillTmuxSession
@@ -631,6 +634,9 @@ struct WorkspaceSidebarView: View {
             } ?? false,
             isActionHovered: isActionHovered
         )
+        let isTmuxSessionWorking = tmuxSession.map {
+            workingTmuxSessionIDs.contains($0.id)
+        } ?? false
         let usesDirectKillAction: Bool
         if case .tmuxSession = row.target {
             usesDirectKillAction = true
@@ -685,6 +691,9 @@ struct WorkspaceSidebarView: View {
                         )
                     }
                     Spacer(minLength: 0)
+                    if isTmuxSessionWorking {
+                        tmuxSessionActivityIndicator
+                    }
                     if isSelected, differentiateWithoutColor {
                         Image(systemName: "checkmark")
                             .font(.system(size: 10, weight: .bold))
@@ -735,7 +744,8 @@ struct WorkspaceSidebarView: View {
             .workspaceAccessibility(
                 WorkspaceAccessibilityModel.descriptor(
                     for: row,
-                    isSelected: isSelected
+                    isSelected: isSelected,
+                    hasRecentTmuxOutput: isTmuxSessionWorking
                 )
             )
             .accessibilityAddTraits(isSelected ? .isSelected : [])
@@ -1604,6 +1614,17 @@ struct WorkspaceSidebarView: View {
                     .lineLimit(1)
             }
         }
+    }
+
+    private var tmuxSessionActivityIndicator: some View {
+        Image(
+            systemName: differentiateWithoutColor
+                ? "waveform" : "circle.fill"
+        )
+        .font(.system(size: 8, weight: .semibold))
+        .foregroundStyle(Color.accentColor)
+        .help("Recent tmux output")
+        .accessibilityLabel("Recent tmux output")
     }
 }
 

@@ -129,3 +129,7 @@ for development machines and power users and is never run automatically.
 Automatic provisioning will remain disabled until the kwt executables are
 Authenticode-signed. Adding a new project from Ghosthub is not yet supported on
 Windows, although already registered project inventory can be shown.
+
+[Session activity indicators](sessions.md#activity-indicators) require psmux
+3.3.4 or newer; older supported versions remain attachable but publish no
+passive activity state.

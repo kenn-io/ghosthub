@@ -403,6 +403,8 @@ func makeModel(
     refreshExeHosts: @escaping () -> Void = {},
     terminalColorsPublisher:
     AnyPublisher<[UInt: TerminalResolvedColors], Never>? = nil,
+    tmuxSessionActivityController:
+    TmuxSessionActivityController? = nil,
     sceneSettings: WorkspaceSceneSettings = .live(),
     createdSessionDiscoveryDelays: [Duration] = [
         .milliseconds(500),
@@ -454,6 +456,7 @@ func makeModel(
         configuredExeHostsPublisher: configuredExeHostsPublisher,
         refreshExeHosts: refreshExeHosts,
         terminalColorsPublisher: terminalColorsPublisher,
+        tmuxSessionActivityController: tmuxSessionActivityController,
         sceneSettings: sceneSettings,
         localHostID: localHostID,
         overrideSnapshot: snapshot,

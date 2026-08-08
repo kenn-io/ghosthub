@@ -472,6 +472,8 @@ public struct RootView: View {
             activeTmuxSession: activeTmuxSession,
             activeTmuxSessionIsConnected:
             display.activeTmuxSessionIsConnected,
+            workingTmuxSessionIDs:
+            display.workingTmuxSessionIDs,
             onOpenTmuxSession: { session in
                 activateTmuxSession(session)
             },

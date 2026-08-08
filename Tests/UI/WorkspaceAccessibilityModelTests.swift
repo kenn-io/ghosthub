@@ -44,10 +44,11 @@ struct WorkspaceAccessibilityModelTests {
         expectAccessibilityDescriptor(
             WorkspaceAccessibilityModel.descriptor(
                 for: row,
-                isSelected: true
+                isSelected: true,
+                hasRecentTmuxOutput: true
             ),
             label: "docbank",
-            value: "2 windows, Selected",
+            value: "2 windows, Recent tmux output, Selected",
             hint: "Attach to this tmux session."
         )
     }

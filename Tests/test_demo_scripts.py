@@ -21,6 +21,7 @@ DEMO = ROOT / "website" / "demo"
 WEBSITE_ASSET_NAMES = (
     "hero.png",
     "guide-sessions.png",
+    "guide-session-activity.png",
     "guide-hosts.png",
     "guide-exe-dev.png",
     "guide-worktree.png",

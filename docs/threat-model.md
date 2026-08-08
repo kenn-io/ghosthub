@@ -288,6 +288,17 @@ retained inventory cannot authorize killing a same-named replacement,
 including one created during the same timestamp second or after a rapid tmux
 server restart. An active client is detached only after the kill succeeds.
 
+Passive activity sampling receives no authority to mutate a warm session. Its
+bounded `capture-pane` reads only recent scrollback, excluding the visible
+screen, from an endpoint connected during the current app launch. Identity
+reads on both sides of the capture must match the enrolled server PID, session
+ID, creation time, and active pane; a session mismatch retires the target and
+a pane mismatch discards the sample. The host computes the capture checksum
+over the exact captured text, including trailing blank output, and adds only
+its byte count and scrollback line count. That fixed-size fingerprint and the
+identity metadata are all that cross SSH or enter application state. Ghosthub
+does not log or persist captured terminal text or warm-session state.
+
 Ghosthub applies the selected Tmux Theme when it creates a new bare session.
 Attachment to an existing session does not add a client-local palette or modify
 tmux visual styles by default. The explicit shared-session override may reset

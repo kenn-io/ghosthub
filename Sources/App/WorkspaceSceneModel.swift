@@ -582,6 +582,8 @@ final class WorkspaceSceneModel: ObservableObject {
     let terminalCoordinator: TerminalSurfaceCoordinator
     let localHostID: UUID
     private let notificationService: NotificationService
+    private let tmuxSessionActivityController:
+        TmuxSessionActivityController?
     private let kwtInventoryLoader: KwtInventoryLoader
     private let kwtRemoteProvisioner: KwtRemoteProvisioner
     private let kwtWorktreeCreator: KwtWorktreeCreator
@@ -615,6 +617,8 @@ final class WorkspaceSceneModel: ObservableObject {
     private var deferredTmuxPresentationTasks: [UUID: Task<Void, Never>] = [:]
     private var drainingDeferredTmuxPresentationTasks:
         [UUID: Task<Void, Never>] = [:]
+    private var tmuxActivityEnrollmentTasks:
+        [UUID: Task<Void, Never>] = [:]
     private let deferredTmuxPresentationRetryDelays: [Duration]
     private var worktreeMutationCancellable: AnyCancellable?
     private var activityControllerBacking: ActivityMonitoringController?
@@ -637,6 +641,7 @@ final class WorkspaceSceneModel: ObservableObject {
         return nativeTmuxSessionCoordinatorBacking
     }
     private var activityCancellable: AnyCancellable?
+    private var tmuxSessionActivityCancellable: AnyCancellable?
     private var panelRoutingCancellable: AnyCancellable?
     var isAppActive = true
     var childExitCancellable: AnyCancellable?
@@ -662,6 +667,9 @@ final class WorkspaceSceneModel: ObservableObject {
     }
     var defaultIdleThresholdSeconds: Int {
         workspaceConfiguration.notifications.idleThresholdSeconds
+    }
+    var workingTmuxSessionIDs: Set<String> {
+        tmuxSessionActivityController?.workingSessionIDs ?? []
     }
     convenience init(
         terminalRuntime: LibghosttyRuntime = .shared,
@@ -692,6 +700,8 @@ final class WorkspaceSceneModel: ObservableObject {
                         .appliesThemeToTmuxSessions
                 },
                 sshAuthenticationCoordinator: sshAuthenticationCoordinator,
+                tmuxSessionActivityController:
+                boot.tmuxSessionActivityController,
                 localHostID: boot.localHostID,
                 startServices: true
             )
@@ -844,6 +854,8 @@ final class WorkspaceSceneModel: ObservableObject {
         },
         terminalColorsPublisher:
         AnyPublisher<[UInt: TerminalResolvedColors], Never>? = nil,
+        tmuxSessionActivityController:
+        TmuxSessionActivityController? = nil,
         sceneSettings: WorkspaceSceneSettings = .live(),
         localHostID: UUID? = nil,
         overrideSnapshot: WorkspaceSnapshot? = nil,
@@ -924,6 +936,8 @@ final class WorkspaceSceneModel: ObservableObject {
         self.startExeHostInventory = startExeHostInventory
         terminalCoordinator = TerminalSurfaceCoordinator(runtime: terminalRuntime)
         self.notificationService = notificationService
+        self.tmuxSessionActivityController =
+            tmuxSessionActivityController
 
         var snapshot = try overrideSnapshot ?? database.fetchSessionSnapshot()
         let resolvedLocalHostID = localHostID
@@ -949,6 +963,9 @@ final class WorkspaceSceneModel: ObservableObject {
                 configuredSSHHostsProvider(),
                 exeHosts: configuredExeHostsProvider(),
                 to: snapshot
+            )
+            tmuxSessionActivityController?.reconcile(
+                endpointsByHostID: Self.resolvedEndpoints(of: snapshot)
             )
         }
         self.snapshot = snapshot
@@ -1100,6 +1117,10 @@ final class WorkspaceSceneModel: ObservableObject {
         activityCancellable = activityController.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }
+        tmuxSessionActivityCancellable = tmuxSessionActivityController?
+            .objectWillChange.sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
         terminalColorsCancellable = (terminalColorsPublisher
             ?? terminalRuntime.$resolvedTerminalColorsBySurface
             .eraseToAnyPublisher())
@@ -1176,6 +1197,7 @@ final class WorkspaceSceneModel: ObservableObject {
         // Cancel Combine subscriptions first so no new events
         // arrive from child controllers during teardown.
         activityCancellable?.cancel()
+        tmuxSessionActivityCancellable?.cancel()
         panelRoutingCancellable?.cancel()
         configuredSSHHostsCancellable?.cancel()
         configuredExeHostsCancellable?.cancel()
@@ -1185,6 +1207,7 @@ final class WorkspaceSceneModel: ObservableObject {
         tmuxDiscoveryTask?.cancel()
         createdSessionDiscoveryTasks.values.forEach { $0.cancel() }
         deferredTmuxPresentationTasks.values.forEach { $0.cancel() }
+        tmuxActivityEnrollmentTasks.values.forEach { $0.cancel() }
         childExitCancellable?.cancel()
         appDidBecomeActiveCancellable?.cancel()
         appDidResignActiveCancellable?.cancel()
@@ -1405,6 +1428,8 @@ final class WorkspaceSceneModel: ObservableObject {
         createdSessionDiscoveryTasks.removeAll()
         deferredTmuxPresentationTasks.values.forEach { $0.cancel() }
         deferredTmuxPresentationTasks.removeAll()
+        tmuxActivityEnrollmentTasks.values.forEach { $0.cancel() }
+        tmuxActivityEnrollmentTasks.removeAll()
         drainingDeferredTmuxPresentationTasks.removeAll()
         exhaustedCreatedTmuxSessionHandles.removeAll()
         endedCreatedTmuxSessionHandles.removeAll()
@@ -2830,21 +2855,26 @@ final class WorkspaceSceneModel: ObservableObject {
             exeHosts: exeHosts,
             to: source
         )
-        let previousTargets = Dictionary(
-            uniqueKeysWithValues: source.hosts.compactMap { host in
-                TmuxHostResolver.resolve(host).map { (host.id, $0) }
-            }
-        )
-        let updatedTargets = Dictionary(
-            uniqueKeysWithValues: updated.hosts.compactMap { host in
-                TmuxHostResolver.resolve(host).map { (host.id, $0) }
-            }
-        )
+        let previousTargets = Self.resolvedEndpoints(of: source)
+        let updatedTargets = Self.resolvedEndpoints(of: updated)
         let invalidatedHostIDs = Set(previousTargets.keys.filter { hostID in
             previousTargets[hostID] != updatedTargets[hostID]
         })
+        tmuxSessionActivityController?.reconcile(
+            endpointsByHostID: updatedTargets
+        )
         invalidateTmuxAttachments(for: invalidatedHostIDs)
         return updated
+    }
+
+    private static func resolvedEndpoints(
+        of snapshot: WorkspaceSnapshot
+    ) -> [UUID: TmuxHost] {
+        Dictionary(
+            uniqueKeysWithValues: snapshot.hosts.compactMap { host in
+                TmuxHostResolver.resolve(host).map { (host.id, $0) }
+            }
+        )
     }
 
     private func invalidateTmuxAttachments(for hostIDs: Set<UUID>) {
@@ -4187,6 +4217,9 @@ final class WorkspaceSceneModel: ObservableObject {
         retainedTmuxPresentationKeysByHandle.removeValue(forKey: handle.id)
         cancelTmuxReconnect(presentation)
         cancelTmuxPresentationTasks(handleID: handle.id)
+        tmuxActivityEnrollmentTasks.removeValue(
+            forKey: handle.id
+        )?.cancel()
         confirmedEndedTmuxSessionHandles.remove(handle.id)
         borrowedTmuxConnectionStates.removeValue(forKey: handle.id)
         if var pending = pendingCreatedTmuxSessions[handle.id] {
@@ -4442,8 +4475,13 @@ final class WorkspaceSceneModel: ObservableObject {
                     presentation: presentation
                 )
             }
+            warmConnectedTmuxSession(handle: handle)
             publishActiveState(for: presentation)
             applyDeferredTmuxPresentationIfReady(presentation)
+        } else {
+            tmuxActivityEnrollmentTasks.removeValue(
+                forKey: handle.id
+            )?.cancel()
         }
         if case .disconnected = state,
            presentation.recoveryState != nil,
@@ -4897,6 +4935,82 @@ final class WorkspaceSceneModel: ObservableObject {
                   presentation.reconnectContext == context
             else { return }
             presentation.establishmentConfirmationTask = nil
+        }
+    }
+
+    private func warmConnectedTmuxSession(
+        handle: BorrowedTmuxSessionHandle
+    ) {
+        guard let activityController = tmuxSessionActivityController,
+              let selection = retainedTmuxPresentation(for: handle)?
+              .selection,
+              !nativeTmuxSessionCoordinator.hasClosedAttachment(handle),
+              let hostSummary = snapshot.host(id: selection.hostID),
+              let host = TmuxHostResolver.resolve(hostSummary)
+        else { return }
+        tmuxActivityEnrollmentTasks.removeValue(
+            forKey: handle.id
+        )?.cancel()
+        let retryDelays: [Duration] = [.zero]
+            + createdSessionDiscoveryDelays
+        let settledRetryDelay = createdSessionDiscoveryDelays.last(where: {
+            $0 > .zero
+        }) ?? .seconds(4)
+        tmuxActivityEnrollmentTasks[handle.id] = Task { [weak self] in
+            var retryIndex = 0
+            while true {
+                let delay = retryIndex < retryDelays.count
+                    ? retryDelays[retryIndex]
+                    : settledRetryDelay
+                retryIndex += 1
+                do {
+                    try await Task.sleep(for: delay)
+                } catch {
+                    return
+                }
+                guard let self,
+                      !Task.isCancelled,
+                      borrowedTmuxConnectionStates[handle.id] == .connected,
+                      let currentSelection = retainedTmuxPresentation(
+                          for: handle
+                      )?.selection,
+                      Self.sameTmuxEndpoint(currentSelection, selection),
+                      let currentHostSummary = snapshot.host(
+                          id: currentSelection.hostID
+                      ),
+                      TmuxHostResolver.resolve(currentHostSummary) == host
+                else { return }
+                let identity: TmuxSessionIdentity
+                do {
+                    identity = try await tmuxSessionIdentityReader(
+                        currentSelection,
+                        host
+                    )
+                } catch {
+                    continue
+                }
+                guard !Task.isCancelled,
+                      !nativeTmuxSessionCoordinator.hasClosedAttachment(
+                          handle
+                      ),
+                      borrowedTmuxConnectionStates[handle.id] == .connected,
+                      retainedTmuxPresentation(for: handle).map({
+                          Self.sameTmuxEndpoint(
+                              $0.selection,
+                              currentSelection
+                          )
+                      }) == true
+                else { return }
+                activityController.warm(
+                    currentSelection,
+                    identity: identity,
+                    on: host
+                )
+                tmuxActivityEnrollmentTasks.removeValue(
+                    forKey: handle.id
+                )
+                return
+            }
         }
     }
 
