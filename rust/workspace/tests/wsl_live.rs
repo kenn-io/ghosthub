@@ -178,6 +178,257 @@ fn discovers_attaches_renders_and_detaches_through_workspace() {
 
 #[test]
 #[ignore = "requires WSL2 and tmux; creates only an isolated TMUX_TMPDIR server"]
+fn switches_between_discovered_sessions_without_destroying_either() {
+    let _serial = WSL_LIVE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let server = IsolatedServer::start("switch");
+    server.run_tmux(["new-session", "-d", "-s", "switch-live"]);
+    let config = WslConfig::configured(None, "/usr/bin/tmux", Some(server.tmpdir.clone()))
+        .expect("valid isolated config");
+    let workspace = Workspace::start_wsl(config, TerminalAppearance::default());
+
+    wait_until_with_diagnostic(
+        || {
+            matches!(
+                workspace.snapshot().content(),
+                WorkspaceContent::Ready { sessions, .. }
+                    if sessions.iter().any(|session| session.name() == "workspace-live")
+                        && sessions.iter().any(|session| session.name() == "switch-live")
+            )
+        },
+        || workspace_diagnostic(&workspace),
+    );
+
+    workspace
+        .attach(&session_selection(&workspace, "workspace-live"))
+        .expect("attach first session");
+    wait_until(|| {
+        matches!(
+            workspace.snapshot().content(),
+            WorkspaceContent::Terminal { session, .. } if session == "workspace-live"
+        )
+    });
+    let first_presentation = active_presentation_id(&workspace);
+
+    workspace
+        .switch_session(&session_selection(&workspace, "switch-live"))
+        .expect("begin session switch");
+    wait_until_with_diagnostic(
+        || {
+            matches!(
+                workspace.snapshot().content(),
+                WorkspaceContent::Terminal { session, .. } if session == "switch-live"
+            )
+        },
+        || workspace_diagnostic(&workspace),
+    );
+    let second_presentation = active_presentation_id(&workspace);
+    assert_retained(&workspace, "workspace-live");
+
+    let sessions = server.run_tmux(["list-sessions", "-F", "#{session_name}:#{session_attached}"]);
+    let sessions = String::from_utf8(sessions.stdout).expect("UTF-8 session inventory");
+    assert!(sessions.lines().any(|line| line == "workspace-live:1"));
+    assert!(sessions.lines().any(|line| line == "switch-live:1"));
+
+    workspace
+        .switch_session(&session_selection(&workspace, "workspace-live"))
+        .expect("restore retained first presentation");
+    assert!(matches!(
+        workspace.snapshot().content(),
+        WorkspaceContent::Terminal {
+            session,
+            presentation_id,
+            ..
+        } if session == "workspace-live" && *presentation_id == first_presentation
+    ));
+    assert_retained(&workspace, "switch-live");
+
+    workspace.detach();
+    wait_until(|| {
+        let sessions =
+            server.run_tmux(["list-sessions", "-F", "#{session_name}:#{session_attached}"]);
+        let sessions = String::from_utf8(sessions.stdout).expect("UTF-8 session inventory");
+        sessions.lines().any(|line| line == "workspace-live:0")
+            && sessions.lines().any(|line| line == "switch-live:1")
+    });
+
+    workspace
+        .attach(&session_selection(&workspace, "switch-live"))
+        .expect("restore retained second presentation");
+    assert!(matches!(
+        workspace.snapshot().content(),
+        WorkspaceContent::Terminal {
+            session,
+            presentation_id,
+            ..
+        } if session == "switch-live" && *presentation_id == second_presentation
+    ));
+    workspace.detach();
+    wait_until(|| {
+        let sessions =
+            server.run_tmux(["list-sessions", "-F", "#{session_name}:#{session_attached}"]);
+        let sessions = String::from_utf8(sessions.stdout).expect("UTF-8 session inventory");
+        sessions.lines().any(|line| line == "workspace-live:0")
+            && sessions.lines().any(|line| line == "switch-live:0")
+    });
+    wait_until(|| {
+        matches!(
+            workspace.snapshot().content(),
+            WorkspaceContent::Ready { sessions, .. }
+                if sessions.iter().any(|session| session.name() == "workspace-live")
+                    && sessions.iter().any(|session| session.name() == "switch-live")
+        )
+    });
+}
+
+#[test]
+#[ignore = "requires WSL2 and tmux; creates only an isolated TMUX_TMPDIR server"]
+fn rename_during_switch_keeps_retained_navigation_consistent() {
+    let _serial = WSL_LIVE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let server = IsolatedServer::start("rename-switch");
+    server.run_tmux(["new-session", "-d", "-s", "switch-live"]);
+    let workspace = start_workspace(&server);
+    wait_for_sessions(&workspace, &["workspace-live", "switch-live"]);
+
+    workspace
+        .attach(&session_selection(&workspace, "workspace-live"))
+        .expect("attach first session");
+    wait_for_terminal(&workspace, "workspace-live");
+    let switch_target = session_selection(&workspace, "switch-live");
+
+    server.run_tmux(["rename-session", "-t", "=workspace-live", "renamed-live"]);
+    workspace.refresh().expect("start rename refresh");
+    workspace
+        .switch_session(&switch_target)
+        .expect("switch while rename refresh is active");
+    wait_for_terminal(&workspace, "switch-live");
+    wait_until(|| {
+        let snapshot = workspace.snapshot();
+        snapshot
+            .hosts()
+            .iter()
+            .flat_map(workspace::HostItem::sessions)
+            .any(|session| session.name() == "renamed-live")
+            && snapshot
+                .retained_selections()
+                .iter()
+                .any(|selection| selection.session() == "renamed-live")
+            && !snapshot
+                .retained_selections()
+                .iter()
+                .any(|selection| selection.session() == "workspace-live")
+    });
+
+    workspace
+        .switch_session(&session_selection(&workspace, "renamed-live"))
+        .expect("reactivate renamed retained presentation");
+    wait_for_terminal(&workspace, "renamed-live");
+    workspace
+        .switch_session(&switch_target)
+        .expect("retain renamed presentation again");
+    wait_for_terminal(&workspace, "switch-live");
+
+    let revision_before_exit = workspace.snapshot().revision();
+    server.run_tmux(["kill-session", "-t", "=renamed-live"]);
+    wait_until(|| {
+        let _events = workspace.drain_events();
+        let snapshot = workspace.snapshot();
+        snapshot.revision() > revision_before_exit
+            && !snapshot
+                .retained_selections()
+                .iter()
+                .any(|selection| selection.session() == "renamed-live")
+    });
+    workspace.detach();
+}
+
+fn assert_retained(workspace: &Workspace, expected_session: &str) {
+    assert!(
+        workspace
+            .snapshot()
+            .retained_selections()
+            .iter()
+            .any(|selection| selection.session() == expected_session)
+    );
+}
+
+#[test]
+#[ignore = "requires WSL2 and tmux; creates only an isolated TMUX_TMPDIR server"]
+fn failed_first_switch_restores_the_previous_presentation() {
+    let _serial = WSL_LIVE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let server = IsolatedServer::start("switch-failure");
+    server.run_tmux(["new-session", "-d", "-s", "switch-live"]);
+    let workspace = start_workspace(&server);
+    wait_for_sessions(&workspace, &["workspace-live", "switch-live"]);
+
+    workspace
+        .attach(&session_selection(&workspace, "workspace-live"))
+        .expect("attach first session");
+    wait_for_terminal(&workspace, "workspace-live");
+    let presentation_id = active_presentation_id(&workspace);
+    let missing = session_selection(&workspace, "switch-live");
+    server.run_tmux(["kill-session", "-t", "=switch-live"]);
+
+    workspace
+        .switch_session(&missing)
+        .expect("start guarded switch to stale inventory target");
+    wait_for_terminal(&workspace, "workspace-live");
+    assert_eq!(active_presentation_id(&workspace), presentation_id);
+    assert!(
+        workspace
+            .snapshot()
+            .notice()
+            .is_some_and(|notice| notice.contains("no longer exists")),
+        "restoring the prior terminal must preserve the switch failure diagnostic"
+    );
+    assert_session_attached(&server, "workspace-live", 1);
+    workspace.detach();
+}
+
+#[test]
+#[ignore = "requires WSL2 and tmux; creates only an isolated TMUX_TMPDIR server"]
+fn failed_retained_activation_restores_the_previous_presentation() {
+    let _serial = WSL_LIVE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let server = IsolatedServer::start("retained-failure");
+    server.run_tmux(["new-session", "-d", "-s", "switch-live"]);
+    let workspace = start_workspace(&server);
+    wait_for_sessions(&workspace, &["workspace-live", "switch-live"]);
+
+    workspace
+        .attach(&session_selection(&workspace, "workspace-live"))
+        .expect("attach first session");
+    wait_for_terminal(&workspace, "workspace-live");
+    workspace
+        .switch_session(&session_selection(&workspace, "switch-live"))
+        .expect("attach second session");
+    wait_for_terminal(&workspace, "switch-live");
+    let dead_target = session_selection(&workspace, "switch-live");
+    workspace
+        .switch_session(&session_selection(&workspace, "workspace-live"))
+        .expect("restore first session");
+    let presentation_id = active_presentation_id(&workspace);
+
+    server.run_tmux(["kill-session", "-t", "=switch-live"]);
+    thread::sleep(Duration::from_secs(2));
+    assert!(workspace.switch_session(&dead_target).is_err());
+    assert!(matches!(
+        workspace.snapshot().content(),
+        WorkspaceContent::Terminal { session, .. } if session == "workspace-live"
+    ));
+    assert_eq!(active_presentation_id(&workspace), presentation_id);
+    assert_session_attached(&server, "workspace-live", 1);
+    workspace.detach();
+}
+
+#[test]
+#[ignore = "requires WSL2 and tmux; creates only an isolated TMUX_TMPDIR server"]
 fn refuses_to_attach_when_the_discovered_session_was_replaced() {
     let _serial = WSL_LIVE
         .lock()
@@ -324,4 +575,61 @@ fn session_selection(workspace: &Workspace, session: &str) -> SessionSelection {
     let snapshot = workspace.snapshot();
     let host = &snapshot.hosts()[0];
     SessionSelection::new(host.id(), host.endpoint(), session)
+}
+
+fn active_presentation_id(workspace: &Workspace) -> u64 {
+    match workspace.snapshot().content() {
+        WorkspaceContent::Terminal {
+            presentation_id, ..
+        } => *presentation_id,
+        _ => panic!("terminal presentation should be active"),
+    }
+}
+
+fn start_workspace(server: &IsolatedServer) -> Workspace {
+    let config = WslConfig::configured(None, "/usr/bin/tmux", Some(server.tmpdir.clone()))
+        .expect("valid isolated config");
+    Workspace::start_wsl(config, TerminalAppearance::default())
+}
+
+fn wait_for_sessions(workspace: &Workspace, expected: &[&str]) {
+    wait_until_with_diagnostic(
+        || {
+            matches!(
+                workspace.snapshot().content(),
+                WorkspaceContent::Ready { sessions, .. }
+                    if expected.iter().all(|expected| {
+                        sessions.iter().any(|session| session.name() == *expected)
+                    })
+            )
+        },
+        || workspace_diagnostic(workspace),
+    );
+}
+
+fn wait_for_terminal(workspace: &Workspace, expected: &str) {
+    wait_until_with_diagnostic(
+        || {
+            matches!(
+                workspace.snapshot().content(),
+                WorkspaceContent::Terminal { session, .. } if session == expected
+            )
+        },
+        || workspace_diagnostic(workspace),
+    );
+}
+
+fn assert_session_attached(server: &IsolatedServer, name: &str, expected: u32) {
+    let output = server.run_tmux([
+        "list-sessions",
+        "-F",
+        "#{session_name}\t#{session_attached}",
+    ]);
+    let sessions = String::from_utf8(output.stdout).expect("UTF-8 attached-client count");
+    assert!(
+        sessions
+            .lines()
+            .any(|line| line == format!("{name}\t{expected}")),
+        "expected {name} to have {expected} attached client(s): {sessions:?}"
+    );
 }
