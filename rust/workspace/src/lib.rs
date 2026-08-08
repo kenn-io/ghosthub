@@ -598,6 +598,7 @@ impl<T> AttachmentState<T> {
         }
     }
 
+    #[cfg(test)]
     fn reserve(&mut self, request: T, term: AttachTerm) -> Option<u64> {
         self.reserve_with_fallback(request, term, None)
     }
@@ -1338,7 +1339,9 @@ impl Workspace {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .contains(&key);
-        let previous = self.retain_active_presentation()?;
+        let in_flight_fallback = self.supersede_inflight_attachment()?;
+        let visible_previous = self.retain_active_presentation()?;
+        let previous = in_flight_fallback.or(visible_previous);
         match self.activate_retained_presentation(&key) {
             Ok(true) => return Ok(()),
             Ok(false) => {}
@@ -1358,6 +1361,33 @@ impl Workspace {
             ));
         }
         self.start_attachment(request, previous)
+    }
+
+    fn supersede_inflight_attachment(&self) -> Result<Option<PresentationKey>, WorkspaceError> {
+        let mut attachment = self
+            .inner
+            .attachment
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let attaching = matches!(
+            *self
+                .inner
+                .state
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            WorkspaceContent::Attaching { .. }
+        );
+        if !attaching {
+            return Ok(None);
+        }
+        let active = attachment.take_active().ok_or_else(|| {
+            WorkspaceError::new("the in-flight terminal presentation is not available")
+        })?;
+        let fallback = active.fallback;
+        drop(attachment);
+        clear_pending_paste(&self.inner);
+        self.restore_inventory_state();
+        Ok(fallback)
     }
 
     fn retain_active_presentation(&self) -> Result<Option<PresentationKey>, WorkspaceError> {
@@ -2074,13 +2104,13 @@ fn activate_retained_presentation(
         .terminal_geometry
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let request = presentation.attachment.request.clone();
     let term = presentation.attachment.term;
     let mut attachment = inner
         .attachment
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let Some(generation) = attachment.reserve(request, term) else {
+    let Some(generation) = reserve_retained_attachment(&mut attachment, &presentation.attachment)
+    else {
         drop(attachment);
         reinsert_retained_presentation(inner, presentation);
         return Err(WorkspaceError::new(
@@ -2135,6 +2165,17 @@ fn activate_retained_presentation(
         },
     );
     Ok(true)
+}
+
+fn reserve_retained_attachment(
+    state: &mut AttachmentState<AttachRequest>,
+    retained: &ActiveAttachment<AttachRequest>,
+) -> Option<u64> {
+    state.reserve_with_fallback(
+        retained.request.clone(),
+        retained.term,
+        retained.fallback.clone(),
+    )
 }
 
 fn reinsert_retained_presentation(
@@ -2408,7 +2449,7 @@ fn run_retained_retry(inner: &Inner, retry: &RetainedRetry) {
         }
         Err(AttachFreshError::SessionChanged { error, snapshot }) => {
             let fallback = take_failed_retained_retry(inner, &retry.key);
-            publish_stale_attachment_failure(inner, &retry.request, snapshot, &error);
+            publish_retained_stale_failure(inner, &retry.request, snapshot, &error);
             restore_retry_fallback_if_idle(inner, fallback);
         }
     }
@@ -2498,6 +2539,18 @@ fn publish_stale_attachment_failure(
 ) {
     clear_pending_paste(inner);
     restore_presentation_inventory(inner);
+    publish_refresh(inner, request.inventory_generation, || {
+        set_local_notice(inner, error.to_string());
+        set_attach_inventory(inner, request, snapshot);
+    });
+}
+
+fn publish_retained_stale_failure(
+    inner: &Inner,
+    request: &AttachRequest,
+    snapshot: HostSnapshot,
+    error: &WorkspaceError,
+) {
     publish_refresh(inner, request.inventory_generation, || {
         set_local_notice(inner, error.to_string());
         set_attach_inventory(inner, request, snapshot);
@@ -3091,6 +3144,93 @@ mod tests {
     }
 
     #[test]
+    fn retained_stale_failure_preserves_the_visible_terminal_and_pending_input() {
+        let executable = WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
+            .expect("absolute WSL path");
+        let config = WslConfig::with_distro("Ubuntu").expect("valid config");
+        let workspace = Workspace::application(
+            TerminalAppearance::default(),
+            Some(WslHostSpec::available(config.clone(), executable.clone())),
+        );
+        let host = WslHost::new(
+            config,
+            Arc::new(StdCommandRunner) as SharedCommandRunner,
+            executable,
+        );
+        let original = HostSnapshot::test_fixture(
+            "Ubuntu",
+            "boot-id",
+            42,
+            vec![session::DiscoveredSession::new(
+                "hidden",
+                session::SessionIdentity::new(100, "$1", 200),
+                0,
+            )],
+        );
+        *workspace
+            .inner
+            .host
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Published::new(
+            HostContext {
+                host,
+                snapshot: original,
+            },
+            0,
+        ));
+        let request = capture_attach_request(
+            &workspace.inner,
+            &SessionSelection::new("wsl", "Ubuntu", "hidden"),
+        )
+        .expect("hidden attach request");
+        set_inner_state(
+            &workspace.inner,
+            WorkspaceContent::Terminal {
+                host_id: "wsl".to_owned(),
+                endpoint: "Ubuntu".to_owned(),
+                session: "visible".to_owned(),
+                presentation_id: 9,
+                surface: Arc::new(SurfaceStore::new(surface::SurfaceFrame::blank(
+                    1,
+                    GridSize::new(80, 24).expect("valid grid"),
+                ))),
+            },
+        );
+        *workspace.inner.pending_paste.lock().expect("pending paste") = Some(PendingPaste {
+            worker_generation: 7,
+            input: input::encode_input(
+                &KeyInput::paste("pending\ninput"),
+                input::TerminalModes::default(),
+            ),
+        });
+        let replacement = HostSnapshot::test_fixture("Ubuntu", "boot-id", 42, Vec::new());
+
+        publish_retained_stale_failure(
+            &workspace.inner,
+            &request,
+            replacement,
+            &WorkspaceError::new("hidden session changed"),
+        );
+
+        let snapshot = workspace.snapshot();
+        assert!(matches!(
+            snapshot.content(),
+            WorkspaceContent::Terminal { session, presentation_id, .. }
+                if session == "visible" && *presentation_id == 9
+        ));
+        assert!(
+            workspace
+                .inner
+                .pending_paste
+                .lock()
+                .expect("pending paste")
+                .is_some()
+        );
+        assert_eq!(snapshot.notice(), Some("hidden session changed"));
+        assert!(snapshot.hosts()[0].sessions().is_empty());
+    }
+
+    #[test]
     fn legacy_attachment_failure_remains_top_level() {
         let workspace = Workspace::preview(WorkspaceSnapshot::ready(
             Appearance::default(),
@@ -3196,6 +3336,26 @@ mod tests {
             retained.restarting[0].attachment.fallback.as_ref(),
             Some(&fallback)
         );
+
+        let mut restored_attachment = AttachmentState::new();
+        let restored_generation = reserve_retained_attachment(
+            &mut restored_attachment,
+            &retained.restarting[0].attachment,
+        )
+        .expect("reactivate retained attachment");
+        let mut restored_worker = WorkerState::new();
+        let worker_generation = restored_worker.publish(());
+        let fallback_after_reactivation =
+            restored_attachment.fallback_if_current(restored_generation);
+
+        assert!(claim_terminal_exit(
+            &mut restored_attachment,
+            &mut restored_worker,
+            restored_generation,
+            worker_generation,
+            false,
+        ));
+        assert_eq!(fallback_after_reactivation.as_ref(), Some(&fallback));
     }
 
     #[test]
@@ -3887,6 +4047,106 @@ mod tests {
                 .is_err(),
             "an equal name on a different endpoint is not the active selection"
         );
+    }
+
+    #[test]
+    fn a_different_selection_supersedes_an_inflight_attachment_and_carries_its_fallback() {
+        let executable = WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
+            .expect("absolute WSL path");
+        let config = WslConfig::with_distro("Ubuntu").expect("valid config");
+        let workspace = Workspace::application(
+            TerminalAppearance::default(),
+            Some(WslHostSpec::available(config.clone(), executable.clone())),
+        );
+        let host = WslHost::new(
+            config,
+            Arc::new(StdCommandRunner) as SharedCommandRunner,
+            executable,
+        );
+        let snapshot = HostSnapshot::test_fixture(
+            "Ubuntu",
+            "boot-id",
+            42,
+            vec![
+                session::DiscoveredSession::new(
+                    "opening",
+                    session::SessionIdentity::new(100, "$1", 200),
+                    0,
+                ),
+                session::DiscoveredSession::new(
+                    "selected",
+                    session::SessionIdentity::new(100, "$2", 201),
+                    0,
+                ),
+            ],
+        );
+        *workspace
+            .inner
+            .host
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Published::new(
+            HostContext {
+                host,
+                snapshot: snapshot.clone(),
+            },
+            0,
+        ));
+        set_inventory_state(&workspace.inner, ready_content(&snapshot));
+        let opening = capture_attach_request(
+            &workspace.inner,
+            &SessionSelection::new("wsl", "Ubuntu", "opening"),
+        )
+        .expect("opening request");
+        let selected = capture_attach_request(
+            &workspace.inner,
+            &SessionSelection::new("wsl", "Ubuntu", "selected"),
+        )
+        .expect("selected request");
+        let fallback = PresentationKey {
+            host_id: "wsl".to_owned(),
+            endpoint: "Ubuntu".to_owned(),
+            socket_directory: None,
+            session: "previous".to_owned(),
+            identity: session::SessionIdentity::new(100, "$3", 202),
+        };
+        workspace
+            .inner
+            .attachment
+            .lock()
+            .expect("attachment")
+            .reserve_with_fallback(opening, AttachTerm::Xterm256Color, Some(fallback.clone()))
+            .expect("reserve opening attachment");
+        set_inner_state(
+            &workspace.inner,
+            WorkspaceContent::Attaching {
+                host_id: "wsl".to_owned(),
+                endpoint: "Ubuntu".to_owned(),
+                session: "opening".to_owned(),
+            },
+        );
+
+        let carried_fallback = workspace
+            .supersede_inflight_attachment()
+            .expect("supersede opening attachment");
+        let selected_generation = workspace
+            .inner
+            .attachment
+            .lock()
+            .expect("attachment")
+            .reserve_with_fallback(selected, AttachTerm::Xterm256Color, carried_fallback)
+            .expect("reserve selected attachment");
+
+        let attachment = workspace.inner.attachment.lock().expect("attachment");
+        let active = attachment.active().expect("selected attachment active");
+        assert_eq!(active.request.name, "selected");
+        assert_eq!(
+            attachment.fallback_if_current(selected_generation).as_ref(),
+            Some(&fallback)
+        );
+        assert!(matches!(
+            workspace.snapshot().content(),
+            WorkspaceContent::Ready { .. } | WorkspaceContent::Shell
+        ));
     }
 
     #[test]
