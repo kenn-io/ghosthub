@@ -14,14 +14,13 @@ use model::PortStatus;
 use surface::{CellStyle, Damage, GridSize, Rgb, SurfaceFrame, SurfaceStore};
 use workspace::{
     HostConnectionState, HostItem, KeyEvent as InputKeyEvent, KeyInput,
-    Modifiers as InputModifiers, MouseAction, MouseButton, MouseInput, NamedKey, Workspace,
-    WorkspaceContent, WorkspaceEvent,
+    Modifiers as InputModifiers, MouseAction, MouseButton, MouseInput, NamedKey, SessionSelection,
+    Workspace, WorkspaceContent, WorkspaceEvent,
 };
 
 pub const WINDOW_TITLE: &str = "Ghosthub";
-const TERMINAL_HEADER_HEIGHT: f32 = 42.0;
-const TERMINAL_PADDING: f32 = 12.0;
-const CELL_LINE_GAP: f32 = 2.0;
+const APP_NAVIGATION_WIDTH: f32 = 280.0;
+const CELL_LINE_GAP: f32 = 4.0;
 const UI_INPUT_CAPACITY: usize = 512;
 const MOUSE_RELEASE_RESERVE: usize = 3;
 const MAX_WHEEL_EVENTS_PER_CALLBACK: usize = 64;
@@ -587,11 +586,52 @@ impl RootView {
         headline_text(&self.status)
     }
 
-    fn attach(&mut self, session: &str, window: &mut Window, cx: &mut Context<Self>) {
-        if let Err(error) = self.workspace.attach(session) {
+    fn attach(
+        &mut self,
+        selection: &SessionSelection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Err(error) = self.workspace.attach(selection) {
             self.diagnostic = Some(error.to_string());
         } else {
             self.diagnostic = None;
+            window.focus(&self.focus);
+        }
+        cx.notify();
+    }
+
+    fn select_session(
+        &mut self,
+        selection: &SessionSelection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let snapshot = self.workspace.snapshot();
+        if active_session_selection(snapshot.content()).as_ref() == Some(selection) {
+            if matches!(snapshot.content(), WorkspaceContent::Terminal { .. }) {
+                window.focus(&self.focus);
+            }
+            return;
+        }
+
+        let switching = matches!(
+            snapshot.content(),
+            WorkspaceContent::Attaching { .. } | WorkspaceContent::Terminal { .. }
+        );
+        let result = if switching {
+            self.workspace.switch_session(selection)
+        } else {
+            self.workspace.attach(selection)
+        };
+        if let Err(error) = result {
+            self.diagnostic = Some(error.to_string());
+        } else {
+            self.diagnostic = None;
+            self.observed_presentation_id = None;
+            self.clear_terminal_input();
+            self.paint_cache.clear();
+            self.resize_for_window(window);
             window.focus(&self.focus);
         }
         cx.notify();
@@ -890,9 +930,15 @@ impl RootView {
             return None;
         };
         let size = surface.load().size();
-        terminal_cell_at(
+        terminal_cell_at_with_offset(
             x,
             y,
+            if snapshot.hosts().is_empty() {
+                0.0
+            } else {
+                APP_NAVIGATION_WIDTH
+            },
+            0.0,
             self.terminal_metrics.cell_width,
             self.terminal_metrics.line_height,
             size,
@@ -1124,7 +1170,13 @@ impl RootView {
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     fn resize_for_window(&mut self, window: &Window) {
         let bounds = window.bounds();
-        let width = f32::from(bounds.size.width);
+        let snapshot = self.workspace.snapshot();
+        let width = f32::from(bounds.size.width)
+            - if snapshot.hosts().is_empty() {
+                0.0
+            } else {
+                APP_NAVIGATION_WIDTH
+            };
         let height = f32::from(bounds.size.height);
         let (columns, rows) = terminal_grid_size(
             width,
@@ -1132,8 +1184,8 @@ impl RootView {
             self.terminal_metrics.cell_width,
             self.terminal_metrics.line_height,
         );
-        let content_width = (width - TERMINAL_PADDING * 2.0).max(1.0);
-        let content_height = (height - TERMINAL_HEADER_HEIGHT - TERMINAL_PADDING * 2.0).max(1.0);
+        let content_width = width.max(1.0);
+        let content_height = height.max(1.0);
         let pixel_width = content_width.min(f32::from(u16::MAX)) as u16;
         let pixel_height = content_height.min(f32::from(u16::MAX)) as u16;
         let resize = TerminalResize {
@@ -1142,8 +1194,7 @@ impl RootView {
             pixel_width,
             pixel_height,
         };
-        if let Some(presentation_id) = terminal_presentation_id(self.workspace.snapshot().content())
-        {
+        if let Some(presentation_id) = terminal_presentation_id(snapshot.content()) {
             let _accepted = self.enqueue_input(presentation_id, PendingUiInput::Resize(resize));
         } else if let Err(error) = self.workspace.resize_with_pixels(
             resize.columns,
@@ -1179,8 +1230,6 @@ impl RootView {
 
     fn terminal_element(
         &mut self,
-        endpoint: &str,
-        session: &str,
         presentation_id: u64,
         surface: &Arc<SurfaceStore>,
         snapshot: &workspace::WorkspaceSnapshot,
@@ -1195,34 +1244,14 @@ impl RootView {
         self.observed_surface_identity = Some(identity);
         self.observed_surface_generation = frame.generation();
         let appearance = snapshot.appearance();
-        let mut header = div()
-            .h(px(42.0))
-            .flex()
-            .items_center()
-            .justify_between()
-            .px_4()
-            .bg(rgb(0x1a_1d24))
-            .text_color(rgb(0xc9_cd_d6))
-            .child(format!("{endpoint}  ·  {session}"));
-        header = header.child(
-            div()
-                .id("detach-terminal")
-                .px_3()
-                .py_1()
-                .rounded_md()
-                .cursor_pointer()
-                .bg(rgb(0x2a_2f_3a))
-                .child("Detach")
-                .on_click(cx.listener(|this, _, _, cx| this.detach(cx))),
-        );
-
         let terminal = self.terminal_surface_element(presentation_id, appearance, rows, cx);
 
         div()
             .size_full()
             .flex()
             .flex_col()
-            .child(header)
+            .overflow_hidden()
+            .bg(rgb(appearance.background()))
             .child(terminal)
     }
 
@@ -1240,12 +1269,12 @@ impl RootView {
             .flex_col()
             .flex_1()
             .overflow_hidden()
-            .p_3()
             .bg(rgb(appearance.background()))
             .text_color(rgb(appearance.foreground()))
             .font_family(appearance.font_family().to_owned())
             .text_size(px(f32::from(appearance.font_size())))
             .line_height(px(self.terminal_metrics.line_height))
+            .font_weight(FontWeight::NORMAL)
             .on_key_down(cx.listener(move |this, event, window, cx| {
                 this.on_key_down(presentation_id, event, window, cx);
             }))
@@ -1332,8 +1361,11 @@ impl RootView {
         snapshot: &workspace::WorkspaceSnapshot,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        if !snapshot.hosts().is_empty() {
+            return self.application_shell(snapshot, cx);
+        }
         match snapshot.content() {
-            WorkspaceContent::Shell => Self::shell_element(snapshot, cx),
+            WorkspaceContent::Shell => centered("No terminal hosts are available."),
             WorkspaceContent::Loading => centered("Starting WSL and discovering tmux sessions…"),
             WorkspaceContent::Error { message } => div()
                 .size_full()
@@ -1356,79 +1388,393 @@ impl RootView {
                         .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
                 )
                 .into_any_element(),
-            WorkspaceContent::Attaching { endpoint, session } => {
-                centered(format!("Attaching to {endpoint} · {session}…"))
-            }
+            WorkspaceContent::Attaching {
+                endpoint, session, ..
+            } => centered(format!("Attaching to {endpoint} · {session}…")),
             WorkspaceContent::Ready { endpoint, sessions } => {
                 Self::ready_element(endpoint, sessions, None, cx)
             }
             WorkspaceContent::Terminal {
-                endpoint,
-                session,
+                endpoint: _,
+                session: _,
                 presentation_id,
                 surface,
+                ..
             } => self
-                .terminal_element(endpoint, session, *presentation_id, surface, snapshot, cx)
+                .terminal_element(*presentation_id, surface, snapshot, cx)
                 .into_any_element(),
         }
     }
 
-    fn shell_element(
+    fn application_shell(
+        &mut self,
         snapshot: &workspace::WorkspaceSnapshot,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let hosts = snapshot.hosts();
-        let sidebar = div()
-            .w(px(230.0))
+        let selected = snapshot
+            .selected_host()
+            .and_then(|id| hosts.iter().find(|host| host.id() == id));
+        let navigator = Self::workspace_tree(snapshot, cx);
+        let main = match snapshot.content() {
+            WorkspaceContent::Terminal {
+                endpoint: _,
+                session: _,
+                presentation_id,
+                surface,
+                ..
+            } => self
+                .terminal_element(*presentation_id, surface, snapshot, cx)
+                .into_any_element(),
+            WorkspaceContent::Attaching {
+                endpoint, session, ..
+            } => centered(format!("Attaching to {endpoint} · {session}…")),
+            WorkspaceContent::Loading => centered("Starting WSL and discovering tmux sessions…"),
+            WorkspaceContent::Error { message } => centered(message.clone()),
+            WorkspaceContent::Shell | WorkspaceContent::Ready { .. } => selected.map_or_else(
+                || centered("No terminal hosts are available."),
+                |host| Self::host_landing_element(host, cx),
+            ),
+        };
+        div()
+            .size_full()
+            .flex()
+            .child(navigator)
+            .child(div().flex_1().h_full().child(main))
+            .into_any_element()
+    }
+
+    fn workspace_tree(
+        snapshot: &workspace::WorkspaceSnapshot,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let mut body = div()
+            .id("workspace-tree-scroll")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .overflow_x_hidden();
+        for (host_index, host) in snapshot.hosts().iter().enumerate() {
+            body = body.child(Self::host_tree(
+                host_index,
+                host,
+                snapshot.selected_host() == Some(host.id()),
+                snapshot.content(),
+                cx,
+            ));
+        }
+
+        div()
+            .w(px(APP_NAVIGATION_WIDTH))
             .h_full()
             .flex_none()
             .flex()
             .flex_col()
-            .gap_2()
-            .p_4()
-            .bg(rgb(0x12_14_19))
-            .child(div().text_sm().text_color(rgb(0x8f_96_a3)).child("HOSTS"))
-            .children(hosts.iter().enumerate().map(|(index, host)| {
-                let status_color = match host.connection() {
-                    HostConnectionState::Ready => 0x62_c0_7a,
-                    HostConnectionState::Connecting => 0xd3_a4_4a,
-                    HostConnectionState::Disconnected => 0x8f_96_a3,
-                    HostConnectionState::Unavailable => 0xd0_65_65,
-                };
+            .bg(rgb(0x0f_1116))
+            .border_r_1()
+            .border_color(rgb(0x25_2932))
+            .child(
                 div()
-                    .id(("host", index))
-                    .p_3()
-                    .rounded_md()
-                    .bg(rgb(0x1a_1d24))
+                    .h(px(44.0))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .px_3()
+                    .border_b_1()
+                    .border_color(rgb(0x1d_2028))
+                    .text_xs()
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(rgb(0xa5_ac_b8))
+                    .child("WORKSPACES"),
+            )
+            .child(body)
+            .into_any_element()
+    }
+
+    fn host_tree(
+        host_index: usize,
+        host: &HostItem,
+        is_selected: bool,
+        content: &WorkspaceContent,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let mut host_tree =
+            div()
+                .flex()
+                .flex_col()
+                .child(Self::host_header(host_index, host, is_selected, cx));
+
+        match host.connection() {
+            HostConnectionState::Connecting => {
+                host_tree = host_tree.child(Self::host_status_row(
+                    host_index,
+                    "Refreshing sessions…".to_owned(),
+                    "Cancel",
+                    true,
+                    cx,
+                ));
+            }
+            HostConnectionState::Unavailable => {
+                let message = host.diagnostic().map_or_else(
+                    || "Host unavailable".to_owned(),
+                    |diagnostic| diagnostic.message().to_owned(),
+                );
+                host_tree = host_tree.child(Self::host_status_row(
+                    host_index, message, "Retry", false, cx,
+                ));
+            }
+            HostConnectionState::Disconnected => {
+                host_tree = host_tree.child(Self::host_status_row(
+                    host_index,
+                    "Host disconnected".to_owned(),
+                    "Connect",
+                    false,
+                    cx,
+                ));
+            }
+            HostConnectionState::Ready => {}
+        }
+
+        let sessions = tree_sessions(host, content);
+        if host.connection() == HostConnectionState::Ready || !sessions.is_empty() {
+            host_tree = host_tree.child(Self::session_tree(host_index, &sessions, cx));
+        }
+        host_tree.into_any_element()
+    }
+
+    fn host_header(
+        host_index: usize,
+        host: &HostItem,
+        is_selected: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let status_color = match host.connection() {
+            HostConnectionState::Ready => 0x62_c0_7a,
+            HostConnectionState::Connecting => 0xd3_a4_4a,
+            HostConnectionState::Disconnected => 0x8f_96_a3,
+            HostConnectionState::Unavailable => 0xd0_65_65,
+        };
+        let mut host_header = div()
+            .id(("host", host_index))
+            .h(px(46.0))
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_3()
+            .bg(rgb(if is_selected { 0x16_1920 } else { 0x0f_1116 }))
+            .child(div().text_color(rgb(0x6f_7682)).child("▾"))
+            .child(div().text_color(rgb(status_color)).child("●"))
+            .child(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .flex()
+                    .flex_col()
                     .child(
                         div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(div().text_color(rgb(status_color)).child("●"))
+                            .truncate()
+                            .text_sm()
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(rgb(0xd2_d7_df))
                             .child(host.name().to_owned()),
                     )
                     .child(
                         div()
-                            .text_sm()
-                            .text_color(rgb(0x8f_96_a3))
+                            .truncate()
+                            .text_xs()
+                            .text_color(rgb(0x71_7885))
                             .child(host.endpoint().to_owned()),
-                    )
-            }));
+                    ),
+            );
+        if host.connection() == HostConnectionState::Ready {
+            host_header = host_header.child(
+                div()
+                    .id(("refresh-host", host_index))
+                    .flex_none()
+                    .px_2()
+                    .py_1()
+                    .rounded_sm()
+                    .cursor_pointer()
+                    .text_xs()
+                    .text_color(rgb(0x8f_96_a3))
+                    .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xd2_d7_df)))
+                    .child("Refresh")
+                    .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
+            );
+        }
+        host_header.into_any_element()
+    }
 
-        let selected = snapshot
-            .selected_host()
-            .and_then(|id| hosts.iter().find(|host| host.id() == id));
-        let main = selected.map_or_else(
-            || centered("No terminal hosts are available."),
-            |host| Self::host_element(host, cx),
+    fn session_tree(
+        host_index: usize,
+        sessions: &[TreeSession],
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let mut tree = div().flex().flex_col().child(
+            div()
+                .h(px(28.0))
+                .flex()
+                .items_center()
+                .pl(px(35.0))
+                .text_xs()
+                .font_weight(FontWeight::BOLD)
+                .text_color(rgb(0x73_7a87))
+                .child("TMUX SESSIONS"),
         );
+        if sessions.is_empty() {
+            tree = tree.child(
+                div()
+                    .px_3()
+                    .pl(px(51.0))
+                    .py_2()
+                    .text_xs()
+                    .text_color(rgb(0x73_7a87))
+                    .child("No sessions"),
+            );
+        }
+        for (session_index, session) in sessions.iter().enumerate() {
+            tree = tree.child(Self::tree_session_row(
+                host_index,
+                session_index,
+                &session.selection,
+                session.attached_clients,
+                session.active,
+                cx,
+            ));
+        }
+        tree.into_any_element()
+    }
+
+    fn host_status_row(
+        host_index: usize,
+        message: String,
+        action: &'static str,
+        cancel: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let action_id = if cancel {
+            "cancel-host-refresh"
+        } else {
+            "retry-host-refresh"
+        };
         div()
-            .size_full()
-            .flex()
-            .child(sidebar)
-            .child(div().flex_1().h_full().child(main))
+            .mx_2()
+            .mb_1()
+            .px_2()
+            .py_2()
+            .rounded_sm()
+            .bg(rgb(0x16_1920))
+            .child(div().text_xs().text_color(rgb(0x9b_a2ae)).child(message))
+            .child(
+                div()
+                    .id((action_id, host_index))
+                    .mt_1()
+                    .cursor_pointer()
+                    .text_xs()
+                    .text_color(rgb(0x79_aee3))
+                    .hover(|style| style.text_color(rgb(0xb6_d8_f8)))
+                    .child(action)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if cancel {
+                            this.cancel_refresh(cx);
+                        } else {
+                            this.refresh(cx);
+                        }
+                    })),
+            )
             .into_any_element()
+    }
+
+    fn tree_session_row(
+        host_index: usize,
+        index: usize,
+        selection: &SessionSelection,
+        attached_clients: Option<u32>,
+        is_active: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let selection = selection.clone();
+        let name = selection.session().to_owned();
+        let detail = if is_active {
+            "open".to_owned()
+        } else if attached_clients == Some(0) {
+            "detached".to_owned()
+        } else if attached_clients == Some(1) {
+            "1 client".to_owned()
+        } else {
+            format!("{} clients", attached_clients.unwrap_or_default())
+        };
+        let mut row = div()
+            .id((
+                gpui::ElementId::named_usize("tree-session-host", host_index),
+                index.to_string(),
+            ))
+            .mx_2()
+            .h(px(40.0))
+            .flex()
+            .items_center()
+            .gap_2()
+            .pl(px(27.0))
+            .pr_2()
+            .rounded_sm()
+            .cursor_pointer()
+            .bg(rgb(if is_active { 0x13_3d6a } else { 0x0f_1116 }))
+            .hover(|style| style.bg(rgb(if is_active { 0x17_477a } else { 0x1b_1f27 })))
+            .child(div().flex_none().text_color(rgb(0x7f_8794)).child("›_"))
+            .child(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .truncate()
+                            .text_sm()
+                            .text_color(rgb(if is_active { 0xe5_ed_f7 } else { 0xc4_c9_d2 }))
+                            .child(name.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(if is_active { 0xa9_c9_ea } else { 0x6f_7682 }))
+                            .child(detail),
+                    ),
+            );
+        if is_active {
+            row = row.child(
+                div()
+                    .id("detach-terminal")
+                    .flex_none()
+                    .size(px(24.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_sm()
+                    .text_color(rgb(0xa9_c9_ea))
+                    .hover(|style| style.bg(rgb(0x25_527f)).text_color(rgb(0xff_ff_ff)))
+                    .child("×")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.detach(cx);
+                        cx.stop_propagation();
+                    })),
+            );
+        }
+        row.on_click(cx.listener(move |this, _, window, cx| {
+            this.select_session(&selection, window, cx);
+        }))
+        .into_any_element()
+    }
+
+    fn host_landing_element(host: &HostItem, cx: &mut Context<Self>) -> gpui::AnyElement {
+        if host.connection() == HostConnectionState::Ready {
+            return centered(if host.sessions().is_empty() {
+                "Start a tmux session in WSL, then refresh."
+            } else {
+                "Choose a session to open its terminal."
+            });
+        }
+        Self::host_element(host, cx)
     }
 
     fn host_element(host: &HostItem, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -1545,6 +1891,8 @@ impl RootView {
         }
         for (index, session) in sessions.iter().enumerate() {
             let name = session.name().to_owned();
+            let selection =
+                SessionSelection::new(host.map_or("wsl", HostItem::id), endpoint, session.name());
             let detail = if session.attached_clients() == 0 {
                 "detached".to_owned()
             } else {
@@ -1564,7 +1912,7 @@ impl RootView {
                     .child(name.clone())
                     .child(div().text_sm().text_color(rgb(0x8f_96_a3)).child(detail))
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.attach(&name, window, cx);
+                        this.attach(&selection, window, cx);
                     })),
             );
         }
@@ -1596,6 +1944,94 @@ fn terminal_presentation_id(content: &WorkspaceContent) -> Option<u64> {
             presentation_id, ..
         } => Some(*presentation_id),
         _ => None,
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct TreeSession {
+    selection: SessionSelection,
+    attached_clients: Option<u32>,
+    active: bool,
+}
+
+fn active_session_selection(content: &WorkspaceContent) -> Option<SessionSelection> {
+    match content {
+        WorkspaceContent::Attaching {
+            host_id,
+            endpoint,
+            session,
+        }
+        | WorkspaceContent::Terminal {
+            host_id,
+            endpoint,
+            session,
+            ..
+        } => Some(SessionSelection::new(host_id, endpoint, session)),
+        WorkspaceContent::Shell
+        | WorkspaceContent::Loading
+        | WorkspaceContent::Ready { .. }
+        | WorkspaceContent::Error { .. } => None,
+    }
+}
+
+fn tree_sessions(host: &HostItem, content: &WorkspaceContent) -> Vec<TreeSession> {
+    let active = active_session_selection(content);
+    let active_for_host = active
+        .as_ref()
+        .filter(|active| active.host_id() == host.id());
+    if host.connection() != HostConnectionState::Ready {
+        return active_for_host.map_or_else(Vec::new, |active| {
+            let attached_clients = host
+                .sessions()
+                .iter()
+                .find(|session| {
+                    host.endpoint() == active.endpoint() && session.name() == active.session()
+                })
+                .map(workspace::SessionItem::attached_clients);
+            vec![TreeSession {
+                selection: active.clone(),
+                attached_clients,
+                active: true,
+            }]
+        });
+    }
+
+    let mut sessions = host
+        .sessions()
+        .iter()
+        .map(|session| {
+            let selection = SessionSelection::new(host.id(), host.endpoint(), session.name());
+            TreeSession {
+                active: active.as_ref() == Some(&selection),
+                selection,
+                attached_clients: Some(session.attached_clients()),
+            }
+        })
+        .collect::<Vec<_>>();
+    if let Some(active) = active_for_host
+        && !sessions.iter().any(|session| session.active)
+    {
+        sessions.push(TreeSession {
+            selection: active.clone(),
+            attached_clients: None,
+            active: true,
+        });
+    }
+    sessions
+}
+
+fn workspace_window_title(content: &WorkspaceContent) -> String {
+    match content {
+        WorkspaceContent::Attaching {
+            endpoint, session, ..
+        }
+        | WorkspaceContent::Terminal {
+            endpoint, session, ..
+        } => format!("{session} — {endpoint} — {WINDOW_TITLE}"),
+        WorkspaceContent::Ready { endpoint, .. } => format!("{endpoint} — {WINDOW_TITLE}"),
+        WorkspaceContent::Shell | WorkspaceContent::Loading | WorkspaceContent::Error { .. } => {
+            WINDOW_TITLE.to_owned()
+        }
     }
 }
 
@@ -1669,10 +2105,11 @@ impl Focusable for RootView {
 }
 
 impl Render for RootView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _scope_changed = self.sync_terminal_scope();
         let _handled = self.handle_events(cx);
         let snapshot = self.workspace.snapshot();
+        window.set_window_title(&workspace_window_title(snapshot.content()));
         self.observed_revision = snapshot.revision();
         if !matches!(snapshot.content(), WorkspaceContent::Terminal { .. }) {
             self.observed_surface_identity = None;
@@ -1892,8 +2329,20 @@ pub fn terminal_cell_at(
     line_height: f32,
     size: surface::GridSize,
 ) -> Option<(usize, usize)> {
-    let content_x = x - TERMINAL_PADDING;
-    let content_y = y - TERMINAL_HEADER_HEIGHT - TERMINAL_PADDING;
+    terminal_cell_at_with_offset(x, y, 0.0, 0.0, cell_width, line_height, size)
+}
+
+fn terminal_cell_at_with_offset(
+    x: f32,
+    y: f32,
+    x_offset: f32,
+    y_offset: f32,
+    cell_width: f32,
+    line_height: f32,
+    size: surface::GridSize,
+) -> Option<(usize, usize)> {
+    let content_x = x - x_offset;
+    let content_y = y - y_offset;
     if content_x < 0.0 || content_y < 0.0 {
         return None;
     }
@@ -1912,8 +2361,8 @@ pub fn terminal_grid_size(
     cell_width: f32,
     line_height: f32,
 ) -> (usize, usize) {
-    let content_width = (width - TERMINAL_PADDING * 2.0).max(1.0);
-    let content_height = (height - TERMINAL_HEADER_HEIGHT - TERMINAL_PADDING * 2.0).max(1.0);
+    let content_width = width.max(1.0);
+    let content_height = height.max(1.0);
     (
         (content_width / cell_width).floor().max(1.0) as usize,
         (content_height / line_height).floor().max(1.0) as usize,
@@ -1932,11 +2381,11 @@ fn measure_terminal_metrics(
             |_| f32::from(text_system.bounding_box(font_id, font_size).size.width),
             |advance| f32::from(advance.width),
         ));
-    let line_height = (f32::from(text_system.ascent(font_id, font_size))
-        + f32::from(text_system.descent(font_id, font_size))
-        + CELL_LINE_GAP)
-        .ceil()
-        .max(1.0);
+    let line_height = terminal_line_height(
+        f32::from(font_size),
+        f32::from(text_system.ascent(font_id, font_size)),
+        f32::from(text_system.descent(font_id, font_size)),
+    );
     TerminalMetrics {
         cell_width,
         line_height,
@@ -1945,6 +2394,13 @@ fn measure_terminal_metrics(
 
 fn normalize_cell_width(measured: f32) -> f32 {
     measured.max(1.0)
+}
+
+fn terminal_line_height(font_size: f32, ascent: f32, descent: f32) -> f32 {
+    (ascent + descent + CELL_LINE_GAP)
+        .max(font_size * 1.3)
+        .ceil()
+        .max(1.0)
 }
 
 #[must_use]
@@ -2004,16 +2460,21 @@ mod tests {
     use std::collections::VecDeque;
 
     use super::{
-        INPUT_BUFFER_FULL_DIAGNOSTIC, INPUT_BUFFERED_DIAGNOSTIC, InputRefusal, PendingUiInput,
-        QueuedUiInput, TerminalKeyboard, TerminalPointer, TerminalResize, UI_INPUT_BYTE_CAPACITY,
-        UI_INPUT_CAPACITY, WheelBatch, clear_terminal_input_state, clears_after_input_delivery,
+        APP_NAVIGATION_WIDTH, INPUT_BUFFER_FULL_DIAGNOSTIC, INPUT_BUFFERED_DIAGNOSTIC,
+        InputRefusal, PendingUiInput, QueuedUiInput, TerminalKeyboard, TerminalPointer,
+        TerminalResize, UI_INPUT_BYTE_CAPACITY, UI_INPUT_CAPACITY, WheelBatch,
+        active_session_selection, clear_terminal_input_state, clears_after_input_delivery,
         clears_when_input_queue_is_empty, coalesce_last_resize, coalesce_last_wheel,
         input_queue_has_capacity, named_key, normalize_cell_width,
-        queued_input_matches_presentation, terminal_key_input, terminal_wheel_steps,
-        transitioned_presentation,
+        queued_input_matches_presentation, terminal_cell_at_with_offset, terminal_key_input,
+        terminal_line_height, terminal_wheel_steps, transitioned_presentation, tree_sessions,
+        workspace_window_title,
     };
+    use std::sync::Arc;
+    use surface::{GridSize, SurfaceFrame, SurfaceStore};
     use workspace::{
-        KeyEvent, KeyInput, Modifiers, MouseAction, MouseButton, MouseInput, NamedKey,
+        HostConnectionState, HostItem, KeyEvent, KeyInput, Modifiers, MouseAction, MouseButton,
+        MouseInput, NamedKey, SessionItem, SessionSelection, WorkspaceContent,
     };
 
     #[test]
@@ -2051,6 +2512,145 @@ mod tests {
         assert_eq!(named_key("numpad7"), Some(NamedKey::KeypadDigit(7)));
         assert_eq!(named_key("kpenter"), Some(NamedKey::KeypadEnter));
         assert_eq!(named_key("numpadadd"), Some(NamedKey::KeypadAdd));
+    }
+
+    #[test]
+    fn terminal_and_attaching_states_expose_the_active_selection() {
+        let size = GridSize::new(80, 24).expect("valid grid");
+        let terminal = WorkspaceContent::Terminal {
+            host_id: "wsl".to_owned(),
+            endpoint: "Ubuntu".to_owned(),
+            session: "work".to_owned(),
+            presentation_id: 1,
+            surface: Arc::new(SurfaceStore::new(SurfaceFrame::blank(1, size))),
+        };
+        let attaching = WorkspaceContent::Attaching {
+            host_id: "wsl".to_owned(),
+            endpoint: "Ubuntu".to_owned(),
+            session: "other".to_owned(),
+        };
+
+        assert_eq!(
+            active_session_selection(&terminal),
+            Some(SessionSelection::new("wsl", "Ubuntu", "work"))
+        );
+        assert_eq!(
+            active_session_selection(&attaching),
+            Some(SessionSelection::new("wsl", "Ubuntu", "other"))
+        );
+        assert_eq!(active_session_selection(&WorkspaceContent::Shell), None);
+    }
+
+    #[test]
+    fn active_terminal_context_moves_into_the_native_window_title() {
+        let size = GridSize::new(80, 24).expect("valid grid");
+        let terminal = WorkspaceContent::Terminal {
+            host_id: "wsl".to_owned(),
+            endpoint: "Ubuntu".to_owned(),
+            session: "demo".to_owned(),
+            presentation_id: 1,
+            surface: Arc::new(SurfaceStore::new(SurfaceFrame::blank(1, size))),
+        };
+        let attaching = WorkspaceContent::Attaching {
+            host_id: "wsl".to_owned(),
+            endpoint: "Ubuntu".to_owned(),
+            session: "demo".to_owned(),
+        };
+
+        assert_eq!(
+            workspace_window_title(&terminal),
+            "demo — Ubuntu — Ghosthub"
+        );
+        assert_eq!(
+            workspace_window_title(&attaching),
+            "demo — Ubuntu — Ghosthub"
+        );
+        assert_eq!(workspace_window_title(&WorkspaceContent::Shell), "Ghosthub");
+    }
+
+    #[test]
+    fn active_session_stays_in_the_tree_while_its_host_refreshes_or_fails() {
+        let size = GridSize::new(80, 24).expect("valid grid");
+        let terminal = WorkspaceContent::Terminal {
+            host_id: "wsl".to_owned(),
+            endpoint: "Ubuntu".to_owned(),
+            session: "demo".to_owned(),
+            presentation_id: 1,
+            surface: Arc::new(SurfaceStore::new(SurfaceFrame::blank(1, size))),
+        };
+        for state in [
+            HostConnectionState::Connecting,
+            HostConnectionState::Unavailable,
+        ] {
+            let host = HostItem::wsl(
+                "Ubuntu",
+                None,
+                state,
+                vec![SessionItem::new("other", 0)],
+                None,
+            );
+
+            let rows = tree_sessions(&host, &terminal);
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].selection.session(), "demo");
+            assert!(rows[0].active);
+        }
+    }
+
+    #[test]
+    fn refreshed_endpoint_does_not_alias_an_active_session_with_the_same_name() {
+        let size = GridSize::new(80, 24).expect("valid grid");
+        let terminal = WorkspaceContent::Terminal {
+            host_id: "wsl".to_owned(),
+            endpoint: "Ubuntu".to_owned(),
+            session: "demo".to_owned(),
+            presentation_id: 1,
+            surface: Arc::new(SurfaceStore::new(SurfaceFrame::blank(1, size))),
+        };
+        let host = HostItem::wsl(
+            "Debian",
+            None,
+            HostConnectionState::Ready,
+            vec![SessionItem::new("demo", 0)],
+            None,
+        );
+
+        let rows = tree_sessions(&host, &terminal);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].selection.endpoint(), "Debian");
+        assert!(!rows[0].active);
+        assert_eq!(rows[1].selection.endpoint(), "Ubuntu");
+        assert!(rows[1].active);
+    }
+
+    #[test]
+    fn terminal_hit_testing_accounts_for_persistent_navigation() {
+        let size = GridSize::new(80, 24).expect("valid grid");
+
+        assert_eq!(
+            terminal_cell_at_with_offset(
+                APP_NAVIGATION_WIDTH + 12.0,
+                8.0,
+                APP_NAVIGATION_WIDTH,
+                0.0,
+                8.0,
+                16.0,
+                size
+            ),
+            Some((1, 0))
+        );
+        assert_eq!(
+            terminal_cell_at_with_offset(
+                APP_NAVIGATION_WIDTH - 1.0,
+                8.0,
+                APP_NAVIGATION_WIDTH,
+                0.0,
+                8.0,
+                16.0,
+                size
+            ),
+            None
+        );
     }
 
     #[test]
@@ -2368,6 +2968,12 @@ mod tests {
     fn measured_fractional_cell_width_is_not_rounded() {
         assert!((normalize_cell_width(8.25) - 8.25).abs() < f32::EPSILON);
         assert!((normalize_cell_width(0.5) - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn terminal_line_height_keeps_readable_leading() {
+        assert!((terminal_line_height(14.0, 10.0, 3.0) - 19.0).abs() < f32::EPSILON);
+        assert!((terminal_line_height(14.0, 12.0, 4.0) - 20.0).abs() < f32::EPSILON);
     }
 
     #[test]

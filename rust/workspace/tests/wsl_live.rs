@@ -8,7 +8,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use config::TerminalAppearance;
 use host::WslConfig;
-use workspace::{KeyInput, Modifiers, NamedKey, Workspace, WorkspaceContent, WorkspaceEvent};
+use workspace::{
+    KeyInput, Modifiers, NamedKey, SessionSelection, Workspace, WorkspaceContent, WorkspaceEvent,
+};
 
 struct IsolatedServer {
     tmpdir: String,
@@ -134,9 +136,10 @@ fn discovers_attaches_renders_and_detaches_through_workspace() {
         },
         || workspace_diagnostic(&workspace),
     );
-    workspace.attach("workspace-live").expect("attach session");
+    let selection = session_selection(&workspace, "workspace-live");
+    workspace.attach(&selection).expect("attach session");
     assert!(
-        workspace.attach("workspace-live").is_err(),
+        workspace.attach(&selection).is_err(),
         "a second presentation must lose the single-window reservation"
     );
     wait_until(|| {
@@ -198,7 +201,7 @@ fn refuses_to_attach_when_the_discovered_session_was_replaced() {
     server.run_tmux(["new-session", "-d", "-s", "workspace-live"]);
 
     workspace
-        .attach("workspace-live")
+        .attach(&session_selection(&workspace, "workspace-live"))
         .expect("begin guarded attach");
 
     wait_until(|| {
@@ -241,7 +244,7 @@ fn detach_restores_the_inventory_revalidated_during_attachment() {
     server.run_tmux(["new-session", "-d", "-s", "appeared-before-attach"]);
 
     workspace
-        .attach("workspace-live")
+        .attach(&session_selection(&workspace, "workspace-live"))
         .expect("attach session after inventory changed");
     wait_until(|| {
         matches!(
@@ -305,7 +308,9 @@ fn workspace_diagnostic(workspace: &Workspace) -> String {
         WorkspaceContent::Ready { endpoint, sessions } => {
             format!("ready in {endpoint} with {} sessions", sessions.len())
         }
-        WorkspaceContent::Attaching { endpoint, session } => {
+        WorkspaceContent::Attaching {
+            endpoint, session, ..
+        } => {
             format!("attaching {session} in {endpoint}")
         }
         WorkspaceContent::Terminal {
@@ -313,4 +318,10 @@ fn workspace_diagnostic(workspace: &Workspace) -> String {
         } => format!("attached to {session} in {endpoint}"),
         WorkspaceContent::Error { message } => format!("error: {message}"),
     }
+}
+
+fn session_selection(workspace: &Workspace, session: &str) -> SessionSelection {
+    let snapshot = workspace.snapshot();
+    let host = &snapshot.hosts()[0];
+    SessionSelection::new(host.id(), host.endpoint(), session)
 }
