@@ -13,6 +13,12 @@ import Testing
 @Suite("Workspace Herdr presentation", .serialized)
 @MainActor
 struct WorkspaceHerdrPresentationTests {
+    enum DelayedHerdrIntent: Sendable {
+        case open
+        case create
+        case restart
+    }
+
     enum SupersedingIntent: Sendable {
         case anotherHerdrSession
         case navigationAway
@@ -247,6 +253,79 @@ struct WorkspaceHerdrPresentationTests {
             intent == .anotherHerdrSession ? replacement : nil
         ))
         await model.shutdown()
+    }
+
+    @Test(
+        "scene shutdown fences delayed Herdr intents",
+        arguments: [
+            DelayedHerdrIntent.open,
+            .create,
+            .restart,
+        ]
+    )
+    func shutdownFencesDelayedHerdrIntent(
+        intent: DelayedHerdrIntent
+    ) async throws {
+        var environment = try environment()
+        environment.snapshot.hosts[0].herdrAvailable = true
+        let name: String
+        let result: HerdrDiscoveryResult
+        switch intent {
+        case .open:
+            name = "api"
+            result = .available([
+                HerdrSessionSummary(
+                    name: name,
+                    isDefault: true,
+                    state: .running
+                ),
+            ])
+        case .create:
+            name = "late"
+            result = .available([])
+        case .restart:
+            name = "sleeping"
+            let stopped = HerdrSessionSummary(
+                name: name,
+                isDefault: false,
+                state: .stopped
+            )
+            environment.snapshot.hosts[0].herdrSessions.append(stopped)
+            result = .available([stopped])
+        }
+        let gate = BlockingGate()
+        let coordinator = HerdrSessionLifecycleCoordinator()
+        let model = try makeHerdrModel(
+            environment,
+            store: RecordingNativeSessionSurfaceStore(),
+            discovery: { _ in
+                gate.block()
+                return result
+            },
+            coordinator: coordinator
+        )
+        let selection = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID,
+            name: name
+        )
+        let operation = Task {
+            switch intent {
+            case .open:
+                try await model.openBorrowedHerdrSession(selection)
+            case .create:
+                try await model.createHerdrSession(selection)
+            case .restart:
+                try await model.restartHerdrSession(selection)
+            }
+        }
+        await gate.waitUntilBlocked()
+
+        await model.shutdown()
+        gate.open()
+        _ = try? await operation.value
+
+        #expect(model.activeBorrowedHerdrSelection == nil)
+        #expect(coordinator.pendingKeys.isEmpty)
     }
 
     @Test("create revalidates absence after the displayed snapshot")

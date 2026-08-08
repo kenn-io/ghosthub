@@ -532,6 +532,8 @@ final class WorkspaceSceneModel: ObservableObject {
                 [TmuxPresentationKey: PendingRemovalPresentation]
         ] = [:]
     private var userNavigationRevision: UInt64 = 0
+    private var isShutDown = false
+    private var sceneActivityGeneration: UInt64 = 0
     var suppressesSelectedWorktreeSessionOpen: Bool {
         suppressesAutomaticWorktreeSessionOpen
             || selection.selectedWorktreeID.map {
@@ -1679,6 +1681,10 @@ final class WorkspaceSceneModel: ObservableObject {
     /// tmux server sessions they attach to. Called by `WorkspaceWindow` before
     /// the scene model leaves the app-level window registry.
     func shutdown() async {
+        guard !isShutDown else { return }
+        isShutDown = true
+        sceneActivityGeneration &+= 1
+        userNavigationRevision &+= 1
         for presentation in retainedTmuxPresentations.values {
             cancelTmuxReconnect(presentation)
         }
@@ -2726,6 +2732,7 @@ final class WorkspaceSceneModel: ObservableObject {
     private func refreshHerdrInventory(
         hostID: UUID
     ) {
+        guard !isShutDown else { return }
         objectWillChange.send()
         invalidateHerdrProbe(for: hostID)
         scheduleHerdrSessionDiscovery()
@@ -3131,7 +3138,7 @@ final class WorkspaceSceneModel: ObservableObject {
     }
 
     func startHerdrSessionDiscovery() {
-        guard !herdrDiscoveryEnabled else { return }
+        guard !isShutDown, !herdrDiscoveryEnabled else { return }
         herdrDiscoveryEnabled = true
         let generation = herdrDiscoveryGeneration
         reconcileInventoryHosts()
@@ -3141,6 +3148,7 @@ final class WorkspaceSceneModel: ObservableObject {
     }
 
     private func refreshHerdrSessionDiscovery() {
+        guard !isShutDown else { return }
         herdrFreshHostIDs.removeAll()
         for host in inventoryHosts.values where Self.supportsHerdr(host) {
             herdrSessionProbeBroker.invalidateSessions(on: host)
@@ -3149,7 +3157,7 @@ final class WorkspaceSceneModel: ObservableObject {
     }
 
     private func scheduleHerdrSessionDiscovery() {
-        guard herdrDiscoveryEnabled else { return }
+        guard !isShutDown, herdrDiscoveryEnabled else { return }
         let targets = inventoryHosts.filter {
             Self.supportsHerdr($0.value)
         }
@@ -3201,14 +3209,15 @@ final class WorkspaceSceneModel: ObservableObject {
                     self.applyHerdrDiscoveryResult(result, hostID: hostID)
                 }
             }
-            guard let self, !Task.isCancelled,
+            guard let self, !Task.isCancelled, !isShutDown,
                   generation == herdrDiscoveryGeneration else { return }
             isHerdrDiscoveryLoading = false
             inventoryRefreshProgress.herdrCompleted = true
             updateWorkspaceInventoryState()
             if needsFreshDiscovery {
                 Task { @MainActor [weak self] in
-                    self?.scheduleHerdrSessionDiscovery()
+                    guard let self, !isShutDown else { return }
+                    scheduleHerdrSessionDiscovery()
                 }
             }
         }
@@ -4459,13 +4468,27 @@ final class WorkspaceSceneModel: ObservableObject {
     }
 
     func prepareActiveBorrowedHerdrSurface() {
+        guard !isShutDown else { return }
         guard let handle = activeBorrowedHerdrHandle else { return }
         _ = nativeHerdrSessionCoordinator.surface(handle: handle)
+    }
+
+    private func captureSceneActivity() throws -> UInt64 {
+        guard !isShutDown else { throw CancellationError() }
+        return sceneActivityGeneration
+    }
+
+    private func requireActiveScene(_ generation: UInt64) throws {
+        guard !Task.isCancelled,
+              !isShutDown,
+              sceneActivityGeneration == generation
+        else { throw CancellationError() }
     }
 
     func openBorrowedHerdrSession(
         _ selection: WorkspaceHerdrSessionSelection
     ) async throws {
+        let activityGeneration = try captureSceneActivity()
         let navigationRevision = userNavigationRevision
         guard snapshot.host(id: selection.hostID)?.herdrSessions.contains(
             where: {
@@ -4477,6 +4500,7 @@ final class WorkspaceSceneModel: ObservableObject {
             )
         }
         let session = try await revalidatedHerdrSession(selection)
+        try requireActiveScene(activityGeneration)
         guard navigationRevision == userNavigationRevision else {
             throw CancellationError()
         }
@@ -4497,6 +4521,7 @@ final class WorkspaceSceneModel: ObservableObject {
     func createHerdrSession(
         _ selection: WorkspaceHerdrSessionSelection
     ) async throws {
+        let activityGeneration = try captureSceneActivity()
         let navigationRevision = userNavigationRevision
         guard let host = snapshot.host(id: selection.hostID),
               host.herdrAvailable
@@ -4507,8 +4532,8 @@ final class WorkspaceSceneModel: ObservableObject {
             throw HerdrSessionPresentationError.sessionExists(selection.name)
         }
         let currentSession = try await revalidatedHerdrSession(selection)
-        guard !Task.isCancelled,
-              navigationRevision == userNavigationRevision
+        try requireActiveScene(activityGeneration)
+        guard navigationRevision == userNavigationRevision
         else { throw CancellationError() }
         guard currentSession == nil else {
             throw HerdrSessionPresentationError.sessionExists(selection.name)
@@ -4520,6 +4545,7 @@ final class WorkspaceSceneModel: ObservableObject {
         _ selection: WorkspaceHerdrSessionSelection,
         action: HerdrSessionDestructiveAction
     ) async throws -> HerdrSessionLifecycleRequest {
+        let activityGeneration = try captureSceneActivity()
         guard let hostSummary = snapshot.host(id: selection.hostID),
               hostSummary.herdrAvailable,
               let host = CommandHostResolver.resolve(hostSummary)
@@ -4536,11 +4562,13 @@ final class WorkspaceSceneModel: ObservableObject {
             action: action
         )
         let connection = await herdrConnectionSnapshot(on: host)
+        try requireActiveScene(activityGeneration)
         let record = try await herdrSessionRecordReader(
             selection.name,
             host,
             connection.arguments
         ).get()
+        try requireActiveScene(activityGeneration)
         try Self.validateHerdrLifecycleState(
             record.state,
             isDefault: record.isDefault,
@@ -4566,6 +4594,7 @@ final class WorkspaceSceneModel: ObservableObject {
     func performHerdrSessionLifecycle(
         _ request: HerdrSessionLifecycleRequest
     ) async throws {
+        let activityGeneration = try captureSceneActivity()
         let selection = request.session
         guard let authority = herdrLifecycleAuthorities.removeValue(
             forKey: request.authorityID
@@ -4587,6 +4616,7 @@ final class WorkspaceSceneModel: ObservableObject {
             )
         }
         let currentConnection = await herdrConnectionSnapshot(on: currentHost)
+        try requireActiveScene(activityGeneration)
         guard currentConnection.cacheKey == authority.connection.cacheKey else {
             throw HerdrSessionLifecycleRequestError.hostChanged(
                 selection.name
@@ -4614,6 +4644,7 @@ final class WorkspaceSceneModel: ObservableObject {
             currentHost,
             authority.connection.arguments
         ).get()
+        try requireActiveScene(activityGeneration)
         guard record.isDefault == request.isDefault,
               record.sessionDirectory == request.confirmedSessionDirectory,
               record.socketPath == request.confirmedSocketPath
@@ -4637,6 +4668,7 @@ final class WorkspaceSceneModel: ObservableObject {
             currentHost,
             authority.connection.arguments
         ).get()
+        try requireActiveScene(activityGeneration)
         outcome = .succeeded
     }
 
@@ -4708,6 +4740,7 @@ final class WorkspaceSceneModel: ObservableObject {
     func restartHerdrSession(
         _ selection: WorkspaceHerdrSessionSelection
     ) async throws {
+        let activityGeneration = try captureSceneActivity()
         let navigationRevision = userNavigationRevision
         guard let host = snapshot.host(id: selection.hostID),
               host.herdrAvailable
@@ -4726,6 +4759,7 @@ final class WorkspaceSceneModel: ObservableObject {
         else {
             throw HerdrSessionPresentationError.sessionMissing(selection.name)
         }
+        try requireActiveScene(activityGeneration)
         guard navigationRevision == userNavigationRevision else {
             throw CancellationError()
         }
@@ -4785,6 +4819,7 @@ final class WorkspaceSceneModel: ObservableObject {
         _ selection: WorkspaceHerdrSessionSelection,
         kind: HerdrSessionLifecycleCoordinator.OperationKind
     ) throws {
+        _ = try captureSceneActivity()
         let key = HerdrSessionLifecycleCoordinator.Key(
             hostID: selection.hostID,
             sessionName: selection.name
@@ -4814,6 +4849,7 @@ final class WorkspaceSceneModel: ObservableObject {
         _ selection: WorkspaceHerdrSessionSelection,
         launchMode: HerdrAttachmentLaunchMode = .attachExisting
     ) -> BorrowedHerdrSessionHandle? {
+        guard !isShutDown else { return nil }
         if let activeTmux = activeBorrowedTmuxSelection {
             closeBorrowedTmuxSession(activeTmux)
         }
@@ -4885,6 +4921,9 @@ final class WorkspaceSceneModel: ObservableObject {
     func retryBorrowedHerdrSession(
         _ selection: WorkspaceHerdrSessionSelection
     ) async {
+        guard let activityGeneration = try? captureSceneActivity() else {
+            return
+        }
         guard activeBorrowedHerdrSelection == selection else { return }
         let key = HerdrSessionLifecycleCoordinator.Key(
             hostID: selection.hostID,
@@ -4901,6 +4940,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 let currentSession = try await revalidatedHerdrSession(
                     selection
                 )
+                try requireActiveScene(activityGeneration)
                 guard activeBorrowedHerdrSelection == selection else {
                     return
                 }
@@ -4941,7 +4981,7 @@ final class WorkspaceSceneModel: ObservableObject {
             named: selection.name,
             on: host
         )
-        guard !Task.isCancelled,
+        guard (try? requireActiveScene(activityGeneration)) != nil,
               activeBorrowedHerdrSelection == selection,
               activeBorrowedHerdrHandle == handle,
               snapshot.host(id: selection.hostID)
@@ -5818,6 +5858,7 @@ final class WorkspaceSceneModel: ObservableObject {
         handle: BorrowedHerdrSessionHandle,
         state: ConnectionState
     ) {
+        guard !isShutDown else { return }
         borrowedHerdrConnectionStates[handle.id] = state
         if let operation = pendingHerdrLaunchOperations[handle.id] {
             switch state {
@@ -5884,6 +5925,7 @@ final class WorkspaceSceneModel: ObservableObject {
         handle: BorrowedHerdrSessionHandle,
         operation: HerdrSessionLifecycleCoordinator.Operation
     ) {
+        guard !isShutDown else { return }
         guard herdrLaunchConfirmationTasks[handle.id] == nil else { return }
         guard let hostSummary = snapshot.host(id: operation.key.hostID),
               let host = CommandHostResolver.resolve(hostSummary)
@@ -5955,7 +5997,8 @@ final class WorkspaceSceneModel: ObservableObject {
     private func startHerdrReconnect(
         _ context: ActiveHerdrReconnectContext
     ) {
-        guard activeHerdrReconnectContext == context,
+        guard !isShutDown,
+              activeHerdrReconnectContext == context,
               activeBorrowedHerdrHandle?.id == context.handleID
         else { return }
         activeBorrowedHerdrRecoveryState = .reconnecting(

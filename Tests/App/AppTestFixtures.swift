@@ -189,6 +189,24 @@ final class LockedValue<T>: @unchecked Sendable {
     }
 }
 
+final class BlockingGate: @unchecked Sendable {
+    private let started = LockedValue(false)
+    private let release = DispatchSemaphore(value: 0)
+
+    func block() {
+        started.store(true)
+        release.wait()
+    }
+
+    func waitUntilBlocked() async {
+        await waitUntil { self.started.load() }
+    }
+
+    func open() {
+        release.signal()
+    }
+}
+
 // MARK: - Domain Model Fixtures
 
 extension WorkspaceSnapshot {

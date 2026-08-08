@@ -111,6 +111,33 @@ private final class HerdrLifecycleRaceDiscovery: @unchecked Sendable {
 @Suite("Workspace Herdr discovery", .serialized)
 struct WorkspaceHerdrDiscoveryTests {
     @MainActor
+    @Test("scene shutdown prevents Herdr discovery from restarting")
+    func shutdownPreventsHerdrDiscoveryRespawn() async throws {
+        let database = try WorkspaceDatabase.inMemory()
+        let host = HostSummary.fixture()
+        let calls = LockedValue(0)
+        let model = try makeModel(
+            database: database,
+            localHostID: host.id,
+            snapshot: WorkspaceSnapshot(
+                hosts: [host],
+                projects: [],
+                worktrees: []
+            ),
+            herdrSessionDiscovery: { _ in
+                calls.withLock { $0 += 1 }
+                return .failure(.cancelled(host: "superseded"))
+            }
+        )
+
+        await model.shutdown()
+        model.startHerdrSessionDiscovery()
+        await Task.yield()
+
+        #expect(calls.load() == 0)
+    }
+
+    @MainActor
     @Test("local and POSIX SSH hosts are probed while Windows is excluded")
     func supportedHostsOnly() async throws {
         let database = try WorkspaceDatabase.inMemory()
