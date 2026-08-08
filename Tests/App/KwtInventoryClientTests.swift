@@ -441,6 +441,7 @@ struct KwtInventoryClientTests {
         let hostID = UUID()
         let unrelatedProjectID = UUID()
         let targetProjectID = UUID()
+        let unrelatedWorktreeID = UUID()
         let generation = "0123456789abcdef0123456789abcdef"
         let snapshot = WorkspaceSnapshot(
             hosts: [.fixture(id: hostID)],
@@ -462,7 +463,7 @@ struct KwtInventoryClientTests {
             ],
             worktrees: [
                 WorktreeSummary(
-                    id: UUID(),
+                    id: unrelatedWorktreeID,
                     hostID: hostID,
                     projectID: unrelatedProjectID,
                     name: "unrelated",
@@ -486,6 +487,26 @@ struct KwtInventoryClientTests {
             ]
         )
         let inventory = KwtHostInventory(projects: [
+            KwtProjectInventory(
+                project: KwtProjectRecord(
+                    repository: "repo-a",
+                    name: "repo-a",
+                    path: "/repo-a",
+                    lastTouched: nil
+                ),
+                worktrees: [KwtWorktreeRecord(
+                    path: "/reused-path",
+                    branch: "feature/unrelated",
+                    commitHash: "def",
+                    isMain: false,
+                    createdAt: nil,
+                    generation: "fedcba9876543210fedcba9876543210",
+                    repository: "repo-a",
+                    sessionName: "kwt-repo-a-unrelated",
+                    tmuxSocketName: "same-path-socket"
+                )],
+                warning: nil
+            ),
             KwtProjectInventory(
                 project: KwtProjectRecord(
                     repository: "repo-b",
@@ -514,8 +535,73 @@ struct KwtInventoryClientTests {
             into: snapshot
         )
 
+        #expect(merged.worktrees.count == 2)
+        let unrelated = merged.worktrees.first {
+            $0.projectID == unrelatedProjectID
+        }
+        let target = merged.worktrees.first {
+            $0.projectID == targetProjectID
+        }
+        #expect(unrelated?.id == unrelatedWorktreeID)
+        #expect(target?.id != unrelated?.id)
+        #expect(target?.tmuxSocketName == generationSocketName)
+    }
+
+    @Test("noncanonical generations do not transfer socket identity")
+    func rejectsNoncanonicalGenerationForSocketIdentity() {
+        let hostID = UUID()
+        let projectID = UUID()
+        let generation = "legacy-generation"
+        let snapshot = WorkspaceSnapshot(
+            hosts: [.fixture(id: hostID)],
+            projects: [ProjectSummary(
+                id: projectID,
+                hostID: hostID,
+                scopedKey: "repo",
+                name: "repo",
+                rootPath: "/repo"
+            )],
+            worktrees: [WorktreeSummary(
+                id: UUID(),
+                hostID: hostID,
+                projectID: projectID,
+                name: "unrelated",
+                path: "/old-path",
+                branch: "feature/unrelated",
+                generation: generation,
+                tmuxSessionName: "kwt-repo-unrelated",
+                tmuxSocketName: "protected-socket"
+            )]
+        )
+        let inventory = KwtHostInventory(projects: [KwtProjectInventory(
+            project: KwtProjectRecord(
+                repository: "repo",
+                name: "repo",
+                path: "/repo",
+                lastTouched: nil
+            ),
+            worktrees: [KwtWorktreeRecord(
+                path: "/new-path",
+                branch: "feature/target",
+                commitHash: "abc",
+                isMain: false,
+                createdAt: nil,
+                generation: generation,
+                repository: "repo",
+                sessionName: "kwt-repo-target",
+                tmuxSocketName: nil
+            )],
+            warning: nil
+        )])
+
+        let merged = KwtSnapshotMerger.merge(
+            inventory,
+            hostID: hostID,
+            into: snapshot
+        )
+
         #expect(merged.worktrees.count == 1)
-        #expect(merged.worktrees[0].tmuxSocketName == generationSocketName)
+        #expect(merged.worktrees[0].tmuxSocketName == nil)
     }
 
     @Test("a failed project listing preserves its last successful worktrees")

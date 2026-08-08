@@ -550,9 +550,12 @@ enum KwtSnapshotMerger {
 
             for record in item.worktrees {
                 let existing = existingWorktrees.first {
-                    normalizedPath($0.path) == normalizedPath(record.path)
+                    $0.projectID == projectID
+                        && normalizedPath($0.path) == normalizedPath(record.path)
                 }
-                let sameGeneration = record.generation.flatMap { generation in
+                let sameGeneration = WorktreeGeneration.canonical(
+                    record.generation
+                ).flatMap { generation in
                     existingWorktrees.first {
                         $0.projectID == projectID && $0.generation == generation
                     }
