@@ -2463,8 +2463,24 @@ fn terminal_key_input(keystroke: &gpui::Keystroke, event: InputKeyEvent) -> Opti
     if let Some(key) = named_key(&keystroke.key) {
         return Some(KeyInput::named(key, modifiers).with_event(event));
     }
-    let text = key_char.or_else(|| keystroke.key.eq_ignore_ascii_case("space").then_some(" "))?;
+    let text = key_char
+        .or_else(|| keystroke.key.eq_ignore_ascii_case("space").then_some(" "))
+        .or_else(|| ctrl_key_text(keystroke));
+    let text = text?;
     Some(KeyInput::text_with_key(text, logical_key, modifiers).with_event(event))
+}
+
+fn ctrl_key_text(keystroke: &gpui::Keystroke) -> Option<&str> {
+    if !keystroke.modifiers.control {
+        return None;
+    }
+    let bytes = keystroke.key.as_bytes();
+    (bytes.len() == 1
+        && matches!(
+            bytes[0],
+            b' ' | b'2'..=b'8' | b'/' | b'?' | b'@'..=b'_' | b'`' | b'a'..=b'z'
+        ))
+    .then_some(keystroke.key.as_str())
 }
 
 fn is_paste_shortcut(keystroke: &gpui::Keystroke) -> bool {
@@ -2963,6 +2979,29 @@ mod tests {
             terminal_key_input(&keystroke, KeyEvent::Press),
             Some(KeyInput::text_with_key(" ", " ", Modifiers::default()))
         );
+    }
+
+    #[test]
+    fn control_chords_without_key_char_reach_the_terminal_encoder() {
+        for key in ["a", "e", "2", "[", "/", "?"] {
+            let keystroke = gpui::Keystroke {
+                modifiers: gpui::Modifiers::control(),
+                key: key.to_owned(),
+                key_char: None,
+            };
+
+            assert_eq!(
+                terminal_key_input(&keystroke, KeyEvent::Press),
+                Some(KeyInput::text_with_key(
+                    key,
+                    key,
+                    Modifiers {
+                        control: true,
+                        ..Modifiers::default()
+                    },
+                ))
+            );
+        }
     }
 
     #[test]
