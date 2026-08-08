@@ -2498,6 +2498,96 @@ struct WorkspaceWorktreeRemovalTests {
     }
 
     @MainActor
+    @Test("an omitted preflight socket preserves the protected identity")
+    func omittedPreflightSocketUsesProtectedIdentity() async throws {
+        let environment = try setupStandardEnvironment()
+        var removable = WorktreeSummary.fixture(
+            hostID: environment.host.id,
+            projectID: environment.project.id,
+            scopedKey: "/tmp/project-a-feature",
+            name: "feature/remove",
+            path: "/tmp/project-a-feature",
+            branch: "feature/remove",
+            generation: stableWorktreeGeneration
+        )
+        removable.tmuxSessionName = "kwt-project-a-feature"
+        removable.tmuxSocketName = "protected"
+        var snapshot = environment.snapshot
+        snapshot.worktrees.append(removable)
+        var preflight = inventory(environment, including: removable)
+        let recordIndex = try #require(
+            preflight.projects[0].worktrees.firstIndex {
+                $0.path == removable.path
+            }
+        )
+        preflight.projects[0].worktrees[recordIndex].tmuxSocketName = nil
+        let omissionPreflight = preflight
+        let removals = LockedValue(0)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtInventoryLoader: { _ in omissionPreflight },
+            kwtWorktreeRemover: { _, _, _, _ in
+                removals.withLock { $0 += 1 }
+            },
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        let result = try await model.resolveWorktreeRemoval(request)
+
+        #expect(result == .removed)
+        #expect(removals.load() == 1)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("an unchanged recovery request remains an error")
+    func unchangedRecoveryRequestRemainsAnError() async throws {
+        let environment = try setupStandardEnvironment()
+        var removable = WorktreeSummary.fixture(
+            hostID: environment.host.id,
+            projectID: environment.project.id,
+            scopedKey: "/tmp/project-a-feature",
+            name: "feature/remove",
+            path: "/tmp/project-a-feature",
+            branch: "feature/remove",
+            generation: stableWorktreeGeneration
+        )
+        removable.tmuxSessionName = "kwt-project-a-feature"
+        var snapshot = environment.snapshot
+        snapshot.worktrees.append(removable)
+        let beforeRemoval = inventory(environment, including: removable)
+        let expected = KwtWorktreeError.removalTargetChanged
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtInventoryLoader: { _ in beforeRemoval },
+            kwtWorktreeRemover: { _, _, _, _ in throw expected },
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        await #expect(throws: expected) {
+            try await model.resolveWorktreeRemoval(request)
+        }
+
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("an unrelated removal failure is not recoverable")
     func unrelatedFailureRemainsAnError() async throws {
         let environment = try setupStandardEnvironment()

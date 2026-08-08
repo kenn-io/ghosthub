@@ -1821,9 +1821,16 @@ final class WorkspaceSceneModel: ObservableObject {
                 guard removalHostEndpointMatches(request) else {
                     throw KwtWorktreeError.removalHostChanged
                 }
-                return await .confirmationRequired(
-                    try prepareCurrentWorktreeRemoval(request)
+                let updatedRequest = try await prepareCurrentWorktreeRemoval(
+                    request
                 )
+                guard removalConfirmationChanged(
+                    from: request,
+                    to: updatedRequest
+                ) else {
+                    throw KwtWorktreeError.removalTargetChanged
+                }
+                return .confirmationRequired(updatedRequest)
             case .sessionStartedAfterConfirmation:
                 guard removalHostEndpointMatches(request) else {
                     throw KwtWorktreeError.removalHostChanged
@@ -1886,15 +1893,14 @@ final class WorkspaceSceneModel: ObservableObject {
             return nil
         }
         applyAuthoritativeKwtInventory(inventory, hostID: hostID)
-        guard record.repository == request.project.scopedKey,
+        guard let worktree = snapshot.worktree(id: request.worktree.id),
+              let project = snapshot.project(id: request.project.id),
+              record.repository == request.project.scopedKey,
               record.branch == request.worktree.branch,
               record.isMain == request.worktree.isPrimary,
               let confirmedGeneration = request.worktree.generation,
               record.generation == confirmedGeneration,
               record.sessionName == request.worktree.tmuxSessionName,
-              record.tmuxSocketName == request.worktree.tmuxSocketName,
-              let worktree = snapshot.worktree(id: request.worktree.id),
-              let project = snapshot.project(id: request.project.id),
               removalRequest(
                   request,
                   matches: worktree,
@@ -1980,6 +1986,17 @@ final class WorkspaceSceneModel: ObservableObject {
             && killRequest.session.worktreeID == worktree.id
             && killRequest.session.workspacePath == worktree.path
             && killRequest.session.socketName == worktree.tmuxSocketName
+    }
+
+    private func removalConfirmationChanged(
+        from request: WorktreeRemovalRequest,
+        to updatedRequest: WorktreeRemovalRequest
+    ) -> Bool {
+        !removalRequest(
+            request,
+            matches: updatedRequest.worktree,
+            project: updatedRequest.project
+        ) || updatedRequest.sessionKillRequest != request.sessionKillRequest
     }
 
     private func removalHostEndpointMatches(
