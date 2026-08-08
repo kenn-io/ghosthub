@@ -19,7 +19,10 @@ use workspace::{
 };
 
 pub const WINDOW_TITLE: &str = "Ghosthub";
-const APP_NAVIGATION_WIDTH: f32 = 280.0;
+const APP_NAVIGATION_WIDTH: f32 = 260.0;
+const NAVIGATION_HEADER_HEIGHT: f32 = 36.0;
+const HOST_ROW_HEIGHT: f32 = 42.0;
+const SESSION_ROW_HEIGHT: f32 = 30.0;
 const CELL_LINE_GAP: f32 = 4.0;
 const UI_INPUT_CAPACITY: usize = 512;
 const MOUSE_RELEASE_RESERVE: usize = 3;
@@ -1475,15 +1478,15 @@ impl RootView {
             .border_color(rgb(0x25_2932))
             .child(
                 div()
-                    .h(px(44.0))
+                    .h(px(NAVIGATION_HEADER_HEIGHT))
                     .flex_none()
                     .flex()
                     .items_center()
-                    .px_3()
+                    .px_2()
                     .border_b_1()
                     .border_color(rgb(0x1d_2028))
                     .text_xs()
-                    .font_weight(FontWeight::BOLD)
+                    .font_weight(FontWeight::SEMIBOLD)
                     .text_color(rgb(0xa5_ac_b8))
                     .child("WORKSPACES"),
             )
@@ -1556,14 +1559,27 @@ impl RootView {
         };
         let mut host_header = div()
             .id(("host", host_index))
-            .h(px(46.0))
+            .h(px(HOST_ROW_HEIGHT))
             .flex()
             .items_center()
-            .gap_2()
-            .px_3()
+            .gap_1()
+            .px_2()
             .bg(rgb(if is_selected { 0x16_1920 } else { 0x0f_1116 }))
-            .child(div().text_color(rgb(0x6f_7682)).child("▾"))
-            .child(div().text_color(rgb(status_color)).child("●"))
+            .child(
+                div()
+                    .w(px(12.0))
+                    .flex_none()
+                    .text_center()
+                    .text_color(rgb(0x6f_7682))
+                    .child("▾"),
+            )
+            .child(
+                div()
+                    .size(px(7.0))
+                    .flex_none()
+                    .rounded_full()
+                    .bg(rgb(status_color)),
+            )
             .child(
                 div()
                     .min_w_0()
@@ -1574,7 +1590,7 @@ impl RootView {
                         div()
                             .truncate()
                             .text_sm()
-                            .font_weight(FontWeight::BOLD)
+                            .font_weight(FontWeight::SEMIBOLD)
                             .text_color(rgb(0xd2_d7_df))
                             .child(host.name().to_owned()),
                     )
@@ -1591,14 +1607,16 @@ impl RootView {
                 div()
                     .id(("refresh-host", host_index))
                     .flex_none()
-                    .px_2()
-                    .py_1()
+                    .size(px(24.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
                     .rounded_sm()
                     .cursor_pointer()
                     .text_xs()
                     .text_color(rgb(0x8f_96_a3))
                     .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xd2_d7_df)))
-                    .child("Refresh")
+                    .child("↻")
                     .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
             );
         }
@@ -1610,23 +1628,30 @@ impl RootView {
         sessions: &[TreeSession],
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let mut tree = div().flex().flex_col().child(
-            div()
-                .h(px(28.0))
-                .flex()
-                .items_center()
-                .pl(px(35.0))
-                .text_xs()
-                .font_weight(FontWeight::BOLD)
-                .text_color(rgb(0x73_7a87))
-                .child("TMUX SESSIONS"),
-        );
+        let mut tree = div()
+            .ml(px(18.0))
+            .border_l_1()
+            .border_color(rgb(0x25_2932))
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .h(px(24.0))
+                    .flex()
+                    .items_center()
+                    .pl(px(17.0))
+                    .text_xs()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(rgb(0x73_7a87))
+                    .child("TMUX SESSIONS"),
+            );
         if sessions.is_empty() {
             tree = tree.child(
                 div()
-                    .px_3()
-                    .pl(px(51.0))
-                    .py_2()
+                    .h(px(SESSION_ROW_HEIGHT))
+                    .flex()
+                    .items_center()
+                    .pl(px(31.0))
                     .text_xs()
                     .text_color(rgb(0x73_7a87))
                     .child("No sessions"),
@@ -1695,51 +1720,45 @@ impl RootView {
     ) -> gpui::AnyElement {
         let selection = selection.clone();
         let name = selection.session().to_owned();
-        let detail = if is_active {
-            "open".to_owned()
-        } else if attached_clients == Some(0) {
-            "detached".to_owned()
-        } else if attached_clients == Some(1) {
-            "1 client".to_owned()
-        } else {
-            format!("{} clients", attached_clients.unwrap_or_default())
-        };
+        let detail = session_status_label(attached_clients, is_active);
         let mut row = div()
             .id((
                 gpui::ElementId::named_usize("tree-session-host", host_index),
                 index.to_string(),
             ))
-            .mx_2()
-            .h(px(40.0))
+            .mr_1()
+            .h(px(SESSION_ROW_HEIGHT))
             .flex()
             .items_center()
-            .gap_2()
-            .pl(px(27.0))
+            .gap_1()
+            .pl(px(14.0))
             .pr_2()
-            .rounded_sm()
             .cursor_pointer()
             .bg(rgb(if is_active { 0x13_3d6a } else { 0x0f_1116 }))
             .hover(|style| style.bg(rgb(if is_active { 0x17_477a } else { 0x1b_1f27 })))
-            .child(div().flex_none().text_color(rgb(0x7f_8794)).child("›_"))
+            .child(
+                div()
+                    .w(px(18.0))
+                    .flex_none()
+                    .text_xs()
+                    .text_color(rgb(if is_active { 0x9d_c7ed } else { 0x7f_8794 }))
+                    .child(">_"),
+            )
             .child(
                 div()
                     .min_w_0()
                     .flex_1()
-                    .flex()
-                    .flex_col()
-                    .child(
-                        div()
-                            .truncate()
-                            .text_sm()
-                            .text_color(rgb(if is_active { 0xe5_ed_f7 } else { 0xc4_c9_d2 }))
-                            .child(name.clone()),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(if is_active { 0xa9_c9_ea } else { 0x6f_7682 }))
-                            .child(detail),
-                    ),
+                    .truncate()
+                    .text_sm()
+                    .text_color(rgb(if is_active { 0xe5_ed_f7 } else { 0xc4_c9_d2 }))
+                    .child(name.clone()),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .text_xs()
+                    .text_color(rgb(if is_active { 0xa9_c9_ea } else { 0x6f_7682 }))
+                    .child(detail),
             );
         if is_active {
             row = row.child(
@@ -1952,6 +1971,19 @@ struct TreeSession {
     selection: SessionSelection,
     attached_clients: Option<u32>,
     active: bool,
+}
+
+fn session_status_label(attached_clients: Option<u32>, is_active: bool) -> String {
+    if is_active {
+        "open".to_owned()
+    } else {
+        match attached_clients {
+            Some(0) => "detached".to_owned(),
+            Some(1) => "1 client".to_owned(),
+            Some(count) => format!("{count} clients"),
+            None => "unknown".to_owned(),
+        }
+    }
 }
 
 fn active_session_selection(content: &WorkspaceContent) -> Option<SessionSelection> {
@@ -2466,9 +2498,9 @@ mod tests {
         active_session_selection, clear_terminal_input_state, clears_after_input_delivery,
         clears_when_input_queue_is_empty, coalesce_last_resize, coalesce_last_wheel,
         input_queue_has_capacity, named_key, normalize_cell_width,
-        queued_input_matches_presentation, terminal_cell_at_with_offset, terminal_key_input,
-        terminal_line_height, terminal_wheel_steps, transitioned_presentation, tree_sessions,
-        workspace_window_title,
+        queued_input_matches_presentation, session_status_label, terminal_cell_at_with_offset,
+        terminal_key_input, terminal_line_height, terminal_wheel_steps, transitioned_presentation,
+        tree_sessions, workspace_window_title,
     };
     use std::sync::Arc;
     use surface::{GridSize, SurfaceFrame, SurfaceStore};
@@ -2595,6 +2627,15 @@ mod tests {
             assert_eq!(rows[0].selection.session(), "demo");
             assert!(rows[0].active);
         }
+    }
+
+    #[test]
+    fn session_status_is_compact_and_explicit() {
+        assert_eq!(session_status_label(Some(0), false), "detached");
+        assert_eq!(session_status_label(Some(1), false), "1 client");
+        assert_eq!(session_status_label(Some(3), false), "3 clients");
+        assert_eq!(session_status_label(None, false), "unknown");
+        assert_eq!(session_status_label(Some(3), true), "open");
     }
 
     #[test]
