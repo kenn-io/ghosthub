@@ -955,7 +955,7 @@ struct WorkspaceWorktreeRemovalTests {
 
         #expect(kills.load() == 1)
         #expect(
-            model.activeBorrowedTmuxSelection?.worktreePath == removable.path
+            model.activeBorrowedTmuxSelection?.workspacePath == removable.path
         )
         #expect(surfaces.lastCommand?.contains("kwt") == true)
         #expect(surfaces.lastCommand?.contains("pr") == true)

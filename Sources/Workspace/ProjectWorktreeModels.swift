@@ -268,6 +268,36 @@ enum PlatformRepository {
     }
 }
 
+/// A kwt-registered plain directory with one canonical tmux workspace.
+/// Directory workspaces are host-level peers of projects rather than
+/// synthetic repositories: they have no Git branch or child worktrees.
+public struct DirectoryWorkspaceSummary: Identifiable, Equatable, Sendable {
+    public let id: UUID
+    public var hostID: UUID
+    public var name: String
+    public var path: String
+    public var tmuxSessionName: String
+    /// Advisory inventory state. Direct tmux discovery remains authoritative
+    /// for destructive actions and active-session presentation.
+    public var sessionLive: Bool
+
+    public init(
+        id: UUID,
+        hostID: UUID,
+        name: String,
+        path: String,
+        tmuxSessionName: String,
+        sessionLive: Bool
+    ) {
+        self.id = id
+        self.hostID = hostID
+        self.name = name
+        self.path = path
+        self.tmuxSessionName = tmuxSessionName
+        self.sessionLive = sessionLive
+    }
+}
+
 public struct WorktreeSummary: Identifiable, Equatable, Sendable {
     public let id: UUID
     public var hostID: UUID

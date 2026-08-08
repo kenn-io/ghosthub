@@ -9,8 +9,9 @@ configuration and launcher-terminal environment.
 Ghosthub is a native session switcher for tmux servers across the local Mac
 and configured SSH hosts. There are two inventory sources:
 
-- **kwt workspaces:** projects and worktrees read from kwt's supported JSON
-  commands, including each worktree's exact `session_name`.
+- **kwt workspaces:** projects, worktrees, and registered plain directories
+  read from kwt's supported JSON commands, including each workspace's exact
+  `session_name`.
 - **unbound sessions:** every other session returned by direct `tmux
   list-sessions` discovery on the host.
 
@@ -103,6 +104,8 @@ never creates a missing session or falls back to a same-named target on a
 different host or socket. Worktree identity is the durable generation reported
 by kwt, so removing and recreating a worktree at the same path cannot inherit a
 saved presentation; a missing generation restores only as far as the project.
+A directory workspace instead restores by its registered path on the same
+stable host, because the kwt registry has no separate generation for it.
 Once a worktree presentation has observed a generation, incomplete inventory
 cannot erase it and a different non-nil generation is treated as a replacement;
 explicitly reselecting the worktree invalidates the observed presentation and
@@ -130,9 +133,9 @@ transport recovery.
 Offline or otherwise unavailable targets remain pending and retry when normal
 inventory refreshes publish new state. Navigating the window elsewhere cancels
 the pending target. If a scene was captured without an active tmux
-presentation, Ghosthub restores its host, project, and worktree navigation but
-does not open or create the worktree session until the user explicitly selects
-it.
+presentation, Ghosthub restores its host and selected project, worktree, or
+directory navigation but does not open or create the workspace session until
+the user explicitly selects it.
 
 A protected worktree is distinct from a same-named session on the default tmux
 server. Restoration first probes the descriptor's exact host, protected socket,
@@ -159,8 +162,9 @@ before launch and passed as one shell-quoted argument. If the exact name
 already exists, it is attached without creating or structurally changing panes
 or windows.
 
-Kwt inventory includes every worktree, whether or not its canonical tmux
-session is live. When the managed helper is available, Ghosthub therefore
+Kwt inventory includes every worktree and registered directory, whether or not
+its canonical tmux session is live. When the managed helper is available,
+Ghosthub therefore
 executes `kwt open <exact-path>` as the initial attached tmux client. Kwt
 idempotently repairs an existing session or creates the configured layout when
 it is absent, without an intermediate detached session that

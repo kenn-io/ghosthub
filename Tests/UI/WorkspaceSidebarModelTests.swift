@@ -579,6 +579,78 @@ struct WorkspaceSidebarModelTests {
         )
     }
 
+    @Test("directory workspaces are flat project-level rows after repositories")
+    func exposesDirectoryWorkspacesAfterProjects() {
+        let hostID = UUID()
+        let projectID = UUID()
+        let directory = DirectoryWorkspaceSummary(
+            id: UUID(),
+            hostID: hostID,
+            name: "jibot",
+            path: "/workspaces/jibot",
+            tmuxSessionName: "kwt-workspace-dir-jibot-abc",
+            sessionLive: true
+        )
+        let snapshot = WorkspaceSnapshot(
+            hosts: [.fixture(
+                id: hostID,
+                tmuxSessions: [.init(
+                    name: directory.tmuxSessionName,
+                    managed: true,
+                    windows: [],
+                    serverPID: "4242",
+                    sessionID: "$3",
+                    createdAt: "1785190000"
+                )]
+            )],
+            projects: [.fixture(
+                id: projectID,
+                hostID: hostID,
+                name: "ghosthub"
+            )],
+            worktrees: [],
+            directoryWorkspaces: [directory]
+        )
+
+        let section = WorkspaceSidebarModel.sections(in: snapshot)[0]
+
+        #expect(section.projects.map(\.project.id) == [projectID])
+        #expect(section.directoryWorkspaceRows == [
+            WorkspaceSidebarRow(
+                target: .directoryWorkspace(directory.id),
+                icon: .directoryWorkspace,
+                title: "jibot",
+                subtitle: "/workspaces/jibot",
+                sessionIsRunning: true
+            ),
+        ])
+        #expect(section.tmuxSessionRows.isEmpty)
+        #expect(
+            WorkspaceSidebarModel.tmuxSessionSelection(
+                for: directory
+            ) == WorkspaceTmuxSessionSelection(
+                hostID: hostID,
+                name: directory.tmuxSessionName,
+                directoryWorkspaceID: directory.id,
+                workspacePath: directory.path
+            )
+        )
+        let selection = WorkspaceSidebarModel.tmuxSessionSelection(
+            for: directory
+        )
+        #expect(WorkspaceSidebarModel.canRequestKill(
+            selection,
+            in: snapshot
+        ))
+
+        var unregistered = snapshot
+        unregistered.directoryWorkspaces = []
+        #expect(
+            WorkspaceSidebarModel.sections(in: unregistered)[0]
+                .tmuxSessionRows.map(\.title) == [directory.tmuxSessionName]
+        )
+    }
+
     @Test("hidden patterns remove only standalone tmux session rows")
     func hiddenPatternsRemoveStandaloneSessions() {
         let hostID = UUID()

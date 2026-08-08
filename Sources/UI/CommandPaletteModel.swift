@@ -468,11 +468,42 @@ public enum CommandPaletteModel {
                     )
                 }
             }
-            let worktreeSessionIDs = Set(
-                worktrees.map { $0.session.id }
+            let directories: [(
+                session: WorkspaceTmuxSessionSelection,
+                hostName: String,
+                canRequestKill: Bool,
+                keywords: [String]
+            )] = section.directoryWorkspaceRows.compactMap { row in
+                guard case let .directoryWorkspace(directoryID) = row.target,
+                      let directory = snapshot.directoryWorkspace(
+                          id: directoryID
+                      )
+                else { return nil }
+                let session = WorkspaceSidebarModel.tmuxSessionSelection(
+                    for: directory
+                )
+                return (
+                    session,
+                    section.host.name,
+                    WorkspaceSidebarModel.canRequestKill(
+                        session,
+                        in: snapshot,
+                        activeSelection: activeSelection,
+                        activeSelectionIsConnected: activeSelectionIsConnected
+                    ),
+                    [
+                        directory.name,
+                        directory.path,
+                        section.row.title,
+                    ]
+                )
+            }
+            let workspaceSessions = worktrees + directories
+            let workspaceSessionIDs = Set(
+                workspaceSessions.map { $0.session.id }
             )
-            return worktrees + discovered.filter {
-                !worktreeSessionIDs.contains($0.session.id)
+            return workspaceSessions + discovered.filter {
+                !workspaceSessionIDs.contains($0.session.id)
             }
         }
 

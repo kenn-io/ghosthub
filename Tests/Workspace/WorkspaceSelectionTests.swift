@@ -4,6 +4,34 @@ import Testing
 @testable import GhosthubWorkspace
 
 struct WorkspaceSelectionTests {
+    @Test("directory workspace navigation is first class")
+    func selectsDirectoryWorkspace() {
+        let hostID = UUID()
+        let directory = DirectoryWorkspaceSummary(
+            id: UUID(),
+            hostID: hostID,
+            name: "jibot",
+            path: "/workspaces/jibot",
+            tmuxSessionName: "kwt-workspace-dir-jibot-abc",
+            sessionLive: false
+        )
+        let snapshot = WorkspaceSnapshot(
+            hosts: [.fixture(id: hostID)],
+            projects: [],
+            worktrees: [],
+            directoryWorkspaces: [directory]
+        )
+        var selection = WorkspaceSelection(selectedHostID: hostID)
+
+        selection.select(.directoryWorkspace(directory.id), in: snapshot)
+
+        #expect(selection.selectedHostID == hostID)
+        #expect(selection.selectedProjectID == nil)
+        #expect(selection.selectedWorktreeID == nil)
+        #expect(selection.selectedDirectoryWorkspaceID == directory.id)
+        #expect(selection.navigationTarget == .directoryWorkspace(directory.id))
+    }
+
     @Test("navigation target prefers worktree then project then host")
     func navigationTargetPrefersWorktreeThenProjectThenHost() {
         let hostID = UUID()

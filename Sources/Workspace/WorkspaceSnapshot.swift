@@ -7,6 +7,7 @@ public struct WorkspaceSnapshot: Equatable, Sendable {
     public var hosts: [HostSummary]
     public var projects: [ProjectSummary]
     public var worktrees: [WorktreeSummary]
+    public var directoryWorkspaces: [DirectoryWorkspaceSummary]
     public var sessions: [TerminalSessionSummary]
     public var projectMap: [String: String]
 
@@ -17,6 +18,7 @@ public struct WorkspaceSnapshot: Equatable, Sendable {
         hosts: [HostSummary],
         projects: [ProjectSummary],
         worktrees: [WorktreeSummary],
+        directoryWorkspaces: [DirectoryWorkspaceSummary] = [],
         sessions: [TerminalSessionSummary] = [],
         projectMap: [String: String] = [:]
     ) {
@@ -26,6 +28,7 @@ public struct WorkspaceSnapshot: Equatable, Sendable {
         self.hosts = hosts
         self.projects = projects
         self.worktrees = worktrees
+        self.directoryWorkspaces = directoryWorkspaces
         self.sessions = sessions
         self.projectMap = projectMap
     }
@@ -40,6 +43,12 @@ public struct WorkspaceSnapshot: Equatable, Sendable {
 
     public func worktree(id: UUID) -> WorktreeSummary? {
         worktrees.first { $0.id == id }
+    }
+
+    public func directoryWorkspace(
+        id: UUID
+    ) -> DirectoryWorkspaceSummary? {
+        directoryWorkspaces.first { $0.id == id }
     }
 
     public func canCreateWorktree(in project: ProjectSummary) -> Bool {
@@ -126,6 +135,7 @@ public struct WorkspaceSelection: Equatable, Sendable {
     public var selectedHostID: UUID
     public var selectedProjectID: UUID?
     public var selectedWorktreeID: UUID?
+    public var selectedDirectoryWorkspaceID: UUID?
     public internal(set) var consoleBindingMode: ConsoleBindingMode
     public internal(set) var pinnedConsoleHostID: UUID?
 
@@ -133,12 +143,14 @@ public struct WorkspaceSelection: Equatable, Sendable {
         selectedHostID: UUID,
         selectedProjectID: UUID? = nil,
         selectedWorktreeID: UUID? = nil,
+        selectedDirectoryWorkspaceID: UUID? = nil,
         consoleBindingMode: ConsoleBindingMode = .followSelectedHost,
         pinnedConsoleHostID: UUID? = nil
     ) {
         self.selectedHostID = selectedHostID
         self.selectedProjectID = selectedProjectID
         self.selectedWorktreeID = selectedWorktreeID
+        self.selectedDirectoryWorkspaceID = selectedDirectoryWorkspaceID
         self.pinnedConsoleHostID = pinnedConsoleHostID
 
         // Pin mode requires a pinned host; fall back to follow mode

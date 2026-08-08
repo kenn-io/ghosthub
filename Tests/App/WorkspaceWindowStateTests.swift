@@ -175,6 +175,33 @@ private struct RestorationFixture {
 
 @Suite("Workspace window restoration state")
 struct WorkspaceWindowStateTests {
+    @Test("older window descriptors decode without a directory path")
+    func decodesOlderDescriptor() throws {
+        let fixture = RestorationFixture.local(sessionName: "editor")
+        let state = WorkspaceWindowState.capture(
+            windowID: UUID(),
+            selection: fixture.selection,
+            activeTmux: fixture.tmuxSelection,
+            snapshot: fixture.snapshot
+        )
+        let encoded = try JSONEncoder().encode(state)
+        var object = try #require(
+            JSONSerialization.jsonObject(with: encoded)
+                as? [String: Any]
+        )
+        var navigation = try #require(
+            object["navigation"] as? [String: Any]
+        )
+        navigation.removeValue(forKey: "directoryWorkspacePath")
+        object["navigation"] = navigation
+        let legacy = try JSONSerialization.data(withJSONObject: object)
+
+        #expect(try JSONDecoder().decode(
+            WorkspaceWindowState.self,
+            from: legacy
+        ) == state)
+    }
+
     @Test("same-ID stale update payloads are rewritten")
     func staleUpdatePayloadRequiresRewrite() {
         let windowID = UUID()
@@ -409,6 +436,69 @@ struct WorkspaceWindowStateTests {
             selection: after.selection,
             tmux: after.tmuxSelection
         ))
+    }
+
+    @Test("directory workspaces restore by host and path")
+    func restoresDirectoryWorkspace() {
+        let hostID = UUID()
+        let directoryID = UUID()
+        let sessionName = "kwt-workspace-dir-jibot-abc"
+        let snapshot = WorkspaceSnapshot(
+            hosts: [.init(
+                id: hostID,
+                configKey: "local",
+                name: "This Mac",
+                kind: .selfHost,
+                platform: .macOS,
+                preferredTransport: .local,
+                tmuxSessions: [.init(
+                    name: sessionName,
+                    managed: true,
+                    windows: []
+                )],
+                decodedConnectionState: .local
+            )],
+            projects: [],
+            worktrees: [],
+            directoryWorkspaces: [.init(
+                id: directoryID,
+                hostID: hostID,
+                name: "jibot",
+                path: "/workspaces/jibot",
+                tmuxSessionName: sessionName,
+                sessionLive: true
+            )]
+        )
+        let selection = WorkspaceSelection(
+            selectedHostID: hostID,
+            selectedDirectoryWorkspaceID: directoryID
+        )
+        let tmux = WorkspaceTmuxSessionSelection(
+            hostID: hostID,
+            name: sessionName,
+            directoryWorkspaceID: directoryID,
+            workspacePath: "/workspaces/jibot"
+        )
+
+        let state = WorkspaceWindowState.capture(
+            windowID: UUID(),
+            selection: selection,
+            activeTmux: tmux,
+            snapshot: snapshot
+        )
+
+        #expect(state.navigation?.projectKey == nil)
+        #expect(
+            state.navigation?.directoryWorkspacePath == "/workspaces/jibot"
+        )
+        #expect(
+            state.tmux?.owner
+                == .directoryWorkspace(path: "/workspaces/jibot")
+        )
+        #expect(
+            WorkspaceWindowRestorationResolver.resolve(state, in: snapshot)
+                == .ready(selection: selection, tmux: tmux)
+        )
     }
 
     @Test("same-path replacement does not inherit restored identity")

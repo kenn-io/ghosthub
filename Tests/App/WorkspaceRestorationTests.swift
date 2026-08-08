@@ -709,7 +709,7 @@ struct WorkspaceRestorationTests {
 
         await waitUntil { probe.selections.count == 2 }
         #expect(
-            probe.selections.last?.worktreePath
+            probe.selections.last?.workspacePath
                 == "/tmp/ghosthub-refreshed"
         )
         probe.complete(1)
@@ -720,7 +720,7 @@ struct WorkspaceRestorationTests {
 
         #expect(model.activeBorrowedTmuxSelection?.name == "pr-42")
         #expect(
-            model.activeBorrowedTmuxSelection?.worktreePath
+            model.activeBorrowedTmuxSelection?.workspacePath
                 == "/tmp/ghosthub-refreshed"
         )
     }
@@ -775,7 +775,7 @@ struct WorkspaceRestorationTests {
 
         #expect(model.activeBorrowedTmuxSelection?.name == "pr-42")
         #expect(
-            model.activeBorrowedTmuxSelection?.worktreePath
+            model.activeBorrowedTmuxSelection?.workspacePath
                 == "/tmp/ghosthub-refreshed"
         )
     }

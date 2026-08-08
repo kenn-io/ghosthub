@@ -117,6 +117,37 @@ struct ConfiguredHostOverlayTests {
         #expect(result.sessions.isEmpty)
     }
 
+    @Test("changing an SSH destination clears directory workspaces")
+    func changingDestinationClearsDirectoryWorkspaces() {
+        let host = HostSummary.fixture(
+            configKey: "builder",
+            name: "Builder",
+            kind: .remote,
+            platform: .linux,
+            sshDestination: "old-builder"
+        )
+        var source = WorkspaceSnapshot.fixture(hosts: [host])
+        source.directoryWorkspaces = [.init(
+            id: UUID(),
+            hostID: host.id,
+            name: "hub",
+            path: "/srv/hub",
+            tmuxSessionName: "kwt-workspace-dir-hub",
+            sessionLive: true
+        )]
+
+        let result = ConfiguredHostOverlay.apply([
+            SSHHost(
+                configKey: "builder",
+                name: "Builder",
+                platform: .linux,
+                sshDestination: "new-builder"
+            ),
+        ], to: source)
+
+        #expect(result.directoryWorkspaces.isEmpty)
+    }
+
     @Test(
         "changing host platform clears inventory",
         arguments: [

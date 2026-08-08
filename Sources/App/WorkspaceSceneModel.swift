@@ -410,6 +410,8 @@ final class WorkspaceSceneModel: ObservableObject {
     @Published private(set) var suppressesAutomaticWorktreeSessionOpen = false
     @Published private var explicitlyDismissedWorktreePresentationIDs:
         Set<UUID> = []
+    @Published private var explicitlyDismissedDirectoryPresentationIDs:
+        Set<UUID> = []
     @Published private var pendingWorktreeRemovals:
         [
             WorktreeMutationCoordinator.Scope:
@@ -425,6 +427,9 @@ final class WorkspaceSceneModel: ObservableObject {
         suppressesAutomaticWorktreeSessionOpen
             || selection.selectedWorktreeID.map {
                 explicitlyDismissedWorktreePresentationIDs.contains($0)
+            } == true
+            || selection.selectedDirectoryWorkspaceID.map {
+                explicitlyDismissedDirectoryPresentationIDs.contains($0)
             } == true
             || selectedWorktreeRemovalIsPending
     }
@@ -1255,6 +1260,9 @@ final class WorkspaceSceneModel: ObservableObject {
         if let worktreeID = newSelection.selectedWorktreeID {
             explicitlyDismissedWorktreePresentationIDs.remove(worktreeID)
         }
+        if let directoryID = newSelection.selectedDirectoryWorkspaceID {
+            explicitlyDismissedDirectoryPresentationIDs.remove(directoryID)
+        }
         selection = newSelection
         attachReplacedWorktreeSessionIfNeeded()
     }
@@ -1845,7 +1853,7 @@ final class WorkspaceSceneModel: ObservableObject {
         return killRequest.session.hostID == worktree.hostID
             && killRequest.session.name == worktree.tmuxSessionName
             && killRequest.session.worktreeID == worktree.id
-            && killRequest.session.worktreePath == worktree.path
+            && killRequest.session.workspacePath == worktree.path
             && killRequest.session.socketName == worktree.tmuxSocketName
     }
 
@@ -2420,7 +2428,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 let endpointTarget = event.removalPresentationTargets.first {
                     Self.sameTmuxEndpoint(selection, $0)
                 }
-                let pathMatches = selection.worktreePath.map { path in
+                let pathMatches = selection.workspacePath.map { path in
                     Self.removalTombstones(
                         event.removalTombstones,
                         matchPath: path,
@@ -2428,11 +2436,11 @@ final class WorkspaceSceneModel: ObservableObject {
                     )
                 } == true
                 if pathMatches {
-                    guard let path = selection.worktreePath,
+                    guard let path = selection.workspacePath,
                           let pathTarget = event.removalPresentationTargets
                           .first(where: {
                               $0.hostID == selection.hostID
-                                  && $0.worktreePath == path
+                                  && $0.workspacePath == path
                           })
                     else { return nil }
                     return (presentation, pathTarget)
@@ -2736,13 +2744,27 @@ final class WorkspaceSceneModel: ObservableObject {
                 }
             }
         let uniqueProjectWarnings = Array(Set(projectWarnings)).sorted()
+        let projectListWarningsByHost = kwtInventoriesByHost.compactMapValues {
+            $0.projectsWarning.map {
+                "Projects: \($0)"
+            }
+        }
+        let directoryWarningsByHost = kwtInventoriesByHost.compactMapValues {
+            $0.directoryWorkspaceWarning.map {
+                "Directory workspaces: \($0)"
+            }
+        }
         let hostIDs = Set(kwtInventoryFailuresByHost.keys)
             .union(tmuxDiscoveryFailuresByHost.keys)
+            .union(projectListWarningsByHost.keys)
+            .union(directoryWarningsByHost.keys)
         workspaceInventoryWarningsByHost = Dictionary(
             uniqueKeysWithValues: hostIDs.compactMap { hostID in
                 let warnings = [
                     kwtInventoryFailuresByHost[hostID],
                     tmuxDiscoveryFailuresByHost[hostID],
+                    projectListWarningsByHost[hostID],
+                    directoryWarningsByHost[hostID],
                 ].compactMap { $0 }
                 let unique = Array(Set(warnings)).sorted()
                 guard !unique.isEmpty else { return nil }
@@ -2753,6 +2775,7 @@ final class WorkspaceSceneModel: ObservableObject {
             ? nil
             : uniqueProjectWarnings.joined(separator: "\n")
         let hasVisibleInventory = !snapshot.projects.isEmpty
+            || !snapshot.directoryWorkspaces.isEmpty
             || snapshot.hosts.contains { !$0.tmuxSessions.isEmpty }
         let hasCachedInventory = hasVisibleInventory
             || !kwtInventoriesByHost.isEmpty
@@ -3678,6 +3701,9 @@ final class WorkspaceSceneModel: ObservableObject {
                 displayTitle: snapshot.worktrees.first {
                     $0.hostID == host.id
                         && $0.tmuxSessionName == sessionName
+                }?.name ?? snapshot.directoryWorkspaces.first {
+                    $0.hostID == host.id
+                        && $0.tmuxSessionName == sessionName
                 }?.name,
                 connectionState: borrowedTmuxConnectionStates[handle.id],
                 recoveryState: activeBorrowedTmuxRecoveryState,
@@ -3730,6 +3756,9 @@ final class WorkspaceSceneModel: ObservableObject {
         if let worktreeID = selection.worktreeID {
             explicitlyDismissedWorktreePresentationIDs.remove(worktreeID)
         }
+        if let directoryID = selection.directoryWorkspaceID {
+            explicitlyDismissedDirectoryPresentationIDs.remove(directoryID)
+        }
         let pendingCreation = pendingCreatedTmuxSessions.values.first {
             Self.sameTmuxSession($0.selection, selection)
         }
@@ -3775,6 +3804,9 @@ final class WorkspaceSceneModel: ObservableObject {
         userNavigationRevision &+= 1
         if let worktreeID = selection.worktreeID {
             explicitlyDismissedWorktreePresentationIDs.remove(worktreeID)
+        }
+        if let directoryID = selection.directoryWorkspaceID {
+            explicitlyDismissedDirectoryPresentationIDs.remove(directoryID)
         }
         let hasPendingCreation = pendingCreatedTmuxSessions.values.contains {
             Self.sameTmuxSession($0.selection, selection)
@@ -3874,9 +3906,34 @@ final class WorkspaceSceneModel: ObservableObject {
             if recreatesClosedAttachment {
                 invalidateBorrowedTmuxSession(retained.selection)
             } else {
-                if retained.selection.worktreeGeneration == nil,
-                   selection.worktreeGeneration != nil {
-                    retained.selection = selection
+                var reboundSelection = selection
+                if retained.selection.worktreeID == selection.worktreeID,
+                   retained.selection.directoryWorkspaceID
+                   == selection.directoryWorkspaceID,
+                   retained.selection.workspacePath == selection.workspacePath,
+                   reboundSelection.worktreeGeneration == nil {
+                    reboundSelection.worktreeGeneration =
+                        retained.selection.worktreeGeneration
+                }
+                if retained.selection != reboundSelection {
+                    let reconnectWasRunning =
+                        retained.reconnectSupervisor.isRunning
+                    retained.selection = reboundSelection
+                    retained.reconnectContext?.selection = reboundSelection
+                    if reboundSelection.workspacePath == nil,
+                       retained.reconnectContext?.phase
+                       == .establishingWorkspace {
+                        retained.reconnectContext?.phase = .attachOnly
+                        retained.establishmentConfirmationTask?.cancel()
+                        retained.establishmentConfirmationTask = nil
+                    }
+                    if reconnectWasRunning,
+                       let reboundContext = retained.reconnectContext {
+                        startTmuxReconnect(
+                            retained,
+                            context: reboundContext
+                        )
+                    }
                 }
                 if activatesPresentation {
                     activateTmuxPresentation(retained)
@@ -3906,12 +3963,12 @@ final class WorkspaceSceneModel: ObservableObject {
         let openWorkspace = intent == .userInitiated
             && effectiveLaunchMode == .attach
             && selection.socketName == nil
-            && selection.worktreePath != nil
+            && selection.workspacePath != nil
             && (!sessionIsDiscovered || !managedKwtUnavailable)
         let protectedSessionNeedsEstablishment = intent == .userInitiated
             && effectiveLaunchMode == .attach
             && selection.socketName != nil
-            && selection.worktreePath != nil
+            && selection.workspacePath != nil
         let handle = nativeTmuxSessionCoordinator.attach(
             hostID: selection.hostID,
             name: selection.name,
@@ -3921,7 +3978,7 @@ final class WorkspaceSceneModel: ObservableObject {
             initialCommand: effectiveLaunchMode == .create
                 ? initialCommand
                 : nil,
-            workingDirectory: selection.worktreePath,
+            workingDirectory: selection.workspacePath,
             openWorkspace: openWorkspace,
             sessionIdentity: Self.discoveredTmuxSessionIdentity(
                 selection,
@@ -4006,7 +4063,7 @@ final class WorkspaceSceneModel: ObservableObject {
     private func worktreeRemovalIsPending(
         for selection: WorkspaceTmuxSessionSelection
     ) -> Bool {
-        guard let path = selection.worktreePath else { return false }
+        guard let path = selection.workspacePath else { return false }
         return pendingWorktreeRemovals.contains { scope, tombstones in
             scope.hostID == selection.hostID
                 && Self.removalTombstones(
@@ -4023,29 +4080,44 @@ final class WorkspaceSceneModel: ObservableObject {
         let invalidSelections: [WorkspaceTmuxSessionSelection] =
             retainedTmuxPresentations.values.compactMap { presentation in
                 var retained = presentation.selection
-                guard retained.hostID == hostID,
-                      let worktreeID = retained.worktreeID
-                else { return nil }
-                guard let worktree = snapshot.worktree(id: worktreeID),
-                      worktree.hostID == hostID,
-                      let current = WorkspaceSidebarModel
-                      .tmuxSessionSelection(for: worktree),
-                      Self.sameTmuxEndpoint(retained, current)
-                else { return retained }
-                if retained.worktreeGeneration == nil,
-                   let canonicalGeneration = WorktreeGeneration.canonical(
-                       current.worktreeGeneration
-                   ) {
-                    retained.worktreeGeneration = canonicalGeneration
-                    presentation.selection = retained
-                    if activeBorrowedTmuxHandle == presentation.handle {
-                        activeBorrowedTmuxSelection = retained
+                guard retained.hostID == hostID else { return nil }
+                if let worktreeID = retained.worktreeID {
+                    guard let worktree = snapshot.worktree(id: worktreeID),
+                          worktree.hostID == hostID,
+                          let current = WorkspaceSidebarModel
+                          .tmuxSessionSelection(for: worktree),
+                          Self.sameTmuxEndpoint(retained, current)
+                    else { return retained }
+                    if retained.worktreeGeneration == nil,
+                       let canonicalGeneration = WorktreeGeneration.canonical(
+                           current.worktreeGeneration
+                       ) {
+                        retained.worktreeGeneration = canonicalGeneration
+                        presentation.selection = retained
+                        if activeBorrowedTmuxHandle == presentation.handle {
+                            activeBorrowedTmuxSelection = retained
+                        }
                     }
+                    if let retainedGeneration = retained.worktreeGeneration,
+                       let currentGeneration = current.worktreeGeneration,
+                       retainedGeneration != currentGeneration {
+                        return retained
+                    }
+                    return nil
                 }
-                if let retainedGeneration = retained.worktreeGeneration,
-                   let currentGeneration = current.worktreeGeneration,
-                   retainedGeneration != currentGeneration {
-                    return retained
+                if let directoryID = retained.directoryWorkspaceID {
+                    guard let directory = snapshot.directoryWorkspace(
+                        id: directoryID
+                    ),
+                        directory.hostID == hostID,
+                        directory.path == retained.workspacePath,
+                        Self.sameTmuxEndpoint(
+                            retained,
+                            WorkspaceSidebarModel.tmuxSessionSelection(
+                                for: directory
+                            )
+                        )
+                    else { return retained }
                 }
                 return nil
             }
@@ -4054,10 +4126,17 @@ final class WorkspaceSceneModel: ObservableObject {
                selection.selectedWorktreeID == worktreeID {
                 explicitlyDismissedWorktreePresentationIDs.insert(worktreeID)
             }
+            if let directoryID = invalidSelection.directoryWorkspaceID,
+               selection.selectedDirectoryWorkspaceID == directoryID {
+                explicitlyDismissedDirectoryPresentationIDs.insert(directoryID)
+            }
             invalidateBorrowedTmuxSession(invalidSelection)
         }
         explicitlyDismissedWorktreePresentationIDs.formIntersection(
             Set(snapshot.worktrees.map(\.id))
+        )
+        explicitlyDismissedDirectoryPresentationIDs.formIntersection(
+            Set(snapshot.directoryWorkspaces.map(\.id))
         )
     }
 
@@ -4200,6 +4279,10 @@ final class WorkspaceSceneModel: ObservableObject {
         cancelPendingRestoration()
         if recordsExplicitDismissal, let worktreeID = selection.worktreeID {
             explicitlyDismissedWorktreePresentationIDs.insert(worktreeID)
+        }
+        if recordsExplicitDismissal,
+           let directoryID = selection.directoryWorkspaceID {
+            explicitlyDismissedDirectoryPresentationIDs.insert(directoryID)
         }
         let key = TmuxPresentationKey(selection)
         guard let presentation = retainedTmuxPresentations.removeValue(
@@ -4779,12 +4862,12 @@ final class WorkspaceSceneModel: ObservableObject {
         let openWorkspace = intent == .userInitiated
             && launchMode == .attach
             && selection.socketName == nil
-            && selection.worktreePath != nil
+            && selection.workspacePath != nil
             && (!sessionIsDiscovered || !managedKwtUnavailable)
         let protectedSessionNeedsEstablishment = intent == .userInitiated
             && launchMode == .attach
             && selection.socketName != nil
-            && selection.worktreePath != nil
+            && selection.workspacePath != nil
         let previousHandle = presentation.handle
         let handle = nativeTmuxSessionCoordinator.attach(
             hostID: selection.hostID,
@@ -4793,7 +4876,7 @@ final class WorkspaceSceneModel: ObservableObject {
             socketName: selection.socketName,
             launchMode: launchMode,
             initialCommand: launchMode == .create ? initialCommand : nil,
-            workingDirectory: selection.worktreePath,
+            workingDirectory: selection.workspacePath,
             openWorkspace: openWorkspace
         )
         if handle.id != previousHandle.id {
@@ -5424,7 +5507,7 @@ final class WorkspaceSceneModel: ObservableObject {
             sessionConfirmedEnded
                 && selection.socketName == nil
                 && selection.worktreeID == nil
-                && selection.worktreePath == nil
+                && selection.workspacePath == nil
         let launchMode: TmuxAttachmentLaunchMode =
             confirmedPendingCreation == nil
                 ? Self.retryLaunchMode(
@@ -5473,7 +5556,7 @@ final class WorkspaceSceneModel: ObservableObject {
         current: TmuxAttachmentLaunchMode?,
         sessionConfirmedEnded: Bool
     ) -> TmuxAttachmentLaunchMode {
-        if sessionConfirmedEnded, selection.worktreePath != nil {
+        if sessionConfirmedEnded, selection.workspacePath != nil {
             return .attach
         }
         return current ?? .attach

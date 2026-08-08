@@ -483,19 +483,22 @@ struct UpdateRelaunchRestorationTests {
         socketName: String?,
         owner: WorkspaceTmuxOwnerDescriptor
     ) -> WorkspaceWindowState {
-        let generation: String? = switch owner {
+        let identity: (generation: String?, directoryPath: String?) = switch owner {
         case .unbound:
-            nil
+            (nil, nil)
         case let .worktree(generation):
-            generation
+            (generation, nil)
+        case let .directoryWorkspace(path):
+            (nil, path)
         }
         return WorkspaceWindowState(
             windowID: UUID(),
             navigation: WorkspaceNavigationDescriptor(
                 hostKey: "local",
-                projectKey: generation == nil
+                projectKey: identity.generation == nil
                     ? nil : "github.com/kenn-io/ghosthub",
-                worktreeGeneration: generation
+                worktreeGeneration: identity.generation,
+                directoryWorkspacePath: identity.directoryPath
             ),
             tmux: WorkspaceTmuxDescriptor(
                 hostKey: "local",

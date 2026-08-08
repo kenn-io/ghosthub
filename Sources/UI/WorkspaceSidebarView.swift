@@ -350,7 +350,8 @@ struct WorkspaceSidebarView: View {
                         }
                     }
                 }
-                if !section.projects.isEmpty {
+                if !section.projects.isEmpty
+                    || !section.directoryWorkspaceRows.isEmpty {
                     let projectsKey = WorkspaceSidebarDisclosureState
                         .projects(section.host.id)
                     sidebarGroupLabel(
@@ -393,6 +394,9 @@ struct WorkspaceSidebarView: View {
                                         )
                                     }
                                 }
+                            }
+                            ForEach(section.directoryWorkspaceRows) { row in
+                                sidebarButton(row)
                             }
                         }
                         .padding(.vertical, 2)
@@ -534,12 +538,14 @@ struct WorkspaceSidebarView: View {
             Image(systemName: "terminal")
                 .font(.system(size: 24, weight: .regular))
                 .foregroundStyle(.secondary)
-            Text("No kwt projects or tmux sessions")
+            Text("No kwt projects, directory workspaces, or tmux sessions")
                 .font(.callout.weight(.semibold))
-            Text("Register projects in kwt or start a tmux session, then refresh Ghosthub.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
+            Text(
+                "Register a project or directory in kwt, or start a tmux session, then refresh Ghosthub."
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.center)
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -550,7 +556,7 @@ struct WorkspaceSidebarView: View {
         HStack(spacing: 7) {
             Image(systemName: "tray")
                 .font(.system(size: 11, weight: .medium))
-            Text("No projects or tmux sessions yet")
+            Text("No projects, directories, or tmux sessions yet")
                 .font(.system(size: 11))
             Spacer(minLength: 0)
         }
@@ -560,7 +566,7 @@ struct WorkspaceSidebarView: View {
         .padding(.vertical, 7)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(
-            "No projects or tmux sessions on \(host.sidebarTitle)"
+            "No projects, directories, or tmux sessions on \(host.sidebarTitle)"
         )
     }
 
@@ -620,6 +626,10 @@ struct WorkspaceSidebarView: View {
         } else if case let .worktree(worktreeID) = row.target,
                   activeTmuxSession?.worktreeID == worktreeID {
             isSelected = true
+        } else if case let .directoryWorkspace(directoryWorkspaceID) =
+            row.target,
+            activeTmuxSession?.directoryWorkspaceID == directoryWorkspaceID {
+            isSelected = true
         } else {
             isSelected = activeTmuxSession == nil
                 && selection.navigationTarget == row.target
@@ -670,6 +680,23 @@ struct WorkspaceSidebarView: View {
                     onOpenTmuxSession(tmuxSelection)
                     return
                 }
+                if case let .directoryWorkspace(directoryWorkspaceID) =
+                    row.target,
+                    let workspace = snapshot.directoryWorkspace(
+                        id: directoryWorkspaceID
+                    ) {
+                    selection.select(
+                        row.target,
+                        in: snapshot,
+                        visibility: visibility
+                    )
+                    onOpenTmuxSession(
+                        WorkspaceSidebarModel.tmuxSessionSelection(
+                            for: workspace
+                        )
+                    )
+                    return
+                }
                 onNavigateAwayFromTmuxSession()
                 selection.select(
                     row.target,
@@ -687,7 +714,8 @@ struct WorkspaceSidebarView: View {
                     } else {
                         legacyRowContent(
                             title: row.title,
-                            subtitle: row.subtitle
+                            subtitle: row.subtitle,
+                            sessionIsRunning: row.sessionIsRunning
                         )
                     }
                     Spacer(minLength: 0)
@@ -891,6 +919,11 @@ struct WorkspaceSidebarView: View {
                 return nil
             }
             return WorkspaceSidebarModel.tmuxSessionSelection(for: worktree)
+        case let .directoryWorkspace(directoryWorkspaceID):
+            guard let workspace = snapshot.directoryWorkspace(
+                id: directoryWorkspaceID
+            ) else { return nil }
+            return WorkspaceSidebarModel.tmuxSessionSelection(for: workspace)
         case .host, .project:
             return nil
         }
@@ -1602,11 +1635,23 @@ struct WorkspaceSidebarView: View {
     }
 
     /// Legacy single-line rendering for host and project rows.
-    private func legacyRowContent(title: String, subtitle: String?) -> some View {
+    private func legacyRowContent(
+        title: String,
+        subtitle: String?,
+        sessionIsRunning: Bool
+    ) -> some View {
         VStack(alignment: .leading, spacing: 1) {
-            Text(title)
-                .font(.system(size: 13, weight: .medium))
-                .lineLimit(1)
+            HStack(spacing: 4) {
+                Text(title)
+                    .font(.system(size: 13, weight: .medium))
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                if sessionIsRunning {
+                    Image(systemName: "play.circle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
             if let subtitle, !subtitle.isEmpty {
                 Text(subtitle)
                     .font(.caption)
@@ -1614,6 +1659,7 @@ struct WorkspaceSidebarView: View {
                     .lineLimit(1)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var tmuxSessionActivityIndicator: some View {

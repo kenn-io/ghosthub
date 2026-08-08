@@ -30,6 +30,9 @@ struct KwtInventoryClientTests {
                             #"[{"repository":"github.com/kenn-io/docbank","name":"docbank","path":"/code/docbank","last_touched":"2026-07-20T00:00:00Z"}]"#
                     )
                 }
+                if command.contains("workspace list --json") {
+                    return (0, "GHOSTHUB_KWT_JSON\n[]")
+                }
                 return (
                     0,
                     "GHOSTHUB_KWT_JSON\n" +
@@ -54,6 +57,100 @@ struct KwtInventoryClientTests {
         #expect(inventory.projects[0].warning == nil)
     }
 
+    @Test("registered directories are loaded independently of projects")
+    func readsDirectoryWorkspaces() async throws {
+        let client = KwtInventoryClient(
+            localRunner: { _, command in
+                if command.contains("workspace list --json") {
+                    return (
+                        0,
+                        "GHOSTHUB_KWT_JSON\n" +
+                            #"[{"name":"jibot","path":"/workspaces/jibot","session_name":"kwt-workspace-dir-jibot-abc","session_live":true}]"#
+                    )
+                }
+                return (0, "GHOSTHUB_KWT_JSON\n[]")
+            }
+        )
+
+        let inventory = try await client.load(from: .local)
+
+        #expect(inventory.projects.isEmpty)
+        #expect(inventory.directoryWorkspaces == [
+            KwtDirectoryWorkspaceRecord(
+                name: "jibot",
+                path: "/workspaces/jibot",
+                sessionName: "kwt-workspace-dir-jibot-abc",
+                sessionLive: true
+            ),
+        ])
+        #expect(inventory.directoryWorkspaceWarning == nil)
+    }
+
+    @Test("directory inventory failure does not hide repository projects")
+    func directoryFailureIsPartial() async throws {
+        let client = KwtInventoryClient(
+            localRunner: { _, command in
+                if command.contains("workspace list --json") {
+                    return (42, "")
+                }
+                if command.contains("projects --json") {
+                    return (
+                        0,
+                        "GHOSTHUB_KWT_JSON\n" +
+                            #"[{"repository":"repo","name":"repo","path":"/repo"}]"#
+                    )
+                }
+                return (0, "GHOSTHUB_KWT_JSON\n[]")
+            }
+        )
+
+        let inventory = try await client.load(from: .local)
+
+        #expect(inventory.projects.map(\.project.name) == ["repo"])
+        #expect(inventory.directoryWorkspaces.isEmpty)
+        #expect(inventory.directoryWorkspaceWarning != nil)
+    }
+
+    @Test("project inventory failure does not hide registered directories")
+    func projectFailureIsPartial() async throws {
+        let client = KwtInventoryClient(
+            localRunner: { _, command in
+                if command.contains("projects --json") {
+                    return (42, "")
+                }
+                if command.contains("workspace list --json") {
+                    return (
+                        0,
+                        "GHOSTHUB_KWT_JSON\n" +
+                            #"[{"name":"jibot","path":"/workspaces/jibot","session_name":"kwt-workspace-dir-jibot-abc","session_live":true}]"#
+                    )
+                }
+                return (0, "GHOSTHUB_KWT_JSON\n[]")
+            }
+        )
+
+        let inventory = try await client.load(from: .local)
+
+        #expect(inventory.projects.isEmpty)
+        #expect(inventory.projectsWarning != nil)
+        #expect(inventory.directoryWorkspaces.map(\.name) == ["jibot"])
+        #expect(inventory.directoryWorkspaceWarning == nil)
+    }
+
+    @Test("complete inventory failure remains fatal")
+    func completeFailureThrows() async {
+        let client = KwtInventoryClient(
+            localRunner: { _, _ in (127, "") }
+        )
+
+        await #expect(throws: KwtInventoryError.commandFailed(
+            host: "this Mac",
+            status: 127
+        )) {
+            try await client.load(from: .local)
+        }
+    }
+
     @Test("remote inventory resolves kwt on the remote host")
     func remoteInventoryDoesNotUseBundledPath() async throws {
         let ssh = SSHHostInfo(user: "wesm", hostname: "builder", port: nil)
@@ -66,6 +163,13 @@ struct KwtInventoryClientTests {
                         + "\(revision)/kwt\";"
                 ))
                 #expect(!command.contains("/Applications/Ghosthub.app"))
+                if command.contains("workspace list --json") {
+                    return (
+                        0,
+                        "GHOSTHUB_KWT_JSON\n" +
+                            #"[{"name":"hub","path":"/srv/hub","session_name":"kwt-workspace-dir-hub-abc","session_live":false}]"#
+                    )
+                }
                 return (0, "GHOSTHUB_KWT_JSON\n[]")
             },
             localBinaryPath: "/Applications/Ghosthub.app/Contents/Helpers/kwt",
@@ -75,6 +179,7 @@ struct KwtInventoryClientTests {
         let inventory = try await client.load(from: .ssh(ssh))
 
         #expect(inventory.projects.isEmpty)
+        #expect(inventory.directoryWorkspaces.map(\.path) == ["/srv/hub"])
     }
 
     @Test("Windows inventory invokes native kwt through PowerShell")
@@ -98,8 +203,11 @@ struct KwtInventoryClientTests {
                     powerShellEncodedArgument(managedPath)
                 ))
                 #expect(!command.contains("Get-Command kwt.exe"))
+                let expectedArguments = command.contains(
+                    powerShellEncodedArgument("workspace")
+                ) ? ["workspace", "list", "--json"] : ["projects", "--json"]
                 #expect(command.contains(
-                    ["projects", "--json"]
+                    expectedArguments
                         .map(powerShellEncodedArgument)
                         .joined(separator: " ")
                 ))
@@ -108,10 +216,13 @@ struct KwtInventoryClientTests {
                         + powerShellEncodedArgument("GHOSTHUB_KWT_JSON")
                 ))
                 #expect(!command.contains("command -v"))
+                let json = expectedArguments.first == "workspace"
+                    ? #"[{"name":"hub","path":"C:\\hub","session_name":"kwt-workspace-dir-hub-abc","session_live":false}]"#
+                    : "[]"
                 return (
                     0,
                     "PowerShell banner without newline"
-                        + "GHOSTHUB_KWT_JSON\r\n[]\r\n"
+                        + "GHOSTHUB_KWT_JSON\r\n\(json)\r\n"
                 )
             },
             remoteBinaryRevision: revision
@@ -120,6 +231,7 @@ struct KwtInventoryClientTests {
         let inventory = try await client.load(from: .ssh(ssh))
 
         #expect(inventory.projects.isEmpty)
+        #expect(inventory.directoryWorkspaces.map(\.name) == ["hub"])
     }
 
     @Test("real zsh login shell loads the current kwt inventory")
@@ -408,6 +520,154 @@ struct KwtInventoryClientTests {
 
         #expect(retained.projects[0].worktrees == [worktree])
         #expect(retained.projects[0].warning == "temporary failure")
+    }
+
+    @Test("failed project list refresh retains cached projects")
+    func retainsCachedProjectsWhenProjectListFails() {
+        let project = KwtProjectRecord(
+            repository: "repo",
+            name: "repo",
+            path: "/repo",
+            lastTouched: nil
+        )
+        let previous = KwtHostInventory(projects: [
+            KwtProjectInventory(
+                project: project,
+                worktrees: [],
+                warning: nil
+            ),
+        ])
+        let failed = KwtHostInventory(
+            projects: [],
+            projectsWarning: "temporary failure"
+        )
+
+        let retained = failed.retainingFailedProjectWorktrees(from: previous)
+
+        #expect(retained.projects.map(\.project) == [project])
+        #expect(retained.projectsWarning == "temporary failure")
+    }
+
+    @Test("failed initial project list preserves persisted project rows")
+    func failedProjectListPreservesStoredOverlay() {
+        let hostID = UUID()
+        let projectID = UUID()
+        let worktreeID = UUID()
+        let snapshot = WorkspaceSnapshot(
+            hosts: [.init(
+                id: hostID,
+                name: "This Mac",
+                kind: .selfHost,
+                platform: .macOS
+            )],
+            projects: [.init(
+                id: projectID,
+                hostID: hostID,
+                scopedKey: "repo",
+                name: "repo",
+                rootPath: "/repo"
+            )],
+            worktrees: [.init(
+                id: worktreeID,
+                hostID: hostID,
+                projectID: projectID,
+                scopedKey: "/repo",
+                name: "main",
+                path: "/repo",
+                branch: "main"
+            )]
+        )
+        let inventory = KwtHostInventory(
+            projects: [],
+            projectsWarning: "temporary failure",
+            directoryWorkspaces: [.init(
+                name: "jibot",
+                path: "/workspaces/jibot",
+                sessionName: "kwt-workspace-dir-jibot-abc",
+                sessionLive: true
+            )]
+        )
+
+        let merged = KwtSnapshotMerger.merge(
+            inventory,
+            hostID: hostID,
+            into: snapshot
+        )
+
+        #expect(merged.projects.map(\.id) == [projectID])
+        #expect(merged.worktrees.map(\.id) == [worktreeID])
+        #expect(merged.directoryWorkspaces.map(\.name) == ["jibot"])
+    }
+
+    @Test("failed directory refresh retains its cached records")
+    func retainsCachedDirectoryWorkspaces() {
+        let workspace = KwtDirectoryWorkspaceRecord(
+            name: "jibot",
+            path: "/workspaces/jibot",
+            sessionName: "kwt-workspace-dir-jibot-abc",
+            sessionLive: true
+        )
+        let previous = KwtHostInventory(
+            projects: [],
+            directoryWorkspaces: [workspace]
+        )
+        let failed = KwtHostInventory(
+            projects: [],
+            directoryWorkspaceWarning: "temporary failure"
+        )
+
+        let retained = failed.retainingFailedProjectWorktrees(from: previous)
+
+        #expect(retained.directoryWorkspaces == [workspace])
+        #expect(retained.directoryWorkspaceWarning == "temporary failure")
+    }
+
+    @Test("directory records merge with stable host-path identity")
+    func mergesDirectoryWorkspaces() {
+        let hostID = UUID()
+        let existingID = UUID()
+        let snapshot = WorkspaceSnapshot(
+            hosts: [.init(
+                id: hostID,
+                name: "This Mac",
+                kind: .selfHost,
+                platform: .macOS
+            )],
+            projects: [],
+            worktrees: [],
+            directoryWorkspaces: [.init(
+                id: existingID,
+                hostID: hostID,
+                name: "old-name",
+                path: "/workspaces/jibot",
+                tmuxSessionName: "old-session",
+                sessionLive: false
+            )]
+        )
+        let inventory = KwtHostInventory(
+            projects: [],
+            directoryWorkspaces: [.init(
+                name: "jibot",
+                path: "/workspaces/jibot",
+                sessionName: "kwt-workspace-dir-old-name-abc",
+                sessionLive: true
+            )]
+        )
+
+        let merged = KwtSnapshotMerger.merge(
+            inventory,
+            hostID: hostID,
+            into: snapshot
+        )
+
+        #expect(merged.directoryWorkspaces.count == 1)
+        #expect(merged.directoryWorkspaces[0].id == existingID)
+        #expect(merged.directoryWorkspaces[0].name == "jibot")
+        #expect(
+            merged.directoryWorkspaces[0].tmuxSessionName
+                == "kwt-workspace-dir-old-name-abc"
+        )
+        #expect(merged.directoryWorkspaces[0].sessionLive)
     }
 
     @Test("failed project retention excludes a worktree already removed")
