@@ -2,6 +2,7 @@ import Foundation
 import GhosthubHerdr
 import GhosthubTransport
 import GhosthubWorkspace
+import Synchronization
 import Testing
 @testable import GhosthubApp
 
@@ -107,6 +108,38 @@ struct HerdrSessionLifecycleClientTests {
         #expect(recorder.commands.allSatisfy { command in
             command.contains("/usr/bin/ssh")
                 && command.contains("/tmp/ghosthub ssh config")
+        })
+    }
+
+    @Test("one mutation cannot drift between effective SSH routes")
+    func mutationFreezesRemoteRoute() {
+        let recorder = LifecycleCommandRecorder(outputs: [
+            executableOutput(),
+            listOutput(running: true),
+            lifecycleOutput(stopped: true),
+        ])
+        let routeCount = Mutex(0)
+        let host = SSHHostInfo(
+            user: "dev",
+            hostname: "build-alias",
+            port: nil
+        )
+        let client = HerdrSessionLifecycleClient(
+            commandRunner: recorder.runner,
+            connectionArgumentsProvider: { _ in
+                let route = routeCount.withLock { count in
+                    count += 1
+                    return count
+                }
+                return ["-o", "HostName=route-\(route).example.test"]
+            }
+        )
+
+        #expect(client.stop(record(state: .running), on: .ssh(host))
+            == .success(record(state: .stopped)))
+        #expect(routeCount.withLock { $0 } == 1)
+        #expect(recorder.commands.allSatisfy {
+            $0.contains("HostName=route-1.example.test")
         })
     }
 

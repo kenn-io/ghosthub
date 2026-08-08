@@ -22,12 +22,17 @@ struct HerdrInventoryClient: Sendable {
     }
 
     func resolveExecutable(
-        on host: CommandHost
+        on host: CommandHost,
+        sshConnectionArguments: [String]? = nil
     ) -> Result<String, HerdrCommandError> {
         guard supportsHerdr(host) else {
             return .failure(.unsupportedPlatform)
         }
-        let output = run(HerdrExecutable.command(), on: host)
+        let output = run(
+            HerdrExecutable.command(),
+            on: host,
+            sshConnectionArguments: sshConnectionArguments
+        )
         switch HerdrExecutable.parse(
             status: output.status,
             stdout: output.stdout,
@@ -42,9 +47,15 @@ struct HerdrInventoryClient: Sendable {
         }
     }
 
-    func discover(on host: CommandHost) -> HerdrDiscoveryResult {
+    func discover(
+        on host: CommandHost,
+        sshConnectionArguments: [String]? = nil
+    ) -> HerdrDiscoveryResult {
         let herdrPath: String
-        switch resolveExecutable(on: host) {
+        switch resolveExecutable(
+            on: host,
+            sshConnectionArguments: sshConnectionArguments
+        ) {
         case let .success(path):
             herdrPath = path
         case .failure(.unavailable), .failure(.unsupportedPlatform):
@@ -55,7 +66,8 @@ struct HerdrInventoryClient: Sendable {
 
         let output = run(
             HerdrSessionList.command(herdrPath: herdrPath),
-            on: host
+            on: host,
+            sshConnectionArguments: sshConnectionArguments
         )
         return HerdrSessionList.parse(
             status: output.status,

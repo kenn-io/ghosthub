@@ -357,6 +357,46 @@ struct WorkspaceHerdrPresentationTests {
         await model.shutdown()
     }
 
+    @Test("a delayed create cannot replace newer tmux navigation")
+    func delayedCreateRespectsNewerNavigation() async throws {
+        var environment = try environment()
+        environment.snapshot.hosts[0].herdrAvailable = true
+        let store = RecordingNativeSessionSurfaceStore()
+        let probeStarted = Mutex(false)
+        let releaseProbe = DispatchSemaphore(value: 0)
+        let model = try makeHerdrModel(
+            environment,
+            store: store,
+            discovery: { _ in
+                probeStarted.withLock { $0 = true }
+                releaseProbe.wait()
+                return .available([])
+            }
+        )
+        let createTarget = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID,
+            name: "new-agent"
+        )
+        let newerTmux = WorkspaceTmuxSessionSelection(
+            hostID: environment.hostID,
+            name: "tmux-work"
+        )
+
+        let create = Task {
+            try await model.createHerdrSession(createTarget)
+        }
+        await waitUntilMainActor { probeStarted.withLock { $0 } }
+        model.openBorrowedTmuxSession(newerTmux)
+        releaseProbe.signal()
+
+        await #expect(throws: CancellationError.self) {
+            try await create.value
+        }
+        #expect(model.activeBorrowedTmuxSelection == newerTmux)
+        #expect(model.activeBorrowedHerdrSelection == nil)
+        await model.shutdown()
+    }
+
     @Test("create rejects collisions and restart launches stopped sessions")
     func createAndRestartPreconditions() async throws {
         var environment = try environment()

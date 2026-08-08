@@ -272,6 +272,7 @@ public enum HerdrSessionDestructiveAction: Equatable, Sendable {
 }
 
 public struct HerdrSessionLifecycleRequest: Equatable, Sendable {
+    public let authorityID: UUID
     public let session: WorkspaceHerdrSessionSelection
     public let confirmedHost: HostSummary
     public let isDefault: Bool
@@ -280,6 +281,7 @@ public struct HerdrSessionLifecycleRequest: Equatable, Sendable {
     public let action: HerdrSessionDestructiveAction
 
     public init(
+        authorityID: UUID,
         session: WorkspaceHerdrSessionSelection,
         confirmedHost: HostSummary,
         isDefault: Bool,
@@ -287,6 +289,7 @@ public struct HerdrSessionLifecycleRequest: Equatable, Sendable {
         confirmedSocketPath: String,
         action: HerdrSessionDestructiveAction
     ) {
+        self.authorityID = authorityID
         self.session = session
         self.confirmedHost = confirmedHost
         self.isDefault = isDefault
@@ -316,6 +319,8 @@ public struct InteractionHandlers {
             async throws -> HerdrSessionLifecycleRequest)?
     public let performHerdrSessionLifecycle:
         ((HerdrSessionLifecycleRequest) async throws -> Void)?
+    public let cancelHerdrSessionLifecycle:
+        ((HerdrSessionLifecycleRequest) -> Void)?
     public let prepareTmuxSessionKill:
         ((WorkspaceTmuxSessionSelection) async throws
             -> TmuxSessionKillRequest)?
@@ -374,6 +379,8 @@ public struct InteractionHandlers {
             async throws -> HerdrSessionLifecycleRequest)? = nil,
         performHerdrSessionLifecycle:
         ((HerdrSessionLifecycleRequest) async throws -> Void)? = nil,
+        cancelHerdrSessionLifecycle:
+        ((HerdrSessionLifecycleRequest) -> Void)? = nil,
         prepareTmuxSessionKill:
         ((WorkspaceTmuxSessionSelection) async throws
             -> TmuxSessionKillRequest)? = nil,
@@ -425,6 +432,7 @@ public struct InteractionHandlers {
         self.closeHerdrSession = closeHerdrSession
         self.prepareHerdrSessionLifecycle = prepareHerdrSessionLifecycle
         self.performHerdrSessionLifecycle = performHerdrSessionLifecycle
+        self.cancelHerdrSessionLifecycle = cancelHerdrSessionLifecycle
         self.prepareTmuxSessionKill = prepareTmuxSessionKill
         self.killTmuxSession = killTmuxSession
         self.applyTmuxSessionTheme = applyTmuxSessionTheme

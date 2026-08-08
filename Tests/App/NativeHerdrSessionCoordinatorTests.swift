@@ -231,7 +231,7 @@ struct NativeHerdrSessionCoordinatorTests {
         let resolutionCount = Mutex(0)
         let coordinator = NativeHerdrSessionCoordinator(
             terminalCoordinator: store,
-            herdrPathProvider: { _ in
+            herdrPathProvider: { _, _ in
                 let count = resolutionCount.withLock { count in
                     count += 1
                     return count
@@ -281,7 +281,7 @@ struct NativeHerdrSessionCoordinatorTests {
         let resolutionCount = Mutex(0)
         let coordinator = NativeHerdrSessionCoordinator(
             terminalCoordinator: store,
-            herdrPathProvider: { _ in
+            herdrPathProvider: { _, _ in
                 let count = resolutionCount.withLock { count in
                     count += 1
                     return count
@@ -529,12 +529,12 @@ struct NativeHerdrSessionCoordinatorTests {
     ) -> NativeHerdrSessionCoordinator {
         NativeHerdrSessionCoordinator(
             terminalCoordinator: store,
-            herdrPathProvider: { _ in .success("/opt/homebrew/bin/herdr") },
+            herdrPathProvider: { _, _ in .success("/opt/homebrew/bin/herdr") },
             sshConnectionArgumentsProvider: { _ in
-                [
+                SSHConnectionArgumentsSnapshot(arguments: [
                     "-o", "ControlPath=/tmp/ghosthub-test-control",
                     "-o", "StrictHostKeyChecking=yes",
-                ]
+                ])
             },
             paneSplitCapabilityProvider: capabilityProvider,
             paneSplitter: paneSplitter,

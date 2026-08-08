@@ -32,6 +32,8 @@ public struct RootView: View {
     @State private var newWorktreeMode: NewWorktreeMode = .branch
     @State private var newTmuxSessionHost: HostSummary?
     @State private var newHerdrSessionHost: HostSummary?
+    @State private var herdrCreationTask: Task<Void, Never>?
+    @State private var herdrCreationRevision: UInt64 = 0
     @State private var addProjectHost: HostSummary?
     @State private var workspaceAlert: WorkspaceAlert?
     @State private var sessionRecoveryRequestRouter =
@@ -193,14 +195,20 @@ public struct RootView: View {
                     onCancel: { newTmuxSessionHost = nil }
                 )
             }
-            .sheet(item: $newHerdrSessionHost) { host in
+            .sheet(
+                item: $newHerdrSessionHost,
+                onDismiss: {
+                    cancelHerdrCreation(dismissSheet: false)
+                }
+            ) { host in
                 NewHerdrSessionSheet(
                     host: host,
                     hosts: snapshot.hosts,
+                    isCreating: herdrCreationTask != nil,
                     onCreate: { selectedHost, name in
                         createHerdrSession(on: selectedHost, name: name)
                     },
-                    onCancel: { newHerdrSessionHost = nil }
+                    onCancel: { cancelHerdrCreation() }
                 )
             }
             .sheet(item: $addProjectHost) { host in
@@ -786,25 +794,46 @@ public struct RootView: View {
         on host: HostSummary,
         name: String
     ) {
+        guard herdrCreationTask == nil else { return }
         let session = WorkspaceHerdrSessionSelection(
             hostID: host.id,
             name: name
         )
-        Task { @MainActor in
+        herdrCreationRevision &+= 1
+        let creationRevision = herdrCreationRevision
+        herdrCreationTask = Task { @MainActor in
             do {
                 guard let create = handlers.createHerdrSession else {
                     throw HerdrLifecycleUnavailableError()
                 }
                 try await create(session)
-                selectWorkspace(.herdrSession(hostID: host.id, name: name))
+                guard herdrCreationRevision == creationRevision else {
+                    return
+                }
+                herdrCreationTask = nil
                 newHerdrSessionHost = nil
+                selectWorkspace(.herdrSession(hostID: host.id, name: name))
             } catch {
+                guard herdrCreationRevision == creationRevision else {
+                    return
+                }
+                herdrCreationTask = nil
+                guard !(error is CancellationError) else { return }
                 workspaceAlert = .herdrLifecycleFailure(
                     session: name,
                     action: "create",
                     message: error.localizedDescription
                 )
             }
+        }
+    }
+
+    private func cancelHerdrCreation(dismissSheet: Bool = true) {
+        herdrCreationRevision &+= 1
+        herdrCreationTask?.cancel()
+        herdrCreationTask = nil
+        if dismissSheet {
+            newHerdrSessionHost = nil
         }
     }
 
@@ -978,7 +1007,9 @@ public struct RootView: View {
                         }
                     }
                 },
-                secondaryButton: .cancel()
+                secondaryButton: .cancel {
+                    handlers.cancelHerdrSessionLifecycle?(request)
+                }
             )
         case let .herdrLifecycleFailure(session, action, message):
             return Alert(
@@ -1503,6 +1534,9 @@ public struct RootView: View {
     }
 
     private func selectWorkspace(_ updatedSelection: WorkspaceSelection) {
+        if herdrCreationTask != nil {
+            cancelHerdrCreation()
+        }
         herdrActivationRevision &+= 1
         if let selectWorkspace = handlers.selectWorkspace {
             selectWorkspace(updatedSelection)

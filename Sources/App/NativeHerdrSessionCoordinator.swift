@@ -28,7 +28,7 @@ private struct NativeHerdrAttachment {
     var host: CommandHost
     var herdrPath: String
     var launchMode: HerdrAttachmentLaunchMode
-    var sshConnectionArguments: [String]
+    var sshConnectionSnapshot: SSHConnectionArgumentsSnapshot
     var paneSplitTarget: HerdrPaneSplitTarget?
     var remoteExitStatusURL: URL?
 }
@@ -63,9 +63,9 @@ final class NativeHerdrSessionCoordinator {
 
     private let terminalCoordinator: any NativeSessionSurfaceStoring
     private let herdrPathProvider:
-        @Sendable (CommandHost) -> Result<String, HerdrCommandError>
+        @Sendable (CommandHost, [String]) -> Result<String, HerdrCommandError>
     private let sshConnectionArgumentsProvider:
-        @Sendable (SSHHostInfo) -> [String]
+        @Sendable (SSHHostInfo) -> SSHConnectionArgumentsSnapshot
     private let paneSplitCapabilityProvider: PaneSplitCapabilityProvider
     private let paneSplitter: HerdrPaneSplitter
     private let remoteExitStatusStore: RemoteExitStatusStore
@@ -93,14 +93,18 @@ final class NativeHerdrSessionCoordinator {
 
     init(
         terminalCoordinator: any NativeSessionSurfaceStoring,
-        herdrPathProvider: @escaping @Sendable (CommandHost)
+        herdrPathProvider: @escaping @Sendable (CommandHost, [String])
             -> Result<String, HerdrCommandError> = {
-                HerdrInventoryClient().resolveExecutable(on: $0)
+                HerdrInventoryClient().resolveExecutable(
+                    on: $0,
+                    sshConnectionArguments: $1
+                )
             },
         sshConnectionArgumentsProvider:
-        @escaping @Sendable (SSHHostInfo) -> [String] = {
-            SSHCommandArguments.noninteractive(for: $0)
-        },
+        @escaping @Sendable (SSHHostInfo)
+            -> SSHConnectionArgumentsSnapshot = {
+                SSHCommandArguments.connectionSnapshot(for: $0)
+            },
         paneSplitCapabilityProvider:
         @escaping PaneSplitCapabilityProvider = {
             host, arguments, path, name in
@@ -174,17 +178,22 @@ final class NativeHerdrSessionCoordinator {
             sshConnectionArgumentsProvider
         provisioningTasks[handle.id] = Task { [weak self] in
             let probe = Task.detached(priority: .userInitiated) {
-                let resolution = herdrPathProvider(host)
-                let sshConnectionArguments: [String]
+                let sshConnectionSnapshot: SSHConnectionArgumentsSnapshot
                 if case let .ssh(info) = host {
-                    sshConnectionArguments =
+                    sshConnectionSnapshot =
                         sshConnectionArgumentsProvider(info)
                 } else {
-                    sshConnectionArguments = []
+                    sshConnectionSnapshot = SSHConnectionArgumentsSnapshot(
+                        arguments: []
+                    )
                 }
-                return (resolution, sshConnectionArguments)
+                let resolution = herdrPathProvider(
+                    host,
+                    sshConnectionSnapshot.arguments
+                )
+                return (resolution, sshConnectionSnapshot)
             }
-            let (resolution, sshConnectionArguments) =
+            let (resolution, sshConnectionSnapshot) =
                 await withTaskCancellationHandler {
                     await probe.value
                 } onCancel: {
@@ -194,7 +203,7 @@ final class NativeHerdrSessionCoordinator {
                 handle: handle,
                 host: host,
                 launchMode: launchMode,
-                sshConnectionArguments: sshConnectionArguments,
+                sshConnectionSnapshot: sshConnectionSnapshot,
                 resolution: resolution
             )
         }
@@ -205,7 +214,7 @@ final class NativeHerdrSessionCoordinator {
         handle: BorrowedHerdrSessionHandle,
         host: CommandHost,
         launchMode: HerdrAttachmentLaunchMode,
-        sshConnectionArguments: [String],
+        sshConnectionSnapshot: SSHConnectionArgumentsSnapshot,
         resolution: Result<String, HerdrCommandError>
     ) {
         provisioningTasks.removeValue(forKey: handle.id)
@@ -223,7 +232,7 @@ final class NativeHerdrSessionCoordinator {
                 host: host,
                 herdrPath: path,
                 launchMode: launchMode,
-                sshConnectionArguments: sshConnectionArguments,
+                sshConnectionSnapshot: sshConnectionSnapshot,
                 paneSplitTarget: nil,
                 remoteExitStatusURL: host.isRemote
                     ? remoteExitStatusStore.prepare()
@@ -301,7 +310,7 @@ final class NativeHerdrSessionCoordinator {
                 herdrPath: attachment.herdrPath,
                 launchMode: attachment.launchMode,
                 sshConnectionArguments:
-                attachment.sshConnectionArguments,
+                attachment.sshConnectionSnapshot.arguments,
                 remoteExitStatusPath:
                 attachment.remoteExitStatusURL?.path
             )
@@ -413,7 +422,7 @@ final class NativeHerdrSessionCoordinator {
             let probe = Task.detached(priority: .userInitiated) {
                 provider(
                     attachment.host,
-                    attachment.sshConnectionArguments,
+                    attachment.sshConnectionSnapshot.arguments,
                     attachment.herdrPath,
                     handle.name
                 )
@@ -442,7 +451,7 @@ final class NativeHerdrSessionCoordinator {
                     sessionName: handle.name,
                     socketPath: $0.session.socketPath,
                     sshConnectionArguments:
-                    attachment.sshConnectionArguments
+                    attachment.sshConnectionSnapshot.arguments
                 )
             }
             attachments[handle.id]?.paneSplitTarget = target

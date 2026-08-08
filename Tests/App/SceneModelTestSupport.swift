@@ -350,12 +350,16 @@ func makeModel(
     herdrLifecycleCoordinator: HerdrSessionLifecycleCoordinator =
         HerdrSessionLifecycleCoordinator(),
     herdrSessionRecordReader:
-    @escaping WorkspaceSceneModel.HerdrSessionRecordReading = { name, _ in
+    @escaping WorkspaceSceneModel.HerdrSessionRecordReading = { name, _, _ in
         .failure(.sessionMissing(name))
     },
     herdrSessionMutator:
-    @escaping WorkspaceSceneModel.HerdrSessionMutating = { _, record, _ in
+    @escaping WorkspaceSceneModel.HerdrSessionMutating = { _, record, _, _ in
         .success(record)
+    },
+    herdrSSHConnectionSnapshotProvider:
+    @escaping @Sendable (SSHHostInfo) -> SSHConnectionArgumentsSnapshot = {
+        _ in SSHConnectionArgumentsSnapshot(arguments: [])
     },
     kwtPullRequestLister:
     @escaping WorkspaceSceneModel.KwtPullRequestLister = {
@@ -468,6 +472,8 @@ func makeModel(
         herdrLifecycleCoordinator: herdrLifecycleCoordinator,
         herdrSessionRecordReader: herdrSessionRecordReader,
         herdrSessionMutator: herdrSessionMutator,
+        herdrSSHConnectionSnapshotProvider:
+        herdrSSHConnectionSnapshotProvider,
         kwtPullRequestLister: kwtPullRequestLister,
         kwtPullRequestImporter: kwtPullRequestImporter,
         kwtProjectRegistration: kwtProjectRegistration,

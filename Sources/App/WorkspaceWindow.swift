@@ -856,6 +856,9 @@ struct WorkspaceWindow: View {
                 performHerdrSessionLifecycle: { [sceneModel] request in
                     try await sceneModel.performHerdrSessionLifecycle(request)
                 },
+                cancelHerdrSessionLifecycle: { [sceneModel] request in
+                    sceneModel.cancelPreparedHerdrSessionLifecycle(request)
+                },
                 prepareTmuxSessionKill: { [sceneModel] selection in
                     try await sceneModel.prepareTmuxSessionKill(selection)
                 },

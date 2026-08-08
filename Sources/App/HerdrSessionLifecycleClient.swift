@@ -24,11 +24,21 @@ struct HerdrSessionLifecycleClient: Sendable {
 
     func record(
         named name: String,
-        on host: CommandHost
+        on host: CommandHost,
+        sshConnectionArguments: [String]? = nil
     ) -> Result<HerdrSessionRecord, HerdrSessionLifecycleError> {
-        switch resolvedExecutable(on: host) {
+        let arguments = connectionArguments(
+            on: host,
+            frozen: sshConnectionArguments
+        )
+        switch resolvedExecutable(on: host, sshConnectionArguments: arguments) {
         case let .success(path):
-            return record(named: name, on: host, herdrPath: path)
+            return record(
+                named: name,
+                on: host,
+                herdrPath: path,
+                sshConnectionArguments: arguments
+            )
         case let .failure(error):
             return .failure(error)
         }
@@ -36,26 +46,47 @@ struct HerdrSessionLifecycleClient: Sendable {
 
     func stop(
         _ confirmed: HerdrSessionRecord,
-        on host: CommandHost
+        on host: CommandHost,
+        sshConnectionArguments: [String]? = nil
     ) -> Result<HerdrSessionRecord, HerdrSessionLifecycleError> {
-        mutate(.stop, confirmed: confirmed, expected: .running, on: host)
+        mutate(
+            .stop,
+            confirmed: confirmed,
+            expected: .running,
+            on: host,
+            sshConnectionArguments: connectionArguments(
+                on: host,
+                frozen: sshConnectionArguments
+            )
+        )
     }
 
     func delete(
         _ confirmed: HerdrSessionRecord,
-        on host: CommandHost
+        on host: CommandHost,
+        sshConnectionArguments: [String]? = nil
     ) -> Result<HerdrSessionRecord, HerdrSessionLifecycleError> {
         guard !confirmed.isDefault else {
             return .failure(.defaultSessionCannotBeDeleted)
         }
-        return mutate(.delete, confirmed: confirmed, expected: .stopped, on: host)
+        return mutate(
+            .delete,
+            confirmed: confirmed,
+            expected: .stopped,
+            on: host,
+            sshConnectionArguments: connectionArguments(
+                on: host,
+                frozen: sshConnectionArguments
+            )
+        )
     }
 
     private func mutate(
         _ action: HerdrSessionLifecycleAction,
         confirmed: HerdrSessionRecord,
         expected: HerdrSessionState,
-        on host: CommandHost
+        on host: CommandHost,
+        sshConnectionArguments: [String]
     ) -> Result<HerdrSessionRecord, HerdrSessionLifecycleError> {
         guard confirmed.state == expected else {
             return .failure(.stateChanged(
@@ -64,7 +95,10 @@ struct HerdrSessionLifecycleClient: Sendable {
             ))
         }
         let herdrPath: String
-        switch resolvedExecutable(on: host) {
+        switch resolvedExecutable(
+            on: host,
+            sshConnectionArguments: sshConnectionArguments
+        ) {
         case let .success(path): herdrPath = path
         case let .failure(error): return .failure(error)
         }
@@ -72,7 +106,8 @@ struct HerdrSessionLifecycleClient: Sendable {
         switch record(
             named: confirmed.name,
             on: host,
-            herdrPath: herdrPath
+            herdrPath: herdrPath,
+            sshConnectionArguments: sshConnectionArguments
         ) {
         case let .success(record): current = record
         case let .failure(error): return .failure(error)
@@ -91,7 +126,7 @@ struct HerdrSessionLifecycleClient: Sendable {
             action: action,
             name: confirmed.name,
             herdrPath: herdrPath
-        ), on: host)
+        ), on: host, sshConnectionArguments: sshConnectionArguments)
         return HerdrSessionLifecycle.parse(
             action: action,
             status: output.status,
@@ -103,11 +138,13 @@ struct HerdrSessionLifecycleClient: Sendable {
     private func record(
         named name: String,
         on host: CommandHost,
-        herdrPath: String
+        herdrPath: String,
+        sshConnectionArguments: [String]
     ) -> Result<HerdrSessionRecord, HerdrSessionLifecycleError> {
         let output = run(
             HerdrSessionList.command(herdrPath: herdrPath),
-            on: host
+            on: host,
+            sshConnectionArguments: sshConnectionArguments
         )
         switch HerdrSessionList.parseRecords(
             status: output.status,
@@ -125,12 +162,17 @@ struct HerdrSessionLifecycleClient: Sendable {
     }
 
     private func resolvedExecutable(
-        on host: CommandHost
+        on host: CommandHost,
+        sshConnectionArguments: [String]
     ) -> Result<String, HerdrSessionLifecycleError> {
         guard supportsHerdr(host) else {
             return .failure(.unsupportedPlatform)
         }
-        let output = run(HerdrExecutable.command(), on: host)
+        let output = run(
+            HerdrExecutable.command(),
+            on: host,
+            sshConnectionArguments: sshConnectionArguments
+        )
         switch HerdrExecutable.parse(
             status: output.status,
             stdout: output.stdout,
@@ -176,7 +218,8 @@ struct HerdrSessionLifecycleClient: Sendable {
 
     private func run(
         _ command: String,
-        on host: CommandHost
+        on host: CommandHost,
+        sshConnectionArguments: [String]
     ) -> AccountCommandOutput {
         switch host {
         case .local:
@@ -187,10 +230,18 @@ struct HerdrSessionLifecycleClient: Sendable {
         case let .ssh(info):
             commandRunner.runRemoteLoginShell(
                 host: info,
-                connectionArguments: connectionArgumentsProvider(info),
+                connectionArguments: sshConnectionArguments,
                 command: command,
                 timeout: processTimeout
             )
         }
+    }
+
+    private func connectionArguments(
+        on host: CommandHost,
+        frozen: [String]?
+    ) -> [String] {
+        guard case let .ssh(info) = host else { return [] }
+        return frozen ?? connectionArgumentsProvider(info)
     }
 }

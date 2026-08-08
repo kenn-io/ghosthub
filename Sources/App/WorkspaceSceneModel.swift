@@ -268,10 +268,10 @@ final class WorkspaceSceneModel: ObservableObject {
         CommandHost
     ) -> HerdrDiscoveryResult
     typealias HerdrSessionRecordReading = @Sendable (
-        String, CommandHost
+        String, CommandHost, [String]
     ) async -> Result<HerdrSessionRecord, HerdrSessionLifecycleError>
     typealias HerdrSessionMutating = @Sendable (
-        HerdrSessionLifecycleAction, HerdrSessionRecord, CommandHost
+        HerdrSessionLifecycleAction, HerdrSessionRecord, CommandHost, [String]
     ) async -> Result<HerdrSessionRecord, HerdrSessionLifecycleError>
     typealias TmuxSessionExactProbe = @Sendable (
         TmuxSessionProbeTarget
@@ -341,6 +341,14 @@ final class WorkspaceSceneModel: ObservableObject {
     private let herdrLifecycleCoordinator: HerdrSessionLifecycleCoordinator
     private let herdrSessionRecordReader: HerdrSessionRecordReading
     private let herdrSessionMutator: HerdrSessionMutating
+    private let herdrSSHConnectionSnapshotProvider:
+        @Sendable (SSHHostInfo) -> SSHConnectionArgumentsSnapshot
+    private struct HerdrLifecycleAuthority {
+        var host: CommandHost
+        var connection: SSHConnectionArgumentsSnapshot
+    }
+    private var herdrLifecycleAuthorities:
+        [UUID: HerdrLifecycleAuthority] = [:]
     private var fencedWorktreeMutationScopes:
         Set<WorktreeMutationCoordinator.Scope> = []
     private var worktreeRemovalTombstones:
@@ -902,23 +910,40 @@ final class WorkspaceSceneModel: ObservableObject {
         worktreeMutationCoordinator: WorktreeMutationCoordinator = .shared,
         herdrLifecycleCoordinator: HerdrSessionLifecycleCoordinator = .shared,
         herdrSessionRecordReader:
-        @escaping HerdrSessionRecordReading = { name, host in
+        @escaping HerdrSessionRecordReading = { name, host, arguments in
             await Task.detached(priority: .userInitiated) {
-                HerdrSessionLifecycleClient().record(named: name, on: host)
+                HerdrSessionLifecycleClient().record(
+                    named: name,
+                    on: host,
+                    sshConnectionArguments: arguments
+                )
             }.value
         },
         herdrSessionMutator:
-        @escaping HerdrSessionMutating = { action, record, host in
+        @escaping HerdrSessionMutating = { action, record, host, arguments in
             await Task.detached(priority: .userInitiated) {
                 let client = HerdrSessionLifecycleClient()
                 return switch action {
                 case .stop:
-                    client.stop(record, on: host)
+                    client.stop(
+                        record,
+                        on: host,
+                        sshConnectionArguments: arguments
+                    )
                 case .delete:
-                    client.delete(record, on: host)
+                    client.delete(
+                        record,
+                        on: host,
+                        sshConnectionArguments: arguments
+                    )
                 }
             }.value
         },
+        herdrSSHConnectionSnapshotProvider:
+        @escaping @Sendable (SSHHostInfo)
+            -> SSHConnectionArgumentsSnapshot = {
+                SSHCommandArguments.connectionSnapshot(for: $0)
+            },
         kwtBranchLister: @escaping KwtBranchLister = {
             projectPath, host in
             try await KwtWorktreeClient().branches(
@@ -1051,6 +1076,8 @@ final class WorkspaceSceneModel: ObservableObject {
         self.herdrLifecycleCoordinator = herdrLifecycleCoordinator
         self.herdrSessionRecordReader = herdrSessionRecordReader
         self.herdrSessionMutator = herdrSessionMutator
+        self.herdrSSHConnectionSnapshotProvider =
+            herdrSSHConnectionSnapshotProvider
         self.sceneSettings = sceneSettings
         self.terminalRuntime = terminalRuntime
         self.kwtInventoryLoader = kwtInventoryLoader
@@ -1203,8 +1230,14 @@ final class WorkspaceSceneModel: ObservableObject {
         nativeHerdrSessionCoordinatorBacking = NativeHerdrSessionCoordinator(
             terminalCoordinator: nativeHerdrSurfaceStore
                 ?? terminalCoordinator,
-            herdrPathProvider: nativeHerdrPathProvider ?? {
-                HerdrInventoryClient().resolveExecutable(on: $0)
+            herdrPathProvider: { host, arguments in
+                if let nativeHerdrPathProvider {
+                    return nativeHerdrPathProvider(host)
+                }
+                return HerdrInventoryClient().resolveExecutable(
+                    on: host,
+                    sshConnectionArguments: arguments
+                )
             },
             paneSplitCapabilityProvider:
             herdrPaneSplitCapabilityProvider ?? { host, arguments, path, name in
@@ -1657,6 +1690,7 @@ final class WorkspaceSceneModel: ObservableObject {
         activeBorrowedTmuxLaunchMode = nil
         cancelHerdrReconnect()
         failedHerdrLaunchIntent = nil
+        herdrLifecycleAuthorities.removeAll()
         herdrLifecycleCancellable?.cancel()
         kwtInventoryTask?.cancel()
         tmuxDiscoveryTask?.cancel()
@@ -4463,6 +4497,7 @@ final class WorkspaceSceneModel: ObservableObject {
     func createHerdrSession(
         _ selection: WorkspaceHerdrSessionSelection
     ) async throws {
+        let navigationRevision = userNavigationRevision
         guard let host = snapshot.host(id: selection.hostID),
               host.herdrAvailable
         else { throw HerdrSessionPresentationError.unavailable }
@@ -4471,7 +4506,11 @@ final class WorkspaceSceneModel: ObservableObject {
         }) else {
             throw HerdrSessionPresentationError.sessionExists(selection.name)
         }
-        guard try await revalidatedHerdrSession(selection) == nil else {
+        let currentSession = try await revalidatedHerdrSession(selection)
+        guard !Task.isCancelled,
+              navigationRevision == userNavigationRevision
+        else { throw CancellationError() }
+        guard currentSession == nil else {
             throw HerdrSessionPresentationError.sessionExists(selection.name)
         }
         try launchHerdrSession(selection, kind: .create)
@@ -4496,9 +4535,11 @@ final class WorkspaceSceneModel: ObservableObject {
             name: summary.name,
             action: action
         )
+        let connection = await herdrConnectionSnapshot(on: host)
         let record = try await herdrSessionRecordReader(
             selection.name,
-            host
+            host,
+            connection.arguments
         ).get()
         try Self.validateHerdrLifecycleState(
             record.state,
@@ -4506,7 +4547,13 @@ final class WorkspaceSceneModel: ObservableObject {
             name: record.name,
             action: action
         )
+        let authorityID = UUID()
+        herdrLifecycleAuthorities[authorityID] = HerdrLifecycleAuthority(
+            host: host,
+            connection: connection
+        )
         return HerdrSessionLifecycleRequest(
+            authorityID: authorityID,
             session: selection,
             confirmedHost: hostSummary,
             isDefault: record.isDefault,
@@ -4520,17 +4567,27 @@ final class WorkspaceSceneModel: ObservableObject {
         _ request: HerdrSessionLifecycleRequest
     ) async throws {
         let selection = request.session
-        guard request.confirmedHost.id == selection.hostID,
-              let confirmedHost = CommandHostResolver.resolve(
-                  request.confirmedHost
-              ),
-              let currentHostSummary = snapshot.host(id: selection.hostID),
-              currentHostSummary.herdrAvailable,
-              let currentHost = CommandHostResolver.resolve(
-                  currentHostSummary
-              ),
-              currentHost == confirmedHost
+        guard let authority = herdrLifecycleAuthorities.removeValue(
+            forKey: request.authorityID
+        ),
+            request.confirmedHost.id == selection.hostID,
+            let confirmedHost = CommandHostResolver.resolve(
+                request.confirmedHost
+            ),
+            let currentHostSummary = snapshot.host(id: selection.hostID),
+            currentHostSummary.herdrAvailable,
+            let currentHost = CommandHostResolver.resolve(
+                currentHostSummary
+            ),
+            currentHost == confirmedHost,
+            authority.host == currentHost
         else {
+            throw HerdrSessionLifecycleRequestError.hostChanged(
+                selection.name
+            )
+        }
+        let currentConnection = await herdrConnectionSnapshot(on: currentHost)
+        guard currentConnection.cacheKey == authority.connection.cacheKey else {
             throw HerdrSessionLifecycleRequestError.hostChanged(
                 selection.name
             )
@@ -4554,7 +4611,8 @@ final class WorkspaceSceneModel: ObservableObject {
 
         let record = try await herdrSessionRecordReader(
             selection.name,
-            currentHost
+            currentHost,
+            authority.connection.arguments
         ).get()
         guard record.isDefault == request.isDefault,
               record.sessionDirectory == request.confirmedSessionDirectory,
@@ -4576,9 +4634,28 @@ final class WorkspaceSceneModel: ObservableObject {
         _ = try await herdrSessionMutator(
             lifecycleAction,
             record,
-            currentHost
+            currentHost,
+            authority.connection.arguments
         ).get()
         outcome = .succeeded
+    }
+
+    func cancelPreparedHerdrSessionLifecycle(
+        _ request: HerdrSessionLifecycleRequest
+    ) {
+        herdrLifecycleAuthorities.removeValue(forKey: request.authorityID)
+    }
+
+    private func herdrConnectionSnapshot(
+        on host: CommandHost
+    ) async -> SSHConnectionArgumentsSnapshot {
+        guard case let .ssh(info) = host else {
+            return SSHConnectionArgumentsSnapshot(arguments: [])
+        }
+        let provider = herdrSSHConnectionSnapshotProvider
+        return await Task.detached(priority: .userInitiated) {
+            provider(info)
+        }.value
     }
 
     private static func validateHerdrLifecycleState(

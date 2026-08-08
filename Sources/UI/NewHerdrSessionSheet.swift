@@ -41,6 +41,7 @@ enum HerdrSessionName {
 
 struct NewHerdrSessionSheet: View {
     let hosts: [HostSummary]
+    let isCreating: Bool
     let onCreate: (HostSummary, String) -> Void
     let onCancel: () -> Void
 
@@ -51,11 +52,13 @@ struct NewHerdrSessionSheet: View {
     init(
         host: HostSummary,
         hosts: [HostSummary],
+        isCreating: Bool,
         onCreate: @escaping (HostSummary, String) -> Void,
         onCancel: @escaping () -> Void
     ) {
         let availableHosts = hosts.filter(\.herdrAvailable)
         self.hosts = availableHosts
+        self.isCreating = isCreating
         _selectedHost = State(initialValue:
             availableHosts.first(where: { $0.id == host.id })
                 ?? availableHosts.first ?? host)
@@ -72,7 +75,8 @@ struct NewHerdrSessionSheet: View {
     }
 
     private var canCreate: Bool {
-        selectedHost.herdrAvailable
+        !isCreating
+            && selectedHost.herdrAvailable
             && HerdrSessionName.isValid(normalizedName)
             && !existingNames.contains(normalizedName)
     }
@@ -116,6 +120,7 @@ struct NewHerdrSessionSheet: View {
                     .font(.system(size: 16))
                     .focused($isNameFieldFocused)
                     .onSubmit(create)
+                    .disabled(isCreating)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 13)

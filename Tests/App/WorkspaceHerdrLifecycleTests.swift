@@ -170,10 +170,10 @@ struct WorkspaceHerdrLifecycleTests {
             nativeHerdrSurfaceStore: store,
             nativeHerdrPathProvider: { _ in .success("/usr/bin/herdr") },
             herdrLifecycleCoordinator: coordinator,
-            herdrSessionRecordReader: { name, _ in
+            herdrSessionRecordReader: { name, _, _ in
                 client.record(named: name)
             },
-            herdrSessionMutator: { action, confirmed, _ in
+            herdrSessionMutator: { action, confirmed, _, _ in
                 client.mutate(action, confirmed: confirmed)
             },
             herdrSessionDiscovery: { _ in
@@ -250,6 +250,61 @@ struct WorkspaceHerdrLifecycleTests {
         model.snapshot.hosts[0].kind = .remote
         model.snapshot.hosts[0].platform = .linux
         model.snapshot.hosts[0].sshDestination = "agent@new-host.test"
+
+        await #expect(throws: HerdrSessionLifecycleRequestError.self) {
+            try await model.performHerdrSessionLifecycle(request)
+        }
+        #expect(client.mutationCount == 0)
+        await model.shutdown()
+    }
+
+    @Test("effective SSH route drift invalidates a confirmed request")
+    func effectiveSSHRouteChange() async throws {
+        var environment = try environment()
+        environment.snapshot.hosts[0] = .fixture(
+            id: environment.hostID,
+            name: "Builder",
+            kind: .remote,
+            platform: .linux,
+            sshDestination: "dev@build-alias",
+            herdrSessions: [
+                .init(name: "agent", isDefault: false, state: .running),
+            ],
+            herdrAvailable: true
+        )
+        let client = LifecycleClientStub(records: [
+            "agent": Self.record(name: "agent", state: .running),
+        ])
+        let route = Mutex(0)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.hostID,
+            snapshot: environment.snapshot,
+            nativeHerdrPathProvider: { _ in .success("/usr/bin/herdr") },
+            herdrSessionRecordReader: { name, _, _ in
+                client.record(named: name)
+            },
+            herdrSessionMutator: { action, confirmed, _, _ in
+                client.mutate(action, confirmed: confirmed)
+            },
+            herdrSSHConnectionSnapshotProvider: { _ in
+                let number = route.withLock { value in
+                    value += 1
+                    return value
+                }
+                return SSHConnectionArgumentsSnapshot(arguments: [
+                    "-o", "HostName=route-\(number).example.test",
+                ])
+            }
+        )
+        let selection = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID,
+            name: "agent"
+        )
+        let request = try await model.prepareHerdrSessionLifecycle(
+            selection,
+            action: .stop
+        )
 
         await #expect(throws: HerdrSessionLifecycleRequestError.self) {
             try await model.performHerdrSessionLifecycle(request)
@@ -483,10 +538,10 @@ struct WorkspaceHerdrLifecycleTests {
             snapshot: environment.snapshot,
             nativeHerdrPathProvider: { _ in .success("/usr/bin/herdr") },
             herdrLifecycleCoordinator: coordinator,
-            herdrSessionRecordReader: { name, _ in
+            herdrSessionRecordReader: { name, _, _ in
                 client.record(named: name)
             },
-            herdrSessionMutator: { action, confirmed, _ in
+            herdrSessionMutator: { action, confirmed, _, _ in
                 client.mutate(action, confirmed: confirmed)
             },
             herdrSessionDiscovery: discovery ?? { _ in
