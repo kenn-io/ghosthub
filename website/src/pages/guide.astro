@@ -115,6 +115,12 @@ const imageAlt = {
             lifecycle controls, and backend ownership.
           </p>
           <p>
+            In a connected tmux 3.4+ or Herdr 0.8.0+ terminal, press{' '}
+            <kbd>⌘D</kbd> to split right or <kbd>⇧⌘D</kbd> to split down.
+            Ghosthub sends that one request to the active multiplexer; tmux or
+            Herdr still owns the focused pane, layout, and resulting process.
+          </p>
+          <p>
             Switching between tmux sessions and worktrees keeps each opened
             tmux terminal connected, so returning picks up where you left off.
             Press <kbd>⌘W</kbd> to detach only the active terminal; your work

@@ -308,6 +308,9 @@ func makeModel(
     (@Sendable () -> Result<ResolvedTmuxBinary, TmuxBinaryError>)? = nil,
     nativeHerdrPathProvider: (@Sendable (CommandHost)
         -> Result<String, HerdrCommandError>)? = nil,
+    herdrPaneSplitCapabilityProvider:
+    NativeHerdrSessionCoordinator.PaneSplitCapabilityProvider? = nil,
+    herdrPaneSplitter: HerdrPaneSplitter = HerdrPaneSplitter(),
     localKwtPathProvider: @escaping @Sendable () -> String? = {
         KwtBinaryLocator.bundledPath()
     },
@@ -450,6 +453,8 @@ func makeModel(
         nativeHerdrSurfaceStore: nativeHerdrSurfaceStore,
         nativeTmuxPathProvider: nativeTmuxPathProvider,
         nativeHerdrPathProvider: nativeHerdrPathProvider,
+        herdrPaneSplitCapabilityProvider: herdrPaneSplitCapabilityProvider,
+        herdrPaneSplitter: herdrPaneSplitter,
         localKwtPathProvider: localKwtPathProvider,
         remoteTmuxPathProvider: remoteTmuxPathProvider,
         tmuxPresentationStyleProvider: tmuxPresentationStyleProvider,

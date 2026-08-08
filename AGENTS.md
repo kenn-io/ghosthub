@@ -44,8 +44,11 @@ layer, as subject to direct iteration.
 - Ghosthub never reconstructs Herdr workspaces, tabs, panes, history, or
   terminal output in Swift, and does not use Herdr as worktree authority.
   Whole-session create, stop, restart, and delete are the only Herdr lifecycle
-  controls. Ghosthub never manages Herdr themes, workspaces, tabs, panes,
-  agents, plugins, installation, updates, configuration, or server-wide state.
+  controls. The explicit Split Right and Split Down app actions may request one
+  pane split from a capable active Herdr attachment; Herdr still chooses the
+  focused pane and owns the resulting layout. Ghosthub never otherwise manages
+  Herdr themes, workspaces, tabs, panes, agents, plugins, installation, updates,
+  configuration, or server-wide state.
 - Ghosthub has no Middleman runtime or API dependency.
 
 ## Source of Truth Hierarchy

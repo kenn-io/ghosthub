@@ -125,7 +125,7 @@ struct WorkspaceTmuxThemeTests {
         )
         await connectActiveTmuxSession(windowsModel, store: windowsStore)
         #expect(!windowsModel.canApplyThemeToActiveTmuxSession)
-        #expect(!windowsModel.canSplitActiveTmuxPane)
+        #expect(!windowsModel.canSplitActivePane)
         await windowsModel.shutdown()
     }
 

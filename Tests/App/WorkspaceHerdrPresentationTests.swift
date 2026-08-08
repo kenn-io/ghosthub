@@ -38,6 +38,46 @@ struct WorkspaceHerdrPresentationTests {
         await model.shutdown()
     }
 
+    @Test("active capable Herdr presentation routes pane splits")
+    func activeHerdrPaneSplitRouting() async throws {
+        let environment = try environment()
+        let store = RecordingNativeSessionSurfaceStore()
+        let commands = Mutex<[String]>([])
+        let model = try makeHerdrModel(
+            environment,
+            store: store,
+            paneSplitCapabilityProvider: { _, _, _, name in
+                .success(HerdrPaneSplitCapability(
+                    version: .paneSplitting,
+                    session: HerdrSessionRecord(
+                        name: name,
+                        isDefault: true,
+                        state: .running,
+                        sessionDirectory: "/tmp/herdr/\(name)",
+                        socketPath: "/tmp/herdr/\(name)/herdr.sock"
+                    )
+                ))
+            },
+            paneSplitter: HerdrPaneSplitter { _, _, command in
+                commands.withLock { $0.append(command) }
+                return (0, "")
+            }
+        )
+        let selection = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID,
+            name: "api"
+        )
+
+        try await model.openBorrowedHerdrSession(selection)
+        await launchHerdrSurface(model, store: store)
+        await waitUntilMainActor { model.canSplitActivePane }
+        model.splitActivePane(.down)
+        await waitUntilMainActor { commands.withLock(\.count) == 1 }
+
+        #expect(commands.withLock { $0[0] }.contains("'--direction' 'down'"))
+        await model.shutdown()
+    }
+
     @Test("another Herdr session replaces the client; reselecting preserves it")
     func herdrIdentity() async throws {
         let environment = try environment()
@@ -808,6 +848,9 @@ struct WorkspaceHerdrPresentationTests {
             -> Result<String, HerdrCommandError> = {
                 _ in .success("/usr/bin/herdr")
             },
+        paneSplitCapabilityProvider: @escaping NativeHerdrSessionCoordinator
+            .PaneSplitCapabilityProvider = { _, _, _, _ in .success(nil) },
+        paneSplitter: HerdrPaneSplitter = HerdrPaneSplitter(),
         createdSessionDiscoveryDelays: [Duration] = [
             .milliseconds(500),
             .seconds(1),
@@ -827,6 +870,8 @@ struct WorkspaceHerdrPresentationTests {
                 successfulTmuxResolution("/usr/bin/tmux")
             },
             nativeHerdrPathProvider: nativeHerdrPathProvider,
+            herdrPaneSplitCapabilityProvider: paneSplitCapabilityProvider,
+            herdrPaneSplitter: paneSplitter,
             remoteTmuxPathProvider: { _, _ in
                 successfulTmuxResolution("/usr/bin/tmux")
             },

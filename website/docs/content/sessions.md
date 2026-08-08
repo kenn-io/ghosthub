@@ -146,6 +146,7 @@ destroys a tmux session only after an explicit, confirmed **Kill Session**
 action or as part of confirmed worktree removal when that worktree has a
 verified live session. Sessions created outside Ghosthub receive the same
 protection as sessions created inside it. For Herdr, Ghosthub manages only
-whole-session create, stop, restart, and delete. Herdr continues to own themes,
-workspaces, tabs, panes, agents, plugins, configuration, updates, and internal
-process behavior.
+whole-session create, stop, restart, and delete, plus the explicit Split Right
+and Split Down requests against a connected Herdr 0.8.0-or-newer session. Herdr
+selects the focused pane and continues to own themes, workspaces, tabs, panes,
+agents, plugins, configuration, updates, and internal process behavior.

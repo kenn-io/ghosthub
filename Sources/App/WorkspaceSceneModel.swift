@@ -544,7 +544,7 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         return borrowedTmuxConnectionStates[handle.id] == .connected
     }
-    var canSplitActiveTmuxPane: Bool {
+    private var canSplitActiveTmuxPane: Bool {
         guard let selection = activeBorrowedTmuxSelection,
               isConnectedActiveTmuxSession(selection),
               let handle = activeBorrowedTmuxHandle,
@@ -553,18 +553,36 @@ final class WorkspaceSceneModel: ObservableObject {
         return true
     }
 
-    func splitActiveTmuxPane(
+    private var canSplitActiveHerdrPane: Bool {
+        guard let handle = activeBorrowedHerdrHandle,
+              borrowedHerdrConnectionStates[handle.id] == .connected,
+              nativeHerdrSessionCoordinator.supportsPaneSplitting(handle)
+        else { return false }
+        return true
+    }
+
+    var canSplitActivePane: Bool {
+        canSplitActiveTmuxPane || canSplitActiveHerdrPane
+    }
+
+    func splitActivePane(
         _ shortcut: TerminalPaneSplitShortcut,
         requiresKeyboardFocus: Bool = false
     ) {
-        guard canSplitActiveTmuxPane,
-              let handle = activeBorrowedTmuxHandle
-        else { return }
-        nativeTmuxSessionCoordinator.requestPaneSplit(
-            shortcut,
-            handle: handle,
-            requiresKeyboardFocus: requiresKeyboardFocus
-        )
+        if canSplitActiveTmuxPane, let handle = activeBorrowedTmuxHandle {
+            nativeTmuxSessionCoordinator.requestPaneSplit(
+                shortcut,
+                handle: handle,
+                requiresKeyboardFocus: requiresKeyboardFocus
+            )
+        } else if canSplitActiveHerdrPane,
+                  let handle = activeBorrowedHerdrHandle {
+            nativeHerdrSessionCoordinator.requestPaneSplit(
+                shortcut,
+                handle: handle,
+                requiresKeyboardFocus: requiresKeyboardFocus
+            )
+        }
     }
 
     var canApplyThemeToActiveTmuxSession: Bool {
@@ -840,6 +858,9 @@ final class WorkspaceSceneModel: ObservableObject {
         (@Sendable () -> Result<ResolvedTmuxBinary, TmuxBinaryError>)? = nil,
         nativeHerdrPathProvider: (@Sendable (CommandHost)
             -> Result<String, HerdrCommandError>)? = nil,
+        herdrPaneSplitCapabilityProvider:
+        NativeHerdrSessionCoordinator.PaneSplitCapabilityProvider? = nil,
+        herdrPaneSplitter: HerdrPaneSplitter = HerdrPaneSplitter(),
         localKwtPathProvider: @escaping @Sendable () -> String? = {
             KwtBinaryLocator.bundledPath()
         },
@@ -1184,7 +1205,17 @@ final class WorkspaceSceneModel: ObservableObject {
                 ?? terminalCoordinator,
             herdrPathProvider: nativeHerdrPathProvider ?? {
                 HerdrInventoryClient().resolveExecutable(on: $0)
-            }
+            },
+            paneSplitCapabilityProvider:
+            herdrPaneSplitCapabilityProvider ?? { host, arguments, path, name in
+                HerdrInventoryClient().paneSplitCapability(
+                    on: host,
+                    herdrPath: path,
+                    sessionName: name,
+                    sshConnectionArguments: arguments
+                )
+            },
+            paneSplitter: herdrPaneSplitter
         )
         nativeHerdrSessionCoordinatorBacking?.onStateChanged = {
             [weak self] handle, state in
@@ -5776,6 +5807,11 @@ final class WorkspaceSceneModel: ObservableObject {
         pendingHerdrLaunchOperations.removeValue(forKey: handleID)
         herdrLaunchConfirmationTasks.removeValue(forKey: handleID)
         herdrLifecycleCoordinator.finish(operation, outcome: outcome)
+        if outcome == .succeeded,
+           let handle = activeBorrowedHerdrHandle,
+           handle.id == handleID {
+            nativeHerdrSessionCoordinator.refreshPaneSplitCapability(handle)
+        }
     }
 
     private func startHerdrReconnect(

@@ -118,8 +118,36 @@ state, and the processes inside each session. Ghosthub owns discovery,
 whole-session lifecycle requests, and the disposable client presentation. Each
 scene may present either one tmux client or one Herdr client, never both.
 Navigating away, pressing Cmd-W, closing a window, or quitting closes only the
-client. Ghosthub never controls Herdr themes, workspaces, tabs, panes, agents,
-plugins, installation, updates, configuration, or server-wide state.
+client. Ghosthub never reconstructs or otherwise controls Herdr themes,
+workspaces, tabs, panes, agents, plugins, installation, updates, configuration,
+or server-wide state. The sole pane-level exception is an explicit Split Right
+or Split Down request against the active attachment, described below.
+
+### Herdr pane splitting
+
+Cmd-D and Cmd-Shift-D, plus the matching File menu actions, request
+`herdr pane split --direction right|down --focus` when the active Herdr client
+reports version 0.8.0 or newer and its exact session is running. Capability is
+probed independently for each attachment and refreshed after Create or Restart.
+Older or malformed versions leave these app shortcuts unavailable and preserve
+ordinary terminal input.
+
+Each split uses the Herdr executable, SSH arguments, and session socket frozen
+on that attachment. Ghosthub first removes every inherited Herdr control
+variable, then sets only `HERDR_SOCKET_PATH` to that socket. It deliberately
+omits `pane_id`: Herdr 0.8.0 uses one session-global focused pane, so the server
+selects the pane the attached clients see. Ghosthub does not synthesize Herdr
+key bindings or reconstruct the resulting pane tree.
+
+Requests serialize per attachment. Detaching prevents queued requests from
+being dispatched; results from an abandoned in-flight request are discarded,
+although a command already delivered to Herdr may still take effect. Split
+failures are not retried and appear over the active terminal. Herdr exposes no
+stable session-generation or client identifier, and its socket path is derived
+from the session name, so this constructive operation cannot receive tmux's
+replacement-identity guarantee. The session-global-focus premise was verified
+against Herdr 0.8.0; later supported versions are trusted to retain that API
+contract.
 
 ### Herdr session lifecycle
 
@@ -257,9 +285,10 @@ styling and identity commands. On Windows, those phases use encoded
 PowerShell commands within the same OpenSSH account environment. Unbound
 discovered sessions remain attach-only.
 Ghosthub does not expose rename, resize, or window operations. On an attached
-tmux terminal, Cmd-D and Cmd-Shift-D request Ghostty-style split-right and
-split-down operations; the File menu exposes the same actions and shortcuts.
-These actions require tmux 3.4 or newer; Ghosthub checks the binary on each
+tmux or capable Herdr terminal, Cmd-D and Cmd-Shift-D request Ghostty-style
+split-right and split-down operations; the File menu exposes the same actions
+and shortcuts. The Herdr routing contract is documented above. For tmux,
+these actions require tmux 3.4 or newer; Ghosthub checks the binary on each
 local or remote attachment and leaves normal tmux key bindings available on
 older versions. On supported POSIX hosts, Ghosthub runs `split-window -h` or
 `split-window -v` against the active pane of that attachment's exact host and
@@ -525,11 +554,12 @@ session model and die with the app process.
   tmux and the documented Herdr control variables for Herdr so an enclosing
   multiplexer cannot redirect the client.
 - Do not read or depend on Ghostty.app global config.
-- Do not install Ghosthub-owned layout, zoom, or tab management. Native tmux
-  owns those interactions. Explicit app shortcuts may request a semantic tmux
-  operation against the active attachment, such as pane splitting.
-- Do not install Herdr workspace, tab, or pane keybindings. The whole-session
-  Herdr client receives ordinary terminal input unchanged.
+- Do not install Ghosthub-owned layout, zoom, or tab management. Each backend
+  owns those interactions. Explicit app shortcuts may request a semantic split
+  operation against the active tmux or Herdr attachment.
+- Do not install Herdr workspace, tab, or pane keybindings. Apart from the
+  explicit Split Right and Split Down app commands on capable attachments, the
+  whole-session Herdr client receives ordinary terminal input unchanged.
 - Do not disable libghostty shell integration to work around keybinding
   bugs.
 

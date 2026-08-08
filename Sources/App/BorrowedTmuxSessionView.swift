@@ -237,15 +237,7 @@ private struct NativeTmuxTerminalView: View {
         .background(Color(nsColor: .textBackgroundColor))
         .overlay(alignment: .top) {
             if let message = surfaceView.paneSplitErrorMessage {
-                Label(message, systemImage: "exclamationmark.triangle.fill")
-                    .font(.callout)
-                    .padding(10)
-                    .background(
-                        .regularMaterial,
-                        in: RoundedRectangle(cornerRadius: 8)
-                    )
-                    .padding()
-                    .allowsHitTesting(false)
+                NativePaneSplitErrorOverlay(message: message)
             }
         }
         .onAppear {

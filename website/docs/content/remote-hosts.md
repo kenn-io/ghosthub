@@ -17,9 +17,9 @@ A macOS or Linux host needs:
 - tmux 3.2 or newer
 - a destination that your Mac's OpenSSH configuration can resolve
 
-Ghosthub checks the remote tmux version when attaching. Cmd-D and Cmd-Shift-D
-pane splitting is available with tmux 3.4 or newer; older versions continue to
-work through their normal tmux key bindings.
+Ghosthub checks the remote multiplexer version when attaching. Cmd-D and
+Cmd-Shift-D pane splitting is available with tmux 3.4 or newer or Herdr 0.8.0
+or newer; older versions continue to work through their normal key bindings.
 
 Test the same destination in Terminal first when diagnosing configuration or
 authentication:

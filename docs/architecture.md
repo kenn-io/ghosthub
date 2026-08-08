@@ -437,9 +437,10 @@ Herdr discovery and attachment are supported on the local Mac and configured
 remote POSIX hosts, not experimental Windows/psmux hosts. Ghosthub shows
 running and stopped sessions. Ordinary open and restoration are attach-only;
 Create and Restart use Herdr's launch-or-attach path. Ghosthub manages only
-whole-session create, stop, restart, and delete. Herdr still owns themes,
-workspaces, tabs, panes, agents, plugins, configuration, updates, and every
-process inside a session.
+whole-session create, stop, restart, and delete. The explicit Split Right and
+Split Down app commands may ask a capable active Herdr attachment to split its
+session-global focused pane; Herdr still owns themes, workspaces, tabs, panes,
+agents, plugins, configuration, updates, and every process inside a session.
 
 Stop terminates every process in the session but preserves Herdr's saved
 workspace/tab/pane shape. Restart restores that shape with new processes.
@@ -475,7 +476,7 @@ replacement. Inactive presentations remain supervised. Tmux owns all windows,
 panes, history, input, rendering, and server-side lifetime.
 
 Cmd-D and Cmd-Shift-D provide Ghostty-style split-right and split-down actions,
-also exposed in the File menu when the attached host reports tmux 3.4 or newer.
+also exposed in the File menu. A tmux attachment requires tmux 3.4 or newer.
 Each explicit action runs `split-window -h` or `split-window -v` against the
 active pane of the attachment's exact host and socket. The attachment retains
 its resolved SSH configuration and effective endpoint, so a later SSH alias
@@ -488,7 +489,19 @@ client switched to another session after binding. Requests
 are serialized per attachment; detaching cancels the active command and queue.
 Keyboard equivalents require effective terminal focus and no attached sheet;
 clicking the File menu action remains an explicit request. This semantic routing
-is independent of the user's tmux prefix and key tables. Command failures appear
+has a Herdr counterpart for version 0.8.0 or newer. Capability discovery binds
+the resolved executable, SSH arguments, and exact running session socket to the
+attachment. Each serialized request scrubs inherited Herdr control variables,
+sets only that socket, and asks Herdr to split and focus right or down without a
+pane identifier. Herdr's session-global focus remains authoritative; Ghosthub
+does not inspect or rebuild its pane model. Detach drops queued requests and
+late results. There is no stable Herdr session-generation or client identity,
+so the constructive split accepts the documented same-name/socket replacement
+limit rather than claiming tmux-strength identity protection. The focus premise
+was verified against Herdr 0.8.0.
+
+Tmux semantic routing is independent of the user's prefix and key tables.
+Command failures appear
 on the attachment rather than silently disappearing. Ghosthub does not maintain
 a parallel pane model; tmux remains layout and process authority. Native Windows
 psmux surfaces do not expose or intercept these split actions.

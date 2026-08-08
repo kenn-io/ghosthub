@@ -306,7 +306,7 @@ struct GhosthubApp: App {
             Divider()
 
             Button("Split Right") {
-                focusedSceneModel?.splitActiveTmuxPane(
+                focusedSceneModel?.splitActivePane(
                     .right,
                     requiresKeyboardFocus: PaneSplitCommand
                         .requiresKeyboardFocus(.right)
@@ -315,15 +315,15 @@ struct GhosthubApp: App {
             .keyboardShortcut(
                 PaneSplitCommand.usesKeyboardShortcut(
                     canSplit:
-                    focusedSceneModel?.canSplitActiveTmuxPane == true,
+                    focusedSceneModel?.canSplitActivePane == true,
                     hasEffectiveKeyboardFocus:
                     terminalHasEffectiveKeyboardFocus == true
                 ) ? KeyboardShortcut("d") : nil
             )
-            .disabled(focusedSceneModel?.canSplitActiveTmuxPane != true)
+            .disabled(focusedSceneModel?.canSplitActivePane != true)
 
             Button("Split Down") {
-                focusedSceneModel?.splitActiveTmuxPane(
+                focusedSceneModel?.splitActivePane(
                     .down,
                     requiresKeyboardFocus: PaneSplitCommand
                         .requiresKeyboardFocus(.down)
@@ -332,7 +332,7 @@ struct GhosthubApp: App {
             .keyboardShortcut(
                 PaneSplitCommand.usesKeyboardShortcut(
                     canSplit:
-                    focusedSceneModel?.canSplitActiveTmuxPane == true,
+                    focusedSceneModel?.canSplitActivePane == true,
                     hasEffectiveKeyboardFocus:
                     terminalHasEffectiveKeyboardFocus == true
                 ) ? KeyboardShortcut(
@@ -340,7 +340,7 @@ struct GhosthubApp: App {
                     modifiers: [.command, .shift]
                 ) : nil
             )
-            .disabled(focusedSceneModel?.canSplitActiveTmuxPane != true)
+            .disabled(focusedSceneModel?.canSplitActivePane != true)
 
             Divider()
 

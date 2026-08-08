@@ -168,6 +168,11 @@ private struct NativeHerdrTerminalView: View {
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .textBackgroundColor))
+        .overlay(alignment: .top) {
+            if let message = surfaceView.paneSplitErrorMessage {
+                NativePaneSplitErrorOverlay(message: message)
+            }
+        }
         .onAppear {
             surfaceView.registerPaneCloseRequestObserver(
                 id: observerID,
@@ -181,5 +186,9 @@ private struct NativeHerdrTerminalView: View {
         .onDisappear {
             surfaceView.unregisterPaneFocusObserver(id: observerID)
         }
+        .focusedSceneValue(
+            \.terminalHasEffectiveKeyboardFocus,
+            surfaceView.hasEffectiveKeyboardFocus
+        )
     }
 }

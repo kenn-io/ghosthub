@@ -285,8 +285,24 @@ equivalents require effective terminal focus and no attached sheet; selecting
 the File menu item is itself an explicit request. This bypasses tmux key
 bindings by design but leaves pane creation, layout, and process startup inside
 tmux. Native Windows psmux surfaces do not expose or intercept the pane-split
-actions. The separate
-Kill Session action is offered only for a session established as running by
+actions.
+
+For Herdr 0.8.0 or newer, the same explicit split actions grant one-shot
+authority to run `herdr pane split --direction right|down --focus` through the
+active attachment's frozen endpoint, SSH configuration, executable, and session
+socket. The command environment removes inherited Herdr routing variables and
+sets only `HERDR_SOCKET_PATH`; it does not accept an external pane identifier.
+Herdr's server chooses its session-global focused pane and remains responsible
+for pane creation and layout. Requests serialize per attachment, are not
+retried, and queued requests are dropped when the attachment is invalidated.
+Herdr exposes neither a stable session-generation identifier nor a client
+identifier, while its socket path is name-derived. A same-name replacement can
+therefore inherit this low-harm constructive authority; Ghosthub documents that
+limit instead of representing the stronger tmux identity guarantee. Shared
+focus was verified on Herdr 0.8.0, and supported later versions are trusted to
+preserve the contract.
+
+The separate Kill Session action is offered only for a session established as running by
 discovery or a currently connected active attachment. Before confirmation,
 Ghosthub binds the selected endpoint, socket, exact target, and tmux
 server PID, `session_id`, and `session_created` identity. One tmux conditional
