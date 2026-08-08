@@ -2622,7 +2622,7 @@ final class WorkspaceSceneModel: ObservableObject {
             suppressedHerdrStops.removeValue(forKey: event.operation.id)
             switch event.operation.kind {
             case .create, .restart:
-                refreshHerdrInventoryAfterConstructiveLifecycle(
+                refreshHerdrInventory(
                     hostID: selection.hostID
                 )
             case .stop, .delete:
@@ -2634,7 +2634,7 @@ final class WorkspaceSceneModel: ObservableObject {
         case .failed:
             switch event.operation.kind {
             case .create, .restart:
-                refreshHerdrInventoryAfterConstructiveLifecycle(
+                refreshHerdrInventory(
                     hostID: selection.hostID
                 )
             case .stop, .delete:
@@ -2649,7 +2649,7 @@ final class WorkspaceSceneModel: ObservableObject {
         }
     }
 
-    private func refreshHerdrInventoryAfterConstructiveLifecycle(
+    private func refreshHerdrInventory(
         hostID: UUID
     ) {
         objectWillChange.send()
@@ -4347,7 +4347,9 @@ final class WorkspaceSceneModel: ObservableObject {
                     )
                 },
                 onRetryRequest: { [weak self] in
-                    self?.retryBorrowedHerdrSession(selection)
+                    Task { @MainActor [weak self] in
+                        await self?.retryBorrowedHerdrSession(selection)
+                    }
                 },
                 onReconnectNow: onReconnectNow,
                 onReviewConnection: onReviewConnection,
@@ -4666,8 +4668,17 @@ final class WorkspaceSceneModel: ObservableObject {
 
     func retryBorrowedHerdrSession(
         _ selection: WorkspaceHerdrSessionSelection
-    ) {
+    ) async {
         guard activeBorrowedHerdrSelection == selection else { return }
+        let key = HerdrSessionLifecycleCoordinator.Key(
+            hostID: selection.hostID,
+            sessionName: selection.name
+        )
+        guard !herdrLifecycleCoordinator.isPending(key),
+              !suppressedHerdrStops.values.contains(where: {
+                  $0.selection == selection
+              })
+        else { return }
         if let intent = failedHerdrLaunchIntent,
            intent.selection == selection {
             do {
@@ -4675,6 +4686,40 @@ final class WorkspaceSceneModel: ObservableObject {
                 prepareActiveBorrowedHerdrSurface()
             } catch {
                 failedHerdrLaunchIntent = intent
+            }
+            return
+        }
+        guard let handle = activeBorrowedHerdrHandle,
+              let hostSummary = snapshot.host(id: selection.hostID),
+              let host = CommandHostResolver.resolve(hostSummary)
+        else { return }
+        herdrSessionProbeBroker.invalidateSessions(on: host)
+        let outcome = await herdrSessionProbeBroker.session(
+            named: selection.name,
+            on: host
+        )
+        guard !Task.isCancelled,
+              activeBorrowedHerdrSelection == selection,
+              activeBorrowedHerdrHandle == handle,
+              snapshot.host(id: selection.hostID)
+              .flatMap(CommandHostResolver.resolve) == host,
+              !herdrLifecycleCoordinator.isPending(key),
+              !suppressedHerdrStops.values.contains(where: {
+                  $0.selection == selection
+              })
+        else { return }
+        guard outcome == .present else {
+            switch outcome {
+            case .absent, .unavailable:
+                refreshHerdrInventory(hostID: selection.hostID)
+            case .failure(.cancelled):
+                break
+            case let .failure(error):
+                stopHerdrReconnectWithUnableToAttach(
+                    error.localizedDescription
+                )
+            case .present:
+                break
             }
             return
         }
@@ -5573,6 +5618,7 @@ final class WorkspaceSceneModel: ObservableObject {
         switch nativeHerdrSessionCoordinator.attachmentClosure(handle) {
         case .detached:
             cancelHerdrReconnect()
+            refreshHerdrInventory(hostID: handle.hostID)
         case let .processExited(code):
             guard var context = activeHerdrReconnectContext,
                   context.handleID == handle.id,
@@ -5580,6 +5626,7 @@ final class WorkspaceSceneModel: ObservableObject {
                   code == 255
             else {
                 cancelHerdrReconnect()
+                refreshHerdrInventory(hostID: handle.hostID)
                 return
             }
             context.surfaceExitCode = code
@@ -5726,6 +5773,7 @@ final class WorkspaceSceneModel: ObservableObject {
             borrowedHerdrConnectionStates[context.handleID] = .disconnected(
                 reason: "The Herdr session is no longer running."
             )
+            refreshHerdrInventory(hostID: context.selection.hostID)
             return .stop
         case .unavailable:
             activeBorrowedHerdrRecoveryState = nil
@@ -5733,6 +5781,7 @@ final class WorkspaceSceneModel: ObservableObject {
             borrowedHerdrConnectionStates[context.handleID] = .disconnected(
                 reason: "Herdr is no longer available on this host."
             )
+            refreshHerdrInventory(hostID: context.selection.hostID)
             return .stop
         case .failure(.cancelled):
             return .retry

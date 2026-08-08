@@ -227,7 +227,7 @@ struct WorkspaceHerdrPresentationTests {
         await launchHerdrSurface(model, store: store)
         await waitUntilMainActor { !coordinator.isPending(key) }
 
-        model.retryBorrowedHerdrSession(selection)
+        await model.retryBorrowedHerdrSession(selection)
         await waitUntilMainActor {
             model.prepareActiveBorrowedHerdrSurface()
             return store.requestedConfigurations.count == 2
@@ -237,6 +237,67 @@ struct WorkspaceHerdrPresentationTests {
         #expect(command.contains("--session"))
         #expect(!command.contains("session attach"))
         #expect(coordinator.isPending(key))
+        await model.shutdown()
+    }
+
+    @Test("manual retry respects destructive lifecycle fences")
+    func manualRetryRespectsLifecycleFence() async throws {
+        let environment = try environment()
+        let store = RecordingNativeSessionSurfaceStore()
+        let coordinator = HerdrSessionLifecycleCoordinator()
+        let model = try makeHerdrModel(
+            environment,
+            store: store,
+            discovery: { _ in .failure(.cancelled(host: "Local Mac")) },
+            coordinator: coordinator
+        )
+        let selection = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID,
+            name: "api"
+        )
+        let key = HerdrSessionLifecycleCoordinator.Key(
+            hostID: selection.hostID,
+            sessionName: selection.name
+        )
+        model.openBorrowedHerdrSession(selection)
+        await launchHerdrSurface(model, store: store)
+        let close = try #require(store.surface.closeObservers.values.first)
+        close(false, 9)
+        let operation = try #require(coordinator.begin(.stop, key: key))
+
+        await model.retryBorrowedHerdrSession(selection)
+        #expect(store.removedKeys.count == 1)
+
+        coordinator.willStop(operation)
+        coordinator.finish(operation, outcome: .failed)
+        await model.retryBorrowedHerdrSession(selection)
+        #expect(store.removedKeys.count == 1)
+        await model.shutdown()
+    }
+
+    @Test("manual retry probes the exact running session before attaching")
+    func manualRetryRequiresRunningSession() async throws {
+        let environment = try environment()
+        let store = RecordingNativeSessionSurfaceStore()
+        let discoveries = HerdrDiscoveryQueue([.available([])])
+        let model = try makeHerdrModel(
+            environment,
+            store: store,
+            discovery: { _ in discoveries.removeFirst() }
+        )
+        let selection = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID,
+            name: "api"
+        )
+        model.openBorrowedHerdrSession(selection)
+        await launchHerdrSurface(model, store: store)
+        let close = try #require(store.surface.closeObservers.values.first)
+        close(false, 9)
+
+        await model.retryBorrowedHerdrSession(selection)
+
+        #expect(discoveries.callCount == 1)
+        #expect(store.removedKeys.count == 1)
         await model.shutdown()
     }
 
@@ -284,6 +345,44 @@ struct WorkspaceHerdrPresentationTests {
         await model.shutdown()
     }
 
+    @Test("non-transport Herdr exit refreshes running inventory")
+    func nonTransportExitRefreshesInventory() async throws {
+        let environment = try environment()
+        let store = RecordingNativeSessionSurfaceStore()
+        let running = HerdrSessionSummary(
+            name: "api",
+            isDefault: true,
+            state: .running
+        )
+        let discoveries = HerdrDiscoveryQueue([
+            .available([running]),
+            .available([]),
+        ])
+        let model = try makeHerdrModel(
+            environment,
+            store: store,
+            discovery: { _ in discoveries.removeFirst() }
+        )
+        model.startHerdrSessionDiscovery()
+        await waitUntilMainActor { discoveries.callCount == 1 }
+        let selection = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID,
+            name: "api"
+        )
+        model.openBorrowedHerdrSession(selection)
+        await launchHerdrSurface(model, store: store)
+        let close = try #require(store.surface.closeObservers.values.first)
+
+        close(false, 9)
+
+        await waitUntilMainActor(timeout: .seconds(1)) {
+            discoveries.callCount == 2
+        }
+        #expect(model.snapshot.host(id: environment.hostID)?
+            .herdrSessions.contains(where: { $0.name == "api" }) == false)
+        await model.shutdown()
+    }
+
     @Test("remote transport loss probes the exact session before relaunch")
     func remoteTransportRecovery() async throws {
         let environment = try remoteEnvironment()
@@ -326,11 +425,23 @@ struct WorkspaceHerdrPresentationTests {
     func recoveryStopConditions(result: HerdrDiscoveryResult) async throws {
         let environment = try remoteEnvironment()
         let store = RecordingNativeSessionSurfaceStore()
+        let running = HerdrSessionSummary(
+            name: "api",
+            isDefault: true,
+            state: .running
+        )
+        let discoveries = HerdrDiscoveryQueue([
+            .available([running]),
+            result,
+            result,
+        ])
         let model = try makeHerdrModel(
             environment,
             store: store,
-            discovery: { _ in result }
+            discovery: { _ in discoveries.removeFirst() }
         )
+        model.startHerdrSessionDiscovery()
+        await waitUntilMainActor { discoveries.callCount == 1 }
         let herdr = WorkspaceHerdrSessionSelection(
             hostID: environment.hostID,
             name: "api"
@@ -343,9 +454,21 @@ struct WorkspaceHerdrPresentationTests {
         await waitUntilMainActor {
             model.activeBorrowedHerdrRecoveryState == nil
         }
-        try? await Task.sleep(for: .milliseconds(25))
+        await waitUntilMainActor(timeout: .seconds(1)) {
+            discoveries.callCount == 3
+        }
 
         #expect(store.requestedKeys.count == 1)
+        switch result {
+        case .available:
+            #expect(model.snapshot.host(id: environment.hostID)?
+                .herdrSessions.contains(where: { $0.name == "api" }) == false)
+        case .unavailable:
+            #expect(model.snapshot.host(id: environment.hostID)?
+                .herdrAvailable == false)
+        case .failure:
+            Issue.record("Unexpected recovery stop fixture")
+        }
         await model.shutdown()
     }
 
