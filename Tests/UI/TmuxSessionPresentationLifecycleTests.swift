@@ -380,6 +380,57 @@ struct TmuxSessionPresentationLifecycleTests {
         #expect(updated.selectedWorktreeID == nil)
     }
 
+    @Test("failed removal normalizes a displaced target before cleanup")
+    func failedRemovalNormalizesDisplacedTargetBeforeCleanup() {
+        let model = WorktreeRemovalPresentationModel()
+        model.removeTargetDuringPreparation()
+        var pendingWorktrees = pendingRemovalIdentities(model.request.worktree)
+
+        let updated = RootView.finishFailedWorktreeRemoval(
+            model.selection,
+            in: model.display.snapshot,
+            visibility: .default,
+            pendingWorktrees: &pendingWorktrees
+        )
+        let afterDelayedSnapshot = RootView.selectionAfterSnapshotChange(
+            updated,
+            in: model.display.snapshot,
+            visibility: .default,
+            pendingRemovals: pendingWorktrees
+        )
+
+        #expect(updated.selectedProjectID == model.projectID)
+        #expect(updated.selectedWorktreeID == nil)
+        #expect(pendingWorktrees.isEmpty)
+        #expect(afterDelayedSnapshot.selectedProjectID == model.projectID)
+        #expect(afterDelayedSnapshot.selectedWorktreeID == nil)
+    }
+
+    @Test("failed removal cleanup preserves newer worktree navigation")
+    func failedRemovalCleanupPreservesNewerNavigation() throws {
+        let model = WorktreeRemovalPresentationModel()
+        model.removeTargetDuringPreparation()
+        let primary = try #require(
+            model.display.snapshot.worktrees.first { $0.isPrimary }
+        )
+        var newerSelection = model.selection
+        newerSelection.select(
+            .worktree(primary.id),
+            in: model.display.snapshot
+        )
+        var pendingWorktrees = pendingRemovalIdentities(model.request.worktree)
+
+        let updated = RootView.finishFailedWorktreeRemoval(
+            newerSelection,
+            in: model.display.snapshot,
+            visibility: .default,
+            pendingWorktrees: &pendingWorktrees
+        )
+
+        #expect(updated.selectedWorktreeID == primary.id)
+        #expect(pendingWorktrees.isEmpty)
+    }
+
     @Test("moved reconfirmation normalizes the original removal selection")
     func movedReconfirmationNormalizesOriginalRemovalSelection() throws {
         let model = WorktreeRemovalPresentationModel()
