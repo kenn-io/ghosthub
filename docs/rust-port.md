@@ -693,6 +693,12 @@ command. The chrome is shaped for additional admitted local mux hosts, but
 Slice 1 exposes only WSL tmux; psmux remains rejection evidence until it
 satisfies the same capability bar.
 
+The Windows shell draws one compact title bar in the same visual plane as the
+application chrome. It retains the native window controls and dynamic
+session/endpoint title, and exposes a sidebar button there. `Ctrl+Shift+B`
+toggles the sidebar without consuming tmux's `Ctrl+B` prefix; terminal geometry
+and pointer mapping update with the visible content area.
+
 The flow resolves and verifies the exact mux binary, discovers live identity,
 reserves the presentation, and launches an AttachPlan whose single tmux
 `if-shell -F` command atomically compares server PID, session ID, and creation
