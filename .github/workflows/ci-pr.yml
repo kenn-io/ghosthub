@@ -15,5 +15,3 @@ concurrency:
 jobs:
   run:
     uses: kenn-io/ghosthub/.github/workflows/ci.yml@main
-    with:
-      self_hosted_validation: ${{ vars.GHOSTHUB_SELF_HOSTED_VALIDATION == 'true' }}
