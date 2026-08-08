@@ -33,9 +33,10 @@ public struct RootView: View {
     @State private var addProjectHost: HostSummary?
     @State private var workspaceAlert: WorkspaceAlert?
     @State private var pendingWorktreeRemoval: WorktreeRemovalRequest?
-    // Retain every runtime ID encountered while reconfirming so a delayed
-    // snapshot callback can still recognize the originally selected target.
-    @State private var pendingWorktreeRemovalIDs: Set<UUID> = []
+    // Retain the first confirmed generation for every runtime ID encountered
+    // while reconfirming so ID reuse cannot disguise a displaced target.
+    @State private var pendingWorktreeRemovals:
+        [UUID: PendingWorktreeRemovalIdentity] = [:]
     @State private var tmuxRecoveryRequestRouter =
         TmuxConnectionRecoveryRequestRouter()
     @StateObject private var sshHostKeyReview =
@@ -234,7 +235,7 @@ public struct RootView: View {
                     selection,
                     in: updatedSnapshot,
                     visibility: worktreeVisibility,
-                    pendingRemovalWorktreeIDs: pendingWorktreeRemovalIDs
+                    pendingRemovals: pendingWorktreeRemovals
                 )
                 synchronizeSelectedWorktreeSession()
             }
@@ -762,7 +763,7 @@ public struct RootView: View {
             alert,
             workspaceAlert: &workspaceAlert,
             pendingWorktreeRemoval: &pendingWorktreeRemoval,
-            pendingWorktreeIDs: &pendingWorktreeRemovalIDs
+            pendingWorktrees: &pendingWorktreeRemovals
         )
     }
 
@@ -837,12 +838,12 @@ public struct RootView: View {
                             switch try await remove(request) {
                             case .removed:
                                 pendingWorktreeRemoval = nil
-                                pendingWorktreeRemovalIDs.removeAll()
+                                pendingWorktreeRemovals.removeAll()
                             case let .confirmationRequired(updatedRequest):
                                 Self.transitionWorktreeRemovalConfirmation(
                                     to: updatedRequest,
                                     pendingWorktreeRemoval: &pendingWorktreeRemoval,
-                                    pendingWorktreeIDs: &pendingWorktreeRemovalIDs
+                                    pendingWorktrees: &pendingWorktreeRemovals
                                 )
                                 workspaceAlert = .worktreeRemovalConfirmation(
                                     updatedRequest
@@ -850,7 +851,7 @@ public struct RootView: View {
                             }
                         } catch {
                             pendingWorktreeRemoval = nil
-                            pendingWorktreeRemovalIDs.removeAll()
+                            pendingWorktreeRemovals.removeAll()
                             workspaceAlert = .worktreeRemovalFailure(
                                 worktree: request.worktree.name,
                                 message: error.localizedDescription
@@ -860,7 +861,7 @@ public struct RootView: View {
                 },
                 secondaryButton: .cancel(Text("Cancel")) {
                     pendingWorktreeRemoval = nil
-                    pendingWorktreeRemovalIDs.removeAll()
+                    pendingWorktreeRemovals.removeAll()
                 }
             )
         case let .worktreeRemovalFailure(worktree, message):
@@ -874,13 +875,13 @@ public struct RootView: View {
 
     private func requestWorktreeRemoval(_ worktree: WorktreeSummary) {
         guard Self.reserveWorktreeRemovalPreparation(
-            worktree.id,
-            pendingWorktreeIDs: &pendingWorktreeRemovalIDs
+            worktree,
+            pendingWorktrees: &pendingWorktreeRemovals
         ) else { return }
         guard let prepare = handlers.prepareWorktreeRemoval else {
             Self.clearWorktreeRemovalPreparation(
-                worktree.id,
-                pendingWorktreeIDs: &pendingWorktreeRemovalIDs
+                worktree,
+                pendingWorktrees: &pendingWorktreeRemovals
             )
             workspaceAlert = .worktreeRemovalFailure(
                 worktree: worktree.name,
@@ -894,7 +895,9 @@ public struct RootView: View {
                     worktree,
                     using: prepare
                 )
-                guard pendingWorktreeRemovalIDs == Set([worktree.id]) else {
+                guard pendingWorktreeRemovals == [
+                    worktree.id: PendingWorktreeRemovalIdentity(worktree),
+                ] else {
                     return
                 }
                 pendingWorktreeRemoval = request
@@ -903,14 +906,14 @@ public struct RootView: View {
                 )
             } catch is CancellationError {
                 guard Self.clearWorktreeRemovalPreparation(
-                    worktree.id,
-                    pendingWorktreeIDs: &pendingWorktreeRemovalIDs
+                    worktree,
+                    pendingWorktrees: &pendingWorktreeRemovals
                 ) else { return }
                 pendingWorktreeRemoval = nil
             } catch {
                 guard Self.clearWorktreeRemovalPreparation(
-                    worktree.id,
-                    pendingWorktreeIDs: &pendingWorktreeRemovalIDs
+                    worktree,
+                    pendingWorktrees: &pendingWorktreeRemovals
                 ) else { return }
                 pendingWorktreeRemoval = nil
                 workspaceAlert = .worktreeRemovalFailure(
@@ -929,24 +932,36 @@ public struct RootView: View {
         try await prepare(worktree.id)
     }
 
+    struct PendingWorktreeRemovalIdentity: Equatable {
+        let generation: String?
+
+        init(_ worktree: WorktreeSummary) {
+            generation = worktree.generation
+        }
+    }
+
     @MainActor
     static func reserveWorktreeRemovalPreparation(
-        _ worktreeID: UUID,
-        pendingWorktreeIDs: inout Set<UUID>
+        _ worktree: WorktreeSummary,
+        pendingWorktrees: inout [UUID: PendingWorktreeRemovalIdentity]
     ) -> Bool {
-        guard pendingWorktreeIDs.isEmpty else { return false }
-        pendingWorktreeIDs.insert(worktreeID)
+        guard pendingWorktrees.isEmpty else { return false }
+        pendingWorktrees[worktree.id] = PendingWorktreeRemovalIdentity(
+            worktree
+        )
         return true
     }
 
     @MainActor
     @discardableResult
     static func clearWorktreeRemovalPreparation(
-        _ worktreeID: UUID,
-        pendingWorktreeIDs: inout Set<UUID>
+        _ worktree: WorktreeSummary,
+        pendingWorktrees: inout [UUID: PendingWorktreeRemovalIdentity]
     ) -> Bool {
-        guard pendingWorktreeIDs == Set([worktreeID]) else { return false }
-        pendingWorktreeIDs.removeAll()
+        guard pendingWorktrees == [
+            worktree.id: PendingWorktreeRemovalIdentity(worktree),
+        ] else { return false }
+        pendingWorktrees.removeAll()
         return true
     }
 
@@ -955,11 +970,11 @@ public struct RootView: View {
         _ alert: WorkspaceAlert,
         workspaceAlert: inout WorkspaceAlert?,
         pendingWorktreeRemoval: inout WorktreeRemovalRequest?,
-        pendingWorktreeIDs: inout Set<UUID>
+        pendingWorktrees: inout [UUID: PendingWorktreeRemovalIdentity]
     ) {
         if pendingWorktreeRemoval != nil {
             pendingWorktreeRemoval = nil
-            pendingWorktreeIDs.removeAll()
+            pendingWorktrees.removeAll()
         }
         workspaceAlert = alert
     }
@@ -975,10 +990,13 @@ public struct RootView: View {
     static func transitionWorktreeRemovalConfirmation(
         to request: WorktreeRemovalRequest,
         pendingWorktreeRemoval: inout WorktreeRemovalRequest?,
-        pendingWorktreeIDs: inout Set<UUID>
+        pendingWorktrees: inout [UUID: PendingWorktreeRemovalIdentity]
     ) {
         pendingWorktreeRemoval = request
-        pendingWorktreeIDs.insert(request.worktree.id)
+        if pendingWorktrees[request.worktree.id] == nil {
+            pendingWorktrees[request.worktree.id] =
+                PendingWorktreeRemovalIdentity(request.worktree)
+        }
     }
 
     static func selectionForHostTmuxSession(
@@ -1359,13 +1377,22 @@ public struct RootView: View {
         _ current: WorkspaceSelection,
         in snapshot: WorkspaceSnapshot,
         visibility: WorktreeVisibility,
-        pendingRemovalWorktreeIDs: Set<UUID>
+        pendingRemovals: [UUID: PendingWorktreeRemovalIdentity]
     ) -> WorkspaceSelection {
         if let selectedWorktreeID = current.selectedWorktreeID,
-           pendingRemovalWorktreeIDs.contains(selectedWorktreeID),
-           snapshot.worktree(id: selectedWorktreeID) == nil,
+           let pending = pendingRemovals[selectedWorktreeID],
            let projectID = current.selectedProjectID,
            snapshot.project(id: projectID) != nil {
+            let worktree = snapshot.worktree(id: selectedWorktreeID)
+            let generationChanged = pending.generation.map {
+                worktree?.generation != $0
+            } ?? false
+            guard worktree == nil || generationChanged else {
+                return current.normalizedBySelectingVisibleFallback(
+                    in: snapshot,
+                    visibility: visibility
+                )
+            }
             var updated = current
             updated.select(
                 .project(projectID),

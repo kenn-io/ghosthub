@@ -5,6 +5,14 @@ import SwiftUI
 import Testing
 @testable import GhosthubUI
 
+private func pendingRemovalIdentities(
+    _ worktrees: WorktreeSummary...
+) -> [UUID: RootView.PendingWorktreeRemovalIdentity] {
+    Dictionary(uniqueKeysWithValues: worktrees.map {
+        ($0.id, RootView.PendingWorktreeRemovalIdentity($0))
+    })
+}
+
 @MainActor
 @Suite("Native tmux presentation lifecycle")
 struct TmuxSessionPresentationLifecycleTests {
@@ -333,7 +341,7 @@ struct TmuxSessionPresentationLifecycleTests {
             model.selection,
             in: model.display.snapshot,
             visibility: .default,
-            pendingRemovalWorktreeIDs: [model.request.worktree.id]
+            pendingRemovals: pendingRemovalIdentities(model.request.worktree)
         )
 
         #expect(updated.selectedProjectID == model.projectID)
@@ -351,9 +359,25 @@ struct TmuxSessionPresentationLifecycleTests {
             newerSelection,
             in: model.display.snapshot,
             visibility: .default,
-            pendingRemovalWorktreeIDs: [model.request.worktree.id]
+            pendingRemovals: pendingRemovalIdentities(model.request.worktree)
         )
         #expect(preserved.selectedWorktreeID == primary.id)
+    }
+
+    @Test("a pending removal treats generation reuse as displacement")
+    func pendingRemovalGenerationReuseSelectsProject() {
+        let model = WorktreeRemovalPresentationModel()
+        model.reuseRemovedWorktreeID()
+
+        let updated = RootView.selectionAfterSnapshotChange(
+            model.selection,
+            in: model.display.snapshot,
+            visibility: .default,
+            pendingRemovals: pendingRemovalIdentities(model.request.worktree)
+        )
+
+        #expect(updated.selectedProjectID == model.projectID)
+        #expect(updated.selectedWorktreeID == nil)
     }
 
     @Test("moved reconfirmation normalizes the original removal selection")
@@ -361,7 +385,7 @@ struct TmuxSessionPresentationLifecycleTests {
         let model = WorktreeRemovalPresentationModel()
         var selection = model.selection
         var pendingRemoval: WorktreeRemovalRequest?
-        var pendingWorktreeIDs: Set<UUID> = [model.removedWorktreeID]
+        var pendingWorktrees = pendingRemovalIdentities(model.request.worktree)
         model.refreshMovedTarget()
         let moved = try #require(
             model.display.snapshot.worktrees.first {
@@ -383,29 +407,33 @@ struct TmuxSessionPresentationLifecycleTests {
         RootView.transitionWorktreeRemovalConfirmation(
             to: updatedRequest,
             pendingWorktreeRemoval: &pendingRemoval,
-            pendingWorktreeIDs: &pendingWorktreeIDs
+            pendingWorktrees: &pendingWorktrees
         )
         selection = RootView.selectionAfterSnapshotChange(
             selection,
             in: model.display.snapshot,
             visibility: .default,
-            pendingRemovalWorktreeIDs: pendingWorktreeIDs
+            pendingRemovals: pendingWorktrees
         )
 
         #expect(selection.selectedProjectID == model.projectID)
         #expect(selection.selectedWorktreeID == nil)
         #expect(pendingRemoval == updatedRequest)
-        #expect(pendingWorktreeIDs == [model.removedWorktreeID, moved.id])
+        #expect(
+            pendingWorktrees
+                == pendingRemovalIdentities(model.request.worktree, moved)
+        )
     }
 
     @Test("removal preparation does not open a sibling worktree session")
     func removalPreparationDoesNotOpenSiblingSession() async throws {
         let model = WorktreeRemovalPresentationModel()
         let preparation = WorktreeRemovalPreparationHold()
-        var pendingWorktreeIDs: Set<UUID> = []
+        var pendingWorktrees:
+            [UUID: RootView.PendingWorktreeRemovalIdentity] = [:]
         #expect(RootView.reserveWorktreeRemovalPreparation(
-            model.removedWorktreeID,
-            pendingWorktreeIDs: &pendingWorktreeIDs
+            model.request.worktree,
+            pendingWorktrees: &pendingWorktrees
         ))
         let preparationTask = Task { @MainActor in
             try await RootView.prepareWorktreeRemoval(
@@ -416,14 +444,16 @@ struct TmuxSessionPresentationLifecycleTests {
             )
         }
         await preparation.waitUntilStarted()
-        #expect(pendingWorktreeIDs == [model.removedWorktreeID])
+        #expect(
+            pendingWorktrees == pendingRemovalIdentities(model.request.worktree)
+        )
 
         model.removeTargetDuringPreparation()
         let updated = RootView.selectionAfterSnapshotChange(
             model.selection,
             in: model.display.snapshot,
             visibility: .default,
-            pendingRemovalWorktreeIDs: pendingWorktreeIDs
+            pendingRemovals: pendingWorktrees
         )
 
         #expect(updated.selectedProjectID == model.projectID)
@@ -434,10 +464,10 @@ struct TmuxSessionPresentationLifecycleTests {
             try await preparationTask.value
         }
         RootView.clearWorktreeRemovalPreparation(
-            model.removedWorktreeID,
-            pendingWorktreeIDs: &pendingWorktreeIDs
+            model.request.worktree,
+            pendingWorktrees: &pendingWorktrees
         )
-        #expect(pendingWorktreeIDs.isEmpty)
+        #expect(pendingWorktrees.isEmpty)
     }
 
     @Test("worktree removal preparation is single-flight")
@@ -450,11 +480,12 @@ struct TmuxSessionPresentationLifecycleTests {
             name: "feature/second",
             path: "/tmp/project-a-second"
         )
-        var pendingWorktreeIDs: Set<UUID> = []
+        var pendingWorktrees:
+            [UUID: RootView.PendingWorktreeRemovalIdentity] = [:]
         var preparedWorktreeIDs: [UUID] = []
         #expect(RootView.reserveWorktreeRemovalPreparation(
-            model.removedWorktreeID,
-            pendingWorktreeIDs: &pendingWorktreeIDs
+            model.request.worktree,
+            pendingWorktrees: &pendingWorktrees
         ))
         let firstTask = Task { @MainActor in
             try await RootView.prepareWorktreeRemoval(
@@ -468,15 +499,17 @@ struct TmuxSessionPresentationLifecycleTests {
         await preparation.waitUntilStarted()
 
         #expect(!RootView.reserveWorktreeRemovalPreparation(
-            secondWorktree.id,
-            pendingWorktreeIDs: &pendingWorktreeIDs
+            secondWorktree,
+            pendingWorktrees: &pendingWorktrees
         ))
         #expect(!RootView.clearWorktreeRemovalPreparation(
-            secondWorktree.id,
-            pendingWorktreeIDs: &pendingWorktreeIDs
+            secondWorktree,
+            pendingWorktrees: &pendingWorktrees
         ))
 
-        #expect(pendingWorktreeIDs == [model.removedWorktreeID])
+        #expect(
+            pendingWorktrees == pendingRemovalIdentities(model.request.worktree)
+        )
         #expect(preparedWorktreeIDs == [model.removedWorktreeID])
 
         await preparation.release()
@@ -484,10 +517,10 @@ struct TmuxSessionPresentationLifecycleTests {
             try await firstTask.value
         }
         #expect(RootView.clearWorktreeRemovalPreparation(
-            model.removedWorktreeID,
-            pendingWorktreeIDs: &pendingWorktreeIDs
+            model.request.worktree,
+            pendingWorktrees: &pendingWorktrees
         ))
-        #expect(pendingWorktreeIDs.isEmpty)
+        #expect(pendingWorktrees.isEmpty)
     }
 
     @Test("non-worktree alert releases a displaced removal confirmation")
@@ -496,7 +529,7 @@ struct TmuxSessionPresentationLifecycleTests {
         var workspaceAlert: WorkspaceAlert? =
             .worktreeRemovalConfirmation(model.request)
         var pendingWorktreeRemoval: WorktreeRemovalRequest? = model.request
-        var pendingWorktreeIDs: Set<UUID> = [model.removedWorktreeID]
+        var pendingWorktrees = pendingRemovalIdentities(model.request.worktree)
 
         RootView.presentNonWorktreeWorkspaceAlert(
             .sessionThemeFailure(
@@ -505,11 +538,11 @@ struct TmuxSessionPresentationLifecycleTests {
             ),
             workspaceAlert: &workspaceAlert,
             pendingWorktreeRemoval: &pendingWorktreeRemoval,
-            pendingWorktreeIDs: &pendingWorktreeIDs
+            pendingWorktrees: &pendingWorktrees
         )
 
         #expect(pendingWorktreeRemoval == nil)
-        #expect(pendingWorktreeIDs.isEmpty)
+        #expect(pendingWorktrees.isEmpty)
         #expect(
             workspaceAlert?.id
                 == "session-theme:failure:project-a-feature:theme failed"
@@ -521,7 +554,7 @@ struct TmuxSessionPresentationLifecycleTests {
         let model = WorktreeRemovalPresentationModel()
         var workspaceAlert: WorkspaceAlert?
         var pendingWorktreeRemoval: WorktreeRemovalRequest? = model.request
-        var pendingWorktreeIDs: Set<UUID> = [model.removedWorktreeID]
+        var pendingWorktrees = pendingRemovalIdentities(model.request.worktree)
 
         RootView.beginWorktreeRemovalResolution(
             pendingWorktreeRemoval: &pendingWorktreeRemoval
@@ -534,11 +567,13 @@ struct TmuxSessionPresentationLifecycleTests {
             ),
             workspaceAlert: &workspaceAlert,
             pendingWorktreeRemoval: &pendingWorktreeRemoval,
-            pendingWorktreeIDs: &pendingWorktreeIDs
+            pendingWorktrees: &pendingWorktrees
         )
 
         #expect(pendingWorktreeRemoval == nil)
-        #expect(pendingWorktreeIDs == [model.removedWorktreeID])
+        #expect(
+            pendingWorktrees == pendingRemovalIdentities(model.request.worktree)
+        )
         #expect(
             workspaceAlert?.id
                 == "session:failure:project-a-feature:kill failed"
@@ -990,6 +1025,23 @@ private final class WorktreeRemovalPresentationModel: ObservableObject {
     func removeTargetDuringPreparation() {
         var snapshot = display.snapshot
         snapshot.worktrees.removeAll { $0.id == removedWorktreeID }
+        display = WorkspaceDisplayState(
+            snapshot: snapshot,
+            isWorkspaceInventoryRefreshComplete: true
+        )
+    }
+
+    func reuseRemovedWorktreeID() {
+        var snapshot = display.snapshot
+        guard let index = snapshot.worktrees.firstIndex(where: {
+            $0.id == removedWorktreeID
+        }) else {
+            Issue.record("Removal target should exist before ID reuse")
+            return
+        }
+        snapshot.worktrees[index].generation =
+            "fedcba9876543210fedcba9876543210"
+        snapshot.worktrees[index].tmuxSessionName = "project-a-replacement"
         display = WorkspaceDisplayState(
             snapshot: snapshot,
             isWorkspaceInventoryRefreshComplete: true

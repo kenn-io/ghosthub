@@ -2593,6 +2593,63 @@ struct WorkspaceWorktreeRemovalTests {
     }
 
     @MainActor
+    @Test("a snapshot-recreated endpoint owner requires confirmation")
+    func snapshotRecreatedEndpointOwnerRequiresConfirmation() async throws {
+        let environment = try setupStandardEnvironment()
+        var removable = WorktreeSummary.fixture(
+            hostID: environment.host.id,
+            projectID: environment.project.id,
+            scopedKey: "/tmp/project-a-feature",
+            name: "feature/remove",
+            path: "/tmp/project-a-feature",
+            branch: "feature/remove",
+            generation: stableWorktreeGeneration
+        )
+        removable.tmuxSessionName = "kwt-project-a-feature"
+        removable.tmuxSocketName = "protected"
+        var snapshot = environment.snapshot
+        snapshot.worktrees.append(removable)
+        let removals = LockedValue(0)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtWorktreeRemover: { _, _, _, _ in
+                removals.withLock { $0 += 1 }
+            },
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        let index = try #require(
+            model.snapshot.worktrees.firstIndex { $0.id == removable.id }
+        )
+        model.snapshot.worktrees[index].generation =
+            "fedcba9876543210fedcba9876543210"
+
+        let result = try await model.resolveWorktreeRemoval(request)
+        guard case let .confirmationRequired(updatedRequest) = result else {
+            Issue.record("Replacement should require a new confirmation")
+            await model.shutdown()
+            return
+        }
+
+        #expect(updatedRequest.worktree.id == removable.id)
+        #expect(
+            updatedRequest.worktree.generation
+                == "fedcba9876543210fedcba9876543210"
+        )
+        #expect(updatedRequest.worktree.tmuxSocketName == "protected")
+        #expect(removals.load() == 0)
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("a recreated worktree requires a refreshed confirmation")
     func recreatedWorktreeRequiresConfirmation() async throws {
         let environment = try setupStandardEnvironment()

@@ -1623,12 +1623,17 @@ final class WorkspaceSceneModel: ObservableObject {
     func removeWorktree(
         _ request: WorktreeRemovalRequest
     ) async throws {
-        guard let requestedWorktree = currentRemovalTarget(for: request),
-              let requestedProject = snapshot.project(
-                  id: requestedWorktree.projectID
-              ),
-              let hostSummary = snapshot.host(id: requestedWorktree.hostID),
-              let currentHost = TmuxHostResolver.resolve(hostSummary)
+        guard let requestedWorktree = currentRemovalTarget(for: request) else {
+            if currentRemovalTmuxEndpointOwner(for: request) != nil {
+                throw KwtWorktreeError.removalTargetChanged
+            }
+            throw KwtWorktreeError.worktreeUnavailable
+        }
+        guard let requestedProject = snapshot.project(
+            id: requestedWorktree.projectID
+        ),
+            let hostSummary = snapshot.host(id: requestedWorktree.hostID),
+            let currentHost = TmuxHostResolver.resolve(hostSummary)
         else {
             throw KwtWorktreeError.worktreeUnavailable
         }
