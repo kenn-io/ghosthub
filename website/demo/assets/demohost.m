@@ -85,8 +85,7 @@ static NSMenuItem *DemoMenuItemForShortcut(
              : nil;
 }
 
-static BOOL DemoClick(NSPoint point) {
-  NSWindow *window = DemoRootWindow();
+static BOOL DemoClickWindow(NSWindow *window, NSPoint point) {
   if (window == nil) return NO;
   NSTimeInterval now = [NSProcessInfo processInfo].systemUptime;
   NSEvent *down = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDown
@@ -110,6 +109,20 @@ static BOOL DemoClick(NSPoint point) {
   [NSApp sendEvent:down];
   [NSApp sendEvent:up];
   return YES;
+}
+
+static BOOL DemoClick(NSPoint point) {
+  return DemoClickWindow(DemoRootWindow(), point);
+}
+
+static NSView *DemoFindViewWithIdentifier(
+    NSView *view, NSString *identifier) {
+  if ([view.identifier isEqualToString:identifier]) return view;
+  for (NSView *subview in view.subviews) {
+    NSView *match = DemoFindViewWithIdentifier(subview, identifier);
+    if (match != nil) return match;
+  }
+  return nil;
 }
 
 static BOOL DemoInsertText(NSString *text) {
@@ -184,9 +197,9 @@ static BOOL DemoContainsTextWalk(id element, NSString *text,
                                  NSUInteger depth, NSUInteger *budget) {
   if (element == nil || depth > 20 || *budget == 0) return NO;
   *budget -= 1;
-  if ([DemoAccessibilityLabel(element) isEqualToString:text] ||
-      [[DemoAccessibilityValue(element) description]
-          isEqualToString:text]) {
+  NSString *label = DemoAccessibilityLabel(element);
+  NSString *value = [DemoAccessibilityValue(element) description];
+  if ([label containsString:text] || [value containsString:text]) {
     return YES;
   }
   for (id child in DemoAccessibilityChildren(element)) {
@@ -406,14 +419,14 @@ static NSArray<NSWindow *> *DemoWorkspaceWindows(void) {
 }
 
 static void DemoArrangeMatrix(NSArray<NSWindow *> *windows) {
-  if (windows.count != 6) return;
+  if (windows.count != 4) return;
   NSRect screen = NSScreen.mainScreen.visibleFrame;
   CGFloat gap = 6;
-  CGFloat width = floor((screen.size.width - (2 * gap)) / 3);
+  CGFloat width = floor((screen.size.width - gap) / 2);
   CGFloat height = floor((screen.size.height - gap) / 2);
   for (NSUInteger index = 0; index < windows.count; index++) {
-    NSUInteger column = index % 3;
-    NSUInteger row = index / 3;
+    NSUInteger column = index % 2;
+    NSUInteger row = index / 2;
     CGFloat x = screen.origin.x + column * (width + gap);
     CGFloat y = screen.origin.y + (1 - row) * (height + gap);
     NSWindow *window = windows[index];
@@ -422,14 +435,14 @@ static void DemoArrangeMatrix(NSArray<NSWindow *> *windows) {
   }
 }
 
-static void DemoCapture(NSString *path, BOOL matrix) {
+static void DemoCapture(NSString *path, BOOL matrix, BOOL exactWindow) {
   if (!matrix) {
-    DemoCaptureWindow(DemoRootWindow(), path, NO);
+    DemoCaptureWindow(DemoRootWindow(), path, exactWindow);
     return;
   }
 
   NSArray<NSWindow *> *windows = DemoWorkspaceWindows();
-  if (windows.count != 6) return;
+  if (windows.count != 4) return;
   DemoArrangeMatrix(windows);
   dispatch_after(
       dispatch_time(DISPATCH_TIME_NOW, 1000 * NSEC_PER_MSEC),
@@ -464,10 +477,12 @@ static void DemoCapture(NSString *path, BOOL matrix) {
 
 - (void)capture:(NSNotification *)notification {
   NSString *path = notification.userInfo[@"path"];
-  BOOL matrix = [notification.userInfo[@"mode"] isEqualToString:@"matrix"];
+  NSString *mode = notification.userInfo[@"mode"] ?: @"window";
+  BOOL matrix = [mode isEqualToString:@"matrix"];
+  BOOL exactWindow = [mode isEqualToString:@"exact"];
   if (path.length == 0) return;
   dispatch_async(dispatch_get_main_queue(), ^{
-    DemoCapture(path, matrix);
+    DemoCapture(path, matrix, exactWindow);
   });
 }
 
@@ -653,31 +668,35 @@ static void DemoCapture(NSString *path, BOOL matrix) {
             });
       });
     } else if ([action isEqualToString:@"hide-sidebar"]) {
-      NSView *content = DemoRootWindow().contentView;
-      BOOL wasVisible = DemoContainsText(content, @"Workspaces", 0);
-      if (!wasVisible) {
-        [self acknowledge:requestID
-                  success:YES
-                  message:@"sidebar already hidden"];
-        return;
-      }
-      BOOL pressed = DemoPressLabel(
-          DemoRootWindow(), @"Hide Sidebar (Cmd+B)", 0);
-      if (!pressed) {
+      NSWindow *window = DemoRootWindow();
+      if (window == nil) {
         [self acknowledge:requestID
                   success:NO
-                  message:@"sidebar control was not available"];
+                  message:@"sidebar button was not available"];
         return;
       }
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+      [NSApp activateIgnoringOtherApps:YES];
+#pragma clang diagnostic pop
+      [window makeKeyAndOrderFront:nil];
       dispatch_after(
           dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC),
           dispatch_get_main_queue(), ^{
-            BOOL isVisible =
-                DemoContainsText(content, @"Workspaces", 0);
+            NSView *titlebar =
+                [window standardWindowButton:NSWindowCloseButton].superview;
+            NSView *control = DemoFindViewWithIdentifier(
+                titlebar, @"GhosthubCompactSidebarControl");
+            NSPoint point = control == nil
+                ? NSZeroPoint
+                : [control convertPoint:NSMakePoint(
+                    NSMidX(control.bounds), NSMidY(control.bounds))
+                                  toView:nil];
+            BOOL handled = control != nil && DemoClickWindow(window, point);
             [self acknowledge:requestID
-                      success:!isVisible
-                      message:isVisible ? @"sidebar remained visible"
-                                        : @"sidebar hidden"];
+                      success:handled
+                      message:handled ? @"sidebar toggle requested"
+                                      : @"sidebar action was not handled"];
           });
     } else if ([action isEqualToString:@"frame"]) {
 #pragma clang diagnostic push
@@ -707,6 +726,13 @@ static void DemoCapture(NSString *path, BOOL matrix) {
                 success:window != nil
                 message:window != nil ? @"window framed"
                                       : @"no workspace window"];
+    } else if ([action isEqualToString:@"expect-text"]) {
+      BOOL found = text.length > 0 &&
+          DemoContainsText(DemoRootWindow(), text, 0);
+      [self acknowledge:requestID
+                success:found
+                message:found ? @"expected text is visible"
+                              : @"expected text is not visible"];
     } else if ([action isEqualToString:@"click"]) {
       NSArray<NSString *> *parts =
           [text componentsSeparatedByString:@","];
