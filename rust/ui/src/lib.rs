@@ -334,8 +334,8 @@ enum TerminalKeyIdentity {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct LayoutKey {
     virtual_key: u16,
-    unshifted: char,
-    shifted: char,
+    unshifted: Option<char>,
+    shifted: Option<char>,
     shift_required: bool,
 }
 
@@ -2525,8 +2525,8 @@ fn terminal_owned_key_input(
     let layout_logical;
     let logical_key = if keystroke.key.eq_ignore_ascii_case("space") {
         " "
-    } else if let Some(layout) = canonical.layout {
-        layout_logical = layout.unshifted.to_string();
+    } else if let Some(unshifted) = canonical.layout.and_then(|layout| layout.unshifted) {
+        layout_logical = unshifted.to_string();
         layout_logical.as_str()
     } else {
         &keystroke.key
@@ -2550,16 +2550,18 @@ fn ctrl_key_input(
     if !keystroke.modifiers.control {
         return None;
     }
-    if let Some(layout) = canonical.layout {
-        let produced = if canonical.modifiers.shift {
+    if let Some(layout) = canonical.layout
+        && let Some(logical) = layout.unshifted
+        && let Some(produced) = if canonical.modifiers.shift {
             layout.shifted
         } else {
             layout.unshifted
-        };
+        }
+    {
         return Some(
             KeyInput::text_with_key(
                 produced.to_string(),
-                layout.unshifted.to_string(),
+                logical.to_string(),
                 canonical.modifiers,
             )
             .with_event(event),
@@ -3221,8 +3223,8 @@ mod tests {
     fn retained_ctrl_key_events_precede_sidebar_shortcut_classification() {
         let layout = LayoutKey {
             virtual_key: 0x42,
-            unshifted: 'b',
-            shifted: 'B',
+            unshifted: Some('b'),
+            shifted: Some('B'),
             shift_required: false,
         };
         let press = gpui::Keystroke {
@@ -3321,8 +3323,8 @@ mod tests {
                 "a",
                 LayoutKey {
                     virtual_key: 0x41,
-                    unshifted: 'a',
-                    shifted: 'A',
+                    unshifted: Some('a'),
+                    shifted: Some('A'),
                     shift_required: false,
                 },
             ),
@@ -3335,8 +3337,8 @@ mod tests {
                 "/",
                 LayoutKey {
                     virtual_key: 0xbf,
-                    unshifted: '/',
-                    shifted: '?',
+                    unshifted: Some('/'),
+                    shifted: Some('?'),
                     shift_required: true,
                 },
             ),
@@ -3347,8 +3349,8 @@ mod tests {
                 "-",
                 LayoutKey {
                     virtual_key: 0xbd,
-                    unshifted: '-',
-                    shifted: '_',
+                    unshifted: Some('-'),
+                    shifted: Some('_'),
                     shift_required: true,
                 },
             ),
@@ -3365,8 +3367,8 @@ mod tests {
                 "/",
                 LayoutKey {
                     virtual_key: 0xbf,
-                    unshifted: '/',
-                    shifted: '?',
+                    unshifted: Some('/'),
+                    shifted: Some('?'),
                     shift_required: false,
                 },
             ),
@@ -3396,8 +3398,8 @@ mod tests {
         // a virtual key that remains stable when Shift changes before key-up.
         let shifted = LayoutKey {
             virtual_key: 0xbb,
-            unshifted: '+',
-            shifted: '*',
+            unshifted: Some('+'),
+            shifted: Some('*'),
             shift_required: true,
         };
         let unshifted = LayoutKey {
@@ -3455,6 +3457,56 @@ mod tests {
                 .with_event(KeyEvent::Release)
             )
         );
+        keyboard.finish_accepted(&release_key.identity, None, KeyEvent::Release);
+        assert_eq!(keyboard.reserved_releases(), 0);
+    }
+
+    #[test]
+    fn altgr_text_keeps_virtual_key_identity_after_altgr_release() {
+        let altgr_layout = LayoutKey {
+            virtual_key: 0x51,
+            unshifted: None,
+            shifted: None,
+            shift_required: false,
+        };
+        let plain_layout = LayoutKey {
+            virtual_key: 0x51,
+            unshifted: Some('q'),
+            shifted: Some('Q'),
+            shift_required: false,
+        };
+        let press = gpui::Keystroke {
+            modifiers: gpui::Modifiers::default(),
+            key: "@".to_owned(),
+            key_char: Some("@".to_owned()),
+        };
+        let release = gpui::Keystroke {
+            modifiers: gpui::Modifiers::default(),
+            key: "q".to_owned(),
+            key_char: None,
+        };
+        let press_key = canonical_terminal_key_with(&press, |_| Some(altgr_layout));
+        let press_input = terminal_key_input_with_canonical(&press, KeyEvent::Press, &press_key)
+            .expect("AltGr text comes from key_char");
+        assert_eq!(press_key.identity, TerminalKeyIdentity::Layout(0x51));
+        assert_eq!(
+            press_input,
+            KeyInput::text_with_key("@", "@", Modifiers::default())
+        );
+
+        let mut keyboard = TerminalKeyboard::default();
+        keyboard.finish_accepted(
+            &press_key.identity,
+            Some(press_input.clone()),
+            KeyEvent::Press,
+        );
+        let (release_key, release_input) =
+            retained_key_event_with(&keyboard, &release, KeyEvent::Release, |_| {
+                Some(plain_layout)
+            })
+            .expect("the virtual key still owns the release after AltGr is released");
+        assert_eq!(release_key.identity, press_key.identity);
+        assert_eq!(release_input, press_input.with_event(KeyEvent::Release));
         keyboard.finish_accepted(&release_key.identity, None, KeyEvent::Release);
         assert_eq!(keyboard.reserved_releases(), 0);
     }

@@ -22,14 +22,10 @@ pub(super) fn resolve(character: char) -> Option<LayoutKey> {
     let mapping = mapping.cast_unsigned();
     let virtual_key = mapping & 0xff;
     let shift_state = (mapping >> 8) as u8;
-    // Ctrl+Alt here describes an AltGr-produced character, not a Ctrl chord.
-    // GPUI routes genuine text through key_char, so do not synthesize it.
-    if shift_state & !SHIFT_STATE != 0 {
-        return None;
-    }
-
-    let unshifted = translate(virtual_key, false, layout)?;
-    let shifted = translate(virtual_key, true, layout)?;
+    // Character faces are optional: AltGr text comes from GPUI's key_char, but
+    // the virtual key must survive even if either face cannot be synthesized.
+    let unshifted = translate(virtual_key, false, layout);
+    let shifted = translate(virtual_key, true, layout);
     Some(LayoutKey {
         virtual_key,
         unshifted,
