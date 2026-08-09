@@ -49,7 +49,7 @@ struct WorkspaceTmuxDiscoveryTests {
         let environment = try setupStandardEnvironment()
         let kwtGate = KillGate()
         let kwtCompletions = Counter()
-        let tmuxGate = BlockingGate()
+        let tmuxGate = KillGate()
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
@@ -59,16 +59,14 @@ struct WorkspaceTmuxDiscoveryTests {
                 return KwtHostInventory(projects: [])
             },
             tmuxSessionDiscovery: { _ in
-                tmuxGate.wait()
+                await tmuxGate.suspend()
                 return .success([])
             },
             startServices: true
         )
 
         await kwtGate.waitUntilStarted()
-        await waitUntilMainActor(timeout: .seconds(15)) {
-            tmuxGate.didStart
-        }
+        await tmuxGate.waitUntilStarted()
         #expect(!model.isWorkspaceInventoryRefreshComplete)
 
         await kwtGate.release()
@@ -77,7 +75,7 @@ struct WorkspaceTmuxDiscoveryTests {
         }
         #expect(!model.isWorkspaceInventoryRefreshComplete)
 
-        tmuxGate.release()
+        await tmuxGate.release()
         await waitUntilMainActor(timeout: .seconds(15)) {
             model.isWorkspaceInventoryRefreshComplete
         }
@@ -1872,9 +1870,10 @@ struct WorkspaceTmuxDiscoveryTests {
         model.openBorrowedTmuxSession(selection)
         await launchActiveTmuxSurface(model, store: surfaceStore)
 
-        await waitUntilMainActor(timeout: .milliseconds(250)) {
-            identityReads.count == 3
+        await waitUntilMainActor {
+            activityController.warmSessionIDs.contains(selection.id)
         }
+        #expect(identityReads.count >= 3)
         let start = Date.now
         for tick in 1 ... 400
             where !model.workingTmuxSessionIDs.contains(selection.id) {
@@ -1948,20 +1947,20 @@ struct WorkspaceTmuxDiscoveryTests {
             name: "build"
         )
         model.openBorrowedTmuxSession(second)
-        await waitUntilMainActor {
+        await waitUntilMainActor(timeout: .seconds(15)) {
             model.prepareActiveBorrowedTmuxSurface()
             return surfaceStore.requestCount == 2
         }
         identityAvailable.store(true)
 
-        let start = Date.now
-        for tick in 1 ... 400
-            where !model.workingTmuxSessionIDs.contains(first.id) {
-            await activityController.sampleWarmSessions(
-                at: start.addingTimeInterval(Double(tick))
-            )
-            try await Task.sleep(for: .milliseconds(2))
+        await waitUntilMainActor(timeout: .seconds(15)) {
+            activityController.warmSessionIDs.contains(first.id)
         }
+        let start = Date.now
+        await activityController.sampleWarmSessions(at: start)
+        await activityController.sampleWarmSessions(
+            at: start.addingTimeInterval(20)
+        )
 
         #expect(model.workingTmuxSessionIDs.contains(first.id))
         await model.shutdown()

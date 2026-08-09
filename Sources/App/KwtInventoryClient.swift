@@ -83,7 +83,7 @@ struct KwtHostInventory: Equatable, Sendable {
 
     func retainingFailedProjectWorktrees(
         from previous: KwtHostInventory?,
-        excludingWorktrees: Set<KwtWorktreeIdentity> = []
+        excludingWorktrees: [String: Set<KwtWorktreeIdentity>] = [:]
     ) -> KwtHostInventory {
         var retainedProjects = projects
         if projectsWarning != nil,
@@ -108,8 +108,10 @@ struct KwtHostInventory: Equatable, Sendable {
                    }) {
                     retained.worktrees = prior.worktrees
                 }
+                let exclusions =
+                    excludingWorktrees[item.project.repository] ?? []
                 retained.worktrees.removeAll { worktree in
-                    excludingWorktrees.contains {
+                    exclusions.contains {
                         $0.matches(
                             path: worktree.path,
                             generation: worktree.generation
@@ -507,16 +509,38 @@ enum KwtSnapshotMerger {
             return workspace
         }
 
+        let inventoryRepositories = Set(
+            inventory.projects.map(\.project.repository)
+        )
+        var reconciledProjectIDs = Set<UUID>()
         for item in inventory.projects {
             let record = item.project
-            let existingProject = existingProjects.first {
-                normalizedPath($0.rootPath) == normalizedPath(record.path)
-                    || (!$0.scopedKey.isEmpty
-                        && $0.scopedKey == record.repository)
+            let recordPath = normalizedPath(record.path)
+            let repositoryMatch = existingProjects.first {
+                !record.repository.isEmpty
+                    && !$0.scopedKey.isEmpty
+                    && $0.scopedKey == record.repository
+                    && !reconciledProjectIDs.contains($0.id)
             }
+            // Repository identity survives a move. Path is only a legacy
+            // fallback for transitional records or when it does not belong to
+            // a different repository, and an existing runtime ID can be
+            // consumed at most once.
+            let existingProject = repositoryMatch
+                ?? existingProjects.first { candidate in
+                    normalizedPath(candidate.rootPath) == recordPath
+                        && ((candidate.registryID != nil
+                                && !inventoryRepositories.contains(
+                                    candidate.scopedKey
+                                ))
+                            || candidate.scopedKey.isEmpty
+                            || candidate.scopedKey == record.repository)
+                        && !reconciledProjectIDs.contains(candidate.id)
+                }
             let projectID = existingProject?.id ?? stableID(
                 "project|\(hostID.uuidString)|\(record.repository)|\(record.path)"
             )
+            reconciledProjectIDs.insert(projectID)
             var project = existingProject ?? ProjectSummary(
                 id: projectID,
                 hostID: hostID,
@@ -550,8 +574,16 @@ enum KwtSnapshotMerger {
             }
 
             for record in item.worktrees {
+                let recordPath = normalizedPath(record.path)
                 let existing = existingWorktrees.first {
-                    normalizedPath($0.path) == normalizedPath(record.path)
+                    $0.projectID == projectID
+                        && normalizedPath($0.path) == recordPath
+                }
+                let consistentExisting = existing.flatMap { candidate in
+                    candidate.branch == record.branch
+                        && candidate.isPrimary == record.isMain
+                        && candidate.tmuxSessionName == record.sessionName
+                        ? candidate : nil
                 }
                 let worktreeID = existing?.id ?? stableID(
                     "worktree|\(hostID.uuidString)|\(record.repository)|\(record.path)"
@@ -576,16 +608,33 @@ enum KwtSnapshotMerger {
                 worktree.isStale = false
                 worktree.createdAt = record.createdAt
                 worktree.generation = record.generation
+                    ?? WorktreeGeneration.canonical(
+                        consistentExisting?.generation
+                    )
                 worktree.tmuxSessionName = record.sessionName
                 // The protected socket is a fail-closed marker: it keeps
                 // contributor-authored terminal configuration out of the app
                 // config and routes attachment through kwt's protected
-                // command. A refresh that omits it is never evidence that the
-                // workspace stopped being protected, so it cannot clear it.
+                // command. A refresh can omit it without unprotecting the same
+                // workspace. Its last canonical generation is retained when
+                // that same incomplete record also omits identity, but a new
+                // canonical generation must not inherit the socket from the
+                // prior owner of a reused path. Canonical generation therefore
+                // outranks path identity.
                 // Deleting the workspace drops the record entirely, which is
                 // how a protected marker is actually retired.
-                worktree.tmuxSocketName = record.tmuxSocketName
-                    ?? existing?.tmuxSocketName
+                if let generation = WorktreeGeneration.canonical(
+                    record.generation
+                ) {
+                    worktree.tmuxSocketName = record.tmuxSocketName
+                        ?? existingWorktrees.first {
+                            $0.projectID == projectID
+                                && $0.generation == generation
+                        }?.tmuxSocketName
+                } else {
+                    worktree.tmuxSocketName = record.tmuxSocketName
+                        ?? consistentExisting?.tmuxSocketName
+                }
                 worktree.sessionBackend = snapshot.host(id: hostID)?.kind == .remote
                     ? .remoteTmux : .localTmux
                 worktrees.append(worktree)

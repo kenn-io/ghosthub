@@ -31,6 +31,11 @@ final class TmuxSessionActivityController: ObservableObject {
 
     @Published private(set) var workingSessionIDs: Set<String> = []
 
+    /// Session IDs currently enrolled for warm-activity sampling. Warm
+    /// enrollment completes asynchronously after identity verification, so
+    /// callers that need to sample deterministically wait on this set.
+    var warmSessionIDs: Set<String> { Set(entries.keys) }
+
     private let sampler: Sampler
     private let activityDuration: TimeInterval
     private let workingSampleInterval: TimeInterval

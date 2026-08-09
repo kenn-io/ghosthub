@@ -6,6 +6,14 @@ import Synchronization
 import Testing
 @testable import GhosthubUI
 
+private func pendingRemovalIdentities(
+    _ worktrees: WorktreeSummary...
+) -> [UUID: RootView.PendingWorktreeRemovalIdentity] {
+    Dictionary(uniqueKeysWithValues: worktrees.map {
+        ($0.id, RootView.PendingWorktreeRemovalIdentity($0))
+    })
+}
+
 @MainActor
 @Suite("Native tmux presentation lifecycle")
 struct TmuxSessionPresentationLifecycleTests {
@@ -647,6 +655,348 @@ struct TmuxSessionPresentationLifecycleTests {
         withExtendedLifetime(hostingView) {}
     }
 
+    @Test("in-app removal does not open a sibling worktree session")
+    func inAppRemovalDoesNotOpenSiblingSession() {
+        let model = WorktreeRemovalPresentationModel()
+        var requestedSessions: [WorkspaceTmuxSessionSelection] = []
+        let hostingView = hostView(
+            WorktreeRemovalPresentationHarness(
+                model: model,
+                onOpen: { requestedSessions.append($0) }
+            ),
+            size: CGSize(width: 960, height: 640)
+        )
+
+        #expect(requestedSessions.isEmpty)
+
+        model.completeRemoval()
+        hostingView.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+
+        #expect(model.selection.selectedProjectID == model.projectID)
+        #expect(model.selection.selectedWorktreeID == nil)
+        #expect(requestedSessions.isEmpty)
+        withExtendedLifetime(hostingView) {}
+    }
+
+    @Test("asynchronous removal failure uses the latest display snapshot")
+    func asynchronousRemovalFailureUsesLatestSnapshot() {
+        let model = WorktreeRemovalPresentationModel()
+        var requestedSessions: [WorkspaceTmuxSessionSelection] = []
+        let hostingView = hostView(
+            AsynchronousFailedWorktreeRemovalPresentationHarness(
+                model: model,
+                onOpen: { requestedSessions.append($0) }
+            ),
+            size: CGSize(width: 960, height: 640)
+        )
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+
+        #expect(model.selection.selectedProjectID == model.projectID)
+        #expect(model.selection.selectedWorktreeID == nil)
+        #expect(requestedSessions.isEmpty)
+        withExtendedLifetime(hostingView) {}
+    }
+
+    @Test("reconfirmation does not open a sibling worktree session")
+    func reconfirmationDoesNotOpenSiblingSession() throws {
+        let model = WorktreeRemovalPresentationModel()
+        model.refreshMovedTarget()
+
+        let updated = RootView.selectionAfterSnapshotChange(
+            model.selection,
+            in: model.display.snapshot,
+            visibility: .default,
+            pendingRemovals: pendingRemovalIdentities(model.request.worktree)
+        )
+
+        #expect(updated.selectedProjectID == model.projectID)
+        #expect(updated.selectedWorktreeID == nil)
+
+        let primary = try #require(
+            model.display.snapshot.worktrees.first { $0.isPrimary }
+        )
+        var newerSelection = model.selection
+        newerSelection.select(
+            .worktree(primary.id),
+            in: model.display.snapshot
+        )
+        let preserved = RootView.selectionAfterSnapshotChange(
+            newerSelection,
+            in: model.display.snapshot,
+            visibility: .default,
+            pendingRemovals: pendingRemovalIdentities(model.request.worktree)
+        )
+        #expect(preserved.selectedWorktreeID == primary.id)
+    }
+
+    @Test("a pending removal treats generation reuse as displacement")
+    func pendingRemovalGenerationReuseSelectsProject() {
+        let model = WorktreeRemovalPresentationModel()
+        model.reuseRemovedWorktreeID()
+
+        let updated = RootView.selectionAfterSnapshotChange(
+            model.selection,
+            in: model.display.snapshot,
+            visibility: .default,
+            pendingRemovals: pendingRemovalIdentities(model.request.worktree)
+        )
+
+        #expect(updated.selectedProjectID == model.projectID)
+        #expect(updated.selectedWorktreeID == nil)
+    }
+
+    @Test("failed removal normalizes a displaced target before cleanup")
+    func failedRemovalNormalizesDisplacedTargetBeforeCleanup() {
+        let model = WorktreeRemovalPresentationModel()
+        model.removeTargetDuringPreparation()
+        var pendingWorktrees = pendingRemovalIdentities(model.request.worktree)
+
+        let updated = RootView.finishFailedWorktreeRemoval(
+            model.selection,
+            in: model.display.snapshot,
+            visibility: .default,
+            pendingWorktrees: &pendingWorktrees
+        )
+        let afterDelayedSnapshot = RootView.selectionAfterSnapshotChange(
+            updated,
+            in: model.display.snapshot,
+            visibility: .default,
+            pendingRemovals: pendingWorktrees
+        )
+
+        #expect(updated.selectedProjectID == model.projectID)
+        #expect(updated.selectedWorktreeID == nil)
+        #expect(pendingWorktrees.isEmpty)
+        #expect(afterDelayedSnapshot.selectedProjectID == model.projectID)
+        #expect(afterDelayedSnapshot.selectedWorktreeID == nil)
+    }
+
+    @Test("failed removal cleanup preserves newer worktree navigation")
+    func failedRemovalCleanupPreservesNewerNavigation() throws {
+        let model = WorktreeRemovalPresentationModel()
+        model.removeTargetDuringPreparation()
+        let primary = try #require(
+            model.display.snapshot.worktrees.first { $0.isPrimary }
+        )
+        var newerSelection = model.selection
+        newerSelection.select(
+            .worktree(primary.id),
+            in: model.display.snapshot
+        )
+        var pendingWorktrees = pendingRemovalIdentities(model.request.worktree)
+
+        let updated = RootView.finishFailedWorktreeRemoval(
+            newerSelection,
+            in: model.display.snapshot,
+            visibility: .default,
+            pendingWorktrees: &pendingWorktrees
+        )
+
+        #expect(updated.selectedWorktreeID == primary.id)
+        #expect(pendingWorktrees.isEmpty)
+    }
+
+    @Test("moved reconfirmation normalizes the original removal selection")
+    func movedReconfirmationNormalizesOriginalRemovalSelection() throws {
+        let model = WorktreeRemovalPresentationModel()
+        var selection = model.selection
+        var pendingRemoval: WorktreeRemovalRequest?
+        var pendingWorktrees = pendingRemovalIdentities(model.request.worktree)
+        model.refreshMovedTarget()
+        let moved = try #require(
+            model.display.snapshot.worktrees.first {
+                $0.generation == model.request.worktree.generation
+            }
+        )
+        let project = try #require(
+            model.display.snapshot.project(id: model.projectID)
+        )
+        let host = try #require(
+            model.display.snapshot.host(id: moved.hostID)
+        )
+        let updatedRequest = WorktreeRemovalRequest(
+            worktree: moved,
+            project: project,
+            confirmedHost: host
+        )
+
+        RootView.transitionWorktreeRemovalConfirmation(
+            to: updatedRequest,
+            pendingWorktreeRemoval: &pendingRemoval,
+            pendingWorktrees: &pendingWorktrees
+        )
+        selection = RootView.selectionAfterSnapshotChange(
+            selection,
+            in: model.display.snapshot,
+            visibility: .default,
+            pendingRemovals: pendingWorktrees
+        )
+
+        #expect(selection.selectedProjectID == model.projectID)
+        #expect(selection.selectedWorktreeID == nil)
+        #expect(pendingRemoval == updatedRequest)
+        #expect(
+            pendingWorktrees
+                == pendingRemovalIdentities(model.request.worktree, moved)
+        )
+    }
+
+    @Test("removal preparation does not open a sibling worktree session")
+    func removalPreparationDoesNotOpenSiblingSession() async throws {
+        let model = WorktreeRemovalPresentationModel()
+        let preparation = WorktreeRemovalPreparationHold()
+        var pendingWorktrees:
+            [UUID: RootView.PendingWorktreeRemovalIdentity] = [:]
+        #expect(RootView.reserveWorktreeRemovalPreparation(
+            model.request.worktree,
+            pendingWorktrees: &pendingWorktrees
+        ))
+        let preparationTask = Task { @MainActor in
+            try await RootView.prepareWorktreeRemoval(
+                model.request.worktree,
+                using: { _ in
+                    try await preparation.prepare(model.request)
+                }
+            )
+        }
+        await preparation.waitUntilStarted()
+        #expect(
+            pendingWorktrees == pendingRemovalIdentities(model.request.worktree)
+        )
+
+        model.removeTargetDuringPreparation()
+        let updated = RootView.selectionAfterSnapshotChange(
+            model.selection,
+            in: model.display.snapshot,
+            visibility: .default,
+            pendingRemovals: pendingWorktrees
+        )
+
+        #expect(updated.selectedProjectID == model.projectID)
+        #expect(updated.selectedWorktreeID == nil)
+
+        await preparation.release()
+        await #expect(throws: CancellationError.self) {
+            try await preparationTask.value
+        }
+        RootView.clearWorktreeRemovalPreparation(
+            model.request.worktree,
+            pendingWorktrees: &pendingWorktrees
+        )
+        #expect(pendingWorktrees.isEmpty)
+    }
+
+    @Test("worktree removal preparation is single-flight")
+    func worktreeRemovalPreparationIsSingleFlight() async throws {
+        let model = WorktreeRemovalPresentationModel()
+        let preparation = WorktreeRemovalPreparationHold()
+        let secondWorktree = WorktreeSummary.fixture(
+            hostID: model.request.worktree.hostID,
+            projectID: model.projectID,
+            name: "feature/second",
+            path: "/tmp/project-a-second"
+        )
+        var pendingWorktrees:
+            [UUID: RootView.PendingWorktreeRemovalIdentity] = [:]
+        var preparedWorktreeIDs: [UUID] = []
+        #expect(RootView.reserveWorktreeRemovalPreparation(
+            model.request.worktree,
+            pendingWorktrees: &pendingWorktrees
+        ))
+        let firstTask = Task { @MainActor in
+            try await RootView.prepareWorktreeRemoval(
+                model.request.worktree,
+                using: { worktreeID in
+                    preparedWorktreeIDs.append(worktreeID)
+                    return try await preparation.prepare(model.request)
+                }
+            )
+        }
+        await preparation.waitUntilStarted()
+
+        #expect(!RootView.reserveWorktreeRemovalPreparation(
+            secondWorktree,
+            pendingWorktrees: &pendingWorktrees
+        ))
+        #expect(!RootView.clearWorktreeRemovalPreparation(
+            secondWorktree,
+            pendingWorktrees: &pendingWorktrees
+        ))
+
+        #expect(
+            pendingWorktrees == pendingRemovalIdentities(model.request.worktree)
+        )
+        #expect(preparedWorktreeIDs == [model.removedWorktreeID])
+
+        await preparation.release()
+        await #expect(throws: CancellationError.self) {
+            try await firstTask.value
+        }
+        #expect(RootView.clearWorktreeRemovalPreparation(
+            model.request.worktree,
+            pendingWorktrees: &pendingWorktrees
+        ))
+        #expect(pendingWorktrees.isEmpty)
+    }
+
+    @Test("non-worktree alert releases a displaced removal confirmation")
+    func nonWorktreeAlertReleasesDisplacedRemovalConfirmation() {
+        let model = WorktreeRemovalPresentationModel()
+        var workspaceAlert: WorkspaceAlert? =
+            .worktreeRemovalConfirmation(model.request)
+        var pendingWorktreeRemoval: WorktreeRemovalRequest? = model.request
+        var pendingWorktrees = pendingRemovalIdentities(model.request.worktree)
+
+        RootView.presentNonWorktreeWorkspaceAlert(
+            .sessionThemeFailure(
+                session: "project-a-feature",
+                message: "theme failed"
+            ),
+            workspaceAlert: &workspaceAlert,
+            pendingWorktreeRemoval: &pendingWorktreeRemoval,
+            pendingWorktrees: &pendingWorktrees
+        )
+
+        #expect(pendingWorktreeRemoval == nil)
+        #expect(pendingWorktrees.isEmpty)
+        #expect(
+            workspaceAlert?.id
+                == "session-theme:failure:project-a-feature:theme failed"
+        )
+    }
+
+    @Test("non-worktree alert preserves non-confirmation removal ownership")
+    func nonWorktreeAlertPreservesNonConfirmationRemovalOwnership() {
+        let model = WorktreeRemovalPresentationModel()
+        var workspaceAlert: WorkspaceAlert?
+        var pendingWorktreeRemoval: WorktreeRemovalRequest? = model.request
+        var pendingWorktrees = pendingRemovalIdentities(model.request.worktree)
+
+        RootView.beginWorktreeRemovalResolution(
+            pendingWorktreeRemoval: &pendingWorktreeRemoval
+        )
+
+        RootView.presentNonWorktreeWorkspaceAlert(
+            .sessionKillFailure(
+                session: "project-a-feature",
+                message: "kill failed"
+            ),
+            workspaceAlert: &workspaceAlert,
+            pendingWorktreeRemoval: &pendingWorktreeRemoval,
+            pendingWorktrees: &pendingWorktrees
+        )
+
+        #expect(pendingWorktreeRemoval == nil)
+        #expect(
+            pendingWorktrees == pendingRemovalIdentities(model.request.worktree)
+        )
+        #expect(
+            workspaceAlert?.id
+                == "session:failure:project-a-feature:kill failed"
+        )
+    }
+
     @Test(
         "non-authoritative generation does not replace active presentation",
         arguments: ["generation-b", nil] as [String?]
@@ -1088,5 +1438,211 @@ private struct WorktreeReplacementPresentationHarness: View {
             handlers: InteractionHandlers(openTmuxSession: onOpen),
             selection: $selection
         )
+    }
+}
+
+@MainActor
+private final class WorktreeRemovalPresentationModel: ObservableObject {
+    @Published var display: WorkspaceDisplayState
+    @Published var selection: WorkspaceSelection
+    let projectID: UUID
+    let request: WorktreeRemovalRequest
+    let removedWorktreeID: UUID
+    var didRunAsynchronousFailure = false
+
+    init() {
+        let host = HostSummary.fixture()
+        let project = ProjectSummary.fixture(hostID: host.id)
+        var primary = WorktreeSummary.fixture(
+            hostID: host.id,
+            projectID: project.id,
+            name: "main",
+            path: "/tmp/project-a"
+        )
+        primary.isPrimary = true
+        primary.tmuxSessionName = "project-a-main"
+        var removed = WorktreeSummary.fixture(
+            hostID: host.id,
+            projectID: project.id,
+            name: "feature/remove",
+            path: "/tmp/project-a-feature",
+            generation: "0123456789abcdef0123456789abcdef"
+        )
+        removed.tmuxSessionName = "project-a-feature"
+        let snapshot = WorkspaceSnapshot.fixture(
+            hosts: [host],
+            projects: [project],
+            worktrees: [primary, removed]
+        )
+        let activeSession = WorkspaceTmuxSessionSelection(
+            hostID: host.id,
+            name: "project-a-feature",
+            worktreeID: removed.id,
+            worktreePath: removed.path,
+            worktreeGeneration: removed.generation
+        )
+
+        projectID = project.id
+        request = WorktreeRemovalRequest(
+            worktree: removed,
+            project: project,
+            confirmedHost: host
+        )
+        removedWorktreeID = removed.id
+        selection = WorkspaceSelection(
+            selectedHostID: host.id,
+            selectedProjectID: project.id,
+            selectedWorktreeID: removed.id
+        )
+        display = WorkspaceDisplayState(
+            snapshot: snapshot,
+            isWorkspaceInventoryRefreshComplete: true,
+            activeTmuxSession: activeSession
+        )
+    }
+
+    func completeRemoval() {
+        var snapshot = display.snapshot
+        snapshot.worktrees.removeAll { $0.id == removedWorktreeID }
+        display = WorkspaceDisplayState(
+            snapshot: snapshot,
+            isWorkspaceInventoryRefreshComplete: true
+        )
+        selection = selection.normalized(
+            in: snapshot,
+            visibility: .default
+        )
+    }
+
+    func refreshMovedTarget() {
+        var snapshot = display.snapshot
+        snapshot.worktrees.removeAll { $0.id == removedWorktreeID }
+        var moved = WorktreeSummary.fixture(
+            hostID: request.worktree.hostID,
+            projectID: request.worktree.projectID,
+            scopedKey: "/tmp/project-a-moved",
+            name: request.worktree.name,
+            path: "/tmp/project-a-moved",
+            branch: request.worktree.branch,
+            generation: request.worktree.generation
+        )
+        moved.tmuxSessionName = request.worktree.tmuxSessionName
+        snapshot.worktrees.append(moved)
+        display = WorkspaceDisplayState(
+            snapshot: snapshot,
+            isWorkspaceInventoryRefreshComplete: true
+        )
+    }
+
+    func removeTargetDuringPreparation() {
+        var snapshot = display.snapshot
+        snapshot.worktrees.removeAll { $0.id == removedWorktreeID }
+        display = WorkspaceDisplayState(
+            snapshot: snapshot,
+            isWorkspaceInventoryRefreshComplete: true
+        )
+    }
+
+    func failRemovalAfterSnapshotUpdate() async throws {
+        removeTargetDuringPreparation()
+        throw WorktreeRemovalPresentationFailure.failed
+    }
+
+    func reuseRemovedWorktreeID() {
+        var snapshot = display.snapshot
+        guard let index = snapshot.worktrees.firstIndex(where: {
+            $0.id == removedWorktreeID
+        }) else {
+            Issue.record("Removal target should exist before ID reuse")
+            return
+        }
+        snapshot.worktrees[index].generation =
+            "fedcba9876543210fedcba9876543210"
+        snapshot.worktrees[index].tmuxSessionName = "project-a-replacement"
+        display = WorkspaceDisplayState(
+            snapshot: snapshot,
+            isWorkspaceInventoryRefreshComplete: true
+        )
+    }
+}
+
+private actor WorktreeRemovalPreparationHold {
+    private var started = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+    func prepare(
+        _ request: WorktreeRemovalRequest
+    ) async throws -> WorktreeRemovalRequest {
+        started = true
+        startWaiters.forEach { $0.resume() }
+        startWaiters.removeAll()
+        await withCheckedContinuation { continuation in
+            releaseContinuation = continuation
+        }
+        throw CancellationError()
+    }
+
+    func waitUntilStarted() async {
+        guard !started else { return }
+        await withCheckedContinuation { continuation in
+            startWaiters.append(continuation)
+        }
+    }
+
+    func release() {
+        releaseContinuation?.resume()
+        releaseContinuation = nil
+    }
+}
+
+private struct WorktreeRemovalPresentationHarness: View {
+    @ObservedObject var model: WorktreeRemovalPresentationModel
+    let onOpen: (WorkspaceTmuxSessionSelection) -> Void
+
+    var body: some View {
+        RootView(
+            display: model.display,
+            handlers: InteractionHandlers(openTmuxSession: onOpen),
+            selection: $model.selection
+        )
+    }
+}
+
+private enum WorktreeRemovalPresentationFailure: Error {
+    case failed
+}
+
+private struct AsynchronousFailedWorktreeRemovalPresentationHarness: View {
+    @ObservedObject var model: WorktreeRemovalPresentationModel
+    let onOpen: (WorkspaceTmuxSessionSelection) -> Void
+
+    var body: some View {
+        let renderedSnapshot = model.display.snapshot
+        let currentSnapshot = { model.display.snapshot }
+        RootView(
+            display: model.display,
+            handlers: InteractionHandlers(
+                openTmuxSession: onOpen,
+                currentWorkspaceSnapshot: currentSnapshot
+            ),
+            selection: $model.selection
+        )
+        .task {
+            guard !model.didRunAsynchronousFailure else { return }
+            model.didRunAsynchronousFailure = true
+            var pending = pendingRemovalIdentities(model.request.worktree)
+            do {
+                try await model.failRemovalAfterSnapshotUpdate()
+            } catch {
+                model.selection = RootView.finishFailedWorktreeRemoval(
+                    model.selection,
+                    in: renderedSnapshot,
+                    currentSnapshot: currentSnapshot,
+                    visibility: .default,
+                    pendingWorktrees: &pending
+                )
+            }
+        }
     }
 }

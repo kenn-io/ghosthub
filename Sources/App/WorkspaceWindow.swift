@@ -871,6 +871,9 @@ struct WorkspaceWindow: View {
                 createTmuxSession: { [sceneModel] request in
                     sceneModel.createTmuxSession(request)
                 },
+                currentWorkspaceSnapshot: { [sceneModel] in
+                    sceneModel.snapshot
+                },
                 refreshWorkspaceInventory: { [sceneModel] in
                     sceneModel.refreshWorkspaceInventory()
                 },
@@ -927,7 +930,7 @@ struct WorkspaceWindow: View {
                     try await sceneModel.prepareWorktreeRemoval(worktreeID)
                 },
                 removeWorktree: { [sceneModel] request in
-                    try await sceneModel.removeWorktree(request)
+                    try await sceneModel.resolveWorktreeRemoval(request)
                 }
             ),
             sidebarToggleTarget: sceneModel,
