@@ -156,8 +156,10 @@ sessions created or removed in another terminal appear without an explicit
 Refresh click. Connecting, disconnected, and unavailable hosts do not start an
 activation retry; their existing Cancel, Connect, and Retry actions remain
 authoritative. Refresh retains the last published session rows while work is in
-flight and reuses the admitted WSL host capability, including its runtime-bound
-tmux verification cache.
+flight and reuses the admitted WSL host capability, including its endpoint- and
+runtime-bound tmux verification cache. A resolved default-distro change always
+requires fresh admission even when two WSL distributions report the same
+kernel boot ID and PID 1 start time.
 
 Each host command runs in a disposable descendant container: a kill-on-close
 Job Object on Windows and a dedicated process group on Unix. Stdout and stderr

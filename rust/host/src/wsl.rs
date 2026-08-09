@@ -390,6 +390,7 @@ pub struct WslHost<R> {
 
 #[derive(Debug)]
 struct VerifiedAdmission {
+    endpoint: WslEndpoint,
     runtime: WslRuntimeIdentity,
     _binary: VerifiedTmuxBinary,
 }
@@ -839,7 +840,9 @@ impl<R: CommandRunner> WslHost<R> {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
-            .is_some_and(|verified| verified.runtime == *runtime)
+            .is_some_and(|verified| {
+                admission_matches(&verified.endpoint, &verified.runtime, endpoint, runtime)
+            })
         {
             return Ok(());
         }
@@ -1399,6 +1402,7 @@ impl<R: CommandRunner> WslHost<R> {
             .verified_tmux
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(VerifiedAdmission {
+            endpoint: endpoint.clone(),
             runtime: runtime.clone(),
             _binary: verified,
         });
@@ -1820,6 +1824,15 @@ impl<R: CommandRunner> WslHost<R> {
                 )
             })
     }
+}
+
+fn admission_matches(
+    verified_endpoint: &WslEndpoint,
+    verified_runtime: &WslRuntimeIdentity,
+    endpoint: &WslEndpoint,
+    runtime: &WslRuntimeIdentity,
+) -> bool {
+    verified_endpoint == endpoint && verified_runtime == runtime
 }
 
 struct AdmissionCleanup<'a, R: CommandRunner> {
@@ -2402,6 +2415,28 @@ mod tests {
         .expect_err("presence failure is visible");
 
         assert_eq!(error.kind(), DiagnosticKind::PermissionDenied);
+    }
+
+    #[test]
+    fn cached_admission_requires_the_same_endpoint_and_runtime() {
+        let ubuntu = WslEndpoint {
+            distro: "Ubuntu".to_owned(),
+        };
+        let debian = WslEndpoint {
+            distro: "Debian".to_owned(),
+        };
+        let runtime = WslRuntimeIdentity {
+            kernel_boot_id: "shared-wsl-kernel".to_owned(),
+            init_start_ticks: 42,
+        };
+        let restarted = WslRuntimeIdentity {
+            kernel_boot_id: "shared-wsl-kernel".to_owned(),
+            init_start_ticks: 43,
+        };
+
+        assert!(admission_matches(&ubuntu, &runtime, &ubuntu, &runtime));
+        assert!(!admission_matches(&ubuntu, &runtime, &debian, &runtime));
+        assert!(!admission_matches(&ubuntu, &runtime, &ubuntu, &restarted));
     }
 
     #[test]
