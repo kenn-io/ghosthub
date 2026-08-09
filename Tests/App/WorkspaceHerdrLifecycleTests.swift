@@ -141,7 +141,18 @@ struct WorkspaceHerdrLifecycleTests {
 
     @Test("a newer stop fences failed-stop reconciliation")
     func newerStopFencesFailedStopReconciliation() async throws {
-        let environment = try environment()
+        var environment = try environment()
+        environment.snapshot.hosts[0] = .fixture(
+            id: environment.hostID,
+            name: "Builder",
+            kind: .remote,
+            platform: .linux,
+            sshDestination: "dev@build.example.test",
+            herdrSessions: [
+                .init(name: "agent", isDefault: false, state: .running),
+            ],
+            herdrAvailable: true
+        )
         let coordinator = HerdrSessionLifecycleCoordinator()
         let client = LifecycleClientStub(
             records: [
@@ -155,9 +166,11 @@ struct WorkspaceHerdrLifecycleTests {
         )
         let store = RecordingNativeSessionSurfaceStore()
         let calls = Mutex(0)
-        let reconciliationStarted = Mutex(false)
-        let releaseReconciliation = DispatchSemaphore(value: 0)
-        let reconciliationReturned = Mutex(false)
+        let reconciliationGate = BlockingGate()
+        let connection = SSHConnectionArgumentsSnapshot(arguments: [
+            "-F", "/tmp/frozen-config", "dev@build.example.test",
+        ])
+        let probedArguments = Mutex<[String]?>(nil)
         let running = HerdrSessionSummary(
             name: "agent",
             isDefault: false,
@@ -176,18 +189,19 @@ struct WorkspaceHerdrLifecycleTests {
             herdrSessionMutator: { action, confirmed, _, _ in
                 client.mutate(action, confirmed: confirmed)
             },
+            herdrSSHConnectionSnapshotProvider: { _ in connection },
             herdrSessionDiscovery: { _ in
-                let call = calls.withLock { value in
+                calls.withLock { value in
                     value += 1
-                    return value
-                }
-                if call == 3 {
-                    reconciliationStarted.withLock { $0 = true }
-                    releaseReconciliation.wait()
-                    reconciliationReturned.withLock { $0 = true }
-                    return .available([])
                 }
                 return .available([running])
+            },
+            herdrSessionExactProbe: { _, _, arguments in
+                probedArguments.withLock { $0 = arguments }
+                return await Task.detached {
+                    reconciliationGate.block()
+                    return HerdrSessionProbeOutcome.absent
+                }.value
             }
         )
         model.startHerdrSessionDiscovery()
@@ -213,15 +227,11 @@ struct WorkspaceHerdrLifecycleTests {
         await #expect(throws: HerdrSessionLifecycleError.self) {
             try await model.performHerdrSessionLifecycle(request)
         }
-        await waitUntilMainActor {
-            reconciliationStarted.withLock { $0 }
-        }
+        await reconciliationGate.waitUntilBlocked()
+        #expect(probedArguments.withLock { $0 } == connection.arguments)
         let newerStop = try #require(coordinator.begin(.stop, key: key))
         coordinator.willStop(newerStop)
-        releaseReconciliation.signal()
-        await waitUntilMainActor {
-            reconciliationReturned.withLock { $0 }
-        }
+        reconciliationGate.open()
         for _ in 0 ..< 20 {
             await Task.yield()
         }

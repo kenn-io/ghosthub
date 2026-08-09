@@ -361,6 +361,10 @@ final class WorkspaceSceneModel: ObservableObject {
         var host: CommandHost
         var connection: SSHConnectionArgumentsSnapshot
     }
+    private struct HerdrSessionProbeValidation {
+        var outcome: HerdrSessionProbeOutcome
+        var validation: HerdrSessionValidation
+    }
     private var herdrLifecycleAuthorities:
         [UUID: HerdrLifecycleAuthority] = [:]
     private var fencedWorktreeMutationScopes:
@@ -2843,20 +2847,28 @@ final class WorkspaceSceneModel: ObservableObject {
         guard !herdrLifecycleCoordinator.isPending(operation.key) else {
             return
         }
-        herdrSessionProbeBroker.invalidateSessions(on: host)
-        let outcome = await herdrSessionProbeBroker.session(
+        let probe = await validatedHerdrSessionProbe(
             named: operation.key.sessionName,
             on: host
         )
-        guard !Task.isCancelled,
-              herdrLifecycleCoordinator.revision(
-                  for: operation.key.hostID
-              ) == lifecycleRevision,
-              !herdrLifecycleCoordinator.isPending(operation.key),
-              snapshot.host(id: operation.key.hostID)
-              .flatMap(CommandHostResolver.resolve) == host
+        guard !Task.isCancelled else { return }
+        guard let probe else {
+            if activeBorrowedHerdrSelection == suppressed.selection {
+                stopHerdrReconnectWithUnableToAttach(
+                    "The SSH connection changed while Ghosthub was checking the Herdr session. Try again to use the current connection."
+                )
+            }
+            scheduleHerdrSessionDiscovery()
+            return
+        }
+        guard herdrLifecycleCoordinator.revision(
+            for: operation.key.hostID
+        ) == lifecycleRevision,
+            !herdrLifecycleCoordinator.isPending(operation.key),
+            snapshot.host(id: operation.key.hostID)
+            .flatMap(CommandHostResolver.resolve) == host
         else { return }
-        switch outcome {
+        switch probe.outcome {
         case .present:
             guard activeBorrowedHerdrSelection == suppressed.selection else {
                 return
@@ -2864,7 +2876,10 @@ final class WorkspaceSceneModel: ObservableObject {
             activeHerdrReconnectContext = suppressed.reconnectContext
             if let handle = activeBorrowedHerdrHandle,
                nativeHerdrSessionCoordinator.attachmentClosure(handle) != nil {
-                guard presentHerdrSession(suppressed.selection) != nil else {
+                guard presentHerdrSession(
+                    suppressed.selection,
+                    validation: probe.validation
+                ) != nil else {
                     return
                 }
                 prepareActiveBorrowedHerdrSurface()
@@ -2883,7 +2898,10 @@ final class WorkspaceSceneModel: ObservableObject {
             else { return }
             context.surfaceExitCode = 255
             activeHerdrReconnectContext = context
-            if herdrReconnectDecision(for: context, outcome: outcome) == .retry {
+            if herdrReconnectDecision(
+                for: context,
+                outcome: probe.outcome
+            ) == .retry {
                 startHerdrReconnect(context)
             }
         case let .failure(error):
@@ -4758,6 +4776,30 @@ final class WorkspaceSceneModel: ObservableObject {
         }.value
     }
 
+    private func validatedHerdrSessionProbe(
+        named name: String,
+        on host: CommandHost
+    ) async -> HerdrSessionProbeValidation? {
+        let connection = await herdrConnectionSnapshot(on: host)
+        let outcome = await herdrSessionExactProbe(
+            name,
+            host,
+            connection.arguments
+        )
+        let currentConnection = await herdrConnectionSnapshot(on: host)
+        guard !Task.isCancelled,
+              currentConnection.cacheKey == connection.cacheKey
+        else { return nil }
+        return HerdrSessionProbeValidation(
+            outcome: outcome,
+            validation: HerdrSessionValidation(
+                session: nil,
+                host: host,
+                connection: connection
+            )
+        )
+    }
+
     private static func validateHerdrLifecycleState(
         _ state: HerdrSessionState,
         isDefault: Bool,
@@ -5125,11 +5167,18 @@ final class WorkspaceSceneModel: ObservableObject {
               let hostSummary = snapshot.host(id: selection.hostID),
               let host = CommandHostResolver.resolve(hostSummary)
         else { return }
-        herdrSessionProbeBroker.invalidateSessions(on: host)
-        let outcome = await herdrSessionProbeBroker.session(
+        let probe = await validatedHerdrSessionProbe(
             named: selection.name,
             on: host
         )
+        guard let probe else {
+            if !Task.isCancelled {
+                stopHerdrReconnectWithUnableToAttach(
+                    "The SSH connection changed while Ghosthub was checking the Herdr session. Try again to use the current connection."
+                )
+            }
+            return
+        }
         guard (try? requireActiveScene(activityGeneration)) != nil,
               activeBorrowedHerdrSelection == selection,
               activeBorrowedHerdrHandle == handle,
@@ -5140,8 +5189,8 @@ final class WorkspaceSceneModel: ObservableObject {
                   $0.selection == selection
               })
         else { return }
-        guard outcome == .present else {
-            switch outcome {
+        guard probe.outcome == .present else {
+            switch probe.outcome {
             case .absent, .unavailable:
                 refreshHerdrInventory(hostID: selection.hostID)
             case .failure(.cancelled):
@@ -5156,7 +5205,10 @@ final class WorkspaceSceneModel: ObservableObject {
             return
         }
         closeBorrowedHerdrSession(selection)
-        guard presentHerdrSession(selection) != nil else { return }
+        guard presentHerdrSession(
+            selection,
+            validation: probe.validation
+        ) != nil else { return }
         prepareActiveBorrowedHerdrSurface()
     }
 
@@ -6223,20 +6275,17 @@ final class WorkspaceSceneModel: ObservableObject {
         guard activeHerdrReconnectContext == context,
               activeBorrowedHerdrHandle?.id == context.handleID
         else { return .stop }
-        let connection = await herdrConnectionSnapshot(on: context.host)
-        let outcome = await herdrSessionExactProbe(
-            context.selection.name,
-            context.host,
-            connection.arguments
+        let probe = await validatedHerdrSessionProbe(
+            named: context.selection.name,
+            on: context.host
         )
-        let currentConnection = await herdrConnectionSnapshot(on: context.host)
         guard !Task.isCancelled else { return .retry }
         guard activeHerdrReconnectContext == context,
               activeBorrowedHerdrHandle?.id == context.handleID,
               snapshot.host(id: context.selection.hostID)
               .flatMap(CommandHostResolver.resolve) == context.host
         else { return .stop }
-        guard currentConnection.cacheKey == connection.cacheKey else {
+        guard let probe else {
             stopHerdrReconnectWithUnableToAttach(
                 "The SSH connection changed while Ghosthub was checking the Herdr session. Reopen it to use the current connection."
             )
@@ -6244,12 +6293,8 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         return herdrReconnectDecision(
             for: context,
-            outcome: outcome,
-            validation: HerdrSessionValidation(
-                session: nil,
-                host: context.host,
-                connection: connection
-            )
+            outcome: probe.outcome,
+            validation: probe.validation
         )
     }
 

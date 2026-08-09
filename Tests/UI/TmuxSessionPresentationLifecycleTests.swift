@@ -8,6 +8,16 @@ import Testing
 @MainActor
 @Suite("Native tmux presentation lifecycle")
 struct TmuxSessionPresentationLifecycleTests {
+    enum CrossHostHerdrIntent: Sendable {
+        case open
+        case restart
+    }
+
+    enum HerdrTransitionEvent: Equatable {
+        case deactivate
+        case start
+    }
+
     @Test("creating a host session clears a selected worktree")
     func creationSelectsHostSession() {
         let hostID = UUID()
@@ -107,6 +117,36 @@ struct TmuxSessionPresentationLifecycleTests {
             )
         }
         #expect(closedTmuxSessions == [tmux])
+    }
+
+    @Test(
+        "cross-host Herdr intents deactivate before starting",
+        arguments: [CrossHostHerdrIntent.open, .restart]
+    )
+    func crossHostHerdrIntentOrdering(intent: CrossHostHerdrIntent) {
+        let active = WorkspaceHerdrSessionSelection(
+            hostID: UUID(),
+            name: "current"
+        )
+        let target = WorkspaceHerdrSessionSelection(
+            hostID: UUID(),
+            name: intent == .open ? "running" : "stopped"
+        )
+        var events: [HerdrTransitionEvent] = []
+
+        RootView.transitionHerdrSession(
+            to: target,
+            from: active,
+            deactivate: { session in
+                #expect(session == active)
+                events.append(.deactivate)
+            },
+            start: {
+                events.append(.start)
+            }
+        )
+
+        #expect(events == [.deactivate, .start])
     }
 
     @Test("Root presents only the active Herdr backend")
@@ -807,8 +847,8 @@ private struct HerdrRoutePresentationHarness: View {
             HerdrSessionPresentationLifecycleModifier(
                 selection: model.selection,
                 activeSession: model.activeSession,
-                deactivate: {
-                    model.recordClosedSession(model.activeSession)
+                deactivate: { session in
+                    model.recordClosedSession(session)
                 }
             )
         )

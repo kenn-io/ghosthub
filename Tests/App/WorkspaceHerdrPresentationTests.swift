@@ -1154,6 +1154,51 @@ struct WorkspaceHerdrPresentationTests {
         await model.shutdown()
     }
 
+    @Test("manual retry preserves its exact remote SSH route")
+    func manualRetryUsesFrozenRoute() async throws {
+        let environment = try remoteEnvironment()
+        let store = RecordingNativeSessionSurfaceStore()
+        let connection = SSHConnectionArgumentsSnapshot(arguments: [
+            "-F", "/tmp/frozen-config", "dev@build.example.test",
+        ])
+        let probedArguments = Mutex<[String]?>(nil)
+        let running = HerdrSessionSummary(
+            name: "api",
+            isDefault: true,
+            state: .running
+        )
+        let model = try makeHerdrModel(
+            environment,
+            store: store,
+            discovery: { _ in .available([running]) },
+            exactProbe: { _, _, arguments in
+                probedArguments.withLock { $0 = arguments }
+                return .present
+            },
+            sshConnectionSnapshotProvider: { _ in connection }
+        )
+        let selection = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID,
+            name: "api"
+        )
+        try await model.openBorrowedHerdrSession(selection)
+        await launchHerdrSurface(model, store: store)
+        let close = try #require(store.surface.closeObservers.values.first)
+        close(false, 9)
+
+        await model.retryBorrowedHerdrSession(selection)
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedHerdrSurface()
+            return store.requestedConfigurations.count == 2
+        }
+
+        #expect(probedArguments.withLock { $0 } == connection.arguments)
+        #expect(store.requestedConfigurations.last?.command?.contains(
+            "/tmp/frozen-config"
+        ) == true)
+        await model.shutdown()
+    }
+
     @Test("leaving session navigation detaches Herdr")
     func navigationClosesHerdr() async throws {
         let environment = try environment()

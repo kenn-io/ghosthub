@@ -275,7 +275,7 @@ public struct RootView: View {
                 HerdrSessionPresentationLifecycleModifier(
                     selection: selection,
                     activeSession: activeHerdrSession,
-                    deactivate: deactivateHerdrSession
+                    deactivate: deactivateHerdrSession(_:)
                 )
             )
             .onAppear {
@@ -735,6 +735,18 @@ public struct RootView: View {
     private func activateHerdrSession(
         _ session: WorkspaceHerdrSessionSelection
     ) {
+        Self.transitionHerdrSession(
+            to: session,
+            from: activeHerdrSession,
+            deactivate: deactivateHerdrSession(_:)
+        ) {
+            startHerdrSessionActivation(session)
+        }
+    }
+
+    private func startHerdrSessionActivation(
+        _ session: WorkspaceHerdrSessionSelection
+    ) {
         herdrActivationTask?.cancel()
         herdrActivationRevision &+= 1
         let activationRevision = herdrActivationRevision
@@ -851,6 +863,18 @@ public struct RootView: View {
     }
 
     private func restartHerdrSession(
+        _ session: WorkspaceHerdrSessionSelection
+    ) {
+        Self.transitionHerdrSession(
+            to: session,
+            from: activeHerdrSession,
+            deactivate: deactivateHerdrSession(_:)
+        ) {
+            startHerdrSessionRestart(session)
+        }
+    }
+
+    private func startHerdrSessionRestart(
         _ session: WorkspaceHerdrSessionSelection
     ) {
         herdrRestartTask?.cancel()
@@ -1133,8 +1157,16 @@ public struct RootView: View {
     }
 
     private func deactivateHerdrSession() {
-        cancelHerdrPresentationIntents()
         guard let previous = activeHerdrSession else { return }
+        deactivateHerdrSession(previous)
+    }
+
+    private func deactivateHerdrSession(
+        _ expected: WorkspaceHerdrSessionSelection
+    ) {
+        guard activeHerdrSession == expected else { return }
+        cancelHerdrPresentationIntents()
+        let previous = expected
         handlers.closeHerdrSession?(previous)
     }
 
@@ -1696,6 +1728,18 @@ public struct RootView: View {
         return true
     }
 
+    static func transitionHerdrSession(
+        to target: WorkspaceHerdrSessionSelection,
+        from active: WorkspaceHerdrSessionSelection?,
+        deactivate: (WorkspaceHerdrSessionSelection) -> Void,
+        start: () -> Void
+    ) {
+        if let active, active.hostID != target.hostID {
+            deactivate(active)
+        }
+        start()
+    }
+
 }
 
 /// Hides the active tmux presentation when navigation leaves its route while
@@ -1725,7 +1769,7 @@ struct TmuxSessionPresentationLifecycleModifier: ViewModifier {
 struct HerdrSessionPresentationLifecycleModifier: ViewModifier {
     let selection: WorkspaceSelection
     let activeSession: WorkspaceHerdrSessionSelection?
-    let deactivate: () -> Void
+    let deactivate: (WorkspaceHerdrSessionSelection) -> Void
 
     func body(content: Content) -> some View {
         content
@@ -1736,7 +1780,7 @@ struct HerdrSessionPresentationLifecycleModifier: ViewModifier {
                       || newSelection.selectedWorktreeID != nil
                       || newSelection.selectedDirectoryWorkspaceID != nil
                 else { return }
-                deactivate()
+                deactivate(activeSession)
             }
     }
 }
