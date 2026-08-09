@@ -2149,6 +2149,7 @@ dependencies = [
  "ghosthub-surface",
  "ghosthub-workspace",
  "gpui",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
