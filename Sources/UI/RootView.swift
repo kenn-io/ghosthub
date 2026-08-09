@@ -27,9 +27,8 @@ public struct RootView: View {
     @State private var sidePanelAutoCollapsed = false
     @State private var sidePanelUserOverride = false
     @State private var tmuxSelectionBaseline: WorkspaceSelection?
-    @State private var herdrActivationRevision: UInt64 = 0
-    @State private var herdrActivationTask: Task<Void, Never>?
-    @State private var herdrRestartTask: Task<Void, Never>?
+    @StateObject private var herdrPresentationIntent =
+        HerdrPresentationIntentController()
     @StateObject private var herdrLifecyclePreparation =
         HerdrLifecyclePreparationController()
     @State private var newWorktreeProject: ProjectSummary?
@@ -750,44 +749,30 @@ public struct RootView: View {
     private func startHerdrSessionActivation(
         _ session: WorkspaceHerdrSessionSelection
     ) {
-        herdrActivationTask?.cancel()
-        herdrActivationRevision &+= 1
-        let activationRevision = herdrActivationRevision
         let replacedTmuxSession = activeTmuxSession
-        herdrActivationTask = Task { @MainActor in
-            defer {
-                if herdrActivationRevision == activationRevision {
-                    herdrActivationTask = nil
-                }
-            }
-            do {
+        herdrPresentationIntent.start(
+            operation: { isCurrent in
                 guard let open = handlers.openHerdrSession else {
                     throw HerdrLifecycleUnavailableError()
                 }
-                let didActivate = try await Self.openHerdrSession(
+                _ = try await Self.openHerdrSession(
                     session,
                     replacing: replacedTmuxSession,
                     open: open,
-                    isCurrent: {
-                        !Task.isCancelled
-                            && herdrActivationRevision == activationRevision
-                    },
+                    isCurrent: isCurrent,
                     closeTmux: { replaced in
                         handlers.closeTmuxSession?(replaced)
                     }
                 )
-                guard didActivate, !Task.isCancelled else { return }
-            } catch {
-                guard herdrActivationRevision == activationRevision,
-                      !(error is CancellationError)
-                else { return }
+            },
+            onFailure: { error in
                 workspaceAlert = .herdrLifecycleFailure(
                     session: session.name,
                     action: "open",
                     message: error.localizedDescription
                 )
             }
-        }
+        )
     }
 
     private func initializeTmuxSelectionBaselineIfNeeded() {
@@ -880,40 +865,26 @@ public struct RootView: View {
     private func startHerdrSessionRestart(
         _ session: WorkspaceHerdrSessionSelection
     ) {
-        herdrRestartTask?.cancel()
-        herdrActivationRevision &+= 1
-        let activationRevision = herdrActivationRevision
-        herdrRestartTask = Task { @MainActor in
-            defer {
-                if herdrActivationRevision == activationRevision {
-                    herdrRestartTask = nil
-                }
-            }
-            do {
+        herdrPresentationIntent.start(
+            operation: { isCurrent in
                 guard let restart = handlers.restartHerdrSession else {
                     throw HerdrLifecycleUnavailableError()
                 }
                 try await restart(session)
-                guard !Task.isCancelled,
-                      herdrActivationRevision == activationRevision else {
-                    return
-                }
-                herdrRestartTask = nil
+                guard isCurrent() else { return }
                 selectWorkspace(.herdrSession(
                     hostID: session.hostID,
                     name: session.name
                 ))
-            } catch {
-                guard herdrActivationRevision == activationRevision,
-                      !(error is CancellationError)
-                else { return }
+            },
+            onFailure: { error in
                 workspaceAlert = .herdrLifecycleFailure(
                     session: session.name,
                     action: "restart",
                     message: error.localizedDescription
                 )
             }
-        }
+        )
     }
 
     private func requestHerdrSessionLifecycle(
@@ -1192,11 +1163,7 @@ public struct RootView: View {
     }
 
     private func cancelHerdrPresentationIntents() {
-        herdrActivationRevision &+= 1
-        herdrActivationTask?.cancel()
-        herdrActivationTask = nil
-        herdrRestartTask?.cancel()
-        herdrRestartTask = nil
+        herdrPresentationIntent.cancel()
     }
     private var selectedWorktreeTmuxSession:
         WorkspaceTmuxSessionSelection? {
@@ -1782,6 +1749,45 @@ struct TmuxSessionPresentationLifecycleModifier: ViewModifier {
                     hide()
                 }
             }
+    }
+}
+
+@MainActor
+final class HerdrPresentationIntentController: ObservableObject {
+    private var revision: UInt64 = 0
+    private var task: Task<Void, Never>?
+
+    func start(
+        operation: @escaping @MainActor (
+            @escaping @MainActor @Sendable () -> Bool
+        ) async throws -> Void,
+        onFailure: @escaping @MainActor (any Error) -> Void
+    ) {
+        cancel()
+        let currentRevision = revision
+        task = Task { @MainActor [weak self] in
+            let isCurrent: @MainActor @Sendable () -> Bool = { [weak self] in
+                guard let self else { return false }
+                return !Task.isCancelled && revision == currentRevision
+            }
+            defer {
+                if let self, revision == currentRevision {
+                    task = nil
+                }
+            }
+            do {
+                try await operation(isCurrent)
+            } catch {
+                guard isCurrent(), !(error is CancellationError) else { return }
+                onFailure(error)
+            }
+        }
+    }
+
+    func cancel() {
+        revision &+= 1
+        task?.cancel()
+        task = nil
     }
 }
 

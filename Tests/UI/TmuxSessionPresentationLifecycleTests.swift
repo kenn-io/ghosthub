@@ -150,6 +150,65 @@ struct TmuxSessionPresentationLifecycleTests {
         #expect(events == [.deactivate, .start])
     }
 
+    @Test("Herdr restart supersedes a delayed activation")
+    func herdrRestartSupersedesDelayedActivation() async {
+        let activationContinuation =
+            Mutex<CheckedContinuation<Void, Never>?>(nil)
+        let controller = HerdrPresentationIntentController()
+        var completions: [String] = []
+        var failures: [String] = []
+        var activationReturned = false
+
+        controller.start(
+            operation: { isCurrent in
+                await withCheckedContinuation { continuation in
+                    activationContinuation.withLock { $0 = continuation }
+                }
+                defer { activationReturned = true }
+                guard isCurrent() else { return }
+                completions.append("activation")
+            },
+            onFailure: { failures.append($0.localizedDescription) }
+        )
+        for _ in 0 ..< 1_000 {
+            if activationContinuation.withLock({ $0 != nil }) {
+                break
+            }
+            await Task.yield()
+        }
+
+        controller.start(
+            operation: { isCurrent in
+                guard isCurrent() else { return }
+                completions.append("restart")
+            },
+            onFailure: { failures.append($0.localizedDescription) }
+        )
+        for _ in 0 ..< 1_000 {
+            if completions == ["restart"] {
+                break
+            }
+            await Task.yield()
+        }
+
+        let continuation = activationContinuation.withLock {
+            let continuation = $0
+            $0 = nil
+            return continuation
+        }
+        continuation?.resume()
+        for _ in 0 ..< 1_000 {
+            if activationReturned {
+                break
+            }
+            await Task.yield()
+        }
+
+        #expect(activationReturned)
+        #expect(completions == ["restart"])
+        #expect(failures.isEmpty)
+    }
+
     @Test("newer Herdr lifecycle preparation supersedes and releases older authority")
     func herdrLifecyclePreparationSupersedesOlderRequest() async {
         let host = HostSummary.fixture()
