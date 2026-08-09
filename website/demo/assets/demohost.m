@@ -125,6 +125,23 @@ static NSView *DemoFindViewWithIdentifier(
   return nil;
 }
 
+static NSView *DemoTitlebarView(
+    NSWindow *window, NSString *identifier) {
+  NSView *titlebar =
+      [window standardWindowButton:NSWindowCloseButton].superview;
+  return DemoFindViewWithIdentifier(titlebar, identifier);
+}
+
+static BOOL DemoSidebarIsHidden(NSWindow *window) {
+  NSView *title = DemoTitlebarView(
+      window, @"GhosthubCompactSessionTitle");
+  if (title == nil) return NO;
+  [title.superview layoutSubtreeIfNeeded];
+  // Ghosthub anchors the title at 120 points when the sidebar is collapsed;
+  // a visible sidebar moves it to the persisted sidebar width plus 12.
+  return NSMinX(title.frame) < 180;
+}
+
 static BOOL DemoInsertText(NSString *text) {
   id responder = DemoEventWindow().firstResponder;
   if (![responder respondsToSelector:
@@ -683,20 +700,35 @@ static void DemoCapture(NSString *path, BOOL matrix, BOOL exactWindow) {
       dispatch_after(
           dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC),
           dispatch_get_main_queue(), ^{
-            NSView *titlebar =
-                [window standardWindowButton:NSWindowCloseButton].superview;
-            NSView *control = DemoFindViewWithIdentifier(
-                titlebar, @"GhosthubCompactSidebarControl");
+            if (DemoSidebarIsHidden(window)) {
+              [self acknowledge:requestID
+                        success:YES
+                        message:@"sidebar already hidden"];
+              return;
+            }
+            NSView *control = DemoTitlebarView(
+                window, @"GhosthubCompactSidebarControl");
             NSPoint point = control == nil
                 ? NSZeroPoint
                 : [control convertPoint:NSMakePoint(
                     NSMidX(control.bounds), NSMidY(control.bounds))
                                   toView:nil];
             BOOL handled = control != nil && DemoClickWindow(window, point);
-            [self acknowledge:requestID
-                      success:handled
-                      message:handled ? @"sidebar toggle requested"
-                                      : @"sidebar action was not handled"];
+            if (!handled) {
+              [self acknowledge:requestID
+                        success:NO
+                        message:@"sidebar action was not handled"];
+              return;
+            }
+            dispatch_after(
+                dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC),
+                dispatch_get_main_queue(), ^{
+                  BOOL hidden = DemoSidebarIsHidden(window);
+                  [self acknowledge:requestID
+                            success:hidden
+                            message:hidden ? @"sidebar hidden"
+                                           : @"sidebar remained visible"];
+                });
           });
     } else if ([action isEqualToString:@"frame"]) {
 #pragma clang diagnostic push
@@ -733,6 +765,13 @@ static void DemoCapture(NSString *path, BOOL matrix, BOOL exactWindow) {
                 success:found
                 message:found ? @"expected text is visible"
                               : @"expected text is not visible"];
+    } else if ([action isEqualToString:@"expect-window-title"]) {
+      BOOL found = text.length > 0 &&
+          [DemoRootWindow().title containsString:text];
+      [self acknowledge:requestID
+                success:found
+                message:found ? @"expected window title is active"
+                              : @"expected window title is not active"];
     } else if ([action isEqualToString:@"click"]) {
       NSArray<NSString *> *parts =
           [text componentsSeparatedByString:@","];

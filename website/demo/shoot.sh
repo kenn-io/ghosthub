@@ -323,7 +323,7 @@ prepare_command_window() {
   fi
   sleep 3
   if [[ "$select" != "none" ]]; then
-    demo_input expect-text "$query"
+    demo_input expect-window-title "$query"
   fi
   demo_input hide-sidebar
 }
@@ -389,7 +389,7 @@ prepare_command_tab() {
     palette "$query"
   fi
   sleep 3
-  demo_input expect-text "$query"
+  demo_input expect-window-title "$query"
   demo_input hide-sidebar
 }
 
