@@ -719,10 +719,12 @@ without attaching and becomes a classified refresh diagnostic.
 
 The same local WSL slice exposes explicit bare-session creation from the host
 tree. The dialog applies the shipped 1-100 character tmux-name rules and
-rejects names already present in current inventory. It pins the displayed WSL
-endpoint and remains usable while that already-admitted host performs a
-background inventory refresh; a disconnected, unavailable, or changed endpoint
-must be selected again. Workspace performs one
+rejects names already present in current inventory. Its title, validation copy,
+terminal-marked input, and subdued detach footer follow the Swift creation
+sheet; distro identity is not presented as the logical host name. The dialog
+pins its selected WSL endpoint and remains usable while that already-admitted
+host performs a background inventory refresh; a disconnected, unavailable, or
+changed endpoint must be selected again. Workspace performs one
 fresh admitted-host read, terminal consumes a non-cloneable CreateOnce whose
 ordinary client executes `new-session -A -s <name>`, and host captures the
 resulting runtime, server, session ID, and creation time. From that point the

@@ -1732,12 +1732,9 @@ impl RootView {
         let focused = self.create_focus.is_focused(window);
         let helper = validation.unwrap_or_else(|| {
             if empty {
-                "Choose a short name for this tmux session.".to_owned()
+                "Name the session you want to create on this host.".to_owned()
             } else {
-                format!(
-                    "Create and attach on {}. Closing Ghosthub only detaches.",
-                    host.endpoint()
-                )
+                format!("Create and attach on {}.", host.name())
             }
         });
 
@@ -1773,7 +1770,7 @@ impl RootView {
                                 .text_sm()
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(rgb(0xe0_e4eb))
-                                .child(format!("New tmux session · {}", host.endpoint())),
+                                .child("New tmux session"),
                         )
                         .child(Self::new_session_name_input(draft, focused, cx))
                         .child(
@@ -1824,6 +1821,14 @@ impl RootView {
             } else {
                 0xe1_e5ec
             }))
+            .child(
+                div()
+                    .mr_2()
+                    .flex_none()
+                    .text_xs()
+                    .text_color(rgb(0x72_7986))
+                    .child(">_"),
+            )
             .child(input_text)
             .on_click(cx.listener(|this, _, window, cx| {
                 window.focus(&this.create_focus);
@@ -1839,40 +1844,56 @@ impl RootView {
             .border_t_1()
             .border_color(rgb(0x2a_2f39))
             .flex()
-            .justify_end()
-            .gap_2()
+            .items_center()
+            .justify_between()
+            .gap_3()
             .child(
                 div()
-                    .id("cancel-new-session")
-                    .px_3()
-                    .py_1()
-                    .rounded_sm()
-                    .cursor_pointer()
-                    .text_sm()
-                    .text_color(rgb(0xb6_bcc7))
-                    .hover(|style| style.bg(rgb(0x29_2e38)))
-                    .child("Cancel")
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.cancel_new_session(window, cx);
-                    })),
+                    .min_w_0()
+                    .flex_1()
+                    .text_xs()
+                    .text_color(rgb(0x78_7f8b))
+                    .child("Tmux owns the session; closing Ghosthub only detaches."),
             )
             .child(
                 div()
-                    .id("create-new-session")
-                    .px_3()
-                    .py_1()
-                    .rounded_sm()
-                    .bg(rgb(if can_create { 0x1d_5f9a } else { 0x2b_3039 }))
-                    .text_sm()
-                    .text_color(rgb(if can_create { 0xf1_f5fa } else { 0x72_7986 }))
-                    .child("Create")
-                    .when(can_create, |element| {
-                        element
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .id("cancel-new-session")
+                            .px_3()
+                            .py_1()
+                            .rounded_sm()
                             .cursor_pointer()
+                            .text_sm()
+                            .text_color(rgb(0xb6_bcc7))
+                            .hover(|style| style.bg(rgb(0x29_2e38)))
+                            .child("Cancel")
                             .on_click(cx.listener(|this, _, window, cx| {
-                                this.submit_new_session(window, cx);
-                            }))
-                    }),
+                                this.cancel_new_session(window, cx);
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id("create-new-session")
+                            .px_3()
+                            .py_1()
+                            .rounded_sm()
+                            .bg(rgb(if can_create { 0x1d_5f9a } else { 0x2b_3039 }))
+                            .text_sm()
+                            .text_color(rgb(if can_create { 0xf1_f5fa } else { 0x72_7986 }))
+                            .child("Create")
+                            .when(can_create, |element| {
+                                element.cursor_pointer().on_click(cx.listener(
+                                    |this, _, window, cx| {
+                                        this.submit_new_session(window, cx);
+                                    },
+                                ))
+                            }),
+                    ),
             )
             .into_any_element()
     }
@@ -2728,14 +2749,13 @@ fn new_session_validation(
     if draft.name.trim().is_empty() {
         return None;
     }
-    let name = match SessionName::parse(&draft.name) {
-        Ok(name) => name,
-        Err(error) => return Some(error.to_string()),
+    let Ok(name) = SessionName::parse(&draft.name) else {
+        return Some("Use 1–100 characters without periods, colons, or line breaks.".to_owned());
     };
     host.sessions()
         .iter()
         .any(|session| session.name() == name.as_str())
-        .then(|| "A tmux session with this name already exists.".to_owned())
+        .then(|| "A session with this name already exists on this host.".to_owned())
 }
 
 fn window_control(
@@ -3262,11 +3282,14 @@ mod tests {
 
         assert_eq!(new_session_validation(&snapshot, &draft), None);
         draft.name = "has.period".to_owned();
-        assert!(new_session_validation(&snapshot, &draft).is_some());
+        assert_eq!(
+            new_session_validation(&snapshot, &draft).as_deref(),
+            Some("Use 1–100 characters without periods, colons, or line breaks.")
+        );
         draft.name = "existing".to_owned();
         assert_eq!(
             new_session_validation(&snapshot, &draft).as_deref(),
-            Some("A tmux session with this name already exists.")
+            Some("A session with this name already exists on this host.")
         );
         draft.name = "  release work  ".to_owned();
         assert_eq!(new_session_validation(&snapshot, &draft), None);
