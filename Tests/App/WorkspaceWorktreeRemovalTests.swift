@@ -1129,6 +1129,91 @@ struct WorkspaceWorktreeRemovalTests {
 
     @MainActor
     @Test(
+        "a stale scene restores the endpoint reconciled during recovery"
+    )
+    func staleSceneRestoresRecoveryReconciledEndpoint() async throws {
+        let fixture = try removalFixture()
+        let environment = fixture.environment
+        let removable = fixture.removable
+        var renamed = removable
+        renamed.tmuxSessionName = "kwt-ghosthub-renamed"
+        let beforeRemoval = fixture.beforeRemoval
+        let afterRename = inventory(environment, including: renamed)
+        let loads = LockedValue(0)
+        let coordinator = WorktreeMutationCoordinator()
+        let staleSurfaces = RecordingNativeSessionSurfaceStore()
+        let currentModel = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: fixture.snapshot,
+            kwtInventoryLoader: { _ in
+                loads.withLock { $0 += 1 }
+                return loads.load() == 1
+                    ? beforeRemoval
+                    : afterRename
+            },
+            kwtWorktreeRemover: { _, _, _, _ in
+                throw KwtWorktreeError.removalFailed(
+                    host: "Local",
+                    status: 1
+                )
+            },
+            worktreeMutationCoordinator: coordinator,
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+        let staleModel = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: fixture.snapshot,
+            nativeTmuxSurfaceStore: staleSurfaces,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            worktreeMutationCoordinator: coordinator
+        )
+        let saved = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: removable)
+        )
+        let renamedSelection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: renamed)
+        )
+        staleModel.openBorrowedTmuxSession(saved)
+        await waitUntilMainActor {
+            staleSurfaces.requestedConfigurations.count == 1
+        }
+
+        let request = try await currentModel.prepareWorktreeRemoval(
+            removable.id
+        )
+        await #expect(throws: KwtWorktreeError.removalTargetChanged) {
+            try await currentModel.removeWorktree(request)
+        }
+        await waitUntilMainActor {
+            staleSurfaces.requestedConfigurations.count == 2
+        }
+
+        #expect(
+            staleModel.retainedBorrowedTmuxHandle(for: saved) == nil
+        )
+        #expect(
+            staleModel.retainedBorrowedTmuxHandle(for: renamedSelection)
+                != nil
+        )
+        #expect(
+            staleModel.activeBorrowedTmuxSelection?.name
+                == renamedSelection.name
+        )
+        await currentModel.shutdown()
+        await staleModel.shutdown()
+    }
+
+    @MainActor
+    @Test(
         "a same-repository move after a failed remove restores the moved endpoint"
     )
     func sameRepositoryMoveRestoresMovedEndpoint() async throws {

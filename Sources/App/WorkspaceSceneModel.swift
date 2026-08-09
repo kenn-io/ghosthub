@@ -145,6 +145,10 @@ final class WorktreeMutationCoordinator {
         let scope: Scope
         let removalTombstones: Set<RemovalTombstone>
         let removalPresentationTargets: Set<WorkspaceTmuxSessionSelection>
+        /// Endpoints the failed removal's recovery refresh confirmed for
+        /// the surviving target; `nil` when no authoritative refresh
+        /// reconciled the failure.
+        let reconciledRestorationTargets: Set<WorkspaceTmuxSessionSelection>?
         let requiresWorkspaceReestablishment: Bool
     }
 
@@ -182,6 +186,7 @@ final class WorktreeMutationCoordinator {
                     scope: scope,
                     removalTombstones: [],
                     removalPresentationTargets: [],
+                    reconciledRestorationTargets: nil,
                     requiresWorkspaceReestablishment: false
                 )
             )
@@ -193,6 +198,8 @@ final class WorktreeMutationCoordinator {
         hostID: UUID,
         projectIdentity: String,
         removalTombstones: Set<RemovalTombstone> = [],
+        reconciledRestorationTargets:
+        Set<WorkspaceTmuxSessionSelection>? = nil,
         requiresWorkspaceReestablishment: Bool = false
     ) {
         let scope = Scope(
@@ -207,6 +214,8 @@ final class WorktreeMutationCoordinator {
                     scope: scope,
                     removalTombstones: removalTombstones,
                     removalPresentationTargets: [],
+                    reconciledRestorationTargets:
+                    reconciledRestorationTargets,
                     requiresWorkspaceReestablishment:
                     requiresWorkspaceReestablishment
                 )
@@ -232,6 +241,7 @@ final class WorktreeMutationCoordinator {
                 scope: scope,
                 removalTombstones: worktrees,
                 removalPresentationTargets: presentationTargets,
+                reconciledRestorationTargets: nil,
                 requiresWorkspaceReestablishment: false
             )
         )
@@ -532,11 +542,6 @@ final class WorkspaceSceneModel: ObservableObject {
         var wasActive: Bool
         var userNavigationRevision: UInt64
     }
-    private struct PendingRemovalRestoration {
-        var presentations:
-            [TmuxPresentationKey: PendingRemovalPresentation] = [:]
-        var snapshotRefreshed = false
-    }
     private var retainedTmuxPresentations:
         [TmuxPresentationKey: RetainedTmuxPresentation] = [:]
     private var retainedTmuxPresentationKeysByHandle:
@@ -560,7 +565,8 @@ final class WorkspaceSceneModel: ObservableObject {
                 Set<WorktreeMutationCoordinator.RemovalTombstone>
         ] = [:]
     private var pendingRemovalPresentationRestorations:
-        [WorktreeMutationCoordinator.Scope: PendingRemovalRestoration] = [:]
+        [WorktreeMutationCoordinator.Scope:
+            [TmuxPresentationKey: PendingRemovalPresentation]] = [:]
     private var userNavigationRevision: UInt64 = 0
     private var isShutDown = false
     private var sceneActivityGeneration: UInt64 = 0
@@ -2116,6 +2122,8 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         var removalTombstones:
             Set<WorktreeMutationCoordinator.RemovalTombstone> = []
+        var reconciledRestorationTargets:
+            Set<WorkspaceTmuxSessionSelection>?
         var requiresWorkspaceReestablishment = false
         var terminatedSession = false
         invalidateKwtInventoryRefresh()
@@ -2125,6 +2133,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 hostID: mutationHostID,
                 projectIdentity: mutationProjectIdentity,
                 removalTombstones: removalTombstones,
+                reconciledRestorationTargets: reconciledRestorationTargets,
                 requiresWorkspaceReestablishment:
                 requiresWorkspaceReestablishment
             )
@@ -2212,6 +2221,8 @@ final class WorkspaceSceneModel: ObservableObject {
                         hostID: project.hostID,
                         confirmedHost: confirmedHost
                     )
+                    reconciledRestorationTargets =
+                        outcome.restorationTargets
                     if outcome.identityRemoved {
                         removalTombstones.insert(removalTombstone)
                         requiresWorkspaceReestablishment = false
@@ -2326,25 +2337,37 @@ final class WorkspaceSceneModel: ObservableObject {
 
     /// Classifies a failed removal against a freshly loaded inventory so
     /// the caller can decide between tombstoning the removed identity and
-    /// requiring a new confirmation. Refresh or reconciliation errors
-    /// leave both flags false to preserve the original removal failure.
+    /// requiring a new confirmation. When the refresh confirms a surviving
+    /// target, `restorationTargets` carries its current endpoints so every
+    /// scene restores against the reconciled state rather than a saved
+    /// preflight endpoint. Refresh or reconciliation errors leave both
+    /// flags false and the targets `nil` to preserve the original removal
+    /// failure and the saved endpoints.
     private func classifyFailedRemoval(
         _ request: WorktreeRemovalRequest,
         tombstone: WorktreeMutationCoordinator.RemovalTombstone,
         hostID: UUID,
         confirmedHost: CommandHost
-    ) async -> (identityRemoved: Bool, targetChanged: Bool) {
+    ) async -> (
+        identityRemoved: Bool,
+        targetChanged: Bool,
+        restorationTargets: Set<WorkspaceTmuxSessionSelection>?
+    ) {
         do {
             let refreshed = try await kwtInventoryLoader(confirmedHost)
             guard removalHostEndpointMatches(request) else {
-                return (false, false)
+                return (false, false, nil)
             }
             do {
-                guard try reconcileRemovalPreflight(
+                if let (intact, _) = try reconcileRemovalPreflight(
                     refreshed,
                     request: request
-                ) == nil else {
-                    return (false, false)
+                ) {
+                    return (false, false, Set(
+                        WorkspaceSidebarModel.tmuxSessionSelection(
+                            for: intact
+                        ).map { [$0] } ?? []
+                    ))
                 }
                 applyAuthoritativeKwtInventory(
                     refreshed,
@@ -2353,7 +2376,7 @@ final class WorkspaceSceneModel: ObservableObject {
                         request.project.scopedKey: [tombstone],
                     ]
                 )
-                return (true, false)
+                return (true, false, nil)
             } catch KwtWorktreeError.removalTargetChanged {
                 // Survival is judged within the confirmed repository: the
                 // identity lives on when its path is still present or when
@@ -2364,29 +2387,65 @@ final class WorkspaceSceneModel: ObservableObject {
                 let generation = WorktreeGeneration.canonical(
                     tombstone.generation
                 )
-                let survives = refreshed.projects.first {
+                guard let item = refreshed.projects.first(where: {
                     $0.project.repository == request.project.scopedKey
-                }.map { item in
-                    // An incomplete worktree list cannot prove removal.
-                    item.warning != nil
-                        || item.worktrees.contains { record in
-                            tombstone.matches(
-                                path: record.path,
-                                generation: record.generation
-                            )
-                                || (generation != nil
-                                    && WorktreeGeneration.canonical(
-                                        record.generation
-                                    ) == generation)
-                        }
-                } ?? false
-                return (identityRemoved: !survives, targetChanged: true)
+                }) else {
+                    return (true, true, nil)
+                }
+                // An incomplete worktree list cannot prove removal, but it
+                // cannot vouch for a restoration endpoint either.
+                guard item.warning == nil else {
+                    return (false, true, nil)
+                }
+                let survives = item.worktrees.contains { record in
+                    tombstone.matches(
+                        path: record.path,
+                        generation: record.generation
+                    )
+                        || (generation != nil
+                            && WorktreeGeneration.canonical(
+                                record.generation
+                            ) == generation)
+                }
+                guard survives else {
+                    return (true, true, nil)
+                }
+                let target = generation.flatMap { generation in
+                    scopedRestorationTarget(
+                        generation: generation,
+                        hostID: hostID,
+                        projectIdentity: request.project.scopedKey
+                    )
+                }
+                return (false, true, Set(target.map { [$0] } ?? []))
             } catch {
-                return (false, false)
+                return (false, false, nil)
             }
         } catch {
-            return (false, false)
+            return (false, false, nil)
         }
+    }
+
+    /// Resolves the current tmux endpoint for a surviving generation
+    /// within the removal's repository scope after the snapshot was
+    /// refreshed by reconciliation.
+    private func scopedRestorationTarget(
+        generation: String,
+        hostID: UUID,
+        projectIdentity: String
+    ) -> WorkspaceTmuxSessionSelection? {
+        let projectIDs = Set(
+            snapshot.projects.filter {
+                $0.hostID == hostID
+                    && $0.scopedKey == projectIdentity
+            }.map(\.id)
+        )
+        guard let worktree = snapshot.worktrees.first(where: {
+            $0.hostID == hostID
+                && projectIDs.contains($0.projectID)
+                && WorktreeGeneration.canonical($0.generation) == generation
+        }) else { return nil }
+        return WorkspaceSidebarModel.tmuxSessionSelection(for: worktree)
     }
 
     private func reconcileRemovalPreflight(
@@ -3118,7 +3177,7 @@ final class WorkspaceSceneModel: ObservableObject {
             } else if let pendingRestoration {
                 restorePresentationsAfterFailedRemoval(
                     pendingRestoration,
-                    scope: event.scope,
+                    reconciledTargets: event.reconciledRestorationTargets,
                     requiresWorkspaceReestablishment:
                     event.requiresWorkspaceReestablishment
                 )
@@ -3404,8 +3463,8 @@ final class WorkspaceSceneModel: ObservableObject {
         for (presentation, restorationSelection) in presentations {
             let key = TmuxPresentationKey(presentation.selection)
             pendingRemovalPresentationRestorations[
-                event.scope, default: PendingRemovalRestoration()
-            ].presentations[key] = PendingRemovalPresentation(
+                event.scope, default: [:]
+            ][key] = PendingRemovalPresentation(
                 selection: restorationSelection,
                 launchMode: presentation.launchMode,
                 requiresWorkspaceEstablishment:
@@ -3419,15 +3478,14 @@ final class WorkspaceSceneModel: ObservableObject {
     }
 
     private func restorePresentationsAfterFailedRemoval(
-        _ restoration: PendingRemovalRestoration,
-        scope: WorktreeMutationCoordinator.Scope,
+        _ restoration: [TmuxPresentationKey: PendingRemovalPresentation],
+        reconciledTargets: Set<WorkspaceTmuxSessionSelection>?,
         requiresWorkspaceReestablishment: Bool
     ) {
-        for presentation in restoration.presentations.values {
-            guard let selection = currentRestorationSelection(
+        for presentation in restoration.values {
+            guard let selection = Self.restorationSelection(
                 for: presentation.selection,
-                scope: scope,
-                snapshotRefreshed: restoration.snapshotRefreshed
+                reconciledTargets: reconciledTargets
             ) else { continue }
             let establishesWorkspace = requiresWorkspaceReestablishment
                 || presentation.requiresWorkspaceEstablishment
@@ -3447,34 +3505,23 @@ final class WorkspaceSceneModel: ObservableObject {
     /// Reconciliation can refresh the surviving worktree's tmux session
     /// name or socket between removal preflight and restoration; restoring
     /// the saved endpoint would leave a presentation the next inventory
-    /// pass immediately invalidates. While this scene's snapshot was not
-    /// refreshed after the target was captured, the saved preflight
-    /// endpoint stays authoritative. When the refreshed snapshot no longer
-    /// holds the worktree within the removal's repository scope — for
-    /// example the same path and generation now belong to another project
-    /// — there is no trustworthy endpoint and restoration is skipped.
-    private func currentRestorationSelection(
+    /// pass immediately invalidates. The reconciled targets carried on the
+    /// mutation event are authoritative for every scene, including scenes
+    /// whose own snapshot is stale. Without reconciled targets the saved
+    /// endpoint stands; with them, a saved endpoint whose generation no
+    /// longer resolves has no trustworthy target and is skipped.
+    private static func restorationSelection(
         for saved: WorkspaceTmuxSessionSelection,
-        scope: WorktreeMutationCoordinator.Scope,
-        snapshotRefreshed: Bool
+        reconciledTargets: Set<WorkspaceTmuxSessionSelection>?
     ) -> WorkspaceTmuxSessionSelection? {
-        guard snapshotRefreshed,
+        guard let reconciledTargets,
               let generation = WorktreeGeneration.canonical(
                   saved.worktreeGeneration
               )
         else { return saved }
-        let projectIDs = Set(
-            snapshot.projects.filter {
-                $0.hostID == scope.hostID
-                    && $0.scopedKey == scope.projectIdentity
-            }.map(\.id)
-        )
-        guard let worktree = snapshot.worktrees.first(where: {
-            $0.hostID == scope.hostID
-                && projectIDs.contains($0.projectID)
-                && WorktreeGeneration.canonical($0.generation) == generation
-        }) else { return nil }
-        return WorkspaceSidebarModel.tmuxSessionSelection(for: worktree)
+        return reconciledTargets.first {
+            WorktreeGeneration.canonical($0.worktreeGeneration) == generation
+        }
     }
 
     private func worktreeIDs(
@@ -3563,11 +3610,6 @@ final class WorkspaceSceneModel: ObservableObject {
             )
         kwtAvailabilityByHost[hostID] = true
         kwtInventoryFailuresByHost.removeValue(forKey: hostID)
-        for scope in pendingRemovalPresentationRestorations.keys
-            where scope.hostID == hostID {
-            pendingRemovalPresentationRestorations[scope]?
-                .snapshotRefreshed = true
-        }
         applyInventoryOverlayIfNeeded()
         reconcileRetainedTmuxPresentations(
             afterAuthoritativeInventoryFor: hostID
