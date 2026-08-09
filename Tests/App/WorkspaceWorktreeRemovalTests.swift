@@ -419,6 +419,61 @@ struct WorkspaceWorktreeRemovalTests {
     }
 
     @MainActor
+    @Test("a successful removal strips scenes with legacy project identity")
+    func successfulRemovalStripsLegacyIdentityScene() async throws {
+        struct InventoryUnavailable: Error {}
+        let fixture = try removalFixture()
+        let environment = fixture.environment
+        let removable = fixture.removable
+        var legacySnapshot = fixture.snapshot
+        for index in legacySnapshot.projects.indices
+            where legacySnapshot.projects[index].id == removable.projectID {
+            legacySnapshot.projects[index].scopedKey = ""
+        }
+        let beforeRemoval = fixture.beforeRemoval
+        let afterRemoval = inventory(environment)
+        let loads = LockedValue(0)
+        let coordinator = WorktreeMutationCoordinator()
+        let currentModel = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: fixture.snapshot,
+            kwtInventoryLoader: { _ in
+                loads.withLock { $0 += 1 }
+                return loads.load() == 1
+                    ? beforeRemoval
+                    : afterRemoval
+            },
+            kwtWorktreeRemover: { _, _, _, _ in },
+            worktreeMutationCoordinator: coordinator,
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+        let legacyModel = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: legacySnapshot,
+            kwtInventoryLoader: { _ in throw InventoryUnavailable() },
+            worktreeMutationCoordinator: coordinator
+        )
+        #expect(legacyModel.snapshot.worktree(id: removable.id) != nil)
+
+        let request = try await currentModel.prepareWorktreeRemoval(
+            removable.id
+        )
+        try await currentModel.removeWorktree(request)
+
+        #expect(currentModel.snapshot.worktree(id: removable.id) == nil)
+        #expect(legacyModel.snapshot.worktree(id: removable.id) == nil)
+        await currentModel.shutdown()
+        await legacyModel.shutdown()
+    }
+
+    @MainActor
     @Test("failed removal restores the canonical endpoint in a stale scene")
     func failedRemovalRestoresCanonicalEndpointAcrossScenes() async throws {
         let fixture = try removalFixture(sessionName: "kwt-ghosthub-stale")

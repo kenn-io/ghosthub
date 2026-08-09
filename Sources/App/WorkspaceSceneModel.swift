@@ -3401,8 +3401,10 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         if var inventory = kwtInventoriesByHost[scope.hostID] {
             for index in inventory.projects.indices
-                where inventory.projects[index].project.repository
-                == scope.projectIdentity {
+                where Self.removalScopeIncludesRepository(
+                    inventory.projects[index].project.repository,
+                    scope: scope
+                ) {
                 inventory.projects[index].worktrees.removeAll {
                     matches($0.path, $0.generation)
                 }
@@ -3524,6 +3526,18 @@ final class WorkspaceSceneModel: ObservableObject {
         }
     }
 
+    /// A removed identity is stripped from its own repository and from
+    /// projects whose identity is legacy-empty, so scenes that have not
+    /// yet resolved a repository identity still drop the removed worktree.
+    /// A different non-empty repository identity is another project's
+    /// worktree — for example a reassignment — and stays visible.
+    private static func removalScopeIncludesRepository(
+        _ repository: String,
+        scope: WorktreeMutationCoordinator.Scope
+    ) -> Bool {
+        repository.isEmpty || repository == scope.projectIdentity
+    }
+
     private func worktreeIDs(
         matching tombstones:
         Set<WorktreeMutationCoordinator.RemovalTombstone>,
@@ -3532,7 +3546,10 @@ final class WorkspaceSceneModel: ObservableObject {
         let projectIDs = Set(
             snapshot.projects.filter {
                 $0.hostID == scope.hostID
-                    && $0.scopedKey == scope.projectIdentity
+                    && Self.removalScopeIncludesRepository(
+                        $0.scopedKey,
+                        scope: scope
+                    )
             }.map(\.id)
         )
         return Set(snapshot.worktrees.compactMap { worktree in
