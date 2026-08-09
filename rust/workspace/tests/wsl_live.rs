@@ -199,8 +199,9 @@ fn creates_attaches_and_detaches_one_atomic_local_session() {
         },
         || workspace_diagnostic(&workspace),
     );
+    let endpoint = workspace.snapshot().hosts()[0].endpoint().to_owned();
     workspace
-        .create_session("wsl", "  created live  ")
+        .create_session("wsl", &endpoint, "  created live  ")
         .expect("start one-shot local creation");
     wait_until_with_diagnostic(
         || {
@@ -245,7 +246,9 @@ fn creates_attaches_and_detaches_one_atomic_local_session() {
         created_identity
     );
     assert!(
-        workspace.create_session("wsl", "created live").is_err(),
+        workspace
+            .create_session("wsl", &endpoint, "created live")
+            .is_err(),
         "current inventory prevents an accidental duplicate create action"
     );
 }
@@ -264,6 +267,7 @@ fn creation_race_attaches_the_exact_existing_session() {
         || workspace.snapshot().hosts()[0].connection() == workspace::HostConnectionState::Ready,
         || workspace_diagnostic(&workspace),
     );
+    let endpoint = workspace.snapshot().hosts()[0].endpoint().to_owned();
 
     server.run_tmux(["new-session", "-d", "-s", "raced live"]);
     let before = server.run_tmux([
@@ -274,7 +278,7 @@ fn creation_race_attaches_the_exact_existing_session() {
         "#{pid}:#{session_id}:#{session_created}",
     ]);
     workspace
-        .create_session("wsl", "raced live")
+        .create_session("wsl", &endpoint, "raced live")
         .expect("the atomic action accepts a session absent from cached inventory");
     wait_until_with_diagnostic(
         || {

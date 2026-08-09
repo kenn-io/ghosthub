@@ -1541,10 +1541,15 @@ impl Workspace {
     ///
     /// # Errors
     ///
-    /// Returns an error when the name is invalid, the host is not ready, a
-    /// matching session is already present in current inventory, or the
-    /// creation task cannot be started.
-    pub fn create_session(&self, host_id: &str, name: &str) -> Result<(), WorkspaceError> {
+    /// Returns an error when the name is invalid, the selected endpoint
+    /// changed, the host has no admitted inventory, a matching session is
+    /// already present, or the creation task cannot be started.
+    pub fn create_session(
+        &self,
+        host_id: &str,
+        endpoint: &str,
+        name: &str,
+    ) -> Result<(), WorkspaceError> {
         let name =
             SessionName::parse(name).map_err(|error| WorkspaceError::new(error.to_string()))?;
         let navigation = self
@@ -1552,7 +1557,7 @@ impl Workspace {
             .navigation
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let request = capture_create_request(&self.inner, host_id, name)?;
+        let request = capture_create_request(&self.inner, host_id, endpoint, name)?;
         let navigation_generation = self.begin_navigation();
         let in_flight_fallback = self.supersede_inflight_attachment()?;
         let visible_previous = self.retain_active_presentation()?;
@@ -2572,6 +2577,7 @@ fn capture_attach_request(
 fn capture_create_request(
     inner: &Inner,
     host_id: &str,
+    endpoint: &str,
     name: SessionName,
 ) -> Result<CreateRequest, WorkspaceError> {
     let selected_host = inner
@@ -2589,7 +2595,15 @@ fn capture_create_request(
         .iter()
         .find(|host| host.id == host_id)
         .ok_or_else(|| WorkspaceError::new("host is not available"))?;
-    if selected.connection != HostConnectionState::Ready {
+    if selected.endpoint != endpoint {
+        return Err(WorkspaceError::new(
+            "the WSL endpoint changed; choose the host again before creating a session",
+        ));
+    }
+    if matches!(
+        selected.connection,
+        HostConnectionState::Disconnected | HostConnectionState::Unavailable
+    ) {
         return Err(WorkspaceError::new(
             "connect the WSL host before creating a tmux session",
         ));
@@ -2612,6 +2626,11 @@ fn capture_create_request(
         .as_ref()
         .ok_or_else(|| WorkspaceError::new("WSL inventory is not ready"))?;
     context.map(|context, inventory_generation| {
+        if context.snapshot.endpoint().distro() != endpoint {
+            return Err(WorkspaceError::new(
+                "the WSL endpoint changed; choose the host again before creating a session",
+            ));
+        }
         Ok(CreateRequest {
             host_id: host_id.to_owned(),
             host: context.host.clone(),
@@ -5564,6 +5583,26 @@ mod tests {
         );
 
         assert!(workspace.refresh_if_ready().expect("refresh ready host"));
+        assert!(
+            capture_create_request(
+                &workspace.inner,
+                "wsl",
+                "Ubuntu",
+                SessionName::parse("new work").expect("valid name"),
+            )
+            .is_ok(),
+            "an admitted host remains available for creation while its inventory refreshes"
+        );
+        assert!(
+            capture_create_request(
+                &workspace.inner,
+                "wsl",
+                "Debian",
+                SessionName::parse("new work").expect("valid name"),
+            )
+            .is_err(),
+            "creation never follows a changed default distro implicitly"
+        );
         runtime.run_next_work();
 
         assert_eq!(discovery.reused_hosts.load(Ordering::Acquire), 1);
