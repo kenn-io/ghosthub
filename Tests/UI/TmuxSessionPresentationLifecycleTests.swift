@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import GhosthubWorkspace
 import SwiftUI
+import Synchronization
 import Testing
 @testable import GhosthubUI
 
@@ -147,6 +148,82 @@ struct TmuxSessionPresentationLifecycleTests {
         )
 
         #expect(events == [.deactivate, .start])
+    }
+
+    @Test("newer Herdr lifecycle preparation supersedes and releases older authority")
+    func herdrLifecyclePreparationSupersedesOlderRequest() async {
+        let host = HostSummary.fixture()
+        let first = HerdrSessionLifecycleRequest(
+            authorityID: UUID(),
+            session: .init(hostID: host.id, name: "first"),
+            confirmedHost: host,
+            isDefault: false,
+            confirmedSessionDirectory: "/tmp/first",
+            confirmedSocketPath: "/tmp/first.sock",
+            action: .stop
+        )
+        let second = HerdrSessionLifecycleRequest(
+            authorityID: UUID(),
+            session: .init(hostID: host.id, name: "second"),
+            confirmedHost: host,
+            isDefault: false,
+            confirmedSessionDirectory: "/tmp/second",
+            confirmedSocketPath: "/tmp/second.sock",
+            action: .delete
+        )
+        let firstContinuation = Mutex<CheckedContinuation<Void, Never>?>(nil)
+        let controller = HerdrLifecyclePreparationController()
+        var prepared: [HerdrSessionLifecycleRequest] = []
+        var cancelled: [HerdrSessionLifecycleRequest] = []
+        var failures: [String] = []
+
+        controller.start(
+            prepare: {
+                await withCheckedContinuation { continuation in
+                    firstContinuation.withLock { $0 = continuation }
+                }
+                return first
+            },
+            cancelPrepared: { cancelled.append($0) },
+            onPrepared: { prepared.append($0) },
+            onFailure: { failures.append($0.localizedDescription) }
+        )
+        for _ in 0 ..< 1_000 {
+            if firstContinuation.withLock({ $0 != nil }) {
+                break
+            }
+            await Task.yield()
+        }
+
+        controller.start(
+            prepare: { second },
+            cancelPrepared: { cancelled.append($0) },
+            onPrepared: { prepared.append($0) },
+            onFailure: { failures.append($0.localizedDescription) }
+        )
+        for _ in 0 ..< 1_000 {
+            if prepared == [second] {
+                break
+            }
+            await Task.yield()
+        }
+
+        let continuation = firstContinuation.withLock {
+            let continuation = $0
+            $0 = nil
+            return continuation
+        }
+        continuation?.resume()
+        for _ in 0 ..< 1_000 {
+            if cancelled == [first] {
+                break
+            }
+            await Task.yield()
+        }
+
+        #expect(prepared == [second])
+        #expect(cancelled == [first])
+        #expect(failures.isEmpty)
     }
 
     @Test("Root presents only the active Herdr backend")

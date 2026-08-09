@@ -633,14 +633,17 @@ final class NativeHerdrSessionCoordinator {
         let recordedExitCode = remoteExitStatusStore.consume(
             attachment?.remoteExitStatusURL
         )
-        let exitCode = recordedExitCode ?? childExitCode
         // As with tmux, SSH 255 is treated as transport loss. If a future
         // Herdr client uses 255 itself, the recovery probe will stop retries
         // once it observes that this exact session is no longer running.
-        if processAlive || exitCode == 0 {
-            attachmentClosures[handle.id] = .detached
+        if let recordedExitCode {
+            attachmentClosures[handle.id] = recordedExitCode == 0
+                ? .detached
+                : .processExited(code: recordedExitCode)
         } else {
-            attachmentClosures[handle.id] = .processExited(code: exitCode)
+            attachmentClosures[handle.id] = processAlive || childExitCode == 0
+                ? .detached
+                : .processExited(code: childExitCode)
         }
         reportedConnectedAttachmentIDs.removeValue(forKey: handle.id)
         terminalCoordinator.removeSurface(for: surfaceKey(handle))

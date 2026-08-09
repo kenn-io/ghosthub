@@ -176,12 +176,14 @@ struct NativeHerdrSessionCoordinatorTests {
     }
 
     @Test("remote status controls closure classification", arguments: [
-        (UInt32(0), BorrowedHerdrAttachmentClosure.detached),
-        (UInt32(255), BorrowedHerdrAttachmentClosure.processExited(code: 255)),
-        (UInt32(9), BorrowedHerdrAttachmentClosure.processExited(code: 9)),
+        (UInt32(0), false, BorrowedHerdrAttachmentClosure.detached),
+        (UInt32(255), false, BorrowedHerdrAttachmentClosure.processExited(code: 255)),
+        (UInt32(255), true, BorrowedHerdrAttachmentClosure.processExited(code: 255)),
+        (UInt32(9), false, BorrowedHerdrAttachmentClosure.processExited(code: 9)),
     ])
     func remoteExitClassification(
         recordedCode: UInt32,
+        processAlive: Bool,
         expected: BorrowedHerdrAttachmentClosure
     ) async throws {
         let directory = temporaryStatusDirectory()
@@ -208,7 +210,7 @@ struct NativeHerdrSessionCoordinatorTests {
         )
 
         let close = try #require(store.surface.closeObservers[handle.id])
-        close(false, 0)
+        close(processAlive, 0)
 
         #expect(coordinator.attachmentClosure(handle) == expected)
         #expect(!FileManager.default.fileExists(atPath: statusFile.path))

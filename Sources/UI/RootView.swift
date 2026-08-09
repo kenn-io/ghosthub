@@ -30,6 +30,8 @@ public struct RootView: View {
     @State private var herdrActivationRevision: UInt64 = 0
     @State private var herdrActivationTask: Task<Void, Never>?
     @State private var herdrRestartTask: Task<Void, Never>?
+    @StateObject private var herdrLifecyclePreparation =
+        HerdrLifecyclePreparationController()
     @State private var newWorktreeProject: ProjectSummary?
     @State private var newWorktreeMode: NewWorktreeMode = .branch
     @State private var newTmuxSessionHost: HostSummary?
@@ -236,6 +238,7 @@ public struct RootView: View {
             .onDisappear {
                 cancelHerdrPresentationIntents()
                 cancelHerdrCreation()
+                cancelHerdrLifecyclePreparation()
             }
     }
 
@@ -917,7 +920,12 @@ public struct RootView: View {
         _ session: WorkspaceHerdrSessionSelection,
         action: HerdrSessionDestructiveAction
     ) {
+        if case let .herdrLifecycleConfirmation(request) = workspaceAlert {
+            handlers.cancelHerdrSessionLifecycle?(request)
+            workspaceAlert = nil
+        }
         guard let prepare = handlers.prepareHerdrSessionLifecycle else {
+            herdrLifecyclePreparation.cancel()
             workspaceAlert = .herdrLifecycleFailure(
                 session: session.name,
                 action: action == .stop ? "stop" : "delete",
@@ -925,19 +933,32 @@ public struct RootView: View {
             )
             return
         }
-        Task {
-            do {
-                workspaceAlert = await .herdrLifecycleConfirmation(
-                    try prepare(session, action)
-                )
-            } catch {
+        herdrLifecyclePreparation.start(
+            prepare: {
+                try await prepare(session, action)
+            },
+            cancelPrepared: { request in
+                handlers.cancelHerdrSessionLifecycle?(request)
+            },
+            onPrepared: { request in
+                workspaceAlert = .herdrLifecycleConfirmation(request)
+            },
+            onFailure: { error in
                 workspaceAlert = .herdrLifecycleFailure(
                     session: session.name,
                     action: action == .stop ? "stop" : "delete",
                     message: error.localizedDescription
                 )
             }
-        }
+        )
+    }
+
+    private func cancelHerdrLifecyclePreparation() {
+        herdrLifecyclePreparation.cancel()
+        guard case let .herdrLifecycleConfirmation(request) = workspaceAlert
+        else { return }
+        handlers.cancelHerdrSessionLifecycle?(request)
+        workspaceAlert = nil
     }
 
     private func requestSessionKill(
@@ -1761,6 +1782,52 @@ struct TmuxSessionPresentationLifecycleModifier: ViewModifier {
                     hide()
                 }
             }
+    }
+}
+
+@MainActor
+final class HerdrLifecyclePreparationController: ObservableObject {
+    private var revision: UInt64 = 0
+    private var task: Task<Void, Never>?
+
+    func start(
+        prepare: @escaping () async throws -> HerdrSessionLifecycleRequest,
+        cancelPrepared: @escaping (HerdrSessionLifecycleRequest) -> Void,
+        onPrepared: @escaping (HerdrSessionLifecycleRequest) -> Void,
+        onFailure: @escaping (any Error) -> Void
+    ) {
+        cancel()
+        let currentRevision = revision
+        task = Task { @MainActor [weak self] in
+            do {
+                let request = try await prepare()
+                guard let self else {
+                    cancelPrepared(request)
+                    return
+                }
+                guard !Task.isCancelled,
+                      revision == currentRevision else {
+                    cancelPrepared(request)
+                    return
+                }
+                task = nil
+                onPrepared(request)
+            } catch {
+                guard let self,
+                      !Task.isCancelled,
+                      revision == currentRevision,
+                      !(error is CancellationError)
+                else { return }
+                task = nil
+                onFailure(error)
+            }
+        }
+    }
+
+    func cancel() {
+        revision &+= 1
+        task?.cancel()
+        task = nil
     }
 }
 
