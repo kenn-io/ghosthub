@@ -628,7 +628,13 @@ struct WorkspaceTmuxDiscoveryTests {
             let isReachable = remoteReachable
             lock.unlock()
             guard isReachable else {
-                return .failure(.shellFailed(status: 255))
+                return .failure(.sshConnectionFailed(
+                    host: "build-box",
+                    classification: SSHConnectionFailure.classify(
+                        status: 255,
+                        output: "Network is unreachable"
+                    )
+                ))
             }
             return .success([
                 DiscoveredTmuxSession(
@@ -5111,6 +5117,10 @@ struct WorkspaceTmuxDiscoveryTests {
     @Test("an unreachable SSH host does not block local inventory")
     func unreachableRemoteDoesNotBlockLocalInventory() async throws {
         let environment = try setupStandardEnvironment()
+        let transport = SSHConnectionFailure.classify(
+            status: 255,
+            output: "ssh: connect to host wesm-mbp port 22: Network is unreachable"
+        )
         let remote = SSHHost(
             configKey: "wesm-mbp",
             name: "Wes MBP",
@@ -5144,7 +5154,10 @@ struct WorkspaceTmuxDiscoveryTests {
                         ),
                     ])
                 case .ssh:
-                    return .failure(.shellFailed(status: 255))
+                    return .failure(.sshConnectionFailed(
+                        host: remote.name,
+                        classification: transport
+                    ))
                 }
             },
             configuredSSHHostsProvider: { configuredHosts.value },
@@ -5179,8 +5192,69 @@ struct WorkspaceTmuxDiscoveryTests {
         #expect(remoteSummary.lastSeenAt == nil)
         #expect(
             model.workspaceInventoryWarningsByHost[remoteHostID]?
-                .contains("status 255") == true
+                .contains("could not reach") == true
         )
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("missing tmux does not make a Herdr-capable host offline")
+    func missingTmuxKeepsHerdrHostReachable() async throws {
+        let environment = try setupStandardEnvironment()
+        let remote = SSHHost(
+            configKey: "herdr-box",
+            name: "Herdr Box",
+            platform: .linux,
+            sshDestination: "dev@herdr-box"
+        )
+        let configuredHosts = CurrentValueSubject<[SSHHost], Never>([remote])
+        let running = HerdrSessionSummary(
+            name: "api",
+            isDefault: true,
+            state: .running
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            kwtInventoryLoader: { _ in KwtHostInventory(projects: []) },
+            tmuxSessionDiscovery: { host in
+                switch host {
+                case .local:
+                    return .success([])
+                case .ssh:
+                    return .failure(.notFound(shell: remote.name))
+                }
+            },
+            herdrSessionDiscovery: { host in
+                switch host {
+                case .local:
+                    return .unavailable
+                case .ssh:
+                    return .available([running])
+                }
+            },
+            configuredSSHHostsProvider: { configuredHosts.value },
+            configuredSSHHostsPublisher:
+            configuredHosts.eraseToAnyPublisher(),
+            startServices: true
+        )
+
+        await waitUntilMainActor {
+            model.workspaceInventoryState == .loaded
+                && model.snapshot.hosts.contains {
+                    $0.configKey == remote.configKey
+                        && $0.herdrSessions == [running]
+                }
+        }
+
+        let summary = try #require(
+            model.snapshot.hosts.first { $0.configKey == remote.configKey }
+        )
+        #expect(summary.lastKnownReachable)
+        #expect(summary.connectionState != .offline)
+        #expect(summary.herdrAvailable)
+        #expect(model.workspaceInventoryWarningsByHost[summary.id]?
+            .contains("tmux was not found") == true)
         await model.shutdown()
     }
 
@@ -5547,7 +5621,7 @@ struct WorkspaceTmuxDiscoveryTests {
         #expect(!model.snapshot.canCreateWorktree(in: cachedProject))
         #expect(
             model.workspaceInventoryWarningsByHost[offlineHost.id]?
-                .contains("255") == true
+                .contains("could not reach") == true
         )
         await model.shutdown()
     }

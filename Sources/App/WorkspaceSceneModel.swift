@@ -3310,7 +3310,8 @@ final class WorkspaceSceneModel: ObservableObject {
     ) {
         guard case let .success(discovered) = result else {
             if case let .failure(error) = result {
-                tmuxReachabilityByHost[hostID] = false
+                tmuxReachabilityByHost[hostID] =
+                    !Self.isConfirmedSSHTransportFailure(error)
                 let hostName = snapshot.host(id: hostID)?.name
                     ?? "Unknown host"
                 tmuxDiscoveryFailuresByHost[hostID] =
@@ -3380,6 +3381,15 @@ final class WorkspaceSceneModel: ObservableObject {
         } else {
             updateWorkspaceInventoryState()
         }
+    }
+
+    private static func isConfirmedSSHTransportFailure(
+        _ error: TmuxBinaryError
+    ) -> Bool {
+        guard case let .sshConnectionFailed(_, classification) = error else {
+            return false
+        }
+        return classification.kind == .transport
     }
 
     private func updateWorkspaceInventoryState() {
@@ -6213,22 +6223,40 @@ final class WorkspaceSceneModel: ObservableObject {
         guard activeHerdrReconnectContext == context,
               activeBorrowedHerdrHandle?.id == context.handleID
         else { return .stop }
-        let outcome = await herdrSessionProbeBroker.session(
-            named: context.selection.name,
-            on: context.host
+        let connection = await herdrConnectionSnapshot(on: context.host)
+        let outcome = await herdrSessionExactProbe(
+            context.selection.name,
+            context.host,
+            connection.arguments
         )
+        let currentConnection = await herdrConnectionSnapshot(on: context.host)
         guard !Task.isCancelled else { return .retry }
         guard activeHerdrReconnectContext == context,
               activeBorrowedHerdrHandle?.id == context.handleID,
               snapshot.host(id: context.selection.hostID)
               .flatMap(CommandHostResolver.resolve) == context.host
         else { return .stop }
-        return herdrReconnectDecision(for: context, outcome: outcome)
+        guard currentConnection.cacheKey == connection.cacheKey else {
+            stopHerdrReconnectWithUnableToAttach(
+                "The SSH connection changed while Ghosthub was checking the Herdr session. Reopen it to use the current connection."
+            )
+            return .stop
+        }
+        return herdrReconnectDecision(
+            for: context,
+            outcome: outcome,
+            validation: HerdrSessionValidation(
+                session: nil,
+                host: context.host,
+                connection: connection
+            )
+        )
     }
 
     private func herdrReconnectDecision(
         for context: ActiveHerdrReconnectContext,
-        outcome: HerdrSessionProbeOutcome
+        outcome: HerdrSessionProbeOutcome,
+        validation: HerdrSessionValidation? = nil
     ) -> SessionReconnectDecision {
         guard !Task.isCancelled else { return .retry }
         guard activeHerdrReconnectContext == context,
@@ -6245,7 +6273,16 @@ final class WorkspaceSceneModel: ObservableObject {
                 )
                 return .stop
             }
-            guard presentHerdrSession(context.selection) != nil else {
+            guard let validation else {
+                stopHerdrReconnectWithUnableToAttach(
+                    "The remote Herdr route could not be verified."
+                )
+                return .stop
+            }
+            guard presentHerdrSession(
+                context.selection,
+                validation: validation
+            ) != nil else {
                 stopHerdrReconnectWithUnableToAttach(
                     "The remote host is no longer available."
                 )

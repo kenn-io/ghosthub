@@ -1241,10 +1241,11 @@ struct WorkspaceHerdrPresentationTests {
     func remoteTransportRecovery() async throws {
         let environment = try remoteEnvironment()
         let store = RecordingNativeSessionSurfaceStore()
+        let connection = SSHConnectionArgumentsSnapshot(arguments: [
+            "-F", "/tmp/frozen-config", "dev@build.example.test",
+        ])
+        let probedConnectionArguments = Mutex<[String]?>(nil)
         let discoveries = HerdrDiscoveryQueue([
-            .available([
-                HerdrSessionSummary(name: "api", isDefault: true, state: .running),
-            ]),
             .available([
                 HerdrSessionSummary(name: "api", isDefault: true, state: .running),
             ]),
@@ -1252,7 +1253,12 @@ struct WorkspaceHerdrPresentationTests {
         let model = try makeHerdrModel(
             environment,
             store: store,
-            discovery: { _ in discoveries.removeFirst() }
+            discovery: { _ in discoveries.removeFirst() },
+            exactProbe: { _, _, arguments in
+                probedConnectionArguments.withLock { $0 = arguments }
+                return .present
+            },
+            sshConnectionSnapshotProvider: { _ in connection }
         )
         let herdr = WorkspaceHerdrSessionSelection(
             hostID: environment.hostID,
@@ -1267,8 +1273,59 @@ struct WorkspaceHerdrPresentationTests {
             store.requestedKeys.count == 2
         }
 
-        #expect(discoveries.callCount == 2)
+        #expect(discoveries.callCount == 1)
+        #expect(probedConnectionArguments.withLock { $0 } == connection.arguments)
+        #expect(store.requestedConfigurations.last?.command?.contains(
+            "/tmp/frozen-config"
+        ) == true)
         #expect(model.activeBorrowedHerdrSelection == herdr)
+        await model.shutdown()
+    }
+
+    @Test("reconnect rejects SSH route drift after its exact probe")
+    func remoteTransportRecoveryRejectsRouteDrift() async throws {
+        let environment = try remoteEnvironment()
+        let store = RecordingNativeSessionSurfaceStore()
+        let frozen = SSHConnectionArgumentsSnapshot(arguments: [
+            "-F", "/tmp/frozen-config", "dev@build.example.test",
+        ])
+        let changed = SSHConnectionArgumentsSnapshot(arguments: [
+            "-F", "/tmp/changed-config", "dev@other.example.test",
+        ])
+        let currentConnection = LockedValue(frozen)
+        let running = HerdrSessionSummary(
+            name: "api",
+            isDefault: true,
+            state: .running
+        )
+        let model = try makeHerdrModel(
+            environment,
+            store: store,
+            discovery: { _ in .available([running]) },
+            exactProbe: { _, _, _ in
+                currentConnection.store(changed)
+                return .present
+            },
+            sshConnectionSnapshotProvider: { _ in currentConnection.load() }
+        )
+        let herdr = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID,
+            name: "api"
+        )
+        try await model.openBorrowedHerdrSession(herdr)
+        await launchHerdrSurface(model, store: store)
+
+        let close = try #require(store.surface.closeObservers.values.first)
+        close(false, 255)
+        await waitUntilMainActor {
+            if case let .disconnected(reason) = model
+                .activeBorrowedHerdrConnectionState {
+                return reason?.contains("SSH connection changed") == true
+            }
+            return false
+        }
+
+        #expect(store.requestedKeys.count == 1)
         await model.shutdown()
     }
 
@@ -1313,7 +1370,17 @@ struct WorkspaceHerdrPresentationTests {
             model.activeBorrowedHerdrRecoveryState == nil
         }
         await waitUntilMainActor(timeout: .seconds(1)) {
-            discoveries.callCount == 4
+            guard discoveries.callCount == 4,
+                  let host = model.snapshot.host(id: environment.hostID)
+            else { return false }
+            switch result {
+            case .available:
+                return !host.herdrSessions.contains { $0.name == "api" }
+            case .unavailable:
+                return !host.herdrAvailable
+            case .failure:
+                return false
+            }
         }
 
         #expect(store.requestedKeys.count == 1)
