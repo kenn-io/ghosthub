@@ -802,10 +802,26 @@ impl RootView {
             return;
         }
         let keystroke = &event.keystroke;
+        if event.is_held
+            && let Some((canonical, input)) =
+                retained_key_event(&self.keyboard, keystroke, InputKeyEvent::Repeat)
+        {
+            self.send_key_event(
+                presentation_id,
+                input,
+                &canonical.identity,
+                InputKeyEvent::Repeat,
+            );
+            cx.stop_propagation();
+            return;
+        }
         if is_toggle_sidebar_shortcut(keystroke) {
             // The application key binding owns this chord. Leave propagation
             // intact so GPUI dispatches ToggleSidebar, but never enqueue it as
             // terminal input.
+            if event.is_held {
+                cx.stop_propagation();
+            }
             return;
         }
         if is_paste_shortcut(keystroke) {
@@ -844,7 +860,9 @@ impl RootView {
         if !self.presentation_accepts_input(presentation_id) {
             return;
         }
-        if let Some((canonical, input)) = retained_key_release(&self.keyboard, &event.keystroke) {
+        if let Some((canonical, input)) =
+            retained_key_event(&self.keyboard, &event.keystroke, InputKeyEvent::Release)
+        {
             self.send_key_event(
                 presentation_id,
                 input,
@@ -2569,24 +2587,22 @@ fn canonical_terminal_key(keystroke: &gpui::Keystroke) -> CanonicalTerminalKey {
     canonical_terminal_key_with(keystroke, platform_layout_key)
 }
 
-fn retained_key_release(
+fn retained_key_event(
     keyboard: &TerminalKeyboard,
     keystroke: &gpui::Keystroke,
+    event: InputKeyEvent,
 ) -> Option<(CanonicalTerminalKey, KeyInput)> {
-    retained_key_release_with(keyboard, keystroke, platform_layout_key)
+    retained_key_event_with(keyboard, keystroke, event, platform_layout_key)
 }
 
-fn retained_key_release_with(
+fn retained_key_event_with(
     keyboard: &TerminalKeyboard,
     keystroke: &gpui::Keystroke,
+    event: InputKeyEvent,
     resolve: impl FnOnce(char) -> Option<LayoutKey>,
 ) -> Option<(CanonicalTerminalKey, KeyInput)> {
     let canonical = canonical_terminal_key_with(keystroke, resolve);
-    let input = keyboard.input_for(
-        &canonical.identity,
-        InputKeyEvent::Release,
-        canonical.modifiers,
-    )?;
+    let input = keyboard.input_for(&canonical.identity, event, canonical.modifiers)?;
     Some((canonical, input))
 }
 
@@ -2824,7 +2840,7 @@ mod tests {
         application_navigation_width, canonical_terminal_key_with, clear_terminal_input_state,
         clears_after_input_delivery, clears_when_input_queue_is_empty, coalesce_last_resize,
         coalesce_last_wheel, input_queue_has_capacity, is_toggle_sidebar_shortcut, named_key,
-        normalize_cell_width, queued_input_matches_presentation, retained_key_release_with,
+        normalize_cell_width, queued_input_matches_presentation, retained_key_event_with,
         terminal_cell_at_with_offset, terminal_key_input, terminal_key_input_with_canonical,
         terminal_line_height, terminal_wheel_steps, transitioned_presentation, tree_sessions,
         workspace_window_title,
@@ -3184,7 +3200,7 @@ mod tests {
     }
 
     #[test]
-    fn retained_ctrl_key_release_precedes_sidebar_shortcut_classification() {
+    fn retained_ctrl_key_events_precede_sidebar_shortcut_classification() {
         let layout = LayoutKey {
             virtual_key: 0x42,
             unshifted: 'b',
@@ -3196,7 +3212,7 @@ mod tests {
             key: "b".to_owned(),
             key_char: None,
         };
-        let release = gpui::Keystroke {
+        let shortcut_shaped_event = gpui::Keystroke {
             modifiers: gpui::Modifiers {
                 control: true,
                 shift: true,
@@ -3205,7 +3221,7 @@ mod tests {
             key: "b".to_owned(),
             key_char: None,
         };
-        assert!(is_toggle_sidebar_shortcut(&release));
+        assert!(is_toggle_sidebar_shortcut(&shortcut_shaped_event));
 
         let press_key = canonical_terminal_key_with(&press, |_| Some(layout));
         let press_input = terminal_key_input_with_canonical(&press, KeyEvent::Press, &press_key)
@@ -3217,9 +3233,33 @@ mod tests {
             KeyEvent::Press,
         );
 
+        let (repeat_key, repeat_input) =
+            retained_key_event_with(&keyboard, &shortcut_shaped_event, KeyEvent::Repeat, |_| {
+                Some(layout)
+            })
+            .expect("the retained terminal press owns its repeats");
+        assert_eq!(repeat_key.identity, press_key.identity);
+        assert_eq!(
+            repeat_input,
+            KeyInput::text_with_key(
+                "b",
+                "b",
+                Modifiers {
+                    shift: true,
+                    control: true,
+                    ..Modifiers::default()
+                },
+            )
+            .with_event(KeyEvent::Repeat)
+        );
+        keyboard.finish_accepted(&repeat_key.identity, None, KeyEvent::Repeat);
+        assert_eq!(keyboard.reserved_releases(), 1);
+
         let (release_key, release_input) =
-            retained_key_release_with(&keyboard, &release, |_| Some(layout))
-                .expect("the retained terminal press owns its release");
+            retained_key_event_with(&keyboard, &shortcut_shaped_event, KeyEvent::Release, |_| {
+                Some(layout)
+            })
+            .expect("the retained terminal press owns its release");
         assert_eq!(release_key.identity, press_key.identity);
         assert_eq!(
             release_input,
@@ -3236,7 +3276,12 @@ mod tests {
         );
         keyboard.finish_accepted(&release_key.identity, None, KeyEvent::Release);
         assert_eq!(keyboard.reserved_releases(), 0);
-        assert!(retained_key_release_with(&keyboard, &release, |_| Some(layout)).is_none());
+        assert!(
+            retained_key_event_with(&keyboard, &shortcut_shaped_event, KeyEvent::Repeat, |_| {
+                Some(layout)
+            },)
+            .is_none()
+        );
     }
 
     #[test]
