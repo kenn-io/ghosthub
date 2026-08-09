@@ -1578,6 +1578,54 @@ fn replaced_session_is_not_killed_after_confirmation() {
 }
 
 #[test]
+fn missing_stable_target_detects_a_same_named_replacement_from_inventory() {
+    let runner = RecordingRunner::new(vec![
+        instance_output(),
+        output(0, "4242\t$3\t1700000000\t0\t4\twork\n", ""),
+        instance_output(),
+        instance_output(),
+        output(0, "4242\t$3\t1700000000\t0\t4\twork\n", ""),
+        instance_output(),
+        instance_output(),
+        output(1, "", "can't find session: $3"),
+        output(0, "4242\t$4\t1700000001\t0\t4\twork\n", ""),
+        instance_output(),
+    ]);
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        runner,
+    );
+    let snapshot = discover(&host).expect("discover sessions");
+    let target = host
+        .capture_live_session(
+            snapshot.endpoint(),
+            snapshot.runtime(),
+            "work",
+            &CancellationToken::new(),
+        )
+        .expect("capture fresh kill authority");
+
+    let error = host
+        .kill_live_session(&target, &CancellationToken::new())
+        .expect_err("same-named replacement must be reported");
+
+    assert!(error.to_string().contains("replaced after confirmation"));
+    let calls = host.runner().calls();
+    let replacement_query = calls
+        .iter()
+        .filter(|(_, args)| args.iter().any(|argument| argument == "list-sessions"))
+        .nth(2)
+        .expect("replacement inventory query");
+    assert_eq!(argument_after(&replacement_query.1, "-t"), None);
+    assert!(
+        replacement_query
+            .1
+            .iter()
+            .all(|argument| argument != "work")
+    );
+}
+
+#[test]
 fn configured_socket_directory_is_explicit_environment() {
     let config = WslConfig::configured(
         Some("Ubuntu".to_owned()),

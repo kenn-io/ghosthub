@@ -700,6 +700,16 @@ impl<R: CommandRunner> WslHost<R> {
             ],
         )?;
         if output.status != 0 {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if is_no_server(&stderr) || is_missing_session(&stderr) {
+                let sessions = self.discover_sessions(&target.endpoint, cancellation)?;
+                self.require_runtime(&target.endpoint, &target.runtime, cancellation)?;
+                if sessions.iter().any(|session| {
+                    session.name() == target.name && session.identity() != &target.identity
+                }) {
+                    return Err(session_replaced_after_confirmation(&target.name));
+                }
+            }
             return Err(classify_session_command_failure(
                 output.status,
                 &output.stderr,
@@ -708,13 +718,7 @@ impl<R: CommandRunner> WslHost<R> {
             ));
         }
         if String::from_utf8_lossy(&output.stdout).contains(KILL_IDENTITY_MISMATCH_MARKER) {
-            return Err(HostError::new(
-                DiagnosticKind::Transport,
-                format!(
-                    "Session ‘{}’ was replaced after confirmation. Review the new session before trying again.",
-                    target.name
-                ),
-            ));
+            return Err(session_replaced_after_confirmation(&target.name));
         }
         Ok(())
     }
@@ -2389,6 +2393,15 @@ fn classify_session_command_failure(
         status,
         stderr,
         &format!("{operation} tmux session ‘{session}’"),
+    )
+}
+
+fn session_replaced_after_confirmation(session: &str) -> HostError {
+    HostError::new(
+        DiagnosticKind::Transport,
+        format!(
+            "Session ‘{session}’ was replaced after confirmation. Review the new session before trying again."
+        ),
     )
 }
 
