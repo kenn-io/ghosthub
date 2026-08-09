@@ -6,6 +6,8 @@ website_root="$(cd "$script_dir/.." && pwd)"
 docs_root="$website_root/docs"
 output_root="$website_root/public"
 
+bash "$script_dir/sync-changelog.sh"
+
 (
   cd "$website_root"
   "$script_dir/run-uv.sh" \

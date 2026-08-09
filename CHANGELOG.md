@@ -5,6 +5,50 @@ test, and documentation-only changes are omitted.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-09
+
+### Added
+
+- Herdr sessions are now first-class peers to tmux sessions on the local Mac
+  and remote macOS and Linux hosts. Ghosthub discovers running and stopped
+  sessions, supports whole-session create, restart, stop, and delete actions,
+  and can split the active Herdr pane with native shortcuts on Herdr 0.8 or
+  later.
+- Optional exe.dev integrations discover running VMs as SSH hosts without
+  duplicating them in manual host settings.
+- macOS and Linux hosts can save launch profiles for starting new tmux sessions
+  with a chosen command, including commands that require an interactive
+  terminal.
+- **Command-D** and **Command-Shift-D** split the active tmux or Herdr pane to
+  the right or down when the connected multiplexer supports native splitting.
+- Recently active tmux sessions show an activity indicator after they have
+  been opened during the current Ghosthub launch.
+- Comprehensive searchable documentation is now available at
+  [ghosthub.ai/docs](https://ghosthub.ai/docs/), with Markdown versions for
+  machine readers.
+
+### Changed
+
+- Tmux presentations stay connected while navigating between sessions in the
+  same window, and remote presentations automatically reconnect after
+  transient SSH failures.
+- Registered kwt directory workspaces appear alongside project worktrees.
+  Worktree rows show confirmed live-session state, while duplicate entries are
+  hidden from **Tmux Sessions** by default.
+- Ghosthub automatically installs or updates its revision-pinned kwt helper on
+  configured remote macOS and Linux hosts. Windows helper installation remains
+  explicit while those executables are unsigned.
+- Homebrew is now the primary installation path, with the notarized DMG kept as
+  a direct alternative.
+
+### Fixed
+
+- Worktree removal now revalidates identity immediately before deletion,
+  avoids destructive action when inventory is incomplete, and restores the
+  correct presentation if removal fails or the worktree moved concurrently.
+- Sidebar transitions resize the terminal smoothly without repeated terminal
+  grid reflow.
+
 ## [0.6.0] - 2026-08-04
 
 ### Added
@@ -194,7 +238,8 @@ test, and documentation-only changes are omitted.
   and SSH tmux session discovery, automatic reconnect, and kwt-backed project
   and worktree navigation.
 
-[Unreleased]: https://github.com/kenn-io/ghosthub/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/kenn-io/ghosthub/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/kenn-io/ghosthub/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/kenn-io/ghosthub/compare/v0.5.3...v0.6.0
 [0.5.3]: https://github.com/kenn-io/ghosthub/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/kenn-io/ghosthub/compare/v0.5.1...v0.5.2

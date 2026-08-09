@@ -20,9 +20,10 @@ documentation and has a separate build.
 The website build downloads repository-supported `uv` platform archives with
 repository-pinned archive and executable checksums through `scripts/run-uv.sh`
 in local, CI, and deployment environments. The verified binary is cached under
-`website/.cache/` and rechecked before every use. To preview only the public
-docs:
+`website/.cache/` and rechecked before every use. The build copies the canonical
+repository-root changelog into the public docs. To preview only the public docs:
 
+    bash scripts/sync-changelog.sh
     ./scripts/run-uv.sh run --project docs --frozen zensical serve --config-file zensical.toml
 
 Constants (repo slug, Discord invite) live in `src/config.ts`.
@@ -40,7 +41,8 @@ Then deploy the current workspace to production from the repository root:
 
 The target builds the site first, which hydrates the hero screenshot from the
 `website-assets` branch, then runs `vercel deploy --prod`. The repository-root
-`.vercelignore` limits the upload to the website project.
+`.vercelignore` limits the upload to the website project and canonical
+changelog.
 
 ## Product screenshots
 

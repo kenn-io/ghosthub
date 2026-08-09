@@ -13,6 +13,7 @@ extra_css = ["stylesheets/extra.css"]
 nav = [
   {"Overview" = "index.md"},
   {"Getting Started" = "getting-started.md"},
+  {"Changelog" = "changelog.md"},
   {"Sessions" = "sessions.md"},
   {"Remote Hosts" = "remote-hosts.md"},
   {"Projects and Worktrees" = "projects-worktrees.md"},

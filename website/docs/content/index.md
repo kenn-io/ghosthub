@@ -18,6 +18,7 @@ start with the [five-minute Overview](https://ghosthub.ai/overview/).
 | If you want to… | Read… |
 | --- | --- |
 | Install Ghosthub and open a first session | [Getting Started](/docs/getting-started/) |
+| See what changed in each release | [Changelog](/docs/changelog/) |
 | Attach to tmux or Herdr, or manage a session | [Sessions](/docs/sessions/) |
 | Connect a Mac, Linux, or experimental Windows host | [Remote Hosts](/docs/remote-hosts/) |
 | Register a Git repository or create a worktree | [Projects and Worktrees](/docs/projects-worktrees/) |

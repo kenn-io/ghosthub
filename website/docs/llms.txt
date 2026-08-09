@@ -8,6 +8,7 @@ Ghosthub is alpha software. The Overview is a short visual tour; the Docs links 
 
 - [Documentation overview](https://ghosthub.ai/docs.md): Mental model and documentation map
 - [Getting started](https://ghosthub.ai/docs/getting-started.md): Requirements, installation, and first session
+- [Changelog](https://ghosthub.ai/docs/changelog.md): User-facing changes in each Ghosthub release
 - [Sessions](https://ghosthub.ai/docs/sessions.md): Create, attach, detach, and manage tmux and Herdr sessions
 - [Remote hosts](https://ghosthub.ai/docs/remote-hosts.md): SSH and exe.dev setup, trust, authentication, reconnect, and supported hosts
 - [Projects and worktrees](https://ghosthub.ai/docs/projects-worktrees.md): Register repositories and manage branch- or pull-request-backed worktrees
