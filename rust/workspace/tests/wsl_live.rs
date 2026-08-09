@@ -25,6 +25,18 @@ fn isolated_namespace_includes_a_cross_process_nonce() {
 
 impl IsolatedServer {
     fn start(label: &str) -> Self {
+        let server = Self::empty(label);
+        server.run_tmux(["new-session", "-d", "-s", "workspace-live"]);
+        let socket = server.run_tmux(["display-message", "-p", "#{socket_path}"]);
+        let socket = String::from_utf8(socket.stdout).expect("UTF-8 tmux socket path");
+        assert!(
+            socket.trim().starts_with(&format!("{}/", server.tmpdir)),
+            "test tmux escaped its isolated directory: {socket:?}"
+        );
+        server
+    }
+
+    fn empty(label: &str) -> Self {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system time")
@@ -40,15 +52,7 @@ impl IsolatedServer {
             "create isolated tmux directory: {}",
             String::from_utf8_lossy(&mkdir.stderr)
         );
-        let server = Self { tmpdir };
-        server.run_tmux(["new-session", "-d", "-s", "workspace-live"]);
-        let socket = server.run_tmux(["display-message", "-p", "#{socket_path}"]);
-        let socket = String::from_utf8(socket.stdout).expect("UTF-8 tmux socket path");
-        assert!(
-            socket.trim().starts_with(&format!("{}/", server.tmpdir)),
-            "test tmux escaped its isolated directory: {socket:?}"
-        );
-        server
+        Self { tmpdir }
     }
 
     fn run_tmux<I, S>(&self, args: I) -> Output
@@ -85,6 +89,32 @@ impl IsolatedServer {
             .expect("UTF-8 tmux identity")
             .trim()
             .to_owned()
+    }
+
+    fn has_session(&self, name: &str) -> bool {
+        let output = Command::new("wsl.exe")
+            .args([
+                "--exec",
+                "/usr/bin/env",
+                &format!("TMUX_TMPDIR={}", self.tmpdir),
+                "/usr/bin/tmux",
+                "-f",
+                "/dev/null",
+                "has-session",
+                "-t",
+                &format!("={name}"),
+            ])
+            .output()
+            .expect("query isolated WSL tmux session");
+        output.status.success()
+    }
+
+    fn path_exists(path: &str) -> bool {
+        Command::new("wsl.exe")
+            .args(["--exec", "/usr/bin/test", "-e", path])
+            .status()
+            .expect("query isolated WSL path")
+            .success()
     }
 }
 
@@ -174,6 +204,195 @@ fn discovers_attaches_renders_and_detaches_through_workspace() {
         )
     });
     assert_eq!(server.identity(), identity);
+}
+
+#[test]
+#[ignore = "requires WSL2 and tmux; creates only an isolated TMUX_TMPDIR server"]
+fn creates_attaches_and_detaches_one_atomic_local_session() {
+    let _serial = WSL_LIVE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let server = IsolatedServer::empty("create-once");
+    let config = WslConfig::configured(None, "/usr/bin/tmux", Some(server.tmpdir.clone()))
+        .expect("valid isolated config");
+    let workspace = Workspace::start_wsl(config, TerminalAppearance::default());
+
+    wait_until_with_diagnostic(
+        || {
+            let snapshot = workspace.snapshot();
+            snapshot.hosts()[0].connection() == workspace::HostConnectionState::Ready
+                && snapshot.hosts()[0].sessions().is_empty()
+        },
+        || workspace_diagnostic(&workspace),
+    );
+    let endpoint = workspace.snapshot().hosts()[0].endpoint().to_owned();
+    workspace
+        .create_session("wsl", &endpoint, "  created live  ")
+        .expect("start one-shot local creation");
+    wait_until_with_diagnostic(
+        || {
+            matches!(
+                workspace.snapshot().content(),
+                WorkspaceContent::Terminal { session, .. } if session == "created live"
+            )
+        },
+        || workspace_diagnostic(&workspace),
+    );
+    let created_identity = server.run_tmux([
+        "display-message",
+        "-p",
+        "-t",
+        "=created live",
+        "#{pid}:#{session_id}:#{session_created}",
+    ]);
+    let created_identity = String::from_utf8(created_identity.stdout)
+        .expect("UTF-8 created identity")
+        .trim()
+        .to_owned();
+
+    workspace.detach();
+    wait_until(|| {
+        matches!(
+            workspace.snapshot().content(),
+            WorkspaceContent::Ready { sessions, .. }
+                if sessions.iter().any(|session| session.name() == "created live")
+        )
+    });
+    let surviving_identity = server.run_tmux([
+        "display-message",
+        "-p",
+        "-t",
+        "=created live",
+        "#{pid}:#{session_id}:#{session_created}",
+    ]);
+    assert_eq!(
+        String::from_utf8(surviving_identity.stdout)
+            .expect("UTF-8 surviving identity")
+            .trim(),
+        created_identity
+    );
+    assert!(
+        workspace
+            .create_session("wsl", &endpoint, "created live")
+            .is_err(),
+        "current inventory prevents an accidental duplicate create action"
+    );
+}
+
+#[test]
+#[ignore = "requires WSL2 and tmux; creates only an isolated TMUX_TMPDIR server"]
+fn user_created_names_cannot_execute_tmux_format_jobs() {
+    let _serial = WSL_LIVE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let server = IsolatedServer::empty("create-format-job");
+    let config = WslConfig::configured(None, "/usr/bin/tmux", Some(server.tmpdir.clone()))
+        .expect("valid isolated config");
+    let workspace = Workspace::start_wsl(config, TerminalAppearance::default());
+    wait_until_with_diagnostic(
+        || workspace.snapshot().hosts()[0].connection() == workspace::HostConnectionState::Ready,
+        || workspace_diagnostic(&workspace),
+    );
+    let endpoint = workspace.snapshot().hosts()[0].endpoint().to_owned();
+    let sentinel = format!("{}/owned", server.tmpdir);
+    let hostile_name = format!("#(touch {sentinel})");
+    assert!(hostile_name.chars().count() <= 100);
+
+    let error = workspace
+        .create_session("wsl", &endpoint, &hostile_name)
+        .expect_err("tmux format syntax must not enter the creation plan");
+
+    assert!(error.to_string().contains("number signs"));
+    assert!(!IsolatedServer::path_exists(&sentinel));
+}
+
+#[test]
+#[ignore = "requires WSL2 and tmux; creates only an isolated TMUX_TMPDIR server"]
+fn creation_follows_the_client_identity_when_a_hook_renames_the_session() {
+    let _serial = WSL_LIVE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let server = IsolatedServer::start("create-hook-rename");
+    server.run_tmux([
+        "set-hook",
+        "-g",
+        "after-new-session",
+        "rename-session renamed-by-hook",
+    ]);
+    let config = WslConfig::configured(None, "/usr/bin/tmux", Some(server.tmpdir.clone()))
+        .expect("valid isolated config");
+    let workspace = Workspace::start_wsl(config, TerminalAppearance::default());
+    wait_until_with_diagnostic(
+        || workspace.snapshot().hosts()[0].connection() == workspace::HostConnectionState::Ready,
+        || workspace_diagnostic(&workspace),
+    );
+    let endpoint = workspace.snapshot().hosts()[0].endpoint().to_owned();
+
+    workspace
+        .create_session("wsl", &endpoint, "requested-name")
+        .expect("start renamed one-shot creation");
+    wait_until_with_diagnostic(
+        || {
+            matches!(
+                workspace.snapshot().content(),
+                WorkspaceContent::Terminal { session, .. } if session == "renamed-by-hook"
+            )
+        },
+        || workspace_diagnostic(&workspace),
+    );
+
+    assert!(server.has_session("renamed-by-hook"));
+    assert!(!server.has_session("requested-name"));
+}
+
+#[test]
+#[ignore = "requires WSL2 and tmux; creates only an isolated TMUX_TMPDIR server"]
+fn creation_race_attaches_the_exact_existing_session() {
+    let _serial = WSL_LIVE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let server = IsolatedServer::start("create-race");
+    let config = WslConfig::configured(None, "/usr/bin/tmux", Some(server.tmpdir.clone()))
+        .expect("valid isolated config");
+    let workspace = Workspace::start_wsl(config, TerminalAppearance::default());
+    wait_until_with_diagnostic(
+        || workspace.snapshot().hosts()[0].connection() == workspace::HostConnectionState::Ready,
+        || workspace_diagnostic(&workspace),
+    );
+    let endpoint = workspace.snapshot().hosts()[0].endpoint().to_owned();
+
+    server.run_tmux(["new-session", "-d", "-s", "raced live"]);
+    let before = server.run_tmux([
+        "display-message",
+        "-p",
+        "-t",
+        "=raced live",
+        "#{pid}:#{session_id}:#{session_created}",
+    ]);
+    workspace
+        .create_session("wsl", &endpoint, "raced live")
+        .expect("the atomic action accepts a session absent from cached inventory");
+    wait_until_with_diagnostic(
+        || {
+            matches!(
+                workspace.snapshot().content(),
+                WorkspaceContent::Terminal { session, .. } if session == "raced live"
+            )
+        },
+        || workspace_diagnostic(&workspace),
+    );
+    let after = server.run_tmux([
+        "display-message",
+        "-p",
+        "-t",
+        "=raced live",
+        "#{pid}:#{session_id}:#{session_created}",
+    ]);
+
+    assert_eq!(
+        after.stdout, before.stdout,
+        "-A must preserve the raced identity"
+    );
 }
 
 #[test]
@@ -473,6 +692,75 @@ fn refuses_to_attach_when_the_discovered_session_was_replaced() {
 
 #[test]
 #[ignore = "requires WSL2 and tmux; creates only an isolated TMUX_TMPDIR server"]
+fn confirms_fresh_identity_and_never_kills_a_replacement() {
+    let _serial = WSL_LIVE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let server = IsolatedServer::start("kill-confirmation");
+    let config = WslConfig::configured(None, "/usr/bin/tmux", Some(server.tmpdir.clone()))
+        .expect("valid isolated config");
+    let workspace = Workspace::start_wsl(config, TerminalAppearance::default());
+
+    wait_until_with_diagnostic(
+        || {
+            matches!(
+                workspace.snapshot().content(),
+                WorkspaceContent::Ready { sessions, .. }
+                    if sessions.iter().any(|session| session.name() == "workspace-live")
+            )
+        },
+        || workspace_diagnostic(&workspace),
+    );
+    let selection = session_selection(&workspace, "workspace-live");
+
+    workspace
+        .request_session_kill(&selection)
+        .expect("begin live identity query");
+    wait_until(|| workspace.session_kill_confirmation().is_some());
+    workspace.cancel_session_kill();
+    assert!(server.has_session("workspace-live"), "cancel must not kill");
+
+    workspace
+        .request_session_kill(&selection)
+        .expect("begin second live identity query");
+    wait_until(|| workspace.session_kill_confirmation().is_some());
+    server.run_tmux(["kill-session", "-t", "=workspace-live"]);
+    server.run_tmux(["new-session", "-d", "-s", "workspace-live"]);
+    workspace
+        .confirm_session_kill()
+        .expect("begin guarded kill");
+    wait_until(|| {
+        workspace.drain_events().0.into_iter().any(|event| {
+            matches!(event, WorkspaceEvent::Error(message) if message.contains("replaced after confirmation"))
+        })
+    });
+    assert!(
+        server.has_session("workspace-live"),
+        "same-named replacement must survive"
+    );
+
+    wait_until_with_diagnostic(
+        || {
+            workspace.snapshot().hosts().first().is_some_and(|host| {
+                host.sessions()
+                    .iter()
+                    .any(|session| session.name() == "workspace-live")
+            })
+        },
+        || workspace_diagnostic(&workspace),
+    );
+    workspace
+        .request_session_kill(&selection)
+        .expect("query replacement identity");
+    wait_until(|| workspace.session_kill_confirmation().is_some());
+    workspace
+        .confirm_session_kill()
+        .expect("kill confirmed replacement");
+    wait_until(|| !server.has_session("workspace-live"));
+}
+
+#[test]
+#[ignore = "requires WSL2 and tmux; creates only an isolated TMUX_TMPDIR server"]
 fn detach_restores_the_inventory_revalidated_during_attachment() {
     let _serial = WSL_LIVE
         .lock()
@@ -553,7 +841,8 @@ fn wait_until_with_diagnostic(
 }
 
 fn workspace_diagnostic(workspace: &Workspace) -> String {
-    match workspace.snapshot().content() {
+    let snapshot = workspace.snapshot();
+    let state = match snapshot.content() {
         WorkspaceContent::Shell => "shell".to_owned(),
         WorkspaceContent::Loading => "loading".to_owned(),
         WorkspaceContent::Ready { endpoint, sessions } => {
@@ -568,7 +857,10 @@ fn workspace_diagnostic(workspace: &Workspace) -> String {
             endpoint, session, ..
         } => format!("attached to {session} in {endpoint}"),
         WorkspaceContent::Error { message } => format!("error: {message}"),
-    }
+    };
+    snapshot
+        .notice()
+        .map_or(state.clone(), |notice| format!("{state}; notice: {notice}"))
 }
 
 fn session_selection(workspace: &Workspace, session: &str) -> SessionSelection {

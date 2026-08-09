@@ -13,14 +13,14 @@ use gpui::{
     IntoElement, KeyBinding, KeyDownEvent, KeyUpEvent, MouseButton as GpuiMouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, Render, ScrollWheelEvent, TitlebarOptions,
     Window, WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowDecorations,
-    WindowOptions, actions, div, font, prelude::*, px, rgb, size,
+    WindowOptions, actions, div, font, prelude::*, px, rgb, rgba, size,
 };
 use model::PortStatus;
 use surface::{CellStyle, Damage, GridSize, Rgb, SurfaceFrame, SurfaceStore};
 use workspace::{
     HostConnectionState, HostItem, KeyEvent as InputKeyEvent, KeyInput,
-    Modifiers as InputModifiers, MouseAction, MouseButton, MouseInput, NamedKey, SessionSelection,
-    Workspace, WorkspaceContent, WorkspaceEvent,
+    Modifiers as InputModifiers, MouseAction, MouseButton, MouseInput, NamedKey, SessionName,
+    SessionSelection, Workspace, WorkspaceContent, WorkspaceEvent,
 };
 
 pub const WINDOW_TITLE: &str = "Ghosthub";
@@ -28,7 +28,7 @@ const APP_NAVIGATION_WIDTH: f32 = 260.0;
 const APP_TITLEBAR_HEIGHT: f32 = 32.0;
 const APP_CHROME_BACKGROUND: u32 = 0x0f_1116;
 const NAVIGATION_HEADER_HEIGHT: f32 = 36.0;
-const HOST_ROW_HEIGHT: f32 = 42.0;
+const HOST_ROW_HEIGHT: f32 = 30.0;
 const SESSION_ROW_HEIGHT: f32 = 30.0;
 const CELL_LINE_GAP: f32 = 4.0;
 const UI_INPUT_CAPACITY: usize = 512;
@@ -70,7 +70,7 @@ pub fn empty_inventory_text(host: &HostItem) -> String {
         .socket_directory()
         .unwrap_or("the default tmux socket namespace");
     format!(
-        "No tmux server is running in {} using {namespace}. Review WSL host settings or start a tmux session, then choose Refresh.",
+        "No tmux server is running in {} using {namespace}. Use + beside the host to create one, or review WSL host settings.",
         host.endpoint()
     )
 }
@@ -285,6 +285,8 @@ pub struct RootView {
     status: PortStatus,
     workspace: Workspace,
     focus: FocusHandle,
+    create_focus: FocusHandle,
+    kill_focus: FocusHandle,
     diagnostic: Option<String>,
     paste_confirmation: bool,
     observed_presentation_id: Option<u64>,
@@ -300,6 +302,14 @@ pub struct RootView {
     keyboard: TerminalKeyboard,
     pointer: TerminalPointer,
     sidebar_visible: bool,
+    new_session: Option<NewSessionDraft>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct NewSessionDraft {
+    host_id: String,
+    endpoint: String,
+    name: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -583,6 +593,21 @@ impl RootView {
         })
         .detach();
 
+        cx.observe_window_activation(window, |view, window, cx| {
+            if !window.is_window_active() {
+                return;
+            }
+            match view.workspace.refresh_if_ready() {
+                Ok(true) => cx.notify(),
+                Ok(false) => {}
+                Err(error) => {
+                    view.diagnostic = Some(error.to_string());
+                    cx.notify();
+                }
+            }
+        })
+        .detach();
+
         cx.on_next_frame(window, |view, _window, cx| {
             if let Err(error) = view.workspace.connect_enabled_hosts() {
                 view.diagnostic = Some(error.to_string());
@@ -596,6 +621,8 @@ impl RootView {
             status,
             workspace,
             focus: cx.focus_handle(),
+            create_focus: cx.focus_handle(),
+            kill_focus: cx.focus_handle(),
             diagnostic: None,
             paste_confirmation: false,
             observed_presentation_id: None,
@@ -611,6 +638,7 @@ impl RootView {
             keyboard: TerminalKeyboard::default(),
             pointer: TerminalPointer::default(),
             sidebar_visible: true,
+            new_session: None,
         };
         view.resize_for_window(window);
         view
@@ -681,6 +709,108 @@ impl RootView {
         cx.notify();
     }
 
+    fn open_new_session(
+        &mut self,
+        host_id: &str,
+        endpoint: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.new_session = Some(NewSessionDraft {
+            host_id: host_id.to_owned(),
+            endpoint: endpoint.to_owned(),
+            name: String::new(),
+        });
+        self.diagnostic = None;
+        window.focus(&self.create_focus);
+        cx.notify();
+    }
+
+    fn cancel_new_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.new_session = None;
+        window.focus(&self.focus);
+        cx.notify();
+    }
+
+    fn submit_new_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(draft) = self.new_session.clone() else {
+            return;
+        };
+        if draft.name.trim().is_empty() {
+            return;
+        }
+        let snapshot = self.workspace.snapshot();
+        if let Some(error) = new_session_validation(&snapshot, &draft) {
+            self.diagnostic = Some(error);
+            cx.notify();
+            return;
+        }
+        match self
+            .workspace
+            .create_session(&draft.host_id, &draft.endpoint, &draft.name)
+        {
+            Ok(()) => {
+                self.new_session = None;
+                self.diagnostic = None;
+                self.observed_presentation_id = None;
+                self.clear_terminal_input();
+                self.paint_cache.clear();
+                window.focus(&self.focus);
+            }
+            Err(error) => self.diagnostic = Some(error.to_string()),
+        }
+        cx.notify();
+    }
+
+    fn on_new_session_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.diagnostic = None;
+        if is_paste_shortcut(&event.keystroke) {
+            if !event.is_held
+                && let Some(text) = cx.read_from_clipboard().and_then(|item| item.text())
+                && let Some(draft) = &mut self.new_session
+            {
+                draft
+                    .name
+                    .extend(text.chars().filter(|character| !character.is_control()));
+                cx.notify();
+            }
+            cx.stop_propagation();
+            return;
+        }
+        let key = event.keystroke.key.to_ascii_lowercase();
+        match key.as_str() {
+            "escape" if !event.is_held => self.cancel_new_session(window, cx),
+            "enter" if !event.is_held => self.submit_new_session(window, cx),
+            "backspace" => {
+                if let Some(draft) = &mut self.new_session {
+                    draft.name.pop();
+                }
+                cx.notify();
+            }
+            _ if !event.keystroke.modifiers.control
+                && !event.keystroke.modifiers.alt
+                && !event.keystroke.modifiers.platform
+                && !event.keystroke.modifiers.function =>
+            {
+                if let Some(text) = &event.keystroke.key_char
+                    && let Some(draft) = &mut self.new_session
+                {
+                    draft
+                        .name
+                        .extend(text.chars().filter(|character| !character.is_control()));
+                    cx.notify();
+                }
+            }
+            _ => {}
+        }
+        cx.stop_propagation();
+    }
+
     fn toggle_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sidebar_visible = !self.sidebar_visible;
         self.resize_for_window(window);
@@ -704,11 +834,37 @@ impl RootView {
         cx.notify();
     }
 
-    fn detach(&mut self, cx: &mut Context<Self>) {
+    fn request_session_kill(&mut self, selection: &SessionSelection, cx: &mut Context<Self>) {
+        match self.workspace.request_session_kill(selection) {
+            Ok(()) => self.diagnostic = None,
+            Err(error) => self.diagnostic = Some(error.to_string()),
+        }
+        cx.notify();
+    }
+
+    fn detach_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.workspace.detach();
+        self.diagnostic = None;
         self.observed_presentation_id = None;
         self.clear_terminal_input();
         self.paint_cache.clear();
+        self.resize_for_window(window);
+        window.focus(&self.focus);
+        cx.notify();
+    }
+
+    fn cancel_session_kill(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.workspace.cancel_session_kill();
+        window.focus(&self.focus);
+        cx.notify();
+    }
+
+    fn confirm_session_kill(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.workspace.confirm_session_kill() {
+            Ok(()) => self.diagnostic = None,
+            Err(error) => self.diagnostic = Some(error.to_string()),
+        }
+        window.focus(&self.focus);
         cx.notify();
     }
 
@@ -1586,6 +1742,277 @@ impl RootView {
             .into_any_element()
     }
 
+    fn new_session_overlay(
+        &self,
+        snapshot: &workspace::WorkspaceSnapshot,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let draft = self.new_session.as_ref()?;
+        let empty = draft.name.trim().is_empty();
+        let validation = new_session_validation(snapshot, draft);
+        let can_create = !empty && validation.is_none();
+        let focused = self.create_focus.is_focused(window);
+
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(rgba(0x00_00_00_80))
+                .child(
+                    div()
+                        .id("new-session-dialog")
+                        .track_focus(&self.create_focus)
+                        .w(px(460.0))
+                        .flex()
+                        .flex_col()
+                        .rounded_lg()
+                        .border_1()
+                        .border_color(rgb(0x36_3c48))
+                        .bg(rgb(0x18_1b22))
+                        .shadow_lg()
+                        .on_key_down(cx.listener(|this, event, window, cx| {
+                            this.on_new_session_key_down(event, window, cx);
+                        }))
+                        .child(
+                            div()
+                                .px_4()
+                                .py_3()
+                                .border_b_1()
+                                .border_color(rgb(0x2a_2f39))
+                                .text_sm()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(rgb(0xe0_e4eb))
+                                .child("New tmux session"),
+                        )
+                        .child(Self::new_session_name_input(draft, focused, cx))
+                        .children(validation.map(|message| {
+                            div()
+                                .px_4()
+                                .pb_3()
+                                .text_xs()
+                                .text_color(rgb(0xd0_7070))
+                                .child(message)
+                        }))
+                        .child(Self::new_session_actions(can_create, cx)),
+                )
+                .into_any_element(),
+        )
+    }
+
+    fn session_kill_overlay(
+        &self,
+        confirmation: &workspace::SessionKillConfirmation,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let title = kill_confirmation_title(confirmation.selection());
+        let description = kill_confirmation_description(confirmation.selection());
+        div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(rgba(0x00_00_00_80))
+            .child(
+                div()
+                    .id("kill-session-dialog")
+                    .track_focus(&self.kill_focus)
+                    .w(px(460.0))
+                    .flex()
+                    .flex_col()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(rgb(0x36_3c48))
+                    .bg(rgb(0x18_1b22))
+                    .shadow_lg()
+                    .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                        if event.keystroke.key.eq_ignore_ascii_case("escape") && !event.is_held {
+                            this.cancel_session_kill(window, cx);
+                            cx.stop_propagation();
+                        }
+                    }))
+                    .child(
+                        div()
+                            .px_4()
+                            .py_3()
+                            .border_b_1()
+                            .border_color(rgb(0x2a_2f39))
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(rgb(0xe0_e4eb))
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .px_4()
+                            .py_4()
+                            .text_sm()
+                            .text_color(rgb(0xb6_bcc7))
+                            .child(description),
+                    )
+                    .child(
+                        div()
+                            .px_4()
+                            .py_3()
+                            .border_t_1()
+                            .border_color(rgb(0x2a_2f39))
+                            .flex()
+                            .items_center()
+                            .justify_end()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .id("cancel-kill-session")
+                                    .px_3()
+                                    .py_1()
+                                    .rounded_sm()
+                                    .cursor_pointer()
+                                    .text_sm()
+                                    .text_color(rgb(0xb6_bcc7))
+                                    .hover(|style| style.bg(rgb(0x29_2e38)))
+                                    .child("Cancel")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.cancel_session_kill(window, cx);
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .id("confirm-kill-session")
+                                    .px_3()
+                                    .py_1()
+                                    .rounded_sm()
+                                    .cursor_pointer()
+                                    .bg(rgb(0xa9_3038))
+                                    .hover(|style| style.bg(rgb(0xc1_3b43)))
+                                    .text_sm()
+                                    .text_color(rgb(0xff_f6f6))
+                                    .child("Kill Session")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.confirm_session_kill(window, cx);
+                                    })),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn pending_session_kill_overlay(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let confirmation = self.workspace.session_kill_confirmation()?;
+        if !self.kill_focus.is_focused(window) {
+            window.focus(&self.kill_focus);
+        }
+        Some(self.session_kill_overlay(&confirmation, cx))
+    }
+
+    fn synchronize_render_state(&mut self, snapshot: &workspace::WorkspaceSnapshot) {
+        self.observed_revision = snapshot.revision();
+        if !matches!(snapshot.content(), WorkspaceContent::Terminal { .. }) {
+            self.observed_surface_identity = None;
+            self.observed_surface_generation = 0;
+            self.paint_cache.clear();
+        }
+    }
+
+    fn new_session_name_input(
+        draft: &NewSessionDraft,
+        focused: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let input_text = if draft.name.is_empty() && focused {
+            "▏".to_owned()
+        } else if draft.name.is_empty() {
+            "Session name".to_owned()
+        } else {
+            format!("{}▏", draft.name)
+        };
+        div()
+            .id("new-session-name-input")
+            .m_4()
+            .px_3()
+            .h(px(38.0))
+            .flex()
+            .items_center()
+            .rounded_md()
+            .border_1()
+            .border_color(rgb(if focused { 0x4a_8f_cf } else { 0x3a_404c }))
+            .bg(rgb(0x0f_1218))
+            .cursor_text()
+            .text_sm()
+            .text_color(rgb(if draft.name.is_empty() && !focused {
+                0x72_7986
+            } else {
+                0xe1_e5ec
+            }))
+            .child(
+                div()
+                    .mr_2()
+                    .flex_none()
+                    .text_xs()
+                    .text_color(rgb(0x72_7986))
+                    .child(">_"),
+            )
+            .child(input_text)
+            .on_click(cx.listener(|this, _, window, cx| {
+                window.focus(&this.create_focus);
+                cx.notify();
+            }))
+            .into_any_element()
+    }
+
+    fn new_session_actions(can_create: bool, cx: &mut Context<Self>) -> gpui::AnyElement {
+        div()
+            .px_4()
+            .py_3()
+            .border_t_1()
+            .border_color(rgb(0x2a_2f39))
+            .flex()
+            .items_center()
+            .justify_end()
+            .gap_2()
+            .child(
+                div()
+                    .id("cancel-new-session")
+                    .px_3()
+                    .py_1()
+                    .rounded_sm()
+                    .cursor_pointer()
+                    .text_sm()
+                    .text_color(rgb(0xb6_bcc7))
+                    .hover(|style| style.bg(rgb(0x29_2e38)))
+                    .child("Cancel")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.cancel_new_session(window, cx);
+                    })),
+            )
+            .child(
+                div()
+                    .id("create-new-session")
+                    .px_3()
+                    .py_1()
+                    .rounded_sm()
+                    .bg(rgb(if can_create { 0x1d_5f9a } else { 0x2b_3039 }))
+                    .text_sm()
+                    .text_color(rgb(if can_create { 0xf1_f5fa } else { 0x72_7986 }))
+                    .child("Create")
+                    .when(can_create, |element| {
+                        element
+                            .cursor_pointer()
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.submit_new_session(window, cx);
+                            }))
+                    }),
+            )
+            .into_any_element()
+    }
+
     fn workspace_tree(
         snapshot: &workspace::WorkspaceSnapshot,
         cx: &mut Context<Self>,
@@ -1725,41 +2152,50 @@ impl RootView {
                 div()
                     .min_w_0()
                     .flex_1()
-                    .flex()
-                    .flex_col()
-                    .child(
-                        div()
-                            .truncate()
-                            .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(rgb(0xd2_d7_df))
-                            .child(host.name().to_owned()),
-                    )
-                    .child(
-                        div()
-                            .truncate()
-                            .text_xs()
-                            .text_color(rgb(0x71_7885))
-                            .child(host.endpoint().to_owned()),
-                    ),
+                    .truncate()
+                    .text_sm()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(rgb(0xd2_d7_df))
+                    .child(host.name().to_owned()),
             );
         if host.connection() == HostConnectionState::Ready {
-            host_header = host_header.child(
-                div()
-                    .id(("refresh-host", host_index))
-                    .flex_none()
-                    .size(px(24.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded_sm()
-                    .cursor_pointer()
-                    .text_xs()
-                    .text_color(rgb(0x8f_96_a3))
-                    .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xd2_d7_df)))
-                    .child("↻")
-                    .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
-            );
+            let host_id = host.id().to_owned();
+            let endpoint = host.endpoint().to_owned();
+            host_header = host_header
+                .child(
+                    div()
+                        .id(("create-session-host", host_index))
+                        .flex_none()
+                        .size(px(24.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .text_sm()
+                        .text_color(rgb(0x8f_96_a3))
+                        .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xd2_d7_df)))
+                        .child("+")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_new_session(&host_id, &endpoint, window, cx);
+                        })),
+                )
+                .child(
+                    div()
+                        .id(("refresh-host", host_index))
+                        .flex_none()
+                        .size(px(24.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .text_xs()
+                        .text_color(rgb(0x8f_96_a3))
+                        .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xd2_d7_df)))
+                        .child("↻")
+                        .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
+                );
         }
         host_header.into_any_element()
     }
@@ -1802,9 +2238,7 @@ impl RootView {
             tree = tree.child(Self::tree_session_row(
                 host_index,
                 session_index,
-                &session.selection,
-                session.active,
-                session.show_endpoint,
+                session,
                 cx,
             ));
         }
@@ -1854,13 +2288,12 @@ impl RootView {
     fn tree_session_row(
         host_index: usize,
         index: usize,
-        selection: &SessionSelection,
-        is_active: bool,
-        show_endpoint: bool,
+        session: &TreeSession,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let selection = selection.clone();
-        let open_selection = selection.clone();
+        let selection = session.selection.clone();
+        let is_active = session.state.is_active();
+        let can_open = session.state.can_open();
         let name = selection.session().to_owned();
         let mut row = div()
             .id((
@@ -1874,9 +2307,13 @@ impl RootView {
             .gap_1()
             .pl(px(14.0))
             .pr_2()
-            .cursor_pointer()
             .bg(rgb(if is_active { 0x13_3d6a } else { 0x0f_1116 }))
-            .hover(|style| style.bg(rgb(if is_active { 0x17_477a } else { 0x1b_1f27 })))
+            .when(can_open, |element| {
+                element
+                    .cursor_pointer()
+                    .hover(|style| style.bg(rgb(if is_active { 0x17_477a } else { 0x1b_1f27 })))
+            })
+            .when(!can_open, |element| element.opacity(0.55))
             .child(
                 div()
                     .w(px(18.0))
@@ -1894,7 +2331,7 @@ impl RootView {
                     .text_color(rgb(if is_active { 0xe5_ed_f7 } else { 0xc4_c9_d2 }))
                     .child(name.clone()),
             );
-        if show_endpoint {
+        if session.show_endpoint {
             row = row.child(
                 div()
                     .flex_none()
@@ -1904,55 +2341,111 @@ impl RootView {
             );
         }
         if is_active {
-            row = row.child(
-                div()
-                    .id("detach-terminal")
-                    .flex_none()
-                    .size(px(24.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded_sm()
-                    .text_color(rgb(0xa9_c9_ea))
-                    .hover(|style| style.bg(rgb(0x25_527f)).text_color(rgb(0xff_ff_ff)))
-                    .child("×")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.detach(cx);
-                        cx.stop_propagation();
-                    })),
-            );
-        } else {
-            row = row.child(
-                div()
-                    .id((
-                        gpui::ElementId::named_usize("open-tree-session-host", host_index),
-                        index.to_string(),
-                    ))
-                    .flex_none()
-                    .px_1()
-                    .py_1()
-                    .rounded_sm()
-                    .cursor_pointer()
-                    .text_xs()
-                    .text_color(rgb(0x79_aee3))
-                    .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xb6_d8_f8)))
-                    .child("Open")
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.select_session(&open_selection, window, cx);
-                        cx.stop_propagation();
-                    })),
-            );
+            row = row.child(Self::tree_detach_action(cx));
+        } else if can_open {
+            row = row.child(Self::tree_open_action(
+                host_index,
+                index,
+                selection.clone(),
+                cx,
+            ));
         }
-        row.on_click(cx.listener(move |this, _, window, cx| {
-            this.select_session(&selection, window, cx);
-        }))
+        if session.state.can_kill() {
+            row = row.child(Self::tree_kill_action(
+                host_index,
+                index,
+                selection.clone(),
+                cx,
+            ));
+        }
+        row.when(can_open, |element| {
+            element.on_click(cx.listener(move |this, _, window, cx| {
+                this.select_session(&selection, window, cx);
+            }))
+        })
         .into_any_element()
+    }
+
+    fn tree_detach_action(cx: &mut Context<Self>) -> gpui::AnyElement {
+        div()
+            .id("detach-session")
+            .flex_none()
+            .px_1()
+            .py_1()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_sm()
+            .cursor_pointer()
+            .text_xs()
+            .text_color(rgb(0xa9_c9_ea))
+            .hover(|style| style.bg(rgb(0x25_527f)).text_color(rgb(0xff_ff_ff)))
+            .child("Detach")
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.detach_session(window, cx);
+                cx.stop_propagation();
+            }))
+            .into_any_element()
+    }
+
+    fn tree_open_action(
+        host_index: usize,
+        index: usize,
+        selection: SessionSelection,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        div()
+            .id((
+                gpui::ElementId::named_usize("open-tree-session-host", host_index),
+                index.to_string(),
+            ))
+            .flex_none()
+            .px_1()
+            .py_1()
+            .rounded_sm()
+            .cursor_pointer()
+            .text_xs()
+            .text_color(rgb(0x79_aee3))
+            .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xb6_d8_f8)))
+            .child("Open")
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.select_session(&selection, window, cx);
+                cx.stop_propagation();
+            }))
+            .into_any_element()
+    }
+
+    fn tree_kill_action(
+        host_index: usize,
+        index: usize,
+        selection: SessionSelection,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        div()
+            .id((
+                gpui::ElementId::named_usize("kill-tree-session-host", host_index),
+                index.to_string(),
+            ))
+            .flex_none()
+            .px_1()
+            .py_1()
+            .rounded_sm()
+            .cursor_pointer()
+            .text_xs()
+            .text_color(rgb(0xc7_7378))
+            .hover(|style| style.bg(rgb(0x3a_2025)).text_color(rgb(0xff_a3_a8)))
+            .child("Kill")
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.request_session_kill(&selection, cx);
+                cx.stop_propagation();
+            }))
+            .into_any_element()
     }
 
     fn host_landing_element(host: &HostItem, cx: &mut Context<Self>) -> gpui::AnyElement {
         if host.connection() == HostConnectionState::Ready {
             return centered(if host.sessions().is_empty() {
-                "Start a tmux session in WSL, then refresh."
+                "Use + beside WSL to create a tmux session."
             } else {
                 "Choose a session to open its terminal."
             });
@@ -2067,7 +2560,10 @@ impl RootView {
             ));
         if sessions.is_empty() {
             let empty = host.map_or_else(
-                || "No tmux server is running in this distro. Start a tmux session in WSL, then choose Refresh.".to_owned(),
+                || {
+                    "No tmux server is running in this distro. Use + beside WSL to create one."
+                        .to_owned()
+                },
                 empty_inventory_text,
             );
             list = list.child(div().p_4().rounded_md().bg(rgb(0x1a_1d24)).child(empty));
@@ -2133,8 +2629,35 @@ fn terminal_presentation_id(content: &WorkspaceContent) -> Option<u64> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct TreeSession {
     selection: SessionSelection,
-    active: bool,
+    state: TreeSessionState,
     show_endpoint: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TreeSessionState {
+    Active,
+    ActiveKillable,
+    Retained,
+    RetainedKillable,
+    Fresh,
+    Cached,
+}
+
+impl TreeSessionState {
+    const fn is_active(self) -> bool {
+        matches!(self, Self::Active | Self::ActiveKillable)
+    }
+
+    const fn can_open(self) -> bool {
+        !matches!(self, Self::Cached)
+    }
+
+    const fn can_kill(self) -> bool {
+        matches!(
+            self,
+            Self::ActiveKillable | Self::RetainedKillable | Self::Fresh
+        )
+    }
 }
 
 fn active_session_selection(content: &WorkspaceContent) -> Option<SessionSelection> {
@@ -2167,31 +2690,68 @@ fn tree_sessions(
         .as_ref()
         .filter(|active| active.host_id() == host.id());
 
-    let mut selections = if host.connection() == HostConnectionState::Ready {
-        host.sessions()
-            .iter()
-            .map(|session| SessionSelection::new(host.id(), host.endpoint(), session.name()))
-            .collect::<Vec<_>>()
-    } else {
-        Vec::new()
-    };
+    let mut selections = host
+        .sessions()
+        .iter()
+        .map(|session| {
+            (
+                SessionSelection::new(host.id(), host.endpoint(), session.name()),
+                true,
+            )
+        })
+        .collect::<Vec<_>>();
     for selection in retained
         .iter()
         .filter(|selection| selection.host_id() == host.id())
         .chain(active_for_host)
     {
-        if !selections.contains(selection) {
-            selections.push(selection.clone());
+        if !selections
+            .iter()
+            .any(|(candidate, _)| candidate == selection)
+        {
+            selections.push((selection.clone(), false));
         }
     }
+    let host_accepts_actions = !matches!(
+        host.connection(),
+        HostConnectionState::Disconnected | HostConnectionState::Unavailable
+    );
     selections
         .into_iter()
-        .map(|selection| TreeSession {
-            active: active.as_ref() == Some(&selection),
-            show_endpoint: selection.endpoint() != host.endpoint(),
-            selection,
+        .map(|(selection, discovered)| {
+            let retained = retained.contains(&selection);
+            let is_active = active.as_ref() == Some(&selection);
+            let can_kill = discovered && host_accepts_actions;
+            let state = match (is_active, retained, host_accepts_actions, can_kill) {
+                (true, _, _, true) => TreeSessionState::ActiveKillable,
+                (true, _, _, false) => TreeSessionState::Active,
+                (false, true, _, true) => TreeSessionState::RetainedKillable,
+                (false, true, _, false) => TreeSessionState::Retained,
+                (false, false, true, _) => TreeSessionState::Fresh,
+                (false, false, false, _) => TreeSessionState::Cached,
+            };
+            TreeSession {
+                state,
+                show_endpoint: selection.endpoint() != host.endpoint(),
+                selection,
+            }
         })
         .collect()
+}
+
+fn kill_confirmation_title(selection: &SessionSelection) -> String {
+    format!(
+        "Kill “{}” on {}?",
+        selection.session(),
+        selection.endpoint()
+    )
+}
+
+fn kill_confirmation_description(selection: &SessionSelection) -> String {
+    format!(
+        "This permanently terminates every window, pane, and process in this tmux session on {}.",
+        selection.endpoint()
+    )
 }
 
 fn workspace_window_title(content: &WorkspaceContent) -> String {
@@ -2293,14 +2853,10 @@ impl Render for RootView {
         let snapshot = self.workspace.snapshot();
         let title = workspace_window_title(snapshot.content());
         window.set_window_title(&title);
-        self.observed_revision = snapshot.revision();
-        if !matches!(snapshot.content(), WorkspaceContent::Terminal { .. }) {
-            self.observed_surface_identity = None;
-            self.observed_surface_generation = 0;
-            self.paint_cache.clear();
-        }
-        let title_bar = self.title_bar(title, cx);
+        self.synchronize_render_state(&snapshot);
         let content = self.content_element(&snapshot, cx);
+        let creation_overlay = self.new_session_overlay(&snapshot, window, cx);
+        let kill_overlay = self.pending_session_kill_overlay(window, cx);
         let mut root = div()
             .flex()
             .flex_col()
@@ -2310,8 +2866,10 @@ impl Render for RootView {
             .on_action(cx.listener(|this, _: &ToggleSidebar, window, cx| {
                 this.toggle_sidebar(window, cx);
             }))
-            .child(title_bar)
-            .child(div().flex_1().min_h_0().w_full().child(content));
+            .child(self.title_bar(title, cx))
+            .child(div().flex_1().min_h_0().w_full().child(content))
+            .children(creation_overlay)
+            .children(kill_overlay);
 
         if let Some(notice) = snapshot.notice() {
             root = root.child(
@@ -2400,6 +2958,40 @@ fn centered(text: impl Into<String>) -> gpui::AnyElement {
         .text_color(rgb(0xb7_bc_c6))
         .child(text.into())
         .into_any_element()
+}
+
+fn new_session_validation(
+    snapshot: &workspace::WorkspaceSnapshot,
+    draft: &NewSessionDraft,
+) -> Option<String> {
+    let Some(host) = snapshot
+        .hosts()
+        .iter()
+        .find(|host| host.id() == draft.host_id.as_str())
+    else {
+        return Some("The selected host is no longer available.".to_owned());
+    };
+    if host.endpoint() != draft.endpoint {
+        return Some(
+            "The WSL endpoint changed. Close this dialog and choose the host again.".to_owned(),
+        );
+    }
+    if matches!(
+        host.connection(),
+        HostConnectionState::Disconnected | HostConnectionState::Unavailable
+    ) {
+        return Some("Reconnect the WSL host before creating a session.".to_owned());
+    }
+    if draft.name.trim().is_empty() {
+        return None;
+    }
+    let Ok(name) = SessionName::parse(&draft.name) else {
+        return Some("Use 1–100 characters without #, periods, colons, or line breaks.".to_owned());
+    };
+    host.sessions()
+        .iter()
+        .any(|session| session.name() == name.as_str())
+        .then(|| "A session with this name already exists on this host.".to_owned())
 }
 
 fn window_control(
@@ -2888,12 +3480,13 @@ mod tests {
 
     use super::{
         APP_NAVIGATION_WIDTH, APP_TITLEBAR_HEIGHT, INPUT_BUFFER_FULL_DIAGNOSTIC,
-        INPUT_BUFFERED_DIAGNOSTIC, InputRefusal, LayoutKey, PendingUiInput, QueuedUiInput,
-        TerminalKeyIdentity, TerminalKeyboard, TerminalPointer, TerminalResize,
+        INPUT_BUFFERED_DIAGNOSTIC, InputRefusal, LayoutKey, NewSessionDraft, PendingUiInput,
+        QueuedUiInput, TerminalKeyIdentity, TerminalKeyboard, TerminalPointer, TerminalResize,
         UI_INPUT_BYTE_CAPACITY, UI_INPUT_CAPACITY, WheelBatch, active_session_selection,
         application_navigation_width, canonical_terminal_key_with, clear_terminal_input_state,
         clears_after_input_delivery, clears_when_input_queue_is_empty, coalesce_last_resize,
-        coalesce_last_wheel, input_queue_has_capacity, is_toggle_sidebar_shortcut, named_key,
+        coalesce_last_wheel, input_queue_has_capacity, is_toggle_sidebar_shortcut,
+        kill_confirmation_description, kill_confirmation_title, named_key, new_session_validation,
         normalize_cell_width, queued_input_matches_presentation, retained_key_event_with,
         terminal_cell_at_with_offset, terminal_key_input, terminal_key_input_with_canonical,
         terminal_line_height, terminal_wheel_steps, transitioned_presentation, tree_sessions,
@@ -2903,8 +3496,60 @@ mod tests {
     use surface::{GridSize, SurfaceFrame, SurfaceStore};
     use workspace::{
         HostConnectionState, HostItem, KeyEvent, KeyInput, Modifiers, MouseAction, MouseButton,
-        MouseInput, NamedKey, SessionItem, SessionSelection, WorkspaceContent,
+        MouseInput, NamedKey, SessionItem, SessionSelection, WorkspaceContent, WorkspaceSnapshot,
     };
+
+    #[test]
+    fn new_session_dialog_matches_the_shipped_name_and_duplicate_rules() {
+        let snapshot = WorkspaceSnapshot::shell(
+            workspace::Appearance::default(),
+            vec![HostItem::wsl(
+                "Ubuntu",
+                None,
+                HostConnectionState::Ready,
+                vec![SessionItem::new("existing", 0)],
+                None,
+            )],
+        );
+        let mut draft = NewSessionDraft {
+            host_id: "wsl".to_owned(),
+            endpoint: "Ubuntu".to_owned(),
+            name: String::new(),
+        };
+
+        assert_eq!(new_session_validation(&snapshot, &draft), None);
+        draft.name = "has.period".to_owned();
+        assert_eq!(
+            new_session_validation(&snapshot, &draft).as_deref(),
+            Some("Use 1–100 characters without #, periods, colons, or line breaks.")
+        );
+        draft.name = "#(touch /tmp/ghosthub-owned)".to_owned();
+        assert_eq!(
+            new_session_validation(&snapshot, &draft).as_deref(),
+            Some("Use 1–100 characters without #, periods, colons, or line breaks.")
+        );
+        draft.name = "existing".to_owned();
+        assert_eq!(
+            new_session_validation(&snapshot, &draft).as_deref(),
+            Some("A session with this name already exists on this host.")
+        );
+        draft.name = "  release work  ".to_owned();
+        assert_eq!(new_session_validation(&snapshot, &draft), None);
+
+        let refreshing = WorkspaceSnapshot::shell(
+            workspace::Appearance::default(),
+            vec![HostItem::wsl(
+                "Ubuntu",
+                None,
+                HostConnectionState::Connecting,
+                vec![SessionItem::new("existing", 0)],
+                None,
+            )],
+        );
+        assert_eq!(new_session_validation(&refreshing, &draft), None);
+        draft.endpoint = "Debian".to_owned();
+        assert!(new_session_validation(&refreshing, &draft).is_some());
+    }
 
     #[test]
     fn a_refused_input_stays_visible_until_later_input_is_delivered() {
@@ -2998,7 +3643,7 @@ mod tests {
     }
 
     #[test]
-    fn active_session_stays_in_the_tree_while_its_host_refreshes_or_fails() {
+    fn cached_and_active_sessions_stay_in_the_tree_while_the_host_refreshes_or_fails() {
         let size = GridSize::new(80, 24).expect("valid grid");
         let terminal = WorkspaceContent::Terminal {
             host_id: "wsl".to_owned(),
@@ -3020,10 +3665,35 @@ mod tests {
             );
 
             let rows = tree_sessions(&host, &terminal, &[]);
-            assert_eq!(rows.len(), 1);
-            assert_eq!(rows[0].selection.session(), "demo");
-            assert!(rows[0].active);
+            assert_eq!(rows.len(), 2);
+            assert_eq!(rows[0].selection.session(), "other");
+            assert!(!rows[0].state.is_active());
+            assert_eq!(
+                rows[0].state.can_open(),
+                state == HostConnectionState::Connecting
+            );
+            assert_eq!(
+                rows[0].state.can_kill(),
+                state == HostConnectionState::Connecting
+            );
+            assert_eq!(rows[1].selection.session(), "demo");
+            assert!(rows[1].state.is_active());
+            assert!(rows[1].state.can_open());
         }
+    }
+
+    #[test]
+    fn kill_confirmation_names_the_exact_endpoint() {
+        let selection = SessionSelection::new("wsl", "Ubuntu-24.04", "release");
+
+        assert_eq!(
+            kill_confirmation_title(&selection),
+            "Kill “release” on Ubuntu-24.04?"
+        );
+        assert_eq!(
+            kill_confirmation_description(&selection),
+            "This permanently terminates every window, pane, and process in this tmux session on Ubuntu-24.04."
+        );
     }
 
     #[test]
@@ -3047,10 +3717,10 @@ mod tests {
         let rows = tree_sessions(&host, &terminal, &[]);
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].selection.endpoint(), "Debian");
-        assert!(!rows[0].active);
+        assert!(!rows[0].state.is_active());
         assert!(!rows[0].show_endpoint);
         assert_eq!(rows[1].selection.endpoint(), "Ubuntu");
-        assert!(rows[1].active);
+        assert!(rows[1].state.is_active());
         assert!(rows[1].show_endpoint);
     }
 
@@ -3070,8 +3740,11 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].selection.endpoint(), "Debian");
         assert!(!rows[0].show_endpoint);
+        assert!(rows[0].state.can_kill());
         assert_eq!(rows[1].selection.endpoint(), "Ubuntu");
         assert!(rows[1].show_endpoint);
+        assert!(rows[1].state.can_open());
+        assert!(!rows[1].state.can_kill());
     }
 
     #[test]
@@ -3093,7 +3766,27 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].selection.session(), "one");
         assert_eq!(rows[1].selection.session(), "two");
-        assert!(rows.iter().all(|row| !row.active));
+        assert!(rows.iter().all(|row| !row.state.is_active()));
+        assert!(rows.iter().all(|row| row.state.can_open()));
+        assert!(rows.iter().all(|row| !row.state.can_kill()));
+    }
+
+    #[test]
+    fn disconnected_cached_sessions_are_visible_but_cannot_start_fresh_actions() {
+        let host = HostItem::wsl(
+            "Ubuntu",
+            None,
+            HostConnectionState::Disconnected,
+            vec![SessionItem::new("cached", 0)],
+            None,
+        );
+
+        let rows = tree_sessions(&host, &WorkspaceContent::Shell, &[]);
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].selection.session(), "cached");
+        assert!(!rows[0].state.can_open());
+        assert!(!rows[0].state.can_kill());
     }
 
     #[test]
