@@ -60,10 +60,29 @@ fn translate(virtual_key: u16, shift: bool, layout: HKL) -> Option<char> {
             layout,
         )
     };
-    if length <= 0 {
-        return None;
-    }
-    let text = String::from_utf16(&buffer[..usize::try_from(length).ok()?]).ok()?;
+    let text = decode_translation(&buffer, length)?;
     let character = super::single_character(&text)?;
     (!character.is_control()).then_some(character)
+}
+
+fn decode_translation(buffer: &[u16], length: i32) -> Option<String> {
+    if length == 0 {
+        return None;
+    }
+    let length = usize::try_from(length.unsigned_abs()).ok()?;
+    String::from_utf16(buffer.get(..length)?).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode_translation;
+
+    #[test]
+    fn dead_key_translation_preserves_the_returned_character() {
+        let buffer = ['^' as u16, 0];
+
+        assert_eq!(decode_translation(&buffer, -1).as_deref(), Some("^"));
+        assert_eq!(decode_translation(&buffer, 1).as_deref(), Some("^"));
+        assert_eq!(decode_translation(&buffer, 0), None);
+    }
 }
