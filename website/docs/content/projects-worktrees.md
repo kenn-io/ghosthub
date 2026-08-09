@@ -109,7 +109,12 @@ confirm the exact worktree and host, Ghosthub:
 
 The Git branch is kept. If the checkout is already absent, Ghosthub skips the
 redundant filesystem removal but still reconciles the exact live session
-covered by the confirmation.
+covered by the confirmation. If the worktree or session changes while the
+confirmation is open, Ghosthub stops and presents the current removal details
+for fresh confirmation instead of continuing automatically.
+
+After removal, the owning project remains selected. Ghosthub does not select
+another worktree or open its tmux session on your behalf.
 
 ## Rearrange worktrees
 

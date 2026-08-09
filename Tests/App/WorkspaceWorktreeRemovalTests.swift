@@ -37,6 +37,27 @@ private actor RemovalPreflightHold {
         )
     }
 
+    func verifyStartedSession(
+        selection: WorkspaceTmuxSessionSelection,
+        host: CommandHost,
+        identity: TmuxSessionIdentity
+    ) async throws -> TmuxSessionIdentity {
+        callCount += 1
+        if callCount == 1 {
+            throw TmuxSessionKillError.sessionNotRunning(
+                host: host.displayName,
+                session: selection.name
+            )
+        }
+        if callCount == 2 {
+            started = true
+            await withCheckedContinuation { continuation in
+                self.continuation = continuation
+            }
+        }
+        return identity
+    }
+
     func load(_ inventory: KwtHostInventory) async -> KwtHostInventory {
         started = true
         await withCheckedContinuation { continuation in
@@ -126,6 +147,59 @@ private func inventory(
     ])
 }
 
+private struct RemovalFixture {
+    let environment: StandardEnvironment
+    var removable: WorktreeSummary
+    var snapshot: WorkspaceSnapshot
+    var beforeRemoval: KwtHostInventory
+}
+
+/// Builds the standard local environment plus one removable worktree, the
+/// snapshot that contains it, and the inventory that still reports it.
+private func removalFixture(
+    path: String = "/tmp/ghosthub-feature",
+    name: String = "feature/remove",
+    branch: String = "feature/remove",
+    sessionName: String? = "kwt-ghosthub-feature",
+    socketName: String? = nil,
+    sessionBackend: SessionBackendKind = .localPTY,
+    runningSession: Bool = false
+) throws -> RemovalFixture {
+    let environment = try setupStandardEnvironment()
+    var removable = WorktreeSummary.fixture(
+        hostID: environment.host.id,
+        projectID: environment.project.id,
+        scopedKey: path,
+        name: name,
+        path: path,
+        branch: branch,
+        generation: stableWorktreeGeneration
+    )
+    removable.tmuxSessionName = sessionName
+    removable.tmuxSocketName = socketName
+    removable.sessionBackend = sessionBackend
+    var snapshot = environment.snapshot
+    snapshot.worktrees.append(removable)
+    if runningSession, let sessionName {
+        snapshot.hosts[0].tmuxSessions = [
+            TmuxSessionSummary(
+                name: sessionName,
+                managed: true,
+                windows: [],
+                serverPID: "31415",
+                sessionID: "$8",
+                createdAt: "1721552400"
+            ),
+        ]
+    }
+    return RemovalFixture(
+        environment: environment,
+        removable: removable,
+        snapshot: snapshot,
+        beforeRemoval: inventory(environment, including: removable)
+    )
+}
+
 @Suite("Workspace worktree removal", .serialized)
 struct WorkspaceWorktreeRemovalTests {
     @MainActor
@@ -136,30 +210,11 @@ struct WorkspaceWorktreeRemovalTests {
     func removalReconcilesOtherScenes(
         checkoutAlreadyAbsent: Bool
     ) async throws {
-        let environment = try setupStandardEnvironment()
-        var removable = WorktreeSummary.fixture(
-            hostID: environment.host.id,
-            projectID: environment.project.id,
-            scopedKey: "/tmp/ghosthub-feature",
-            name: "feature/remove",
-            path: "/tmp/ghosthub-feature",
-            branch: "feature/remove",
-            generation: stableWorktreeGeneration
-        )
-        removable.tmuxSessionName = "kwt-ghosthub-feature"
-        var snapshot = environment.snapshot
-        snapshot.worktrees.append(removable)
-        snapshot.hosts[0].tmuxSessions = [
-            TmuxSessionSummary(
-                name: "kwt-ghosthub-feature",
-                managed: true,
-                windows: [],
-                serverPID: "31415",
-                sessionID: "$8",
-                createdAt: "1721552400"
-            ),
-        ]
-        let beforeRemoval = inventory(environment, including: removable)
+        let fixture = try removalFixture(runningSession: true)
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let snapshot = fixture.snapshot
+        let beforeRemoval = fixture.beforeRemoval
         let afterRemoval = inventory(environment)
         let warningAfterRemoval: KwtHostInventory = {
             var inventory = beforeRemoval
@@ -217,7 +272,7 @@ struct WorkspaceWorktreeRemovalTests {
         )
         secondModel.startKwtInventory()
         secondModel.startTmuxSessionDiscovery()
-        await waitUntilMainActor {
+        await waitUntilMainActor(timeout: .seconds(10)) {
             secondLoads.load() >= 1
                 && secondDiscoveries.load() >= 1
         }
@@ -228,7 +283,7 @@ struct WorkspaceWorktreeRemovalTests {
         // Wait on the reconciled snapshot itself: the load and discovery
         // counters increment when the closures are entered, before their
         // results are applied, so counter-based waits race the assertion.
-        await waitUntilMainActor {
+        await waitUntilMainActor(timeout: .seconds(10)) {
             secondModel.snapshot.worktree(id: removable.id) == nil
                 && secondModel.snapshot.host(id: environment.host.id)?
                 .tmuxSessions.isEmpty == true
@@ -240,26 +295,17 @@ struct WorkspaceWorktreeRemovalTests {
     @MainActor
     @Test("removal cancels pending presentations in every scene")
     func removalCancelsPendingPresentationsInEveryScene() async throws {
-        let environment = try setupStandardEnvironment()
-        var removable = WorktreeSummary.fixture(
-            hostID: environment.host.id,
-            projectID: environment.project.id,
-            scopedKey: "/tmp/ghosthub-feature",
-            name: "feature/remove",
-            path: "/tmp/ghosthub-feature",
-            branch: "feature/remove",
-            generation: stableWorktreeGeneration
-        )
-        removable.tmuxSessionName = "kwt-ghosthub-feature"
-        var snapshot = environment.snapshot
-        snapshot.worktrees.append(removable)
+        let fixture = try removalFixture()
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let snapshot = fixture.snapshot
         var staleSnapshot = snapshot
         let staleIndex = try #require(
             staleSnapshot.worktrees.firstIndex { $0.id == removable.id }
         )
         staleSnapshot.worktrees[staleIndex].generation = nil
 
-        let beforeRemoval = inventory(environment, including: removable)
+        let beforeRemoval = fixture.beforeRemoval
         let afterRemoval = inventory(environment)
         let coordinator = WorktreeMutationCoordinator()
         let pathGate = DispatchSemaphore(value: 0)
@@ -336,12 +382,7 @@ struct WorkspaceWorktreeRemovalTests {
         let removal = Task { @MainActor in
             try await firstModel.removeWorktree(request)
         }
-        for _ in 0 ..< 1_000 {
-            if await removerHold.started {
-                break
-            }
-            await Task.yield()
-        }
+        await waitUntilMainActor { await removerHold.started }
         #expect(await removerHold.started)
 
         #expect(firstModel.retainedBorrowedTmuxPresentationCount == 0)
@@ -378,25 +419,71 @@ struct WorkspaceWorktreeRemovalTests {
     }
 
     @MainActor
+    @Test("a successful removal strips scenes with legacy project identity")
+    func successfulRemovalStripsLegacyIdentityScene() async throws {
+        struct InventoryUnavailable: Error {}
+        let fixture = try removalFixture()
+        let environment = fixture.environment
+        let removable = fixture.removable
+        var legacySnapshot = fixture.snapshot
+        for index in legacySnapshot.projects.indices
+            where legacySnapshot.projects[index].id == removable.projectID {
+            legacySnapshot.projects[index].scopedKey = ""
+        }
+        let beforeRemoval = fixture.beforeRemoval
+        let afterRemoval = inventory(environment)
+        let loads = LockedValue(0)
+        let coordinator = WorktreeMutationCoordinator()
+        let currentModel = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: fixture.snapshot,
+            kwtInventoryLoader: { _ in
+                loads.withLock { $0 += 1 }
+                return loads.load() == 1
+                    ? beforeRemoval
+                    : afterRemoval
+            },
+            kwtWorktreeRemover: { _, _, _, _ in },
+            worktreeMutationCoordinator: coordinator,
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+        let legacyModel = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: legacySnapshot,
+            kwtInventoryLoader: { _ in throw InventoryUnavailable() },
+            worktreeMutationCoordinator: coordinator
+        )
+        #expect(legacyModel.snapshot.worktree(id: removable.id) != nil)
+
+        let request = try await currentModel.prepareWorktreeRemoval(
+            removable.id
+        )
+        try await currentModel.removeWorktree(request)
+
+        #expect(currentModel.snapshot.worktree(id: removable.id) == nil)
+        #expect(legacyModel.snapshot.worktree(id: removable.id) == nil)
+        await currentModel.shutdown()
+        await legacyModel.shutdown()
+    }
+
+    @MainActor
     @Test("failed removal restores the canonical endpoint in a stale scene")
     func failedRemovalRestoresCanonicalEndpointAcrossScenes() async throws {
-        let environment = try setupStandardEnvironment()
-        var stale = WorktreeSummary.fixture(
-            hostID: environment.host.id,
-            projectID: environment.project.id,
-            scopedKey: "/tmp/ghosthub-feature",
-            name: "feature/remove",
-            path: "/tmp/ghosthub-feature",
-            branch: "feature/remove",
-            generation: stableWorktreeGeneration
-        )
-        stale.tmuxSessionName = "kwt-ghosthub-stale"
+        let fixture = try removalFixture(sessionName: "kwt-ghosthub-stale")
+        let environment = fixture.environment
+        let stale = fixture.removable
+        let staleSnapshot = fixture.snapshot
         var canonical = stale
         canonical.tmuxSessionName = "kwt-ghosthub-canonical"
         var currentSnapshot = environment.snapshot
         currentSnapshot.worktrees.append(canonical)
-        var staleSnapshot = environment.snapshot
-        staleSnapshot.worktrees.append(stale)
         let currentInventory = inventory(
             environment,
             including: canonical
@@ -464,22 +551,808 @@ struct WorkspaceWorktreeRemovalTests {
     }
 
     @MainActor
+    @Test(
+        "a replacement racing a failed remove suppresses stale restoration"
+    )
+    func replacementAfterFailedRemoveRequiresConfirmation() async throws {
+        let fixture = try removalFixture()
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let snapshot = fixture.snapshot
+        var replacement = removable
+        replacement.generation = "fedcba9876543210fedcba9876543210"
+        let beforeRemoval = fixture.beforeRemoval
+        let afterReplacement = inventory(
+            environment,
+            including: replacement,
+            generation: replacement.generation
+        )
+        let loads = LockedValue(0)
+        let surfaces = RecordingNativeSessionSurfaceStore()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaces,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            kwtInventoryLoader: { _ in
+                loads.withLock { $0 += 1 }
+                return loads.load() == 1
+                    ? beforeRemoval
+                    : afterReplacement
+            },
+            kwtWorktreeRemover: { _, _, _, _ in
+                throw KwtWorktreeError.removalFailed(
+                    host: "Local",
+                    status: 1
+                )
+            },
+            worktreeMutationCoordinator: WorktreeMutationCoordinator(),
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: removable)
+        )
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        model.openBorrowedTmuxSession(selection)
+        await waitUntilMainActor {
+            surfaces.requestedConfigurations.count == 1
+        }
+
+        let result = try await model.resolveWorktreeRemoval(request)
+        guard case let .confirmationRequired(updatedRequest) = result else {
+            Issue.record("Replacement should require a new confirmation")
+            await model.shutdown()
+            return
+        }
+
+        #expect(updatedRequest.worktree.generation == replacement.generation)
+        #expect(loads.load() == 2)
+        #expect(model.retainedBorrowedTmuxPresentationCount == 0)
+        #expect(surfaces.requestedConfigurations.count == 1)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test(
+        "a same-generation metadata change after a failed remove keeps the worktree"
+    )
+    func metadataChangeAfterFailedRemoveKeepsWorktree() async throws {
+        let fixture = try removalFixture()
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let snapshot = fixture.snapshot
+        var changed = removable
+        changed.branch = "feature/renamed"
+        let beforeRemoval = fixture.beforeRemoval
+        let afterMetadataChange = inventory(environment, including: changed)
+        let loads = LockedValue(0)
+        let surfaces = RecordingNativeSessionSurfaceStore()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaces,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            kwtInventoryLoader: { _ in
+                loads.withLock { $0 += 1 }
+                return loads.load() == 1
+                    ? beforeRemoval
+                    : afterMetadataChange
+            },
+            kwtWorktreeRemover: { _, _, _, _ in
+                throw KwtWorktreeError.removalFailed(
+                    host: "Local",
+                    status: 1
+                )
+            },
+            worktreeMutationCoordinator: WorktreeMutationCoordinator(),
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: removable)
+        )
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        model.openBorrowedTmuxSession(selection)
+        await waitUntilMainActor {
+            surfaces.requestedConfigurations.count == 1
+        }
+
+        let result = try await model.resolveWorktreeRemoval(request)
+        guard case let .confirmationRequired(updatedRequest) = result else {
+            Issue.record("Metadata change should require a new confirmation")
+            await model.shutdown()
+            return
+        }
+
+        #expect(updatedRequest.worktree.branch == changed.branch)
+        #expect(
+            updatedRequest.worktree.generation == stableWorktreeGeneration
+        )
+        await waitUntilMainActor {
+            surfaces.requestedConfigurations.count == 2
+        }
+        #expect(model.retainedBorrowedTmuxPresentationCount == 1)
+
+        model.startKwtInventory()
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            loads.load() >= 3 && model.isWorkspaceInventoryRefreshComplete
+        }
+        #expect(model.snapshot.worktrees.contains {
+            $0.path == removable.path
+                && $0.generation == stableWorktreeGeneration
+        })
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test(
+        "failed removal restores the refreshed same-generation endpoint",
+        arguments: [true, false]
+    )
+    func failedRemovalRestoresRefreshedEndpoint(
+        sessionNameChanged: Bool
+    ) async throws {
+        let fixture = try removalFixture()
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let snapshot = fixture.snapshot
+        var changed = removable
+        if sessionNameChanged {
+            changed.tmuxSessionName = "kwt-ghosthub-renamed"
+        } else {
+            changed.tmuxSocketName = "kwt-ghosthub-socket"
+        }
+        let beforeRemoval = fixture.beforeRemoval
+        let afterEndpointChange = inventory(environment, including: changed)
+        let loads = LockedValue(0)
+        let surfaces = RecordingNativeSessionSurfaceStore()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaces,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            kwtInventoryLoader: { _ in
+                loads.withLock { $0 += 1 }
+                return loads.load() == 1
+                    ? beforeRemoval
+                    : afterEndpointChange
+            },
+            kwtWorktreeRemover: { _, _, _, _ in
+                throw KwtWorktreeError.removalFailed(
+                    host: "Local",
+                    status: 1
+                )
+            },
+            worktreeMutationCoordinator: WorktreeMutationCoordinator(),
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: removable)
+        )
+        let changedSelection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: changed)
+        )
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        model.openBorrowedTmuxSession(selection)
+        await waitUntilMainActor {
+            surfaces.requestedConfigurations.count == 1
+        }
+
+        let result = try await model.resolveWorktreeRemoval(request)
+        guard case .confirmationRequired = result else {
+            Issue.record("Endpoint change should require a new confirmation")
+            await model.shutdown()
+            return
+        }
+
+        await waitUntilMainActor {
+            surfaces.requestedConfigurations.count == 2
+        }
+        #expect(model.retainedBorrowedTmuxPresentationCount == 1)
+        #expect(model.retainedBorrowedTmuxHandle(for: selection) == nil)
+        #expect(
+            model.retainedBorrowedTmuxHandle(for: changedSelection) != nil
+        )
+        #expect(
+            model.activeBorrowedTmuxSelection?.name
+                == changedSelection.name
+        )
+        #expect(
+            model.activeBorrowedTmuxSelection?.socketName
+                == changedSelection.socketName
+        )
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test(
+        "an absent target after a failed remove suppresses restoration"
+    )
+    func absentTargetAfterFailedRemoveSuppressesRestoration() async throws {
+        let fixture = try removalFixture()
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let snapshot = fixture.snapshot
+        let beforeRemoval = fixture.beforeRemoval
+        let afterRemoval = inventory(environment)
+        let loads = LockedValue(0)
+        let surfaces = RecordingNativeSessionSurfaceStore()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaces,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            kwtInventoryLoader: { _ in
+                loads.withLock { $0 += 1 }
+                return loads.load() == 1
+                    ? beforeRemoval
+                    : afterRemoval
+            },
+            kwtWorktreeRemover: { _, _, _, _ in
+                throw KwtWorktreeError.removalFailed(
+                    host: "Local",
+                    status: 1
+                )
+            },
+            worktreeMutationCoordinator: WorktreeMutationCoordinator(),
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: removable)
+        )
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        model.openBorrowedTmuxSession(selection)
+        await waitUntilMainActor {
+            surfaces.requestedConfigurations.count == 1
+        }
+
+        await #expect(
+            throws: KwtWorktreeError.removalFailed(
+                host: "Local",
+                status: 1
+            )
+        ) {
+            try await model.removeWorktree(request)
+        }
+        for _ in 0 ..< 10 {
+            await Task.yield()
+        }
+
+        #expect(loads.load() == 2)
+        #expect(model.snapshot.worktree(id: removable.id) == nil)
+        #expect(model.retainedBorrowedTmuxPresentationCount == 0)
+        #expect(surfaces.requestedConfigurations.count == 1)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test(
+        "a cross-project reassignment after a failed remove suppresses restoration"
+    )
+    func crossProjectReassignmentSuppressesRestoration() async throws {
+        let fixture = try removalFixture()
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let snapshot = fixture.snapshot
+        let beforeRemoval = fixture.beforeRemoval
+        let afterReassignment = KwtHostInventory(projects: [
+            KwtProjectInventory(
+                project: KwtProjectRecord(
+                    repository: environment.project.scopedKey,
+                    name: environment.project.name,
+                    path: environment.project.rootPath,
+                    lastTouched: nil
+                ),
+                worktrees: [
+                    KwtWorktreeRecord(
+                        path: environment.worktree.path,
+                        branch: environment.worktree.branch,
+                        commitHash: "",
+                        isMain: true,
+                        createdAt: nil,
+                        generation: nil,
+                        repository: environment.project.scopedKey,
+                        sessionName: "kwt-ghosthub-main",
+                        tmuxSocketName: nil
+                    ),
+                ],
+                warning: nil
+            ),
+            KwtProjectInventory(
+                project: KwtProjectRecord(
+                    repository: "/tmp/ghosthub-other",
+                    name: "other",
+                    path: "/tmp/ghosthub-other",
+                    lastTouched: nil
+                ),
+                worktrees: [
+                    KwtWorktreeRecord(
+                        path: removable.path,
+                        branch: removable.branch,
+                        commitHash: "",
+                        isMain: false,
+                        createdAt: nil,
+                        generation: stableWorktreeGeneration,
+                        repository: "/tmp/ghosthub-other",
+                        sessionName: "kwt-ghosthub-other-feature",
+                        tmuxSocketName: nil
+                    ),
+                ],
+                warning: nil
+            ),
+        ])
+        let loads = LockedValue(0)
+        let surfaces = RecordingNativeSessionSurfaceStore()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaces,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            kwtInventoryLoader: { _ in
+                loads.withLock { $0 += 1 }
+                return loads.load() == 1
+                    ? beforeRemoval
+                    : afterReassignment
+            },
+            kwtWorktreeRemover: { _, _, _, _ in
+                throw KwtWorktreeError.removalFailed(
+                    host: "Local",
+                    status: 1
+                )
+            },
+            worktreeMutationCoordinator: WorktreeMutationCoordinator(),
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: removable)
+        )
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        model.openBorrowedTmuxSession(selection)
+        await waitUntilMainActor {
+            surfaces.requestedConfigurations.count == 1
+        }
+
+        await #expect(throws: KwtWorktreeError.removalTargetChanged) {
+            try await model.removeWorktree(request)
+        }
+        for _ in 0 ..< 10 {
+            await Task.yield()
+        }
+
+        #expect(loads.load() == 2)
+        #expect(model.retainedBorrowedTmuxPresentationCount == 0)
+        #expect(surfaces.requestedConfigurations.count == 1)
+        #expect(model.snapshot.worktrees.contains { worktree in
+            worktree.path == removable.path
+                && worktree.generation == stableWorktreeGeneration
+                && model.snapshot.project(id: worktree.projectID)?.scopedKey
+                == "/tmp/ghosthub-other"
+        })
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test(
+        "a cross-project reassignment closes stale-scene presentations"
+    )
+    func crossProjectReassignmentClosesStaleScenePresentation() async throws {
+        let fixture = try removalFixture()
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let beforeRemoval = fixture.beforeRemoval
+        let afterReassignment = KwtHostInventory(projects: [
+            KwtProjectInventory(
+                project: KwtProjectRecord(
+                    repository: environment.project.scopedKey,
+                    name: environment.project.name,
+                    path: environment.project.rootPath,
+                    lastTouched: nil
+                ),
+                worktrees: [
+                    KwtWorktreeRecord(
+                        path: environment.worktree.path,
+                        branch: environment.worktree.branch,
+                        commitHash: "",
+                        isMain: true,
+                        createdAt: nil,
+                        generation: nil,
+                        repository: environment.project.scopedKey,
+                        sessionName: "kwt-ghosthub-main",
+                        tmuxSocketName: nil
+                    ),
+                ],
+                warning: nil
+            ),
+            KwtProjectInventory(
+                project: KwtProjectRecord(
+                    repository: "/tmp/ghosthub-other",
+                    name: "other",
+                    path: "/tmp/ghosthub-other",
+                    lastTouched: nil
+                ),
+                worktrees: [
+                    KwtWorktreeRecord(
+                        path: removable.path,
+                        branch: removable.branch,
+                        commitHash: "",
+                        isMain: false,
+                        createdAt: nil,
+                        generation: stableWorktreeGeneration,
+                        repository: "/tmp/ghosthub-other",
+                        sessionName: "kwt-ghosthub-other-feature",
+                        tmuxSocketName: nil
+                    ),
+                ],
+                warning: nil
+            ),
+        ])
+        let loads = LockedValue(0)
+        let coordinator = WorktreeMutationCoordinator()
+        let staleSurfaces = RecordingNativeSessionSurfaceStore()
+        let currentModel = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: fixture.snapshot,
+            kwtInventoryLoader: { _ in
+                loads.withLock { $0 += 1 }
+                return loads.load() == 1
+                    ? beforeRemoval
+                    : afterReassignment
+            },
+            kwtWorktreeRemover: { _, _, _, _ in
+                throw KwtWorktreeError.removalFailed(
+                    host: "Local",
+                    status: 1
+                )
+            },
+            worktreeMutationCoordinator: coordinator,
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+        let staleModel = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: fixture.snapshot,
+            nativeTmuxSurfaceStore: staleSurfaces,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            worktreeMutationCoordinator: coordinator
+        )
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: removable)
+        )
+        staleModel.openBorrowedTmuxSession(selection)
+        await waitUntilMainActor {
+            staleSurfaces.requestedConfigurations.count == 1
+        }
+
+        let request = try await currentModel.prepareWorktreeRemoval(
+            removable.id
+        )
+        await #expect(throws: KwtWorktreeError.removalTargetChanged) {
+            try await currentModel.removeWorktree(request)
+        }
+        for _ in 0 ..< 10 {
+            await Task.yield()
+        }
+
+        #expect(staleModel.retainedBorrowedTmuxPresentationCount == 0)
+        #expect(staleSurfaces.requestedConfigurations.count == 1)
+        #expect(staleModel.snapshot.worktree(id: removable.id) == nil)
+        await currentModel.shutdown()
+        await staleModel.shutdown()
+    }
+
+    @MainActor
+    @Test(
+        "an incomplete owning repository keeps failed-removal identity"
+    )
+    func incompleteOwningRepositoryKeepsFailedRemovalIdentity() async throws {
+        let fixture = try removalFixture()
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let snapshot = fixture.snapshot
+        let beforeRemoval = fixture.beforeRemoval
+        let movedRootPath = "/tmp/ghosthub-moved-root"
+        let conflictedRefresh = KwtHostInventory(projects: [
+            KwtProjectInventory(
+                project: KwtProjectRecord(
+                    repository: environment.project.scopedKey,
+                    name: environment.project.name,
+                    path: movedRootPath,
+                    lastTouched: nil
+                ),
+                worktrees: [],
+                warning: "kwt could not enumerate worktrees"
+            ),
+            KwtProjectInventory(
+                project: KwtProjectRecord(
+                    repository: "/tmp/ghosthub-occupant",
+                    name: "occupant",
+                    path: environment.project.rootPath,
+                    lastTouched: nil
+                ),
+                worktrees: [],
+                warning: nil
+            ),
+        ])
+        let loads = LockedValue(0)
+        let surfaces = RecordingNativeSessionSurfaceStore()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaces,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            kwtInventoryLoader: { _ in
+                loads.withLock { $0 += 1 }
+                return loads.load() == 1
+                    ? beforeRemoval
+                    : conflictedRefresh
+            },
+            kwtWorktreeRemover: { _, _, _, _ in
+                throw KwtWorktreeError.removalFailed(
+                    host: "Local",
+                    status: 1
+                )
+            },
+            worktreeMutationCoordinator: WorktreeMutationCoordinator(),
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: removable)
+        )
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        model.openBorrowedTmuxSession(selection)
+        await waitUntilMainActor {
+            surfaces.requestedConfigurations.count == 1
+        }
+
+        await #expect(
+            throws: KwtWorktreeError.removalFailed(
+                host: "Local",
+                status: 1
+            )
+        ) {
+            try await model.removeWorktree(request)
+        }
+        await waitUntilMainActor {
+            surfaces.requestedConfigurations.count == 2
+        }
+
+        #expect(loads.load() == 2)
+        #expect(model.retainedBorrowedTmuxPresentationCount == 1)
+        #expect(model.retainedBorrowedTmuxHandle(for: selection) != nil)
+        #expect(model.snapshot.worktrees.contains {
+            $0.path == removable.path
+                && $0.generation == stableWorktreeGeneration
+        })
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test(
+        "a stale scene restores the endpoint reconciled during recovery"
+    )
+    func staleSceneRestoresRecoveryReconciledEndpoint() async throws {
+        let fixture = try removalFixture()
+        let environment = fixture.environment
+        let removable = fixture.removable
+        var renamed = removable
+        renamed.tmuxSessionName = "kwt-ghosthub-renamed"
+        let beforeRemoval = fixture.beforeRemoval
+        let afterRename = inventory(environment, including: renamed)
+        let loads = LockedValue(0)
+        let coordinator = WorktreeMutationCoordinator()
+        let staleSurfaces = RecordingNativeSessionSurfaceStore()
+        let currentModel = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: fixture.snapshot,
+            kwtInventoryLoader: { _ in
+                loads.withLock { $0 += 1 }
+                return loads.load() == 1
+                    ? beforeRemoval
+                    : afterRename
+            },
+            kwtWorktreeRemover: { _, _, _, _ in
+                throw KwtWorktreeError.removalFailed(
+                    host: "Local",
+                    status: 1
+                )
+            },
+            worktreeMutationCoordinator: coordinator,
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+        let staleModel = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: fixture.snapshot,
+            nativeTmuxSurfaceStore: staleSurfaces,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            worktreeMutationCoordinator: coordinator
+        )
+        let saved = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: removable)
+        )
+        let renamedSelection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: renamed)
+        )
+        staleModel.openBorrowedTmuxSession(saved)
+        await waitUntilMainActor {
+            staleSurfaces.requestedConfigurations.count == 1
+        }
+
+        let request = try await currentModel.prepareWorktreeRemoval(
+            removable.id
+        )
+        await #expect(throws: KwtWorktreeError.removalTargetChanged) {
+            try await currentModel.removeWorktree(request)
+        }
+        await waitUntilMainActor {
+            staleSurfaces.requestedConfigurations.count == 2
+        }
+
+        #expect(
+            staleModel.retainedBorrowedTmuxHandle(for: saved) == nil
+        )
+        #expect(
+            staleModel.retainedBorrowedTmuxHandle(for: renamedSelection)
+                != nil
+        )
+        #expect(
+            staleModel.activeBorrowedTmuxSelection?.name
+                == renamedSelection.name
+        )
+        await currentModel.shutdown()
+        await staleModel.shutdown()
+    }
+
+    @MainActor
+    @Test(
+        "a same-repository move after a failed remove restores the moved endpoint"
+    )
+    func sameRepositoryMoveRestoresMovedEndpoint() async throws {
+        let fixture = try removalFixture()
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let snapshot = fixture.snapshot
+        var moved = removable
+        moved.path = "/tmp/ghosthub-feature-moved"
+        moved.scopedKey = moved.path
+        let beforeRemoval = fixture.beforeRemoval
+        let afterMove = inventory(environment, including: moved)
+        let loads = LockedValue(0)
+        let surfaces = RecordingNativeSessionSurfaceStore()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaces,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            kwtInventoryLoader: { _ in
+                loads.withLock { $0 += 1 }
+                return loads.load() == 1
+                    ? beforeRemoval
+                    : afterMove
+            },
+            kwtWorktreeRemover: { _, _, _, _ in
+                throw KwtWorktreeError.removalFailed(
+                    host: "Local",
+                    status: 1
+                )
+            },
+            worktreeMutationCoordinator: WorktreeMutationCoordinator(),
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: removable)
+        )
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        model.openBorrowedTmuxSession(selection)
+        await waitUntilMainActor {
+            surfaces.requestedConfigurations.count == 1
+        }
+
+        let result = try await model.resolveWorktreeRemoval(request)
+        guard case let .confirmationRequired(updatedRequest) = result else {
+            Issue.record("A moved target should require a new confirmation")
+            await model.shutdown()
+            return
+        }
+
+        #expect(updatedRequest.worktree.path == moved.path)
+        #expect(
+            updatedRequest.worktree.generation == stableWorktreeGeneration
+        )
+        await waitUntilMainActor {
+            surfaces.requestedConfigurations.count == 2
+        }
+        #expect(model.retainedBorrowedTmuxPresentationCount == 1)
+        #expect(
+            model.activeBorrowedTmuxSelection?.workspacePath == moved.path
+        )
+        #expect(model.snapshot.worktrees.contains {
+            $0.path == moved.path
+                && $0.generation == stableWorktreeGeneration
+        })
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("post-removal refresh ignores a generationless stale record")
     func postRemovalRefreshIgnoresGenerationlessRecord() async throws {
-        let environment = try setupStandardEnvironment()
-        var removable = WorktreeSummary.fixture(
-            hostID: environment.host.id,
-            projectID: environment.project.id,
-            scopedKey: "/tmp/ghosthub-feature",
-            name: "feature/remove",
-            path: "/tmp/ghosthub-feature",
-            branch: "feature/remove",
-            generation: stableWorktreeGeneration
-        )
-        removable.tmuxSessionName = "kwt-ghosthub-feature"
-        var snapshot = environment.snapshot
-        snapshot.worktrees.append(removable)
-        let beforeRemoval = inventory(environment, including: removable)
+        let fixture = try removalFixture()
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let snapshot = fixture.snapshot
+        let beforeRemoval = fixture.beforeRemoval
         let staleRefresh = inventory(
             environment,
             including: removable,
@@ -521,20 +1394,11 @@ struct WorkspaceWorktreeRemovalTests {
     @MainActor
     @Test("failed removal restores an inactive retained presentation")
     func failedRemovalRestoresInactivePresentation() async throws {
-        let environment = try setupStandardEnvironment()
-        var removable = WorktreeSummary.fixture(
-            hostID: environment.host.id,
-            projectID: environment.project.id,
-            scopedKey: "/tmp/ghosthub-feature",
-            name: "feature/remove",
-            path: "/tmp/ghosthub-feature",
-            branch: "feature/remove",
-            generation: stableWorktreeGeneration
-        )
-        removable.tmuxSessionName = "kwt-ghosthub-feature"
-        var snapshot = environment.snapshot
-        snapshot.worktrees.append(removable)
-        let beforeRemoval = inventory(environment, including: removable)
+        let fixture = try removalFixture()
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let snapshot = fixture.snapshot
+        let beforeRemoval = fixture.beforeRemoval
         let removerHold = RemovalPreflightHold()
         let model = try makeModel(
             database: environment.database,
@@ -582,12 +1446,7 @@ struct WorkspaceWorktreeRemovalTests {
         let removal = Task { @MainActor in
             try await model.removeWorktree(request)
         }
-        for _ in 0 ..< 1_000 {
-            if await removerHold.started {
-                break
-            }
-            await Task.yield()
-        }
+        await waitUntilMainActor { await removerHold.started }
         #expect(await removerHold.started)
         #expect(model.retainedBorrowedTmuxPresentationCount == 1)
         #expect(model.suppressesSelectedWorktreeSessionOpen)
@@ -617,20 +1476,11 @@ struct WorkspaceWorktreeRemovalTests {
     @MainActor
     @Test("failed removal does not replace newer active presentation")
     func failedRemovalPreservesNewerActivePresentation() async throws {
-        let environment = try setupStandardEnvironment()
-        var removable = WorktreeSummary.fixture(
-            hostID: environment.host.id,
-            projectID: environment.project.id,
-            scopedKey: "/tmp/ghosthub-feature",
-            name: "feature/remove",
-            path: "/tmp/ghosthub-feature",
-            branch: "feature/remove",
-            generation: stableWorktreeGeneration
-        )
-        removable.tmuxSessionName = "kwt-ghosthub-feature"
-        var snapshot = environment.snapshot
-        snapshot.worktrees.append(removable)
-        let beforeRemoval = inventory(environment, including: removable)
+        let fixture = try removalFixture()
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let snapshot = fixture.snapshot
+        let beforeRemoval = fixture.beforeRemoval
         let removerHold = RemovalPreflightHold()
         let model = try makeModel(
             database: environment.database,
@@ -686,20 +1536,11 @@ struct WorkspaceWorktreeRemovalTests {
     @MainActor
     @Test("failed removal re-establishes a terminated worktree session")
     func failedRemovalReestablishesTerminatedSession() async throws {
-        let environment = try setupStandardEnvironment()
-        var removable = WorktreeSummary.fixture(
-            hostID: environment.host.id,
-            projectID: environment.project.id,
-            scopedKey: "/tmp/ghosthub-feature",
-            name: "feature/remove",
-            path: "/tmp/ghosthub-feature",
-            branch: "feature/remove",
-            generation: stableWorktreeGeneration
-        )
-        removable.tmuxSessionName = "kwt-ghosthub-feature"
-        var snapshot = environment.snapshot
-        snapshot.worktrees.append(removable)
-        let beforeRemoval = inventory(environment, including: removable)
+        let fixture = try removalFixture()
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let snapshot = fixture.snapshot
+        let beforeRemoval = fixture.beforeRemoval
         let surfaces = RecordingNativeSessionSurfaceStore()
         let kills = LockedValue(0)
         let model = try makeModel(
@@ -822,20 +1663,11 @@ struct WorkspaceWorktreeRemovalTests {
     @MainActor
     @Test("failed removal preserves interrupted local establishment")
     func failedRemovalPreservesInterruptedLocalEstablishment() async throws {
-        let environment = try setupStandardEnvironment()
-        var removable = WorktreeSummary.fixture(
-            hostID: environment.host.id,
-            projectID: environment.project.id,
-            scopedKey: "/tmp/ghosthub-feature",
-            name: "feature/remove",
-            path: "/tmp/ghosthub-feature",
-            branch: "feature/remove",
-            generation: stableWorktreeGeneration
-        )
-        removable.tmuxSessionName = "kwt-ghosthub-feature"
-        var snapshot = environment.snapshot
-        snapshot.worktrees.append(removable)
-        let beforeRemoval = inventory(environment, including: removable)
+        let fixture = try removalFixture()
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let snapshot = fixture.snapshot
+        let beforeRemoval = fixture.beforeRemoval
         let surfaces = RecordingNativeSessionSurfaceStore()
         let model = try makeModel(
             database: environment.database,
@@ -893,21 +1725,11 @@ struct WorkspaceWorktreeRemovalTests {
     @MainActor
     @Test("failed removal restores a pathless matching endpoint")
     func failedRemovalRestoresPathlessMatchingEndpoint() async throws {
-        let environment = try setupStandardEnvironment()
-        var removable = WorktreeSummary.fixture(
-            hostID: environment.host.id,
-            projectID: environment.project.id,
-            scopedKey: "/tmp/ghosthub-feature",
-            name: "feature/remove",
-            path: "/tmp/ghosthub-feature",
-            branch: "feature/remove",
-            generation: stableWorktreeGeneration
-        )
-        removable.tmuxSessionName = "kwt-ghosthub-feature"
-        removable.tmuxSocketName = "kwt-pr-0123456789abcdef"
-        var snapshot = environment.snapshot
-        snapshot.worktrees.append(removable)
-        let beforeRemoval = inventory(environment, including: removable)
+        let fixture = try removalFixture(socketName: "kwt-pr-0123456789abcdef")
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let snapshot = fixture.snapshot
+        let beforeRemoval = fixture.beforeRemoval
         let surfaces = RecordingNativeSessionSurfaceStore()
         let kills = LockedValue(0)
         let model = try makeModel(
@@ -1058,21 +1880,12 @@ struct WorkspaceWorktreeRemovalTests {
     @MainActor
     @Test("removal preflight invalidates a replaced retained endpoint")
     func removalPreflightInvalidatesReplacedPresentation() async throws {
-        let environment = try setupStandardEnvironment()
-        var removable = WorktreeSummary.fixture(
-            hostID: environment.host.id,
-            projectID: environment.project.id,
-            scopedKey: "/tmp/ghosthub-feature",
-            name: "feature/remove",
-            path: "/tmp/ghosthub-feature",
-            branch: "feature/remove",
-            generation: stableWorktreeGeneration
-        )
-        removable.tmuxSessionName = "kwt-ghosthub-feature"
+        let fixture = try removalFixture()
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let snapshot = fixture.snapshot
         var replacement = removable
         replacement.tmuxSessionName = "kwt-ghosthub-replacement"
-        var snapshot = environment.snapshot
-        snapshot.worktrees.append(removable)
         let replacementInventory = inventory(
             environment,
             including: replacement
@@ -1110,22 +1923,13 @@ struct WorkspaceWorktreeRemovalTests {
         "live session removal leaves a same-path worktree on another host"
     )
     func liveSessionIsKilledFirst() async throws {
-        let environment = try setupStandardEnvironment()
-        let feature = WorktreeSummary.fixture(
-            hostID: environment.host.id,
-            projectID: environment.project.id,
-            scopedKey: "/tmp/ghosthub-feature",
-            name: "feature/remove",
-            path: "/tmp/ghosthub-feature",
-            branch: "feature/remove",
-            generation: stableWorktreeGeneration
+        let fixture = try removalFixture(
+            socketName: "kwt-pr-0123456789abcdef",
+            sessionBackend: .localTmux
         )
-        var removable = feature
-        removable.tmuxSessionName = "kwt-ghosthub-feature"
-        removable.tmuxSocketName = "kwt-pr-0123456789abcdef"
-        removable.sessionBackend = .localTmux
-
-        var snapshot = environment.snapshot
+        let environment = fixture.environment
+        let removable = fixture.removable
+        var snapshot = fixture.snapshot
         let otherHost = HostSummary.fixture(
             name: "Build Box",
             kind: .remote,
@@ -1147,10 +1951,10 @@ struct WorkspaceWorktreeRemovalTests {
         )
         snapshot.hosts.append(otherHost)
         snapshot.projects.append(otherProject)
-        snapshot.worktrees += [removable, samePath]
+        snapshot.worktrees.append(samePath)
         let events = LockedValue<[String]>([])
         let loads = LockedValue(0)
-        let beforeRemoval = inventory(environment, including: removable)
+        let beforeRemoval = fixture.beforeRemoval
         let afterRemoval = inventory(environment)
         let model = try makeModel(
             database: environment.database,
@@ -1194,10 +1998,8 @@ struct WorkspaceWorktreeRemovalTests {
         ])
         #expect(model.snapshot.worktree(id: removable.id) == nil)
         #expect(model.snapshot.worktree(id: samePath.id) == samePath)
-        #expect(
-            model.selection.selectedWorktreeID
-                == environment.worktree.id
-        )
+        #expect(model.selection.selectedProjectID == environment.project.id)
+        #expect(model.selection.selectedWorktreeID == nil)
         await model.shutdown()
     }
 
@@ -1215,16 +2017,9 @@ struct WorkspaceWorktreeRemovalTests {
     @MainActor
     @Test("an already-absent worktree completes cached removal")
     func alreadyAbsentWorktreeCompletesRemoval() async throws {
-        let environment = try setupStandardEnvironment()
-        let removable = WorktreeSummary.fixture(
-            hostID: environment.host.id,
-            projectID: environment.project.id,
-            scopedKey: "/tmp/ghosthub-feature",
-            name: "feature/remove",
-            path: "/tmp/ghosthub-feature",
-            branch: "feature/remove",
-            generation: stableWorktreeGeneration
-        )
+        let fixture = try removalFixture(sessionName: nil)
+        let environment = fixture.environment
+        let removable = fixture.removable
         let session = TerminalSessionSummary(
             id: UUID(),
             hostID: environment.host.id,
@@ -1232,8 +2027,7 @@ struct WorkspaceWorktreeRemovalTests {
             scopedKey: removable.scopedKey,
             isAlive: false
         )
-        var snapshot = environment.snapshot
-        snapshot.worktrees.append(removable)
+        var snapshot = fixture.snapshot
         snapshot.sessions.append(session)
         let removals = LockedValue(0)
         let kills = LockedValue(0)
@@ -1263,21 +2057,13 @@ struct WorkspaceWorktreeRemovalTests {
     @MainActor
     @Test("an already-absent worktree still kills its confirmed session")
     func alreadyAbsentWorktreeKillsConfirmedSession() async throws {
-        let environment = try setupStandardEnvironment()
-        var removable = WorktreeSummary.fixture(
-            hostID: environment.host.id,
-            projectID: environment.project.id,
-            scopedKey: "/tmp/ghosthub-feature",
-            name: "feature/remove",
-            path: "/tmp/ghosthub-feature",
-            branch: "feature/remove",
-            generation: stableWorktreeGeneration
+        let fixture = try removalFixture(
+            socketName: "kwt-pr-0123456789abcdef",
+            sessionBackend: .localTmux
         )
-        removable.tmuxSessionName = "kwt-ghosthub-feature"
-        removable.tmuxSocketName = "kwt-pr-0123456789abcdef"
-        removable.sessionBackend = .localTmux
-        var snapshot = environment.snapshot
-        snapshot.worktrees.append(removable)
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let snapshot = fixture.snapshot
         let events = LockedValue<[String]>([])
         let model = try makeModel(
             database: environment.database,
@@ -1311,21 +2097,13 @@ struct WorkspaceWorktreeRemovalTests {
     @MainActor
     @Test("a session starting for an absent worktree requires confirmation again")
     func newlyStartedSessionForAbsentWorktreeAbortsRemoval() async throws {
-        let environment = try setupStandardEnvironment()
-        var removable = WorktreeSummary.fixture(
-            hostID: environment.host.id,
-            projectID: environment.project.id,
-            scopedKey: "/tmp/ghosthub-feature",
-            name: "feature/remove",
-            path: "/tmp/ghosthub-feature",
-            branch: "feature/remove",
-            generation: stableWorktreeGeneration
+        let fixture = try removalFixture(
+            socketName: "kwt-pr-0123456789abcdef",
+            sessionBackend: .localTmux
         )
-        removable.tmuxSessionName = "kwt-ghosthub-feature"
-        removable.tmuxSocketName = "kwt-pr-0123456789abcdef"
-        removable.sessionBackend = .localTmux
-        var snapshot = environment.snapshot
-        snapshot.worktrees.append(removable)
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let snapshot = fixture.snapshot
         let reads = LockedValue(0)
         let removals = LockedValue(0)
         let kills = LockedValue(0)
@@ -1482,8 +2260,65 @@ struct WorkspaceWorktreeRemovalTests {
         )
         model.snapshot.hosts[0].sshDestination = "replacement.example.com"
 
-        await #expect(throws: KwtWorktreeError.removalTargetChanged) {
+        await #expect(throws: KwtWorktreeError.removalHostChanged) {
             try await model.removeWorktree(request)
+        }
+        #expect(removals.load() == 0)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("a changed host endpoint cannot refresh removal confirmation")
+    func changedHostEndpointIsNotRecoverable() async throws {
+        let environment = try setupRemoteEnvironment()
+        var worktree = try #require(environment.snapshot.worktrees.first)
+        worktree.generation = stableWorktreeGeneration
+        var snapshot = environment.snapshot
+        snapshot.worktrees = [worktree]
+        let removals = LockedValue(0)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtWorktreeRemover: { _, _, _, _ in
+                removals.withLock { $0 += 1 }
+            }
+        )
+
+        let request = try await model.prepareWorktreeRemoval(worktree.id)
+        model.snapshot.hosts[0].sshDestination = "replacement.example.com"
+
+        await #expect(throws: KwtWorktreeError.removalHostChanged) {
+            try await model.resolveWorktreeRemoval(request)
+        }
+        #expect(removals.load() == 0)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("a changed target cannot redirect confirmation to a new host")
+    func changedTargetAndHostEndpointAreNotRecoverable() async throws {
+        let environment = try setupRemoteEnvironment()
+        var worktree = try #require(environment.snapshot.worktrees.first)
+        worktree.generation = stableWorktreeGeneration
+        var snapshot = environment.snapshot
+        snapshot.worktrees = [worktree]
+        let removals = LockedValue(0)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtWorktreeRemover: { _, _, _, _ in
+                removals.withLock { $0 += 1 }
+            }
+        )
+
+        let request = try await model.prepareWorktreeRemoval(worktree.id)
+        model.snapshot.worktrees[0].branch = "feature/replacement"
+        model.snapshot.hosts[0].sshDestination = "replacement.example.com"
+
+        await #expect(throws: KwtWorktreeError.removalHostChanged) {
+            try await model.resolveWorktreeRemoval(request)
         }
         #expect(removals.load() == 0)
         await model.shutdown()
@@ -1516,19 +2351,14 @@ struct WorkspaceWorktreeRemovalTests {
         )
         let request = try await model.prepareWorktreeRemoval(worktree.id)
         let removal = Task { @MainActor in
-            try await model.removeWorktree(request)
+            try await model.resolveWorktreeRemoval(request)
         }
-        for _ in 0 ..< 1_000 {
-            if await hold.started {
-                break
-            }
-            await Task.yield()
-        }
+        await waitUntilMainActor { await hold.started }
         #expect(await hold.started)
         model.snapshot.hosts[0].sshDestination = "replacement.example.com"
         await hold.release()
 
-        await #expect(throws: KwtWorktreeError.removalTargetChanged) {
+        await #expect(throws: KwtWorktreeError.removalHostChanged) {
             try await removal.value
         }
         #expect(removals.load() == 0)
@@ -1588,7 +2418,7 @@ struct WorkspaceWorktreeRemovalTests {
 
         model.snapshot.hosts[0].sshDestination = "replacement.example.com"
         await killHold.release()
-        await #expect(throws: KwtWorktreeError.removalTargetChanged) {
+        await #expect(throws: KwtWorktreeError.removalHostChanged) {
             try await removal.value
         }
         await waitUntilMainActor {
@@ -1597,6 +2427,118 @@ struct WorkspaceWorktreeRemovalTests {
 
         #expect(removals.load() == 0)
         #expect(surfaces.lastCommand?.contains("'open'") == true)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("a session start cannot redirect removal recovery to a new host")
+    func sessionStartRecoveryRejectsChangedHostEndpoint() async throws {
+        let environment = try setupRemoteEnvironment()
+        var worktree = try #require(environment.snapshot.worktrees.first)
+        worktree.generation = stableWorktreeGeneration
+        worktree.scopedKey = worktree.path
+        worktree.tmuxSessionName = "kwt-remote-feature"
+        var snapshot = environment.snapshot
+        snapshot.worktrees = [worktree]
+        let hold = RemovalPreflightHold()
+        let preflight = inventory(environment, including: worktree)
+        let identity = TmuxSessionIdentity(
+            serverPID: "31415",
+            sessionID: "$8",
+            createdAt: "1721552400"
+        )
+        let removals = LockedValue(0)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtInventoryLoader: { _ in preflight },
+            kwtWorktreeRemover: { _, _, _, _ in
+                removals.withLock { $0 += 1 }
+            },
+            tmuxSessionIdentityReader: { selection, host in
+                try await hold.verifyStartedSession(
+                    selection: selection,
+                    host: host,
+                    identity: identity
+                )
+            }
+        )
+
+        let request = try await model.prepareWorktreeRemoval(worktree.id)
+        let removal = Task { @MainActor in
+            try await model.resolveWorktreeRemoval(request)
+        }
+        await waitUntilMainActor { await hold.started }
+        model.snapshot.hosts[0].sshDestination = "replacement.example.com"
+        await hold.release()
+
+        await #expect(throws: KwtWorktreeError.removalHostChanged) {
+            try await removal.value
+        }
+        #expect(removals.load() == 0)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("a replaced session cannot redirect removal recovery to a new host")
+    func sessionChangeRecoveryRejectsChangedHostEndpoint() async throws {
+        let environment = try setupRemoteEnvironment()
+        var worktree = try #require(environment.snapshot.worktrees.first)
+        worktree.generation = stableWorktreeGeneration
+        worktree.scopedKey = worktree.path
+        worktree.tmuxSessionName = "kwt-remote-feature"
+        var snapshot = environment.snapshot
+        snapshot.worktrees = [worktree]
+        snapshot.hosts[0].tmuxSessions = [
+            TmuxSessionSummary(
+                name: "kwt-remote-feature",
+                managed: true,
+                windows: [],
+                serverPID: "31415",
+                sessionID: "$8",
+                createdAt: "1721552400"
+            ),
+        ]
+        let hold = RemovalPreflightHold()
+        let preflight = inventory(environment, including: worktree)
+        let removals = LockedValue(0)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtInventoryLoader: { _ in preflight },
+            kwtWorktreeRemover: { _, _, _, _ in
+                removals.withLock { $0 += 1 }
+            },
+            tmuxSessionKiller: { selection, _, host in
+                _ = await hold.load(preflight)
+                throw TmuxSessionKillError.sessionChanged(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            },
+            tmuxSessionIdentityReader: { _, _ in
+                TmuxSessionIdentity(
+                    serverPID: "27182",
+                    sessionID: "$13",
+                    createdAt: "1786136400"
+                )
+            }
+        )
+
+        let request = try await model.prepareWorktreeRemoval(worktree.id)
+        let removal = Task { @MainActor in
+            try await model.resolveWorktreeRemoval(request)
+        }
+        await waitUntilMainActor { await hold.started }
+        model.snapshot.hosts[0].sshDestination = "replacement.example.com"
+        await hold.release()
+
+        await #expect(throws: KwtWorktreeError.removalHostChanged) {
+            try await removal.value
+        }
+        #expect(removals.load() == 0)
         await model.shutdown()
     }
 
@@ -1630,17 +2572,12 @@ struct WorkspaceWorktreeRemovalTests {
         let removal = Task { @MainActor in
             try await model.removeWorktree(request)
         }
-        for _ in 0 ..< 1_000 {
-            if await hold.started {
-                break
-            }
-            await Task.yield()
-        }
+        await waitUntilMainActor { await hold.started }
         #expect(await hold.started)
         model.snapshot.hosts[0].sshDestination = "replacement.example.com"
         await hold.release()
 
-        await #expect(throws: KwtWorktreeError.removalTargetChanged) {
+        await #expect(throws: KwtWorktreeError.removalHostChanged) {
             try await removal.value
         }
         #expect(removals.load() == 0)
@@ -1651,21 +2588,17 @@ struct WorkspaceWorktreeRemovalTests {
     @MainActor
     @Test("a session starting after confirmation requires confirmation again")
     func newlyStartedSessionAbortsRemoval() async throws {
-        let environment = try setupStandardEnvironment()
-        var removable = WorktreeSummary.fixture(
-            hostID: environment.host.id,
-            projectID: environment.project.id,
-            scopedKey: "/tmp/ghosthub-feature",
-            name: "feature/remove",
-            path: "/tmp/ghosthub-feature"
+        let fixture = try removalFixture(
+            path: "/tmp/project-a-feature",
+            branch: "main",
+            sessionName: "kwt-project-a-feature"
         )
-        removable.generation = stableWorktreeGeneration
-        removable.tmuxSessionName = "kwt-ghosthub-feature"
-        var snapshot = environment.snapshot
-        snapshot.worktrees.append(removable)
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let snapshot = fixture.snapshot
         let reads = LockedValue(0)
         let removals = LockedValue(0)
-        let beforeRemoval = inventory(environment, including: removable)
+        let beforeRemoval = fixture.beforeRemoval
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
@@ -1693,18 +2626,138 @@ struct WorkspaceWorktreeRemovalTests {
 
         let request = try await model.prepareWorktreeRemoval(removable.id)
         #expect(request.sessionKillRequest == nil)
-        do {
-            try await model.removeWorktree(request)
+        let result = try await model.resolveWorktreeRemoval(request)
+        guard case let .confirmationRequired(updatedRequest) = result else {
             Issue.record("Removal should require a new confirmation")
-        } catch {
-            #expect(
-                error as? KwtWorktreeError
-                    == .sessionStartedAfterConfirmation(
-                        session: "kwt-ghosthub-feature"
-                    )
-            )
+            await model.shutdown()
+            return
         }
 
+        #expect(
+            updatedRequest.sessionKillRequest?.session.name
+                == "kwt-project-a-feature"
+        )
+        #expect(removals.load() == 0)
+        #expect(model.snapshot.worktree(id: removable.id) != nil)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("a replaced session requires a fresh removal confirmation")
+    func replacedSessionRequiresFreshConfirmation() async throws {
+        let fixture = try removalFixture(
+            path: "/tmp/project-a-feature",
+            branch: "main",
+            sessionName: "kwt-project-a-feature",
+            runningSession: true
+        )
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let snapshot = fixture.snapshot
+        let beforeRemoval = fixture.beforeRemoval
+        let reads = LockedValue(0)
+        let removals = LockedValue(0)
+        let kills = LockedValue(0)
+        let replacementIdentity = TmuxSessionIdentity(
+            serverPID: "27182",
+            sessionID: "$13",
+            createdAt: "1786136400"
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtInventoryLoader: { _ in beforeRemoval },
+            kwtWorktreeRemover: { _, _, _, _ in
+                removals.withLock { $0 += 1 }
+            },
+            tmuxSessionKiller: { selection, _, _ in
+                kills.withLock { $0 += 1 }
+                throw TmuxSessionKillError.sessionChanged(
+                    host: "localhost",
+                    session: selection.name
+                )
+            },
+            tmuxSessionIdentityReader: { _, _ in
+                reads.withLock { $0 += 1 }
+                return replacementIdentity
+            }
+        )
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        #expect(request.sessionKillRequest?.serverPID == "31415")
+        let result = try await model.resolveWorktreeRemoval(request)
+        guard case let .confirmationRequired(updatedRequest) = result else {
+            Issue.record("Replacement should require a new confirmation")
+            await model.shutdown()
+            return
+        }
+
+        #expect(updatedRequest.sessionKillRequest?.serverPID == "27182")
+        #expect(updatedRequest.sessionKillRequest?.sessionID == "$13")
+        #expect(
+            updatedRequest.sessionKillRequest?.sessionCreatedAt
+                == "1786136400"
+        )
+        #expect(reads.load() == 1)
+        #expect(kills.load() == 1)
+        #expect(removals.load() == 0)
+        #expect(model.snapshot.worktree(id: removable.id) != nil)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("a confirmed session ending requires a fresh removal confirmation")
+    func endedSessionRequiresFreshConfirmation() async throws {
+        let fixture = try removalFixture(
+            path: "/tmp/project-a-feature",
+            branch: "main",
+            sessionName: "kwt-project-a-feature",
+            runningSession: true
+        )
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let snapshot = fixture.snapshot
+        let beforeRemoval = fixture.beforeRemoval
+        let reads = LockedValue(0)
+        let removals = LockedValue(0)
+        let kills = LockedValue(0)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtInventoryLoader: { _ in beforeRemoval },
+            kwtWorktreeRemover: { _, _, _, _ in
+                removals.withLock { $0 += 1 }
+            },
+            tmuxSessionKiller: { selection, _, host in
+                kills.withLock { $0 += 1 }
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            },
+            tmuxSessionIdentityReader: { selection, host in
+                reads.withLock { $0 += 1 }
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        #expect(request.sessionKillRequest?.serverPID == "31415")
+        let result = try await model.resolveWorktreeRemoval(request)
+        guard case let .confirmationRequired(updatedRequest) = result else {
+            Issue.record("Ended session should require a new confirmation")
+            await model.shutdown()
+            return
+        }
+
+        #expect(updatedRequest.sessionKillRequest == nil)
+        #expect(reads.load() == 1)
+        #expect(kills.load() == 1)
         #expect(removals.load() == 0)
         #expect(model.snapshot.worktree(id: removable.id) != nil)
         await model.shutdown()
@@ -1713,21 +2766,13 @@ struct WorkspaceWorktreeRemovalTests {
     @MainActor
     @Test("refresh failure after removal is a reconciliation warning")
     func refreshFailureDoesNotUndoRemoval() async throws {
-        let environment = try setupStandardEnvironment()
-        var removable = WorktreeSummary.fixture(
-            hostID: environment.host.id,
-            projectID: environment.project.id,
-            scopedKey: "/tmp/ghosthub-feature",
-            name: "feature/remove",
-            path: "/tmp/ghosthub-feature"
-        )
-        removable.generation = stableWorktreeGeneration
-        removable.tmuxSessionName = "kwt-ghosthub-feature"
-        var snapshot = environment.snapshot
-        snapshot.worktrees.append(removable)
+        let fixture = try removalFixture(branch: "main")
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let snapshot = fixture.snapshot
         let loads = LockedValue(0)
         let removals = LockedValue(0)
-        let beforeRemoval = inventory(environment, including: removable)
+        let beforeRemoval = fixture.beforeRemoval
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
@@ -1771,21 +2816,17 @@ struct WorkspaceWorktreeRemovalTests {
     @MainActor
     @Test("successful removal cancels pending window restoration")
     func removalCancelsPendingRestoration() async throws {
-        let environment = try setupStandardEnvironment()
-        var removable = WorktreeSummary.fixture(
-            hostID: environment.host.id,
-            projectID: environment.project.id,
-            scopedKey: "/tmp/ghosthub-restoration-boundary",
-            name: "feature/restoration-boundary",
+        let fixture = try removalFixture(
             path: "/tmp/ghosthub-restoration-boundary",
+            name: "feature/restoration-boundary",
             branch: "feature/restoration-boundary",
-            generation: stableWorktreeGeneration
+            sessionName: "kwt-ghosthub-restoration-boundary"
         )
-        removable.tmuxSessionName = "kwt-ghosthub-restoration-boundary"
-        var snapshot = environment.snapshot
-        snapshot.worktrees.append(removable)
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let snapshot = fixture.snapshot
         let loads = LockedValue(0)
-        let beforeRemoval = inventory(environment, including: removable)
+        let beforeRemoval = fixture.beforeRemoval
         let afterRemoval = inventory(environment)
         let model = try makeModel(
             database: environment.database,
@@ -1839,23 +2880,17 @@ struct WorkspaceWorktreeRemovalTests {
         replacementBranch: String,
         replacementSession: String
     ) async throws {
-        let environment = try setupStandardEnvironment()
-        var removable = WorktreeSummary.fixture(
-            hostID: environment.host.id,
-            projectID: environment.project.id,
-            scopedKey: "/tmp/ghosthub-feature",
-            name: "feature/remove",
-            path: "/tmp/ghosthub-feature",
-            branch: "feature/remove",
-            generation: stableWorktreeGeneration
+        let fixture = try removalFixture(
+            path: "/tmp/project-a-feature",
+            sessionName: "kwt-project-a-feature"
         )
-        removable.tmuxSessionName = "kwt-ghosthub-feature"
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let snapshot = fixture.snapshot
         var replacement = removable
         replacement.branch = replacementBranch
         replacement.name = replacementBranch
         replacement.tmuxSessionName = replacementSession
-        var snapshot = environment.snapshot
-        snapshot.worktrees.append(removable)
         let events = LockedValue<[String]>([])
         let replacementInventory = inventory(
             environment,
@@ -1905,21 +2940,467 @@ struct WorkspaceWorktreeRemovalTests {
     }
 
     @MainActor
-    @Test("a recreated worktree invalidates removal confirmation")
-    func recreatedWorktreeAbortsRemoval() async throws {
-        let environment = try setupStandardEnvironment()
-        var removable = WorktreeSummary.fixture(
-            hostID: environment.host.id,
-            projectID: environment.project.id,
-            scopedKey: "/tmp/ghosthub-feature",
-            name: "feature/remove",
-            path: "/tmp/ghosthub-feature",
-            branch: "feature/remove",
+    @Test("a moved worktree outranks a replacement reusing its runtime ID")
+    func movedWorktreeRequiresConfirmation() async throws {
+        let fixture = try removalFixture(
+            path: "/tmp/project-a-feature",
+            sessionName: "kwt-project-a-feature"
+        )
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let snapshot = fixture.snapshot
+        var moved = removable
+        moved.path = "/tmp/project-a-moved"
+        moved.scopedKey = moved.path
+        let replacementGeneration = "fedcba9876543210fedcba9876543210"
+        var inventoryAfterMove = inventory(environment, including: moved)
+        inventoryAfterMove.projects[0].worktrees.append(KwtWorktreeRecord(
+            path: removable.path,
+            branch: "feature/replacement",
+            commitHash: "",
+            isMain: false,
+            createdAt: nil,
+            generation: replacementGeneration,
+            repository: environment.project.scopedKey,
+            sessionName: "kwt-project-a-replacement",
+            tmuxSocketName: nil
+        ))
+        let movedInventory = inventoryAfterMove
+        let removals = LockedValue(0)
+        let kills = LockedValue(0)
+        let identity = TmuxSessionIdentity(
+            serverPID: "31415",
+            sessionID: "$8",
+            createdAt: "1721552400"
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtInventoryLoader: { _ in movedInventory },
+            kwtWorktreeRemover: { _, _, _, _ in
+                removals.withLock { $0 += 1 }
+            },
+            tmuxSessionKiller: { _, _, _ in
+                kills.withLock { $0 += 1 }
+            },
+            tmuxSessionIdentityReader: { _, _ in identity }
+        )
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        let result = try await model.resolveWorktreeRemoval(request)
+        guard case let .confirmationRequired(updatedRequest) = result else {
+            Issue.record("Removal should require a new confirmation")
+            await model.shutdown()
+            return
+        }
+
+        #expect(updatedRequest.worktree.id != request.worktree.id)
+        #expect(updatedRequest.worktree.path == moved.path)
+        #expect(
+            updatedRequest.worktree.generation
+                == stableWorktreeGeneration
+        )
+        #expect(kills.load() == 0)
+        #expect(removals.load() == 0)
+        #expect(
+            model.snapshot.worktree(id: removable.id)?.generation
+                == replacementGeneration
+        )
+        #expect(model.snapshot.worktree(id: updatedRequest.worktree.id) != nil)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("a moved worktree retains its protected socket identity")
+    func movedWorktreeRetainsProtectedSocket() async throws {
+        let fixture = try removalFixture(
+            path: "/tmp/project-a-feature",
+            sessionName: "kwt-project-a-feature",
+            socketName: "protected"
+        )
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let snapshot = fixture.snapshot
+        var moved = removable
+        moved.path = "/tmp/project-a-moved"
+        moved.scopedKey = moved.path
+        var inventoryAfterMove = inventory(environment, including: moved)
+        let recordIndex = try #require(
+            inventoryAfterMove.projects[0].worktrees.firstIndex {
+                $0.path == moved.path
+            }
+        )
+        inventoryAfterMove.projects[0]
+            .worktrees[recordIndex].tmuxSocketName = nil
+        let movedInventory = inventoryAfterMove
+        let probes = LockedValue<[String?]>([])
+        let removals = LockedValue(0)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtInventoryLoader: { _ in movedInventory },
+            kwtWorktreeRemover: { _, _, _, _ in
+                removals.withLock { $0 += 1 }
+            },
+            tmuxSessionIdentityReader: { selection, host in
+                probes.withLock { $0.append(selection.socketName) }
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        let result = try await model.resolveWorktreeRemoval(request)
+        guard case let .confirmationRequired(updatedRequest) = result else {
+            Issue.record("Removal should require a new confirmation")
+            await model.shutdown()
+            return
+        }
+
+        #expect(updatedRequest.worktree.path == moved.path)
+        #expect(updatedRequest.worktree.tmuxSocketName == "protected")
+        #expect(probes.load() == ["protected", "protected"])
+        #expect(removals.load() == 0)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test(
+        "a replacement claiming the confirmed tmux endpoint requires confirmation",
+        arguments: ["protected", nil] as [String?]
+    )
+    func replacementClaimingTmuxEndpointRequiresConfirmation(
+        replacementSocket: String?
+    ) async throws {
+        let fixture = try removalFixture(
+            path: "/tmp/project-a-feature",
+            sessionName: "kwt-project-a-feature",
+            socketName: "protected"
+        )
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let snapshot = fixture.snapshot
+        var replacement = WorktreeSummary.fixture(
+            hostID: removable.hostID,
+            projectID: removable.projectID,
+            scopedKey: "/tmp/project-a-replacement",
+            name: removable.name,
+            path: "/tmp/project-a-replacement",
+            branch: removable.branch,
+            generation: "fedcba9876543210fedcba9876543210"
+        )
+        replacement.tmuxSessionName = removable.tmuxSessionName
+        replacement.tmuxSocketName = replacementSocket
+        let replacementInventory = inventory(
+            environment,
+            including: replacement,
+            generation: replacement.generation
+        )
+        let removals = LockedValue(0)
+        let kills = LockedValue(0)
+        let identity = TmuxSessionIdentity(
+            serverPID: "31415",
+            sessionID: "$8",
+            createdAt: "1721552400"
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtInventoryLoader: { _ in replacementInventory },
+            kwtWorktreeRemover: { _, _, _, _ in
+                removals.withLock { $0 += 1 }
+            },
+            tmuxSessionKiller: { _, _, _ in
+                kills.withLock { $0 += 1 }
+            },
+            tmuxSessionIdentityReader: { _, _ in identity }
+        )
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        let result = try await model.resolveWorktreeRemoval(request)
+        guard case let .confirmationRequired(updatedRequest) = result else {
+            Issue.record("Replacement should require a new confirmation")
+            await model.shutdown()
+            return
+        }
+
+        #expect(updatedRequest.worktree.path == replacement.path)
+        #expect(updatedRequest.worktree.generation == replacement.generation)
+        #expect(updatedRequest.worktree.tmuxSocketName == replacementSocket)
+        #expect(kills.load() == 0)
+        #expect(removals.load() == 0)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test(
+        "a different project claiming removal identity fails closed",
+        arguments: [true, false]
+    )
+    func differentProjectClaimingRemovalIdentityFailsClosed(
+        claimsGeneration: Bool
+    ) async throws {
+        let fixture = try removalFixture(
+            path: "/tmp/project-a-feature",
+            sessionName: "kwt-project-a-feature",
+            socketName: "protected"
+        )
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let snapshot = fixture.snapshot
+        var conflictingInventory = inventory(environment)
+        conflictingInventory.projects.append(KwtProjectInventory(
+            project: KwtProjectRecord(
+                repository: "/tmp/project-b",
+                name: "project-b",
+                path: "/tmp/project-b",
+                lastTouched: nil
+            ),
+            worktrees: [
+                KwtWorktreeRecord(
+                    path: "/tmp/project-b-feature",
+                    branch: "feature/other",
+                    commitHash: "",
+                    isMain: false,
+                    createdAt: nil,
+                    generation: claimsGeneration
+                        ? stableWorktreeGeneration
+                        : "fedcba9876543210fedcba9876543210",
+                    repository: "/tmp/project-b",
+                    sessionName: claimsGeneration
+                        ? "kwt-project-b-feature"
+                        : removable.tmuxSessionName ?? "",
+                    tmuxSocketName: claimsGeneration
+                        ? nil
+                        : removable.tmuxSocketName
+                ),
+            ],
+            warning: nil
+        ))
+        let preflightInventory = conflictingInventory
+        let removals = LockedValue(0)
+        let kills = LockedValue(0)
+        let identity = TmuxSessionIdentity(
+            serverPID: "31415",
+            sessionID: "$8",
+            createdAt: "1721552400"
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtInventoryLoader: { _ in preflightInventory },
+            kwtWorktreeRemover: { _, _, _, _ in
+                removals.withLock { $0 += 1 }
+            },
+            tmuxSessionKiller: { _, _, _ in
+                kills.withLock { $0 += 1 }
+            },
+            tmuxSessionIdentityReader: { _, _ in identity }
+        )
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        await #expect(throws: KwtWorktreeError.worktreeUnavailable) {
+            try await model.resolveWorktreeRemoval(request)
+        }
+
+        #expect(kills.load() == 0)
+        #expect(removals.load() == 0)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("a snapshot-moved worktree requires a refreshed confirmation")
+    func snapshotMovedWorktreeRequiresConfirmation() async throws {
+        let fixture = try removalFixture(
+            path: "/tmp/project-a-feature",
+            sessionName: "kwt-project-a-feature"
+        )
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let snapshot = fixture.snapshot
+        let removals = LockedValue(0)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtWorktreeRemover: { _, _, _, _ in
+                removals.withLock { $0 += 1 }
+            },
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        var moved = WorktreeSummary.fixture(
+            hostID: removable.hostID,
+            projectID: removable.projectID,
+            scopedKey: "/tmp/project-a-moved",
+            name: removable.name,
+            path: "/tmp/project-a-moved",
+            branch: removable.branch,
             generation: stableWorktreeGeneration
         )
-        removable.tmuxSessionName = "kwt-ghosthub-feature"
-        var snapshot = environment.snapshot
-        snapshot.worktrees.append(removable)
+        moved.tmuxSessionName = removable.tmuxSessionName
+        model.snapshot.worktrees.removeAll { $0.id == removable.id }
+        model.snapshot.worktrees.append(moved)
+
+        let result = try await model.resolveWorktreeRemoval(request)
+        guard case let .confirmationRequired(updatedRequest) = result else {
+            Issue.record("Removal should require a new confirmation")
+            await model.shutdown()
+            return
+        }
+
+        #expect(updatedRequest.worktree.id == moved.id)
+        #expect(updatedRequest.worktree.path == moved.path)
+        #expect(removals.load() == 0)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("a snapshot-moved project requires a refreshed confirmation")
+    func snapshotMovedProjectRequiresConfirmation() async throws {
+        let fixture = try removalFixture(
+            path: "/tmp/project-a-feature",
+            sessionName: "kwt-project-a-feature"
+        )
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let snapshot = fixture.snapshot
+        let removals = LockedValue(0)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtWorktreeRemover: { _, _, _, _ in
+                removals.withLock { $0 += 1 }
+            },
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        let movedPath = "/tmp/project-a-moved"
+        model.snapshot.projects[0].rootPath = movedPath
+
+        let result = try await model.resolveWorktreeRemoval(request)
+        guard case let .confirmationRequired(updatedRequest) = result else {
+            Issue.record("Removal should require a new confirmation")
+            await model.shutdown()
+            return
+        }
+
+        #expect(updatedRequest.project.rootPath == movedPath)
+        #expect(removals.load() == 0)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("a snapshot-removed worktree remains unavailable")
+    func snapshotRemovedWorktreeRemainsUnavailable() async throws {
+        let fixture = try removalFixture(
+            path: "/tmp/project-a-feature",
+            sessionName: "kwt-project-a-feature"
+        )
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let snapshot = fixture.snapshot
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        model.snapshot.worktrees.removeAll { $0.id == removable.id }
+
+        await #expect(throws: KwtWorktreeError.worktreeUnavailable) {
+            try await model.resolveWorktreeRemoval(request)
+        }
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("a snapshot-recreated endpoint owner requires confirmation")
+    func snapshotRecreatedEndpointOwnerRequiresConfirmation() async throws {
+        let fixture = try removalFixture(
+            path: "/tmp/project-a-feature",
+            sessionName: "kwt-project-a-feature",
+            socketName: "protected"
+        )
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let snapshot = fixture.snapshot
+        let removals = LockedValue(0)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtWorktreeRemover: { _, _, _, _ in
+                removals.withLock { $0 += 1 }
+            },
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        let index = try #require(
+            model.snapshot.worktrees.firstIndex { $0.id == removable.id }
+        )
+        model.snapshot.worktrees[index].generation =
+            "fedcba9876543210fedcba9876543210"
+
+        let result = try await model.resolveWorktreeRemoval(request)
+        guard case let .confirmationRequired(updatedRequest) = result else {
+            Issue.record("Replacement should require a new confirmation")
+            await model.shutdown()
+            return
+        }
+
+        #expect(updatedRequest.worktree.id == removable.id)
+        #expect(
+            updatedRequest.worktree.generation
+                == "fedcba9876543210fedcba9876543210"
+        )
+        #expect(updatedRequest.worktree.tmuxSocketName == "protected")
+        #expect(removals.load() == 0)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("a recreated worktree requires a refreshed confirmation")
+    func recreatedWorktreeRequiresConfirmation() async throws {
+        let fixture = try removalFixture(
+            path: "/tmp/project-a-feature",
+            sessionName: "kwt-project-a-feature"
+        )
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let snapshot = fixture.snapshot
         let removals = LockedValue(0)
         let recreatedInventory = inventory(
             environment,
@@ -1943,12 +3424,457 @@ struct WorkspaceWorktreeRemovalTests {
         )
 
         let request = try await model.prepareWorktreeRemoval(removable.id)
-        await #expect(throws: KwtWorktreeError.removalTargetChanged) {
-            try await model.removeWorktree(request)
+        let result = try await model.resolveWorktreeRemoval(request)
+        guard case let .confirmationRequired(updatedRequest) = result else {
+            Issue.record("Removal should require a new confirmation")
+            await model.shutdown()
+            return
         }
 
+        #expect(
+            updatedRequest.worktree.generation
+                == "fedcba9876543210fedcba9876543210"
+        )
         #expect(removals.load() == 0)
         await model.shutdown()
+    }
+
+    @MainActor
+    @Test("an omitted preflight socket preserves the protected identity")
+    func omittedPreflightSocketUsesProtectedIdentity() async throws {
+        let fixture = try removalFixture(
+            path: "/tmp/project-a-feature",
+            sessionName: "kwt-project-a-feature",
+            socketName: "protected"
+        )
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let snapshot = fixture.snapshot
+        var preflight = fixture.beforeRemoval
+        let recordIndex = try #require(
+            preflight.projects[0].worktrees.firstIndex {
+                $0.path == removable.path
+            }
+        )
+        preflight.projects[0].worktrees[recordIndex].tmuxSocketName = nil
+        let omissionPreflight = preflight
+        let removals = LockedValue(0)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtInventoryLoader: { _ in omissionPreflight },
+            kwtWorktreeRemover: { _, _, _, _ in
+                removals.withLock { $0 += 1 }
+            },
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        let result = try await model.resolveWorktreeRemoval(request)
+
+        #expect(result == .removed)
+        #expect(removals.load() == 1)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("an unchanged recovery request remains an error")
+    func unchangedRecoveryRequestRemainsAnError() async throws {
+        let fixture = try removalFixture(
+            path: "/tmp/project-a-feature",
+            sessionName: "kwt-project-a-feature"
+        )
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let snapshot = fixture.snapshot
+        let beforeRemoval = fixture.beforeRemoval
+        let expected = KwtWorktreeError.removalTargetChanged
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtInventoryLoader: { _ in beforeRemoval },
+            kwtWorktreeRemover: { _, _, _, _ in throw expected },
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        await #expect(throws: expected) {
+            try await model.resolveWorktreeRemoval(request)
+        }
+
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("an unrelated removal failure is not recoverable")
+    func unrelatedFailureRemainsAnError() async throws {
+        let fixture = try removalFixture(
+            path: "/tmp/project-a-feature",
+            sessionName: "kwt-project-a-feature"
+        )
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let snapshot = fixture.snapshot
+        let expected = KwtWorktreeError.removalFailed(
+            host: "this Mac",
+            status: 42
+        )
+        let beforeRemoval = fixture.beforeRemoval
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtInventoryLoader: { _ in beforeRemoval },
+            kwtWorktreeRemover: { _, _, _, _ in throw expected },
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        await #expect(throws: expected) {
+            try await model.resolveWorktreeRemoval(request)
+        }
+
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("a missing project invalidates cached removal state")
+    func missingProjectInvalidatesCachedState() async throws {
+        let fixture = try removalFixture(
+            path: "/tmp/project-a-feature",
+            sessionName: "kwt-project-a-feature"
+        )
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let snapshot = fixture.snapshot
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtInventoryLoader: { _ in KwtHostInventory(projects: []) },
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        await #expect(throws: KwtWorktreeError.worktreeUnavailable) {
+            try await model.resolveWorktreeRemoval(request)
+        }
+
+        #expect(model.snapshot.worktree(id: removable.id) == nil)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("a warning-bearing preflight cannot trigger reconfirmation")
+    func warningPreflightRemainsAnError() async throws {
+        let fixture = try removalFixture(
+            path: "/tmp/project-a-feature",
+            sessionName: "kwt-project-a-feature"
+        )
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let snapshot = fixture.snapshot
+        let hostSummary = try #require(snapshot.host(id: environment.host.id))
+        let warning = "Project inventory is temporarily unavailable."
+        var warningInventory = inventory(environment)
+        warningInventory.projects[0].warning = warning
+        let preflight = warningInventory
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtInventoryLoader: { _ in preflight },
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+        let expected = KwtWorktreeError.removalPreflightUnavailable(
+            host: hostSummary.name,
+            message: warning
+        )
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        await #expect(throws: expected) {
+            try await model.resolveWorktreeRemoval(request)
+        }
+
+        #expect(model.snapshot.worktree(id: removable.id) != nil)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("an unrelated project warning prevents absent-target removal")
+    func unrelatedProjectWarningPreventsAbsentTargetRemoval() async throws {
+        let fixture = try removalFixture(
+            path: "/tmp/project-a-feature",
+            sessionName: "kwt-project-a-feature"
+        )
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let snapshot = fixture.snapshot
+        let hostSummary = try #require(snapshot.host(id: environment.host.id))
+        let warning = "Another project inventory is temporarily unavailable."
+        var warningInventory = inventory(environment)
+        warningInventory.projects.append(KwtProjectInventory(
+            project: KwtProjectRecord(
+                repository: "example.com/acme/unavailable",
+                name: "unavailable",
+                path: "/tmp/project-b",
+                lastTouched: nil
+            ),
+            worktrees: [],
+            warning: warning
+        ))
+        let preflight = warningInventory
+        let kills = LockedValue(0)
+        let removals = LockedValue(0)
+        let identity = TmuxSessionIdentity(
+            serverPID: "31415",
+            sessionID: "$8",
+            createdAt: "1721552400"
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtInventoryLoader: { _ in preflight },
+            kwtWorktreeRemover: { _, _, _, _ in
+                removals.withLock { $0 += 1 }
+            },
+            tmuxSessionKiller: { _, _, _ in
+                kills.withLock { $0 += 1 }
+            },
+            tmuxSessionIdentityReader: { _, _ in identity }
+        )
+        let expected = KwtWorktreeError.removalPreflightUnavailable(
+            host: hostSummary.name,
+            message: warning
+        )
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        await #expect(throws: expected) {
+            try await model.resolveWorktreeRemoval(request)
+        }
+
+        #expect(kills.load() == 0)
+        #expect(removals.load() == 0)
+        #expect(model.snapshot.worktree(id: removable.id) != nil)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("a failed project-list preflight cannot trigger reconfirmation")
+    func projectListWarningPreflightRemainsAnError() async throws {
+        let fixture = try removalFixture(
+            path: "/tmp/project-a-feature",
+            sessionName: "kwt-project-a-feature"
+        )
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let snapshot = fixture.snapshot
+        let hostSummary = try #require(snapshot.host(id: environment.host.id))
+        let warning = "Project listing is temporarily unavailable."
+        let preflight = KwtHostInventory(
+            projects: [],
+            projectsWarning: warning
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtInventoryLoader: { _ in preflight },
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+        let expected = KwtWorktreeError.removalPreflightUnavailable(
+            host: hostSummary.name,
+            message: warning
+        )
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        await #expect(throws: expected) {
+            try await model.resolveWorktreeRemoval(request)
+        }
+
+        #expect(model.snapshot.worktree(id: removable.id) != nil)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("a changed project path refreshes removal confirmation")
+    func changedProjectPathRefreshesConfirmation() async throws {
+        let fixture = try removalFixture(
+            path: "/tmp/project-a-feature",
+            sessionName: "kwt-project-a-feature"
+        )
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let snapshot = fixture.snapshot
+        let movedPath = "/tmp/project-a-moved"
+        var movedInventory = fixture.beforeRemoval
+        movedInventory.projects[0].project.path = movedPath
+        let preflight = movedInventory
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtInventoryLoader: { _ in preflight },
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        let result = try await model.resolveWorktreeRemoval(request)
+        guard case let .confirmationRequired(updatedRequest) = result else {
+            Issue.record("Removal should require a new confirmation")
+            await model.shutdown()
+            return
+        }
+
+        #expect(updatedRequest.project.rootPath == movedPath)
+        #expect(model.snapshot.project(id: environment.project.id)?.rootPath == movedPath)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("project path reuse refreshes confirmation for the moved repository")
+    func projectPathReuseRefreshesMovedRepositoryConfirmation() async throws {
+        let fixture = try removalFixture(
+            path: "/tmp/project-a-feature",
+            sessionName: "kwt-project-a-feature"
+        )
+        let environment = fixture.environment
+        let removable = fixture.removable
+        let snapshot = fixture.snapshot
+
+        let movedPath = "/tmp/project-a-moved"
+        var movedProject = fixture.beforeRemoval.projects[0]
+        movedProject.project.path = movedPath
+        let replacementRepository = "example.com/acme/replacement"
+        let replacementProject = KwtProjectInventory(
+            project: KwtProjectRecord(
+                repository: replacementRepository,
+                name: "replacement",
+                path: environment.project.rootPath,
+                lastTouched: nil
+            ),
+            worktrees: [
+                KwtWorktreeRecord(
+                    path: environment.project.rootPath,
+                    branch: "main",
+                    commitHash: "",
+                    isMain: true,
+                    createdAt: nil,
+                    generation: nil,
+                    repository: replacementRepository,
+                    sessionName: "kwt-replacement-main",
+                    tmuxSocketName: nil
+                ),
+            ],
+            warning: nil
+        )
+        let preflight = KwtHostInventory(projects: [
+            replacementProject,
+            movedProject,
+        ])
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtInventoryLoader: { _ in preflight },
+            tmuxSessionIdentityReader: { selection, host in
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+
+        let request = try await model.prepareWorktreeRemoval(removable.id)
+        let result = try await model.resolveWorktreeRemoval(request)
+        guard case let .confirmationRequired(updatedRequest) = result else {
+            Issue.record("Removal should require a new confirmation")
+            await model.shutdown()
+            return
+        }
+
+        #expect(updatedRequest.project.id == environment.project.id)
+        #expect(updatedRequest.project.scopedKey == environment.project.scopedKey)
+        #expect(updatedRequest.project.rootPath == movedPath)
+        #expect(updatedRequest.worktree.generation == stableWorktreeGeneration)
+        let hostProjects = model.snapshot.projects.filter {
+            $0.hostID == environment.host.id
+        }
+        #expect(Set(hostProjects.map(\.id)).count == hostProjects.count)
+        #expect(
+            hostProjects.first { $0.scopedKey == replacementRepository }?.id
+                != environment.project.id
+        )
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("removal completion keeps the owning project selected")
+    func removalKeepsOwningProjectSelected() throws {
+        let environment = try setupStandardEnvironment()
+        let removed = WorktreeSummary.fixture(
+            hostID: environment.host.id,
+            projectID: environment.project.id,
+            name: "feature/remove",
+            path: "/tmp/project-a-feature"
+        )
+        var snapshot = environment.snapshot
+        snapshot.worktrees.append(removed)
+        var current = WorkspaceSelection(
+            selectedHostID: environment.host.id
+        )
+        current.select(
+            WorkspaceNavigationTarget.worktree(removed.id),
+            in: snapshot
+        )
+        snapshot.worktrees.removeAll { $0.id == removed.id }
+
+        let resolved = WorkspaceSceneModel.selectionAfterWorktreeRemoval(
+            current,
+            in: snapshot,
+            visibility: WorktreeVisibility.default
+        )
+
+        #expect(resolved.selectedProjectID == environment.project.id)
+        #expect(resolved.selectedWorktreeID == nil)
     }
 
     @MainActor
