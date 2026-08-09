@@ -69,8 +69,12 @@ attachment establishes that the session is running. Before displaying
 confirmation, Ghosthub captures tmux's server PID, `session_id`, and
 `session_created` values together with the exact local or SSH endpoint, socket,
 and session name. Termination uses one tmux conditional command that compares
-all three live identity values and invokes `kill-session -t =<name>:` only on
-a match. The server PID distinguishes tmux server generations, while the
+all three live identity values and invokes `kill-session` against that exact
+session only on a match. Swift targets the exact name. The Windows WSL client
+captures authority from a fresh length-framed all-session listing, matches the
+decoded name in Rust, and targets only the captured stable session ID; the name
+never re-enters a tmux target or nested command parser. The server PID
+distinguishes tmux server generations, while the
 monotonically assigned session ID distinguishes same-named replacements within
 one server even when their second-resolution creation timestamps match. A
 replacement session is therefore never killed under stale cached inventory or
@@ -217,6 +221,16 @@ Local client exit always detaches and never reconnects. Only remote OpenSSH
 status 255 enters transport reconnect. Bare remote creation becomes
 attach-only before that loop; ordinary and protected kwt paths retain only
 their explicitly documented repair/open behavior.
+
+Rust local WSL creation follows the same one-shot rule as shipped local
+creation. After validating the normalized name, Ghosthub performs a fresh
+admitted-host read and consumes one CreateOnce by launching the ordinary
+ConPTY client with `tmux new-session -A -s <name>`. It captures the resulting
+runtime, server PID, session ID, and creation time before publishing the
+presentation; every later activation is attach-only. If creation and identity
+capture race another creator, `-A` attaches to the exact same-named session.
+If any step after launch fails, Ghosthub detaches the client and reports the
+failure but neither reruns creation nor destroys the possibly created session.
 
 Psmux 3.3.7 failed the required exact-kill proof and never established genuine
 ConPTY `attach-session -E` behavior. Its probe remains rejection evidence, but

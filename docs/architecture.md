@@ -164,7 +164,17 @@ frame. Missing WSL omits that host. A slow, failed, or unsupported WSL runtime
 changes only the host entry to an unavailable state with Retry and never
 replaces the application shell. The first refresh has a 45-second total budget
 for cold start; later attempts have 30 seconds, in addition to per-command
-timeouts.
+timeouts. Returning focus to a window refreshes a ready WSL inventory, matching
+the Swift app's activation-driven discovery without retrying disconnected or
+failed hosts in a loop. Later refreshes reuse the admitted host capability so
+they perform ordinary inventory reads instead of repeating tmux admission.
+The ready host also exposes explicit bare-session creation. Rust consumes one
+non-cloneable CreateOnce as an ordinary ConPTY client running atomic
+`new-session -A`; it then captures the fresh WSL runtime and tmux live identity
+and retains only attach authority. Creation failure never authorizes a rerun or
+server cleanup. The creation interaction pins its selected endpoint and may use
+the existing admitted host while an activation-driven inventory refresh is in
+flight; it never follows a changed default distro implicitly.
 
 Rust keeps backend and authority boundaries structural: the UI package has
 direct dependencies only on workspace, model, and surface, while persistence
@@ -542,6 +552,10 @@ endpoint and tmux server PID, `session_id`, and `session_created` identity. A
 single tmux conditional checks all three live values and kills only the
 matching instance, rejecting a same-named replacement even within the same
 timestamp second or after a rapid tmux server restart.
+The Rust WSL implementation obtains that authority from a fresh host query
+before presenting confirmation and targets the captured stable session ID
+inside the conditional, keeping cached inventory and mutable display names out
+of the destructive command.
 Ghosthub detaches an active client after a successful kill, never before the
 operation can fail. After success, Ghosthub closes the matching current active
 selection and navigates away only when the killed target is active at
