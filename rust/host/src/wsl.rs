@@ -9,10 +9,11 @@ use std::time::{Duration, Instant};
 use model::DiagnosticKind;
 use session::{
     AdmissionPlan, AttachPlan, CreateOnce, DiscoveredSession, ExecutablePlatform,
-    IDENTITY_MISMATCH_MARKER, ProbeObservation, SessionIdentity, SessionName, VerifiedTmuxBinary,
-    resolve_tmux_binary,
+    HerdrSessionRecord, IDENTITY_MISMATCH_MARKER, ProbeObservation, SessionIdentity, SessionName,
+    VerifiedTmuxBinary, resolve_tmux_binary,
 };
 
+use crate::herdr::{self, ExecutableProbe};
 use crate::{CancellationToken, CommandOutput, CommandRunner};
 
 const DEFAULT_TMUX: &str = "/usr/bin/tmux";
@@ -170,6 +171,48 @@ pub struct HostSnapshot {
     endpoint: WslEndpoint,
     runtime: WslRuntimeIdentity,
     sessions: Vec<DiscoveredSession>,
+    herdr: Box<HerdrInventory>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HerdrInventory {
+    Unavailable,
+    Available {
+        executable: String,
+        sessions: Vec<HerdrSessionRecord>,
+    },
+    Failed(HostError),
+}
+
+impl HerdrInventory {
+    #[must_use]
+    pub const fn is_available(&self) -> bool {
+        matches!(self, Self::Available { .. })
+    }
+
+    #[must_use]
+    pub fn executable(&self) -> Option<&str> {
+        match self {
+            Self::Available { executable, .. } => Some(executable),
+            Self::Unavailable | Self::Failed(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn sessions(&self) -> &[HerdrSessionRecord] {
+        match self {
+            Self::Available { sessions, .. } => sessions,
+            Self::Unavailable | Self::Failed(_) => &[],
+        }
+    }
+
+    #[must_use]
+    pub const fn diagnostic(&self) -> Option<&HostError> {
+        match self {
+            Self::Failed(error) => Some(error),
+            Self::Unavailable | Self::Available { .. } => None,
+        }
+    }
 }
 
 /// Fresh, non-persistable authority to kill one exact live tmux session.
@@ -242,7 +285,23 @@ impl HostSnapshot {
                 init_start_ticks,
             },
             sessions,
+            herdr: Box::new(HerdrInventory::Unavailable),
         }
+    }
+
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn test_fixture_with_herdr(
+        distro: impl Into<String>,
+        kernel_boot_id: impl Into<String>,
+        init_start_ticks: u64,
+        sessions: Vec<DiscoveredSession>,
+        herdr: HerdrInventory,
+    ) -> Self {
+        let mut snapshot = Self::test_fixture(distro, kernel_boot_id, init_start_ticks, sessions);
+        snapshot.herdr = Box::new(herdr);
+        snapshot
     }
 
     #[must_use]
@@ -258,6 +317,11 @@ impl HostSnapshot {
     #[must_use]
     pub fn sessions(&self) -> &[DiscoveredSession] {
         &self.sessions
+    }
+
+    #[must_use]
+    pub fn herdr(&self) -> &HerdrInventory {
+        self.herdr.as_ref()
     }
 }
 
@@ -457,12 +521,14 @@ impl<R: CommandRunner> WslHost<R> {
         for _attempt in 0..DISCOVERY_ATTEMPTS {
             self.verify_tmux(&endpoint, &runtime, attacher, cancellation)?;
             let sessions = self.discover_sessions(&endpoint, cancellation)?;
+            let herdr = self.discover_herdr(&endpoint, cancellation);
             let observed_runtime = self.resolve_runtime(&endpoint, cancellation)?;
             if runtime == observed_runtime {
                 return Ok(HostSnapshot {
                     endpoint,
                     runtime,
                     sessions,
+                    herdr: Box::new(herdr),
                 });
             }
             runtime = observed_runtime;
@@ -609,6 +675,7 @@ impl<R: CommandRunner> WslHost<R> {
         &self,
         endpoint: &WslEndpoint,
         runtime: &WslRuntimeIdentity,
+        herdr: &HerdrInventory,
         cancellation: &CancellationToken,
     ) -> Result<HostSnapshot, HostError> {
         let sessions = self.discover_sessions(endpoint, cancellation)?;
@@ -623,6 +690,7 @@ impl<R: CommandRunner> WslHost<R> {
             endpoint: endpoint.clone(),
             runtime: observed_runtime,
             sessions,
+            herdr: Box::new(herdr.clone()),
         })
     }
 
@@ -837,6 +905,87 @@ impl<R: CommandRunner> WslHost<R> {
             ));
         }
         parse_inventory(&output.stdout)
+    }
+
+    fn discover_herdr(
+        &self,
+        endpoint: &WslEndpoint,
+        cancellation: &CancellationToken,
+    ) -> HerdrInventory {
+        match self.resolve_herdr_executable(endpoint, cancellation) {
+            Ok(ExecutableProbe::Available(executable)) => {
+                self.list_herdr_sessions(endpoint, cancellation, executable)
+            }
+            Ok(ExecutableProbe::Unavailable) => HerdrInventory::Unavailable,
+            Err(error) => HerdrInventory::Failed(error),
+        }
+    }
+
+    fn resolve_herdr_executable(
+        &self,
+        endpoint: &WslEndpoint,
+        cancellation: &CancellationToken,
+    ) -> Result<ExecutableProbe, HostError> {
+        let mut args = pinned_prefix(endpoint);
+        args.extend(
+            [
+                "/bin/sh",
+                "-c",
+                herdr::ACCOUNT_LOGIN_HANDOFF,
+                "ghosthub-herdr-resolve",
+                herdr::RESOLVE_SCRIPT,
+            ]
+            .into_iter()
+            .map(OsString::from),
+        );
+        let output = self.run(&args, cancellation)?;
+        if output.status != 0 && output.status != 127 {
+            return Err(classify_command_failure(
+                output.status,
+                &output.stderr,
+                "resolve Herdr executable",
+            ));
+        }
+        herdr::parse_executable(output.status, &output.stdout)
+            .map_err(|detail| HostError::new(DiagnosticKind::MalformedOutput, detail))
+    }
+
+    fn list_herdr_sessions(
+        &self,
+        endpoint: &WslEndpoint,
+        cancellation: &CancellationToken,
+        executable: String,
+    ) -> HerdrInventory {
+        let mut args = pinned_prefix(endpoint);
+        append_herdr_environment(&mut args);
+        args.extend(
+            [executable.as_str(), "session", "list", "--json"]
+                .into_iter()
+                .map(OsString::from),
+        );
+        let output = match self.run(&args, cancellation) {
+            Ok(output) => output,
+            Err(error) => return HerdrInventory::Failed(error),
+        };
+        if output.status == 127 {
+            return HerdrInventory::Unavailable;
+        }
+        if output.status != 0 {
+            return HerdrInventory::Failed(classify_command_failure(
+                output.status,
+                &output.stderr,
+                "list Herdr sessions",
+            ));
+        }
+        match herdr::parse_inventory(&output.stdout) {
+            Ok(sessions) => HerdrInventory::Available {
+                executable,
+                sessions,
+            },
+            Err(detail) => {
+                HerdrInventory::Failed(HostError::new(DiagnosticKind::MalformedOutput, detail))
+            }
+        }
     }
 
     fn run_tmux_command(
@@ -2126,6 +2275,14 @@ fn append_tmux_environment(
         args.push(OsString::from(format!("TMUX_TMPDIR={path}")));
     }
     args.extend(environment.iter().map(OsString::from));
+}
+
+fn append_herdr_environment(args: &mut Vec<OsString>) {
+    args.push(OsString::from("/usr/bin/env"));
+    for variable in herdr::CONTROL_VARIABLES {
+        args.push(OsString::from("-u"));
+        args.push(OsString::from(variable));
+    }
 }
 
 fn settle_uncertain_cleanup(

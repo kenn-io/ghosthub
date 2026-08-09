@@ -103,6 +103,65 @@ pub struct DiscoveredSession {
     attached_clients: u32,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HerdrSessionState {
+    Running,
+    Stopped,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HerdrSessionRecord {
+    name: String,
+    is_default: bool,
+    state: HerdrSessionState,
+    session_directory: String,
+    socket_path: String,
+}
+
+impl HerdrSessionRecord {
+    #[must_use]
+    pub fn new(
+        name: impl Into<String>,
+        is_default: bool,
+        state: HerdrSessionState,
+        session_directory: impl Into<String>,
+        socket_path: impl Into<String>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            is_default,
+            state,
+            session_directory: session_directory.into(),
+            socket_path: socket_path.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    #[must_use]
+    pub const fn is_default(&self) -> bool {
+        self.is_default
+    }
+
+    #[must_use]
+    pub const fn state(&self) -> HerdrSessionState {
+        self.state
+    }
+
+    #[must_use]
+    pub fn session_directory(&self) -> &str {
+        &self.session_directory
+    }
+
+    #[must_use]
+    pub fn socket_path(&self) -> &str {
+        &self.socket_path
+    }
+}
+
 impl DiscoveredSession {
     #[must_use]
     pub fn new(name: impl Into<String>, identity: SessionIdentity, attached_clients: u32) -> Self {

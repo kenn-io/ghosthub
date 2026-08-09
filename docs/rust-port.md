@@ -1,17 +1,18 @@
 # Windows and Linux Rust Port
 
 This document is the maintained design for native Ghosthub applications on
-Windows and Linux. The first product slice is Windows-only and uses tmux in
-WSL2; Linux remains a compile-and-contract target until a native Linux product
-slice is authorized. The shipped macOS application remains SwiftUI/AppKit with
-libghostty. The shared product and terminal invariants remain authoritative in
+Windows and Linux. The first product slice is Windows-only, uses tmux in WSL2,
+and discovers optional Herdr sessions there; Linux remains a
+compile-and-contract target until a native Linux product slice is authorized.
+The shipped macOS application remains SwiftUI/AppKit with libghostty. The
+shared product and terminal invariants remain authoritative in
 [architecture.md](architecture.md) and
 [terminal-sessions.md](terminal-sessions.md).
 
-The port exists to deliver the same native terminal for local and remote tmux
-fleets on Windows and Linux. It is not a rewrite of the macOS application, a
-shared runtime embedded into Swift, or a reason to change macOS away from
-SwiftUI.
+The port exists to deliver the same native terminal for local and remote
+multiplexer fleets on Windows and Linux. It is not a rewrite of the macOS
+application, a shared runtime embedded into Swift, or a reason to change macOS
+away from SwiftUI.
 
 ## 1. Product and Dependency Boundary
 
@@ -224,6 +225,26 @@ Host publishes classified diagnostics rather than flattening command failures:
 Failures remain retryable where another attempt can change the result. The
 empty state names the resolved distro, binary, and default or configured socket
 environment so zero sessions cannot silently conceal where Ghosthub looked.
+
+### Optional Herdr capability in WSL
+
+Herdr is discovered as an optional capability of the resolved WSL endpoint,
+not as a second host and not as an application startup requirement. After tmux
+admission, Host resolves an exact absolute `herdr` executable through the WSL
+account login environment, removes every inherited Herdr routing variable named
+in [Terminal Sessions](terminal-sessions.md), and invokes
+`herdr session list --json` through direct argv. Exit 127 is silent absence.
+Other executable, permission, transport, and malformed-output failures remain a
+Herdr-scoped diagnostic and do not change tmux readiness or cached tmux rows.
+
+The inventory preserves both running and stopped sessions and publishes them in
+a separate compact Herdr group under the WSL host. The Herdr executable and
+inventory are captured inside the same before/after WSL runtime check as tmux,
+so a distro restart cannot combine evidence from different runtime instances.
+The first incremental slice exposes this optional inventory. Ordinary-client
+attachment, retained presentation switching, and explicit lifecycle actions
+must reuse the shipped exact-name and environment-scrubbing rules; they may not
+reinterpret Herdr as a tmux-compatible server or use Herdr's remote mode.
 
 ### Terminal ownership
 

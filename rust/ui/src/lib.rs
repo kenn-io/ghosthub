@@ -18,7 +18,7 @@ use gpui::{
 use model::PortStatus;
 use surface::{CellStyle, Damage, GridSize, Rgb, SurfaceFrame, SurfaceStore};
 use workspace::{
-    HostConnectionState, HostItem, KeyEvent as InputKeyEvent, KeyInput,
+    HerdrSessionState, HostConnectionState, HostItem, KeyEvent as InputKeyEvent, KeyInput,
     Modifiers as InputModifiers, MouseAction, MouseButton, MouseInput, NamedKey, SessionName,
     SessionSelection, Workspace, WorkspaceContent, WorkspaceEvent,
 };
@@ -2110,6 +2110,12 @@ impl RootView {
         if host.connection() == HostConnectionState::Ready || !sessions.is_empty() {
             host_tree = host_tree.child(Self::session_tree(host_index, &sessions, cx));
         }
+        if host.herdr_available()
+            || !host.herdr_sessions().is_empty()
+            || host.herdr_diagnostic().is_some()
+        {
+            host_tree = host_tree.child(Self::herdr_tree(host_index, host, cx));
+        }
         host_tree.into_any_element()
     }
 
@@ -2243,6 +2249,130 @@ impl RootView {
             ));
         }
         tree.into_any_element()
+    }
+
+    fn herdr_tree(host_index: usize, host: &HostItem, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let mut tree = div()
+            .ml(px(18.0))
+            .border_l_1()
+            .border_color(rgb(0x25_2932))
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .h(px(24.0))
+                    .flex()
+                    .items_center()
+                    .pl(px(17.0))
+                    .text_xs()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(rgb(0x73_7a87))
+                    .child("HERDR SESSIONS"),
+            );
+        if let Some(diagnostic) = host.herdr_diagnostic() {
+            tree = tree.child(Self::herdr_diagnostic_row(
+                host_index,
+                diagnostic.message().to_owned(),
+                cx,
+            ));
+        } else if host.herdr_sessions().is_empty() {
+            tree = tree.child(
+                div()
+                    .h(px(SESSION_ROW_HEIGHT))
+                    .flex()
+                    .items_center()
+                    .pl(px(31.0))
+                    .text_xs()
+                    .text_color(rgb(0x73_7a87))
+                    .child("No sessions"),
+            );
+        }
+        for (index, session) in host.herdr_sessions().iter().enumerate() {
+            tree = tree.child(Self::herdr_session_row(host_index, index, session));
+        }
+        tree.into_any_element()
+    }
+
+    fn herdr_diagnostic_row(
+        host_index: usize,
+        message: String,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        div()
+            .mx_2()
+            .mb_1()
+            .px_2()
+            .py_1()
+            .rounded_sm()
+            .bg(rgb(0x16_1920))
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .truncate()
+                    .text_xs()
+                    .text_color(rgb(0x9b_a2ae))
+                    .child(message),
+            )
+            .child(
+                div()
+                    .id(("retry-herdr", host_index))
+                    .flex_none()
+                    .cursor_pointer()
+                    .text_xs()
+                    .text_color(rgb(0x79_aee3))
+                    .child("Retry")
+                    .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
+            )
+            .into_any_element()
+    }
+
+    fn herdr_session_row(
+        host_index: usize,
+        index: usize,
+        session: &workspace::HerdrSessionItem,
+    ) -> gpui::AnyElement {
+        let running = session.state() == HerdrSessionState::Running;
+        div()
+            .id((
+                gpui::ElementId::named_usize("herdr-session-host", host_index),
+                index.to_string(),
+            ))
+            .mr_1()
+            .h(px(SESSION_ROW_HEIGHT))
+            .flex()
+            .items_center()
+            .gap_1()
+            .pl(px(14.0))
+            .pr_2()
+            .child(
+                div()
+                    .w(px(18.0))
+                    .flex_none()
+                    .text_xs()
+                    .text_color(rgb(if running { 0x79_c9_a3 } else { 0x68_6f7a }))
+                    .child(if running { ">_" } else { "○" }),
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .truncate()
+                    .text_sm()
+                    .text_color(rgb(if running { 0xc4_c9_d2 } else { 0x7f_8794 }))
+                    .child(session.name().to_owned()),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .text_xs()
+                    .text_color(rgb(0x73_7a87))
+                    .child(if running { "running" } else { "stopped" }),
+            )
+            .into_any_element()
     }
 
     fn host_status_row(

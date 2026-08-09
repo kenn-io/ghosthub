@@ -8,12 +8,12 @@ use std::time::Duration;
 
 use config::TerminalAppearance;
 use host::{
-    AdmissionAttacher, AttachTerm, CancellationToken, CommandRunner, HostError, HostSnapshot,
-    LiveSessionTarget, StdCommandRunner, WslConfig, WslExecutable, WslHost,
+    AdmissionAttacher, AttachTerm, CancellationToken, CommandRunner, HerdrInventory, HostError,
+    HostSnapshot, LiveSessionTarget, StdCommandRunner, WslConfig, WslExecutable, WslHost,
 };
 pub use input::{KeyEvent, KeyInput, Modifiers, MouseAction, MouseButton, MouseInput, NamedKey};
 use model::DiagnosticKind;
-pub use session::{SessionName, SessionNameError};
+pub use session::{HerdrSessionState, SessionName, SessionNameError};
 use surface::{GridSize, PixelSize, Rgb, SurfaceStore};
 use terminal::{
     ClipboardPolicy, ClipboardReadRequest as TerminalClipboardRead, ClipboardTarget, DefaultColors,
@@ -180,6 +180,42 @@ pub struct HostItem {
     connection: HostConnectionState,
     sessions: Vec<SessionItem>,
     diagnostic: Option<HostDiagnostic>,
+    herdr_available: bool,
+    herdr_sessions: Vec<HerdrSessionItem>,
+    herdr_diagnostic: Option<HostDiagnostic>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HerdrSessionItem {
+    name: String,
+    is_default: bool,
+    state: HerdrSessionState,
+}
+
+impl HerdrSessionItem {
+    #[must_use]
+    pub fn new(name: impl Into<String>, is_default: bool, state: HerdrSessionState) -> Self {
+        Self {
+            name: name.into(),
+            is_default,
+            state,
+        }
+    }
+
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    #[must_use]
+    pub const fn is_default(&self) -> bool {
+        self.is_default
+    }
+
+    #[must_use]
+    pub const fn state(&self) -> HerdrSessionState {
+        self.state
+    }
 }
 
 impl HostItem {
@@ -199,6 +235,9 @@ impl HostItem {
             connection,
             sessions,
             diagnostic,
+            herdr_available: false,
+            herdr_sessions: Vec::new(),
+            herdr_diagnostic: None,
         }
     }
 
@@ -235,6 +274,21 @@ impl HostItem {
     #[must_use]
     pub const fn diagnostic(&self) -> Option<&HostDiagnostic> {
         self.diagnostic.as_ref()
+    }
+
+    #[must_use]
+    pub const fn herdr_available(&self) -> bool {
+        self.herdr_available
+    }
+
+    #[must_use]
+    pub fn herdr_sessions(&self) -> &[HerdrSessionItem] {
+        &self.herdr_sessions
+    }
+
+    #[must_use]
+    pub const fn herdr_diagnostic(&self) -> Option<&HostDiagnostic> {
+        self.herdr_diagnostic.as_ref()
     }
 }
 
@@ -2583,6 +2637,7 @@ impl Workspace {
                     match resolved {
                         Ok(context) => {
                             let state = ready_content(&context.snapshot);
+                            set_herdr_inventory(&task_inner, context.snapshot.herdr());
                             *task_inner
                                 .host
                                 .lock()
@@ -3350,7 +3405,12 @@ fn create_fresh(
         }
         let snapshot = request
             .host
-            .discover_after_create(before.endpoint(), &request.runtime, cancellation)
+            .discover_after_create(
+                before.endpoint(),
+                &request.runtime,
+                before.herdr(),
+                cancellation,
+            )
             .map_err(|error| WorkspaceError::new(error.to_string()))?;
         if let Some(session) = created_session(&snapshot, &client_identity) {
             return Ok((worker, snapshot, session, launch_geometry, term));
@@ -3690,6 +3750,7 @@ fn merge_created_inventory(
     };
 
     let inventory_state = ready_content(&snapshot);
+    set_herdr_inventory(inner, snapshot.herdr());
     reconcile_retained_session_names(inner, &snapshot, request.host.socket_directory());
     *inner
         .host
@@ -3713,6 +3774,7 @@ fn publish_attach_inventory(inner: &Inner, request: &AttachRequest, snapshot: Ho
 
 fn set_attach_inventory(inner: &Inner, request: &AttachRequest, snapshot: HostSnapshot) {
     let inventory_state = ready_content(&snapshot);
+    set_herdr_inventory(inner, snapshot.herdr());
     reconcile_retained_session_names(inner, &snapshot, request.host.socket_directory());
     *inner
         .host
@@ -4026,6 +4088,36 @@ fn ready_content(snapshot: &HostSnapshot) -> WorkspaceContent {
             .iter()
             .map(|session| SessionItem::new(session.name(), session.attached_clients()))
             .collect(),
+    }
+}
+
+fn set_herdr_inventory(inner: &Inner, inventory: &HerdrInventory) {
+    let mut hosts = inner
+        .hosts
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(host) = hosts.iter_mut().find(|host| host.id == "wsl") else {
+        return;
+    };
+    match inventory {
+        HerdrInventory::Unavailable => {
+            host.herdr_available = false;
+            host.herdr_sessions.clear();
+            host.herdr_diagnostic = None;
+        }
+        HerdrInventory::Available { sessions, .. } => {
+            host.herdr_available = true;
+            host.herdr_sessions = sessions
+                .iter()
+                .map(|session| {
+                    HerdrSessionItem::new(session.name(), session.is_default(), session.state())
+                })
+                .collect();
+            host.herdr_diagnostic = None;
+        }
+        HerdrInventory::Failed(error) => {
+            host.herdr_diagnostic = Some(HostDiagnostic::new(error.kind(), error.to_string()));
+        }
     }
 }
 
@@ -6473,6 +6565,107 @@ mod tests {
         assert_eq!(
             workspace.snapshot().hosts()[0].connection(),
             HostConnectionState::Ready
+        );
+    }
+
+    #[test]
+    fn successful_refresh_projects_herdr_without_changing_tmux_readiness() {
+        let runtime = Arc::new(ManualRefreshRuntime::default());
+        let snapshot = HostSnapshot::test_fixture_with_herdr(
+            "Ubuntu",
+            "boot",
+            42,
+            vec![session::DiscoveredSession::new(
+                "work",
+                session::SessionIdentity::new(100, "$1", 200),
+                0,
+            )],
+            HerdrInventory::Available {
+                executable: "/opt/herdr/bin/herdr".to_owned(),
+                sessions: vec![
+                    session::HerdrSessionRecord::new(
+                        "default",
+                        true,
+                        HerdrSessionState::Running,
+                        "/tmp/herdr/default",
+                        "/tmp/herdr/default/herdr.sock",
+                    ),
+                    session::HerdrSessionRecord::new(
+                        "review",
+                        false,
+                        HerdrSessionState::Stopped,
+                        "/tmp/herdr/review",
+                        "/tmp/herdr/review/herdr.sock",
+                    ),
+                ],
+            },
+        );
+        let discovery = Arc::new(FixedDiscovery::new(snapshot));
+        let spec = WslHostSpec::available(
+            WslConfig::with_distro("Ubuntu").expect("valid config"),
+            WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
+                .expect("absolute WSL path"),
+        );
+        let workspace = Workspace::application_with_services(
+            TerminalAppearance::default(),
+            Some(spec),
+            discovery,
+            runtime.clone(),
+        );
+
+        workspace.connect_enabled_hosts().expect("start refresh");
+        runtime.run_next_work();
+
+        let snapshot = workspace.snapshot();
+        let host = &snapshot.hosts()[0];
+        assert_eq!(host.connection(), HostConnectionState::Ready);
+        assert_eq!(host.sessions()[0].name(), "work");
+        assert!(host.herdr_available());
+        assert_eq!(host.herdr_sessions().len(), 2);
+        assert!(host.herdr_sessions()[0].is_default());
+        assert_eq!(host.herdr_sessions()[1].state(), HerdrSessionState::Stopped);
+        assert!(host.herdr_diagnostic().is_none());
+    }
+
+    #[test]
+    fn herdr_refresh_failure_preserves_cached_rows() {
+        let workspace = Workspace::preview(WorkspaceSnapshot::shell(
+            Appearance::default(),
+            vec![HostItem::wsl(
+                "Ubuntu",
+                None,
+                HostConnectionState::Ready,
+                Vec::new(),
+                None,
+            )],
+        ));
+        set_herdr_inventory(
+            &workspace.inner,
+            &HerdrInventory::Available {
+                executable: "/opt/herdr/bin/herdr".to_owned(),
+                sessions: vec![session::HerdrSessionRecord::new(
+                    "review",
+                    false,
+                    HerdrSessionState::Running,
+                    "/tmp/herdr/review",
+                    "/tmp/herdr/review/herdr.sock",
+                )],
+            },
+        );
+        set_herdr_inventory(
+            &workspace.inner,
+            &HerdrInventory::Failed(
+                WslExecutable::from_absolute("wsl.exe").expect_err("relative path is rejected"),
+            ),
+        );
+
+        let snapshot = workspace.snapshot();
+        let host = &snapshot.hosts()[0];
+        assert!(host.herdr_available());
+        assert_eq!(host.herdr_sessions()[0].name(), "review");
+        assert_eq!(
+            host.herdr_diagnostic().expect("scoped diagnostic").kind(),
+            DiagnosticKind::MalformedOutput
         );
     }
 

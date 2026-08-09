@@ -8,12 +8,12 @@ use std::sync::{Arc, Mutex};
 
 use contracts::{Manifest, PlatformTag};
 use host::{
-    AdmissionAttacher, AttachTerm, CancellationToken, CommandOutput, CommandRunner, HostErrorKind,
-    WslConfig, WslExecutable, WslHost,
+    AdmissionAttacher, AttachTerm, CancellationToken, CommandOutput, CommandRunner, HerdrInventory,
+    HostErrorKind, WslConfig, WslExecutable, WslHost,
 };
 use serde::Deserialize;
 use session::ExecutablePlatform;
-use session::{AdmissionPlan, SessionName};
+use session::{AdmissionPlan, HerdrSessionState, SessionName};
 
 #[derive(Clone, Copy, Debug)]
 struct AdmissionStatusFailure {
@@ -39,6 +39,7 @@ struct RecordingRunner {
     namespaces_are_isolated: bool,
     exact_targets_are_strict: bool,
     admission_directory: Mutex<AdmissionDirectoryState>,
+    herdr_outputs: Mutex<VecDeque<CommandOutput>>,
 }
 
 #[derive(Debug, Default)]
@@ -75,6 +76,7 @@ impl RecordingRunner {
             namespaces_are_isolated: true,
             exact_targets_are_strict: true,
             admission_directory: Mutex::new(AdmissionDirectoryState::default()),
+            herdr_outputs: Mutex::new(VecDeque::new()),
         }
     }
 
@@ -95,6 +97,7 @@ impl RecordingRunner {
             namespaces_are_isolated: true,
             exact_targets_are_strict: true,
             admission_directory: Mutex::new(AdmissionDirectoryState::default()),
+            herdr_outputs: Mutex::new(VecDeque::new()),
         }
     }
 
@@ -119,6 +122,7 @@ impl RecordingRunner {
             namespaces_are_isolated: true,
             exact_targets_are_strict: true,
             admission_directory: Mutex::new(AdmissionDirectoryState::default()),
+            herdr_outputs: Mutex::new(VecDeque::new()),
         }
     }
 
@@ -147,6 +151,7 @@ impl RecordingRunner {
             namespaces_are_isolated: true,
             exact_targets_are_strict: true,
             admission_directory: Mutex::new(AdmissionDirectoryState::default()),
+            herdr_outputs: Mutex::new(VecDeque::new()),
         }
     }
 
@@ -167,6 +172,7 @@ impl RecordingRunner {
             namespaces_are_isolated: false,
             exact_targets_are_strict: true,
             admission_directory: Mutex::new(AdmissionDirectoryState::default()),
+            herdr_outputs: Mutex::new(VecDeque::new()),
         }
     }
 
@@ -210,13 +216,17 @@ impl RecordingRunner {
             .lock()
             .expect("calls lock")
             .iter()
-            .filter(|(_, args)| !is_admission_call(args))
+            .filter(|(_, args)| !is_admission_call(args) && !is_herdr_call(args))
             .cloned()
             .collect()
     }
 
     fn all_calls(&self) -> Vec<(OsString, Vec<OsString>)> {
         self.calls.lock().expect("calls lock").clone()
+    }
+
+    fn set_herdr_outputs(&self, outputs: Vec<CommandOutput>) {
+        *self.herdr_outputs.lock().expect("Herdr outputs lock") = outputs.into();
     }
 
     fn all_timeouts(&self) -> Vec<std::time::Duration> {
@@ -318,6 +328,14 @@ impl CommandRunner for RecordingRunner {
             .expect("calls lock")
             .push((program.to_owned(), args.to_vec()));
         self.timeouts.lock().expect("timeouts lock").push(timeout);
+        if is_herdr_call(args) {
+            return Ok(self
+                .herdr_outputs
+                .lock()
+                .expect("Herdr outputs lock")
+                .pop_front()
+                .unwrap_or_else(|| output(127, "", "herdr: not found")));
+        }
         if self
             .admission_failure
             .is_some_and(|failed| admission_command(args).is_some_and(|command| command == failed))
@@ -444,6 +462,16 @@ fn is_admission_call(args: &[OsString]) -> bool {
             argument.starts_with("ghv-") || argument.starts_with("/tmp/ghosthub-tmux-probe.")
         })
     }) || args.last().is_some_and(|argument| argument == "-V")
+}
+
+fn is_herdr_call(args: &[OsString]) -> bool {
+    args.iter().any(|argument| {
+        argument
+            .to_str()
+            .is_some_and(|argument| argument.contains("GHOSTHUB_HERDR_PATH"))
+    }) || args
+        .windows(3)
+        .any(|arguments| arguments == ["session", "list", "--json"])
 }
 
 #[allow(
@@ -878,6 +906,96 @@ fn discovers_identity_in_one_tmux_crossing() {
     assert_eq!(session.identity().created_at(), 1_700_000_000);
     assert_eq!(session.attached_clients(), 1);
     assert_eq!(host.runner().calls().len(), 3);
+}
+
+#[test]
+fn herdr_inventory_is_additive_and_scrubs_control_environment() {
+    let runner = RecordingRunner::new(vec![
+        instance_output(),
+        output(0, "4242\t$3\t1700000000\t1\t4\twork\n", ""),
+        instance_output(),
+    ]);
+    runner.set_herdr_outputs(vec![
+        output(0, "GHOSTHUB_HERDR_PATH\n/opt/herdr/bin/herdr\n", ""),
+        output(
+            0,
+            r#"{"sessions":[{"name":"default","default":true,"running":true,"session_dir":"/tmp/herdr/default","socket_path":"/tmp/herdr/default/herdr.sock"},{"name":"review","default":false,"running":false,"session_dir":"/tmp/herdr/review","socket_path":"/tmp/herdr/review/herdr.sock"}]}"#,
+            "",
+        ),
+    ]);
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        runner,
+    );
+
+    let snapshot = discover(&host).expect("tmux discovery remains authoritative");
+
+    let HerdrInventory::Available {
+        executable,
+        sessions,
+    } = snapshot.herdr()
+    else {
+        panic!("Herdr is available");
+    };
+    assert_eq!(executable, "/opt/herdr/bin/herdr");
+    assert_eq!(sessions.len(), 2);
+    assert_eq!(sessions[0].state(), HerdrSessionState::Running);
+    assert_eq!(sessions[1].state(), HerdrSessionState::Stopped);
+    let list_call = host
+        .runner()
+        .all_calls()
+        .into_iter()
+        .find(|(_, args)| {
+            args.windows(3)
+                .any(|arguments| arguments == ["session", "list", "--json"])
+        })
+        .expect("Herdr list call");
+    assert!(
+        list_call
+            .1
+            .iter()
+            .any(|argument| argument == "/opt/herdr/bin/herdr")
+    );
+    for variable in [
+        "HERDR_ENV",
+        "HERDR_SESSION",
+        "HERDR_SOCKET_PATH",
+        "HERDR_CLIENT_SOCKET_PATH",
+        "HERDR_PANE_ID",
+        "HERDR_TAB_ID",
+        "HERDR_WORKSPACE_ID",
+        "HERDR_BIN_PATH",
+        "HERDR_ACTIVE_WORKSPACE_ID",
+        "HERDR_ACTIVE_TAB_ID",
+        "HERDR_ACTIVE_PANE_ID",
+        "HERDR_ACTIVE_PANE_CWD",
+    ] {
+        assert!(list_call.1.windows(2).any(|pair| pair == ["-u", variable]));
+    }
+}
+
+#[test]
+fn malformed_herdr_inventory_does_not_hide_tmux_sessions() {
+    let runner = RecordingRunner::new(vec![
+        instance_output(),
+        output(0, "4242\t$3\t1700000000\t1\t4\twork\n", ""),
+        instance_output(),
+    ]);
+    runner.set_herdr_outputs(vec![
+        output(0, "GHOSTHUB_HERDR_PATH\n/opt/herdr/bin/herdr\n", ""),
+        output(0, "not-json", ""),
+    ]);
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        runner,
+    );
+
+    let snapshot = discover(&host).expect("Herdr failure is host-capability scoped");
+
+    assert_eq!(snapshot.sessions()[0].name(), "work");
+    assert!(
+        matches!(snapshot.herdr(), HerdrInventory::Failed(error) if error.kind() == HostErrorKind::MalformedOutput)
+    );
 }
 
 #[test]
