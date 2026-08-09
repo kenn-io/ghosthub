@@ -854,13 +854,23 @@ Rust keeps the same separation:
 
 - cargo test-contracts is the fast manifest, parsing, capability, plan,
   sidebar, registry, and architecture gate
-- test-rust-live-attach launches a real isolated tmux server inside a WSL2
+- `make rust-test-wsl-live` launches real isolated tmux servers inside a WSL2
   distro plus PTYs and supervisor children for detach and app-death survival
 
 Cargo test binaries own cross-platform orchestration. Make targets are thin
 wrappers; Windows CI invokes the same Cargo tests without POSIX shell
 scaffolding. Windows tests use a unique WSL tmux socket namespace and assert
 before and after each run that the user's default server is untouched.
+
+The live gate runs separately from ordinary pull-request CI on a Windows x64
+acceptance runner labeled `ghosthub-wsl2`. That runner must have a usable WSL2
+default distro, `/usr/bin/tmux`, and the Windows Rust build toolchain. The
+manually dispatched `rust-wsl-live.yml` workflow runs the same terminal and
+workspace suites as `make rust-test-wsl-live`; a successful live run is
+required acceptance evidence for changes to WSL attachment, creation, guarded
+kill, or client-lifetime behavior. GitHub-hosted Windows runners remain the
+fast compile, unit, contract, and lint gate because their installed WSL tooling
+does not guarantee a usable WSL2 distro or nested virtualization.
 
 The Rust port adds no Swift or macOS live-attach work. Linux compilation is not
 used as evidence for the Windows ConPTY-to-WSL relay path.

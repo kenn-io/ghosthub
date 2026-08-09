@@ -1,0 +1,61 @@
+name: Rust WSL Live Acceptance
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  wsl-live:
+    name: WSL2 terminal lifecycle
+    runs-on: [self-hosted, Windows, X64, ghosthub-wsl2]
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: rust
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Verify the WSL2 acceptance environment
+        shell: pwsh
+        run: |
+          $wsl = Join-Path ([Environment]::GetFolderPath('System')) 'wsl.exe'
+          if (-not (Test-Path -LiteralPath $wsl -PathType Leaf)) {
+            throw "The acceptance runner does not provide System32\\wsl.exe."
+          }
+
+          $kernel = (& $wsl --exec /usr/bin/uname -r | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $kernel -notmatch 'WSL2') {
+            throw "The default WSL distro is not running under WSL2: $kernel"
+          }
+
+          & $wsl --exec /usr/bin/tmux -V
+          if ($LASTEXITCODE -ne 0) {
+            throw "The default WSL2 distro does not provide /usr/bin/tmux."
+          }
+
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install 1.96.1 --profile minimal
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: rust
+
+      - name: Run live WSL terminal and workspace tests
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath`) do set "VSINSTALL=%%i" || exit /b 1
+          if not defined VSINSTALL exit /b 1
+          call "%VSINSTALL%\Common7\Tools\VsDevCmd.bat" -no_logo -arch=x64 -host_arch=x64 || exit /b 1
+          cargo test-wsl-terminal-live || exit /b 1
+          cargo test-wsl-workspace-live || exit /b 1
