@@ -187,6 +187,22 @@ pub struct LiveSessionTarget {
 }
 
 impl LiveSessionTarget {
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn test_fixture(
+        snapshot: &HostSnapshot,
+        name: impl Into<String>,
+        identity: SessionIdentity,
+    ) -> Self {
+        Self {
+            endpoint: snapshot.endpoint.clone(),
+            runtime: snapshot.runtime.clone(),
+            name: name.into(),
+            identity,
+        }
+    }
+
     #[must_use]
     pub fn endpoint(&self) -> &WslEndpoint {
         &self.endpoint

@@ -1666,12 +1666,7 @@ impl Workspace {
     }
 
     fn begin_navigation(&self) -> u64 {
-        self.inner.kill_generation.fetch_add(1, Ordering::AcqRel);
-        self.inner
-            .pending_kill
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
+        invalidate_pending_kill(&self.inner);
         self.inner
             .navigation_generation
             .fetch_add(1, Ordering::AcqRel)
@@ -1968,12 +1963,7 @@ impl Workspace {
     /// inventory or the background query cannot be started.
     pub fn request_session_kill(&self, selection: &SessionSelection) -> Result<(), WorkspaceError> {
         let request = capture_kill_request(&self.inner, selection)?;
-        let generation = self.inner.kill_generation.fetch_add(1, Ordering::AcqRel) + 1;
-        self.inner
-            .pending_kill
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
+        let (generation, _) = invalidate_pending_kill(&self.inner);
         let workspace = self.clone();
         thread::Builder::new()
             .name("ghosthub-session-kill-identity".to_owned())
@@ -1984,26 +1974,32 @@ impl Workspace {
                     request.selection.session(),
                     &CancellationToken::new(),
                 );
-                if workspace.inner.kill_generation.load(Ordering::Acquire) != generation {
-                    return;
-                }
                 match result {
                     Ok(target) => {
-                        *workspace
-                            .inner
-                            .pending_kill
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                            Some(PendingKill {
+                        publish_pending_kill(
+                            &workspace.inner,
+                            PendingKill {
                                 generation,
                                 selection: request.selection,
                                 host: request.host,
                                 target: Arc::new(target),
-                            });
+                            },
+                        );
                     }
-                    Err(error) => workspace.push_operation_error(error.to_string()),
+                    Err(error) => {
+                        let pending_kill = workspace
+                            .inner
+                            .pending_kill
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if workspace.inner.kill_generation.load(Ordering::Acquire) != generation {
+                            return;
+                        }
+                        workspace.push_operation_error(error.to_string());
+                        workspace.inner.revision.fetch_add(1, Ordering::Release);
+                        drop(pending_kill);
+                    }
                 }
-                workspace.inner.revision.fetch_add(1, Ordering::Release);
             })
             .map_err(|error| WorkspaceError::new(format!("verify tmux session: {error}")))?;
         Ok(())
@@ -2011,26 +2007,23 @@ impl Workspace {
 
     #[must_use]
     pub fn session_kill_confirmation(&self) -> Option<SessionKillConfirmation> {
-        self.inner
+        let pending_kill = self
+            .inner
             .pending_kill
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let generation = self.inner.kill_generation.load(Ordering::Acquire);
+        pending_kill
             .as_ref()
+            .filter(|pending| pending.generation == generation)
             .map(|pending| SessionKillConfirmation {
                 selection: pending.selection.clone(),
             })
     }
 
     pub fn cancel_session_kill(&self) {
-        self.inner.kill_generation.fetch_add(1, Ordering::AcqRel);
-        if self
-            .inner
-            .pending_kill
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
-            .is_some()
-        {
+        let (_generation, removed) = invalidate_pending_kill(&self.inner);
+        if removed {
             self.inner.revision.fetch_add(1, Ordering::Release);
         }
     }
@@ -2235,6 +2228,15 @@ impl Workspace {
 
     fn detach_locked(&self) {
         self.begin_navigation();
+        if let Some(pending) = self
+            .inner
+            .pending_creation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            pending.cancellation.cancel();
+        }
         self.inner
             .attachment
             .lock()
@@ -2682,6 +2684,29 @@ impl Workspace {
     fn set_state(&self, state: WorkspaceContent) {
         set_inner_state(&self.inner, state);
     }
+}
+
+fn publish_pending_kill(inner: &Inner, pending: PendingKill) -> bool {
+    let mut pending_kill = inner
+        .pending_kill
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if inner.kill_generation.load(Ordering::Acquire) != pending.generation {
+        return false;
+    }
+    *pending_kill = Some(pending);
+    drop(pending_kill);
+    inner.revision.fetch_add(1, Ordering::Release);
+    true
+}
+
+fn invalidate_pending_kill(inner: &Inner) -> (u64, bool) {
+    let mut pending_kill = inner
+        .pending_kill
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let generation = inner.kill_generation.fetch_add(1, Ordering::AcqRel) + 1;
+    (generation, pending_kill.take().is_some())
 }
 
 fn activate_retained_presentation(
@@ -6155,6 +6180,95 @@ mod tests {
                 if sessions.iter().any(|session| session.name() == "selected")
         ));
         assert_eq!(workspace.snapshot().notice(), None);
+    }
+
+    #[test]
+    fn detaching_during_creation_cancels_the_task_and_restores_inventory() {
+        let workspace = Workspace::preview(WorkspaceSnapshot::ready(
+            Appearance::default(),
+            "Ubuntu",
+            vec![SessionItem::new("existing", 0)],
+        ));
+        let creation_navigation = workspace.begin_navigation();
+        let cancellation = CancellationToken::new();
+        *workspace
+            .inner
+            .pending_creation
+            .lock()
+            .expect("pending creation") = Some(PendingCreation {
+            navigation_generation: creation_navigation,
+            previous: None,
+            cancellation: cancellation.clone(),
+        });
+        set_inner_state(
+            &workspace.inner,
+            WorkspaceContent::Attaching {
+                host_id: "wsl".to_owned(),
+                endpoint: "Ubuntu".to_owned(),
+                session: "creating".to_owned(),
+            },
+        );
+
+        workspace.detach();
+
+        assert!(cancellation.is_cancelled());
+        assert!(
+            workspace
+                .inner
+                .pending_creation
+                .lock()
+                .expect("pending creation")
+                .is_none()
+        );
+        restore_inventory_after_creation_failure(
+            &workspace.inner,
+            None,
+            creation_navigation,
+            "stale creation failure".to_owned(),
+        );
+        assert!(matches!(
+            workspace.snapshot().content(),
+            WorkspaceContent::Ready { sessions, .. }
+                if sessions.iter().any(|session| session.name() == "existing")
+        ));
+        assert_eq!(workspace.snapshot().notice(), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn stale_kill_identity_results_cannot_publish_confirmation() {
+        let workspace = Workspace::preview(WorkspaceSnapshot::ready(
+            Appearance::default(),
+            "Ubuntu",
+            Vec::new(),
+        ));
+        let snapshot = HostSnapshot::test_fixture("Ubuntu", "boot-id", 42, Vec::new());
+        let host = WslHost::new(
+            WslConfig::with_distro("Ubuntu").expect("valid WSL config"),
+            Arc::new(StdCommandRunner) as SharedCommandRunner,
+            WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
+                .expect("absolute WSL path"),
+        );
+        let pending = |generation| PendingKill {
+            generation,
+            selection: SessionSelection::new("wsl", "Ubuntu", "work"),
+            host: host.clone(),
+            target: Arc::new(LiveSessionTarget::test_fixture(
+                &snapshot,
+                "work",
+                session::SessionIdentity::new(100, "$1", 200),
+            )),
+        };
+
+        workspace.inner.kill_generation.store(2, Ordering::Release);
+        assert!(!publish_pending_kill(&workspace.inner, pending(1)));
+        assert_eq!(workspace.session_kill_confirmation(), None);
+
+        workspace.inner.kill_generation.store(3, Ordering::Release);
+        assert!(publish_pending_kill(&workspace.inner, pending(3)));
+        assert!(workspace.session_kill_confirmation().is_some());
+        workspace.inner.kill_generation.store(4, Ordering::Release);
+        assert_eq!(workspace.session_kill_confirmation(), None);
     }
 
     #[test]
