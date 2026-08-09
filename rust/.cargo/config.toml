@@ -2,5 +2,5 @@
 test-contracts = "test -p ghosthub-contracts -p ghosthub-config -p ghosthub-host -p ghosthub-session -p ghosthub-architecture"
 test-psmux-live = "test -p ghosthub-session --test psmux_live -- --ignored --nocapture"
 test-wsl-host-live = "test -p ghosthub-host --test wsl_live -- --ignored --nocapture"
-test-wsl-terminal-live = "test -p ghosthub-terminal --test wsl_live -- --ignored --nocapture --test-threads=1"
-test-wsl-workspace-live = "test -p ghosthub-workspace --test wsl_live -- --ignored --nocapture --test-threads=1"
+test-wsl-terminal-live = "test --locked -p ghosthub-terminal --test wsl_live -- --ignored --nocapture --test-threads=1"
+test-wsl-workspace-live = "test --locked -p ghosthub-workspace --test wsl_live -- --ignored --nocapture --test-threads=1"
