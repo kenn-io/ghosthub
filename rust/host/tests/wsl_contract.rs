@@ -8,12 +8,12 @@ use std::sync::{Arc, Mutex};
 
 use contracts::{Manifest, PlatformTag};
 use host::{
-    AdmissionAttacher, CancellationToken, CommandOutput, CommandRunner, HostErrorKind, WslConfig,
-    WslExecutable, WslHost,
+    AdmissionAttacher, AttachTerm, CancellationToken, CommandOutput, CommandRunner, HostErrorKind,
+    WslConfig, WslExecutable, WslHost,
 };
 use serde::Deserialize;
-use session::AdmissionPlan;
 use session::ExecutablePlatform;
+use session::{AdmissionPlan, SessionName};
 
 #[derive(Clone, Copy, Debug)]
 struct AdmissionStatusFailure {
@@ -881,6 +881,10 @@ fn discovers_identity_in_one_tmux_crossing() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the admission transcript assertions stay together for safety auditing"
+)]
 fn admission_uses_inert_sessions_and_always_cleans_its_namespaces() {
     let runner = RecordingRunner::new(vec![
         instance_output(),
@@ -963,12 +967,20 @@ fn admission_uses_inert_sessions_and_always_cleans_its_namespaces() {
             .count(),
         1
     );
+    assert!(attachment_plans.iter().any(|(_, args)| {
+        args.iter().any(|argument| argument == "new-session")
+            && args.iter().any(|argument| argument == "-A")
+            && args.iter().any(|argument| argument == "-E")
+            && args
+                .iter()
+                .any(|argument| argument == "GHOSTHUB_PROBE=ignored")
+    }));
     assert_eq!(
         attachment_plans
             .iter()
             .filter(|(_, args)| args.iter().any(|argument| argument == "-E"))
             .count(),
-        1
+        2
     );
     assert!(
         admission_calls
@@ -995,7 +1007,8 @@ fn admission_does_not_require_xterm_256color_terminfo() {
         runner: host.runner(),
     };
 
-    host.discover(&attacher)
+    let snapshot = host
+        .discover(&attacher)
         .expect("baseline xterm admission succeeds without xterm-256color");
 
     let plans = host.runner().attachment_plans();
@@ -1006,6 +1019,50 @@ fn admission_does_not_require_xterm_256color_terminfo() {
                 .iter()
                 .any(|argument| argument == "TERM=xterm-256color")
     }));
+    let (creation, term) = host
+        .create_once(
+            snapshot.endpoint(),
+            snapshot.runtime(),
+            SessionName::parse("baseline").expect("valid session name"),
+        )
+        .expect("baseline creation authority");
+    let (_, args, _, _) = creation.into_parts();
+    assert_eq!(term, AttachTerm::Xterm);
+    assert!(args.iter().any(|argument| argument == "TERM=xterm"));
+    assert!(
+        !args
+            .iter()
+            .any(|argument| argument == "TERM=xterm-256color")
+    );
+}
+
+#[test]
+fn admission_uses_xterm_256color_for_creation_when_the_client_proves_it() {
+    let runner = RecordingRunner::new(vec![
+        instance_output(),
+        output(0, "4242\t$3\t1700000000\t0\t4\twork\n", ""),
+        instance_output(),
+    ]);
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        runner,
+    );
+    let snapshot = discover(&host).expect("admit full-color tmux client");
+
+    let (creation, term) = host
+        .create_once(
+            snapshot.endpoint(),
+            snapshot.runtime(),
+            SessionName::parse("full-color").expect("valid session name"),
+        )
+        .expect("full-color creation authority");
+    let (_, args, _, _) = creation.into_parts();
+
+    assert_eq!(term, AttachTerm::Xterm256Color);
+    assert!(
+        args.iter()
+            .any(|argument| argument == "TERM=xterm-256color")
+    );
 }
 
 #[test]
@@ -1075,7 +1132,7 @@ fn admission_failure_before_isolation_cleans_only_created_sessions() {
             .iter()
             .filter(|(_, args)| args.iter().any(|argument| argument == "kill-session"))
             .count(),
-        2
+        1
     );
 }
 
@@ -1346,6 +1403,41 @@ fn discovery_decodes_length_prefixed_session_names_without_splitting_records() {
 }
 
 #[test]
+fn kill_capture_matches_format_shaped_names_without_targeting_them() {
+    let name = "work#(touch /tmp/ghosthub-owned)\nand-more";
+    let inventory = format!("4242\t$3\t1700000000\t0\t{}\t{name}\n", name.len());
+    let runner = RecordingRunner::new(vec![
+        instance_output(),
+        output(0, &inventory, ""),
+        instance_output(),
+        instance_output(),
+        output(0, &inventory, ""),
+        instance_output(),
+    ]);
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        runner,
+    );
+    let snapshot = discover(&host).expect("discover format-shaped session name");
+
+    let target = host
+        .capture_live_session(
+            snapshot.endpoint(),
+            snapshot.runtime(),
+            name,
+            &CancellationToken::new(),
+        )
+        .expect("capture identity from decoded inventory");
+
+    assert_eq!(target.name(), name);
+    assert_eq!(target.identity().session_id(), "$3");
+    assert!(host.runner().all_calls().iter().all(|(_, args)| {
+        args.iter()
+            .all(|argument| !argument.to_string_lossy().contains("#("))
+    }));
+}
+
+#[test]
 fn attach_plan_targets_the_fresh_stable_session_id() {
     let runner = RecordingRunner::new(vec![
         instance_output(),
@@ -1394,6 +1486,143 @@ fn attach_plan_targets_the_fresh_stable_session_id() {
         ]
     );
     assert!(!args.iter().any(|argument| argument == "new-session"));
+}
+
+#[test]
+fn kill_authority_comes_from_a_fresh_query_and_targets_stable_identity() {
+    let runner = RecordingRunner::new(vec![
+        instance_output(),
+        output(0, "4242\t$3\t1700000000\t0\t4\twork\n", ""),
+        instance_output(),
+        instance_output(),
+        output(0, "4242\t$3\t1700000000\t0\t4\twork\n", ""),
+        instance_output(),
+        instance_output(),
+        output(0, "", ""),
+    ]);
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        runner,
+    );
+    let snapshot = discover(&host).expect("discover sessions");
+
+    let target = host
+        .capture_live_session(
+            snapshot.endpoint(),
+            snapshot.runtime(),
+            "work",
+            &CancellationToken::new(),
+        )
+        .expect("capture fresh kill authority");
+    host.kill_live_session(&target, &CancellationToken::new())
+        .expect("kill confirmed identity");
+
+    assert_eq!(target.identity().server_pid(), 4242);
+    assert_eq!(target.identity().session_id(), "$3");
+    assert_eq!(target.identity().created_at(), 1_700_000_000);
+    let calls = host.runner().calls();
+    let identity_call = calls
+        .iter()
+        .filter(|(_, args)| args.iter().any(|argument| argument == "list-sessions"))
+        .nth(1)
+        .expect("fresh all-session identity query");
+    assert_eq!(argument_after(&identity_call.1, "-t"), None);
+    let kill_call = calls
+        .iter()
+        .find(|(_, args)| args.iter().any(|argument| argument == "if-shell"))
+        .expect("conditional kill command");
+    assert_eq!(argument_after(&kill_call.1, "-t"), Some("=$3:"));
+    assert!(kill_call.1.iter().any(|argument| {
+        argument
+            == "#{&&:#{==:#{pid},4242},#{&&:#{==:#{session_id},$3},#{==:#{session_created},1700000000}}}"
+    }));
+    assert!(
+        kill_call
+            .1
+            .iter()
+            .any(|argument| argument == "kill-session -t =$3")
+    );
+}
+
+#[test]
+fn replaced_session_is_not_killed_after_confirmation() {
+    let runner = RecordingRunner::new(vec![
+        instance_output(),
+        output(0, "4242\t$3\t1700000000\t0\t4\twork\n", ""),
+        instance_output(),
+        instance_output(),
+        output(0, "4242\t$3\t1700000000\t0\t4\twork\n", ""),
+        instance_output(),
+        instance_output(),
+        output(0, "__ghosthub_kill_identity_mismatch_v1__\n", ""),
+    ]);
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        runner,
+    );
+    let snapshot = discover(&host).expect("discover sessions");
+    let target = host
+        .capture_live_session(
+            snapshot.endpoint(),
+            snapshot.runtime(),
+            "work",
+            &CancellationToken::new(),
+        )
+        .expect("capture fresh kill authority");
+
+    let error = host
+        .kill_live_session(&target, &CancellationToken::new())
+        .expect_err("identity mismatch must refuse the kill");
+
+    assert!(error.to_string().contains("replaced after confirmation"));
+}
+
+#[test]
+fn missing_stable_target_detects_a_same_named_replacement_from_inventory() {
+    let runner = RecordingRunner::new(vec![
+        instance_output(),
+        output(0, "4242\t$3\t1700000000\t0\t4\twork\n", ""),
+        instance_output(),
+        instance_output(),
+        output(0, "4242\t$3\t1700000000\t0\t4\twork\n", ""),
+        instance_output(),
+        instance_output(),
+        output(1, "", "can't find session: $3"),
+        output(0, "4242\t$4\t1700000001\t0\t4\twork\n", ""),
+        instance_output(),
+    ]);
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        runner,
+    );
+    let snapshot = discover(&host).expect("discover sessions");
+    let target = host
+        .capture_live_session(
+            snapshot.endpoint(),
+            snapshot.runtime(),
+            "work",
+            &CancellationToken::new(),
+        )
+        .expect("capture fresh kill authority");
+
+    let error = host
+        .kill_live_session(&target, &CancellationToken::new())
+        .expect_err("same-named replacement must be reported");
+
+    assert!(error.to_string().contains("replaced after confirmation"));
+    let calls = host.runner().calls();
+    let replacement_query = calls
+        .iter()
+        .filter(|(_, args)| args.iter().any(|argument| argument == "list-sessions"))
+        .nth(2)
+        .expect("replacement inventory query");
+    assert_eq!(argument_after(&replacement_query.1, "-t"), None);
+    assert!(
+        replacement_query
+            .1
+            .iter()
+            .all(|argument| argument != "work")
+    );
 }
 
 #[test]

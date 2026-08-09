@@ -58,7 +58,7 @@ KWT_SOURCE_REVISION ?= unpinned
 endif
 SWIFT_TEST_FILTER ?=
 
-.PHONY: help bootstrap-kwt bootstrap-kwt-variants ensure-kwt ensure-kwt-variants bootstrap-libghostty bootstrap-libghostty-release check-libghostty check-libghostty-release test-libghostty-bootstrap test-terminal-fallback test-stage-release-app-bundles test-assemble-app-bundle test-essential-workflows test-ssh-authentication-live build swift-warning-check build-release debug-app release-app release-dmg release-appcast run-release-app run-app swift-test test-tmux-attach purge-test-tmux python-test test rust-format-check rust-test rust-lint rust-deny rust-check smoke-test docs-build docs-serve site-docs-serve site-deploy reset-app-state install-hooks format format-check
+.PHONY: help bootstrap-kwt bootstrap-kwt-variants ensure-kwt ensure-kwt-variants bootstrap-libghostty bootstrap-libghostty-release check-libghostty check-libghostty-release test-libghostty-bootstrap test-terminal-fallback test-stage-release-app-bundles test-assemble-app-bundle test-essential-workflows test-ssh-authentication-live build swift-warning-check build-release debug-app release-app release-dmg release-appcast run-release-app run-app swift-test test-tmux-attach purge-test-tmux python-test test rust-format-check rust-test rust-test-wsl-live rust-lint rust-deny rust-check smoke-test docs-build docs-serve site-docs-serve site-deploy reset-app-state install-hooks format format-check
 
 help:
 	@printf '%s\n' \
@@ -109,6 +109,8 @@ help:
 		'      Run both the Swift and Python test suites.' \
 		'  make rust-check' \
 		'      Run Rust formatting, tests, checks, and clippy for the current platform.' \
+		'  make rust-test-wsl-live' \
+		'      Run the isolated WSL2 terminal and workspace acceptance suites.' \
 		'  make rust-deny' \
 		'      Check the complete Windows/Linux Rust dependency graph with cargo-deny.' \
 		'  make format' \
@@ -431,6 +433,10 @@ rust-format-check:
 
 rust-test:
 	@cd "$(RUST_DIR)" && $(CARGO) test --workspace --locked
+
+rust-test-wsl-live:
+	@cd "$(RUST_DIR)" && $(CARGO) test-wsl-terminal-live
+	@cd "$(RUST_DIR)" && $(CARGO) test-wsl-workspace-live
 
 rust-lint:
 	@cd "$(RUST_DIR)" && $(CARGO) check --workspace --all-targets --locked

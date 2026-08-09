@@ -17,8 +17,8 @@ mod windows_system;
 mod wsl;
 
 pub use wsl::{
-    AdmissionAttacher, AttachTerm, HostError, HostSnapshot, SystemWslPresence, WslConfig,
-    WslEndpoint, WslExecutable, WslHost, WslPresence, WslRuntimeIdentity,
+    AdmissionAttacher, AttachTerm, HostError, HostSnapshot, LiveSessionTarget, SystemWslPresence,
+    WslConfig, WslEndpoint, WslExecutable, WslHost, WslPresence, WslRuntimeIdentity,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
