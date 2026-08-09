@@ -1721,22 +1721,10 @@ impl RootView {
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
         let draft = self.new_session.as_ref()?;
-        let host = snapshot
-            .hosts()
-            .iter()
-            .find(|host| host.id() == draft.host_id)?;
         let empty = draft.name.trim().is_empty();
         let validation = new_session_validation(snapshot, draft);
         let can_create = !empty && validation.is_none();
-        let helper_is_error = validation.is_some();
         let focused = self.create_focus.is_focused(window);
-        let helper = validation.unwrap_or_else(|| {
-            if empty {
-                "Name the session you want to create on this host.".to_owned()
-            } else {
-                format!("Create and attach on {}.", host.name())
-            }
-        });
 
         Some(
             div()
@@ -1773,18 +1761,14 @@ impl RootView {
                                 .child("New tmux session"),
                         )
                         .child(Self::new_session_name_input(draft, focused, cx))
-                        .child(
+                        .children(validation.map(|message| {
                             div()
                                 .px_4()
                                 .pb_3()
                                 .text_xs()
-                                .text_color(rgb(if helper_is_error {
-                                    0xd0_7070
-                                } else {
-                                    0x82_8995
-                                }))
-                                .child(helper),
-                        )
+                                .text_color(rgb(0xd0_7070))
+                                .child(message)
+                        }))
                         .child(Self::new_session_actions(can_create, cx)),
                 )
                 .into_any_element(),
@@ -1845,55 +1829,40 @@ impl RootView {
             .border_color(rgb(0x2a_2f39))
             .flex()
             .items_center()
-            .justify_between()
-            .gap_3()
+            .justify_end()
+            .gap_2()
             .child(
                 div()
-                    .min_w_0()
-                    .flex_1()
-                    .text_xs()
-                    .text_color(rgb(0x78_7f8b))
-                    .child("Tmux owns the session; closing Ghosthub only detaches."),
+                    .id("cancel-new-session")
+                    .px_3()
+                    .py_1()
+                    .rounded_sm()
+                    .cursor_pointer()
+                    .text_sm()
+                    .text_color(rgb(0xb6_bcc7))
+                    .hover(|style| style.bg(rgb(0x29_2e38)))
+                    .child("Cancel")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.cancel_new_session(window, cx);
+                    })),
             )
             .child(
                 div()
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        div()
-                            .id("cancel-new-session")
-                            .px_3()
-                            .py_1()
-                            .rounded_sm()
+                    .id("create-new-session")
+                    .px_3()
+                    .py_1()
+                    .rounded_sm()
+                    .bg(rgb(if can_create { 0x1d_5f9a } else { 0x2b_3039 }))
+                    .text_sm()
+                    .text_color(rgb(if can_create { 0xf1_f5fa } else { 0x72_7986 }))
+                    .child("Create")
+                    .when(can_create, |element| {
+                        element
                             .cursor_pointer()
-                            .text_sm()
-                            .text_color(rgb(0xb6_bcc7))
-                            .hover(|style| style.bg(rgb(0x29_2e38)))
-                            .child("Cancel")
                             .on_click(cx.listener(|this, _, window, cx| {
-                                this.cancel_new_session(window, cx);
-                            })),
-                    )
-                    .child(
-                        div()
-                            .id("create-new-session")
-                            .px_3()
-                            .py_1()
-                            .rounded_sm()
-                            .bg(rgb(if can_create { 0x1d_5f9a } else { 0x2b_3039 }))
-                            .text_sm()
-                            .text_color(rgb(if can_create { 0xf1_f5fa } else { 0x72_7986 }))
-                            .child("Create")
-                            .when(can_create, |element| {
-                                element.cursor_pointer().on_click(cx.listener(
-                                    |this, _, window, cx| {
-                                        this.submit_new_session(window, cx);
-                                    },
-                                ))
-                            }),
-                    ),
+                                this.submit_new_session(window, cx);
+                            }))
+                    }),
             )
             .into_any_element()
     }
