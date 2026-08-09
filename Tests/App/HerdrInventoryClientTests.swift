@@ -49,6 +49,7 @@ struct HerdrInventoryClientTests {
     @Test("remote discovery uses injected SSH routing in an account login shell")
     func remoteDiscovery() {
         let commands = HerdrCommandRecorder()
+        let routeSamples = Mutex(0)
         let host = SSHHostInfo(
             user: "dev",
             hostname: "build.example",
@@ -58,7 +59,12 @@ struct HerdrInventoryClientTests {
             commandRunner: commandRunner(capturing: commands),
             connectionArgumentsProvider: { suppliedHost in
                 #expect(suppliedHost == host)
-                return ["-F", "/tmp/ghosthub ssh config"]
+                return routeSamples.withLock { samples in
+                    samples += 1
+                    return samples == 1
+                        ? ["-F", "/tmp/ghosthub ssh config"]
+                        : ["-F", "/tmp/changed ssh config"]
+                }
             }
         )
 
@@ -66,6 +72,7 @@ struct HerdrInventoryClientTests {
             HerdrSessionSummary(name: "api", isDefault: true, state: .running),
         ]))
         let captured = commands.snapshot
+        #expect(routeSamples.withLock { $0 } == 1)
         #expect(captured.count == 2)
         #expect(captured.allSatisfy { $0.executable == "/bin/account-shell" })
         #expect(captured.allSatisfy { $0.command.contains("/usr/bin/ssh") })
@@ -76,6 +83,7 @@ struct HerdrInventoryClientTests {
     @Test("Windows hosts are unavailable without starting a process")
     func windowsUnavailable() {
         let calls = Mutex(0)
+        let routeSamples = Mutex(0)
         let runner = AccountCommandRunner(
             processRunner: { _, _, _, _ in
                 calls.withLock { $0 += 1 }
@@ -90,11 +98,15 @@ struct HerdrInventoryClientTests {
         )
         let client = HerdrInventoryClient(
             commandRunner: runner,
-            connectionArgumentsProvider: { _ in [] }
+            connectionArgumentsProvider: { _ in
+                routeSamples.withLock { $0 += 1 }
+                return []
+            }
         )
 
         #expect(client.discover(on: .ssh(host)) == .unavailable)
         #expect(calls.withLock { $0 } == 0)
+        #expect(routeSamples.withLock { $0 } == 0)
     }
 
     @Test("exit 127 is silent unavailability")

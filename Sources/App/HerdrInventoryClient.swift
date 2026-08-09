@@ -51,10 +51,15 @@ struct HerdrInventoryClient: Sendable {
         on host: CommandHost,
         sshConnectionArguments: [String]? = nil
     ) -> HerdrDiscoveryResult {
+        guard supportsHerdr(host) else { return .unavailable }
+        let connectionArguments = resolvedConnectionArguments(
+            on: host,
+            override: sshConnectionArguments
+        )
         let herdrPath: String
         switch resolveExecutable(
             on: host,
-            sshConnectionArguments: sshConnectionArguments
+            sshConnectionArguments: connectionArguments
         ) {
         case let .success(path):
             herdrPath = path
@@ -67,7 +72,7 @@ struct HerdrInventoryClient: Sendable {
         let output = run(
             HerdrSessionList.command(herdrPath: herdrPath),
             on: host,
-            sshConnectionArguments: sshConnectionArguments
+            sshConnectionArguments: connectionArguments
         )
         return HerdrSessionList.parse(
             status: output.status,
@@ -105,6 +110,17 @@ struct HerdrInventoryClient: Sendable {
         case let .ssh(info):
             info.platform == .posix
         }
+    }
+
+    private func resolvedConnectionArguments(
+        on host: CommandHost,
+        override: [String]?
+    ) -> [String]? {
+        if let override {
+            return override
+        }
+        guard case let .ssh(info) = host else { return nil }
+        return connectionArgumentsProvider(info)
     }
 
     private func run(

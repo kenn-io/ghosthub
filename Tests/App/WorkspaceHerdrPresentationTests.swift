@@ -634,6 +634,43 @@ struct WorkspaceHerdrPresentationTests {
         await model.shutdown()
     }
 
+    @Test("opening rejects SSH route drift during validation")
+    func openRejectsRouteDriftDuringValidation() async throws {
+        var environment = try remoteEnvironment()
+        environment.snapshot.hosts[0].herdrAvailable = true
+        let running = try #require(
+            environment.snapshot.hosts[0].herdrSessions.first
+        )
+        let frozen = SSHConnectionArgumentsSnapshot(arguments: [
+            "-F", "/tmp/frozen-config", "dev@build.example.test",
+        ])
+        let changed = SSHConnectionArgumentsSnapshot(arguments: [
+            "-F", "/tmp/changed-config", "dev@other.example.test",
+        ])
+        let currentRoute = LockedValue(frozen)
+        let store = RecordingNativeSessionSurfaceStore()
+        let model = try makeHerdrModel(
+            environment,
+            store: store,
+            discovery: { _ in
+                currentRoute.store(changed)
+                return .available([running])
+            },
+            sshConnectionSnapshotProvider: { _ in currentRoute.load() }
+        )
+        let selection = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID,
+            name: running.name
+        )
+
+        await #expect(throws: HerdrSessionPresentationError.self) {
+            try await model.openBorrowedHerdrSession(selection)
+        }
+
+        #expect(store.requestedConfigurations.isEmpty)
+        await model.shutdown()
+    }
+
     @Test("constructive confirmation rejects SSH route drift")
     func constructiveConfirmationRejectsRouteDrift() async throws {
         var environment = try remoteEnvironment()

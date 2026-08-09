@@ -144,7 +144,8 @@ final class NativeHerdrSessionCoordinator {
         hostID: UUID,
         name: String,
         host: CommandHost,
-        launchMode: HerdrAttachmentLaunchMode = .attachExisting
+        launchMode: HerdrAttachmentLaunchMode = .attachExisting,
+        sshConnectionSnapshot: SSHConnectionArgumentsSnapshot? = nil
     ) -> BorrowedHerdrSessionHandle {
         let key = NativeHerdrSessionKey(hostID: hostID, name: name)
         if let existing = handlesByKey[key],
@@ -184,10 +185,13 @@ final class NativeHerdrSessionCoordinator {
         let herdrPathProvider = herdrPathProvider
         let sshConnectionArgumentsProvider =
             sshConnectionArgumentsProvider
+        let suppliedConnectionSnapshot = sshConnectionSnapshot
         provisioningTasks[handle.id] = Task { [weak self] in
             let probe = Task.detached(priority: .userInitiated) {
                 let sshConnectionSnapshot: SSHConnectionArgumentsSnapshot
-                if case let .ssh(info) = host {
+                if let suppliedConnectionSnapshot {
+                    sshConnectionSnapshot = suppliedConnectionSnapshot
+                } else if case let .ssh(info) = host {
                     sshConnectionSnapshot =
                         sshConnectionArgumentsProvider(info)
                 } else {

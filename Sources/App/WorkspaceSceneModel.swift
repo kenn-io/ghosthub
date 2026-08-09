@@ -267,6 +267,9 @@ final class WorkspaceSceneModel: ObservableObject {
     typealias HerdrSessionDiscovery = @Sendable (
         CommandHost
     ) -> HerdrDiscoveryResult
+    typealias HerdrSessionValidationDiscovery = @Sendable (
+        CommandHost, [String]
+    ) async -> HerdrDiscoveryResult
     typealias HerdrSessionExactProbe = @Sendable (
         String, CommandHost, [String]
     ) async -> HerdrSessionProbeOutcome
@@ -324,6 +327,8 @@ final class WorkspaceSceneModel: ObservableObject {
     private let createdSessionDiscoveryDelays: [Duration]
     private let tmuxSessionProbeBroker: TmuxSessionProbeBroker
     private let herdrSessionProbeBroker: HerdrSessionProbeBroker
+    private let herdrSessionValidationDiscovery:
+        HerdrSessionValidationDiscovery
     private let herdrSessionExactProbe: HerdrSessionExactProbe
     private let tmuxReconnectIntervals: [Duration]
     private let tmuxReconnectProbeDeadline: Duration
@@ -348,6 +353,11 @@ final class WorkspaceSceneModel: ObservableObject {
     private let herdrSSHConnectionSnapshotProvider:
         @Sendable (SSHHostInfo) -> SSHConnectionArgumentsSnapshot
     private struct HerdrLifecycleAuthority {
+        var host: CommandHost
+        var connection: SSHConnectionArgumentsSnapshot
+    }
+    private struct HerdrSessionValidation {
+        var session: HerdrSessionSummary?
         var host: CommandHost
         var connection: SSHConnectionArgumentsSnapshot
     }
@@ -998,6 +1008,15 @@ final class WorkspaceSceneModel: ObservableObject {
         herdrSessionDiscovery: @escaping HerdrSessionDiscovery = { host in
             HerdrInventoryClient().discover(on: host)
         },
+        herdrSessionValidationDiscovery:
+        @escaping HerdrSessionValidationDiscovery = { host, arguments in
+            await Task.detached(priority: .utility) {
+                HerdrInventoryClient().discover(
+                    on: host,
+                    sshConnectionArguments: arguments
+                )
+            }.value
+        },
         herdrSessionExactProbe: @escaping HerdrSessionExactProbe = {
             name, host, arguments in
             await Task.detached(priority: .utility) {
@@ -1150,6 +1169,8 @@ final class WorkspaceSceneModel: ObservableObject {
                 }
             }
         )
+        self.herdrSessionValidationDiscovery =
+            herdrSessionValidationDiscovery
         self.herdrSessionExactProbe = herdrSessionExactProbe
         herdrReconnectSupervisor = SessionReconnectSupervisor(
             intervals: tmuxReconnectIntervals,
@@ -4528,13 +4549,13 @@ final class WorkspaceSceneModel: ObservableObject {
                 selection.name
             )
         }
-        let session = try await revalidatedHerdrSession(selection)
+        let validation = try await revalidatedHerdrSession(selection)
         try requireActiveScene(activityGeneration)
         guard navigationRevision == userNavigationRevision else {
             throw CancellationError()
         }
-        guard session?.state == .running else {
-            throw session == nil
+        guard validation.session?.state == .running else {
+            throw validation.session == nil
                 ? HerdrSessionPresentationError.sessionMissing(selection.name)
                 : HerdrSessionPresentationError.sessionNotRunning(
                     selection.name
@@ -4544,7 +4565,11 @@ final class WorkspaceSceneModel: ObservableObject {
         if failedHerdrLaunchIntent?.selection == selection {
             failedHerdrLaunchIntent = nil
         }
-        _ = presentHerdrSession(selection, launchMode: .attachExisting)
+        _ = presentHerdrSession(
+            selection,
+            launchMode: .attachExisting,
+            validation: validation
+        )
     }
 
     func createHerdrSession(
@@ -4560,14 +4585,18 @@ final class WorkspaceSceneModel: ObservableObject {
         }) else {
             throw HerdrSessionPresentationError.sessionExists(selection.name)
         }
-        let currentSession = try await revalidatedHerdrSession(selection)
+        let validation = try await revalidatedHerdrSession(selection)
         try requireActiveScene(activityGeneration)
         guard navigationRevision == userNavigationRevision
         else { throw CancellationError() }
-        guard currentSession == nil else {
+        guard validation.session == nil else {
             throw HerdrSessionPresentationError.sessionExists(selection.name)
         }
-        try launchHerdrSession(selection, kind: .create)
+        try launchHerdrSession(
+            selection,
+            kind: .create,
+            validation: validation
+        )
     }
 
     func prepareHerdrSessionLifecycle(
@@ -4784,8 +4813,8 @@ final class WorkspaceSceneModel: ObservableObject {
                 selection.name
             )
         }
-        guard let currentSession = try await revalidatedHerdrSession(selection)
-        else {
+        let validation = try await revalidatedHerdrSession(selection)
+        guard let currentSession = validation.session else {
             throw HerdrSessionPresentationError.sessionMissing(selection.name)
         }
         try requireActiveScene(activityGeneration)
@@ -4797,12 +4826,16 @@ final class WorkspaceSceneModel: ObservableObject {
                 selection.name
             )
         }
-        try launchHerdrSession(selection, kind: .restart)
+        try launchHerdrSession(
+            selection,
+            kind: .restart,
+            validation: validation
+        )
     }
 
     private func revalidatedHerdrSession(
         _ selection: WorkspaceHerdrSessionSelection
-    ) async throws -> HerdrSessionSummary? {
+    ) async throws -> HerdrSessionValidation {
         guard let originalHost = snapshot.host(id: selection.hostID),
               let route = CommandHostResolver.resolve(originalHost)
         else { throw HerdrSessionPresentationError.unavailable }
@@ -4818,11 +4851,16 @@ final class WorkspaceSceneModel: ObservableObject {
         let lifecycleRevision = herdrLifecycleCoordinator.revision(
             for: selection.hostID
         )
-        herdrSessionProbeBroker.invalidateSessions(on: route)
-        let result = await herdrSessionProbeBroker.sessions(on: route)
+        let connection = await herdrConnectionSnapshot(on: route)
+        let result = await herdrSessionValidationDiscovery(
+            route,
+            connection.arguments
+        )
+        let currentConnection = await herdrConnectionSnapshot(on: route)
         guard !Task.isCancelled,
               snapshot.host(id: selection.hostID)
               .flatMap(CommandHostResolver.resolve) == route,
+              currentConnection.cacheKey == connection.cacheKey,
               herdrLifecycleCoordinator.revision(for: selection.hostID)
               == lifecycleRevision,
               !herdrLifecycleCoordinator.isPending(key)
@@ -4833,7 +4871,11 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         switch result {
         case let .available(sessions):
-            return sessions.first { $0.name == selection.name }
+            return HerdrSessionValidation(
+                session: sessions.first { $0.name == selection.name },
+                host: route,
+                connection: connection
+            )
         case .unavailable:
             throw HerdrSessionPresentationError.unavailable
         case let .failure(error):
@@ -4846,7 +4888,8 @@ final class WorkspaceSceneModel: ObservableObject {
 
     private func launchHerdrSession(
         _ selection: WorkspaceHerdrSessionSelection,
-        kind: HerdrSessionLifecycleCoordinator.OperationKind
+        kind: HerdrSessionLifecycleCoordinator.OperationKind,
+        validation: HerdrSessionValidation
     ) throws {
         _ = try captureSceneActivity()
         let key = HerdrSessionLifecycleCoordinator.Key(
@@ -4864,7 +4907,8 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         guard let handle = presentHerdrSession(
             selection,
-            launchMode: .launchOrAttach
+            launchMode: .launchOrAttach,
+            validation: validation
         ) else {
             herdrLifecycleCoordinator.finish(operation, outcome: .failed)
             scheduleHerdrSessionDiscovery()
@@ -4879,7 +4923,8 @@ final class WorkspaceSceneModel: ObservableObject {
     @discardableResult
     private func presentHerdrSession(
         _ selection: WorkspaceHerdrSessionSelection,
-        launchMode: HerdrAttachmentLaunchMode = .attachExisting
+        launchMode: HerdrAttachmentLaunchMode = .attachExisting,
+        validation: HerdrSessionValidation? = nil
     ) -> BorrowedHerdrSessionHandle? {
         guard !isShutDown else { return nil }
         if let activeTmux = activeBorrowedTmuxSelection {
@@ -4894,24 +4939,37 @@ final class WorkspaceSceneModel: ObservableObject {
            nativeHerdrSessionCoordinator.attachmentClosure(handle) == nil {
             let existingMode = nativeHerdrSessionCoordinator
                 .attachmentLaunchMode(handle)
+            let routeMatches = if let validation,
+                                  let authority = nativeHerdrSessionCoordinator
+                                  .attachmentAuthority(handle) {
+                authority.host == validation.host
+                    && authority.sshConnectionSnapshot.cacheKey
+                    == validation.connection.cacheKey
+            } else {
+                validation == nil
+            }
             if launchMode == .attachExisting
-                || existingMode == .launchOrAttach {
+                || existingMode == .launchOrAttach,
+                routeMatches {
                 return handle
             }
             closeBorrowedHerdrSession(selection)
         }
         guard let host = snapshot.host(id: selection.hostID),
-              let attachmentHost = CommandHostResolver.resolve(host)
+              let currentHost = CommandHostResolver.resolve(host)
         else {
             activeBorrowedHerdrSelection = selection
             activeBorrowedHerdrHandle = nil
             return nil
         }
+        let attachmentHost = validation?.host ?? currentHost
+        guard currentHost == attachmentHost else { return nil }
         let handle = nativeHerdrSessionCoordinator.attach(
             hostID: selection.hostID,
             name: selection.name,
             host: attachmentHost,
-            launchMode: launchMode
+            launchMode: launchMode,
+            sshConnectionSnapshot: validation?.connection
         )
         activeBorrowedHerdrSelection = selection
         activeBorrowedHerdrHandle = handle
@@ -4978,19 +5036,20 @@ final class WorkspaceSceneModel: ObservableObject {
         if let intent = failedHerdrLaunchIntent,
            intent.selection == selection {
             do {
-                let currentSession = try await revalidatedHerdrSession(
+                let validation = try await revalidatedHerdrSession(
                     selection
                 )
                 try requireActiveScene(activityGeneration)
                 guard activeBorrowedHerdrSelection == selection else {
                     return
                 }
-                if currentSession?.state == .running {
+                if validation.session?.state == .running {
                     failedHerdrLaunchIntent = nil
                     closeBorrowedHerdrSession(selection)
                     guard presentHerdrSession(
                         selection,
-                        launchMode: .attachExisting
+                        launchMode: .attachExisting,
+                        validation: validation
                     ) != nil else {
                         stopHerdrReconnectWithUnableToAttach(
                             HerdrSessionPresentationError.unavailable
@@ -5003,13 +5062,13 @@ final class WorkspaceSceneModel: ObservableObject {
                 }
                 switch intent.kind {
                 case .create:
-                    guard currentSession == nil else {
+                    guard validation.session == nil else {
                         throw HerdrSessionPresentationError.sessionExists(
                             selection.name
                         )
                     }
                 case .restart:
-                    guard let currentSession else {
+                    guard let currentSession = validation.session else {
                         throw HerdrSessionPresentationError.sessionMissing(
                             selection.name
                         )
@@ -5022,7 +5081,11 @@ final class WorkspaceSceneModel: ObservableObject {
                 case .stop, .delete:
                     return
                 }
-                try launchHerdrSession(selection, kind: intent.kind)
+                try launchHerdrSession(
+                    selection,
+                    kind: intent.kind,
+                    validation: validation
+                )
                 prepareActiveBorrowedHerdrSurface()
             } catch is CancellationError {
                 return
