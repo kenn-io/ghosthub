@@ -23,7 +23,7 @@ demo_pid="$(demo_require_recorded_process "$scratch/app.pid" "$bin")"
 
 rm -f "$out" "$out.tmp"
 if [[ "$mode" == "matrix" ]]; then
-  for index in 1 2 3 4 5; do
+  for index in 1 2 3; do
     rm -f "$out.$index" "$out.$index.tmp"
   done
 fi
@@ -51,7 +51,7 @@ capture_complete() {
   [[ -s "$out" ]] || return 1
   [[ "$mode" != "matrix" ]] && return 0
   local index
-  for index in 1 2 3 4 5; do
+  for index in 1 2 3; do
     [[ -s "$out.$index" ]] || return 1
   done
 }
@@ -66,7 +66,7 @@ if ! capture_complete; then
 fi
 
 if [[ "$mode" == "matrix" ]]; then
-  echo "captured six-window demo matrix from process $demo_pid -> $out{,.1...5}"
+  echo "captured four-window demo matrix from process $demo_pid -> $out{,.1...3}"
 else
   echo "captured demo process $demo_pid -> $out"
   sips -g pixelWidth -g pixelHeight "$out" | tail -2

@@ -165,8 +165,9 @@ EOF
 
 capture_state() {
   local name="$1"
+  local mode="${2:-window}"
   local raw="$scratch/screenshots-raw/$name"
-  "$demo_root/capture.sh" "$raw"
+  "$demo_root/capture.sh" "$raw" "$mode"
   process_capture "$raw" "$out_dir/$name"
   sips -g pixelWidth -g pixelHeight "$out_dir/$name" | tail -2
 }
@@ -180,7 +181,7 @@ process_matrix_capture() {
 const sharp = require("sharp");
 (async () => {
   const [raw, destination] = process.argv.slice(2);
-  const files = [raw, ...[1, 2, 3, 4, 5].map((index) => `${raw}.${index}`)];
+  const files = [raw, ...[1, 2, 3].map((index) => `${raw}.${index}`)];
   const metadata = await Promise.all(
     files.map((file) => sharp(file).metadata())
   );
@@ -193,7 +194,7 @@ const sharp = require("sharp");
   const gap = 6;
   await sharp({
     create: {
-      width: width * 3 + gap * 2,
+      width: width * 2 + gap,
       height: height * 2 + gap,
       channels: 4,
       background: "#080b0e",
@@ -201,8 +202,8 @@ const sharp = require("sharp");
   })
     .composite(files.map((input, index) => ({
       input,
-      left: (index % 3) * (width + gap),
-      top: Math.floor(index / 3) * (height + gap),
+      left: (index % 2) * (width + gap),
+      top: Math.floor(index / 2) * (height + gap),
     })))
     .resize({ width: 1800 })
     .png({ compressionLevel: 9 })
@@ -225,7 +226,8 @@ if [[ "${GHOSTHUB_DEMO_EXE_ONLY:-}" == "1" ]]; then
   exit 0
 fi
 
-if [[ "${GHOSTHUB_DEMO_TABS_ONLY:-}" != "1" ]]; then
+if [[ "${GHOSTHUB_DEMO_TABS_ONLY:-}" != "1" &&
+      "${GHOSTHUB_DEMO_COMMAND_CENTER_ONLY:-}" != "1" ]]; then
 echo "==> controller: unmatched palette commands fail validation"
 unmatched_command="__ghosthub_missing_command__"
 unmatched_error="$scratch/unmatched-command.error"
@@ -284,6 +286,7 @@ palette "Open Appearance Settings" true sheet
 sleep 2
 capture_state guide-terminal.png
 dismiss_sheet
+fi
 
 prepare_command_window() {
   local query="$1" create="${2:-true}" select="${3:-palette}"
@@ -296,9 +299,13 @@ prepare_command_window() {
   if [[ "$select" == "row" ]]; then
     case "$query" in
       add-session-filters)
-        demo_input click "32,222"
+        if [[ "${GHOSTHUB_DEMO_COMMAND_CENTER_ONLY:-}" == "1" ]]; then
+          demo_input click "32,249"
+          sleep 0.5
+        fi
+        demo_input click "32,165"
         sleep 0.5
-        demo_input click "80,155"
+        demo_input click "80,95"
         ;;
       docbank-export) demo_input click "80,603" ;;
       release-watch) demo_input click "80,558" ;;
@@ -315,21 +322,30 @@ prepare_command_window() {
     palette "$query"
   fi
   sleep 3
+  demo_input expect-window-title "$query"
   demo_input hide-sidebar
 }
 
-echo "==> guide: six-window tmux command center"
-prepare_command_window "fix-reconnect-backoff" false none
-prepare_command_window "add-session-filters" true row
-prepare_command_window "scratch" true row
-prepare_command_window "docbank-export" true row
-prepare_command_window "release-watch" true row
-prepare_command_window "test-matrix" true row
-matrix_raw="$scratch/screenshots-raw/guide-command-center.png"
-"$demo_root/capture.sh" "$matrix_raw" matrix
-process_matrix_capture "$matrix_raw" "$out_dir/guide-command-center.png"
-sips -g pixelWidth -g pixelHeight \
-  "$out_dir/guide-command-center.png" | tail -2
+if [[ "${GHOSTHUB_DEMO_TABS_ONLY:-}" != "1" ]]; then
+  echo "==> guide: four-window tmux command center"
+  if [[ "${GHOSTHUB_DEMO_COMMAND_CENTER_ONLY:-}" == "1" ]]; then
+    prepare_command_window "fix-reconnect-backoff" false palette
+  else
+    prepare_command_window "fix-reconnect-backoff" false none
+  fi
+  prepare_command_window "scratch" true row
+  prepare_command_window "docbank-export" true row
+  prepare_command_window "release-watch" true row
+  matrix_raw="$scratch/screenshots-raw/guide-command-center.png"
+  "$demo_root/capture.sh" "$matrix_raw" matrix
+  process_matrix_capture "$matrix_raw" "$out_dir/guide-command-center.png"
+  sips -g pixelWidth -g pixelHeight \
+    "$out_dir/guide-command-center.png" | tail -2
+
+  if [[ "${GHOSTHUB_DEMO_COMMAND_CENTER_ONLY:-}" == "1" ]]; then
+    echo "captured command-center website asset -> $out_dir"
+    exit 0
+  fi
 fi
 
 prepare_command_tab() {
@@ -343,18 +359,18 @@ prepare_command_tab() {
   if [[ "$select" == "row" ]]; then
     case "$query" in
       fix-reconnect-backoff)
-        demo_input click "32,365"
+        demo_input click "32,310"
         sleep 0.5
-        demo_input click "32,327"
+        demo_input click "32,268"
         sleep 0.5
-        demo_input click "80,258"
+        demo_input click "80,202"
         ;;
       add-session-filters)
-        demo_input click "32,293"
+        demo_input click "32,228"
         sleep 0.5
-        demo_input click "32,252"
+        demo_input click "32,185"
         sleep 0.5
-        demo_input click "80,174"
+        demo_input click "80,115"
         ;;
       docbank-export) demo_input click "80,613" ;;
       release-watch) demo_input click "80,569" ;;
@@ -371,19 +387,18 @@ prepare_command_tab() {
     palette "$query"
   fi
   sleep 3
+  demo_input expect-window-title "$query"
+  demo_input hide-sidebar
 }
 
 echo "==> guide: six-tab tmux workspace"
 demo_input new-window
 sleep 2
 if [[ "${GHOSTHUB_DEMO_TABS_ONLY:-}" != "1" ]]; then
-  # The preceding command-center capture leaves the shared Projects and
-  # agentsview disclosures expanded. Normalize the fresh window to the
-  # collapsed state used by the focused tabs-only workflow.
+  # The Overview captures leave Projects expanded. Collapse it so the first
+  # tab starts from the same sidebar state as the focused tabs-only workflow.
   demo_input frame "110,145,1500,820"
-  demo_input click "32,283"
-  sleep 0.5
-  demo_input click "32,365"
+  demo_input click "32,310"
   sleep 0.5
 fi
 prepare_command_tab "fix-reconnect-backoff" false row
@@ -392,8 +407,12 @@ prepare_command_tab "scratch" true row
 prepare_command_tab "docbank-export" true row
 prepare_command_tab "release-watch" true row
 prepare_command_tab "test-matrix" true row
-demo_input hide-sidebar
-capture_state guide-native-tabs.png
+capture_state guide-native-tabs.png exact
+
+if [[ "${GHOSTHUB_DEMO_TABS_ONLY:-}" == "1" ]]; then
+  echo "captured native-tabs website asset -> $out_dir"
+  exit 0
+fi
 
 echo "==> guide: passive session activity indicator"
 # Every session above is warm from its earlier attachment. Drive fresh
