@@ -27,6 +27,8 @@ const UNCERTAIN_CLEANUP_SETTLE: Duration = Duration::from_secs(2);
 // without adding another process crossing.
 const INVENTORY_FORMAT: &str = "#{pid}\t#{session_id}\t#{session_created}\t#{session_attached}\t#{n:session_name}\t#{session_name}";
 const ADMISSION_IDENTITY_FORMAT: &str = "#{pid}\t#{session_id}\t#{n:session_name}\t#{session_name}";
+const LIVE_IDENTITY_FORMAT: &str = "#{pid}\t#{session_id}\t#{session_created}";
+const KILL_IDENTITY_MISMATCH_MARKER: &str = "__ghosthub_kill_identity_mismatch_v1__";
 static ADMISSION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub trait AdmissionAttacher {
@@ -169,6 +171,41 @@ pub struct HostSnapshot {
     endpoint: WslEndpoint,
     runtime: WslRuntimeIdentity,
     sessions: Vec<DiscoveredSession>,
+}
+
+/// Fresh, non-persistable authority to kill one exact live tmux session.
+///
+/// The constructor is private so cached inventory cannot be promoted into
+/// destructive authority. Callers can obtain this value only from a live
+/// tmux query immediately before presenting confirmation.
+#[derive(Debug)]
+pub struct LiveSessionTarget {
+    endpoint: WslEndpoint,
+    runtime: WslRuntimeIdentity,
+    name: String,
+    identity: SessionIdentity,
+}
+
+impl LiveSessionTarget {
+    #[must_use]
+    pub fn endpoint(&self) -> &WslEndpoint {
+        &self.endpoint
+    }
+
+    #[must_use]
+    pub const fn runtime(&self) -> &WslRuntimeIdentity {
+        &self.runtime
+    }
+
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    #[must_use]
+    pub const fn identity(&self) -> &SessionIdentity {
+        &self.identity
+    }
 }
 
 impl HostSnapshot {
@@ -524,6 +561,128 @@ impl<R: CommandRunner> WslHost<R> {
         })
     }
 
+    /// Capture fresh destructive authority for one exact session.
+    ///
+    /// This deliberately does not accept a cached `SessionIdentity`. The WSL
+    /// runtime is checked on both sides of the tmux query so a distro restart
+    /// cannot launder an old inventory row into a confirmation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified error when the runtime changed, the session is no
+    /// longer running, or tmux returned an invalid identity.
+    pub fn capture_live_session(
+        &self,
+        endpoint: &WslEndpoint,
+        expected_runtime: &WslRuntimeIdentity,
+        name: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<LiveSessionTarget, HostError> {
+        self.require_runtime(endpoint, expected_runtime, cancellation)?;
+        let target = format!("={name}:");
+        let output = self.run_tmux_command(
+            endpoint,
+            cancellation,
+            &[
+                "-f",
+                "/dev/null",
+                "display-message",
+                "-p",
+                "-t",
+                &target,
+                LIVE_IDENTITY_FORMAT,
+            ],
+        )?;
+        if output.status != 0 {
+            return Err(classify_session_command_failure(
+                output.status,
+                &output.stderr,
+                name,
+                "verify",
+            ));
+        }
+        let identity = parse_live_identity(&output.stdout)?;
+        self.require_runtime(endpoint, expected_runtime, cancellation)?;
+        Ok(LiveSessionTarget {
+            endpoint: endpoint.clone(),
+            runtime: expected_runtime.clone(),
+            name: name.to_owned(),
+            identity,
+        })
+    }
+
+    /// Kill the exact session identity captured immediately before user
+    /// confirmation.
+    ///
+    /// Tmux evaluates all three identity fields and performs the kill in one
+    /// server-side command. A replaced session is never destroyed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the WSL runtime changed, the session disappeared,
+    /// its identity no longer matches, or tmux could not execute the command.
+    pub fn kill_live_session(
+        &self,
+        target: &LiveSessionTarget,
+        cancellation: &CancellationToken,
+    ) -> Result<(), HostError> {
+        self.require_runtime(&target.endpoint, &target.runtime, cancellation)?;
+        let identity = &target.identity;
+        let tmux_target = format!("={}:", identity.session_id());
+        let condition = tmux_identity_condition(identity);
+        let kill = format!("kill-session -t ={}", identity.session_id());
+        let mismatch = format!("display-message -p {KILL_IDENTITY_MISMATCH_MARKER}");
+        let output = self.run_tmux_command(
+            &target.endpoint,
+            cancellation,
+            &[
+                "-f",
+                "/dev/null",
+                "if-shell",
+                "-F",
+                "-t",
+                &tmux_target,
+                &condition,
+                &kill,
+                &mismatch,
+            ],
+        )?;
+        if output.status != 0 {
+            return Err(classify_session_command_failure(
+                output.status,
+                &output.stderr,
+                &target.name,
+                "kill",
+            ));
+        }
+        if String::from_utf8_lossy(&output.stdout).contains(KILL_IDENTITY_MISMATCH_MARKER) {
+            return Err(HostError::new(
+                DiagnosticKind::Transport,
+                format!(
+                    "Session ‘{}’ was replaced after confirmation. Review the new session before trying again.",
+                    target.name
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    fn require_runtime(
+        &self,
+        endpoint: &WslEndpoint,
+        expected: &WslRuntimeIdentity,
+        cancellation: &CancellationToken,
+    ) -> Result<(), HostError> {
+        if self.resolve_runtime(endpoint, cancellation)? == *expected {
+            Ok(())
+        } else {
+            Err(HostError::new(
+                DiagnosticKind::Transport,
+                "WSL restarted; refresh the host before changing the session",
+            ))
+        }
+    }
+
     fn resolve_endpoint(&self, cancellation: &CancellationToken) -> Result<WslEndpoint, HostError> {
         if let Some(distro) = &self.config.distro {
             return Ok(WslEndpoint {
@@ -622,6 +781,24 @@ impl<R: CommandRunner> WslHost<R> {
             ));
         }
         parse_inventory(&output.stdout)
+    }
+
+    fn run_tmux_command(
+        &self,
+        endpoint: &WslEndpoint,
+        cancellation: &CancellationToken,
+        tmux_args: &[&str],
+    ) -> Result<CommandOutput, HostError> {
+        let mut args = pinned_prefix(endpoint);
+        append_tmux_environment(
+            &mut args,
+            Some("TERM=xterm"),
+            self.config.tmux_tmpdir.as_deref(),
+            &[],
+        );
+        args.push(OsString::from(&self.config.tmux_binary));
+        args.extend(tmux_args.iter().map(OsString::from));
+        self.run(&args, cancellation)
     }
 
     #[allow(
@@ -1937,6 +2114,39 @@ fn parse_inventory(bytes: &[u8]) -> Result<Vec<DiscoveredSession>, HostError> {
         .collect()
 }
 
+fn parse_live_identity(bytes: &[u8]) -> Result<SessionIdentity, HostError> {
+    let output = decode(bytes, "live tmux session identity")?;
+    let fields = output
+        .trim_end_matches(['\r', '\n'])
+        .split('\t')
+        .collect::<Vec<_>>();
+    if fields.len() != 3 {
+        return Err(HostError::new(
+            DiagnosticKind::MalformedOutput,
+            "tmux returned an invalid live session identity",
+        ));
+    }
+    let server_pid = fields[0].parse::<u32>().map_err(|_| {
+        HostError::new(
+            DiagnosticKind::MalformedOutput,
+            "tmux returned an invalid live server PID",
+        )
+    })?;
+    let created_at = fields[2].parse::<u64>().map_err(|_| {
+        HostError::new(
+            DiagnosticKind::MalformedOutput,
+            "tmux returned an invalid live session creation time",
+        )
+    })?;
+    if server_pid == 0 || !is_tmux_session_id(fields[1]) {
+        return Err(HostError::new(
+            DiagnosticKind::MalformedOutput,
+            "tmux returned an invalid live session identity",
+        ));
+    }
+    Ok(SessionIdentity::new(server_pid, fields[1], created_at))
+}
+
 struct TmuxNameRecord<'a> {
     fields: Vec<&'a str>,
     name: &'a str,
@@ -2021,6 +2231,26 @@ fn classify_command_failure(status: i32, stderr: &[u8], subject: &str) -> HostEr
     HostError::new(kind, format!("{subject}: {}", stderr.trim()))
 }
 
+fn classify_session_command_failure(
+    status: i32,
+    stderr: &[u8],
+    session: &str,
+    operation: &str,
+) -> HostError {
+    let text = String::from_utf8_lossy(stderr);
+    if is_no_server(&text) || is_missing_session(&text) {
+        return HostError::new(
+            DiagnosticKind::Transport,
+            format!("Session ‘{session}’ is no longer running."),
+        );
+    }
+    classify_command_failure(
+        status,
+        stderr,
+        &format!("{operation} tmux session ‘{session}’"),
+    )
+}
+
 fn classify_admission_failure(status: i32, stderr: &[u8], subject: &str) -> HostError {
     let error = classify_command_failure(status, stderr, subject);
     if error.kind() == DiagnosticKind::Transport {
@@ -2073,6 +2303,15 @@ fn tmux_identity_equals(field: &str, value: &str) -> String {
     condition.push_str(value);
     condition.push('}');
     condition
+}
+
+fn tmux_identity_condition(identity: &SessionIdentity) -> String {
+    format!(
+        "#{{&&:{},#{{&&:{},{}}}}}",
+        tmux_identity_equals("pid", &identity.server_pid().to_string()),
+        tmux_identity_equals("session_id", identity.session_id()),
+        tmux_identity_equals("session_created", &identity.created_at().to_string()),
+    )
 }
 
 #[cfg(test)]

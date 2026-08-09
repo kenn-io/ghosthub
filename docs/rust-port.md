@@ -701,6 +701,16 @@ command. The chrome is shaped for additional admitted local mux hosts, but
 Slice 1 exposes only WSL tmux; psmux remains rejection evidence until it
 satisfies the same capability bar.
 
+The selected session row also exposes a separate destructive close action.
+It performs a fresh WSL runtime and tmux identity query before showing
+confirmation. Approval carries that non-persistable authority into one tmux
+conditional that compares server PID, session ID, and creation time, then
+kills by the captured stable session ID only on a match. Cancellation changes
+nothing; lookup, runtime, identity, and command failures leave the presentation
+open. A successful kill removes only the matching active or retained
+presentation and refreshes inventory. This action never shares the ordinary
+detach path.
+
 The Windows shell draws one compact title bar in the same visual plane as the
 application chrome. It retains the native window controls and dynamic
 session/endpoint title, and exposes a sidebar button there. `Ctrl+Shift+B`
@@ -801,7 +811,7 @@ Cross-window focus arbitration is deferred until multi-window delivery.
 
 Slice 1 includes policy-controlled OSC 52 writes to the Windows clipboard,
 empty responses for remote OSC 52 reads, and explicit clipboard paste with
-bracketed framing. It excludes IME composition, dead keys, kill,
+bracketed framing. It excludes IME composition, dead keys,
 kwt inventory, worktree mutation, remote SSH, managed-helper
 installation, native Linux product UI, persistence/restoration, multiple
 windows, Console Panel, telemetry, updates, packaging, and acceptance
@@ -845,7 +855,8 @@ After Slice 1:
 2. Worktree selection adds ordinary/protected RepairOrOpen authority; plain
    local session creation already ships through CreateOnce in the WSL slice.
 3. Local lifecycle adds project registration, worktree creation, branch/PR
-   import, deletion, and fresh-identity conditional Kill Session.
+   import, and deletion; the WSL slice already ships fresh-identity conditional
+   Kill Session for bare sessions.
 4. Remote hosts add OpenSSH diagnostics, managed-helper installation,
    attach-only transport reconnect, repair/open reconnect, and remote Windows.
 5. Persistence and restoration add the coalescing writer, host settings,

@@ -286,6 +286,7 @@ pub struct RootView {
     workspace: Workspace,
     focus: FocusHandle,
     create_focus: FocusHandle,
+    kill_focus: FocusHandle,
     diagnostic: Option<String>,
     paste_confirmation: bool,
     observed_presentation_id: Option<u64>,
@@ -621,6 +622,7 @@ impl RootView {
             workspace,
             focus: cx.focus_handle(),
             create_focus: cx.focus_handle(),
+            kill_focus: cx.focus_handle(),
             diagnostic: None,
             paste_confirmation: false,
             observed_presentation_id: None,
@@ -832,11 +834,26 @@ impl RootView {
         cx.notify();
     }
 
-    fn detach(&mut self, cx: &mut Context<Self>) {
-        self.workspace.detach();
-        self.observed_presentation_id = None;
-        self.clear_terminal_input();
-        self.paint_cache.clear();
+    fn request_session_kill(&mut self, selection: &SessionSelection, cx: &mut Context<Self>) {
+        match self.workspace.request_session_kill(selection) {
+            Ok(()) => self.diagnostic = None,
+            Err(error) => self.diagnostic = Some(error.to_string()),
+        }
+        cx.notify();
+    }
+
+    fn cancel_session_kill(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.workspace.cancel_session_kill();
+        window.focus(&self.focus);
+        cx.notify();
+    }
+
+    fn confirm_session_kill(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.workspace.confirm_session_kill() {
+            Ok(()) => self.diagnostic = None,
+            Err(error) => self.diagnostic = Some(error.to_string()),
+        }
+        window.focus(&self.focus);
         cx.notify();
     }
 
@@ -1775,6 +1792,125 @@ impl RootView {
         )
     }
 
+    fn session_kill_overlay(
+        &self,
+        confirmation: &workspace::SessionKillConfirmation,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let session = confirmation.selection().session().to_owned();
+        div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(rgba(0x00_00_00_80))
+            .child(
+                div()
+                    .id("kill-session-dialog")
+                    .track_focus(&self.kill_focus)
+                    .w(px(460.0))
+                    .flex()
+                    .flex_col()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(rgb(0x36_3c48))
+                    .bg(rgb(0x18_1b22))
+                    .shadow_lg()
+                    .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                        if event.keystroke.key.eq_ignore_ascii_case("escape") && !event.is_held {
+                            this.cancel_session_kill(window, cx);
+                            cx.stop_propagation();
+                        }
+                    }))
+                    .child(
+                        div()
+                            .px_4()
+                            .py_3()
+                            .border_b_1()
+                            .border_color(rgb(0x2a_2f39))
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(rgb(0xe0_e4eb))
+                            .child(format!("Kill “{session}”?")),
+                    )
+                    .child(
+                        div()
+                            .px_4()
+                            .py_4()
+                            .text_sm()
+                            .text_color(rgb(0xb6_bcc7))
+                            .child(
+                                "This permanently terminates every window, pane, and process in this tmux session on WSL.",
+                            ),
+                    )
+                    .child(
+                        div()
+                            .px_4()
+                            .py_3()
+                            .border_t_1()
+                            .border_color(rgb(0x2a_2f39))
+                            .flex()
+                            .items_center()
+                            .justify_end()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .id("cancel-kill-session")
+                                    .px_3()
+                                    .py_1()
+                                    .rounded_sm()
+                                    .cursor_pointer()
+                                    .text_sm()
+                                    .text_color(rgb(0xb6_bcc7))
+                                    .hover(|style| style.bg(rgb(0x29_2e38)))
+                                    .child("Cancel")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.cancel_session_kill(window, cx);
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .id("confirm-kill-session")
+                                    .px_3()
+                                    .py_1()
+                                    .rounded_sm()
+                                    .cursor_pointer()
+                                    .bg(rgb(0xa9_3038))
+                                    .hover(|style| style.bg(rgb(0xc1_3b43)))
+                                    .text_sm()
+                                    .text_color(rgb(0xff_f6f6))
+                                    .child("Kill Session")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.confirm_session_kill(window, cx);
+                                    })),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn pending_session_kill_overlay(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let confirmation = self.workspace.session_kill_confirmation()?;
+        if !self.kill_focus.is_focused(window) {
+            window.focus(&self.kill_focus);
+        }
+        Some(self.session_kill_overlay(&confirmation, cx))
+    }
+
+    fn synchronize_render_state(&mut self, snapshot: &workspace::WorkspaceSnapshot) {
+        self.observed_revision = snapshot.revision();
+        if !matches!(snapshot.content(), WorkspaceContent::Terminal { .. }) {
+            self.observed_surface_identity = None;
+            self.observed_surface_generation = 0;
+            self.paint_cache.clear();
+        }
+    }
+
     fn new_session_name_input(
         draft: &NewSessionDraft,
         focused: bool,
@@ -2151,6 +2287,7 @@ impl RootView {
     ) -> gpui::AnyElement {
         let selection = selection.clone();
         let open_selection = selection.clone();
+        let kill_selection = selection.clone();
         let name = selection.session().to_owned();
         let mut row = div()
             .id((
@@ -2196,7 +2333,7 @@ impl RootView {
         if is_active {
             row = row.child(
                 div()
-                    .id("detach-terminal")
+                    .id("kill-session")
                     .flex_none()
                     .size(px(24.0))
                     .flex()
@@ -2206,8 +2343,8 @@ impl RootView {
                     .text_color(rgb(0xa9_c9_ea))
                     .hover(|style| style.bg(rgb(0x25_527f)).text_color(rgb(0xff_ff_ff)))
                     .child("×")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.detach(cx);
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.request_session_kill(&kill_selection, cx);
                         cx.stop_propagation();
                     })),
             );
@@ -2583,14 +2720,10 @@ impl Render for RootView {
         let snapshot = self.workspace.snapshot();
         let title = workspace_window_title(snapshot.content());
         window.set_window_title(&title);
-        self.observed_revision = snapshot.revision();
-        if !matches!(snapshot.content(), WorkspaceContent::Terminal { .. }) {
-            self.observed_surface_identity = None;
-            self.observed_surface_generation = 0;
-            self.paint_cache.clear();
-        }
+        self.synchronize_render_state(&snapshot);
         let content = self.content_element(&snapshot, cx);
         let creation_overlay = self.new_session_overlay(&snapshot, window, cx);
+        let kill_overlay = self.pending_session_kill_overlay(window, cx);
         let mut root = div()
             .flex()
             .flex_col()
@@ -2602,7 +2735,8 @@ impl Render for RootView {
             }))
             .child(self.title_bar(title, cx))
             .child(div().flex_1().min_h_0().w_full().child(content))
-            .children(creation_overlay);
+            .children(creation_overlay)
+            .children(kill_overlay);
 
         if let Some(notice) = snapshot.notice() {
             root = root.child(

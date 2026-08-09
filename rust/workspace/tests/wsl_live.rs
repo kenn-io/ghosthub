@@ -90,6 +90,24 @@ impl IsolatedServer {
             .trim()
             .to_owned()
     }
+
+    fn has_session(&self, name: &str) -> bool {
+        let output = Command::new("wsl.exe")
+            .args([
+                "--exec",
+                "/usr/bin/env",
+                &format!("TMUX_TMPDIR={}", self.tmpdir),
+                "/usr/bin/tmux",
+                "-f",
+                "/dev/null",
+                "has-session",
+                "-t",
+                &format!("={name}"),
+            ])
+            .output()
+            .expect("query isolated WSL tmux session");
+        output.status.success()
+    }
 }
 
 fn isolated_tmpdir(label: &str, process_id: u32, nonce: u128) -> String {
@@ -596,6 +614,75 @@ fn refuses_to_attach_when_the_discovered_session_was_replaced() {
                 .notice()
                 .is_some_and(|notice| notice.contains("identity changed"))
     });
+}
+
+#[test]
+#[ignore = "requires WSL2 and tmux; creates only an isolated TMUX_TMPDIR server"]
+fn confirms_fresh_identity_and_never_kills_a_replacement() {
+    let _serial = WSL_LIVE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let server = IsolatedServer::start("kill-confirmation");
+    let config = WslConfig::configured(None, "/usr/bin/tmux", Some(server.tmpdir.clone()))
+        .expect("valid isolated config");
+    let workspace = Workspace::start_wsl(config, TerminalAppearance::default());
+
+    wait_until_with_diagnostic(
+        || {
+            matches!(
+                workspace.snapshot().content(),
+                WorkspaceContent::Ready { sessions, .. }
+                    if sessions.iter().any(|session| session.name() == "workspace-live")
+            )
+        },
+        || workspace_diagnostic(&workspace),
+    );
+    let selection = session_selection(&workspace, "workspace-live");
+
+    workspace
+        .request_session_kill(&selection)
+        .expect("begin live identity query");
+    wait_until(|| workspace.session_kill_confirmation().is_some());
+    workspace.cancel_session_kill();
+    assert!(server.has_session("workspace-live"), "cancel must not kill");
+
+    workspace
+        .request_session_kill(&selection)
+        .expect("begin second live identity query");
+    wait_until(|| workspace.session_kill_confirmation().is_some());
+    server.run_tmux(["kill-session", "-t", "=workspace-live"]);
+    server.run_tmux(["new-session", "-d", "-s", "workspace-live"]);
+    workspace
+        .confirm_session_kill()
+        .expect("begin guarded kill");
+    wait_until(|| {
+        workspace.drain_events().0.into_iter().any(|event| {
+            matches!(event, WorkspaceEvent::Error(message) if message.contains("replaced after confirmation"))
+        })
+    });
+    assert!(
+        server.has_session("workspace-live"),
+        "same-named replacement must survive"
+    );
+
+    wait_until_with_diagnostic(
+        || {
+            workspace.snapshot().hosts().first().is_some_and(|host| {
+                host.sessions()
+                    .iter()
+                    .any(|session| session.name() == "workspace-live")
+            })
+        },
+        || workspace_diagnostic(&workspace),
+    );
+    workspace
+        .request_session_kill(&selection)
+        .expect("query replacement identity");
+    wait_until(|| workspace.session_kill_confirmation().is_some());
+    workspace
+        .confirm_session_kill()
+        .expect("kill confirmed replacement");
+    wait_until(|| !server.has_session("workspace-live"));
 }
 
 #[test]

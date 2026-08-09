@@ -492,6 +492,10 @@ endpoint and tmux server PID, `session_id`, and `session_created` identity. A
 single tmux conditional checks all three live values and kills only the
 matching instance, rejecting a same-named replacement even within the same
 timestamp second or after a rapid tmux server restart.
+The Rust WSL implementation obtains that authority from a fresh host query
+before presenting confirmation and targets the captured stable session ID
+inside the conditional, keeping cached inventory and mutable display names out
+of the destructive command.
 Ghosthub detaches an active client after a successful kill, never before the
 operation can fail. After success, Ghosthub closes the matching current active
 selection and navigates away only when the killed target is active at

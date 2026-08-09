@@ -9,7 +9,7 @@ use std::time::Duration;
 use config::TerminalAppearance;
 use host::{
     AdmissionAttacher, AttachTerm, CancellationToken, CommandRunner, HostError, HostSnapshot,
-    StdCommandRunner, WslConfig, WslExecutable, WslHost,
+    LiveSessionTarget, StdCommandRunner, WslConfig, WslExecutable, WslHost,
 };
 pub use input::{KeyEvent, KeyInput, Modifiers, MouseAction, MouseButton, MouseInput, NamedKey};
 use model::DiagnosticKind;
@@ -361,6 +361,18 @@ pub enum WorkspaceEvent {
     Error(String),
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionKillConfirmation {
+    selection: SessionSelection,
+}
+
+impl SessionKillConfirmation {
+    #[must_use]
+    pub const fn selection(&self) -> &SessionSelection {
+        &self.selection
+    }
+}
+
 const MAX_EVENTS_PER_DRAIN: usize = 32;
 const RETAINED_EVENT_RESERVE: usize = 8;
 const ACTIVE_EVENT_BUDGET: usize = MAX_EVENTS_PER_DRAIN - RETAINED_EVENT_RESERVE;
@@ -544,6 +556,21 @@ impl<T> Published<T> {
 struct PendingPaste {
     worker_generation: u64,
     input: input::EncodedInput,
+}
+
+#[derive(Clone)]
+struct KillCaptureRequest {
+    selection: SessionSelection,
+    host: RuntimeHost,
+    endpoint: host::WslEndpoint,
+    runtime: host::WslRuntimeIdentity,
+}
+
+struct PendingKill {
+    generation: u64,
+    selection: SessionSelection,
+    host: RuntimeHost,
+    target: Arc<LiveSessionTarget>,
 }
 
 #[derive(Clone)]
@@ -818,6 +845,16 @@ impl<T> RetainedPresentations<T> {
     fn take(&mut self, key: &PresentationKey) -> Option<RetainedPresentation<T>> {
         let index = self.entries.iter().position(|entry| &entry.key == key)?;
         Some(self.entries.remove(index))
+    }
+
+    fn remove_matching(&mut self, mut matches: impl FnMut(&PresentationKey) -> bool) -> bool {
+        let before = self.entries.len();
+        self.entries.retain(|entry| !matches(&entry.key));
+        let mut changed = self.entries.len() != before;
+        let restart_before = self.restarting.len();
+        self.restarting.retain(|entry| !matches(&entry.key));
+        changed |= self.restarting.len() != restart_before;
+        changed
     }
 
     fn contains(&self, key: &PresentationKey) -> bool {
@@ -1117,6 +1154,9 @@ struct Inner {
     worker: Mutex<WorkerState<TerminalWorker>>,
     retained_presentations: Mutex<RetainedPresentations<TerminalWorker>>,
     pending_paste: Mutex<Option<PendingPaste>>,
+    pending_kill: Mutex<Option<PendingKill>>,
+    kill_generation: AtomicU64,
+    operation_events: Mutex<std::collections::VecDeque<WorkspaceEvent>>,
     terminal_geometry: Mutex<TerminalGeometry>,
     allow_remote_clipboard_write: bool,
     refresh_generation: AtomicU64,
@@ -1177,6 +1217,9 @@ impl Workspace {
                 worker: Mutex::new(WorkerState::new()),
                 retained_presentations: Mutex::new(RetainedPresentations::new()),
                 pending_paste: Mutex::new(None),
+                pending_kill: Mutex::new(None),
+                kill_generation: AtomicU64::new(0),
+                operation_events: Mutex::new(std::collections::VecDeque::new()),
                 terminal_geometry: Mutex::new(default_terminal_geometry()),
                 allow_remote_clipboard_write: true,
                 refresh_generation: AtomicU64::new(0),
@@ -1235,6 +1278,9 @@ impl Workspace {
                 worker: Mutex::new(WorkerState::new()),
                 retained_presentations: Mutex::new(RetainedPresentations::new()),
                 pending_paste: Mutex::new(None),
+                pending_kill: Mutex::new(None),
+                kill_generation: AtomicU64::new(0),
+                operation_events: Mutex::new(std::collections::VecDeque::new()),
                 terminal_geometry: Mutex::new(default_terminal_geometry()),
                 allow_remote_clipboard_write,
                 refresh_generation: AtomicU64::new(0),
@@ -1277,6 +1323,9 @@ impl Workspace {
                 worker: Mutex::new(WorkerState::new()),
                 retained_presentations: Mutex::new(RetainedPresentations::new()),
                 pending_paste: Mutex::new(None),
+                pending_kill: Mutex::new(None),
+                kill_generation: AtomicU64::new(0),
+                operation_events: Mutex::new(std::collections::VecDeque::new()),
                 terminal_geometry: Mutex::new(default_terminal_geometry()),
                 allow_remote_clipboard_write,
                 refresh_generation: AtomicU64::new(0),
@@ -1601,6 +1650,12 @@ impl Workspace {
     }
 
     fn begin_navigation(&self) -> u64 {
+        self.inner.kill_generation.fetch_add(1, Ordering::AcqRel);
+        self.inner
+            .pending_kill
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
         self.inner
             .navigation_generation
             .fetch_add(1, Ordering::AcqRel)
@@ -1876,6 +1931,177 @@ impl Workspace {
         }
     }
 
+    /// Query one session's live identity before exposing destructive
+    /// confirmation to the presentation layer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the selection is not part of the current WSL
+    /// inventory or the background query cannot be started.
+    pub fn request_session_kill(&self, selection: &SessionSelection) -> Result<(), WorkspaceError> {
+        let request = capture_kill_request(&self.inner, selection)?;
+        let generation = self.inner.kill_generation.fetch_add(1, Ordering::AcqRel) + 1;
+        self.inner
+            .pending_kill
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        let workspace = self.clone();
+        thread::Builder::new()
+            .name("ghosthub-session-kill-identity".to_owned())
+            .spawn(move || {
+                let result = request.host.capture_live_session(
+                    &request.endpoint,
+                    &request.runtime,
+                    request.selection.session(),
+                    &CancellationToken::new(),
+                );
+                if workspace.inner.kill_generation.load(Ordering::Acquire) != generation {
+                    return;
+                }
+                match result {
+                    Ok(target) => {
+                        *workspace
+                            .inner
+                            .pending_kill
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                            Some(PendingKill {
+                                generation,
+                                selection: request.selection,
+                                host: request.host,
+                                target: Arc::new(target),
+                            });
+                    }
+                    Err(error) => workspace.push_operation_error(error.to_string()),
+                }
+                workspace.inner.revision.fetch_add(1, Ordering::Release);
+            })
+            .map_err(|error| WorkspaceError::new(format!("verify tmux session: {error}")))?;
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn session_kill_confirmation(&self) -> Option<SessionKillConfirmation> {
+        self.inner
+            .pending_kill
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(|pending| SessionKillConfirmation {
+                selection: pending.selection.clone(),
+            })
+    }
+
+    pub fn cancel_session_kill(&self) {
+        self.inner.kill_generation.fetch_add(1, Ordering::AcqRel);
+        if self
+            .inner
+            .pending_kill
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .is_some()
+        {
+            self.inner.revision.fetch_add(1, Ordering::Release);
+        }
+    }
+
+    /// Execute the identity-guarded kill approved by the user.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no live confirmation is pending or the kill task
+    /// cannot be started.
+    pub fn confirm_session_kill(&self) -> Result<(), WorkspaceError> {
+        let pending = self
+            .inner
+            .pending_kill
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .ok_or_else(|| WorkspaceError::new("no tmux session kill is awaiting confirmation"))?;
+        if self.inner.kill_generation.load(Ordering::Acquire) != pending.generation {
+            return Err(WorkspaceError::new(
+                "tmux session kill confirmation is no longer current",
+            ));
+        }
+        self.inner.revision.fetch_add(1, Ordering::Release);
+        let workspace = self.clone();
+        let retry = PendingKill {
+            generation: pending.generation,
+            selection: pending.selection.clone(),
+            host: pending.host.clone(),
+            target: Arc::clone(&pending.target),
+        };
+        if let Err(error) = thread::Builder::new()
+            .name("ghosthub-session-kill".to_owned())
+            .spawn(move || {
+                let result = pending
+                    .host
+                    .kill_live_session(&pending.target, &CancellationToken::new());
+                match result {
+                    Ok(()) => workspace.finish_session_kill(&pending.target),
+                    Err(error) => workspace.push_operation_error(error.to_string()),
+                }
+                let _refresh_started = workspace.refresh();
+                workspace.inner.revision.fetch_add(1, Ordering::Release);
+            })
+        {
+            *self
+                .inner
+                .pending_kill
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(retry);
+            self.inner.revision.fetch_add(1, Ordering::Release);
+            return Err(WorkspaceError::new(format!("kill tmux session: {error}")));
+        }
+        Ok(())
+    }
+
+    fn push_operation_error(&self, error: String) {
+        let mut events = self
+            .inner
+            .operation_events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if events.len() >= MAX_EVENTS_PER_DRAIN {
+            events.pop_front();
+        }
+        events.push_back(WorkspaceEvent::Error(error));
+    }
+
+    fn finish_session_kill(&self, target: &LiveSessionTarget) {
+        let key_matches = |request: &AttachRequest| {
+            request.endpoint == *target.endpoint()
+                && request.runtime == *target.runtime()
+                && request.identity == *target.identity()
+        };
+        let active_matches = self
+            .inner
+            .attachment
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .active()
+            .is_some_and(|active| key_matches(&active.request));
+        if active_matches {
+            self.detach();
+        }
+        let changed = self
+            .inner
+            .retained_presentations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove_matching(|key| {
+                key.endpoint == target.endpoint().distro()
+                    && key.runtime == *target.runtime()
+                    && key.identity == *target.identity()
+            });
+        if changed {
+            self.inner.revision.fetch_add(1, Ordering::Release);
+        }
+    }
+
     /// Update the desired grid and resize an active VT/PTTY pair together.
     ///
     /// # Errors
@@ -1986,6 +2212,7 @@ impl Workspace {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut emitted = Vec::new();
+        let operation_has_more = self.drain_operation_events(&mut emitted);
         let mut exited = false;
         let mut exited_attachment = None;
         let mut exited_worker_generation = None;
@@ -2074,10 +2301,25 @@ impl Workspace {
         let active_processed = processed;
         let retained_budget = retained_event_budget(processed, exited);
         let retained_processed = self.drain_retained_events(retained_budget, &mut emitted);
-        let may_have_more =
-            event_source_may_have_more(active_processed, ACTIVE_EVENT_BUDGET, exited)
-                || event_source_may_have_more(retained_processed, retained_budget, false);
+        let may_have_more = operation_has_more
+            || event_source_may_have_more(active_processed, ACTIVE_EVENT_BUDGET, exited)
+            || event_source_may_have_more(retained_processed, retained_budget, false);
         (emitted, may_have_more)
+    }
+
+    fn drain_operation_events(&self, emitted: &mut Vec<WorkspaceEvent>) -> bool {
+        let mut events = self
+            .inner
+            .operation_events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for _ in 0..RETAINED_EVENT_RESERVE {
+            let Some(event) = events.pop_front() else {
+                break;
+            };
+            emitted.push(event);
+        }
+        !events.is_empty()
     }
 
     fn next_terminal_event(
@@ -2570,6 +2812,70 @@ fn capture_attach_request(
             identity: session.identity().clone(),
             name: session.name().to_owned(),
             inventory_generation,
+        })
+    })
+}
+
+fn capture_kill_request(
+    inner: &Inner,
+    selection: &SessionSelection,
+) -> Result<KillCaptureRequest, WorkspaceError> {
+    if inner
+        .selected_host
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_deref()
+        != Some(selection.host_id())
+    {
+        return Err(WorkspaceError::new("host is not selected"));
+    }
+    if let Some(request) = inner
+        .attachment
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .active()
+        .map(|active| active.request.clone())
+        .filter(|request| {
+            request.host_id == selection.host_id()
+                && request.endpoint.distro() == selection.endpoint()
+                && request.name == selection.session()
+        })
+    {
+        return Ok(KillCaptureRequest {
+            selection: selection.clone(),
+            host: request.host,
+            endpoint: request.endpoint,
+            runtime: request.runtime,
+        });
+    }
+    let host = inner
+        .host
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let context = host
+        .as_ref()
+        .ok_or_else(|| WorkspaceError::new("WSL inventory is not ready"))?;
+    context.map(|context, _inventory_generation| {
+        if context.snapshot.endpoint().distro() != selection.endpoint() {
+            return Err(WorkspaceError::new(
+                "host endpoint changed; refresh the session selection",
+            ));
+        }
+        if !context
+            .snapshot
+            .sessions()
+            .iter()
+            .any(|session| session.name() == selection.session())
+        {
+            return Err(WorkspaceError::new(
+                "session is not in the current inventory",
+            ));
+        }
+        Ok(KillCaptureRequest {
+            selection: selection.clone(),
+            host: context.host.clone(),
+            endpoint: context.snapshot.endpoint().clone(),
+            runtime: context.snapshot.runtime().clone(),
         })
     })
 }

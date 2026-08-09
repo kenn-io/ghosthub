@@ -1397,6 +1397,94 @@ fn attach_plan_targets_the_fresh_stable_session_id() {
 }
 
 #[test]
+fn kill_authority_comes_from_a_fresh_query_and_targets_stable_identity() {
+    let runner = RecordingRunner::new(vec![
+        instance_output(),
+        output(0, "4242\t$3\t1700000000\t0\t4\twork\n", ""),
+        instance_output(),
+        instance_output(),
+        output(0, "4242\t$3\t1700000000\n", ""),
+        instance_output(),
+        instance_output(),
+        output(0, "", ""),
+    ]);
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        runner,
+    );
+    let snapshot = discover(&host).expect("discover sessions");
+
+    let target = host
+        .capture_live_session(
+            snapshot.endpoint(),
+            snapshot.runtime(),
+            "work",
+            &CancellationToken::new(),
+        )
+        .expect("capture fresh kill authority");
+    host.kill_live_session(&target, &CancellationToken::new())
+        .expect("kill confirmed identity");
+
+    assert_eq!(target.identity().server_pid(), 4242);
+    assert_eq!(target.identity().session_id(), "$3");
+    assert_eq!(target.identity().created_at(), 1_700_000_000);
+    let calls = host.runner().calls();
+    let identity_call = calls
+        .iter()
+        .find(|(_, args)| args.iter().any(|argument| argument == "display-message"))
+        .expect("fresh identity query");
+    assert_eq!(argument_after(&identity_call.1, "-t"), Some("=work:"));
+    let kill_call = calls
+        .iter()
+        .find(|(_, args)| args.iter().any(|argument| argument == "if-shell"))
+        .expect("conditional kill command");
+    assert_eq!(argument_after(&kill_call.1, "-t"), Some("=$3:"));
+    assert!(kill_call.1.iter().any(|argument| {
+        argument
+            == "#{&&:#{==:#{pid},4242},#{&&:#{==:#{session_id},$3},#{==:#{session_created},1700000000}}}"
+    }));
+    assert!(
+        kill_call
+            .1
+            .iter()
+            .any(|argument| argument == "kill-session -t =$3")
+    );
+}
+
+#[test]
+fn replaced_session_is_not_killed_after_confirmation() {
+    let runner = RecordingRunner::new(vec![
+        instance_output(),
+        output(0, "4242\t$3\t1700000000\t0\t4\twork\n", ""),
+        instance_output(),
+        instance_output(),
+        output(0, "4242\t$3\t1700000000\n", ""),
+        instance_output(),
+        instance_output(),
+        output(0, "__ghosthub_kill_identity_mismatch_v1__\n", ""),
+    ]);
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        runner,
+    );
+    let snapshot = discover(&host).expect("discover sessions");
+    let target = host
+        .capture_live_session(
+            snapshot.endpoint(),
+            snapshot.runtime(),
+            "work",
+            &CancellationToken::new(),
+        )
+        .expect("capture fresh kill authority");
+
+    let error = host
+        .kill_live_session(&target, &CancellationToken::new())
+        .expect_err("identity mismatch must refuse the kill");
+
+    assert!(error.to_string().contains("replaced after confirmation"));
+}
+
+#[test]
 fn configured_socket_directory_is_explicit_environment() {
     let config = WslConfig::configured(
         Some("Ubuntu".to_owned()),
