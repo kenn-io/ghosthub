@@ -3099,7 +3099,7 @@ fn run_create(
     navigation_generation: u64,
 ) {
     let created = create_fresh(inner, request, navigation_generation);
-    let (worker, snapshot, session, initial_geometry) = match created {
+    let (worker, snapshot, session, initial_geometry, term) = match created {
         Ok(created) => created,
         Err(error) => {
             restore_inventory_after_creation_failure(
@@ -3153,11 +3153,9 @@ fn run_create(
         drop(worker);
         return;
     }
-    let Some(generation) = attachment.reserve_with_fallback(
-        attached.clone(),
-        AttachTerm::Xterm256Color,
-        fallback.clone(),
-    ) else {
+    let Some(generation) =
+        attachment.reserve_with_fallback(attached.clone(), term, fallback.clone())
+    else {
         drop(attachment);
         drop(worker);
         restore_inventory_after_creation_failure(
@@ -3188,7 +3186,7 @@ fn run_create(
         );
         return;
     }
-    set_terminal_notice(inner, AttachTerm::Xterm256Color);
+    set_terminal_notice(inner, term);
     set_inner_state(
         inner,
         WorkspaceContent::Terminal {
@@ -3211,6 +3209,7 @@ fn create_fresh(
         HostSnapshot,
         session::DiscoveredSession,
         TerminalGeometry,
+        AttachTerm,
     ),
     WorkspaceError,
 > {
@@ -3231,13 +3230,9 @@ fn create_fresh(
     if inner.navigation_generation.load(Ordering::Acquire) != navigation_generation {
         return Err(WorkspaceError::new("tmux creation was superseded"));
     }
-    let authority = request
+    let (authority, term) = request
         .host
-        .create_once_with_term(
-            before.endpoint(),
-            request.name.clone(),
-            AttachTerm::Xterm256Color,
-        )
+        .create_once(before.endpoint(), before.runtime(), request.name.clone())
         .map_err(|error| WorkspaceError::new(error.to_string()))?;
     let geometry = *inner
         .terminal_geometry
@@ -3267,7 +3262,7 @@ fn create_fresh(
             .discover_after_create(before.endpoint(), &request.runtime, &cancellation)
             .map_err(|error| WorkspaceError::new(error.to_string()))?;
         if let Some(session) = created_session(&snapshot, &client_identity) {
-            return Ok((worker, snapshot, session, launch_geometry));
+            return Ok((worker, snapshot, session, launch_geometry, term));
         }
         if attempt + 1 < CREATE_DISCOVERY_ATTEMPTS {
             thread::sleep(CREATE_DISCOVERY_DELAY);

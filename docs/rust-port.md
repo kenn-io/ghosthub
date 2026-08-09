@@ -746,9 +746,13 @@ pins its selected WSL endpoint and remains usable while that already-admitted
 host performs a background inventory refresh; a disconnected, unavailable, or
 changed endpoint must be selected again. Workspace performs one
 fresh admitted-host read, terminal consumes a non-cloneable CreateOnce whose
-ordinary client executes `new-session -A -s <name>`, and host captures the
-resulting runtime, server, session ID, and creation time. From that point the
-presentation holds only attach authority. A race that creates the same name
+ordinary client executes `new-session -A -E -s <name>`, and host captures the
+resulting runtime, server, session ID, and creation time. Admission proves
+`xterm-256color` on that same atomic client shape before caching it for
+creation; if the distro lacks that terminfo entry, admission proves `xterm`
+instead and creation immediately displays the reduced-color notice. Creation
+never retries after consuming its authority. From that point the presentation
+holds only attach authority. A race that creates the same name
 after validation attaches to that exact existing session without changing its
 layout. A failure after launch may detach and report the result but never
 reruns creation or kills the session.

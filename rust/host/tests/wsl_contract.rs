@@ -8,12 +8,12 @@ use std::sync::{Arc, Mutex};
 
 use contracts::{Manifest, PlatformTag};
 use host::{
-    AdmissionAttacher, CancellationToken, CommandOutput, CommandRunner, HostErrorKind, WslConfig,
-    WslExecutable, WslHost,
+    AdmissionAttacher, AttachTerm, CancellationToken, CommandOutput, CommandRunner, HostErrorKind,
+    WslConfig, WslExecutable, WslHost,
 };
 use serde::Deserialize;
-use session::AdmissionPlan;
 use session::ExecutablePlatform;
+use session::{AdmissionPlan, SessionName};
 
 #[derive(Clone, Copy, Debug)]
 struct AdmissionStatusFailure {
@@ -1007,7 +1007,8 @@ fn admission_does_not_require_xterm_256color_terminfo() {
         runner: host.runner(),
     };
 
-    host.discover(&attacher)
+    let snapshot = host
+        .discover(&attacher)
         .expect("baseline xterm admission succeeds without xterm-256color");
 
     let plans = host.runner().attachment_plans();
@@ -1018,6 +1019,50 @@ fn admission_does_not_require_xterm_256color_terminfo() {
                 .iter()
                 .any(|argument| argument == "TERM=xterm-256color")
     }));
+    let (creation, term) = host
+        .create_once(
+            snapshot.endpoint(),
+            snapshot.runtime(),
+            SessionName::parse("baseline").expect("valid session name"),
+        )
+        .expect("baseline creation authority");
+    let (_, args, _, _) = creation.into_parts();
+    assert_eq!(term, AttachTerm::Xterm);
+    assert!(args.iter().any(|argument| argument == "TERM=xterm"));
+    assert!(
+        !args
+            .iter()
+            .any(|argument| argument == "TERM=xterm-256color")
+    );
+}
+
+#[test]
+fn admission_uses_xterm_256color_for_creation_when_the_client_proves_it() {
+    let runner = RecordingRunner::new(vec![
+        instance_output(),
+        output(0, "4242\t$3\t1700000000\t0\t4\twork\n", ""),
+        instance_output(),
+    ]);
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        runner,
+    );
+    let snapshot = discover(&host).expect("admit full-color tmux client");
+
+    let (creation, term) = host
+        .create_once(
+            snapshot.endpoint(),
+            snapshot.runtime(),
+            SessionName::parse("full-color").expect("valid session name"),
+        )
+        .expect("full-color creation authority");
+    let (_, args, _, _) = creation.into_parts();
+
+    assert_eq!(term, AttachTerm::Xterm256Color);
+    assert!(
+        args.iter()
+            .any(|argument| argument == "TERM=xterm-256color")
+    );
 }
 
 #[test]

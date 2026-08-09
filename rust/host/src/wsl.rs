@@ -392,6 +392,7 @@ pub struct WslHost<R> {
 struct VerifiedAdmission {
     endpoint: WslEndpoint,
     runtime: WslRuntimeIdentity,
+    creation_term: AttachTerm,
     _binary: VerifiedTmuxBinary,
 }
 
@@ -517,9 +518,35 @@ impl<R: CommandRunner> WslHost<R> {
     ///
     /// # Errors
     ///
-    /// Returns an error when a collision-resistant identity marker cannot be
-    /// generated for the ordinary client's tmux-side identity report.
-    pub fn create_once_with_term(
+    /// Returns an error when this endpoint and runtime lack fresh admission,
+    /// or when a collision-resistant identity marker cannot be generated for
+    /// the ordinary client's tmux-side identity report.
+    pub fn create_once(
+        &self,
+        endpoint: &WslEndpoint,
+        runtime: &WslRuntimeIdentity,
+        name: SessionName,
+    ) -> Result<(CreateOnce, AttachTerm), HostError> {
+        let term = self
+            .verified_tmux
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .filter(|verified| {
+                admission_matches(&verified.endpoint, &verified.runtime, endpoint, runtime)
+            })
+            .map(|verified| verified.creation_term)
+            .ok_or_else(|| {
+                HostError::new(
+                    DiagnosticKind::UnsupportedEnvironment,
+                    "tmux creation requires fresh admission for this WSL runtime",
+                )
+            })?;
+        let authority = self.create_once_with_term(endpoint, name, term)?;
+        Ok((authority, term))
+    }
+
+    fn create_once_with_term(
         &self,
         endpoint: &WslEndpoint,
         name: SessionName,
@@ -965,21 +992,14 @@ impl<R: CommandRunner> WslHost<R> {
             ],
             "set session environment control value",
         )?;
-        let repeat_create_plan =
-            self.admission_new_session_plan(endpoint, &admission_tmpdir, &namespace, &session);
-        let repeat_create_client = attacher.attach(&repeat_create_plan).map_err(|error| {
-            HostError::new(
-                DiagnosticKind::Transport,
-                format!("start atomic create-or-attach admission client: {error}"),
-            )
-        })?;
-        self.wait_for_admission_attachment(
+        let (repeat_create_client, creation_term) = self.start_admission_create_client(
             endpoint,
-            cancellation,
             &admission_tmpdir,
             &namespace,
+            &session,
             &target,
-            true,
+            attacher,
+            cancellation,
         )?;
         drop(repeat_create_client);
         self.wait_for_admission_attachment(
@@ -1404,6 +1424,7 @@ impl<R: CommandRunner> WslHost<R> {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(VerifiedAdmission {
             endpoint: endpoint.clone(),
             runtime: runtime.clone(),
+            creation_term,
             _binary: verified,
         });
         Ok(())
@@ -1578,11 +1599,12 @@ impl<R: CommandRunner> WslHost<R> {
         tmux_tmpdir: &str,
         namespace: &str,
         session_name: &str,
+        term: AttachTerm,
     ) -> AdmissionPlan {
         let mut args = pinned_prefix(endpoint);
         append_tmux_environment(
             &mut args,
-            Some("TERM=xterm"),
+            Some(term.environment()),
             Some(tmux_tmpdir),
             &["GHOSTHUB_PROBE=ignored"],
         );
@@ -1604,6 +1626,82 @@ impl<R: CommandRunner> WslHost<R> {
             .map(OsString::from),
         );
         AdmissionPlan::isolated(self.wsl_executable.as_os_str(), args)
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the admission client is bound to one private tmux target"
+    )]
+    fn start_admission_create_client<A: AdmissionAttacher>(
+        &self,
+        endpoint: &WslEndpoint,
+        tmux_tmpdir: &str,
+        namespace: &str,
+        session_name: &str,
+        target: &str,
+        attacher: &A,
+        cancellation: &CancellationToken,
+    ) -> Result<(A::Client, AttachTerm), HostError> {
+        let preferred_plan = self.admission_new_session_plan(
+            endpoint,
+            tmux_tmpdir,
+            namespace,
+            session_name,
+            AttachTerm::Xterm256Color,
+        );
+        let preferred_failure = match attacher.attach(&preferred_plan) {
+            Ok(client) => match self.wait_for_admission_attachment(
+                endpoint,
+                cancellation,
+                tmux_tmpdir,
+                namespace,
+                target,
+                true,
+            ) {
+                Ok(()) => return Ok((client, AttachTerm::Xterm256Color)),
+                Err(error) => {
+                    drop(client);
+                    if cancellation.is_cancelled() {
+                        return Err(error);
+                    }
+                    self.wait_for_admission_attachment(
+                        endpoint,
+                        cancellation,
+                        tmux_tmpdir,
+                        namespace,
+                        target,
+                        false,
+                    )?;
+                    error.to_string()
+                }
+            },
+            Err(error) => error,
+        };
+
+        let baseline_plan = self.admission_new_session_plan(
+            endpoint,
+            tmux_tmpdir,
+            namespace,
+            session_name,
+            AttachTerm::Xterm,
+        );
+        let client = attacher.attach(&baseline_plan).map_err(|error| {
+            HostError::new(
+                DiagnosticKind::Transport,
+                format!(
+                    "start atomic create-or-attach admission client: {error}; xterm-256color probe failed: {preferred_failure}"
+                ),
+            )
+        })?;
+        self.wait_for_admission_attachment(
+            endpoint,
+            cancellation,
+            tmux_tmpdir,
+            namespace,
+            target,
+            true,
+        )?;
+        Ok((client, AttachTerm::Xterm))
     }
 
     fn admission_attach_plan(
