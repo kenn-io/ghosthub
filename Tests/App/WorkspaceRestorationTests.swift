@@ -478,6 +478,68 @@ struct WorkspaceRestorationTests {
         await model.shutdown()
     }
 
+    @Test("Herdr restoration retries after transient validation failure")
+    func herdrRestorationRetriesTransientValidationFailure() async throws {
+        let environment = try setupStandardEnvironment()
+        let running = HerdrSessionSummary(
+            name: "editor",
+            isDefault: false,
+            state: .running
+        )
+        let validationAttempts = Mutex(0)
+        let retryGate = BlockingGate()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeHerdrPathProvider: { _ in .success("/usr/bin/herdr") },
+            herdrSessionDiscovery: { _ in .available([running]) },
+            herdrSessionValidationDiscovery: { _, _ in
+                let attempt = validationAttempts.withLock {
+                    $0 += 1
+                    return $0
+                }
+                guard attempt > 1 else {
+                    return .failure(.commandFailed(
+                        status: 1,
+                        stderr: "temporary failure"
+                    ))
+                }
+                return await Task.detached {
+                    retryGate.block()
+                    return HerdrDiscoveryResult.available([running])
+                }.value
+            }
+        )
+        let state = WorkspaceWindowState(
+            windowID: UUID(),
+            navigation: WorkspaceNavigationDescriptor(
+                hostKey: environment.host.configKey,
+                projectKey: nil,
+                worktreeGeneration: nil
+            ),
+            tmux: nil,
+            herdr: WorkspaceHerdrDescriptor(
+                hostKey: environment.host.configKey,
+                sessionName: running.name
+            )
+        )
+
+        model.startHerdrSessionDiscovery()
+        model.beginRestoration(state)
+        await retryGate.waitUntilBlocked()
+
+        #expect(model.isWorkspaceRestorationPending)
+        #expect(model.restorationState(windowID: state.windowID) == state)
+
+        retryGate.open()
+        await waitUntilMainActor {
+            model.activeBorrowedHerdrSelection?.name == running.name
+        }
+        #expect(validationAttempts.withLock { $0 } == 2)
+        await model.shutdown()
+    }
+
     @Test("Herdr restoration rejects SSH route drift during validation")
     func herdrRestorationRejectsSSHRouteDrift() async throws {
         let environment = try setupRemoteEnvironment()

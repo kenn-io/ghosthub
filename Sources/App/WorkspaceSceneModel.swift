@@ -59,6 +59,7 @@ enum HerdrSessionPresentationError: Error, Equatable, LocalizedError {
     case sessionNotRunning(String)
     case sessionNotStopped(String)
     case operationPending(String)
+    case routeChangedDuringValidation(String)
     case stateChangedDuringValidation(String)
     case stateValidationFailed(name: String, detail: String)
 
@@ -76,6 +77,8 @@ enum HerdrSessionPresentationError: Error, Equatable, LocalizedError {
             "Herdr session “\(name)” is not stopped."
         case let .operationPending(name):
             "Another operation is already changing “\(name)”."
+        case let .routeChangedDuringValidation(name):
+            "The connection for the host containing “\(name)” changed while Ghosthub was checking it."
         case let .stateChangedDuringValidation(name):
             "Herdr session “\(name)” changed while Ghosthub was checking it. Try again."
         case let .stateValidationFailed(name, detail):
@@ -1670,33 +1673,53 @@ final class WorkspaceSceneModel: ObservableObject {
                 validation = try await revalidatedHerdrSession(
                     herdrSelection
                 )
-            } catch {
-                failHerdrRestorationValidation(
+            } catch HerdrSessionPresentationError
+                .routeChangedDuringValidation {
+                cancelHerdrRestorationValidation(
                     validationID,
                     expectedState: expectedState
+                )
+                return
+            } catch {
+                retryHerdrRestorationValidation(
+                    validationID,
+                    expectedState: expectedState,
+                    hostID: herdrSelection.hostID
                 )
                 return
             }
             guard !Task.isCancelled,
                   herdrRestorationValidationID == validationID,
-                  pendingRestoration == expectedState,
-                  case let .ready(currentSelection, currentPresentation) =
-                  WorkspaceWindowRestorationResolver.resolve(
-                      expectedState,
-                      in: snapshot,
-                      herdrFreshHostIDs: herdrFreshHostIDs,
-                      pendingHerdrSessions: pendingHerdrSessionSelections
-                  ),
-                  case let .herdr(currentHerdrSelection) =
-                  currentPresentation,
-                  currentSelection == resolvedSelection,
-                  currentHerdrSelection == herdrSelection,
-                  validation.session?.name == herdrSelection.name,
-                  validation.session?.state == .running
-            else {
-                failHerdrRestorationValidation(
+                  pendingRestoration == expectedState
+            else { return }
+            let currentResolution = WorkspaceWindowRestorationResolver.resolve(
+                expectedState,
+                in: snapshot,
+                herdrFreshHostIDs: herdrFreshHostIDs,
+                pendingHerdrSessions: pendingHerdrSessionSelections
+            )
+            if case .invalid = currentResolution {
+                cancelHerdrRestorationValidation(
                     validationID,
                     expectedState: expectedState
+                )
+                return
+            }
+            guard case let .ready(
+                currentSelection,
+                currentPresentation
+            ) = currentResolution,
+                case let .herdr(currentHerdrSelection) =
+                currentPresentation,
+                currentSelection == resolvedSelection,
+                currentHerdrSelection == herdrSelection,
+                validation.session?.name == herdrSelection.name,
+                validation.session?.state == .running
+            else {
+                retryHerdrRestorationValidation(
+                    validationID,
+                    expectedState: expectedState,
+                    hostID: herdrSelection.hostID
                 )
                 return
             }
@@ -1716,7 +1739,7 @@ final class WorkspaceSceneModel: ObservableObject {
         }
     }
 
-    private func failHerdrRestorationValidation(
+    private func cancelHerdrRestorationValidation(
         _ validationID: UUID,
         expectedState: WorkspaceWindowState
     ) {
@@ -1725,6 +1748,19 @@ final class WorkspaceSceneModel: ObservableObject {
         herdrRestorationValidationID = nil
         guard pendingRestoration == expectedState else { return }
         cancelPendingRestoration()
+    }
+
+    private func retryHerdrRestorationValidation(
+        _ validationID: UUID,
+        expectedState: WorkspaceWindowState,
+        hostID: UUID
+    ) {
+        guard herdrRestorationValidationID == validationID else { return }
+        herdrRestorationValidationTask = nil
+        herdrRestorationValidationID = nil
+        guard pendingRestoration == expectedState else { return }
+        herdrFreshHostIDs.remove(hostID)
+        scheduleHerdrSessionDiscovery()
     }
 
     private func beginProtectedRestorationProbe(
@@ -4992,13 +5028,18 @@ final class WorkspaceSceneModel: ObservableObject {
             connection.arguments
         )
         let currentConnection = await herdrConnectionSnapshot(on: route)
-        guard !Task.isCancelled,
-              snapshot.host(id: selection.hostID)
-              .flatMap(CommandHostResolver.resolve) == route,
-              currentConnection.cacheKey == connection.cacheKey,
-              herdrLifecycleCoordinator.revision(for: selection.hostID)
-              == lifecycleRevision,
-              !herdrLifecycleCoordinator.isPending(key)
+        guard !Task.isCancelled else { throw CancellationError() }
+        guard snapshot.host(id: selection.hostID)
+            .flatMap(CommandHostResolver.resolve) == route,
+            currentConnection.cacheKey == connection.cacheKey
+        else {
+            throw HerdrSessionPresentationError.routeChangedDuringValidation(
+                selection.name
+            )
+        }
+        guard herdrLifecycleCoordinator.revision(for: selection.hostID)
+            == lifecycleRevision,
+            !herdrLifecycleCoordinator.isPending(key)
         else {
             throw HerdrSessionPresentationError.stateChangedDuringValidation(
                 selection.name
@@ -5233,6 +5274,7 @@ final class WorkspaceSceneModel: ObservableObject {
                          .sessionNotRunning, .sessionNotStopped:
                         true
                     case .unavailable, .operationPending,
+                         .routeChangedDuringValidation,
                          .stateChangedDuringValidation,
                          .stateValidationFailed:
                         false
