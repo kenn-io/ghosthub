@@ -1,3 +1,4 @@
+import GhosthubTransport
 import GhosthubTerminal
 import GhosthubTmux
 import SwiftUI
@@ -8,7 +9,7 @@ struct BorrowedTmuxSessionView: View {
     var isRemoteHost: Bool
     var displayTitle: String?
     var connectionState: ConnectionState?
-    var recoveryState: BorrowedTmuxRecoveryState?
+    var recoveryState: NativeSessionRecoveryState?
     var attachmentClosure: BorrowedTmuxAttachmentClosure?
     var sessionClosed: Bool
     var defersTerminalResize: Bool
@@ -29,7 +30,7 @@ struct BorrowedTmuxSessionView: View {
         isRemoteHost: Bool,
         displayTitle: String? = nil,
         connectionState: ConnectionState?,
-        recoveryState: BorrowedTmuxRecoveryState? = nil,
+        recoveryState: NativeSessionRecoveryState? = nil,
         attachmentClosure: BorrowedTmuxAttachmentClosure? = nil,
         sessionClosed: Bool = false,
         defersTerminalResize: Bool = false,
@@ -235,16 +236,8 @@ private struct NativeTmuxTerminalView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .textBackgroundColor))
         .overlay(alignment: .top) {
-            if let message = surfaceView.tmuxSplitErrorMessage {
-                Label(message, systemImage: "exclamationmark.triangle.fill")
-                    .font(.callout)
-                    .padding(10)
-                    .background(
-                        .regularMaterial,
-                        in: RoundedRectangle(cornerRadius: 8)
-                    )
-                    .padding()
-                    .allowsHitTesting(false)
+            if let message = surfaceView.paneSplitErrorMessage {
+                NativePaneSplitErrorOverlay(message: message)
             }
         }
         .onAppear {
@@ -261,7 +254,7 @@ private struct NativeTmuxTerminalView: View {
             surfaceView.unregisterPaneFocusObserver(id: observerID)
         }
         .focusedSceneValue(
-            \.tmuxTerminalHasEffectiveKeyboardFocus,
+            \.terminalHasEffectiveKeyboardFocus,
             surfaceView.hasEffectiveKeyboardFocus
         )
     }

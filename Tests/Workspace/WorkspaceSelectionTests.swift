@@ -129,6 +129,25 @@ struct WorkspaceSelectionTests {
         #expect(selection.selectedWorktreeID == nil)
     }
 
+    @Test("Herdr navigation selects only its host")
+    func herdrNavigationIsHostScoped() {
+        let setup = makeStandardWorkspaceSetup()
+        var selection = setup.makeSelection(
+            host: setup.remoteHost,
+            project: setup.remoteProject,
+            worktree: setup.remoteWorktree
+        )
+
+        selection.select(
+            .herdrSession(hostID: setup.remoteHost.id, name: "default"),
+            in: setup.snapshot
+        )
+
+        #expect(selection.selectedHostID == setup.remoteHost.id)
+        #expect(selection.selectedProjectID == nil)
+        #expect(selection.selectedWorktreeID == nil)
+    }
+
     @Test("selecting a worktree also selects its owning project and host")
     func selectingWorktreeAlsoSelectsItsOwningProjectAndHost() {
         let setup = makeStandardWorkspaceSetup()

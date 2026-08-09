@@ -90,6 +90,12 @@ enum ConfiguredHostOverlay {
             host.exeVM = entry.exeVM
             if invalidatedHostIDs.contains(host.id) {
                 host.tmuxSessions = []
+                host.herdrSessions = []
+                host.herdrAvailable = false
+            }
+            if host.platform == .windows {
+                host.herdrSessions = []
+                host.herdrAvailable = false
             }
             hosts.append(host)
         }

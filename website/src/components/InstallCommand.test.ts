@@ -13,11 +13,11 @@ describe('InstallCommand', () => {
   it('renders secondary actions together below the primary command', async () => {
     const html = await container.renderToString(InstallCommand, {
       slots: {
-        secondary: '<a href="/guide/">Learn More</a>',
+        secondary: '<a href="/overview/">Learn More</a>',
       },
     });
 
-    expect(html).toContain('href="/guide/"');
+    expect(html).toContain('href="/overview/"');
     expect(html.indexOf('brew install kenn-io/tap/ghosthub')).toBeLessThan(
       html.indexOf('Download DMG'),
     );
@@ -29,16 +29,16 @@ describe('InstallCommand', () => {
   it('omits the secondary action when no slot is supplied', async () => {
     const html = await container.renderToString(InstallCommand);
 
-    expect(html).not.toContain('href="/guide/"');
+    expect(html).not.toContain('href="/overview/"');
   });
 
-  it('keeps Homebrew primary while exposing the Guide', async () => {
+  it('keeps Homebrew primary while exposing the Overview', async () => {
     const html = await container.renderToString(Hero);
     const commandIndex = html.indexOf('brew install kenn-io/tap/ghosthub');
-    const guideIndex = html.indexOf('href="/guide/"');
+    const overviewIndex = html.indexOf('href="/overview/"');
 
     expect(commandIndex).toBeGreaterThan(-1);
-    expect(guideIndex).toBeGreaterThan(commandIndex);
-    expect(html.slice(guideIndex)).toContain('Learn More');
+    expect(overviewIndex).toBeGreaterThan(commandIndex);
+    expect(html.slice(overviewIndex)).toContain('Learn More');
   });
 });

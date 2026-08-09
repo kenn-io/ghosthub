@@ -1,5 +1,6 @@
 @preconcurrency import Combine
 import Foundation
+import GhosthubTransport
 import GhosthubTmux
 import GhosthubUI
 
@@ -8,13 +9,13 @@ final class TmuxSessionActivityController: ObservableObject {
     typealias Sampler = @Sendable (
         WorkspaceTmuxSessionSelection,
         TmuxSessionIdentity,
-        TmuxHost
+        CommandHost
     ) async -> TmuxSessionActivityProbeResult
 
     private struct Entry: Sendable {
         var selection: WorkspaceTmuxSessionSelection
         var identity: TmuxSessionIdentity
-        var host: TmuxHost
+        var host: CommandHost
         var paneID: String?
         var dimensions: String?
         var fingerprint: String?
@@ -74,7 +75,7 @@ final class TmuxSessionActivityController: ObservableObject {
     func warm(
         _ selection: WorkspaceTmuxSessionSelection,
         identity: TmuxSessionIdentity,
-        on host: TmuxHost,
+        on host: CommandHost,
         at date: Date = .now
     ) {
         let id = selection.id
@@ -99,7 +100,7 @@ final class TmuxSessionActivityController: ObservableObject {
         startPollingIfNeeded()
     }
 
-    func reconcile(endpointsByHostID: [UUID: TmuxHost]) {
+    func reconcile(endpointsByHostID: [UUID: CommandHost]) {
         let sessionIDs = entries.compactMap { id, entry in
             endpointsByHostID[entry.selection.hostID] != entry.host
                 ? id
@@ -161,7 +162,7 @@ final class TmuxSessionActivityController: ObservableObject {
         _ result: TmuxSessionActivityProbeResult,
         sessionID id: String,
         identity: TmuxSessionIdentity,
-        host: TmuxHost,
+        host: CommandHost,
         requestID: UUID,
         startedAt: Date,
         completedAt: Date

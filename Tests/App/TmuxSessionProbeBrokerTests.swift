@@ -1,3 +1,4 @@
+import GhosthubTransport
 import Foundation
 import GhosthubTmux
 import Testing
@@ -190,7 +191,7 @@ struct TmuxSessionProbeBrokerTests {
         )
 
         let first = Task { await broker.sessions(on: .local) }
-        await waitUntil { lifetime.snapshot.starts == 1 }
+        await waitUntilMainActor { lifetime.snapshot.starts == 1 }
         first.cancel()
         #expect(
             await first.value
@@ -235,7 +236,7 @@ struct TmuxSessionProbeBrokerTests {
         )
 
         let first = Task { await broker.sessions(on: .local) }
-        await waitUntil { lifetime.snapshot.starts == 1 }
+        await waitUntilMainActor { lifetime.snapshot.starts == 1 }
         broker.invalidateSessions(on: .local)
         #expect(
             await first.value

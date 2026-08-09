@@ -78,8 +78,8 @@ public final class TerminalSurfaceView: ObservableObject {
     public var onPrimaryInteraction: (() -> Void)?
     public var onCloseRequest: (() -> Void)?
     public var shouldConfirmClose: (() -> Bool)?
-    @Published public var tmuxSplitErrorMessage: String?
-    public var tmuxSplitShortcutHandler: ((TerminalTmuxSplitShortcut) -> Void)?
+    @Published public var paneSplitErrorMessage: String?
+    public var paneSplitShortcutHandler: ((TerminalPaneSplitShortcut) -> Void)?
     package var hasEffectiveKeyboardFocus = false
     public var hasRunningChildProcessOverride: (() -> Bool)?
     public var onSurfaceClosed: ((Bool) -> Void)?

@@ -1,9 +1,10 @@
 import Foundation
 import GhosthubTerminalSupport
 import GhosthubTmux
+import GhosthubTransport
 
 struct TmuxPaneSplitTarget: Sendable {
-    var host: TmuxHost
+    var host: CommandHost
     var tmuxPath: String
     var sessionName: String
     var socketName: String?
@@ -64,7 +65,7 @@ struct TmuxPaneSplitter: Sendable {
     private static let identityMismatchMarker =
         "GHOSTHUB_TMUX_SPLIT_IDENTITY_MISMATCH"
     typealias Runner = @Sendable (
-        TmuxHost,
+        CommandHost,
         [String],
         String
     ) -> (status: Int32, diagnostic: String)
@@ -77,7 +78,7 @@ struct TmuxPaneSplitter: Sendable {
 
     static func supportsPaneSplitting(
         version: String,
-        host: TmuxHost
+        host: CommandHost
     ) -> Bool {
         guard platform(for: host) == .posix else { return false }
         let fields = version.split(whereSeparator: \.isWhitespace)
@@ -91,7 +92,7 @@ struct TmuxPaneSplitter: Sendable {
     }
 
     func split(
-        _ shortcut: TerminalTmuxSplitShortcut,
+        _ shortcut: TerminalPaneSplitShortcut,
         target: TmuxPaneSplitTarget
     ) async -> TmuxPaneSplitFailure? {
         guard Self.platform(for: target.host) == .posix,
@@ -178,7 +179,7 @@ struct TmuxPaneSplitter: Sendable {
     static func command(
         tmuxPath: String,
         socketName: String?,
-        shortcut: TerminalTmuxSplitShortcut,
+        shortcut: TerminalPaneSplitShortcut,
         expectedClient: TmuxPaneSplitClientIdentity,
         mismatchMarker: String,
         hookIndex: Int
@@ -428,14 +429,14 @@ struct TmuxPaneSplitter: Sendable {
     }
 
     private static func run(
-        host: TmuxHost,
+        host: CommandHost,
         sshConnectionArguments: [String],
         command: String
     ) -> (status: Int32, diagnostic: String) {
         switch host {
         case .local:
-            let result = TmuxBinaryResolver.runLoginShell(
-                shell: TmuxBinaryResolver.loginShell(),
+            let result = AccountCommandRunner.runLoginShell(
+                shell: AccountCommandRunner.loginShell(),
                 command: command,
                 timeout: 15,
                 captureStandardError: true
@@ -454,12 +455,12 @@ struct TmuxPaneSplitter: Sendable {
             arguments += [
                 "--",
                 destination,
-                TmuxBinaryResolver.remoteLoginCommand(
+                AccountCommandRunner.remoteLoginCommand(
                     host: info,
                     command: command
                 ),
             ]
-            let result = TmuxBinaryResolver.runProcessInLoginShell(
+            let result = AccountCommandRunner.runProcessInLoginShell(
                 executable: "/usr/bin/ssh",
                 arguments: arguments,
                 timeout: 15,
@@ -477,7 +478,7 @@ struct TmuxPaneSplitter: Sendable {
     }
 
     private static func platform(
-        for host: TmuxHost
+        for host: CommandHost
     ) -> SSHHostInfo.Platform {
         switch host {
         case .local:

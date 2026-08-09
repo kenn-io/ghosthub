@@ -1,24 +1,24 @@
 # Ghosthub
 
-> Ghosthub is a native macOS terminal for creating and attaching to local and remote tmux sessions, with optional git worktree management.
+> Ghosthub is a multiplexer-native macOS terminal for local and remote tmux and Herdr sessions, with optional Git worktree management.
 
-Ghosthub is alpha software. The Guide is a short visual tour; the Docs links below are comprehensive task-oriented references. Markdown versions are canonical for machine readers.
+Ghosthub is alpha software. The Overview is a short visual tour; the Docs links below are comprehensive task-oriented references. Markdown versions are canonical for machine readers.
 
 ## Docs
 
 - [Documentation overview](https://ghosthub.ai/docs.md): Mental model and documentation map
 - [Getting started](https://ghosthub.ai/docs/getting-started.md): Requirements, installation, and first session
-- [Sessions](https://ghosthub.ai/docs/sessions.md): Create, attach, detach, reopen, hide, and kill tmux sessions
+- [Sessions](https://ghosthub.ai/docs/sessions.md): Create, attach, detach, and manage tmux and Herdr sessions
 - [Remote hosts](https://ghosthub.ai/docs/remote-hosts.md): SSH and exe.dev setup, trust, authentication, reconnect, and supported hosts
 - [Projects and worktrees](https://ghosthub.ai/docs/projects-worktrees.md): Register repositories and manage branch- or pull-request-backed worktrees
 - [Windows and navigation](https://ghosthub.ai/docs/windows-navigation.md): Sidebar, Command Palette, windows, tabs, and restoration
 - [Terminal configuration](https://ghosthub.ai/docs/terminal-configuration.md): Ghosthub-owned libghostty configuration and tmux themes
-- [Keyboard shortcuts](https://ghosthub.ai/docs/keyboard-shortcuts.md): Application, workspace, and tmux pane-splitting shortcuts
+- [Keyboard shortcuts](https://ghosthub.ai/docs/keyboard-shortcuts.md): Application, workspace, tmux, and Herdr pane-splitting shortcuts
 - [Privacy](https://ghosthub.ai/docs/privacy.md): Anonymous usage data and local state
-- [Troubleshooting](https://ghosthub.ai/docs/troubleshooting.md): Common local, SSH, tmux, and worktree problems
+- [Troubleshooting](https://ghosthub.ai/docs/troubleshooting.md): Common local, SSH, tmux, Herdr, and worktree problems
 
 ## Other
 
-- [Five-minute Guide](https://ghosthub.ai/guide/): High-level visual product tour
+- [Five-minute Overview](https://ghosthub.ai/overview/): High-level visual product tour
 - [Source repository](https://github.com/kenn-io/ghosthub): Source, releases, changelog, and issue tracker
 - [kwt](https://kwt.sh): Git worktree manager used for optional project and worktree workflows

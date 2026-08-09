@@ -7,10 +7,10 @@
 <h1 align="center">Ghosthub</h1>
 
 <p align="center">
-  <strong>A native power terminal for your tmux fleet.</strong>
+  <strong>A multiplexer-native power terminal for your fleet.</strong>
   <br>
-  Create or attach to any session, or manage worktree-bound sessions from Git
-  branches and GitHub pull requests, locally or over SSH.
+  Create or attach to tmux and Herdr sessions across your Mac and SSH hosts, or
+  manage tmux-backed worktrees from Git branches and GitHub pull requests.
 </p>
 
 <p align="center">
@@ -26,7 +26,7 @@
   ·
   <a href="https://github.com/kenn-io/ghosthub/releases"><strong>Download</strong></a>
   ·
-  <a href="https://ghosthub.ai/guide/"><strong>Guide</strong></a>
+  <a href="https://ghosthub.ai/overview/"><strong>Overview</strong></a>
   ·
   <a href="https://ghosthub.ai/docs/"><strong>Docs</strong></a>
   ·
@@ -39,24 +39,21 @@
   <img
     src="https://raw.githubusercontent.com/kenn-io/ghosthub/refs/heads/website-assets/hero.png?asset=hero"
     width="960"
-    alt="Ghosthub showing local and remote tmux sessions and kwt worktrees in its sidebar"
+    alt="Ghosthub showing local and remote tmux sessions, Herdr sessions, and tmux-backed worktrees in its sidebar"
   >
 </p>
 
-Ghosthub creates and attaches to ordinary tmux sessions across your Mac and SSH
-hosts, including sessions started outside Ghosthub. They need no Git project or
-worktree setup: create a named session, pick up an existing one, and manage the
-whole fleet from one native sidebar.
+Ghosthub creates and attaches to ordinary tmux and Herdr sessions across your
+Mac and SSH hosts. Both can run side by side without Git setup. Each
+multiplexer continues to own its panes, layout, history, key bindings, and
+processes while Ghosthub provides native presentation, keepalives, and
+reconnect.
 
 Ghosthub also manages tmux sessions bound to Git worktrees. Register a
 repository, then continue a local or remote branch, create a branch, or import
 a GitHub pull request without leaving the app. Its bundled [kwt](https://kwt.sh)
 helper manages the linked worktree lifecycle while Ghosthub opens the canonical
 tmux session for that workspace.
-
-In both modes, tmux continues to own windows, panes, layout, history, and
-process lifetime. Ghosthub provides the native, libghostty-powered terminal and
-supervises SSH keepalives and reconnects.
 
 There is no proprietary session format, background daemon, or migration.
 
@@ -67,18 +64,18 @@ we will do our best to fix them.
 
 ## Highlights
 
-- **Any tmux session.** Create or attach to sessions on local and remote hosts,
-  including sessions created outside Ghosthub. No Git project or worktree is
-  required.
+- **Tmux and Herdr, together.** Create or attach to sessions on local and remote
+  hosts, including sessions created outside Ghosthub. No Git project or
+  worktree is required.
 - **Managed worktree sessions.** Register an existing checkout, continue a
   local or remote branch, create a branch, import a GitHub pull request, and
   remove a linked worktree through the bundled [kwt](https://kwt.sh)
   helper. No system kwt installation is required.
 - **Resilient SSH.** Keepalives and automatic reconnect preserve remote
   presentations through ordinary network interruptions.
-- **Deliberate tmux lifecycle.** Closing a presentation detaches. Confirmed
-  controls end standalone or worktree-backed sessions, and a bare session that
-  exits can be reopened under its exact previous name.
+- **Deliberate session lifecycle.** Closing a presentation detaches. Tmux Kill
+  is confirmed, while Herdr exposes separate Stop, Restart, and Delete actions
+  that preserve each backend's ownership boundaries.
 - **Experimental native Windows hosts.** Connect to OpenSSH hosts running
   PowerShell and [psmux](https://github.com/marlocarlo/psmux), with managed
   AMD64 and ARM64 kwt helpers for already registered project inventory.
@@ -97,10 +94,12 @@ Ghosthub requires:
 
 - an Apple Silicon Mac
 - macOS 26 (Tahoe) or newer
-- tmux 3.2 or newer locally and on remote macOS or Linux hosts
+- tmux 3.2 or newer for tmux sessions
+- Herdr 0.8.0 or newer for Herdr sessions
 
-Cmd-D and Cmd-Shift-D pane splitting requires tmux 3.4 or newer on the host.
-Older tmux versions remain supported through their normal pane-splitting keys.
+Use either multiplexer or both. Cmd-D and Cmd-Shift-D pane splitting requires
+tmux 3.4 or newer or Herdr 0.8.0 or newer on the attached session. With older
+versions, use the multiplexer's normal pane-splitting keys.
 
 Experimental native Windows hosts require Windows 11 build 22523 or newer,
 OpenSSH, Windows PowerShell 5.1 or newer, and psmux with its `tmux.exe`

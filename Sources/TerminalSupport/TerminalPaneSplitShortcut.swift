@@ -1,7 +1,7 @@
 import AppKit
 
-/// Ghostty-style pane splitting requested from an attached tmux surface.
-public enum TerminalTmuxSplitShortcut: Equatable, Sendable {
+/// Ghostty-style pane splitting requested from a capable session surface.
+public enum TerminalPaneSplitShortcut: Equatable, Sendable {
     case right
     case down
 

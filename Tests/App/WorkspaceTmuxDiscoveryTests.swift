@@ -1,3 +1,4 @@
+import GhosthubTransport
 import Combine
 import Foundation
 import GhosthubSettings
@@ -579,7 +580,7 @@ struct WorkspaceTmuxDiscoveryTests {
             self.remoteInventory = remoteInventory
         }
 
-        func load(_ host: TmuxHost) throws -> KwtHostInventory {
+        func load(_ host: CommandHost) throws -> KwtHostInventory {
             guard host.isRemote else {
                 return KwtHostInventory(projects: [])
             }
@@ -620,14 +621,20 @@ struct WorkspaceTmuxDiscoveryTests {
         private var remoteReachable = true
 
         func discover(
-            _ host: TmuxHost
+            _ host: CommandHost
         ) -> Result<[DiscoveredTmuxSession], TmuxBinaryError> {
             guard host.isRemote else { return .success([]) }
             lock.lock()
             let isReachable = remoteReachable
             lock.unlock()
             guard isReachable else {
-                return .failure(.shellFailed(status: 255))
+                return .failure(.sshConnectionFailed(
+                    host: "build-box",
+                    classification: SSHConnectionFailure.classify(
+                        status: 255,
+                        output: "Network is unreachable"
+                    )
+                ))
             }
             return .success([
                 DiscoveredTmuxSession(
@@ -674,16 +681,16 @@ struct WorkspaceTmuxDiscoveryTests {
         private let lock = NSLock()
         private var failuresRemaining: Int
         private var attempts = 0
-        private var startedHosts: [TmuxHost] = []
-        private let delayedHost: TmuxHost?
+        private var startedHosts: [CommandHost] = []
+        private let delayedHost: CommandHost?
 
-        init(failuresRemaining: Int, delayedHost: TmuxHost? = nil) {
+        init(failuresRemaining: Int, delayedHost: CommandHost? = nil) {
             self.failuresRemaining = failuresRemaining
             self.delayedHost = delayedHost
         }
 
         func discover(
-            _ host: TmuxHost
+            _ host: CommandHost
         ) -> Result<[DiscoveredTmuxSession], TmuxBinaryError> {
             lock.lock()
             attempts += 1
@@ -725,7 +732,7 @@ struct WorkspaceTmuxDiscoveryTests {
             return attempts
         }
 
-        func hasStarted(on host: TmuxHost) -> Bool {
+        func hasStarted(on host: CommandHost) -> Bool {
             lock.lock()
             defer { lock.unlock() }
             return startedHosts.contains(host)
@@ -739,7 +746,7 @@ struct WorkspaceTmuxDiscoveryTests {
         private var didStartFirst = false
 
         func discover(
-            _ host: TmuxHost
+            _ host: CommandHost
         ) -> Result<[DiscoveredTmuxSession], TmuxBinaryError> {
             lock.lock()
             calls += 1
@@ -779,7 +786,7 @@ struct WorkspaceTmuxDiscoveryTests {
         private var cancelled = false
 
         func discover(
-            _ host: TmuxHost
+            _ host: CommandHost
         ) -> Result<[DiscoveredTmuxSession], TmuxBinaryError> {
             .failure(waitForCancellation())
         }
@@ -829,7 +836,7 @@ struct WorkspaceTmuxDiscoveryTests {
         }
 
         func discover(
-            _ host: TmuxHost
+            _ host: CommandHost
         ) -> Result<[DiscoveredTmuxSession], TmuxBinaryError> {
             lock.lock()
             calls += 1
@@ -3030,7 +3037,7 @@ struct WorkspaceTmuxDiscoveryTests {
     @Test("endpoint changes cancel detached creation discovery")
     func endpointChangeCancelsDetachedCreationDiscovery() async throws {
         let environment = try setupStandardEnvironment()
-        let oldTarget = TmuxHost.ssh(SSHHostInfo(
+        let oldTarget = CommandHost.ssh(SSHHostInfo(
             user: "wesm",
             hostname: "old.example.com",
             port: nil
@@ -3206,7 +3213,7 @@ struct WorkspaceTmuxDiscoveryTests {
         let remoteHost = try #require(
             model.snapshot.hosts.first { $0.configKey == "laptop" }
         )
-        let oldEndpoint = try #require(TmuxHostResolver.resolve(remoteHost))
+        let oldEndpoint = try #require(CommandHostResolver.resolve(remoteHost))
         let selection = WorkspaceTmuxSessionSelection(
             hostID: remoteHost.id,
             name: "build"
@@ -3280,7 +3287,7 @@ struct WorkspaceTmuxDiscoveryTests {
         let remoteHost = try #require(
             firstScene.snapshot.hosts.first { $0.configKey == "laptop" }
         )
-        let oldEndpoint = try #require(TmuxHostResolver.resolve(remoteHost))
+        let oldEndpoint = try #require(CommandHostResolver.resolve(remoteHost))
         let selection = WorkspaceTmuxSessionSelection(
             hostID: remoteHost.id,
             name: "build"
@@ -4106,7 +4113,7 @@ struct WorkspaceTmuxDiscoveryTests {
     func staleReconnectDiscoveryCannotMutateReplacementEndpoint()
         async throws {
         let environment = try setupStandardEnvironment()
-        let oldTarget = TmuxHost.ssh(SSHHostInfo(
+        let oldTarget = CommandHost.ssh(SSHHostInfo(
             user: "wesm",
             hostname: "old.example.com",
             port: nil
@@ -4554,10 +4561,10 @@ struct WorkspaceTmuxDiscoveryTests {
         surfaceStore.surface.closeObservers.values.first?(false, 255)
 
         await waitUntilMainActor {
-            model.tmuxConnectionRecoveryRequest != nil
+            model.sessionConnectionRecoveryRequest != nil
         }
         #expect(
-            model.tmuxConnectionRecoveryRequest?.hostID
+            model.sessionConnectionRecoveryRequest?.hostID
                 == environment.remoteHost.id
         )
         guard case .needsAttention(_, true) =
@@ -4627,10 +4634,10 @@ struct WorkspaceTmuxDiscoveryTests {
         )
         surfaceStore.surface.closeObservers[remoteHandle.id]?(false, 255)
         await waitUntilMainActor {
-            model.tmuxConnectionRecoveryRequest != nil
+            model.sessionConnectionRecoveryRequest != nil
         }
         let recoveryRequest = try #require(
-            model.tmuxConnectionRecoveryRequest
+            model.sessionConnectionRecoveryRequest
         )
 
         model.openBorrowedTmuxSession(local)
@@ -4638,7 +4645,7 @@ struct WorkspaceTmuxDiscoveryTests {
             model.prepareActiveBorrowedTmuxSurface()
             return surfaceStore.requestCount == 2
         }
-        model.resumeTmuxReconnectAfterSSHRecovery(recoveryRequest)
+        model.resumeSessionReconnectAfterSSHRecovery(recoveryRequest)
 
         await waitUntilMainActor {
             surfaceStore.requestCount == 3
@@ -4693,7 +4700,7 @@ struct WorkspaceTmuxDiscoveryTests {
         )
         surfaceStore.surface.closeObservers[retainedHandle.id]?(false, 255)
         await waitUntilMainActor {
-            model.tmuxConnectionRecoveryRequest != nil
+            model.sessionConnectionRecoveryRequest != nil
         }
 
         let unresolved = WorkspaceTmuxSessionSelection(
@@ -4704,10 +4711,10 @@ struct WorkspaceTmuxDiscoveryTests {
 
         #expect(model.activeBorrowedTmuxSelection == unresolved)
         #expect(model.activeBorrowedTmuxRecoveryState == nil)
-        #expect(model.tmuxConnectionRecoveryRequest == nil)
+        #expect(model.sessionConnectionRecoveryRequest == nil)
 
         model.openBorrowedTmuxSession(retained)
-        #expect(model.tmuxConnectionRecoveryRequest?.hostID == retained.hostID)
+        #expect(model.sessionConnectionRecoveryRequest?.hostID == retained.hostID)
         guard case .needsAttention(_, true) =
             model.activeBorrowedTmuxRecoveryState
         else {
@@ -4767,10 +4774,10 @@ struct WorkspaceTmuxDiscoveryTests {
             return
         }
         #expect(message.contains("known-hosts"))
-        #expect(model.tmuxConnectionRecoveryRequest == nil)
+        #expect(model.sessionConnectionRecoveryRequest == nil)
 
-        model.resumeTmuxReconnectAfterSSHRecovery(
-            TmuxConnectionRecoveryRequest(
+        model.resumeSessionReconnectAfterSSHRecovery(
+            SessionConnectionRecoveryRequest(
                 hostID: environment.remoteHost.id,
                 message: message
             )
@@ -5114,6 +5121,10 @@ struct WorkspaceTmuxDiscoveryTests {
     @Test("an unreachable SSH host does not block local inventory")
     func unreachableRemoteDoesNotBlockLocalInventory() async throws {
         let environment = try setupStandardEnvironment()
+        let transport = SSHConnectionFailure.classify(
+            status: 255,
+            output: "ssh: connect to host wesm-mbp port 22: Network is unreachable"
+        )
         let remote = SSHHost(
             configKey: "wesm-mbp",
             name: "Wes MBP",
@@ -5147,7 +5158,10 @@ struct WorkspaceTmuxDiscoveryTests {
                         ),
                     ])
                 case .ssh:
-                    return .failure(.shellFailed(status: 255))
+                    return .failure(.sshConnectionFailed(
+                        host: remote.name,
+                        classification: transport
+                    ))
                 }
             },
             configuredSSHHostsProvider: { configuredHosts.value },
@@ -5182,8 +5196,69 @@ struct WorkspaceTmuxDiscoveryTests {
         #expect(remoteSummary.lastSeenAt == nil)
         #expect(
             model.workspaceInventoryWarningsByHost[remoteHostID]?
-                .contains("status 255") == true
+                .contains("could not reach") == true
         )
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("missing tmux does not make a Herdr-capable host offline")
+    func missingTmuxKeepsHerdrHostReachable() async throws {
+        let environment = try setupStandardEnvironment()
+        let remote = SSHHost(
+            configKey: "herdr-box",
+            name: "Herdr Box",
+            platform: .linux,
+            sshDestination: "dev@herdr-box"
+        )
+        let configuredHosts = CurrentValueSubject<[SSHHost], Never>([remote])
+        let running = HerdrSessionSummary(
+            name: "api",
+            isDefault: true,
+            state: .running
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            kwtInventoryLoader: { _ in KwtHostInventory(projects: []) },
+            tmuxSessionDiscovery: { host in
+                switch host {
+                case .local:
+                    return .success([])
+                case .ssh:
+                    return .failure(.notFound(shell: remote.name))
+                }
+            },
+            herdrSessionDiscovery: { host in
+                switch host {
+                case .local:
+                    return .unavailable
+                case .ssh:
+                    return .available([running])
+                }
+            },
+            configuredSSHHostsProvider: { configuredHosts.value },
+            configuredSSHHostsPublisher:
+            configuredHosts.eraseToAnyPublisher(),
+            startServices: true
+        )
+
+        await waitUntilMainActor {
+            model.workspaceInventoryState == .loaded
+                && model.snapshot.hosts.contains {
+                    $0.configKey == remote.configKey
+                        && $0.herdrSessions == [running]
+                }
+        }
+
+        let summary = try #require(
+            model.snapshot.hosts.first { $0.configKey == remote.configKey }
+        )
+        #expect(summary.lastKnownReachable)
+        #expect(summary.connectionState != .offline)
+        #expect(summary.herdrAvailable)
+        #expect(model.workspaceInventoryWarningsByHost[summary.id]?
+            .contains("tmux was not found") == true)
         await model.shutdown()
     }
 
@@ -5550,7 +5625,7 @@ struct WorkspaceTmuxDiscoveryTests {
         #expect(!model.snapshot.canCreateWorktree(in: cachedProject))
         #expect(
             model.workspaceInventoryWarningsByHost[offlineHost.id]?
-                .contains("255") == true
+                .contains("could not reach") == true
         )
         await model.shutdown()
     }
@@ -6004,7 +6079,7 @@ struct WorkspaceTmuxDiscoveryTests {
 }
 
 @MainActor
-private final class SceneTmuxPaneSurfaceStub: TmuxPaneSurfacing {
+private final class SceneTmuxPaneSurfaceStub: NativeSessionPaneSurfacing {
     var blocksClipboardReads = false
     var launchError: Error?
     var childExitCode: UInt32?
@@ -6029,7 +6104,7 @@ private enum SceneSurfaceLaunchError: LocalizedError {
 }
 
 @MainActor
-private final class SceneTmuxSurfaceStoreStub: TmuxSurfaceStoring {
+private final class SceneTmuxSurfaceStoreStub: NativeSessionSurfaceStoring {
     let surface = SceneTmuxPaneSurfaceStub()
     var returnsSurface = true
     private(set) var requestCount = 0
@@ -6041,7 +6116,7 @@ private final class SceneTmuxSurfaceStoreStub: TmuxSurfaceStoring {
     func paneSurface(
         for key: SurfaceKey,
         configuration: TerminalSurfaceConfiguration
-    ) -> (any TmuxPaneSurfacing)? {
+    ) -> (any NativeSessionPaneSurfacing)? {
         guard !retainedKeys.contains(key) else { return surface }
         retainedKeys.insert(key)
         requestCount += 1

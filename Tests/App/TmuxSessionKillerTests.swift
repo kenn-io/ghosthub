@@ -1,3 +1,4 @@
+import GhosthubTransport
 import Foundation
 import GhosthubTmux
 import GhosthubUI
@@ -19,7 +20,7 @@ struct TmuxSessionKillerTests {
             ?? "ghosthub-kill-\(UUID().uuidString.lowercased())"
         let sessionName = "same-name"
         defer {
-            _ = TmuxBinaryResolver.runProcess(
+            _ = AccountCommandRunner.runProcess(
                 executable: tmuxPath,
                 arguments: [
                     "-L", socketName,
@@ -28,7 +29,7 @@ struct TmuxSessionKillerTests {
                 timeout: 5
             )
         }
-        let anchor = TmuxBinaryResolver.runProcess(
+        let anchor = AccountCommandRunner.runProcess(
             executable: tmuxPath,
             arguments: [
                 "-f", "/dev/null", "-L", socketName,
@@ -37,7 +38,7 @@ struct TmuxSessionKillerTests {
             timeout: 5
         )
         #expect(anchor.status == 0)
-        let initial = TmuxBinaryResolver.runProcess(
+        let initial = AccountCommandRunner.runProcess(
             executable: tmuxPath,
             arguments: [
                 "-L", socketName, "new-session", "-d", "-s", sessionName,
@@ -64,7 +65,7 @@ struct TmuxSessionKillerTests {
             expectedIdentity: originalIdentity,
             on: .local
         )
-        let absent = TmuxBinaryResolver.runProcess(
+        let absent = AccountCommandRunner.runProcess(
             executable: tmuxPath,
             arguments: [
                 "-L", socketName, "has-session", "-t", "=\(sessionName):",
@@ -73,7 +74,7 @@ struct TmuxSessionKillerTests {
         )
         #expect(absent.status != 0)
 
-        let replacement = TmuxBinaryResolver.runProcess(
+        let replacement = AccountCommandRunner.runProcess(
             executable: tmuxPath,
             arguments: [
                 "-L", socketName, "new-session", "-d", "-s", sessionName,
@@ -93,7 +94,7 @@ struct TmuxSessionKillerTests {
                 session: sessionName
             )
         }
-        let replacementStillRunning = TmuxBinaryResolver.runProcess(
+        let replacementStillRunning = AccountCommandRunner.runProcess(
             executable: tmuxPath,
             arguments: [
                 "-L", socketName, "has-session", "-t", "=\(sessionName):",

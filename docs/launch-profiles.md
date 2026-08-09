@@ -27,7 +27,7 @@ docker exec -it app-container /bin/sh
 
 ## Start a session with a profile
 
-1. Choose **New tmux session** for the target host.
+1. Select the **+** beside **Tmux Sessions** for the target host.
 2. Enter the new session name.
 3. Under **Start with**, select the saved profile. **Login shell** remains the
    default.

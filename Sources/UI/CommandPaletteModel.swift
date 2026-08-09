@@ -44,8 +44,13 @@ public enum WorkspaceCommandAction: Equatable, Sendable {
     case previousWorktree
     case nextWorktree
     case newTmuxSession(UUID)
+    case newHerdrSession(UUID)
     case addProject(UUID)
     case openTmuxSession(WorkspaceTmuxSessionSelection)
+    case openHerdrSession(WorkspaceHerdrSessionSelection)
+    case restartHerdrSession(WorkspaceHerdrSessionSelection)
+    case stopHerdrSession(WorkspaceHerdrSessionSelection)
+    case deleteHerdrSession(WorkspaceHerdrSessionSelection)
     case killTmuxSession(WorkspaceTmuxSessionSelection)
     case applyThemeToCurrentTmuxSession(
         WorkspaceTmuxSessionSelection
@@ -131,7 +136,9 @@ public enum CommandPaletteModel {
         tmuxSessionVisibility: TmuxSessionVisibility = TmuxSessionVisibility(),
         supportsSettings: Bool = true,
         worktreeOrderRawValue: String = "",
-        tmuxSessionOrderRawValue: String = ""
+        tmuxSessionOrderRawValue: String = "",
+        herdrSessionOrderRawValue: String = "",
+        pendingHerdrSessions: Set<WorkspaceHerdrSessionSelection> = []
     ) -> [WorkspaceCommandItem] {
         var commands = [
             WorkspaceCommandItem(
@@ -204,6 +211,15 @@ public enum CommandPaletteModel {
             tmuxSessionVisibility: tmuxSessionVisibility,
             worktreeOrderRawValue: worktreeOrderRawValue,
             tmuxSessionOrderRawValue: tmuxSessionOrderRawValue
+        ))
+        commands.append(contentsOf: herdrSessionCommands(
+            in: snapshot,
+            visibility: worktreeVisibility,
+            tmuxSessionVisibility: tmuxSessionVisibility,
+            worktreeOrderRawValue: worktreeOrderRawValue,
+            tmuxSessionOrderRawValue: tmuxSessionOrderRawValue,
+            herdrSessionOrderRawValue: herdrSessionOrderRawValue,
+            pendingHerdrSessions: pendingHerdrSessions
         ))
         commands.append(contentsOf: newWorktreeCommands(
             in: snapshot,
@@ -375,6 +391,18 @@ public enum CommandPaletteModel {
                     action: .newTmuxSession(host.id)
                 ),
             ]
+            if host.herdrAvailable {
+                commands.append(WorkspaceCommandItem(
+                    id: "new-herdr-session-\(host.id.uuidString)",
+                    title: "New Herdr session on \(host.name)",
+                    subtitle: "Create and attach on \(host.commandPaletteSubtitle)",
+                    keywords: [
+                        "new", "create", "herdr", "session",
+                        host.name, host.sshDestination ?? "",
+                    ],
+                    action: .newHerdrSession(host.id)
+                ))
+            }
             if host.canRegisterProjects {
                 commands.append(WorkspaceCommandItem(
                     id: "add-project-\(host.id.uuidString)",
@@ -557,6 +585,79 @@ public enum CommandPaletteModel {
                 )
             ),
         ]
+    }
+
+    private static func herdrSessionCommands(
+        in snapshot: WorkspaceSnapshot,
+        visibility: WorktreeVisibility,
+        tmuxSessionVisibility: TmuxSessionVisibility,
+        worktreeOrderRawValue: String,
+        tmuxSessionOrderRawValue: String,
+        herdrSessionOrderRawValue: String,
+        pendingHerdrSessions: Set<WorkspaceHerdrSessionSelection>
+    ) -> [WorkspaceCommandItem] {
+        WorkspaceSidebarModel.sections(
+            in: snapshot,
+            visibility: visibility,
+            tmuxSessionVisibility: tmuxSessionVisibility,
+            worktreeOrderRawValue: worktreeOrderRawValue,
+            tmuxSessionOrderRawValue: tmuxSessionOrderRawValue,
+            herdrSessionOrderRawValue: herdrSessionOrderRawValue
+        ).flatMap { section in
+            section.herdrSessionRows.flatMap { row -> [WorkspaceCommandItem] in
+                guard case let .herdrSession(hostID, name) = row.target else {
+                    return []
+                }
+                let session = WorkspaceHerdrSessionSelection(
+                    hostID: hostID,
+                    name: name
+                )
+                guard !pendingHerdrSessions.contains(session) else { return [] }
+                let keywords = [
+                    "herdr", "session", name,
+                    section.host.name, section.row.title,
+                ]
+                switch row.herdrSessionState {
+                case .running:
+                    return [
+                        WorkspaceCommandItem(
+                            id: "open-herdr-session-\(session.id)",
+                            title: "Open Herdr session: \(name)",
+                            subtitle: "Attach on \(section.host.name).",
+                            keywords: ["open", "attach"] + keywords,
+                            action: .openHerdrSession(session)
+                        ),
+                        WorkspaceCommandItem(
+                            id: "stop-herdr-session-\(session.id)",
+                            title: "Stop Herdr session: \(name)",
+                            subtitle: "Stop every process on \(section.host.name).",
+                            keywords: ["stop", "terminate"] + keywords,
+                            action: .stopHerdrSession(session)
+                        ),
+                    ]
+                case .stopped:
+                    var commands = [WorkspaceCommandItem(
+                        id: "restart-herdr-session-\(session.id)",
+                        title: "Restart Herdr session: \(name)",
+                        subtitle: "Restore its saved shape and attach on \(section.host.name).",
+                        keywords: ["restart", "start", "attach"] + keywords,
+                        action: .restartHerdrSession(session)
+                    )]
+                    if row.herdrSessionIsDefault != true {
+                        commands.append(WorkspaceCommandItem(
+                            id: "delete-herdr-session-\(session.id)",
+                            title: "Delete Herdr session: \(name)",
+                            subtitle: "Permanently remove its saved state on \(section.host.name).",
+                            keywords: ["delete", "remove"] + keywords,
+                            action: .deleteHerdrSession(session)
+                        ))
+                    }
+                    return commands
+                case nil:
+                    return []
+                }
+            }
+        }
     }
 
     private static func newWorktreeCommands(

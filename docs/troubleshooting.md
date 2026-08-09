@@ -97,7 +97,7 @@ Kwt does not need a system installation: Ghosthub automatically installs or
 updates its managed helper when it loads inventory for a configured remote
 macOS or Linux host. If provisioning fails, use the host warning to retry or
 open Host Settings. If the host has never used kwt, enter an existing
-checkout's absolute path under **Add Project** from the **+** menu beside that
+checkout's absolute path with the **+** beside the **Projects** group for that
 host; repeat for each repository Ghosthub should display.
 
 **Test Connection** follows your OpenSSH host-key policy. If the exact full
@@ -112,3 +112,29 @@ system OpenSSH client without putting them in command arguments, environment
 variables, logs, or persistent storage.
 A reachable host without tmux is reported
 separately as **tmux is not installed** rather than as an SSH failure.
+
+## Herdr sessions do not appear
+
+Ghosthub treats Herdr as an optional, independent host capability. A host with
+no `herdr` executable shows no Herdr group or missing-tool warning and remains
+fully usable for tmux and kwt. On the local Mac or a remote POSIX host, verify
+the account login environment reports the expected sessions:
+
+```bash
+command -v herdr
+herdr session list --json
+```
+
+Running and stopped sessions appear under **Herdr Sessions**. A stopped row is
+dimmed and labeled **Stopped**; choose **Restart** to restore its saved shape
+with new processes. Malformed
+JSON, a failing Herdr command, or an SSH failure adds a host-scoped warning;
+use its **Retry** action after correcting the command or connection. Herdr is
+not supported on experimental Windows/psmux hosts.
+
+Closing a Herdr presentation only detaches. **Stop Session…** is a separate,
+confirmed action that terminates every process while preserving saved shape.
+**Delete Session…** permanently removes a stopped named session and is never
+available for Herdr's default session. A normal detach offers manual reconnect;
+an SSH transport loss retries only while a fresh exact-session probe still
+confirms the target.

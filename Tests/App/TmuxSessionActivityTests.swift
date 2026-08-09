@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import GhosthubTransport
 import GhosthubTmux
 import GhosthubUI
 import Testing
@@ -263,7 +264,7 @@ struct TmuxSessionActivityProbeTests {
         let probe = TmuxSessionActivityProbe(
             pathResolver: { _ in .success(tmux.path) },
             runner: { _, command in
-                TmuxBinaryResolver.runLoginShell(
+                AccountCommandRunner.runLoginShell(
                     shell: "/bin/sh",
                     command: command,
                     timeout: 2
@@ -317,7 +318,7 @@ struct TmuxSessionActivityProbeTests {
         let probe = TmuxSessionActivityProbe(
             pathResolver: { _ in .success(tmux.path) },
             runner: { _, command in
-                TmuxBinaryResolver.runLoginShell(
+                AccountCommandRunner.runLoginShell(
                     shell: "/bin/sh",
                     command: command,
                     timeout: 2
@@ -362,7 +363,7 @@ struct TmuxSessionActivityProbeTests {
         let probe = TmuxSessionActivityProbe(
             pathResolver: { _ in .success(tmux.path) },
             runner: { _, command in
-                TmuxBinaryResolver.runLoginShell(
+                AccountCommandRunner.runLoginShell(
                     shell: "/bin/sh",
                     command: command,
                     timeout: 2
@@ -406,7 +407,7 @@ struct TmuxSessionActivityProbeTests {
         let probe = TmuxSessionActivityProbe(
             pathResolver: { _ in .success(tmux.path) },
             runner: { _, command in
-                TmuxBinaryResolver.runLoginShell(
+                AccountCommandRunner.runLoginShell(
                     shell: "/bin/sh",
                     command: command,
                     timeout: 2
@@ -507,7 +508,7 @@ struct TmuxSessionActivityProbeTests {
         let probe = TmuxSessionActivityProbe(
             pathResolver: { _ in .success(tmux.path) },
             runner: { _, command in
-                TmuxBinaryResolver.runLoginShell(
+                AccountCommandRunner.runLoginShell(
                     shell: "/bin/sh",
                     command: command,
                     timeout: 2
@@ -582,7 +583,7 @@ struct TmuxSessionActivityProbeTests {
         let probe = TmuxSessionActivityProbe(
             pathResolver: { _ in .success(tmux.path) },
             runner: { _, command in
-                TmuxBinaryResolver.runLoginShell(
+                AccountCommandRunner.runLoginShell(
                     shell: "/bin/sh",
                     command: command,
                     timeout: 2
@@ -646,7 +647,7 @@ struct TmuxSessionActivityProbeTests {
         let probe = TmuxSessionActivityProbe(
             pathResolver: { _ in .success(tmux.path) },
             runner: { _, command in
-                TmuxBinaryResolver.runLoginShell(
+                AccountCommandRunner.runLoginShell(
                     shell: "/bin/sh",
                     command: command,
                     timeout: 2
@@ -964,13 +965,13 @@ struct TmuxSessionActivityControllerTests {
         let keptHostID = UUID()
         let movedHostID = UUID()
         let removedHostID = UUID()
-        let oldEndpoint = TmuxHost.ssh(SSHHostInfo(
+        let oldEndpoint = CommandHost.ssh(SSHHostInfo(
             user: "wes",
             hostname: "old-box",
             port: nil,
             platform: .posix
         ))
-        let newEndpoint = TmuxHost.ssh(SSHHostInfo(
+        let newEndpoint = CommandHost.ssh(SSHHostInfo(
             user: "wes",
             hostname: "new-box",
             port: nil,

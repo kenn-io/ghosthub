@@ -1,6 +1,7 @@
 import Foundation
 import GhosthubTerminalSupport
 import GhosthubTmux
+import GhosthubTransport
 import Testing
 @testable import GhosthubApp
 
@@ -65,7 +66,7 @@ private final class TestTmuxClient {
 }
 
 private func stopTestTmuxServer(tmuxPath: String, socketName: String) {
-    _ = TmuxBinaryResolver.runProcess(
+    _ = AccountCommandRunner.runProcess(
         executable: tmuxPath,
         arguments: [
             "-L", socketName,
@@ -123,7 +124,7 @@ struct TmuxPaneSplitterTests {
         defer {
             stopTestTmuxServer(tmuxPath: tmuxPath, socketName: socketName)
         }
-        let created = TmuxBinaryResolver.runProcess(
+        let created = AccountCommandRunner.runProcess(
             executable: tmuxPath,
             arguments: [
                 "-f", "/dev/null", "-L", socketName,
@@ -132,7 +133,7 @@ struct TmuxPaneSplitterTests {
             timeout: 5
         )
         #expect(created.status == 0)
-        let customized = TmuxBinaryResolver.runProcess(
+        let customized = AccountCommandRunner.runProcess(
             executable: tmuxPath,
             arguments: [
                 "-L", socketName,
@@ -168,7 +169,7 @@ struct TmuxPaneSplitterTests {
         defer { clientProcess?.stop() }
         var attachedClientCount = 0
         for _ in 0 ..< 100 where attachedClientCount != 2 {
-            let listed = TmuxBinaryResolver.runProcess(
+            let listed = AccountCommandRunner.runProcess(
                 executable: tmuxPath,
                 arguments: [
                     "-L", socketName, "list-clients", "-F", "#{client_tty}",
@@ -187,7 +188,7 @@ struct TmuxPaneSplitterTests {
             target: unresolvedTarget
         ).get()
         #expect(initialClient != nil)
-        let renamed = TmuxBinaryResolver.runProcess(
+        let renamed = AccountCommandRunner.runProcess(
             executable: tmuxPath,
             arguments: [
                 "-L", socketName,
@@ -228,7 +229,7 @@ struct TmuxPaneSplitterTests {
             )
         )
         #expect(failure == nil)
-        let hooks = TmuxBinaryResolver.runProcess(
+        let hooks = AccountCommandRunner.runProcess(
             executable: tmuxPath,
             arguments: ["-L", socketName, "show-hooks", "-g"],
             timeout: 5
@@ -236,7 +237,7 @@ struct TmuxPaneSplitterTests {
         #expect(!hooks.stdout.split(whereSeparator: \.isNewline)
             .contains(where: { $0.hasPrefix("after-refresh-client[") }))
 
-        let panes = TmuxBinaryResolver.runProcess(
+        let panes = AccountCommandRunner.runProcess(
             executable: tmuxPath,
             arguments: [
                 "-L", socketName, "list-panes", "-t", "=renamed:",
@@ -262,7 +263,7 @@ struct TmuxPaneSplitterTests {
             stopTestTmuxServer(tmuxPath: tmuxPath, socketName: socketName)
         }
         for sessionName in ["concurrent-a", "concurrent-b"] {
-            let created = TmuxBinaryResolver.runProcess(
+            let created = AccountCommandRunner.runProcess(
                 executable: tmuxPath,
                 arguments: [
                     "-f", "/dev/null", "-L", socketName,
@@ -391,7 +392,7 @@ struct TmuxPaneSplitterTests {
         #expect(failures.0 == nil)
         #expect(failures.1 == nil)
         for sessionName in ["concurrent-a", "concurrent-b"] {
-            let panes = TmuxBinaryResolver.runProcess(
+            let panes = AccountCommandRunner.runProcess(
                 executable: tmuxPath,
                 arguments: [
                     "-L", socketName, "list-panes", "-t", "=\(sessionName):",
@@ -415,7 +416,7 @@ struct TmuxPaneSplitterTests {
         defer {
             stopTestTmuxServer(tmuxPath: tmuxPath, socketName: socketName)
         }
-        let created = TmuxBinaryResolver.runProcess(
+        let created = AccountCommandRunner.runProcess(
             executable: tmuxPath,
             arguments: [
                 "-f", "/dev/null", "-L", socketName,
@@ -439,8 +440,8 @@ struct TmuxPaneSplitterTests {
         let splitter = TmuxPaneSplitter { _, _, command in
             runnerStarted.store(true)
             releaseRunner.wait()
-            let result = TmuxBinaryResolver.runLoginShell(
-                shell: TmuxBinaryResolver.loginShell(),
+            let result = AccountCommandRunner.runLoginShell(
+                shell: AccountCommandRunner.loginShell(),
                 command: command,
                 timeout: 15,
                 captureStandardError: true
@@ -481,7 +482,7 @@ struct TmuxPaneSplitterTests {
         defer {
             stopTestTmuxServer(tmuxPath: tmuxPath, socketName: socketName)
         }
-        let created = TmuxBinaryResolver.runProcess(
+        let created = AccountCommandRunner.runProcess(
             executable: tmuxPath,
             arguments: [
                 "-f", "/dev/null", "-L", socketName,
@@ -600,12 +601,12 @@ struct TmuxPaneSplitterTests {
             tmuxPath, "-f", "/dev/null", "-L", launcherSocketName,
             "new-session", "-d", "-s", "launcher",
         ].map(shellQuotedCommandArgument).joined(separator: " ")
-        #expect(TmuxBinaryResolver.runLoginShell(
+        #expect(AccountCommandRunner.runLoginShell(
             shell: "/bin/sh",
             command: targetCreate,
             timeout: 5
         ).status == 0)
-        #expect(TmuxBinaryResolver.runLoginShell(
+        #expect(AccountCommandRunner.runLoginShell(
             shell: "/bin/sh",
             command: launcherCreate,
             timeout: 5
@@ -626,7 +627,7 @@ struct TmuxPaneSplitterTests {
             "client-attached",
             "rename-session -t =inherited-target: inherited-renamed",
         ].map(shellQuotedCommandArgument).joined(separator: " ")
-        #expect(TmuxBinaryResolver.runLoginShell(
+        #expect(AccountCommandRunner.runLoginShell(
             shell: "/bin/sh",
             command: renameHook,
             timeout: 5
@@ -635,7 +636,7 @@ struct TmuxPaneSplitterTests {
             tmuxPath, "-L", launcherSocketName, "display-message", "-p",
             "#{socket_path}\t#{pid}",
         ].map(shellQuotedCommandArgument).joined(separator: " ")
-        let launcherFields = TmuxBinaryResolver.runLoginShell(
+        let launcherFields = AccountCommandRunner.runLoginShell(
             shell: "/bin/sh",
             command: launcherIdentity,
             timeout: 5
@@ -684,7 +685,7 @@ struct TmuxPaneSplitterTests {
             "=inherited-renamed:",
             "#{pid}\t#{session_id}\t#{session_created}",
         ].map(shellQuotedCommandArgument).joined(separator: " ")
-        let targetIdentityResult = TmuxBinaryResolver.runLoginShell(
+        let targetIdentityResult = AccountCommandRunner.runLoginShell(
             shell: "/bin/sh",
             command: targetIdentity,
             timeout: 5
@@ -845,12 +846,12 @@ struct TmuxPaneSplitterTests {
             mismatchMarker: "TEST_MISMATCH",
             hookIndex: 1_500_000_002
         )
-        let rightSyntax = TmuxBinaryResolver.runProcess(
+        let rightSyntax = AccountCommandRunner.runProcess(
             executable: "/bin/sh",
             arguments: ["-n", "-c", right],
             timeout: 5
         )
-        let downSyntax = TmuxBinaryResolver.runProcess(
+        let downSyntax = AccountCommandRunner.runProcess(
             executable: "/bin/sh",
             arguments: ["-n", "-c", down],
             timeout: 5
@@ -890,7 +891,7 @@ struct TmuxPaneSplitterTests {
         defer {
             stopTestTmuxServer(tmuxPath: tmuxPath, socketName: socketName)
         }
-        let created = TmuxBinaryResolver.runProcess(
+        let created = AccountCommandRunner.runProcess(
             executable: tmuxPath,
             arguments: [
                 "-f", "/dev/null", "-L", socketName,
@@ -955,7 +956,7 @@ struct TmuxPaneSplitterTests {
         )
 
         #expect(failure?.diagnostic == "The attached tmux session changed.")
-        let panes = TmuxBinaryResolver.runProcess(
+        let panes = AccountCommandRunner.runProcess(
             executable: tmuxPath,
             arguments: [
                 "-L", socketName, "list-panes", "-t", "=identity:",
@@ -989,7 +990,7 @@ struct TmuxPaneSplitterTests {
             sshConnectionArguments: [],
             clientToken: UUID().uuidString.lowercased()
         )
-        let created = TmuxBinaryResolver.runProcess(
+        let created = AccountCommandRunner.runProcess(
             executable: tmuxPath,
             arguments: [
                 "-f", "/dev/null", "-L", socketName,
@@ -1010,12 +1011,12 @@ struct TmuxPaneSplitterTests {
             target: target
         ).get()
         #expect(client != nil)
-        _ = TmuxBinaryResolver.runProcess(
+        _ = AccountCommandRunner.runProcess(
             executable: tmuxPath,
             arguments: ["-L", socketName, "kill-session", "-t", "replaceable"],
             timeout: 5
         )
-        let replacement = TmuxBinaryResolver.runProcess(
+        let replacement = AccountCommandRunner.runProcess(
             executable: tmuxPath,
             arguments: [
                 "-f", "/dev/null", "-L", socketName,
@@ -1033,7 +1034,7 @@ struct TmuxPaneSplitterTests {
             target: guardedTarget
         )
         #expect(failure?.diagnostic == "The attached tmux session changed.")
-        let panes = TmuxBinaryResolver.runProcess(
+        let panes = AccountCommandRunner.runProcess(
             executable: tmuxPath,
             arguments: [
                 "-L", socketName, "list-panes", "-t", "=replaceable:",
@@ -1059,7 +1060,7 @@ struct TmuxPaneSplitterTests {
             stopTestTmuxServer(tmuxPath: tmuxPath, socketName: socketName)
         }
         for session in ["original", "visible"] {
-            let created = TmuxBinaryResolver.runProcess(
+            let created = AccountCommandRunner.runProcess(
                 executable: tmuxPath,
                 arguments: [
                     "-f", "/dev/null", "-L", socketName,
@@ -1093,7 +1094,7 @@ struct TmuxPaneSplitterTests {
             target: target
         ).get()
         guard let client else {
-            let listed = TmuxBinaryResolver.runProcess(
+            let listed = AccountCommandRunner.runProcess(
                 executable: tmuxPath,
                 arguments: [
                     "-L", socketName, "list-clients", "-F",
@@ -1111,7 +1112,7 @@ struct TmuxPaneSplitterTests {
             Issue.record(Comment(rawValue: diagnostic))
             return
         }
-        let listed = TmuxBinaryResolver.runProcess(
+        let listed = AccountCommandRunner.runProcess(
             executable: tmuxPath,
             arguments: [
                 "-L", socketName, "list-clients", "-F",
@@ -1131,7 +1132,7 @@ struct TmuxPaneSplitterTests {
             Issue.record("tmux client name was unavailable")
             return
         }
-        let switched = TmuxBinaryResolver.runProcess(
+        let switched = AccountCommandRunner.runProcess(
             executable: tmuxPath,
             arguments: [
                 "-L", socketName, "switch-client", "-c", clientName,
@@ -1150,7 +1151,7 @@ struct TmuxPaneSplitterTests {
         )
         #expect(failure?.diagnostic == "The attached tmux session changed.")
         for session in ["original", "visible"] {
-            let panes = TmuxBinaryResolver.runProcess(
+            let panes = AccountCommandRunner.runProcess(
                 executable: tmuxPath,
                 arguments: [
                     "-L", socketName, "list-panes", "-t", "=\(session):",

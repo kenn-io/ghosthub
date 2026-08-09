@@ -1,3 +1,4 @@
+import GhosthubTransport
 import Foundation
 import GhosthubTmux
 
@@ -227,7 +228,7 @@ enum SSHConfigurationResolver {
             omittingEmptySubsequences: false
         )
         let hosts = destinations.compactMap { value in
-            TmuxHostResolver.parseSSHDestination(
+            CommandHostResolver.parseSSHDestination(
                 String(value).trimmingCharacters(in: .whitespaces)
             )
         }
@@ -341,7 +342,7 @@ enum SSHConfigurationResolver {
         for host: SSHHostInfo
     ) -> EffectiveSSHConfiguration? {
         var arguments = ["-G"]
-        arguments.append(contentsOf: tmuxSSHConnectionArguments())
+        arguments.append(contentsOf: demoSSHIsolationArguments())
         if let port = host.port {
             arguments.append(contentsOf: ["-p", String(port)])
         }
@@ -361,8 +362,8 @@ enum SSHConfigurationResolver {
         printf '\\n%s\\n' \(shellQuotedCommandArgument(endMarker))
         exit "$ghosthub_ssh_status"
         """
-        let result = TmuxBinaryResolver.runLoginShell(
-            shell: TmuxBinaryResolver.loginShell(),
+        let result = AccountCommandRunner.runLoginShell(
+            shell: AccountCommandRunner.loginShell(),
             command: command,
             timeout: 5
         )

@@ -1,3 +1,4 @@
+import GhosthubTransport
 import Darwin
 import Foundation
 import GhosthubTmux
@@ -6,17 +7,6 @@ import Testing
 
 @Suite("TmuxBinaryResolver")
 struct TmuxBinaryResolverTests {
-    @Test("tmux subprocesses do not inherit a launcher session")
-    func stripsLauncherTmuxEnvironment() {
-        let sanitized = TmuxBinaryResolver.sanitizedProcessEnvironment([
-            "PATH": "/usr/bin",
-            "TMUX": "/tmp/tmux-501/default,1,0",
-            "TMUX_PANE": "%3",
-        ])
-
-        #expect(sanitized == ["PATH": "/usr/bin"])
-    }
-
     @Test("parses the resolved path from shell output")
     func parsesPath() throws {
         let resolver = TmuxBinaryResolver(processRunner: { _, command in
@@ -96,7 +86,7 @@ struct TmuxBinaryResolverTests {
 
         // A hang backstop only: real login shells can take seconds to start
         // under parallel suite load, so a tight timeout is a flake.
-        let result = TmuxBinaryResolver.runProcessInLoginShell(
+        let result = AccountCommandRunner.runProcessInLoginShell(
             executable: "/usr/bin/printf",
             arguments: ["%s", argument],
             timeout: 15,
@@ -111,7 +101,7 @@ struct TmuxBinaryResolverTests {
     func loginShellProcessPreservesEnvironmentOverrides() throws {
         let password = try #require(getpwuid(getuid()))
         let shell = String(cString: password.pointee.pw_shell)
-        let result = TmuxBinaryResolver.runProcessInLoginShell(
+        let result = AccountCommandRunner.runProcessInLoginShell(
             executable: "/usr/bin/printenv",
             arguments: ["GHOSTHUB_TEST_OVERRIDE"],
             timeout: 15,
@@ -134,7 +124,7 @@ struct TmuxBinaryResolverTests {
             hostname: "remote.example",
             port: nil
         )
-        let command = TmuxBinaryResolver.remoteLoginCommand(
+        let command = AccountCommandRunner.remoteLoginCommand(
             host: host,
             command:
             "marker=$(printf '%s' 'REMOTE_SHELL_READY'); "
@@ -143,7 +133,7 @@ struct TmuxBinaryResolverTests {
 
         // A hang backstop only: real login shells can take seconds to start
         // under parallel suite load, so a tight timeout is a flake.
-        let result = TmuxBinaryResolver.runProcess(
+        let result = AccountCommandRunner.runProcess(
             executable: shell,
             arguments: ["-c", command],
             timeout: 15
@@ -155,7 +145,7 @@ struct TmuxBinaryResolverTests {
 
     @Test("process output keeps diagnostics separate from protocol output")
     func separatesStandardError() {
-        let result = TmuxBinaryResolver.runProcess(
+        let result = AccountCommandRunner.runProcess(
             executable: "/bin/sh",
             arguments: [
                 "-c",
@@ -427,7 +417,7 @@ struct TmuxBinaryResolverTests {
         )
         let command = "Write-Output 'windows-ready'"
 
-        let remoteCommand = TmuxBinaryResolver.remoteLoginCommand(
+        let remoteCommand = AccountCommandRunner.remoteLoginCommand(
             host: host,
             command: command
         )
@@ -487,7 +477,7 @@ struct TmuxBinaryResolverTests {
         guard FileManager.default.isExecutableFile(atPath: "/bin/zsh") else {
             return
         }
-        let expected = TmuxBinaryResolver.runLoginShell(
+        let expected = AccountCommandRunner.runLoginShell(
             shell: "/bin/zsh",
             command: "tmux list-sessions -F '#{session_name}' 2>/dev/null",
             timeout: 5
@@ -620,7 +610,7 @@ struct TmuxBinaryResolverTests {
         )
         let resolver = TmuxBinaryResolver(
             remoteProcessRunner: { _, _, command in
-                return TmuxBinaryResolver.runProcess(
+                let output = AccountCommandRunner.runProcess(
                     executable: "/bin/sh",
                     arguments: ["-c", command],
                     timeout: 5,
@@ -628,6 +618,7 @@ struct TmuxBinaryResolverTests {
                         "PATH": "\(directory.path):/usr/bin:/bin",
                     ]
                 )
+                return (output.status, output.stdout, output.stderr)
             }
         )
 

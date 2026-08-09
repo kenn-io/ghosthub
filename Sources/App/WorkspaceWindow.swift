@@ -15,7 +15,7 @@ struct FocusedSceneModelKey: FocusedValueKey {
     typealias Value = WorkspaceSceneModel
 }
 
-struct TmuxTerminalKeyboardFocusKey: FocusedValueKey {
+struct TerminalKeyboardFocusKey: FocusedValueKey {
     typealias Value = Bool
 }
 
@@ -25,9 +25,9 @@ extension FocusedValues {
         set { self[FocusedSceneModelKey.self] = newValue }
     }
 
-    var tmuxTerminalHasEffectiveKeyboardFocus: Bool? {
-        get { self[TmuxTerminalKeyboardFocusKey.self] }
-        set { self[TmuxTerminalKeyboardFocusKey.self] = newValue }
+    var terminalHasEffectiveKeyboardFocus: Bool? {
+        get { self[TerminalKeyboardFocusKey.self] }
+        set { self[TerminalKeyboardFocusKey.self] = newValue }
     }
 }
 
@@ -654,8 +654,12 @@ struct WorkspaceWindow: View {
                 sceneModel.activeBorrowedTmuxSessionIsConnected,
                 activeTmuxSessionCanApplyTheme:
                 sceneModel.canApplyThemeToActiveTmuxSession,
-                tmuxConnectionRecoveryRequest:
-                sceneModel.tmuxConnectionRecoveryRequest,
+                activeHerdrSession:
+                sceneModel.activeBorrowedHerdrSelection,
+                pendingHerdrSessions:
+                sceneModel.pendingHerdrSessionSelections,
+                sessionConnectionRecoveryRequest:
+                sceneModel.sessionConnectionRecoveryRequest,
                 workingTmuxSessionIDs:
                 sceneModel.workingTmuxSessionIDs
             ),
@@ -664,6 +668,17 @@ struct WorkspaceWindow: View {
                     [sceneModel]
                     host, sessionName, defersTerminalResize, actions in
                     sceneModel.borrowedTmuxSessionView(
+                        host: host,
+                        sessionName: sessionName,
+                        defersTerminalResize: defersTerminalResize,
+                        onReconnectNow: actions.reconnectNow,
+                        onReviewConnection: actions.reviewConnection
+                    )
+                },
+                herdrSessionContentBuilder: {
+                    [sceneModel]
+                    host, sessionName, defersTerminalResize, actions in
+                    sceneModel.borrowedHerdrSessionView(
                         host: host,
                         sessionName: sessionName,
                         defersTerminalResize: defersTerminalResize,
@@ -816,8 +831,33 @@ struct WorkspaceWindow: View {
                 hideTmuxSession: { [sceneModel] selection in
                     sceneModel.hideBorrowedTmuxSession(selection)
                 },
+                openHerdrSession: { [sceneModel] selection in
+                    try await sceneModel.openBorrowedHerdrSession(selection)
+                },
+                createHerdrSession: { [sceneModel] selection in
+                    try await sceneModel.createHerdrSession(selection)
+                },
+                restartHerdrSession: { [sceneModel] selection in
+                    try await sceneModel.restartHerdrSession(selection)
+                },
                 closeTmuxSession: { [sceneModel] selection in
                     sceneModel.closeBorrowedTmuxSession(selection)
+                },
+                closeHerdrSession: { [sceneModel] selection in
+                    sceneModel.closeBorrowedHerdrSession(selection)
+                },
+                prepareHerdrSessionLifecycle: {
+                    [sceneModel] selection, action in
+                    try await sceneModel.prepareHerdrSessionLifecycle(
+                        selection,
+                        action: action
+                    )
+                },
+                performHerdrSessionLifecycle: { [sceneModel] request in
+                    try await sceneModel.performHerdrSessionLifecycle(request)
+                },
+                cancelHerdrSessionLifecycle: { [sceneModel] request in
+                    sceneModel.cancelPreparedHerdrSessionLifecycle(request)
                 },
                 prepareTmuxSessionKill: { [sceneModel] selection in
                     try await sceneModel.prepareTmuxSessionKill(selection)
@@ -837,9 +877,12 @@ struct WorkspaceWindow: View {
                 reconnectActiveTmuxSessionNow: { [sceneModel] in
                     sceneModel.reconnectActiveTmuxSessionNow()
                 },
-                resumeTmuxReconnectAfterSSHRecovery: {
+                reconnectActiveHerdrSessionNow: { [sceneModel] in
+                    sceneModel.reconnectActiveHerdrSessionNow()
+                },
+                resumeSessionReconnectAfterSSHRecovery: {
                     [sceneModel] request in
-                    sceneModel.resumeTmuxReconnectAfterSSHRecovery(
+                    sceneModel.resumeSessionReconnectAfterSSHRecovery(
                         request
                     )
                 },
@@ -952,7 +995,10 @@ struct WorkspaceWindow: View {
                 sidebarWidth: titlebarSidebarWidth,
                 canCreateWorktree: canCreateWorktree,
                 sessionTitle: SessionTitlebarPresentation.resolve(
-                    activeSession: sceneModel.activeBorrowedTmuxSelection,
+                    activeTmuxSession:
+                    sceneModel.activeBorrowedTmuxSelection,
+                    activeHerdrSession:
+                    sceneModel.activeBorrowedHerdrSelection,
                     in: sceneModel.snapshot
                 ),
                 onToggleSidebar: {

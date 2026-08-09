@@ -1,5 +1,5 @@
 ---
-description: Diagnose common Ghosthub installation, SSH, tmux, and worktree problems.
+description: Diagnose common Ghosthub installation, SSH, tmux, Herdr, and worktree problems.
 icon: lucide/life-buoy
 ---
 
@@ -29,9 +29,34 @@ tmux -V
 tmux list-sessions
 ```
 
-An expanded host with no discovered tmux sessions or projects reports that it
-is empty. Project inventory is separate from SSH reachability, so a reachable
-host can also show a separate kwt diagnostic.
+An expanded host with no discovered tmux or Herdr sessions or projects reports
+that it is empty. Project inventory is separate from SSH reachability, so a
+reachable host can also show a separate kwt diagnostic.
+
+## Herdr Sessions does not appear
+
+Herdr is optional and independent from tmux and projects. On the local Mac or
+a remote macOS/Linux host, run:
+
+```sh
+command -v herdr
+herdr session list --json
+```
+
+Ghosthub shows entries reported as running or stopped. If `herdr` is missing, the
+host stays fully usable and Ghosthub silently omits **Herdr Sessions**. If the
+command exists but fails or returns malformed JSON, the host header shows a
+warning with **Retry** and a shortcut to Host Settings. Herdr is not probed on
+experimental Windows hosts.
+
+Closing a Herdr client never stops its server. A normal detach offers manual
+**Reconnect**; automatic retry is reserved for remote SSH transport loss and
+stops if the exact session is no longer running.
+
+If a session is labeled **Stopped**, choose **Restart** to restore its saved
+shape with new processes. **Stop Session…** intentionally terminates all
+current processes; **Delete Session…** permanently removes saved state and is
+not available for Herdr's default session.
 
 ## Reconnect needs attention
 
@@ -44,8 +69,9 @@ when no review is pending.
 
 For a remote macOS or Linux host, Ghosthub installs its managed kwt helper
 automatically. If the host shows a provisioning warning, retry it or open Host
-Settings. Then use the host's **Add Project** action and provide the absolute
-path to an existing checkout on that host. Ghosthub does not discover
+Settings. Then select the **+** beside that host's **Projects** group and
+provide the absolute path to an existing checkout on that host. Ghosthub does
+not discover
 repositories by scanning.
 
 Project registration is not yet supported for native Windows hosts.

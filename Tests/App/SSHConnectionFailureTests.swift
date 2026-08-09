@@ -87,7 +87,7 @@ struct SSHConnectionFailureTests {
     @Test("a process timeout keeps its specific connection diagnosis")
     func classifiesProcessTimeout() {
         let diagnostic = SSHConnectionFailure.diagnostic(
-            status: TmuxBinaryResolver.timedOutStatus,
+            status: AccountCommandRunner.timedOutStatus,
             output: ""
         )
 

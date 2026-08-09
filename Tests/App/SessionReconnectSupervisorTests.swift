@@ -54,9 +54,9 @@ private actor ReconnectSleepRecorder {
     }
 }
 
-@Suite("Tmux reconnect supervisor", .serialized)
+@Suite("Session reconnect supervisor", .serialized)
 @MainActor
-struct TmuxSessionReconnectSupervisorTests {
+struct SessionReconnectSupervisorTests {
     @Test(
         "probe runtime counts against the attempt-start interval",
         arguments: [
@@ -74,7 +74,7 @@ struct TmuxSessionReconnectSupervisorTests {
         elapsed: Duration,
         expected: Duration
     ) {
-        #expect(TmuxSessionReconnectSupervisor.remainingDelay(
+        #expect(SessionReconnectSupervisor.remainingDelay(
             interval: interval,
             elapsed: elapsed
         ) == expected)
@@ -83,7 +83,7 @@ struct TmuxSessionReconnectSupervisorTests {
     @Test("failed attempts continue until one stops the supervisor")
     func retriesUntilStopped() async {
         let attempts = ReconnectAttemptCounter()
-        let supervisor = TmuxSessionReconnectSupervisor(
+        let supervisor = SessionReconnectSupervisor(
             intervals: [.milliseconds(1)],
             probeDeadline: .seconds(1)
         )
@@ -100,11 +100,41 @@ struct TmuxSessionReconnectSupervisorTests {
         #expect(!supervisor.isRunning)
     }
 
+    @Test(
+        "backend stop conditions halt without scheduling another attempt",
+        arguments: [
+            "session absent",
+            "capability unavailable",
+            "non-transport exit",
+        ]
+    )
+    func backendStopConditionsHalt(reason _: String) async {
+        let attempts = ReconnectAttemptCounter()
+        let sleeps = ReconnectSleepRecorder()
+        let supervisor = SessionReconnectSupervisor(
+            intervals: [.seconds(10)],
+            probeDeadline: .seconds(1),
+            sleep: { try await sleeps.sleep($0) }
+        )
+        supervisor.start {
+            attempts.begin()
+            attempts.end()
+            return .stop
+        }
+
+        await waitUntilMainActor {
+            attempts.count == 1 && !supervisor.isRunning
+        }
+
+        #expect(await sleeps.count == 0)
+        #expect(attempts.count == 1)
+    }
+
     @Test("Reconnect Now interrupts the pending delay")
     func reconnectNowInterruptsDelay() async {
         let attempts = ReconnectAttemptCounter()
         let sleeps = ReconnectSleepRecorder()
-        let supervisor = TmuxSessionReconnectSupervisor(
+        let supervisor = SessionReconnectSupervisor(
             intervals: [.seconds(10)],
             probeDeadline: .seconds(1),
             sleep: { try await sleeps.sleep($0) }
@@ -128,7 +158,7 @@ struct TmuxSessionReconnectSupervisorTests {
     func reconnectNowDoesNotOverlapProbe() async {
         let attempts = ReconnectAttemptCounter()
         let gate = ReconnectAttemptGate()
-        let supervisor = TmuxSessionReconnectSupervisor(
+        let supervisor = SessionReconnectSupervisor(
             intervals: [.milliseconds(1)],
             probeDeadline: .seconds(1)
         )
@@ -156,7 +186,7 @@ struct TmuxSessionReconnectSupervisorTests {
     func cancelIgnoresStaleCompletion() async {
         let attempts = ReconnectAttemptCounter()
         let gate = ReconnectAttemptGate()
-        let supervisor = TmuxSessionReconnectSupervisor(
+        let supervisor = SessionReconnectSupervisor(
             intervals: [.milliseconds(1)],
             probeDeadline: .seconds(1)
         )
@@ -179,7 +209,7 @@ struct TmuxSessionReconnectSupervisorTests {
     @Test("overlong probes are cancelled before retrying")
     func cancelsOverlongProbe() async {
         let attempts = ReconnectAttemptCounter()
-        let supervisor = TmuxSessionReconnectSupervisor(
+        let supervisor = SessionReconnectSupervisor(
             intervals: [.milliseconds(1)],
             probeDeadline: .milliseconds(20)
         )

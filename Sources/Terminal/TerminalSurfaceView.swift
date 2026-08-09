@@ -134,7 +134,7 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     private nonisolated(unsafe) var eventMonitor: Any?
     var lastPerformKeyEvent: TimeInterval?
     private var consumedCommandKeyCodes: Set<UInt16> = []
-    private var consumedTmuxSplitKeyCodes: Set<UInt16> = []
+    private var consumedPaneSplitKeyCodes: Set<UInt16> = []
     private var surfaceResizeState = SurfaceResizeState()
     private var isDeferringLiveResize = false
     private var isDeferringPresentationResize = false
@@ -149,10 +149,10 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     public var onPrimaryInteraction: (() -> Void)?
     public var onCloseRequest: (() -> Void)?
     public var shouldConfirmClose: (() -> Bool)?
-    @Published public var tmuxSplitErrorMessage: String?
-    /// Installed only for ordinary tmux-client surfaces. The handler sends
-    /// Ghostty-style split shortcuts through the attached client as tmux input.
-    public var tmuxSplitShortcutHandler: ((TerminalTmuxSplitShortcut) -> Void)?
+    @Published public var paneSplitErrorMessage: String?
+    /// Installed only for native session surfaces whose backend supports
+    /// semantic pane splitting.
+    public var paneSplitShortcutHandler: ((TerminalPaneSplitShortcut) -> Void)?
     /// Control-mode surfaces render through a silent local child, so their
     /// meaningful process liveness comes from the tmux pane rather than
     /// `childProcessID`. When supplied, close confirmation uses this source.
@@ -812,7 +812,7 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     }
 
     private func localEventKeyUp(_ event: NSEvent) -> NSEvent? {
-        if consumedTmuxSplitKeyCodes.remove(event.keyCode) != nil {
+        if consumedPaneSplitKeyCodes.remove(event.keyCode) != nil {
             return nil
         }
         let wasConsumedCommandChord = consumedCommandKeyCodes
@@ -825,7 +825,7 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
             }
             return event
         }
-        if tmuxSplitShortcut(for: event) != nil {
+        if paneSplitShortcut(for: event) != nil {
             return nil
         }
         if isPaneCloseShortcut(event),
@@ -846,7 +846,7 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     private func localEventKeyDown(_ event: NSEvent) -> NSEvent? {
         guard event.modifierFlags.contains(.command) else { return event }
         guard hasEffectiveKeyboardFocus else { return event }
-        if handleTmuxSplitShortcut(event) {
+        if handlePaneSplitShortcut(event) {
             return nil
         }
         if isPaneCloseShortcut(event),
@@ -1121,7 +1121,7 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
         }
         guard hasEffectiveKeyboardFocus else { return false }
 
-        if handleTmuxSplitShortcut(event) {
+        if handlePaneSplitShortcut(event) {
             return true
         }
 
@@ -1663,8 +1663,8 @@ extension TerminalSurfaceView {
     }
 
     @discardableResult
-    func handleTmuxSplitShortcutForTesting(_ event: NSEvent) -> Bool {
-        handleTmuxSplitShortcut(event)
+    func handlePaneSplitShortcutForTesting(_ event: NSEvent) -> Bool {
+        handlePaneSplitShortcut(event)
     }
 
     func markConsumedCommandKeyCodeForTesting(_ keyCode: UInt16) {
@@ -1703,23 +1703,23 @@ extension TerminalSurfaceView {
 }
 
 private extension TerminalSurfaceView {
-    func tmuxSplitShortcut(
+    func paneSplitShortcut(
         for event: NSEvent
-    ) -> TerminalTmuxSplitShortcut? {
-        guard tmuxSplitShortcutHandler != nil else { return nil }
-        return TerminalTmuxSplitShortcut.matching(
+    ) -> TerminalPaneSplitShortcut? {
+        guard paneSplitShortcutHandler != nil else { return nil }
+        return TerminalPaneSplitShortcut.matching(
             flags: event.modifierFlags,
             charactersIgnoringModifiers: event.charactersIgnoringModifiers
         )
     }
 
-    func handleTmuxSplitShortcut(_ event: NSEvent) -> Bool {
-        guard let shortcut = tmuxSplitShortcut(for: event) else {
+    func handlePaneSplitShortcut(_ event: NSEvent) -> Bool {
+        guard let shortcut = paneSplitShortcut(for: event) else {
             return false
         }
-        consumedTmuxSplitKeyCodes.insert(event.keyCode)
+        consumedPaneSplitKeyCodes.insert(event.keyCode)
         if !event.isARepeat {
-            tmuxSplitShortcutHandler?(shortcut)
+            paneSplitShortcutHandler?(shortcut)
         }
         return true
     }

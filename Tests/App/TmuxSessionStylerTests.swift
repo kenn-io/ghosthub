@@ -1,3 +1,4 @@
+import GhosthubTransport
 import Foundation
 import GhosthubTmux
 import GhosthubUI
@@ -14,7 +15,7 @@ private let testTmuxIdentity = TmuxSessionIdentity(
 struct TmuxSessionStylerTests {
     @Test("styling routes the exact active session through its POSIX host")
     func routesExactSession() async throws {
-        let calls = LockedValue<[(TmuxHost, String)]>([])
+        let calls = LockedValue<[(CommandHost, String)]>([])
         let styler = TmuxSessionStyler(
             pathResolver: { _ in .success("/usr/bin/tmux") },
             runner: { host, command in
@@ -22,7 +23,7 @@ struct TmuxSessionStylerTests {
                 return (0, "")
             }
         )
-        let host = TmuxHost.ssh(SSHHostInfo(
+        let host = CommandHost.ssh(SSHHostInfo(
             user: "wesm",
             hostname: "builder",
             port: 2222
@@ -52,7 +53,7 @@ struct TmuxSessionStylerTests {
 
     @Test("styling failure preserves host, session, and status")
     func commandFailure() async {
-        let host = TmuxHost.ssh(SSHHostInfo(
+        let host = CommandHost.ssh(SSHHostInfo(
             user: "wesm",
             hostname: "builder",
             port: 2222
@@ -123,7 +124,7 @@ struct TmuxSessionStylerTests {
     func rejectsWindowsHost() async {
         let resolverCalls = LockedValue(0)
         let runnerCalls = LockedValue(0)
-        let host = TmuxHost.ssh(SSHHostInfo(
+        let host = CommandHost.ssh(SSHHostInfo(
             user: "wesm",
             hostname: "arm-builder",
             port: nil,
@@ -177,7 +178,7 @@ struct TmuxSessionStylerTests {
             ?? "ghosthub-style-\(UUID().uuidString.lowercased())"
         let sessionName = "review"
         defer {
-            _ = TmuxBinaryResolver.runProcess(
+            _ = AccountCommandRunner.runProcess(
                 executable: tmuxPath,
                 arguments: [
                     "-L", socketName,
@@ -186,7 +187,7 @@ struct TmuxSessionStylerTests {
                 timeout: 5
             )
         }
-        let created = TmuxBinaryResolver.runProcess(
+        let created = AccountCommandRunner.runProcess(
             executable: tmuxPath,
             arguments: [
                 "-f", "/dev/null", "-L", socketName,
@@ -222,7 +223,7 @@ struct TmuxSessionStylerTests {
             on: .local
         )
 
-        let statusStyle = TmuxBinaryResolver.runProcess(
+        let statusStyle = AccountCommandRunner.runProcess(
             executable: tmuxPath,
             arguments: [
                 "-L", socketName, "show-options", "-v", "-t",
@@ -230,7 +231,7 @@ struct TmuxSessionStylerTests {
             ],
             timeout: 5
         )
-        let windowStyle = TmuxBinaryResolver.runProcess(
+        let windowStyle = AccountCommandRunner.runProcess(
             executable: tmuxPath,
             arguments: [
                 "-L", socketName, "show-options", "-v", "-w", "-t",

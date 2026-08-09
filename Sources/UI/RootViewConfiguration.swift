@@ -25,8 +25,10 @@ public struct WorkspaceDisplayState {
     public let activeTmuxSession: WorkspaceTmuxSessionSelection?
     public let activeTmuxSessionIsConnected: Bool
     public let activeTmuxSessionCanApplyTheme: Bool
-    public let tmuxConnectionRecoveryRequest:
-        TmuxConnectionRecoveryRequest?
+    public let activeHerdrSession: WorkspaceHerdrSessionSelection?
+    public let pendingHerdrSessions: Set<WorkspaceHerdrSessionSelection>
+    public let sessionConnectionRecoveryRequest:
+        SessionConnectionRecoveryRequest?
     public let workingTmuxSessionIDs: Set<String>
 
     public init(
@@ -50,8 +52,10 @@ public struct WorkspaceDisplayState {
         activeTmuxSession: WorkspaceTmuxSessionSelection? = nil,
         activeTmuxSessionIsConnected: Bool = false,
         activeTmuxSessionCanApplyTheme: Bool = false,
-        tmuxConnectionRecoveryRequest:
-        TmuxConnectionRecoveryRequest? = nil,
+        activeHerdrSession: WorkspaceHerdrSessionSelection? = nil,
+        pendingHerdrSessions: Set<WorkspaceHerdrSessionSelection> = [],
+        sessionConnectionRecoveryRequest:
+        SessionConnectionRecoveryRequest? = nil,
         workingTmuxSessionIDs: Set<String> = []
     ) {
         self.snapshot = snapshot
@@ -80,13 +84,15 @@ public struct WorkspaceDisplayState {
             activeTmuxSessionIsConnected
         self.activeTmuxSessionCanApplyTheme =
             activeTmuxSessionCanApplyTheme
-        self.tmuxConnectionRecoveryRequest =
-            tmuxConnectionRecoveryRequest
+        self.activeHerdrSession = activeHerdrSession
+        self.pendingHerdrSessions = pendingHerdrSessions
+        self.sessionConnectionRecoveryRequest =
+            sessionConnectionRecoveryRequest
         self.workingTmuxSessionIDs = workingTmuxSessionIDs
     }
 }
 
-public struct TmuxSessionContentActions {
+public struct NativeSessionContentActions {
     public let reconnectNow: () -> Void
     public let reviewConnection: () -> Void
 
@@ -102,19 +108,24 @@ public struct TmuxSessionContentActions {
 /// View factory closures and providers consumed by RootView.
 public struct ContentBuilders {
     public let tmuxSessionContentBuilder:
-        ((HostSummary, String, Bool, TmuxSessionContentActions) -> AnyView?)?
+        ((HostSummary, String, Bool, NativeSessionContentActions) -> AnyView?)?
+    public let herdrSessionContentBuilder:
+        ((HostSummary, String, Bool, NativeSessionContentActions) -> AnyView?)?
     public let settingsSheetBuilder: ((SettingsStore) -> AnyView)?
     public let logViewerBuilder: (() -> AnyView?)?
     public let sshAuthenticationBuilder: ((UUID) -> AnyView?)?
 
     public init(
         tmuxSessionContentBuilder:
-        ((HostSummary, String, Bool, TmuxSessionContentActions) -> AnyView?)? = nil,
+        ((HostSummary, String, Bool, NativeSessionContentActions) -> AnyView?)? = nil,
+        herdrSessionContentBuilder:
+        ((HostSummary, String, Bool, NativeSessionContentActions) -> AnyView?)? = nil,
         settingsSheetBuilder: ((SettingsStore) -> AnyView)? = nil,
         logViewerBuilder: (() -> AnyView?)? = nil,
         sshAuthenticationBuilder: ((UUID) -> AnyView?)? = nil
     ) {
         self.tmuxSessionContentBuilder = tmuxSessionContentBuilder
+        self.herdrSessionContentBuilder = herdrSessionContentBuilder
         self.settingsSheetBuilder = settingsSheetBuilder
         self.logViewerBuilder = logViewerBuilder
         self.sshAuthenticationBuilder = sshAuthenticationBuilder
@@ -182,7 +193,7 @@ public enum SSHHostKeyReviewRequirement: Equatable, Sendable {
     case authenticationRequired
 }
 
-public struct TmuxConnectionRecoveryRequest:
+public struct SessionConnectionRecoveryRequest:
     Identifiable, Equatable, Sendable {
     public let id: UUID
     public let hostID: UUID
@@ -195,14 +206,14 @@ public struct TmuxConnectionRecoveryRequest:
     }
 }
 
-struct TmuxConnectionRecoveryRequestRouter {
+struct SessionConnectionRecoveryRequestRouter {
     private(set) var reviewedRequestIDs: Set<UUID> = []
-    private(set) var currentReviewRequest: TmuxConnectionRecoveryRequest?
+    private(set) var currentReviewRequest: SessionConnectionRecoveryRequest?
 
     mutating func take(
-        _ request: TmuxConnectionRecoveryRequest?,
+        _ request: SessionConnectionRecoveryRequest?,
         whileReviewIsPresented: Bool
-    ) -> TmuxConnectionRecoveryRequest? {
+    ) -> SessionConnectionRecoveryRequest? {
         guard let request, !reviewedRequestIDs.contains(request.id) else {
             return nil
         }
@@ -214,7 +225,7 @@ struct TmuxConnectionRecoveryRequestRouter {
 
     mutating func recoveryRequestID(
         for hostID: UUID,
-        activeRequest: TmuxConnectionRecoveryRequest?
+        activeRequest: SessionConnectionRecoveryRequest?
     ) -> UUID? {
         guard let activeRequest,
               reviewedRequestIDs.contains(activeRequest.id),
@@ -231,7 +242,7 @@ struct TmuxConnectionRecoveryRequestRouter {
     func recoveryRequestToResume(
         reviewedHostID: UUID?,
         reviewRequestID: UUID?
-    ) -> TmuxConnectionRecoveryRequest? {
+    ) -> SessionConnectionRecoveryRequest? {
         guard let reviewedHostID,
               let reviewRequestID,
               let currentReviewRequest,
@@ -255,6 +266,39 @@ public struct WorkspaceTmuxSessionCreationRequest: Equatable, Sendable {
     }
 }
 
+public enum HerdrSessionDestructiveAction: Equatable, Sendable {
+    case stop
+    case delete
+}
+
+public struct HerdrSessionLifecycleRequest: Equatable, Sendable {
+    public let authorityID: UUID
+    public let session: WorkspaceHerdrSessionSelection
+    public let confirmedHost: HostSummary
+    public let isDefault: Bool
+    public let confirmedSessionDirectory: String
+    public let confirmedSocketPath: String
+    public let action: HerdrSessionDestructiveAction
+
+    public init(
+        authorityID: UUID,
+        session: WorkspaceHerdrSessionSelection,
+        confirmedHost: HostSummary,
+        isDefault: Bool,
+        confirmedSessionDirectory: String,
+        confirmedSocketPath: String,
+        action: HerdrSessionDestructiveAction
+    ) {
+        self.authorityID = authorityID
+        self.session = session
+        self.confirmedHost = confirmedHost
+        self.isDefault = isDefault
+        self.confirmedSessionDirectory = confirmedSessionDirectory
+        self.confirmedSocketPath = confirmedSocketPath
+        self.action = action
+    }
+}
+
 public struct InteractionHandlers {
     public let closeWindow: (() -> Void)?
     public let dismissLogViewer: (() -> Void)?
@@ -262,7 +306,21 @@ public struct InteractionHandlers {
     public let selectWorkspace: ((WorkspaceSelection) -> Void)?
     public let openTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)?
     public let hideTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)?
+    public let openHerdrSession:
+        ((WorkspaceHerdrSessionSelection) async throws -> Void)?
+    public let createHerdrSession:
+        ((WorkspaceHerdrSessionSelection) async throws -> Void)?
+    public let restartHerdrSession:
+        ((WorkspaceHerdrSessionSelection) async throws -> Void)?
     public let closeTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)?
+    public let closeHerdrSession: ((WorkspaceHerdrSessionSelection) -> Void)?
+    public let prepareHerdrSessionLifecycle:
+        ((WorkspaceHerdrSessionSelection, HerdrSessionDestructiveAction)
+            async throws -> HerdrSessionLifecycleRequest)?
+    public let performHerdrSessionLifecycle:
+        ((HerdrSessionLifecycleRequest) async throws -> Void)?
+    public let cancelHerdrSessionLifecycle:
+        ((HerdrSessionLifecycleRequest) -> Void)?
     public let prepareTmuxSessionKill:
         ((WorkspaceTmuxSessionSelection) async throws
             -> TmuxSessionKillRequest)?
@@ -274,8 +332,9 @@ public struct InteractionHandlers {
         ((WorkspaceTmuxSessionCreationRequest) -> Void)?
     public let refreshWorkspaceInventory: (() -> Void)?
     public let reconnectActiveTmuxSessionNow: (() -> Void)?
-    public let resumeTmuxReconnectAfterSSHRecovery:
-        ((TmuxConnectionRecoveryRequest) -> Void)?
+    public let reconnectActiveHerdrSessionNow: (() -> Void)?
+    public let resumeSessionReconnectAfterSSHRecovery:
+        ((SessionConnectionRecoveryRequest) -> Void)?
     public let reviewSSHHostKey:
         ((UUID, String) async -> SSHConnectionRecoveryResult)?
     public let trustSSHHostKey:
@@ -307,7 +366,21 @@ public struct InteractionHandlers {
         selectWorkspace: ((WorkspaceSelection) -> Void)? = nil,
         openTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)? = nil,
         hideTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)? = nil,
+        openHerdrSession:
+        ((WorkspaceHerdrSessionSelection) async throws -> Void)? = nil,
+        createHerdrSession:
+        ((WorkspaceHerdrSessionSelection) async throws -> Void)? = nil,
+        restartHerdrSession:
+        ((WorkspaceHerdrSessionSelection) async throws -> Void)? = nil,
         closeTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)? = nil,
+        closeHerdrSession: ((WorkspaceHerdrSessionSelection) -> Void)? = nil,
+        prepareHerdrSessionLifecycle:
+        ((WorkspaceHerdrSessionSelection, HerdrSessionDestructiveAction)
+            async throws -> HerdrSessionLifecycleRequest)? = nil,
+        performHerdrSessionLifecycle:
+        ((HerdrSessionLifecycleRequest) async throws -> Void)? = nil,
+        cancelHerdrSessionLifecycle:
+        ((HerdrSessionLifecycleRequest) -> Void)? = nil,
         prepareTmuxSessionKill:
         ((WorkspaceTmuxSessionSelection) async throws
             -> TmuxSessionKillRequest)? = nil,
@@ -319,8 +392,9 @@ public struct InteractionHandlers {
         ((WorkspaceTmuxSessionCreationRequest) -> Void)? = nil,
         refreshWorkspaceInventory: (() -> Void)? = nil,
         reconnectActiveTmuxSessionNow: (() -> Void)? = nil,
-        resumeTmuxReconnectAfterSSHRecovery:
-        ((TmuxConnectionRecoveryRequest) -> Void)? = nil,
+        reconnectActiveHerdrSessionNow: (() -> Void)? = nil,
+        resumeSessionReconnectAfterSSHRecovery:
+        ((SessionConnectionRecoveryRequest) -> Void)? = nil,
         reviewSSHHostKey:
         ((UUID, String) async -> SSHConnectionRecoveryResult)? = nil,
         trustSSHHostKey:
@@ -351,15 +425,23 @@ public struct InteractionHandlers {
         self.selectWorkspace = selectWorkspace
         self.openTmuxSession = openTmuxSession
         self.hideTmuxSession = hideTmuxSession
+        self.openHerdrSession = openHerdrSession
+        self.createHerdrSession = createHerdrSession
+        self.restartHerdrSession = restartHerdrSession
         self.closeTmuxSession = closeTmuxSession
+        self.closeHerdrSession = closeHerdrSession
+        self.prepareHerdrSessionLifecycle = prepareHerdrSessionLifecycle
+        self.performHerdrSessionLifecycle = performHerdrSessionLifecycle
+        self.cancelHerdrSessionLifecycle = cancelHerdrSessionLifecycle
         self.prepareTmuxSessionKill = prepareTmuxSessionKill
         self.killTmuxSession = killTmuxSession
         self.applyTmuxSessionTheme = applyTmuxSessionTheme
         self.createTmuxSession = createTmuxSession
         self.refreshWorkspaceInventory = refreshWorkspaceInventory
         self.reconnectActiveTmuxSessionNow = reconnectActiveTmuxSessionNow
-        self.resumeTmuxReconnectAfterSSHRecovery =
-            resumeTmuxReconnectAfterSSHRecovery
+        self.reconnectActiveHerdrSessionNow = reconnectActiveHerdrSessionNow
+        self.resumeSessionReconnectAfterSSHRecovery =
+            resumeSessionReconnectAfterSSHRecovery
         self.reviewSSHHostKey = reviewSSHHostKey
         self.trustSSHHostKey = trustSSHHostKey
         self.isSSHAuthenticationReady = isSSHAuthenticationReady

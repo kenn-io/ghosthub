@@ -153,6 +153,81 @@ struct WorkspaceSidebarModelTests {
             == ["alpha", "beta", "gamma"])
     }
 
+    @Test("Herdr sessions use an independent row model and ordering")
+    func herdrSessionRowsAndOrdering() {
+        let hostID = UUID()
+        let herdrSessions = [
+            HerdrSessionSummary(name: "alpha", isDefault: false, state: .running),
+            HerdrSessionSummary(name: "beta", isDefault: true, state: .running),
+            HerdrSessionSummary(name: "gamma", isDefault: false, state: .stopped),
+        ]
+        let host = HostSummary.fixture(
+            id: hostID,
+            tmuxSessions: [
+                TmuxSessionSummary(
+                    name: "tmux-kept",
+                    managed: false,
+                    windows: []
+                ),
+            ],
+            herdrSessions: herdrSessions.reversed()
+        )
+        let ids = herdrSessions.map {
+            WorkspaceSidebarModel.herdrSessionOrderID(
+                hostID: hostID,
+                name: $0.name
+            )
+        }
+        var order = WorkspaceSidebarOrder()
+        let didMove = order.move(ids[0], to: ids[2], within: ids)
+        #expect(didMove)
+
+        let section = WorkspaceSidebarModel.sections(
+            in: WorkspaceSnapshot(
+                hosts: [host],
+                projects: [
+                    .fixture(hostID: hostID, name: "ghosthub"),
+                ],
+                worktrees: []
+            ),
+            herdrSessionOrderRawValue: order.rawValue
+        )[0]
+
+        #expect(section.tmuxSessionRows.map(\.title) == ["tmux-kept"])
+        #expect(section.herdrSessionRows.map(\.title)
+            == ["beta", "gamma", "alpha"])
+        #expect(section.herdrSessionRows.map(\.subtitle)
+            == ["Herdr session", "Stopped", "Herdr session"])
+        #expect(section.herdrSessionRows[0].target == .herdrSession(
+            hostID: hostID,
+            name: "beta"
+        ))
+        #expect(section.herdrSessionRows[0].icon == .herdrSession)
+        #expect(section.herdrSessionRows[0].subtitle == "Herdr session")
+        #expect(section.herdrSessionRows[0].indentLevel == 0)
+        #expect(section.visibleGroups == [
+            .tmuxSessions, .herdrSessions, .projects,
+        ])
+    }
+
+    @Test("section emptiness includes Herdr inventory")
+    func herdrAffectsSectionEmptiness() {
+        let empty = WorkspaceSidebarModel.sections(
+            in: .fixture(hosts: [.fixture()])
+        )[0]
+        let herdr = WorkspaceSidebarModel.sections(
+            in: .fixture(hosts: [
+                .fixture(herdrSessions: [
+                    HerdrSessionSummary(name: "api", isDefault: true, state: .running),
+                ]),
+            ])
+        )[0]
+
+        #expect(empty.herdrSessionRows.isEmpty)
+        #expect(empty.isEmpty)
+        #expect(!herdr.isEmpty)
+    }
+
     @Test("sidebar hierarchy advances one compact indent per level")
     func hierarchyIndentAdvancesByLevel() {
         let host = WorkspaceSidebarHierarchy.indent(level: 0)
@@ -165,24 +240,39 @@ struct WorkspaceSidebarModelTests {
         #expect(nested - child == child - host)
     }
 
-    @Test("tmux action hover does not change reserved row width")
-    func tmuxActionHoverKeepsStableRowWidth() {
-        let idle = WorkspaceTmuxSessionActionPresentation(
-            hasTmuxSession: true,
+    @Test("session actions appear on hover or selection without shifting rows")
+    func sessionActionsStayDiscoverableAndStable() {
+        let idle = WorkspaceSessionActionPresentation(
+            hasActions: true,
             isRowHovered: false,
-            isActionHovered: false
+            isActionHovered: false,
+            isSelected: false
         )
-        let hovered = WorkspaceTmuxSessionActionPresentation(
-            hasTmuxSession: true,
+        let selected = WorkspaceSessionActionPresentation(
+            hasActions: true,
+            isRowHovered: false,
+            isActionHovered: false,
+            isSelected: true
+        )
+        let hovered = WorkspaceSessionActionPresentation(
+            hasActions: true,
             isRowHovered: true,
-            isActionHovered: false
+            isActionHovered: false,
+            isSelected: false
+        )
+        let unavailable = WorkspaceSessionActionPresentation(
+            hasActions: false,
+            isRowHovered: true,
+            isActionHovered: true,
+            isSelected: true
         )
 
         #expect(!idle.isVisible)
+        #expect(selected.isVisible)
         #expect(hovered.isVisible)
-        #expect(idle.reservedWidth == hovered.reservedWidth)
-        #expect(idle.reservedWidth > 0)
-        #expect(hovered.hitTargetWidth >= 28)
+        #expect(!unavailable.isVisible)
+        #expect(idle.reservedWidth == selected.reservedWidth)
+        #expect(selected.hitTargetWidth >= 28)
     }
 
     @Test("worktree removal is subtle without shrinking its hit target")
@@ -236,12 +326,15 @@ struct WorkspaceSidebarModelTests {
         let projectID = UUID()
         let hostKey = WorkspaceSidebarDisclosureState.host(hostID)
         let sessionsKey = WorkspaceSidebarDisclosureState.sessions(hostID)
+        let herdrSessionsKey = WorkspaceSidebarDisclosureState
+            .herdrSessions(hostID)
         let projectsKey = WorkspaceSidebarDisclosureState.projects(hostID)
         let projectKey = WorkspaceSidebarDisclosureState.project(projectID)
         var state = WorkspaceSidebarDisclosureState()
 
         #expect(state.isExpanded(hostKey))
         #expect(state.isExpanded(sessionsKey))
+        #expect(state.isExpanded(herdrSessionsKey))
         #expect(!state.isExpanded(projectsKey))
         #expect(!state.isExpanded(projectKey))
 
@@ -260,6 +353,42 @@ struct WorkspaceSidebarModelTests {
         reopened.toggle(projectsKey)
         #expect(!reopened.isExpanded(projectsKey))
         #expect(reopened.rawValue.isEmpty)
+    }
+
+    @Test("Herdr ordering has its own persisted storage key")
+    func herdrOrderStorageKey() {
+        #expect(
+            WorkspaceSidebarOrderStorage.herdrSessionKey
+                == "workspaceSidebarHerdrSessionOrderV1"
+        )
+        #expect(
+            WorkspaceSidebarOrderStorage.herdrSessionKey
+                != WorkspaceSidebarOrderStorage.tmuxSessionKey
+        )
+    }
+
+    @Test("Herdr rows preserve running and stopped state")
+    func herdrRowState() {
+        let hostID = UUID()
+        let snapshot = WorkspaceSnapshot.fixture(hosts: [
+            .fixture(
+                id: hostID,
+                herdrSessions: [
+                    .init(name: "running", isDefault: true, state: .running),
+                    .init(name: "stopped", isDefault: false, state: .stopped),
+                ]
+            ),
+        ])
+
+        let rows = WorkspaceSidebarModel.sections(in: snapshot)[0]
+            .herdrSessionRows
+        let running = rows.first { $0.title == "running" }
+        let stopped = rows.first { $0.title == "stopped" }
+        #expect(running?.herdrSessionState == .running)
+        #expect(running?.herdrSessionIsDefault == true)
+        #expect(stopped?.herdrSessionState == .stopped)
+        #expect(stopped?.herdrSessionIsDefault == false)
+        #expect(stopped?.subtitle == "Stopped")
     }
 
     @Test("legacy collapsed sidebar items migrate into disclosure overrides")

@@ -1,3 +1,4 @@
+import GhosthubTransport
 @preconcurrency import Combine
 import Foundation
 import GhosthubSettings
@@ -45,7 +46,7 @@ struct ExeVMClient: Sendable {
     }
 
     func listVMs(for account: ExeAccount) throws -> [ExeVMRecord] {
-        guard let host = TmuxHostResolver.parseSSHDestination(
+        guard let host = CommandHostResolver.parseSSHDestination(
             account.sshDestination
         ) else {
             throw ExeVMInventoryError.invalidDestination
@@ -125,14 +126,8 @@ struct ExeVMClient: Sendable {
             "-o", "ConnectTimeout=10",
             "-o", "ConnectionAttempts=1",
         ]
-        arguments.append(contentsOf: tmuxSSHConnectionArguments())
         arguments.append(contentsOf:
-            SSHConnectionPool.connectionArguments(for: host)
-        )
-        arguments.append(contentsOf:
-            SSHConfigurationResolver.noninteractiveHostKeyArguments(
-                for: host
-            )
+            SSHCommandArguments.noninteractive(for: host)
         )
         if let port = host.port {
             arguments.append(contentsOf: ["-p", String(port)])
@@ -153,11 +148,12 @@ struct ExeVMClient: Sendable {
         printf '\\n%s\\n' \(shellQuotedCommandArgument(endMarker))
         exit "$ghosthub_exe_status"
         """
-        return TmuxBinaryResolver.runProcess(
-            executable: TmuxBinaryResolver.loginShell(),
+        let output = AccountCommandRunner.runProcess(
+            executable: AccountCommandRunner.loginShell(),
             arguments: ["-lc", accountShellCommand(command)],
             timeout: 15
         )
+        return (output.status, output.stdout, output.stderr)
     }
 }
 

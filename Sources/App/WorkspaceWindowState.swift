@@ -56,10 +56,16 @@ struct WorkspaceTmuxDescriptor: Codable, Hashable, Sendable {
     var owner: WorkspaceTmuxOwnerDescriptor
 }
 
+struct WorkspaceHerdrDescriptor: Codable, Hashable, Sendable {
+    var hostKey: String
+    var sessionName: String
+}
+
 struct WorkspaceWindowState: Codable, Hashable, Sendable {
     var windowID: UUID
     var navigation: WorkspaceNavigationDescriptor?
     var tmux: WorkspaceTmuxDescriptor?
+    var herdr: WorkspaceHerdrDescriptor? = nil
 
     static func fresh(windowID: UUID = UUID()) -> Self {
         Self(windowID: windowID, navigation: nil, tmux: nil)
@@ -69,6 +75,7 @@ struct WorkspaceWindowState: Codable, Hashable, Sendable {
         windowID: UUID,
         selection: WorkspaceSelection,
         activeTmux: WorkspaceTmuxSessionSelection?,
+        activeHerdr: WorkspaceHerdrSessionSelection? = nil,
         snapshot: WorkspaceSnapshot
     ) -> Self {
         let host = snapshot.host(id: selection.selectedHostID)
@@ -108,7 +115,10 @@ struct WorkspaceWindowState: Codable, Hashable, Sendable {
         // only when its host and worktree ownership match the captured
         // navigation; otherwise keep the navigation alone rather than
         // emitting a combination the resolver rejects outright.
+        let hasContradictoryPresentations = activeTmux != nil
+            && activeHerdr != nil
         let tmux = activeTmux.flatMap { active -> WorkspaceTmuxDescriptor? in
+            guard !hasContradictoryPresentations else { return nil }
             guard let activeHost = snapshot.host(id: active.hostID),
                   let navigation,
                   activeHost.configKey == navigation.hostKey
@@ -151,7 +161,30 @@ struct WorkspaceWindowState: Codable, Hashable, Sendable {
                 owner: owner
             )
         }
-        return Self(windowID: windowID, navigation: navigation, tmux: tmux)
+        let herdr = activeHerdr.flatMap {
+            active -> WorkspaceHerdrDescriptor? in
+            guard !hasContradictoryPresentations,
+                  let activeHost = snapshot.host(id: active.hostID),
+                  let navigation,
+                  activeHost.configKey == navigation.hostKey,
+                  selection.selectedProjectID == nil,
+                  selection.selectedWorktreeID == nil,
+                  selection.selectedDirectoryWorkspaceID == nil,
+                  !active.name.trimmingCharacters(
+                      in: .whitespacesAndNewlines
+                  ).isEmpty
+            else { return nil }
+            return WorkspaceHerdrDescriptor(
+                hostKey: activeHost.configKey,
+                sessionName: active.name
+            )
+        }
+        return Self(
+            windowID: windowID,
+            navigation: navigation,
+            tmux: tmux,
+            herdr: herdr
+        )
     }
 }
 
@@ -209,12 +242,17 @@ struct WorkspaceWindowStateBuffer {
     }
 }
 
+enum WorkspaceRestoredPresentation: Equatable, Sendable {
+    case tmux(WorkspaceTmuxSessionSelection)
+    case herdr(WorkspaceHerdrSessionSelection)
+}
+
 enum WorkspaceRestorationResolution: Equatable, Sendable {
     case invalid
     case pending(selection: WorkspaceSelection?)
     case ready(
         selection: WorkspaceSelection,
-        tmux: WorkspaceTmuxSessionSelection?
+        presentation: WorkspaceRestoredPresentation?
     )
     case needsProtectedProbe(
         selection: WorkspaceSelection,
@@ -225,7 +263,9 @@ enum WorkspaceRestorationResolution: Equatable, Sendable {
 enum WorkspaceWindowRestorationResolver {
     static func resolve(
         _ state: WorkspaceWindowState,
-        in snapshot: WorkspaceSnapshot
+        in snapshot: WorkspaceSnapshot,
+        herdrFreshHostIDs: Set<UUID> = [],
+        pendingHerdrSessions: Set<WorkspaceHerdrSessionSelection> = []
     ) -> WorkspaceRestorationResolution {
         guard let navigation = state.navigation,
               isNonblank(navigation.hostKey),
@@ -240,6 +280,10 @@ enum WorkspaceWindowRestorationResolver {
                   && navigation.worktreeGeneration == nil),
               isValidOptional(navigation.directoryWorkspacePath)
         else { return .invalid }
+
+        guard state.tmux == nil || state.herdr == nil else {
+            return .invalid
+        }
 
         if let tmux = state.tmux {
             guard isNonblank(tmux.hostKey),
@@ -266,6 +310,16 @@ enum WorkspaceWindowRestorationResolver {
                       tmux.socketName == nil
                 else { return .invalid }
             }
+        }
+
+        if let herdr = state.herdr {
+            guard isNonblank(herdr.hostKey),
+                  isNonblank(herdr.sessionName),
+                  herdr.hostKey == navigation.hostKey,
+                  navigation.projectKey == nil,
+                  navigation.worktreeGeneration == nil,
+                  navigation.directoryWorkspacePath == nil
+            else { return .invalid }
         }
 
         guard let host = snapshot.hosts.first(where: {
@@ -307,8 +361,26 @@ enum WorkspaceWindowRestorationResolver {
             selection.selectedDirectoryWorkspaceID = workspace.id
         }
 
+        if let herdr = state.herdr {
+            let herdrSelection = WorkspaceHerdrSessionSelection(
+                hostID: host.id,
+                name: herdr.sessionName
+            )
+            guard herdrFreshHostIDs.contains(host.id),
+                  !pendingHerdrSessions.contains(herdrSelection),
+                  host.herdrSessions.contains(where: {
+                      $0.name == herdr.sessionName
+                          && $0.state == .running
+                  })
+            else { return .pending(selection: selection) }
+            return .ready(
+                selection: selection,
+                presentation: .herdr(herdrSelection)
+            )
+        }
+
         guard let tmux = state.tmux else {
-            return .ready(selection: selection, tmux: nil)
+            return .ready(selection: selection, presentation: nil)
         }
         if host.kind == .remote, host.connectionState == .offline {
             return .pending(selection: selection)
@@ -374,7 +446,10 @@ enum WorkspaceWindowRestorationResolver {
         }) else {
             return .pending(selection: selection)
         }
-        return .ready(selection: selection, tmux: tmuxSelection)
+        return .ready(
+            selection: selection,
+            presentation: .tmux(tmuxSelection)
+        )
     }
 
     private static func isNonblank(_ value: String) -> Bool {

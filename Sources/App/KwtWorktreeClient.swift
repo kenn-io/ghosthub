@@ -1,3 +1,4 @@
+import GhosthubTransport
 import Foundation
 import GhosthubTmux
 import GhosthubWorkspace
@@ -77,17 +78,17 @@ struct KwtWorktreeClient: Sendable {
         remoteBinaryRevision: String? =
             KwtBinaryLocator.bundledRemoteRevision(),
         loginShellProvider: @escaping @Sendable () -> String =
-            TmuxBinaryResolver.loginShell
+            AccountCommandRunner.loginShell
     ) {
         self.localRunner = localRunner ?? { shell, command in
-            TmuxBinaryResolver.runLoginShell(
+            AccountCommandRunner.runLoginShell(
                 shell: shell,
                 command: command,
                 timeout: processTimeout
             )
         }
         self.remoteRunner = remoteRunner ?? { host, command in
-            TmuxBinaryResolver.runRemoteLoginShell(
+            AccountCommandRunner.runRemoteLoginShell(
                 host: host,
                 command: command,
                 timeout: processTimeout
@@ -101,7 +102,7 @@ struct KwtWorktreeClient: Sendable {
     func create(
         request: WorktreeCreateRequest,
         projectPath: String,
-        on host: TmuxHost
+        on host: CommandHost
     ) async throws {
         let binaryPrelude: String
         let windowsKwtRelativePath: String?
@@ -153,7 +154,7 @@ struct KwtWorktreeClient: Sendable {
 
     func branches(
         projectPath: String,
-        on host: TmuxHost
+        on host: CommandHost
     ) async throws -> [WorktreeBranchCandidate] {
         let binaryPrelude: String
         let windowsKwtRelativePath: String?
@@ -226,7 +227,7 @@ struct KwtWorktreeClient: Sendable {
         worktreePath: String,
         generation: String,
         projectPath: String,
-        on host: TmuxHost
+        on host: CommandHost
     ) async throws {
         let binaryPrelude: String
         let windowsKwtRelativePath: String?

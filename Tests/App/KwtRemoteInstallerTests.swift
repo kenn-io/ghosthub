@@ -1,3 +1,4 @@
+import GhosthubTransport
 import CryptoKit
 import Foundation
 import GhosthubSettings

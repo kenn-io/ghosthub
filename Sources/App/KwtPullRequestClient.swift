@@ -1,3 +1,4 @@
+import GhosthubTransport
 import Foundation
 import GhosthubTmux
 import GhosthubWorkspace
@@ -70,17 +71,17 @@ struct KwtPullRequestClient: Sendable {
         remoteBinaryRevision: String? =
             KwtBinaryLocator.bundledRemoteRevision(),
         loginShellProvider: @escaping @Sendable () -> String =
-            TmuxBinaryResolver.loginShell
+            AccountCommandRunner.loginShell
     ) {
         self.localRunner = localRunner ?? { shell, command in
-            TmuxBinaryResolver.runLoginShell(
+            AccountCommandRunner.runLoginShell(
                 shell: shell,
                 command: command,
                 timeout: processTimeout
             )
         }
         self.remoteRunner = remoteRunner ?? { host, command in
-            TmuxBinaryResolver.runRemoteLoginShell(
+            AccountCommandRunner.runRemoteLoginShell(
                 host: host,
                 command: command,
                 timeout: processTimeout
@@ -93,7 +94,7 @@ struct KwtPullRequestClient: Sendable {
 
     func list(
         projectIdentity: String,
-        on host: TmuxHost
+        on host: CommandHost
     ) async throws -> [PullRequestCandidate] {
         let response: ListResponse = try await execute(
             Self.listCommand(
@@ -113,7 +114,7 @@ struct KwtPullRequestClient: Sendable {
     func importPullRequest(
         id: String,
         projectIdentity: String,
-        on host: TmuxHost
+        on host: CommandHost
     ) async throws -> KwtPullRequestImportResult {
         let response: ImportResponse = try await execute(
             Self.importCommand(
@@ -144,7 +145,7 @@ struct KwtPullRequestClient: Sendable {
 
     private func execute<Value: Decodable>(
         _ command: String,
-        on host: TmuxHost
+        on host: CommandHost
     ) async throws -> Value {
         let localRunner = localRunner
         let remoteRunner = remoteRunner
@@ -168,7 +169,7 @@ struct KwtPullRequestClient: Sendable {
         )
     }
 
-    private func binaryPrelude(for host: TmuxHost) -> String {
+    private func binaryPrelude(for host: CommandHost) -> String {
         switch host {
         case .local:
             KwtBinaryLocator.commandPrelude(exactPath: localBinaryPath)
@@ -180,7 +181,7 @@ struct KwtPullRequestClient: Sendable {
     }
 
     private func platform(
-        for host: TmuxHost
+        for host: CommandHost
     ) -> SSHHostInfo.Platform {
         switch host {
         case .local: .posix
