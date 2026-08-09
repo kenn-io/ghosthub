@@ -881,6 +881,10 @@ fn discovers_identity_in_one_tmux_crossing() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the admission transcript assertions stay together for safety auditing"
+)]
 fn admission_uses_inert_sessions_and_always_cleans_its_namespaces() {
     let runner = RecordingRunner::new(vec![
         instance_output(),
@@ -963,12 +967,20 @@ fn admission_uses_inert_sessions_and_always_cleans_its_namespaces() {
             .count(),
         1
     );
+    assert!(attachment_plans.iter().any(|(_, args)| {
+        args.iter().any(|argument| argument == "new-session")
+            && args.iter().any(|argument| argument == "-A")
+            && args.iter().any(|argument| argument == "-E")
+            && args
+                .iter()
+                .any(|argument| argument == "GHOSTHUB_PROBE=ignored")
+    }));
     assert_eq!(
         attachment_plans
             .iter()
             .filter(|(_, args)| args.iter().any(|argument| argument == "-E"))
             .count(),
-        1
+        2
     );
     assert!(
         admission_calls
@@ -1075,7 +1087,7 @@ fn admission_failure_before_isolation_cleans_only_created_sessions() {
             .iter()
             .filter(|(_, args)| args.iter().any(|argument| argument == "kill-session"))
             .count(),
-        2
+        1
     );
 }
 

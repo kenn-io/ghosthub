@@ -142,6 +142,7 @@ pub struct CreateOnce {
     program: OsString,
     args: Vec<OsString>,
     target_name: SessionName,
+    identity_marker: String,
 }
 
 impl CreateOnce {
@@ -150,17 +151,24 @@ impl CreateOnce {
         program: impl Into<OsString>,
         args: Vec<OsString>,
         target_name: SessionName,
+        identity_marker: impl Into<String>,
     ) -> Self {
         Self {
             program: program.into(),
             args,
             target_name,
+            identity_marker: identity_marker.into(),
         }
     }
 
     #[must_use]
-    pub fn into_parts(self) -> (OsString, Vec<OsString>, SessionName) {
-        (self.program, self.args, self.target_name)
+    pub fn into_parts(self) -> (OsString, Vec<OsString>, SessionName, String) {
+        (
+            self.program,
+            self.args,
+            self.target_name,
+            self.identity_marker,
+        )
     }
 }
 
@@ -513,8 +521,9 @@ mod tests {
                 "demo".into(),
             ],
             SessionName::parse("demo").expect("valid name"),
+            "create-marker",
         );
-        let (program, args, target) = plan.into_parts();
+        let (program, args, target, marker) = plan.into_parts();
 
         assert_eq!(program, "wsl.exe");
         assert_eq!(
@@ -525,5 +534,6 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         assert_eq!(target.as_str(), "demo");
+        assert_eq!(marker, "create-marker");
     }
 }

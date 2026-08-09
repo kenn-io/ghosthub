@@ -513,13 +513,18 @@ impl<R: CommandRunner> WslHost<R> {
     /// Build one atomic local create-or-attach client for an already verified
     /// WSL endpoint. The returned authority cannot be cloned and must be
     /// consumed by the terminal launcher.
-    #[must_use]
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a collision-resistant identity marker cannot be
+    /// generated for the ordinary client's tmux-side identity report.
     pub fn create_once_with_term(
         &self,
         endpoint: &WslEndpoint,
         name: SessionName,
         term: AttachTerm,
-    ) -> CreateOnce {
+    ) -> Result<CreateOnce, HostError> {
+        let identity_marker = creation_identity_marker()?;
         let mut args = pinned_prefix(endpoint);
         append_tmux_environment(
             &mut args,
@@ -528,9 +533,26 @@ impl<R: CommandRunner> WslHost<R> {
             &[],
         );
         args.push(OsString::from(&self.config.tmux_binary));
-        args.extend(["new-session", "-A", "-s"].into_iter().map(OsString::from));
+        args.extend(
+            ["new-session", "-A", "-E", "-s"]
+                .into_iter()
+                .map(OsString::from),
+        );
         args.push(OsString::from(name.as_str()));
-        CreateOnce::local_atomic(self.wsl_executable.as_os_str(), args, name)
+        args.extend(
+            [";", "display-message", "-p", "-F"]
+                .into_iter()
+                .map(OsString::from),
+        );
+        args.push(OsString::from(format!(
+            "{identity_marker}#{{pid}}|#{{session_id}}|#{{session_created}}|!"
+        )));
+        Ok(CreateOnce::local_atomic(
+            self.wsl_executable.as_os_str(),
+            args,
+            name,
+            identity_marker,
+        ))
     }
 
     /// Capture the exact inventory after a one-shot create client has started,
@@ -891,6 +913,55 @@ impl<R: CommandRunner> WslHost<R> {
             ],
             "find primary isolated session",
         )?;
+        let new_session_environment = self.run_tmux_required(
+            endpoint,
+            cancellation,
+            &admission_tmpdir,
+            &[
+                "-f",
+                "/dev/null",
+                "-L",
+                &namespace,
+                "show-environment",
+                "-t",
+                &target,
+                "GHOSTHUB_PROBE",
+            ],
+            "read new-session environment",
+        )?;
+        self.run_tmux_required(
+            endpoint,
+            cancellation,
+            &admission_tmpdir,
+            &[
+                "-f",
+                "/dev/null",
+                "-L",
+                &namespace,
+                "set-option",
+                "-g",
+                "update-environment",
+                "GHOSTHUB_PROBE",
+            ],
+            "configure client environment updates",
+        )?;
+        self.run_tmux_required(
+            endpoint,
+            cancellation,
+            &admission_tmpdir,
+            &[
+                "-f",
+                "/dev/null",
+                "-L",
+                &namespace,
+                "set-environment",
+                "-t",
+                &target,
+                "GHOSTHUB_PROBE",
+                "session",
+            ],
+            "set session environment control value",
+        )?;
         let repeat_create_plan =
             self.admission_new_session_plan(endpoint, &admission_tmpdir, &namespace, &session);
         let repeat_create_client = attacher.attach(&repeat_create_plan).map_err(|error| {
@@ -915,6 +986,22 @@ impl<R: CommandRunner> WslHost<R> {
             &namespace,
             &target,
             false,
+        )?;
+        let create_preserved_value = self.run_tmux_required(
+            endpoint,
+            cancellation,
+            &admission_tmpdir,
+            &[
+                "-f",
+                "/dev/null",
+                "-L",
+                &namespace,
+                "show-environment",
+                "-t",
+                &target,
+                "GHOSTHUB_PROBE",
+            ],
+            "read atomic create-or-attach environment",
         )?;
         self.require_admission_session_absent(
             endpoint,
@@ -943,22 +1030,6 @@ impl<R: CommandRunner> WslHost<R> {
         );
         cleanup.finish_server_creation(&namespace, &collision, &creation);
         creation?;
-        let environment = self.run_tmux_required(
-            endpoint,
-            cancellation,
-            &admission_tmpdir,
-            &[
-                "-f",
-                "/dev/null",
-                "-L",
-                &namespace,
-                "show-environment",
-                "-t",
-                &target,
-                "GHOSTHUB_PROBE",
-            ],
-            "read new-session environment",
-        )?;
         let initial_identity = self.read_admission_identity(
             endpoint,
             cancellation,
@@ -1061,39 +1132,6 @@ impl<R: CommandRunner> WslHost<R> {
             ));
         }
         cleanup.mark_isolated([&namespace, &peer_namespace]);
-        self.run_tmux_required(
-            endpoint,
-            cancellation,
-            &admission_tmpdir,
-            &[
-                "-f",
-                "/dev/null",
-                "-L",
-                &namespace,
-                "set-option",
-                "-g",
-                "update-environment",
-                "GHOSTHUB_PROBE",
-            ],
-            "configure client environment updates",
-        )?;
-        self.run_tmux_required(
-            endpoint,
-            cancellation,
-            &admission_tmpdir,
-            &[
-                "-f",
-                "/dev/null",
-                "-L",
-                &namespace,
-                "set-environment",
-                "-t",
-                &target,
-                "GHOSTHUB_PROBE",
-                "session",
-            ],
-            "set session environment control value",
-        )?;
         let control_plan = self.admission_attach_plan(
             endpoint,
             &admission_tmpdir,
@@ -1321,12 +1359,18 @@ impl<R: CommandRunner> WslHost<R> {
             decode(&positive_value.stdout, "updated session environment")?.trim()
                 == "GHOSTHUB_PROBE=client"
                 && decode(&preserved_value.stdout, "preserved session environment")?.trim()
+                    == "GHOSTHUB_PROBE=session"
+                && decode(
+                    &create_preserved_value.stdout,
+                    "atomic create-or-attach environment",
+                )?
+                .trim()
                     == "GHOSTHUB_PROBE=session";
         let observations = [
             observation("atomic-create-or-attach", true),
             observation(
                 "new-session-environment",
-                String::from_utf8_lossy(&environment.stdout)
+                String::from_utf8_lossy(&new_session_environment.stdout)
                     .lines()
                     .any(|line| line == "GHOSTHUB_PROBE=present"),
             ),
@@ -1532,7 +1576,12 @@ impl<R: CommandRunner> WslHost<R> {
         session_name: &str,
     ) -> AdmissionPlan {
         let mut args = pinned_prefix(endpoint);
-        append_tmux_environment(&mut args, Some("TERM=xterm"), Some(tmux_tmpdir), &[]);
+        append_tmux_environment(
+            &mut args,
+            Some("TERM=xterm"),
+            Some(tmux_tmpdir),
+            &["GHOSTHUB_PROBE=ignored"],
+        );
         args.push(OsString::from(&self.config.tmux_binary));
         args.extend(
             [
@@ -1542,6 +1591,7 @@ impl<R: CommandRunner> WslHost<R> {
                 namespace,
                 "new-session",
                 "-A",
+                "-E",
                 "-s",
                 session_name,
                 "exec /usr/bin/sleep 60",
@@ -2006,6 +2056,17 @@ struct AdmissionScope {
     name_nonce: String,
 }
 
+fn creation_identity_marker() -> Result<String, HostError> {
+    let mut nonce = [0_u8; 16];
+    getrandom::fill(&mut nonce).map_err(|error| {
+        HostError::new(
+            DiagnosticKind::Transport,
+            format!("generate tmux creation identity marker: {error}"),
+        )
+    })?;
+    Ok(format!("__ghc_{:032x}__", u128::from_ne_bytes(nonce)))
+}
+
 fn admission_scope(sequence: u64) -> Result<AdmissionScope, HostError> {
     let mut nonce = [0_u8; 16];
     getrandom::fill(&mut nonce).map_err(|error| {
@@ -2384,12 +2445,14 @@ mod tests {
         let endpoint = WslEndpoint {
             distro: "Ubuntu Work".to_owned(),
         };
-        let plan = host.create_once_with_term(
-            &endpoint,
-            SessionName::parse("release work").expect("valid name"),
-            AttachTerm::Xterm256Color,
-        );
-        let (program, args, target) = plan.into_parts();
+        let plan = host
+            .create_once_with_term(
+                &endpoint,
+                SessionName::parse("release work").expect("valid name"),
+                AttachTerm::Xterm256Color,
+            )
+            .expect("creation plan");
+        let (program, args, target, marker) = plan.into_parts();
 
         assert_eq!(program, r"C:\Windows\System32\wsl.exe");
         assert_eq!(target.as_str(), "release work");
@@ -2411,12 +2474,21 @@ mod tests {
                 "/opt/tmux/bin/tmux",
                 "new-session",
                 "-A",
+                "-E",
                 "-s",
                 "release work",
+                ";",
+                "display-message",
+                "-p",
+                "-F",
             ]
             .into_iter()
             .map(OsString::from)
+            .chain([OsString::from(format!(
+                "{marker}#{{pid}}|#{{session_id}}|#{{session_created}}|!"
+            ))])
             .collect::<Vec<_>>()
         );
+        assert!(marker.starts_with("__ghc_") && marker.ends_with("__"));
     }
 }

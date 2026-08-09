@@ -6,10 +6,12 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::{Receiver, Sender, TryRecvError, TrySendError, bounded, never, select};
+use crossbeam_channel::{
+    Receiver, RecvTimeoutError, Sender, TryRecvError, TrySendError, bounded, never, select,
+};
 use input::{EncodedInput, KeyInput, MouseAction, MouseInput, encode_input, encode_mouse};
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
-use session::{AdmissionPlan, AttachPlan, CreateOnce};
+use session::{AdmissionPlan, AttachPlan, CreateOnce, SessionIdentity};
 use surface::{GridSize, PixelSize, SurfaceStore};
 
 use crate::windows_job::RelayJob;
@@ -28,6 +30,7 @@ const CHILD_EXIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const CHILD_OUTPUT_DRAIN_GRACE: Duration = Duration::from_millis(250);
 const REAP_ATTEMPTS: usize = 20;
 const REAP_POLL_DELAY: Duration = Duration::from_millis(25);
+const CREATION_IDENTITY_BUFFER_LIMIT: usize = 1024 * 1024;
 
 pub enum TerminalEvent {
     ClipboardWrite {
@@ -226,6 +229,7 @@ pub struct TerminalWorker {
     deferred_events: Mutex<VecDeque<TerminalEvent>>,
     surface: Arc<SurfaceStore>,
     confirmed_live: Arc<AtomicBool>,
+    creation_identity: Option<Receiver<Result<SessionIdentity, String>>>,
     clipboard_visibility: Arc<AtomicU64>,
     thread: Option<thread::JoinHandle<()>>,
 }
@@ -266,6 +270,7 @@ impl TerminalWorker {
         Self::launch(
             plan.program(),
             plan.args(),
+            None,
             size,
             resize_sequence,
             pixel_size,
@@ -290,10 +295,11 @@ impl TerminalWorker {
         clipboard_policy: ClipboardPolicy,
         default_colors: DefaultColors,
     ) -> Result<Self, WorkerError> {
-        let (program, args, _target_name) = plan.into_parts();
+        let (program, args, _target_name, identity_marker) = plan.into_parts();
         Self::launch(
             &program,
             &args,
+            Some(identity_marker),
             size,
             resize_sequence,
             pixel_size,
@@ -312,6 +318,7 @@ impl TerminalWorker {
         Self::launch(
             plan.program(),
             plan.args(),
+            None,
             size,
             0,
             PixelSize::default(),
@@ -320,9 +327,15 @@ impl TerminalWorker {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "PTY setup and ownership transfer stay together for lifecycle auditing"
+    )]
     fn launch(
         program: &std::ffi::OsStr,
         args: &[std::ffi::OsString],
+        creation_identity_marker: Option<String>,
         size: GridSize,
         resize_sequence: u64,
         pixel_size: PixelSize,
@@ -381,6 +394,14 @@ impl TerminalWorker {
         let (write_complete_sender, write_complete_receiver) = bounded(1);
         let confirmed_live = Arc::new(AtomicBool::new(false));
         let worker_confirmed_live = Arc::clone(&confirmed_live);
+        let (creation_capture, creation_identity) =
+            creation_identity_marker.map_or((None, None), |marker| {
+                let (sender, receiver) = bounded(1);
+                (
+                    Some(CreationIdentityCapture::new(marker, sender)),
+                    Some(receiver),
+                )
+            });
         let clipboard_visibility = Arc::new(AtomicU64::new(1));
         let worker_clipboard_visibility = Arc::clone(&clipboard_visibility);
 
@@ -414,6 +435,7 @@ impl TerminalWorker {
                     &write_complete_receiver,
                     &events_sender,
                     &worker_confirmed_live,
+                    creation_capture,
                     &worker_clipboard_visibility,
                 );
             })
@@ -429,6 +451,7 @@ impl TerminalWorker {
             deferred_events: Mutex::new(VecDeque::new()),
             surface,
             confirmed_live,
+            creation_identity,
             clipboard_visibility,
             thread: Some(worker_thread),
         })
@@ -448,6 +471,36 @@ impl TerminalWorker {
     #[must_use]
     pub fn is_confirmed_live(&self) -> bool {
         self.confirmed_live.load(Ordering::Acquire)
+    }
+
+    /// Wait for the exact tmux identity reported by a consumed creation client.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if this is not a creation worker, the client reports an
+    /// invalid identity, or the report does not arrive before `timeout`.
+    pub fn wait_for_creation_identity(
+        &self,
+        timeout: Duration,
+    ) -> Result<SessionIdentity, WorkerError> {
+        let receiver = self.creation_identity.as_ref().ok_or_else(|| {
+            WorkerError::new(
+                "receive tmux creation identity",
+                "worker was not created by CreateOnce",
+            )
+        })?;
+        match receiver.recv_timeout(timeout) {
+            Ok(Ok(identity)) => Ok(identity),
+            Ok(Err(error)) => Err(WorkerError::new("receive tmux creation identity", error)),
+            Err(RecvTimeoutError::Timeout) => Err(WorkerError::new(
+                "receive tmux creation identity",
+                "timed out waiting for the ordinary client",
+            )),
+            Err(RecvTimeoutError::Disconnected) => Err(WorkerError::new(
+                "receive tmux creation identity",
+                "terminal client exited before reporting its session",
+            )),
+        }
     }
 
     /// Enable or suppress clipboard writes emitted by this presentation.
@@ -688,6 +741,104 @@ fn write_pty(
     }
 }
 
+struct CreationIdentityCapture {
+    marker: Vec<u8>,
+    pending: Vec<u8>,
+    result: Option<Sender<Result<SessionIdentity, String>>>,
+}
+
+impl CreationIdentityCapture {
+    fn new(marker: String, result: Sender<Result<SessionIdentity, String>>) -> Self {
+        Self {
+            marker: marker.into_bytes(),
+            pending: Vec::new(),
+            result: Some(result),
+        }
+    }
+
+    fn push(&mut self, bytes: &[u8]) -> Vec<u8> {
+        if self.result.is_none() {
+            return bytes.to_vec();
+        }
+        // Tmux sends terminal queries before its identity message and waits for
+        // their replies. Observe the raw stream without withholding it from the
+        // VT engine, otherwise creation deadlocks before the report is emitted.
+        self.pending.extend_from_slice(bytes);
+        let Some(start) = find_bytes(&self.pending, &self.marker) else {
+            if self.pending.len() > CREATION_IDENTITY_BUFFER_LIMIT {
+                self.finish(Err(
+                    "tmux did not report creation identity before emitting terminal output"
+                        .to_owned(),
+                ));
+                return bytes.to_vec();
+            }
+            return bytes.to_vec();
+        };
+        let payload_start = start + self.marker.len();
+        let Some(relative_end) = self.pending[payload_start..]
+            .iter()
+            .position(|byte| *byte == b'!')
+        else {
+            if self.pending.len() > CREATION_IDENTITY_BUFFER_LIMIT {
+                self.finish(Err(
+                    "tmux creation identity report was incomplete".to_owned()
+                ));
+                return bytes.to_vec();
+            }
+            return bytes.to_vec();
+        };
+        let end = payload_start + relative_end;
+        let identity = parse_creation_identity(&self.pending[payload_start..end]);
+        self.pending.clear();
+        if let Some(sender) = self.result.take() {
+            let _ignored = sender.try_send(identity);
+        }
+        bytes.to_vec()
+    }
+
+    fn finish(&mut self, result: Result<SessionIdentity, String>) {
+        if let Some(sender) = self.result.take() {
+            let _ignored = sender.try_send(result);
+        }
+        self.pending.clear();
+    }
+}
+
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    (!needle.is_empty())
+        .then(|| {
+            haystack
+                .windows(needle.len())
+                .position(|bytes| bytes == needle)
+        })
+        .flatten()
+}
+
+fn parse_creation_identity(bytes: &[u8]) -> Result<SessionIdentity, String> {
+    let value = std::str::from_utf8(bytes)
+        .map_err(|error| format!("tmux creation identity was not UTF-8: {error}"))?;
+    let value = value
+        .strip_suffix('|')
+        .ok_or_else(|| "tmux creation identity had invalid framing".to_owned())?;
+    let mut fields = value.split('|');
+    let server_pid = fields
+        .next()
+        .and_then(|field| field.parse::<u32>().ok())
+        .ok_or_else(|| "tmux creation identity had an invalid server PID".to_owned())?;
+    let session_id = fields
+        .next()
+        .filter(|field| field.starts_with('$') && field.len() > 1)
+        .ok_or_else(|| "tmux creation identity had an invalid session ID".to_owned())?;
+    let created_at = fields
+        .next()
+        .and_then(|field| field.parse::<u64>().ok())
+        .ok_or_else(|| "tmux creation identity had an invalid creation time".to_owned())?;
+    if fields.next().is_some() {
+        return Err("tmux creation identity had extra fields".to_owned());
+    }
+    Ok(SessionIdentity::new(server_pid, session_id, created_at))
+}
+
 #[allow(clippy::too_many_arguments)]
 #[allow(
     clippy::too_many_lines,
@@ -709,6 +860,7 @@ fn run_worker(
     write_completions: &Receiver<WriterMessage>,
     events: &Sender<TerminalEvent>,
     confirmed_live: &AtomicBool,
+    mut creation_capture: Option<CreationIdentityCapture>,
     clipboard_visibility: &AtomicU64,
 ) {
     let mut report_exit = false;
@@ -873,7 +1025,15 @@ fn run_worker(
             recv(reader) -> message => match message {
                 Ok(ReaderMessage::Bytes(bytes)) => {
                     retain_output_tail(&mut output_tail, &bytes);
-                    let output = engine.process(&bytes);
+                    let visible = if let Some(capture) = &mut creation_capture {
+                        capture.push(&bytes)
+                    } else {
+                        bytes
+                    };
+                    if visible.is_empty() {
+                        continue;
+                    }
+                    let output = engine.process(&visible);
                     if engine.has_entered_alternate_screen() {
                         confirmed_live.store(true, Ordering::Release);
                     }
@@ -901,11 +1061,21 @@ fn run_worker(
                     }
                 }
                 Ok(ReaderMessage::Error(error)) => {
+                    if let Some(capture) = &mut creation_capture {
+                        capture.finish(Err(format!(
+                            "terminal client failed before reporting its session: {error}"
+                        )));
+                    }
                     let _ignored = emit_event(events, shutdown, TerminalEvent::Error(error));
                     report_exit = true;
                     break 'worker;
                 }
                 Ok(ReaderMessage::Eof) | Err(_) => {
+                    if let Some(capture) = &mut creation_capture {
+                        capture.finish(Err(
+                            "terminal client exited before reporting its session".to_owned(),
+                        ));
+                    }
                     report_exit = true;
                     break 'worker;
                 },
@@ -1433,6 +1603,44 @@ mod tests {
     }
 
     struct RecordingWriter(Arc<Mutex<Vec<&'static str>>>);
+
+    #[test]
+    fn creation_identity_capture_follows_the_client_report_across_chunks() {
+        let marker = "__ghc_0123456789abcdef__";
+        let (sender, receiver) = bounded(1);
+        let mut capture = CreationIdentityCapture::new(marker.to_owned(), sender);
+
+        assert_eq!(
+            capture.push(b"\x1b[?1049h__ghc_0123"),
+            b"\x1b[?1049h__ghc_0123"
+        );
+        let chunk = b"456789abcdef__321|$7|123456|!\x1b[2Jpane";
+        let visible = capture.push(chunk);
+
+        assert_eq!(visible, chunk);
+        assert_eq!(
+            receiver.recv().expect("creation identity report"),
+            Ok(SessionIdentity::new(321, "$7", 123_456))
+        );
+    }
+
+    #[test]
+    fn creation_identity_capture_rejects_malformed_reports() {
+        let marker = "__ghc_marker__";
+        let (sender, receiver) = bounded(1);
+        let mut capture = CreationIdentityCapture::new(marker.to_owned(), sender);
+
+        let visible = capture.push(b"prefix__ghc_marker__bad|$7|123|!suffix");
+
+        assert_eq!(visible, b"prefix__ghc_marker__bad|$7|123|!suffix");
+        assert!(
+            receiver
+                .recv()
+                .expect("creation identity report")
+                .expect_err("invalid server PID")
+                .contains("server PID")
+        );
+    }
 
     #[test]
     fn hiding_a_presentation_discards_queued_clipboard_writes_only() {

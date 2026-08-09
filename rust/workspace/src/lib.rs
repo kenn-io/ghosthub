@@ -24,6 +24,8 @@ const REDUCED_COLOR_NOTICE: &str =
     "Using TERM=xterm because xterm-256color terminfo is unavailable in WSL";
 const CREATE_DISCOVERY_ATTEMPTS: usize = 5;
 const CREATE_DISCOVERY_DELAY: Duration = Duration::from_millis(40);
+const CREATE_IDENTITY_TIMEOUT: Duration = Duration::from_secs(5);
+const CREATE_IDENTITY_MIN_COLUMNS: usize = 120;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Appearance {
@@ -589,8 +591,8 @@ struct CreateRequest {
     host_id: String,
     host: RuntimeHost,
     endpoint: host::WslEndpoint,
+    runtime: host::WslRuntimeIdentity,
     name: SessionName,
-    inventory_generation: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2931,7 +2933,7 @@ fn capture_create_request(
     let context = host
         .as_ref()
         .ok_or_else(|| WorkspaceError::new("WSL inventory is not ready"))?;
-    context.map(|context, inventory_generation| {
+    context.map(|context, _inventory_generation| {
         if context.snapshot.endpoint().distro() != endpoint {
             return Err(WorkspaceError::new(
                 "the WSL endpoint changed; choose the host again before creating a session",
@@ -2941,8 +2943,8 @@ fn capture_create_request(
             host_id: host_id.to_owned(),
             host: context.host.clone(),
             endpoint: context.snapshot.endpoint().clone(),
+            runtime: context.snapshot.runtime().clone(),
             name,
-            inventory_generation,
         })
     })
 }
@@ -3096,6 +3098,19 @@ fn run_create(
         return;
     }
 
+    let inventory_generation = match merge_created_inventory(inner, request, snapshot.clone()) {
+        Ok(generation) => generation,
+        Err(error) => {
+            drop(worker);
+            restore_inventory_after_creation_failure(
+                inner,
+                previous,
+                navigation_generation,
+                error.to_string(),
+            );
+            return;
+        }
+    };
     let attached = AttachRequest {
         host_id: request.host_id.clone(),
         host: request.host.clone(),
@@ -3103,7 +3118,7 @@ fn run_create(
         runtime: snapshot.runtime().clone(),
         identity: session.identity().clone(),
         name: session.name().to_owned(),
-        inventory_generation: request.inventory_generation,
+        inventory_generation,
     };
     let key = attached.presentation_key();
     let fallback = previous.map(|presentation| FallbackAuthority {
@@ -3136,7 +3151,6 @@ fn run_create(
         return;
     };
     let surface = worker.surface_handle();
-    publish_attach_inventory(inner, &attached, snapshot);
     if let Err(error) = publish_worker_at_latest_geometry(
         &inner.terminal_geometry,
         &inner.worker,
@@ -3191,27 +3205,39 @@ fn create_fresh(
             "the default WSL distro changed; refresh before creating the session",
         ));
     }
+    if before.runtime() != &request.runtime {
+        return Err(WorkspaceError::new(
+            "WSL restarted; refresh before creating the session",
+        ));
+    }
     if inner.navigation_generation.load(Ordering::Acquire) != navigation_generation {
         return Err(WorkspaceError::new("tmux creation was superseded"));
     }
-    let authority = request.host.create_once_with_term(
-        before.endpoint(),
-        request.name.clone(),
-        AttachTerm::Xterm256Color,
-    );
+    let authority = request
+        .host
+        .create_once_with_term(
+            before.endpoint(),
+            request.name.clone(),
+            AttachTerm::Xterm256Color,
+        )
+        .map_err(|error| WorkspaceError::new(error.to_string()))?;
     let geometry = *inner
         .terminal_geometry
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let launch_geometry = creation_launch_geometry(geometry);
     let worker = TerminalWorker::create_with_metadata(
         authority,
-        geometry.grid,
-        geometry.sequence,
-        geometry.pixels,
+        launch_geometry.grid,
+        launch_geometry.sequence,
+        launch_geometry.pixels,
         ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
         default_colors(&inner.appearance),
     )
     .map_err(|error| WorkspaceError::new(error.to_string()))?;
+    let client_identity = worker
+        .wait_for_creation_identity(CREATE_IDENTITY_TIMEOUT)
+        .map_err(|error| WorkspaceError::new(error.to_string()))?;
     let cancellation = CancellationToken::new();
     for attempt in 0..CREATE_DISCOVERY_ATTEMPTS {
         if inner.navigation_generation.load(Ordering::Acquire) != navigation_generation {
@@ -3220,15 +3246,10 @@ fn create_fresh(
         }
         let snapshot = request
             .host
-            .discover_after_create(before.endpoint(), before.runtime(), &cancellation)
+            .discover_after_create(before.endpoint(), &request.runtime, &cancellation)
             .map_err(|error| WorkspaceError::new(error.to_string()))?;
-        if let Some(session) = snapshot
-            .sessions()
-            .iter()
-            .find(|session| session.name() == request.name.as_str())
-            .cloned()
-        {
-            return Ok((worker, snapshot, session, geometry));
+        if let Some(session) = created_session(&snapshot, &client_identity) {
+            return Ok((worker, snapshot, session, launch_geometry));
         }
         if attempt + 1 < CREATE_DISCOVERY_ATTEMPTS {
             thread::sleep(CREATE_DISCOVERY_DELAY);
@@ -3236,8 +3257,30 @@ fn create_fresh(
     }
     drop(worker);
     Err(WorkspaceError::new(
-        "the one-shot tmux client started, but the session did not appear; refresh to inspect the host before trying again",
+        "the one-shot tmux client started, but its exact session did not appear; refresh to inspect the host before trying again",
     ))
+}
+
+fn creation_launch_geometry(geometry: TerminalGeometry) -> TerminalGeometry {
+    if geometry.grid.columns() >= CREATE_IDENTITY_MIN_COLUMNS {
+        return geometry;
+    }
+    TerminalGeometry {
+        grid: GridSize::new(CREATE_IDENTITY_MIN_COLUMNS, geometry.grid.rows())
+            .expect("creation identity grid is valid"),
+        ..geometry
+    }
+}
+
+fn created_session(
+    snapshot: &HostSnapshot,
+    client_identity: &session::SessionIdentity,
+) -> Option<session::DiscoveredSession> {
+    snapshot
+        .sessions()
+        .iter()
+        .find(|session| session.identity() == client_identity)
+        .cloned()
 }
 
 fn restore_inventory_after_creation_failure(
@@ -3480,6 +3523,72 @@ fn restore_attach_fallback_locked(inner: &Inner, fallback: Option<FallbackAuthor
             format!("could not restore the previous terminal presentation: {error}"),
         ),
     }
+}
+
+fn merge_created_inventory(
+    inner: &Inner,
+    request: &CreateRequest,
+    snapshot: HostSnapshot,
+) -> Result<u64, WorkspaceError> {
+    let _publication = inner
+        .refresh_publication
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if snapshot.endpoint() != &request.endpoint || snapshot.runtime() != &request.runtime {
+        return Err(WorkspaceError::new(
+            "WSL changed while publishing the created tmux session",
+        ));
+    }
+    let published_generation = inner
+        .host
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .and_then(|published| {
+            (published.value.snapshot.endpoint() == &request.endpoint
+                && published.value.snapshot.runtime() == &request.runtime)
+                .then_some(published.generation)
+        })
+        .ok_or_else(|| {
+            WorkspaceError::new(
+                "the WSL endpoint changed while creating the tmux session; refresh before trying again",
+            )
+        })?;
+    let current_generation = inner.refresh_generation.load(Ordering::Acquire);
+    let inventory_generation = match published_generation.cmp(&current_generation) {
+        std::cmp::Ordering::Equal => current_generation,
+        std::cmp::Ordering::Less => {
+            if let Some(cancellation) = inner
+                .discovery_cancel
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+            {
+                cancellation.cancel();
+            }
+            inner.refresh_generation.fetch_add(1, Ordering::AcqRel) + 1
+        }
+        std::cmp::Ordering::Greater => {
+            return Err(WorkspaceError::new(
+                "tmux inventory generation moved backwards during creation",
+            ));
+        }
+    };
+
+    let inventory_state = ready_content(&snapshot);
+    reconcile_retained_session_names(inner, &snapshot, request.host.socket_directory());
+    *inner
+        .host
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Published::new(
+        HostContext {
+            host: request.host.clone(),
+            snapshot,
+        },
+        inventory_generation,
+    ));
+    set_inventory_state(inner, inventory_state);
+    Ok(inventory_generation)
 }
 
 fn publish_attach_inventory(inner: &Inner, request: &AttachRequest, snapshot: HostSnapshot) {
@@ -5098,6 +5207,203 @@ mod tests {
             WorkspaceContent::Ready { sessions, .. }
                 if sessions.len() == 1 && sessions[0].name() == "newer"
         ));
+    }
+
+    #[test]
+    fn created_session_is_resolved_by_client_identity_not_requested_name() {
+        let client_identity = session::SessionIdentity::new(100, "$1", 200);
+        let snapshot = HostSnapshot::test_fixture(
+            "Ubuntu",
+            "boot-id",
+            42,
+            vec![
+                session::DiscoveredSession::new(
+                    "requested",
+                    session::SessionIdentity::new(100, "$2", 201),
+                    0,
+                ),
+                session::DiscoveredSession::new("renamed-by-hook", client_identity.clone(), 1),
+            ],
+        );
+
+        let created = created_session(&snapshot, &client_identity).expect("client session");
+
+        assert_eq!(created.name(), "renamed-by-hook");
+        assert_eq!(created.identity(), &client_identity);
+    }
+
+    #[test]
+    fn creation_identity_report_gets_a_bounded_startup_width() {
+        let narrow = TerminalGeometry {
+            grid: GridSize::new(20, 12).expect("valid narrow grid"),
+            pixels: PixelSize::new(200, 240),
+            sequence: 7,
+        };
+
+        let launch = creation_launch_geometry(narrow);
+
+        assert_eq!(launch.grid.columns(), CREATE_IDENTITY_MIN_COLUMNS);
+        assert_eq!(launch.grid.rows(), narrow.grid.rows());
+        assert_eq!(launch.pixels, narrow.pixels);
+        assert_eq!(launch.sequence, narrow.sequence);
+        assert_eq!(
+            creation_launch_geometry(launch),
+            launch,
+            "already-wide grids are unchanged"
+        );
+    }
+
+    #[test]
+    fn post_create_inventory_merges_into_a_completed_refresh_generation() {
+        let workspace = Workspace::preview(WorkspaceSnapshot::ready(
+            Appearance::default(),
+            "Ubuntu",
+            Vec::new(),
+        ));
+        let runner: SharedCommandRunner = Arc::new(StdCommandRunner);
+        let runtime_host = WslHost::new(
+            WslConfig::with_distro("Ubuntu").expect("valid WSL config"),
+            runner,
+            WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
+                .expect("absolute system WSL path"),
+        );
+        let initial_generation = workspace.inner.refresh_generation.load(Ordering::Acquire);
+        let initial_snapshot = HostSnapshot::test_fixture(
+            "Ubuntu",
+            "boot-id",
+            42,
+            vec![session::DiscoveredSession::new(
+                "before",
+                session::SessionIdentity::new(100, "$1", 200),
+                0,
+            )],
+        );
+        *workspace.inner.host.lock().expect("host context") = Some(Published::new(
+            HostContext {
+                host: runtime_host.clone(),
+                snapshot: initial_snapshot.clone(),
+            },
+            initial_generation,
+        ));
+        let request = CreateRequest {
+            host_id: "wsl".to_owned(),
+            host: runtime_host.clone(),
+            endpoint: initial_snapshot.endpoint().clone(),
+            runtime: initial_snapshot.runtime().clone(),
+            name: SessionName::parse("created").expect("valid name"),
+        };
+
+        let refresh_generation = begin_refresh(&workspace.inner, &CancellationToken::new());
+        let refreshed = HostSnapshot::test_fixture(
+            "Ubuntu",
+            "boot-id",
+            42,
+            vec![session::DiscoveredSession::new(
+                "refreshed",
+                session::SessionIdentity::new(100, "$2", 201),
+                0,
+            )],
+        );
+        assert!(publish_refresh(
+            &workspace.inner,
+            refresh_generation,
+            || {
+                *workspace.inner.host.lock().expect("host context") = Some(Published::new(
+                    HostContext {
+                        host: runtime_host,
+                        snapshot: refreshed,
+                    },
+                    refresh_generation,
+                ));
+            }
+        ));
+        let created = HostSnapshot::test_fixture(
+            "Ubuntu",
+            "boot-id",
+            42,
+            vec![session::DiscoveredSession::new(
+                "created",
+                session::SessionIdentity::new(100, "$3", 202),
+                1,
+            )],
+        );
+
+        let merged = merge_created_inventory(&workspace.inner, &request, created)
+            .expect("merge post-create inventory");
+
+        assert_eq!(merged, refresh_generation);
+        let host = workspace.inner.host.lock().expect("host context");
+        let published = host.as_ref().expect("published host");
+        assert_eq!(published.generation, refresh_generation);
+        assert_eq!(published.value.snapshot.sessions()[0].name(), "created");
+    }
+
+    #[test]
+    fn post_create_inventory_supersedes_an_inflight_refresh() {
+        let workspace = Workspace::preview(WorkspaceSnapshot::ready(
+            Appearance::default(),
+            "Ubuntu",
+            Vec::new(),
+        ));
+        let runner: SharedCommandRunner = Arc::new(StdCommandRunner);
+        let runtime_host = WslHost::new(
+            WslConfig::with_distro("Ubuntu").expect("valid WSL config"),
+            runner,
+            WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
+                .expect("absolute system WSL path"),
+        );
+        let initial_generation = workspace.inner.refresh_generation.load(Ordering::Acquire);
+        let initial_snapshot = HostSnapshot::test_fixture(
+            "Ubuntu",
+            "boot-id",
+            42,
+            vec![session::DiscoveredSession::new(
+                "before",
+                session::SessionIdentity::new(100, "$1", 200),
+                0,
+            )],
+        );
+        *workspace.inner.host.lock().expect("host context") = Some(Published::new(
+            HostContext {
+                host: runtime_host.clone(),
+                snapshot: initial_snapshot.clone(),
+            },
+            initial_generation,
+        ));
+        let request = CreateRequest {
+            host_id: "wsl".to_owned(),
+            host: runtime_host,
+            endpoint: initial_snapshot.endpoint().clone(),
+            runtime: initial_snapshot.runtime().clone(),
+            name: SessionName::parse("created").expect("valid name"),
+        };
+        let cancellation = CancellationToken::new();
+        let refresh_generation = begin_refresh(&workspace.inner, &cancellation);
+        let created = HostSnapshot::test_fixture(
+            "Ubuntu",
+            "boot-id",
+            42,
+            vec![session::DiscoveredSession::new(
+                "created",
+                session::SessionIdentity::new(100, "$2", 201),
+                1,
+            )],
+        );
+
+        let merged = merge_created_inventory(&workspace.inner, &request, created)
+            .expect("merge post-create inventory");
+
+        assert!(merged > refresh_generation);
+        assert!(cancellation.is_cancelled());
+        assert!(!publish_refresh(
+            &workspace.inner,
+            refresh_generation,
+            || panic!("superseded refresh must not publish")
+        ));
+        let host = workspace.inner.host.lock().expect("host context");
+        let published = host.as_ref().expect("published host");
+        assert_eq!(published.generation, merged);
+        assert_eq!(published.value.snapshot.sessions()[0].name(), "created");
     }
 
     #[test]

@@ -273,6 +273,45 @@ fn creates_attaches_and_detaches_one_atomic_local_session() {
 
 #[test]
 #[ignore = "requires WSL2 and tmux; creates only an isolated TMUX_TMPDIR server"]
+fn creation_follows_the_client_identity_when_a_hook_renames_the_session() {
+    let _serial = WSL_LIVE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let server = IsolatedServer::start("create-hook-rename");
+    server.run_tmux([
+        "set-hook",
+        "-g",
+        "after-new-session",
+        "rename-session renamed-by-hook",
+    ]);
+    let config = WslConfig::configured(None, "/usr/bin/tmux", Some(server.tmpdir.clone()))
+        .expect("valid isolated config");
+    let workspace = Workspace::start_wsl(config, TerminalAppearance::default());
+    wait_until_with_diagnostic(
+        || workspace.snapshot().hosts()[0].connection() == workspace::HostConnectionState::Ready,
+        || workspace_diagnostic(&workspace),
+    );
+    let endpoint = workspace.snapshot().hosts()[0].endpoint().to_owned();
+
+    workspace
+        .create_session("wsl", &endpoint, "requested-name")
+        .expect("start renamed one-shot creation");
+    wait_until_with_diagnostic(
+        || {
+            matches!(
+                workspace.snapshot().content(),
+                WorkspaceContent::Terminal { session, .. } if session == "renamed-by-hook"
+            )
+        },
+        || workspace_diagnostic(&workspace),
+    );
+
+    assert!(server.has_session("renamed-by-hook"));
+    assert!(!server.has_session("requested-name"));
+}
+
+#[test]
+#[ignore = "requires WSL2 and tmux; creates only an isolated TMUX_TMPDIR server"]
 fn creation_race_attaches_the_exact_existing_session() {
     let _serial = WSL_LIVE
         .lock()
@@ -767,7 +806,8 @@ fn wait_until_with_diagnostic(
 }
 
 fn workspace_diagnostic(workspace: &Workspace) -> String {
-    match workspace.snapshot().content() {
+    let snapshot = workspace.snapshot();
+    let state = match snapshot.content() {
         WorkspaceContent::Shell => "shell".to_owned(),
         WorkspaceContent::Loading => "loading".to_owned(),
         WorkspaceContent::Ready { endpoint, sessions } => {
@@ -782,7 +822,10 @@ fn workspace_diagnostic(workspace: &Workspace) -> String {
             endpoint, session, ..
         } => format!("attached to {session} in {endpoint}"),
         WorkspaceContent::Error { message } => format!("error: {message}"),
-    }
+    };
+    snapshot
+        .notice()
+        .map_or(state.clone(), |notice| format!("{state}; notice: {notice}"))
 }
 
 fn session_selection(workspace: &Workspace, session: &str) -> SessionSelection {
