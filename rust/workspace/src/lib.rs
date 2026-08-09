@@ -1962,8 +1962,11 @@ impl Workspace {
     /// Returns an error when the selection is not part of the current WSL
     /// inventory or the background query cannot be started.
     pub fn request_session_kill(&self, selection: &SessionSelection) -> Result<(), WorkspaceError> {
+        let (generation, removed) = invalidate_pending_kill(&self.inner);
+        if removed {
+            self.inner.revision.fetch_add(1, Ordering::Release);
+        }
         let request = capture_kill_request(&self.inner, selection)?;
-        let (generation, _) = invalidate_pending_kill(&self.inner);
         let workspace = self.clone();
         thread::Builder::new()
             .name("ghosthub-session-kill-identity".to_owned())
@@ -6267,7 +6270,9 @@ mod tests {
         workspace.inner.kill_generation.store(3, Ordering::Release);
         assert!(publish_pending_kill(&workspace.inner, pending(3)));
         assert!(workspace.session_kill_confirmation().is_some());
-        workspace.inner.kill_generation.store(4, Ordering::Release);
+        workspace
+            .request_session_kill(&SessionSelection::new("wsl", "Ubuntu", "missing"))
+            .expect_err("new invalid request still supersedes old confirmation");
         assert_eq!(workspace.session_kill_confirmation(), None);
     }
 

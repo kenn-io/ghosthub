@@ -27,7 +27,6 @@ const UNCERTAIN_CLEANUP_SETTLE: Duration = Duration::from_secs(2);
 // without adding another process crossing.
 const INVENTORY_FORMAT: &str = "#{pid}\t#{session_id}\t#{session_created}\t#{session_attached}\t#{n:session_name}\t#{session_name}";
 const ADMISSION_IDENTITY_FORMAT: &str = "#{pid}\t#{session_id}\t#{n:session_name}\t#{session_name}";
-const LIVE_IDENTITY_FORMAT: &str = "#{pid}\t#{session_id}\t#{session_created}";
 const KILL_IDENTITY_MISMATCH_MARKER: &str = "__ghosthub_kill_identity_mismatch_v1__";
 static ADMISSION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -645,35 +644,22 @@ impl<R: CommandRunner> WslHost<R> {
         cancellation: &CancellationToken,
     ) -> Result<LiveSessionTarget, HostError> {
         self.require_runtime(endpoint, expected_runtime, cancellation)?;
-        let target = format!("={name}:");
-        let output = self.run_tmux_command(
-            endpoint,
-            cancellation,
-            &[
-                "-f",
-                "/dev/null",
-                "display-message",
-                "-p",
-                "-t",
-                &target,
-                LIVE_IDENTITY_FORMAT,
-            ],
-        )?;
-        if output.status != 0 {
-            return Err(classify_session_command_failure(
-                output.status,
-                &output.stderr,
-                name,
-                "verify",
-            ));
-        }
-        let identity = parse_live_identity(&output.stdout)?;
+        let sessions = self.discover_sessions(endpoint, cancellation)?;
+        let session = sessions
+            .into_iter()
+            .find(|session| session.name() == name)
+            .ok_or_else(|| {
+                HostError::new(
+                    DiagnosticKind::Transport,
+                    format!("Session ‘{name}’ is no longer running. Refresh before trying again."),
+                )
+            })?;
         self.require_runtime(endpoint, expected_runtime, cancellation)?;
         Ok(LiveSessionTarget {
             endpoint: endpoint.clone(),
             runtime: expected_runtime.clone(),
-            name: name.to_owned(),
-            identity,
+            name: session.name().to_owned(),
+            identity: session.identity().clone(),
         })
     }
 
@@ -2300,39 +2286,6 @@ fn parse_inventory(bytes: &[u8]) -> Result<Vec<DiscoveredSession>, HostError> {
             ))
         })
         .collect()
-}
-
-fn parse_live_identity(bytes: &[u8]) -> Result<SessionIdentity, HostError> {
-    let output = decode(bytes, "live tmux session identity")?;
-    let fields = output
-        .trim_end_matches(['\r', '\n'])
-        .split('\t')
-        .collect::<Vec<_>>();
-    if fields.len() != 3 {
-        return Err(HostError::new(
-            DiagnosticKind::MalformedOutput,
-            "tmux returned an invalid live session identity",
-        ));
-    }
-    let server_pid = fields[0].parse::<u32>().map_err(|_| {
-        HostError::new(
-            DiagnosticKind::MalformedOutput,
-            "tmux returned an invalid live server PID",
-        )
-    })?;
-    let created_at = fields[2].parse::<u64>().map_err(|_| {
-        HostError::new(
-            DiagnosticKind::MalformedOutput,
-            "tmux returned an invalid live session creation time",
-        )
-    })?;
-    if server_pid == 0 || !is_tmux_session_id(fields[1]) {
-        return Err(HostError::new(
-            DiagnosticKind::MalformedOutput,
-            "tmux returned an invalid live session identity",
-        ));
-    }
-    Ok(SessionIdentity::new(server_pid, fields[1], created_at))
 }
 
 struct TmuxNameRecord<'a> {

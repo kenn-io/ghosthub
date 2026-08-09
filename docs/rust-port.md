@@ -393,10 +393,12 @@ VerifiedKwtHelper requires the exact revision, verified SHA-256, and
 revision-scoped managed path.
 
 Cached inventory identity is display-only. LiveIdentity has private fields and
-can be produced only by a fresh query immediately before a destructive
-operation. Conditional kill compares server PID, session ID, and creation
-timestamp. Store cannot depend on the session crate and cannot serialize
-runtime authority.
+can be produced only from a fresh, length-framed all-session query immediately
+before a destructive operation. Host matches the decoded display name in Rust;
+the name never crosses back into a tmux target expression. Conditional kill
+then targets the captured session ID while comparing server PID, session ID,
+and creation timestamp. Store cannot depend on the session crate and cannot
+serialize runtime authority.
 
 ### Presentation registry
 

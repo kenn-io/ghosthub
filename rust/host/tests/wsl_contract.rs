@@ -1403,6 +1403,41 @@ fn discovery_decodes_length_prefixed_session_names_without_splitting_records() {
 }
 
 #[test]
+fn kill_capture_matches_format_shaped_names_without_targeting_them() {
+    let name = "work#(touch /tmp/ghosthub-owned)\nand-more";
+    let inventory = format!("4242\t$3\t1700000000\t0\t{}\t{name}\n", name.len());
+    let runner = RecordingRunner::new(vec![
+        instance_output(),
+        output(0, &inventory, ""),
+        instance_output(),
+        instance_output(),
+        output(0, &inventory, ""),
+        instance_output(),
+    ]);
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        runner,
+    );
+    let snapshot = discover(&host).expect("discover format-shaped session name");
+
+    let target = host
+        .capture_live_session(
+            snapshot.endpoint(),
+            snapshot.runtime(),
+            name,
+            &CancellationToken::new(),
+        )
+        .expect("capture identity from decoded inventory");
+
+    assert_eq!(target.name(), name);
+    assert_eq!(target.identity().session_id(), "$3");
+    assert!(host.runner().all_calls().iter().all(|(_, args)| {
+        args.iter()
+            .all(|argument| !argument.to_string_lossy().contains("#("))
+    }));
+}
+
+#[test]
 fn attach_plan_targets_the_fresh_stable_session_id() {
     let runner = RecordingRunner::new(vec![
         instance_output(),
@@ -1460,7 +1495,7 @@ fn kill_authority_comes_from_a_fresh_query_and_targets_stable_identity() {
         output(0, "4242\t$3\t1700000000\t0\t4\twork\n", ""),
         instance_output(),
         instance_output(),
-        output(0, "4242\t$3\t1700000000\n", ""),
+        output(0, "4242\t$3\t1700000000\t0\t4\twork\n", ""),
         instance_output(),
         instance_output(),
         output(0, "", ""),
@@ -1488,9 +1523,10 @@ fn kill_authority_comes_from_a_fresh_query_and_targets_stable_identity() {
     let calls = host.runner().calls();
     let identity_call = calls
         .iter()
-        .find(|(_, args)| args.iter().any(|argument| argument == "display-message"))
-        .expect("fresh identity query");
-    assert_eq!(argument_after(&identity_call.1, "-t"), Some("=work:"));
+        .filter(|(_, args)| args.iter().any(|argument| argument == "list-sessions"))
+        .nth(1)
+        .expect("fresh all-session identity query");
+    assert_eq!(argument_after(&identity_call.1, "-t"), None);
     let kill_call = calls
         .iter()
         .find(|(_, args)| args.iter().any(|argument| argument == "if-shell"))
@@ -1515,7 +1551,7 @@ fn replaced_session_is_not_killed_after_confirmation() {
         output(0, "4242\t$3\t1700000000\t0\t4\twork\n", ""),
         instance_output(),
         instance_output(),
-        output(0, "4242\t$3\t1700000000\n", ""),
+        output(0, "4242\t$3\t1700000000\t0\t4\twork\n", ""),
         instance_output(),
         instance_output(),
         output(0, "__ghosthub_kill_identity_mismatch_v1__\n", ""),
