@@ -1,5 +1,9 @@
 //! GPUI presentation for the Rust Ghosthub application.
 
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod windows_key;
+
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
@@ -318,7 +322,28 @@ struct TerminalPointer {
 
 #[derive(Default)]
 struct TerminalKeyboard {
-    pressed: HashMap<String, KeyInput>,
+    pressed: HashMap<TerminalKeyIdentity, KeyInput>,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+enum TerminalKeyIdentity {
+    Layout(u16),
+    Logical(String),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct LayoutKey {
+    virtual_key: u16,
+    unshifted: Option<char>,
+    shifted: Option<char>,
+    shift_required: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CanonicalTerminalKey {
+    identity: TerminalKeyIdentity,
+    modifiers: InputModifiers,
+    layout: Option<LayoutKey>,
 }
 
 impl TerminalKeyboard {
@@ -326,17 +351,17 @@ impl TerminalKeyboard {
         self.pressed.len()
     }
 
-    fn reservations_after_press(&self, key: &str) -> usize {
+    fn reservations_after_press(&self, key: &TerminalKeyIdentity) -> usize {
         self.pressed.len() + usize::from(!self.pressed.contains_key(key))
     }
 
-    fn accepts(&self, key: &str, event: InputKeyEvent) -> bool {
+    fn accepts(&self, key: &TerminalKeyIdentity, event: InputKeyEvent) -> bool {
         event == InputKeyEvent::Press || self.pressed.contains_key(key)
     }
 
     fn input_for(
         &self,
-        key: &str,
+        key: &TerminalKeyIdentity,
         event: InputKeyEvent,
         modifiers: InputModifiers,
     ) -> Option<KeyInput> {
@@ -358,14 +383,14 @@ impl TerminalKeyboard {
 
     fn finish_accepted(
         &mut self,
-        key: &str,
+        key: &TerminalKeyIdentity,
         pressed_input: Option<KeyInput>,
         event: InputKeyEvent,
     ) {
         match event {
             InputKeyEvent::Press => {
                 self.pressed.insert(
-                    key.to_owned(),
+                    key.clone(),
                     pressed_input.expect("accepted press retains its input"),
                 );
             }
@@ -777,6 +802,28 @@ impl RootView {
             return;
         }
         let keystroke = &event.keystroke;
+        if event.is_held
+            && let Some((canonical, input)) =
+                retained_key_event(&self.keyboard, keystroke, InputKeyEvent::Repeat)
+        {
+            self.send_key_event(
+                presentation_id,
+                input,
+                &canonical.identity,
+                InputKeyEvent::Repeat,
+            );
+            cx.stop_propagation();
+            return;
+        }
+        if is_toggle_sidebar_shortcut(keystroke) {
+            // The application key binding owns this chord. Leave propagation
+            // intact so GPUI dispatches ToggleSidebar, but never enqueue it as
+            // terminal input.
+            if event.is_held {
+                cx.stop_propagation();
+            }
+            return;
+        }
         if is_paste_shortcut(keystroke) {
             if !event.is_held
                 && let Some(text) = cx.read_from_clipboard().and_then(|item| item.text())
@@ -792,12 +839,13 @@ impl RootView {
         } else {
             InputKeyEvent::Press
         };
-        let input = terminal_key_input(keystroke, event).or_else(|| {
+        let canonical = canonical_terminal_key(keystroke);
+        let input = terminal_key_input_with_canonical(keystroke, event, &canonical).or_else(|| {
             self.keyboard
-                .input_for(&keystroke.key, event, input_modifiers(keystroke.modifiers))
+                .input_for(&canonical.identity, event, canonical.modifiers)
         });
         if let Some(input) = input {
-            self.send_key_event(presentation_id, input, &keystroke.key, event);
+            self.send_key_event(presentation_id, input, &canonical.identity, event);
             cx.stop_propagation();
         }
     }
@@ -812,21 +860,19 @@ impl RootView {
         if !self.presentation_accepts_input(presentation_id) {
             return;
         }
-        if is_paste_shortcut(&event.keystroke) {
-            cx.stop_propagation();
-            return;
-        }
-        if let Some(input) = self.keyboard.input_for(
-            &event.keystroke.key,
-            InputKeyEvent::Release,
-            input_modifiers(event.keystroke.modifiers),
-        ) {
+        if let Some((canonical, input)) =
+            retained_key_event(&self.keyboard, &event.keystroke, InputKeyEvent::Release)
+        {
             self.send_key_event(
                 presentation_id,
                 input,
-                &event.keystroke.key,
+                &canonical.identity,
                 InputKeyEvent::Release,
             );
+            cx.stop_propagation();
+            return;
+        }
+        if is_paste_shortcut(&event.keystroke) || is_toggle_sidebar_shortcut(&event.keystroke) {
             cx.stop_propagation();
         }
     }
@@ -991,7 +1037,7 @@ impl RootView {
         &mut self,
         presentation_id: u64,
         input: KeyInput,
-        key: &str,
+        key: &TerminalKeyIdentity,
         event: InputKeyEvent,
     ) {
         if !self.presentation_accepts_input(presentation_id) {
@@ -2447,30 +2493,229 @@ fn named_key(key: &str) -> Option<NamedKey> {
     }
 }
 
+#[cfg(test)]
 fn terminal_key_input(keystroke: &gpui::Keystroke, event: InputKeyEvent) -> Option<KeyInput> {
+    let canonical = canonical_terminal_key(keystroke);
+    terminal_key_input_with_canonical(keystroke, event, &canonical)
+}
+
+fn terminal_key_input_with_canonical(
+    keystroke: &gpui::Keystroke,
+    event: InputKeyEvent,
+    canonical: &CanonicalTerminalKey,
+) -> Option<KeyInput> {
+    if is_toggle_sidebar_shortcut(keystroke) {
+        return None;
+    }
+    terminal_owned_key_input(keystroke, event, canonical)
+}
+
+fn terminal_owned_key_input(
+    keystroke: &gpui::Keystroke,
+    event: InputKeyEvent,
+    canonical: &CanonicalTerminalKey,
+) -> Option<KeyInput> {
     // GPUI's Windows backend removes the synthetic Ctrl+Alt pair generated by
     // right-Alt on AltGr layouts, while preserving genuine Ctrl+Alt chords.
-    let modifiers = input_modifiers(keystroke.modifiers);
+    let modifiers = canonical.modifiers;
     let key_char = keystroke
         .key_char
         .as_deref()
         .filter(|text| !text.is_empty());
+    let layout_logical;
     let logical_key = if keystroke.key.eq_ignore_ascii_case("space") {
         " "
+    } else if let Some(unshifted) = canonical.layout.and_then(|layout| layout.unshifted) {
+        layout_logical = unshifted.to_string();
+        layout_logical.as_str()
     } else {
         &keystroke.key
     };
     if let Some(key) = named_key(&keystroke.key) {
         return Some(KeyInput::named(key, modifiers).with_event(event));
     }
-    let text = key_char.or_else(|| keystroke.key.eq_ignore_ascii_case("space").then_some(" "))?;
-    Some(KeyInput::text_with_key(text, logical_key, modifiers).with_event(event))
+    if let Some(text) =
+        key_char.or_else(|| keystroke.key.eq_ignore_ascii_case("space").then_some(" "))
+    {
+        return Some(KeyInput::text_with_key(text, logical_key, modifiers).with_event(event));
+    }
+    ctrl_key_input(keystroke, event, canonical)
+}
+
+fn ctrl_key_input(
+    keystroke: &gpui::Keystroke,
+    event: InputKeyEvent,
+    canonical: &CanonicalTerminalKey,
+) -> Option<KeyInput> {
+    if !keystroke.modifiers.control {
+        return None;
+    }
+    if let Some(layout) = canonical.layout
+        && let Some(logical) = layout.unshifted
+        && let Some(produced) = if canonical.modifiers.shift {
+            layout.shifted
+        } else {
+            layout.unshifted
+        }
+    {
+        return Some(
+            KeyInput::text_with_key(
+                produced.to_string(),
+                logical.to_string(),
+                canonical.modifiers,
+            )
+            .with_event(event),
+        );
+    }
+
+    let mut characters = keystroke.key.chars();
+    let raw = characters.next()?;
+    if characters.next().is_some() {
+        return None;
+    }
+
+    let (logical, produced) = if canonical.modifiers.shift {
+        (
+            raw,
+            if raw.is_ascii_lowercase() {
+                raw.to_ascii_uppercase()
+            } else {
+                shifted_ascii_key(raw).unwrap_or(raw)
+            },
+        )
+    } else {
+        (raw, raw)
+    };
+    if !is_ascii_control_chord(produced) {
+        return None;
+    }
+
+    Some(
+        KeyInput::text_with_key(
+            produced.to_string(),
+            logical.to_string(),
+            canonical.modifiers,
+        )
+        .with_event(event),
+    )
+}
+
+const fn shifted_ascii_key(character: char) -> Option<char> {
+    match character {
+        '`' => Some('~'),
+        '1' => Some('!'),
+        '2' => Some('@'),
+        '3' => Some('#'),
+        '4' => Some('$'),
+        '5' => Some('%'),
+        '6' => Some('^'),
+        '7' => Some('&'),
+        '8' => Some('*'),
+        '9' => Some('('),
+        '0' => Some(')'),
+        '-' => Some('_'),
+        '=' => Some('+'),
+        '[' => Some('{'),
+        ']' => Some('}'),
+        '\\' => Some('|'),
+        ';' => Some(':'),
+        '\'' => Some('"'),
+        ',' => Some('<'),
+        '.' => Some('>'),
+        '/' => Some('?'),
+        _ => None,
+    }
+}
+
+fn canonical_terminal_key(keystroke: &gpui::Keystroke) -> CanonicalTerminalKey {
+    canonical_terminal_key_with(keystroke, platform_layout_key)
+}
+
+fn retained_key_event(
+    keyboard: &TerminalKeyboard,
+    keystroke: &gpui::Keystroke,
+    event: InputKeyEvent,
+) -> Option<(CanonicalTerminalKey, KeyInput)> {
+    retained_key_event_with(keyboard, keystroke, event, platform_layout_key)
+}
+
+fn retained_key_event_with(
+    keyboard: &TerminalKeyboard,
+    keystroke: &gpui::Keystroke,
+    event: InputKeyEvent,
+    resolve: impl FnOnce(char) -> Option<LayoutKey>,
+) -> Option<(CanonicalTerminalKey, KeyInput)> {
+    let canonical = canonical_terminal_key_with(keystroke, resolve);
+    if !keyboard.accepts(&canonical.identity, event) {
+        return None;
+    }
+    let input = match event {
+        InputKeyEvent::Repeat => terminal_owned_key_input(keystroke, event, &canonical)
+            .or_else(|| keyboard.input_for(&canonical.identity, event, canonical.modifiers)),
+        InputKeyEvent::Release => {
+            keyboard.input_for(&canonical.identity, event, canonical.modifiers)
+        }
+        InputKeyEvent::Press => None,
+    }?;
+    Some((canonical, input))
+}
+
+fn canonical_terminal_key_with(
+    keystroke: &gpui::Keystroke,
+    resolve: impl FnOnce(char) -> Option<LayoutKey>,
+) -> CanonicalTerminalKey {
+    let mut modifiers = input_modifiers(keystroke.modifiers);
+    let layout = single_character(&keystroke.key).and_then(resolve);
+    let identity = if let Some(layout) = layout {
+        if layout.shift_required {
+            modifiers.shift = true;
+        }
+        TerminalKeyIdentity::Layout(layout.virtual_key)
+    } else {
+        TerminalKeyIdentity::Logical(keystroke.key.clone())
+    };
+    CanonicalTerminalKey {
+        identity,
+        modifiers,
+        layout,
+    }
+}
+
+fn single_character(value: &str) -> Option<char> {
+    let mut characters = value.chars();
+    let character = characters.next()?;
+    characters.next().is_none().then_some(character)
+}
+
+#[cfg(windows)]
+fn platform_layout_key(character: char) -> Option<LayoutKey> {
+    windows_key::resolve(character)
+}
+
+#[cfg(not(windows))]
+const fn platform_layout_key(_character: char) -> Option<LayoutKey> {
+    None
+}
+
+fn is_ascii_control_chord(character: char) -> bool {
+    character.is_ascii()
+        && matches!(
+            character as u8,
+            b' ' | b'2'..=b'8' | b'/' | b'?' | b'@'..=b'_' | b'`' | b'a'..=b'z'
+        )
 }
 
 fn is_paste_shortcut(keystroke: &gpui::Keystroke) -> bool {
     keystroke.modifiers.control
         && keystroke.modifiers.shift
         && keystroke.key.eq_ignore_ascii_case("v")
+}
+
+fn is_toggle_sidebar_shortcut(keystroke: &gpui::Keystroke) -> bool {
+    keystroke.modifiers.control
+        && keystroke.modifiers.shift
+        && !keystroke.modifiers.alt
+        && keystroke.key.eq_ignore_ascii_case("b")
 }
 
 const fn input_modifiers(modifiers: gpui::Modifiers) -> InputModifiers {
@@ -2643,12 +2888,14 @@ mod tests {
 
     use super::{
         APP_NAVIGATION_WIDTH, APP_TITLEBAR_HEIGHT, INPUT_BUFFER_FULL_DIAGNOSTIC,
-        INPUT_BUFFERED_DIAGNOSTIC, InputRefusal, PendingUiInput, QueuedUiInput, TerminalKeyboard,
-        TerminalPointer, TerminalResize, UI_INPUT_BYTE_CAPACITY, UI_INPUT_CAPACITY, WheelBatch,
-        active_session_selection, application_navigation_width, clear_terminal_input_state,
+        INPUT_BUFFERED_DIAGNOSTIC, InputRefusal, LayoutKey, PendingUiInput, QueuedUiInput,
+        TerminalKeyIdentity, TerminalKeyboard, TerminalPointer, TerminalResize,
+        UI_INPUT_BYTE_CAPACITY, UI_INPUT_CAPACITY, WheelBatch, active_session_selection,
+        application_navigation_width, canonical_terminal_key_with, clear_terminal_input_state,
         clears_after_input_delivery, clears_when_input_queue_is_empty, coalesce_last_resize,
-        coalesce_last_wheel, input_queue_has_capacity, named_key, normalize_cell_width,
-        queued_input_matches_presentation, terminal_cell_at_with_offset, terminal_key_input,
+        coalesce_last_wheel, input_queue_has_capacity, is_toggle_sidebar_shortcut, named_key,
+        normalize_cell_width, queued_input_matches_presentation, retained_key_event_with,
+        terminal_cell_at_with_offset, terminal_key_input, terminal_key_input_with_canonical,
         terminal_line_height, terminal_wheel_steps, transitioned_presentation, tree_sessions,
         workspace_window_title,
     };
@@ -2966,6 +3213,371 @@ mod tests {
     }
 
     #[test]
+    fn control_chords_without_key_char_reach_the_terminal_encoder() {
+        for key in ["a", "e", "2", "[", "/"] {
+            let keystroke = gpui::Keystroke {
+                modifiers: gpui::Modifiers::control(),
+                key: key.to_owned(),
+                key_char: None,
+            };
+
+            assert_eq!(
+                terminal_key_input(&keystroke, KeyEvent::Press),
+                Some(KeyInput::text_with_key(
+                    key,
+                    key,
+                    Modifiers {
+                        control: true,
+                        ..Modifiers::default()
+                    },
+                ))
+            );
+        }
+    }
+
+    #[test]
+    fn sidebar_shortcut_is_owned_by_the_application() {
+        let keystroke = gpui::Keystroke {
+            modifiers: gpui::Modifiers {
+                control: true,
+                shift: true,
+                ..gpui::Modifiers::default()
+            },
+            key: "b".to_owned(),
+            key_char: None,
+        };
+
+        assert!(is_toggle_sidebar_shortcut(&keystroke));
+        assert_eq!(terminal_key_input(&keystroke, KeyEvent::Press), None);
+        assert_eq!(terminal_key_input(&keystroke, KeyEvent::Repeat), None);
+        assert_eq!(terminal_key_input(&keystroke, KeyEvent::Release), None);
+    }
+
+    #[test]
+    fn retained_ctrl_key_events_precede_sidebar_shortcut_classification() {
+        let layout = LayoutKey {
+            virtual_key: 0x42,
+            unshifted: Some('b'),
+            shifted: Some('B'),
+            shift_required: false,
+        };
+        let press = gpui::Keystroke {
+            modifiers: gpui::Modifiers::control(),
+            key: "b".to_owned(),
+            key_char: None,
+        };
+        let shortcut_shaped_event = gpui::Keystroke {
+            modifiers: gpui::Modifiers {
+                control: true,
+                shift: true,
+                ..gpui::Modifiers::default()
+            },
+            key: "b".to_owned(),
+            key_char: None,
+        };
+        assert!(is_toggle_sidebar_shortcut(&shortcut_shaped_event));
+
+        let press_key = canonical_terminal_key_with(&press, |_| Some(layout));
+        let press_input = terminal_key_input_with_canonical(&press, KeyEvent::Press, &press_key)
+            .expect("Ctrl+B is terminal input");
+        let mut keyboard = TerminalKeyboard::default();
+        keyboard.finish_accepted(
+            &press_key.identity,
+            Some(press_input.clone()),
+            KeyEvent::Press,
+        );
+
+        let (repeat_key, repeat_input) =
+            retained_key_event_with(&keyboard, &shortcut_shaped_event, KeyEvent::Repeat, |_| {
+                Some(layout)
+            })
+            .expect("the retained terminal press owns its repeats");
+        assert_eq!(repeat_key.identity, press_key.identity);
+        assert_eq!(
+            repeat_input,
+            KeyInput::text_with_key(
+                "B",
+                "b",
+                Modifiers {
+                    shift: true,
+                    control: true,
+                    ..Modifiers::default()
+                },
+            )
+            .with_event(KeyEvent::Repeat)
+        );
+        keyboard.finish_accepted(&repeat_key.identity, None, KeyEvent::Repeat);
+        assert_eq!(keyboard.reserved_releases(), 1);
+
+        let (release_key, release_input) =
+            retained_key_event_with(&keyboard, &shortcut_shaped_event, KeyEvent::Release, |_| {
+                Some(layout)
+            })
+            .expect("the retained terminal press owns its release");
+        assert_eq!(release_key.identity, press_key.identity);
+        assert_eq!(
+            release_input,
+            KeyInput::text_with_key(
+                "b",
+                "b",
+                Modifiers {
+                    shift: true,
+                    control: true,
+                    ..Modifiers::default()
+                },
+            )
+            .with_event(KeyEvent::Release)
+        );
+        keyboard.finish_accepted(&release_key.identity, None, KeyEvent::Release);
+        assert_eq!(keyboard.reserved_releases(), 0);
+        assert!(
+            retained_key_event_with(&keyboard, &shortcut_shaped_event, KeyEvent::Repeat, |_| {
+                Some(layout)
+            },)
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn shifted_control_fallback_preserves_kitty_key_parts() {
+        let expected_modifiers = Modifiers {
+            shift: true,
+            control: true,
+            ..Modifiers::default()
+        };
+        for (key, modifiers, produced, logical, layout) in [
+            (
+                "a",
+                gpui::Modifiers {
+                    control: true,
+                    shift: true,
+                    ..gpui::Modifiers::default()
+                },
+                "A",
+                "a",
+                LayoutKey {
+                    virtual_key: 0x41,
+                    unshifted: Some('a'),
+                    shifted: Some('A'),
+                    shift_required: false,
+                },
+            ),
+            // GPUI folds Shift into Windows punctuation keys and clears the
+            // modifier before delivering the keystroke.
+            (
+                "?",
+                gpui::Modifiers::control(),
+                "?",
+                "/",
+                LayoutKey {
+                    virtual_key: 0xbf,
+                    unshifted: Some('/'),
+                    shifted: Some('?'),
+                    shift_required: true,
+                },
+            ),
+            (
+                "_",
+                gpui::Modifiers::control(),
+                "_",
+                "-",
+                LayoutKey {
+                    virtual_key: 0xbd,
+                    unshifted: Some('-'),
+                    shifted: Some('_'),
+                    shift_required: true,
+                },
+            ),
+            // Preserve the same result if a backend retains the modifier and
+            // reports the unshifted logical key instead.
+            (
+                "/",
+                gpui::Modifiers {
+                    control: true,
+                    shift: true,
+                    ..gpui::Modifiers::default()
+                },
+                "?",
+                "/",
+                LayoutKey {
+                    virtual_key: 0xbf,
+                    unshifted: Some('/'),
+                    shifted: Some('?'),
+                    shift_required: false,
+                },
+            ),
+        ] {
+            let keystroke = gpui::Keystroke {
+                modifiers,
+                key: key.to_owned(),
+                key_char: None,
+            };
+            let canonical = canonical_terminal_key_with(&keystroke, |_| Some(layout));
+
+            assert_eq!(
+                terminal_key_input_with_canonical(&keystroke, KeyEvent::Press, &canonical),
+                Some(KeyInput::text_with_key(
+                    produced,
+                    logical,
+                    expected_modifiers
+                ))
+            );
+        }
+    }
+
+    #[test]
+    fn no_layout_fallback_shifts_ascii_control_punctuation() {
+        let modifiers = gpui::Modifiers {
+            control: true,
+            shift: true,
+            ..gpui::Modifiers::default()
+        };
+        let expected_modifiers = Modifiers {
+            control: true,
+            shift: true,
+            ..Modifiers::default()
+        };
+        for (logical, produced) in [("-", "_"), ("/", "?")] {
+            let keystroke = gpui::Keystroke {
+                modifiers,
+                key: logical.to_owned(),
+                key_char: None,
+            };
+            let canonical = canonical_terminal_key_with(&keystroke, |_| None);
+
+            assert_eq!(canonical.layout, None);
+            assert_eq!(
+                terminal_key_input_with_canonical(&keystroke, KeyEvent::Press, &canonical),
+                Some(KeyInput::text_with_key(
+                    produced,
+                    logical,
+                    expected_modifiers,
+                ))
+            );
+        }
+    }
+
+    #[test]
+    fn layout_identity_pairs_non_us_shifted_press_and_release() {
+        // German layouts place '+' and '*' on one key, unlike the fixed US
+        // punctuation pairs. The layout resolver supplies both characters and
+        // a virtual key that remains stable when Shift changes before key-up.
+        let shifted = LayoutKey {
+            virtual_key: 0xbb,
+            unshifted: Some('+'),
+            shifted: Some('*'),
+            shift_required: true,
+        };
+        let unshifted = LayoutKey {
+            shift_required: false,
+            ..shifted
+        };
+        let press = gpui::Keystroke {
+            modifiers: gpui::Modifiers::control(),
+            key: "*".to_owned(),
+            key_char: None,
+        };
+        let release = gpui::Keystroke {
+            modifiers: gpui::Modifiers::control(),
+            key: "+".to_owned(),
+            key_char: None,
+        };
+        let press_key = canonical_terminal_key_with(&press, |_| Some(shifted));
+        let release_key = canonical_terminal_key_with(&release, |_| Some(unshifted));
+
+        assert_eq!(press_key.identity, release_key.identity);
+        assert_eq!(press_key.identity, TerminalKeyIdentity::Layout(0xbb));
+        assert_eq!(
+            terminal_key_input_with_canonical(&press, KeyEvent::Press, &press_key),
+            Some(KeyInput::text_with_key(
+                "*",
+                "+",
+                Modifiers {
+                    shift: true,
+                    control: true,
+                    ..Modifiers::default()
+                }
+            ))
+        );
+
+        let mut keyboard = TerminalKeyboard::default();
+        let input = terminal_key_input_with_canonical(&press, KeyEvent::Press, &press_key)
+            .expect("layout-resolved control key is representable");
+        keyboard.finish_accepted(&press_key.identity, Some(input.clone()), KeyEvent::Press);
+        assert!(keyboard.accepts(&release_key.identity, KeyEvent::Release));
+        assert_eq!(
+            keyboard.input_for(
+                &release_key.identity,
+                KeyEvent::Release,
+                release_key.modifiers,
+            ),
+            Some(
+                KeyInput::text_with_key(
+                    "*",
+                    "+",
+                    Modifiers {
+                        control: true,
+                        ..Modifiers::default()
+                    },
+                )
+                .with_event(KeyEvent::Release)
+            )
+        );
+        keyboard.finish_accepted(&release_key.identity, None, KeyEvent::Release);
+        assert_eq!(keyboard.reserved_releases(), 0);
+    }
+
+    #[test]
+    fn altgr_text_keeps_virtual_key_identity_after_altgr_release() {
+        let altgr_layout = LayoutKey {
+            virtual_key: 0x51,
+            unshifted: None,
+            shifted: None,
+            shift_required: false,
+        };
+        let plain_layout = LayoutKey {
+            virtual_key: 0x51,
+            unshifted: Some('q'),
+            shifted: Some('Q'),
+            shift_required: false,
+        };
+        let press = gpui::Keystroke {
+            modifiers: gpui::Modifiers::default(),
+            key: "@".to_owned(),
+            key_char: Some("@".to_owned()),
+        };
+        let release = gpui::Keystroke {
+            modifiers: gpui::Modifiers::default(),
+            key: "q".to_owned(),
+            key_char: None,
+        };
+        let press_key = canonical_terminal_key_with(&press, |_| Some(altgr_layout));
+        let press_input = terminal_key_input_with_canonical(&press, KeyEvent::Press, &press_key)
+            .expect("AltGr text comes from key_char");
+        assert_eq!(press_key.identity, TerminalKeyIdentity::Layout(0x51));
+        assert_eq!(
+            press_input,
+            KeyInput::text_with_key("@", "@", Modifiers::default())
+        );
+
+        let mut keyboard = TerminalKeyboard::default();
+        keyboard.finish_accepted(
+            &press_key.identity,
+            Some(press_input.clone()),
+            KeyEvent::Press,
+        );
+        let (release_key, release_input) =
+            retained_key_event_with(&keyboard, &release, KeyEvent::Release, |_| {
+                Some(plain_layout)
+            })
+            .expect("the virtual key still owns the release after AltGr is released");
+        assert_eq!(release_key.identity, press_key.identity);
+        assert_eq!(release_input, press_input.with_event(KeyEvent::Release));
+        keyboard.finish_accepted(&release_key.identity, None, KeyEvent::Release);
+        assert_eq!(keyboard.reserved_releases(), 0);
+    }
+
+    #[test]
     fn pressed_mouse_button_releases_at_the_last_terminal_cell() {
         let mut pointer = TerminalPointer::default();
 
@@ -3167,29 +3779,31 @@ mod tests {
     fn accepted_key_press_reserves_capacity_until_release_is_accepted() {
         let mut keyboard = TerminalKeyboard::default();
         let press = KeyInput::text_with_key("!", "1", Modifiers::default());
+        let a = TerminalKeyIdentity::Layout(0x41);
+        let b = TerminalKeyIdentity::Layout(0x42);
         let release_without_text = gpui::Keystroke {
             modifiers: gpui::Modifiers::default(),
             key: "a".to_owned(),
             key_char: None,
         };
 
-        assert!(keyboard.accepts("a", KeyEvent::Press));
-        assert!(!keyboard.accepts("a", KeyEvent::Repeat));
-        assert!(!keyboard.accepts("a", KeyEvent::Release));
-        assert_eq!(keyboard.reservations_after_press("a"), 1);
-        keyboard.finish_accepted("a", Some(press.clone()), KeyEvent::Press);
+        assert!(keyboard.accepts(&a, KeyEvent::Press));
+        assert!(!keyboard.accepts(&a, KeyEvent::Repeat));
+        assert!(!keyboard.accepts(&a, KeyEvent::Release));
+        assert_eq!(keyboard.reservations_after_press(&a), 1);
+        keyboard.finish_accepted(&a, Some(press.clone()), KeyEvent::Press);
         assert_eq!(keyboard.reserved_releases(), 1);
-        assert_eq!(keyboard.reservations_after_press("a"), 1);
-        assert!(keyboard.accepts("a", KeyEvent::Repeat));
-        assert!(keyboard.accepts("a", KeyEvent::Release));
-        assert!(!keyboard.accepts("b", KeyEvent::Repeat));
-        assert!(!keyboard.accepts("b", KeyEvent::Release));
+        assert_eq!(keyboard.reservations_after_press(&a), 1);
+        assert!(keyboard.accepts(&a, KeyEvent::Repeat));
+        assert!(keyboard.accepts(&a, KeyEvent::Release));
+        assert!(!keyboard.accepts(&b, KeyEvent::Repeat));
+        assert!(!keyboard.accepts(&b, KeyEvent::Release));
         let release_modifiers = Modifiers {
             alt: true,
             ..Modifiers::default()
         };
         assert_eq!(
-            keyboard.input_for("a", KeyEvent::Release, release_modifiers),
+            keyboard.input_for(&a, KeyEvent::Release, release_modifiers),
             Some(
                 KeyInput::text_with_key("!", "1", release_modifiers).with_event(KeyEvent::Release)
             )
@@ -3199,12 +3813,12 @@ mod tests {
             None
         );
 
-        keyboard.finish_accepted("a", None, KeyEvent::Repeat);
+        keyboard.finish_accepted(&a, None, KeyEvent::Repeat);
         assert_eq!(keyboard.reserved_releases(), 1);
-        keyboard.finish_accepted("a", None, KeyEvent::Release);
+        keyboard.finish_accepted(&a, None, KeyEvent::Release);
         assert_eq!(keyboard.reserved_releases(), 0);
-        assert!(!keyboard.accepts("a", KeyEvent::Repeat));
-        assert!(!keyboard.accepts("a", KeyEvent::Release));
+        assert!(!keyboard.accepts(&a, KeyEvent::Repeat));
+        assert!(!keyboard.accepts(&a, KeyEvent::Release));
     }
 
     #[test]
