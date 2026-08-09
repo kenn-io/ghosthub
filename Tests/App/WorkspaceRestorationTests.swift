@@ -6,6 +6,7 @@ import GhosthubTmux
 import GhosthubUI
 import GhosthubWorkspace
 import GhosthubSettings
+import Synchronization
 import Testing
 @testable import GhosthubApp
 
@@ -404,6 +405,7 @@ struct WorkspaceRestorationTests {
         let command = try #require(store.lastCommand)
         let expectedCommand = try HerdrAttachmentInfo(
             sessionName: "editor",
+            isDefault: false,
             host: .local
         ).attachCommand(herdrPath: "/usr/bin/herdr")
         #expect(command == expectedCommand)
@@ -473,6 +475,68 @@ struct WorkspaceRestorationTests {
             model.activeBorrowedHerdrSelection == target
         }
         #expect(inventory.attemptCount > attemptsBeforeCompletion)
+        await model.shutdown()
+    }
+
+    @Test("Herdr restoration rejects SSH route drift during validation")
+    func herdrRestorationRejectsSSHRouteDrift() async throws {
+        let environment = try setupRemoteEnvironment()
+        var snapshot = environment.snapshot
+        let running = HerdrSessionSummary(
+            name: "editor",
+            isDefault: false,
+            state: .running
+        )
+        snapshot.hosts[0].herdrAvailable = true
+        snapshot.hosts[0].herdrSessions = [running]
+        let frozen = SSHConnectionArgumentsSnapshot(arguments: [
+            "-F", "/tmp/frozen-config", "dev@build.example.test",
+        ])
+        let changed = SSHConnectionArgumentsSnapshot(arguments: [
+            "-F", "/tmp/changed-config", "dev@other.example.test",
+        ])
+        let connectionReads = Mutex(0)
+        let store = RecordingNativeSessionSurfaceStore()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: UUID(),
+            snapshot: snapshot,
+            nativeHerdrSurfaceStore: store,
+            nativeHerdrPathProvider: { _ in .success("/usr/bin/herdr") },
+            herdrSSHConnectionSnapshotProvider: { _ in
+                connectionReads.withLock {
+                    $0 += 1
+                    return $0 == 1 ? frozen : changed
+                }
+            },
+            herdrSessionDiscovery: { _ in .available([running]) },
+            herdrSessionValidationDiscovery: { _, _ in
+                .available([running])
+            }
+        )
+        let state = WorkspaceWindowState(
+            windowID: UUID(),
+            navigation: WorkspaceNavigationDescriptor(
+                hostKey: environment.host.configKey,
+                projectKey: nil,
+                worktreeGeneration: nil
+            ),
+            tmux: nil,
+            herdr: WorkspaceHerdrDescriptor(
+                hostKey: environment.host.configKey,
+                sessionName: running.name
+            )
+        )
+
+        model.startHerdrSessionDiscovery()
+        model.beginRestoration(state)
+        await waitUntilMainActor {
+            !model.isWorkspaceRestorationPending
+        }
+
+        #expect(connectionReads.withLock { $0 } >= 2)
+        #expect(model.activeBorrowedHerdrSelection == nil)
+        #expect(store.requestedConfigurations.isEmpty)
         await model.shutdown()
     }
 

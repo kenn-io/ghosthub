@@ -577,7 +577,7 @@ struct WorkspaceHerdrPresentationTests {
         #expect(store.requestedConfigurations.count == 2)
         #expect(store.requestedConfigurations.last?.command?.contains(
             "--session"
-        ) == true)
+        ) == false)
         await model.shutdown()
     }
 
@@ -631,6 +631,9 @@ struct WorkspaceHerdrPresentationTests {
             environment.snapshot.hosts[0]
         ))
         #expect(route.1 == snapshot.arguments)
+        #expect(store.requestedConfigurations.last?.command?.contains(
+            "--session"
+        ) == false)
         await model.shutdown()
     }
 

@@ -7,10 +7,16 @@ public enum HerdrAttachmentLaunchMode: Equatable, Sendable {
 
 public struct HerdrAttachmentInfo: Equatable, Sendable {
     public let sessionName: String
+    public let isDefault: Bool
     public let host: CommandHost
 
-    public init(sessionName: String, host: CommandHost) {
+    public init(
+        sessionName: String,
+        isDefault: Bool,
+        host: CommandHost
+    ) {
         self.sessionName = sessionName
+        self.isDefault = isDefault
         self.host = host
     }
 
@@ -62,7 +68,7 @@ public struct HerdrAttachmentInfo: Equatable, Sendable {
         let arguments: [String] = switch launchMode {
         case .attachExisting:
             [herdrPath, "session", "attach", sessionName]
-        case .launchOrAttach where sessionName == "default":
+        case .launchOrAttach where isDefault:
             [herdrPath]
         case .launchOrAttach:
             [herdrPath, "--session", sessionName]

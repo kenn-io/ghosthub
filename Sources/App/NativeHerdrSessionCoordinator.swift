@@ -26,6 +26,7 @@ private struct NativeHerdrSessionKey: Hashable {
 private struct NativeHerdrAttachment {
     var id: UUID
     var host: CommandHost
+    var isDefault: Bool
     var herdrPath: String
     var launchMode: HerdrAttachmentLaunchMode
     var sshConnectionSnapshot: SSHConnectionArgumentsSnapshot
@@ -144,6 +145,7 @@ final class NativeHerdrSessionCoordinator {
         hostID: UUID,
         name: String,
         host: CommandHost,
+        isDefault: Bool = false,
         launchMode: HerdrAttachmentLaunchMode = .attachExisting,
         sshConnectionSnapshot: SSHConnectionArgumentsSnapshot? = nil
     ) -> BorrowedHerdrSessionHandle {
@@ -214,6 +216,7 @@ final class NativeHerdrSessionCoordinator {
             self?.finishAttach(
                 handle: handle,
                 host: host,
+                isDefault: isDefault,
                 launchMode: launchMode,
                 sshConnectionSnapshot: sshConnectionSnapshot,
                 resolution: resolution
@@ -225,6 +228,7 @@ final class NativeHerdrSessionCoordinator {
     private func finishAttach(
         handle: BorrowedHerdrSessionHandle,
         host: CommandHost,
+        isDefault: Bool,
         launchMode: HerdrAttachmentLaunchMode,
         sshConnectionSnapshot: SSHConnectionArgumentsSnapshot,
         resolution: Result<String, HerdrCommandError>
@@ -242,6 +246,7 @@ final class NativeHerdrSessionCoordinator {
             attachments[handle.id] = NativeHerdrAttachment(
                 id: UUID(),
                 host: host,
+                isDefault: isDefault,
                 herdrPath: path,
                 launchMode: launchMode,
                 sshConnectionSnapshot: sshConnectionSnapshot,
@@ -335,6 +340,7 @@ final class NativeHerdrSessionCoordinator {
         do {
             command = try HerdrAttachmentInfo(
                 sessionName: handle.name,
+                isDefault: attachment.isDefault,
                 host: attachment.host
             ).attachCommand(
                 herdrPath: attachment.herdrPath,

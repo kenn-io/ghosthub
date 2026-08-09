@@ -573,6 +573,8 @@ final class WorkspaceSceneModel: ObservableObject {
     private var protectedRestorationProbeTask: Task<Void, Never>?
     private var protectedRestorationProbeID: UUID?
     private var protectedRestorationRefreshPending = false
+    private var herdrRestorationValidationTask: Task<Void, Never>?
+    private var herdrRestorationValidationID: UUID?
     var activeBorrowedTmuxSessionIsConnected: Bool {
         guard let handle = activeBorrowedTmuxHandle else {
             return false
@@ -1541,6 +1543,9 @@ final class WorkspaceSceneModel: ObservableObject {
         protectedRestorationProbeTask = nil
         protectedRestorationProbeID = nil
         protectedRestorationRefreshPending = false
+        herdrRestorationValidationTask?.cancel()
+        herdrRestorationValidationTask = nil
+        herdrRestorationValidationID = nil
     }
 
     func restorationState(windowID: UUID) -> WorkspaceWindowState {
@@ -1602,10 +1607,11 @@ final class WorkspaceSceneModel: ObservableObject {
 
     private func attemptPendingRestoration() {
         guard let pendingRestoration else { return }
-        guard protectedRestorationProbeTask == nil else {
+        if protectedRestorationProbeTask != nil {
             protectedRestorationRefreshPending = true
             return
         }
+        guard herdrRestorationValidationTask == nil else { return }
         switch WorkspaceWindowRestorationResolver.resolve(
             pendingRestoration,
             in: snapshot,
@@ -1619,9 +1625,9 @@ final class WorkspaceSceneModel: ObservableObject {
                 applyRestoredSelection(resolvedSelection)
             }
         case let .ready(resolvedSelection, presentation):
-            applyRestoredSelection(resolvedSelection)
             switch presentation {
             case let .tmux(tmuxSelection):
+                applyRestoredSelection(resolvedSelection)
                 _ = presentTmuxSession(
                     tmuxSelection,
                     launchMode: .attach,
@@ -1629,10 +1635,14 @@ final class WorkspaceSceneModel: ObservableObject {
                 )
                 suppressesAutomaticWorktreeSessionOpen = false
             case let .herdr(herdrSelection):
-                _ = presentHerdrSession(herdrSelection)
-                suppressesAutomaticWorktreeSessionOpen = false
+                beginHerdrRestorationValidation(
+                    selection: resolvedSelection,
+                    herdrSelection: herdrSelection,
+                    expectedState: pendingRestoration
+                )
+                return
             case nil:
-                break
+                applyRestoredSelection(resolvedSelection)
             }
             self.pendingRestoration = nil
             isWorkspaceRestorationPending = false
@@ -1643,6 +1653,78 @@ final class WorkspaceSceneModel: ObservableObject {
                 expectedState: pendingRestoration
             )
         }
+    }
+
+    private func beginHerdrRestorationValidation(
+        selection resolvedSelection: WorkspaceSelection,
+        herdrSelection: WorkspaceHerdrSessionSelection,
+        expectedState: WorkspaceWindowState
+    ) {
+        guard herdrRestorationValidationTask == nil else { return }
+        let validationID = UUID()
+        herdrRestorationValidationID = validationID
+        herdrRestorationValidationTask = Task { [weak self] in
+            guard let self else { return }
+            let validation: HerdrSessionValidation
+            do {
+                validation = try await revalidatedHerdrSession(
+                    herdrSelection
+                )
+            } catch {
+                failHerdrRestorationValidation(
+                    validationID,
+                    expectedState: expectedState
+                )
+                return
+            }
+            guard !Task.isCancelled,
+                  herdrRestorationValidationID == validationID,
+                  pendingRestoration == expectedState,
+                  case let .ready(currentSelection, currentPresentation) =
+                  WorkspaceWindowRestorationResolver.resolve(
+                      expectedState,
+                      in: snapshot,
+                      herdrFreshHostIDs: herdrFreshHostIDs,
+                      pendingHerdrSessions: pendingHerdrSessionSelections
+                  ),
+                  case let .herdr(currentHerdrSelection) =
+                  currentPresentation,
+                  currentSelection == resolvedSelection,
+                  currentHerdrSelection == herdrSelection,
+                  validation.session?.name == herdrSelection.name,
+                  validation.session?.state == .running
+            else {
+                failHerdrRestorationValidation(
+                    validationID,
+                    expectedState: expectedState
+                )
+                return
+            }
+            herdrRestorationValidationTask = nil
+            herdrRestorationValidationID = nil
+            applyRestoredSelection(resolvedSelection)
+            guard presentHerdrSession(
+                herdrSelection,
+                validation: validation
+            ) != nil else {
+                cancelPendingRestoration()
+                return
+            }
+            pendingRestoration = nil
+            isWorkspaceRestorationPending = false
+            suppressesAutomaticWorktreeSessionOpen = false
+        }
+    }
+
+    private func failHerdrRestorationValidation(
+        _ validationID: UUID,
+        expectedState: WorkspaceWindowState
+    ) {
+        guard herdrRestorationValidationID == validationID else { return }
+        herdrRestorationValidationTask = nil
+        herdrRestorationValidationID = nil
+        guard pendingRestoration == expectedState else { return }
+        cancelPendingRestoration()
     }
 
     private func beginProtectedRestorationProbe(
@@ -1736,6 +1818,7 @@ final class WorkspaceSceneModel: ObservableObject {
         isShutDown = true
         sceneActivityGeneration &+= 1
         userNavigationRevision &+= 1
+        cancelPendingRestoration()
         for presentation in retainedTmuxPresentations.values {
             cancelTmuxReconnect(presentation)
         }
@@ -5020,6 +5103,7 @@ final class WorkspaceSceneModel: ObservableObject {
             hostID: selection.hostID,
             name: selection.name,
             host: attachmentHost,
+            isDefault: validation?.session?.isDefault ?? false,
             launchMode: launchMode,
             sshConnectionSnapshot: validation?.connection
         )

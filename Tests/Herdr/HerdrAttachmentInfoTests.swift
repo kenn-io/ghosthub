@@ -9,6 +9,7 @@ struct HerdrAttachmentInfoTests {
     func localAttachment() throws {
         let info = HerdrAttachmentInfo(
             sessionName: "review 'alpha'",
+            isDefault: false,
             host: .local
         )
 
@@ -37,6 +38,7 @@ struct HerdrAttachmentInfoTests {
     func launchIntent() throws {
         let named = HerdrAttachmentInfo(
             sessionName: "review",
+            isDefault: false,
             host: .local
         )
         let existing = try named.attachCommand(
@@ -48,7 +50,16 @@ struct HerdrAttachmentInfoTests {
             launchMode: .launchOrAttach
         )
         let defaultLaunch = try HerdrAttachmentInfo(
+            sessionName: "api",
+            isDefault: true,
+            host: .local
+        ).attachCommand(
+            herdrPath: "/bin/echo",
+            launchMode: .launchOrAttach
+        )
+        let ordinaryNamedDefault = try HerdrAttachmentInfo(
             sessionName: "default",
+            isDefault: false,
             host: .local
         ).attachCommand(
             herdrPath: "/bin/echo",
@@ -58,12 +69,14 @@ struct HerdrAttachmentInfoTests {
         #expect(try output(of: existing) == "session attach review\n")
         #expect(try output(of: launch) == "--session review\n")
         #expect(try output(of: defaultLaunch) == "\n")
+        #expect(try output(of: ordinaryNamedDefault) == "--session default\n")
     }
 
     @Test("local attachment survives libghostty's exec shell wrapper")
     func localAttachmentThroughSurfaceShell() throws {
         let info = HerdrAttachmentInfo(
             sessionName: "default",
+            isDefault: true,
             host: .local
         )
         let command = try info.attachCommand(herdrPath: "/usr/bin/true")
@@ -81,6 +94,7 @@ struct HerdrAttachmentInfoTests {
     func remoteAttachment() throws {
         let info = HerdrAttachmentInfo(
             sessionName: "review 'alpha'",
+            isDefault: false,
             host: .ssh(SSHHostInfo(
                 user: "dev",
                 hostname: "build.example",
@@ -113,6 +127,7 @@ struct HerdrAttachmentInfoTests {
     func windowsUnsupported() {
         let info = HerdrAttachmentInfo(
             sessionName: "default",
+            isDefault: true,
             host: .ssh(SSHHostInfo(
                 user: nil,
                 hostname: "windows.example",
