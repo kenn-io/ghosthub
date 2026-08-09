@@ -36,7 +36,7 @@ fn empty_inventory_copy_names_the_socket_namespace() {
 
     assert_eq!(
         empty_inventory_text(&host),
-        "No tmux server is running in Ubuntu using /run/user/1000/tmux. Review WSL host settings or start a tmux session, then choose Refresh."
+        "No tmux server is running in Ubuntu using /run/user/1000/tmux. Use + beside the host to create one, or review WSL host settings."
     );
 }
 

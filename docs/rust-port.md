@@ -151,6 +151,16 @@ Expiry cancels the active generation and discards late publication. Retry
 supersedes the earlier generation without changing the configured distro,
 binary, socket directory, or identity rules.
 
+When a Ghosthub window becomes active, workspace refreshes a ready WSL host so
+sessions created or removed in another terminal appear without an explicit
+Refresh click. Connecting, disconnected, and unavailable hosts do not start an
+activation retry; their existing Cancel, Connect, and Retry actions remain
+authoritative. Refresh retains the last published session rows while work is in
+flight and reuses the admitted WSL host capability, including its endpoint- and
+runtime-bound tmux verification cache. A resolved default-distro change always
+requires fresh admission even when two WSL distributions report the same
+kernel boot ID and PID 1 start time.
+
 Each host command runs in a disposable descendant container: a kill-on-close
 Job Object on Windows and a dedicated process group on Unix. Stdout and stderr
 travel through a bounded fixed-chunk channel into capped capture buffers. On
@@ -383,10 +393,12 @@ VerifiedKwtHelper requires the exact revision, verified SHA-256, and
 revision-scoped managed path.
 
 Cached inventory identity is display-only. LiveIdentity has private fields and
-can be produced only by a fresh query immediately before a destructive
-operation. Conditional kill compares server PID, session ID, and creation
-timestamp. Store cannot depend on the session crate and cannot serialize
-runtime authority.
+can be produced only from a fresh, length-framed all-session query immediately
+before a destructive operation. Host matches the decoded display name in Rust;
+the name never crosses back into a tmux target expression. Conditional kill
+then targets the captured session ID while comparing server PID, session ID,
+and creation timestamp. Store cannot depend on the session crate and cannot
+serialize runtime authority.
 
 ### Presentation registry
 
@@ -693,11 +705,28 @@ command. The chrome is shaped for additional admitted local mux hosts, but
 Slice 1 exposes only WSL tmux; psmux remains rejection evidence until it
 satisfies the same capability bar.
 
+The active presentation keeps a detach action that only closes its ordinary
+client. Every session in the current live inventory separately exposes Kill
+Session, including sessions that are not open. Kill performs a fresh WSL
+runtime and tmux identity query before showing confirmation for the exact
+endpoint. Approval carries that non-persistable authority into one tmux
+conditional that compares server PID, session ID, and creation time, then
+kills by the captured stable session ID only on a match. Cancellation changes
+nothing; lookup, runtime, identity, and command failures leave the presentation
+open. A successful kill removes only the matching active or retained
+presentation and refreshes inventory. Kill completion rechecks the active
+identity under the navigation lock before detaching, so a concurrent switch
+cannot close an unrelated presentation. This action never shares the ordinary
+detach path. Cached rows remain visible while a host is unavailable, but only
+retained presentations can be reopened until the host reconnects.
+
 The Windows shell draws one compact title bar in the same visual plane as the
 application chrome. It retains the native window controls and dynamic
 session/endpoint title, and exposes a sidebar button there. `Ctrl+Shift+B`
 toggles the sidebar without consuming tmux's `Ctrl+B` prefix; terminal geometry
-and pointer mapping update with the visible content area.
+and pointer mapping update with the visible content area. Sidebar host entries
+use one compact line for the logical host name; distro configuration is not
+duplicated beneath it and remains visible only in endpoint-relevant contexts.
 
 The flow resolves and verifies the exact mux binary, discovers live identity,
 reserves the presentation, and launches an AttachPlan whose single tmux
@@ -706,6 +735,33 @@ time before its matching branch executes `attach-session -E`. It then promotes
 the reservation, renders through surface, disconnects on close, and reattaches
 to the surviving identity from a fresh process. An identity mismatch exits
 without attaching and becomes a classified refresh diagnostic.
+
+The same local WSL slice exposes explicit bare-session creation from the host
+tree. The dialog applies the shipped 1-100 character tmux-name rules,
+additionally rejects `#` before it can reach tmux format evaluation, and
+rejects names already present in current inventory. Discovered sessions are
+unaffected and remain attachable by live identity. Its title, validation copy,
+terminal-marked input, and compact actions present only task-relevant content;
+distro and lifecycle explanations are not shown in routine workflow chrome.
+The dialog
+pins its selected WSL endpoint and remains usable while that already-admitted
+host performs a background inventory refresh; a disconnected, unavailable, or
+changed endpoint must be selected again. Workspace performs one
+fresh admitted-host read, terminal consumes a non-cloneable CreateOnce whose
+ordinary client executes `new-session -A -E -s <name>`, and host captures the
+resulting runtime, server, session ID, and creation time. Admission proves
+`xterm-256color` on that same atomic client shape before caching it for
+creation; if the distro lacks that terminfo entry, admission proves `xterm`
+instead and creation immediately displays the reduced-color notice. Creation
+never retries after consuming its authority. From that point the presentation
+holds only attach authority. A race that creates the same name
+after validation attaches to that exact existing session without changing its
+layout. A failure after launch may detach and report the result but never
+reruns creation or kills the session. Until promotion to attach authority,
+workspace navigation owns a cancellable pending-creation reservation; choosing
+another session or detaching restores navigation immediately and invalidates
+the background task without gaining authority to destroy any session it may
+have created.
 
 Slice 1 reads font family, font size, and theme through:
 
@@ -745,9 +801,10 @@ clipboard-write = true
 Every field is optional. `clipboard-write` governs remote OSC 52 writes;
 remote OSC 52 reads remain denied regardless of configuration.
 
-Windows manual acceptance requires WSL2, tmux, and an existing session started
-outside Ghosthub. Setup is documented as deterministic commands rather than an
-implicit prerequisite. A missing server is an empty inventory, not an error.
+Windows manual acceptance requires WSL2 and tmux. Ghosthub can create the first
+session itself; setup remains documented as deterministic commands for tests
+that exercise discovery of an externally created session. A missing server is
+an empty inventory, not an error.
 
 The milestone proves:
 
@@ -757,6 +814,9 @@ The milestone proves:
 - buffers remain bounded and UI never blocks on PTY or store work
 - reselecting the same session in one window refuses a second client and
   focuses the existing terminal as Ghosthub policy rather than a tmux limit
+- explicit local creation consumes one atomic `new-session -A` authority,
+  publishes the fresh live identity, and survives detach without rerunning
+  creation
 - client close, graceful app exit, and forced app death preserve the server
   and permit fresh-process reattachment to the exact same live identity
 - failed relay-job membership fully unwinds the spawned attachment before the
@@ -770,7 +830,7 @@ Cross-window focus arbitration is deferred until multi-window delivery.
 
 Slice 1 includes policy-controlled OSC 52 writes to the Windows clipboard,
 empty responses for remote OSC 52 reads, and explicit clipboard paste with
-bracketed framing. It excludes IME composition, dead keys, creation, kill,
+bracketed framing. It excludes IME composition, dead keys,
 kwt inventory, worktree mutation, remote SSH, managed-helper
 installation, native Linux product UI, persistence/restoration, multiple
 windows, Console Panel, telemetry, updates, packaging, and acceptance
@@ -794,13 +854,32 @@ Rust keeps the same separation:
 
 - cargo test-contracts is the fast manifest, parsing, capability, plan,
   sidebar, registry, and architecture gate
-- test-rust-live-attach launches a real isolated tmux server inside a WSL2
+- `make rust-test-wsl-live` launches real isolated tmux servers inside a WSL2
   distro plus PTYs and supervisor children for detach and app-death survival
 
 Cargo test binaries own cross-platform orchestration. Make targets are thin
 wrappers; Windows CI invokes the same Cargo tests without POSIX shell
 scaffolding. Windows tests use a unique WSL tmux socket namespace and assert
 before and after each run that the user's default server is untouched.
+
+The live gate runs separately from ordinary pull-request CI on a Windows x64
+runner in the dedicated `ghosthub-wsl-acceptance` group. That runner must have
+a usable WSL2 default distro, `/usr/bin/tmux`, and the Windows Rust build
+toolchain. The group's GitHub settings permit only the canonical repository
+and the exact `rust-wsl-live.yml` workflow.
+
+The workflow is manual-only. It rejects every repository and ref except
+`kenn-io/ghosthub`'s `rust-port` integration branch, then explicitly checks out
+the immutable dispatch SHA. It never executes feature-branch or fork code on
+the persistent runner. Feature changes run `make rust-test-wsl-live` on an
+isolated developer machine before merge; after merge, the trusted integration
+SHA receives the GitHub acceptance run. A successful live run is required
+acceptance evidence for changes to WSL attachment, creation, guarded kill, or
+client-lifetime behavior.
+
+GitHub-hosted Windows runners remain the fast compile, unit, contract, and lint
+gate because their installed WSL tooling does not guarantee a usable WSL2
+distro or nested virtualization.
 
 The Rust port adds no Swift or macOS live-attach work. Linux compilation is not
 used as evidence for the Windows ConPTY-to-WSL relay path.
@@ -811,10 +890,11 @@ After Slice 1:
 
 1. Local Ghosthub inventory adds pinned bundled kwt, project/worktree
    inventory, unbound reconciliation, and the full sidebar hierarchy.
-2. Launch authorities deliver user-visible plain session creation through
-   CreateOnce and worktree selection through ordinary/protected RepairOrOpen.
+2. Worktree selection adds ordinary/protected RepairOrOpen authority; plain
+   local session creation already ships through CreateOnce in the WSL slice.
 3. Local lifecycle adds project registration, worktree creation, branch/PR
-   import, deletion, and fresh-identity conditional Kill Session.
+   import, and deletion; the WSL slice already ships fresh-identity conditional
+   Kill Session for bare sessions.
 4. Remote hosts add OpenSSH diagnostics, managed-helper installation,
    attach-only transport reconnect, repair/open reconnect, and remote Windows.
 5. Persistence and restoration add the coalescing writer, host settings,
