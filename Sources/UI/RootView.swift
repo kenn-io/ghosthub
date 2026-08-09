@@ -773,11 +773,11 @@ public struct RootView: View {
                 )
             },
             onFailure: { error in
-                workspaceAlert = .herdrLifecycleFailure(
+                presentNonWorktreeWorkspaceAlert(.herdrLifecycleFailure(
                     session: session.name,
                     action: "open",
                     message: error.localizedDescription
-                )
+                ))
             }
         )
     }
@@ -839,11 +839,11 @@ public struct RootView: View {
                 }
                 herdrCreationTask = nil
                 guard !(error is CancellationError) else { return }
-                workspaceAlert = .herdrLifecycleFailure(
+                presentNonWorktreeWorkspaceAlert(.herdrLifecycleFailure(
                     session: name,
                     action: "create",
                     message: error.localizedDescription
-                )
+                ))
             }
         }
     }
@@ -885,11 +885,11 @@ public struct RootView: View {
                 ))
             },
             onFailure: { error in
-                workspaceAlert = .herdrLifecycleFailure(
+                presentNonWorktreeWorkspaceAlert(.herdrLifecycleFailure(
                     session: session.name,
                     action: "restart",
                     message: error.localizedDescription
-                )
+                ))
             }
         )
     }
@@ -904,11 +904,11 @@ public struct RootView: View {
         }
         guard let prepare = handlers.prepareHerdrSessionLifecycle else {
             herdrLifecyclePreparation.cancel()
-            workspaceAlert = .herdrLifecycleFailure(
+            presentNonWorktreeWorkspaceAlert(.herdrLifecycleFailure(
                 session: session.name,
                 action: action == .stop ? "stop" : "delete",
                 message: "Herdr session lifecycle actions are unavailable."
-            )
+            ))
             return
         }
         herdrLifecyclePreparation.start(
@@ -919,14 +919,16 @@ public struct RootView: View {
                 handlers.cancelHerdrSessionLifecycle?(request)
             },
             onPrepared: { request in
-                workspaceAlert = .herdrLifecycleConfirmation(request)
+                presentNonWorktreeWorkspaceAlert(
+                    .herdrLifecycleConfirmation(request)
+                )
             },
             onFailure: { error in
-                workspaceAlert = .herdrLifecycleFailure(
+                presentNonWorktreeWorkspaceAlert(.herdrLifecycleFailure(
                     session: session.name,
                     action: action == .stop ? "stop" : "delete",
                     message: error.localizedDescription
-                )
+                ))
             }
         )
     }
@@ -1051,11 +1053,13 @@ public struct RootView: View {
                             else { throw HerdrLifecycleUnavailableError() }
                             try await perform(request)
                         } catch {
-                            workspaceAlert = .herdrLifecycleFailure(
-                                session: request.session.name,
-                                action: request.action == .stop
-                                    ? "stop" : "delete",
-                                message: error.localizedDescription
+                            presentNonWorktreeWorkspaceAlert(
+                                .herdrLifecycleFailure(
+                                    session: request.session.name,
+                                    action: request.action == .stop
+                                        ? "stop" : "delete",
+                                    message: error.localizedDescription
+                                )
                             )
                         }
                     }

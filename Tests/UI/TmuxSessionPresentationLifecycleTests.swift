@@ -966,6 +966,36 @@ struct TmuxSessionPresentationLifecycleTests {
         )
     }
 
+    @Test("herdr alert releases a displaced removal confirmation")
+    func herdrAlertReleasesDisplacedRemovalConfirmation() {
+        let model = WorktreeRemovalPresentationModel()
+        var workspaceAlert: WorkspaceAlert? =
+            .worktreeRemovalConfirmation(model.request)
+        var pendingWorktreeRemoval: WorktreeRemovalRequest? = model.request
+        var pendingWorktrees = pendingRemovalIdentities(model.request.worktree)
+
+        RootView.presentNonWorktreeWorkspaceAlert(
+            .herdrLifecycleFailure(
+                session: "build",
+                action: "stop",
+                message: "stop failed"
+            ),
+            workspaceAlert: &workspaceAlert,
+            pendingWorktreeRemoval: &pendingWorktreeRemoval,
+            pendingWorktrees: &pendingWorktrees
+        )
+
+        #expect(pendingWorktreeRemoval == nil)
+        #expect(pendingWorktrees.isEmpty)
+        #expect(
+            workspaceAlert?.id == "herdr:failure:stop:build:stop failed"
+        )
+        #expect(RootView.reserveWorktreeRemovalPreparation(
+            model.request.worktree,
+            pendingWorktrees: &pendingWorktrees
+        ))
+    }
+
     @Test("non-worktree alert preserves non-confirmation removal ownership")
     func nonWorktreeAlertPreservesNonConfirmationRemovalOwnership() {
         let model = WorktreeRemovalPresentationModel()
