@@ -28,7 +28,7 @@ const APP_NAVIGATION_WIDTH: f32 = 260.0;
 const APP_TITLEBAR_HEIGHT: f32 = 32.0;
 const APP_CHROME_BACKGROUND: u32 = 0x0f_1116;
 const NAVIGATION_HEADER_HEIGHT: f32 = 36.0;
-const HOST_ROW_HEIGHT: f32 = 42.0;
+const HOST_ROW_HEIGHT: f32 = 30.0;
 const SESSION_ROW_HEIGHT: f32 = 30.0;
 const CELL_LINE_GAP: f32 = 4.0;
 const UI_INPUT_CAPACITY: usize = 512;
@@ -2016,23 +2016,11 @@ impl RootView {
                 div()
                     .min_w_0()
                     .flex_1()
-                    .flex()
-                    .flex_col()
-                    .child(
-                        div()
-                            .truncate()
-                            .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(rgb(0xd2_d7_df))
-                            .child(host.name().to_owned()),
-                    )
-                    .child(
-                        div()
-                            .truncate()
-                            .text_xs()
-                            .text_color(rgb(0x71_7885))
-                            .child(host.endpoint().to_owned()),
-                    ),
+                    .truncate()
+                    .text_sm()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(rgb(0xd2_d7_df))
+                    .child(host.name().to_owned()),
             );
         if host.connection() == HostConnectionState::Ready {
             let host_id = host.id().to_owned();

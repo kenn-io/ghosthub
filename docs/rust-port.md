@@ -705,7 +705,9 @@ The Windows shell draws one compact title bar in the same visual plane as the
 application chrome. It retains the native window controls and dynamic
 session/endpoint title, and exposes a sidebar button there. `Ctrl+Shift+B`
 toggles the sidebar without consuming tmux's `Ctrl+B` prefix; terminal geometry
-and pointer mapping update with the visible content area.
+and pointer mapping update with the visible content area. Sidebar host entries
+use one compact line for the logical host name; distro configuration is not
+duplicated beneath it and remains visible only in endpoint-relevant contexts.
 
 The flow resolves and verifies the exact mux binary, discovers live identity,
 reserves the presentation, and launches an AttachPlan whose single tmux
