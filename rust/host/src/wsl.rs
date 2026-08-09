@@ -8,8 +8,9 @@ use std::time::{Duration, Instant};
 
 use model::DiagnosticKind;
 use session::{
-    AdmissionPlan, AttachPlan, DiscoveredSession, ExecutablePlatform, IDENTITY_MISMATCH_MARKER,
-    ProbeObservation, SessionIdentity, VerifiedTmuxBinary, resolve_tmux_binary,
+    AdmissionPlan, AttachPlan, CreateOnce, DiscoveredSession, ExecutablePlatform,
+    IDENTITY_MISMATCH_MARKER, ProbeObservation, SessionIdentity, SessionName, VerifiedTmuxBinary,
+    resolve_tmux_binary,
 };
 
 use crate::{CancellationToken, CommandOutput, CommandRunner};
@@ -470,6 +471,57 @@ impl<R: CommandRunner> WslHost<R> {
             session.name(),
             session.identity().clone(),
         )
+    }
+
+    /// Build one atomic local create-or-attach client for an already verified
+    /// WSL endpoint. The returned authority cannot be cloned and must be
+    /// consumed by the terminal launcher.
+    #[must_use]
+    pub fn create_once_with_term(
+        &self,
+        endpoint: &WslEndpoint,
+        name: SessionName,
+        term: AttachTerm,
+    ) -> CreateOnce {
+        let mut args = pinned_prefix(endpoint);
+        append_tmux_environment(
+            &mut args,
+            Some(term.environment()),
+            self.config.tmux_tmpdir.as_deref(),
+            &[],
+        );
+        args.push(OsString::from(&self.config.tmux_binary));
+        args.extend(["new-session", "-A", "-s"].into_iter().map(OsString::from));
+        args.push(OsString::from(name.as_str()));
+        CreateOnce::local_atomic(self.wsl_executable.as_os_str(), args, name)
+    }
+
+    /// Capture the exact inventory after a one-shot create client has started,
+    /// without rerunning admission or creation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified error when inventory cannot be read or the WSL
+    /// runtime changed across the creation boundary.
+    pub fn discover_after_create(
+        &self,
+        endpoint: &WslEndpoint,
+        runtime: &WslRuntimeIdentity,
+        cancellation: &CancellationToken,
+    ) -> Result<HostSnapshot, HostError> {
+        let sessions = self.discover_sessions(endpoint, cancellation)?;
+        let observed_runtime = self.resolve_runtime(endpoint, cancellation)?;
+        if &observed_runtime != runtime {
+            return Err(HostError::new(
+                DiagnosticKind::Transport,
+                "WSL distro restarted while creating the tmux session",
+            ));
+        }
+        Ok(HostSnapshot {
+            endpoint: endpoint.clone(),
+            runtime: observed_runtime,
+            sessions,
+        })
     }
 
     fn resolve_endpoint(&self, cancellation: &CancellationToken) -> Result<WslEndpoint, HostError> {
@@ -2075,5 +2127,57 @@ mod tests {
         assert!(late_creation_ran.get());
         assert!(elapsed.get() >= UNCERTAIN_CLEANUP_SETTLE);
         assert!(!exists.get(), "the final removal must follow late creation");
+    }
+
+    #[test]
+    fn local_creation_is_one_atomic_scrubbed_client_command() {
+        let host = WslHost::new(
+            WslConfig::configured(
+                Some("Ubuntu Work".to_owned()),
+                "/opt/tmux/bin/tmux",
+                Some("/run/user/1000/ghosthub".to_owned()),
+            )
+            .expect("valid config"),
+            crate::StdCommandRunner,
+            WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
+                .expect("absolute WSL path"),
+        );
+        let endpoint = WslEndpoint {
+            distro: "Ubuntu Work".to_owned(),
+        };
+        let plan = host.create_once_with_term(
+            &endpoint,
+            SessionName::parse("release work").expect("valid name"),
+            AttachTerm::Xterm256Color,
+        );
+        let (program, args, target) = plan.into_parts();
+
+        assert_eq!(program, r"C:\Windows\System32\wsl.exe");
+        assert_eq!(target.as_str(), "release work");
+        assert_eq!(
+            args,
+            [
+                "--distribution",
+                "Ubuntu Work",
+                "--exec",
+                "/usr/bin/env",
+                "-u",
+                "TMUX",
+                "-u",
+                "TMUX_PANE",
+                "-u",
+                "TMUX_TMPDIR",
+                "TERM=xterm-256color",
+                "TMUX_TMPDIR=/run/user/1000/ghosthub",
+                "/opt/tmux/bin/tmux",
+                "new-session",
+                "-A",
+                "-s",
+                "release work",
+            ]
+            .into_iter()
+            .map(OsString::from)
+            .collect::<Vec<_>>()
+        );
     }
 }

@@ -715,6 +715,17 @@ the reservation, renders through surface, disconnects on close, and reattaches
 to the surviving identity from a fresh process. An identity mismatch exits
 without attaching and becomes a classified refresh diagnostic.
 
+The same local WSL slice exposes explicit bare-session creation from the host
+tree. The dialog applies the shipped 1-100 character tmux-name rules and
+rejects names already present in current inventory. Workspace performs one
+fresh admitted-host read, terminal consumes a non-cloneable CreateOnce whose
+ordinary client executes `new-session -A -s <name>`, and host captures the
+resulting runtime, server, session ID, and creation time. From that point the
+presentation holds only attach authority. A race that creates the same name
+after validation attaches to that exact existing session without changing its
+layout. A failure after launch may detach and report the result but never
+reruns creation or kills the session.
+
 Slice 1 reads font family, font size, and theme through:
 
 ~~~text
@@ -753,9 +764,10 @@ clipboard-write = true
 Every field is optional. `clipboard-write` governs remote OSC 52 writes;
 remote OSC 52 reads remain denied regardless of configuration.
 
-Windows manual acceptance requires WSL2, tmux, and an existing session started
-outside Ghosthub. Setup is documented as deterministic commands rather than an
-implicit prerequisite. A missing server is an empty inventory, not an error.
+Windows manual acceptance requires WSL2 and tmux. Ghosthub can create the first
+session itself; setup remains documented as deterministic commands for tests
+that exercise discovery of an externally created session. A missing server is
+an empty inventory, not an error.
 
 The milestone proves:
 
@@ -765,6 +777,9 @@ The milestone proves:
 - buffers remain bounded and UI never blocks on PTY or store work
 - reselecting the same session in one window refuses a second client and
   focuses the existing terminal as Ghosthub policy rather than a tmux limit
+- explicit local creation consumes one atomic `new-session -A` authority,
+  publishes the fresh live identity, and survives detach without rerunning
+  creation
 - client close, graceful app exit, and forced app death preserve the server
   and permit fresh-process reattachment to the exact same live identity
 - failed relay-job membership fully unwinds the spawned attachment before the
@@ -778,7 +793,7 @@ Cross-window focus arbitration is deferred until multi-window delivery.
 
 Slice 1 includes policy-controlled OSC 52 writes to the Windows clipboard,
 empty responses for remote OSC 52 reads, and explicit clipboard paste with
-bracketed framing. It excludes IME composition, dead keys, creation, kill,
+bracketed framing. It excludes IME composition, dead keys, kill,
 kwt inventory, worktree mutation, remote SSH, managed-helper
 installation, native Linux product UI, persistence/restoration, multiple
 windows, Console Panel, telemetry, updates, packaging, and acceptance
@@ -819,8 +834,8 @@ After Slice 1:
 
 1. Local Ghosthub inventory adds pinned bundled kwt, project/worktree
    inventory, unbound reconciliation, and the full sidebar hierarchy.
-2. Launch authorities deliver user-visible plain session creation through
-   CreateOnce and worktree selection through ordinary/protected RepairOrOpen.
+2. Worktree selection adds ordinary/protected RepairOrOpen authority; plain
+   local session creation already ships through CreateOnce in the WSL slice.
 3. Local lifecycle adds project registration, worktree creation, branch/PR
    import, deletion, and fresh-identity conditional Kill Session.
 4. Remote hosts add OpenSSH diagnostics, managed-helper installation,

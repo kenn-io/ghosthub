@@ -13,6 +13,7 @@ use host::{
 };
 pub use input::{KeyEvent, KeyInput, Modifiers, MouseAction, MouseButton, MouseInput, NamedKey};
 use model::DiagnosticKind;
+pub use session::{SessionName, SessionNameError};
 use surface::{GridSize, PixelSize, Rgb, SurfaceStore};
 use terminal::{
     ClipboardPolicy, ClipboardReadRequest as TerminalClipboardRead, ClipboardTarget, DefaultColors,
@@ -21,6 +22,8 @@ use terminal::{
 
 const REDUCED_COLOR_NOTICE: &str =
     "Using TERM=xterm because xterm-256color terminfo is unavailable in WSL";
+const CREATE_DISCOVERY_ATTEMPTS: usize = 5;
+const CREATE_DISCOVERY_DELAY: Duration = Duration::from_millis(40);
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Appearance {
@@ -551,6 +554,15 @@ struct AttachRequest {
     runtime: host::WslRuntimeIdentity,
     identity: session::SessionIdentity,
     name: String,
+    inventory_generation: u64,
+}
+
+#[derive(Clone)]
+struct CreateRequest {
+    host_id: String,
+    host: RuntimeHost,
+    endpoint: host::WslEndpoint,
+    name: SessionName,
     inventory_generation: u64,
 }
 
@@ -1518,6 +1530,69 @@ impl Workspace {
             ));
         };
         self.start_attachment(request, fallback, navigation_generation)
+    }
+
+    /// Create or attach to one exact local WSL tmux session with a consumed
+    /// one-shot authority.
+    ///
+    /// Existing visible presentations are retained and restored if the new
+    /// client cannot be established. Once the atomic client is launched,
+    /// failure never reruns creation or destroys the resulting session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the name is invalid, the host is not ready, a
+    /// matching session is already present in current inventory, or the
+    /// creation task cannot be started.
+    pub fn create_session(&self, host_id: &str, name: &str) -> Result<(), WorkspaceError> {
+        let name =
+            SessionName::parse(name).map_err(|error| WorkspaceError::new(error.to_string()))?;
+        let navigation = self
+            .inner
+            .navigation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let request = capture_create_request(&self.inner, host_id, name)?;
+        let navigation_generation = self.begin_navigation();
+        let in_flight_fallback = self.supersede_inflight_attachment()?;
+        let visible_previous = self.retain_active_presentation()?;
+        let previous = in_flight_fallback.or(visible_previous);
+        clear_terminal_notice(&self.inner);
+        set_inner_state(
+            &self.inner,
+            WorkspaceContent::Attaching {
+                host_id: request.host_id.clone(),
+                endpoint: request.endpoint.distro().to_owned(),
+                session: request.name.as_str().to_owned(),
+            },
+        );
+
+        let inner = Arc::clone(&self.inner);
+        let spawn_request = request.clone();
+        let spawn_previous = previous.clone();
+        if let Err(error) = thread::Builder::new()
+            .name("ghosthub-terminal-create".to_owned())
+            .spawn(move || {
+                run_create(
+                    &inner,
+                    &spawn_request,
+                    spawn_previous,
+                    navigation_generation,
+                );
+            })
+        {
+            drop(navigation);
+            restore_inventory_after_creation_failure(
+                &self.inner,
+                previous,
+                navigation_generation,
+                format!("start tmux creation task: {error}"),
+            );
+            return Err(WorkspaceError::new(format!(
+                "start tmux creation task: {error}"
+            )));
+        }
+        Ok(())
     }
 
     fn begin_navigation(&self) -> u64 {
@@ -2494,6 +2569,59 @@ fn capture_attach_request(
     })
 }
 
+fn capture_create_request(
+    inner: &Inner,
+    host_id: &str,
+    name: SessionName,
+) -> Result<CreateRequest, WorkspaceError> {
+    let selected_host = inner
+        .selected_host
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if selected_host.as_deref() != Some(host_id) {
+        return Err(WorkspaceError::new("host is not selected"));
+    }
+    let hosts = inner
+        .hosts
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let selected = hosts
+        .iter()
+        .find(|host| host.id == host_id)
+        .ok_or_else(|| WorkspaceError::new("host is not available"))?;
+    if selected.connection != HostConnectionState::Ready {
+        return Err(WorkspaceError::new(
+            "connect the WSL host before creating a tmux session",
+        ));
+    }
+    if selected
+        .sessions
+        .iter()
+        .any(|session| session.name == name.as_str())
+    {
+        return Err(WorkspaceError::new(
+            "a tmux session with this name already exists",
+        ));
+    }
+    drop(hosts);
+    let host = inner
+        .host
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let context = host
+        .as_ref()
+        .ok_or_else(|| WorkspaceError::new("WSL inventory is not ready"))?;
+    context.map(|context, inventory_generation| {
+        Ok(CreateRequest {
+            host_id: host_id.to_owned(),
+            host: context.host.clone(),
+            endpoint: context.snapshot.endpoint().clone(),
+            name,
+            inventory_generation,
+        })
+    })
+}
+
 fn choose_navigation_target(
     retained: Option<PresentationKey>,
     current: Result<AttachRequest, WorkspaceError>,
@@ -2617,6 +2745,204 @@ fn fail_refresh_start(
             format!("{context}: {error}"),
         );
     });
+}
+
+fn run_create(
+    inner: &Inner,
+    request: &CreateRequest,
+    previous: Option<PresentationKey>,
+    navigation_generation: u64,
+) {
+    let created = create_fresh(inner, request, navigation_generation);
+    let (worker, snapshot, session, initial_geometry) = match created {
+        Ok(created) => created,
+        Err(error) => {
+            restore_inventory_after_creation_failure(
+                inner,
+                previous,
+                navigation_generation,
+                error.to_string(),
+            );
+            return;
+        }
+    };
+    if inner.navigation_generation.load(Ordering::Acquire) != navigation_generation {
+        drop(worker);
+        return;
+    }
+
+    let attached = AttachRequest {
+        host_id: request.host_id.clone(),
+        host: request.host.clone(),
+        endpoint: snapshot.endpoint().clone(),
+        runtime: snapshot.runtime().clone(),
+        identity: session.identity().clone(),
+        name: session.name().to_owned(),
+        inventory_generation: request.inventory_generation,
+    };
+    let key = attached.presentation_key();
+    let fallback = previous.map(|presentation| FallbackAuthority {
+        presentation,
+        target: key,
+        navigation_generation,
+    });
+    let mut attachment = inner
+        .attachment
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if inner.navigation_generation.load(Ordering::Acquire) != navigation_generation {
+        drop(attachment);
+        drop(worker);
+        return;
+    }
+    let Some(generation) = attachment.reserve_with_fallback(
+        attached.clone(),
+        AttachTerm::Xterm256Color,
+        fallback.clone(),
+    ) else {
+        drop(attachment);
+        drop(worker);
+        restore_inventory_after_creation_failure(
+            inner,
+            fallback.map(|fallback| fallback.presentation),
+            navigation_generation,
+            "another terminal presentation replaced the creation request".to_owned(),
+        );
+        return;
+    };
+    let surface = worker.surface_handle();
+    publish_attach_inventory(inner, &attached, snapshot);
+    if let Err(error) = publish_worker_at_latest_geometry(
+        &inner.terminal_geometry,
+        &inner.worker,
+        worker,
+        initial_geometry,
+        |worker, geometry| {
+            worker.resize_with_metadata(geometry.grid, geometry.sequence, geometry.pixels)
+        },
+    ) {
+        attachment.clear_if_current(generation);
+        drop(attachment);
+        restore_inventory_after_creation_failure(
+            inner,
+            fallback.map(|fallback| fallback.presentation),
+            navigation_generation,
+            error.to_string(),
+        );
+        return;
+    }
+    set_terminal_notice(inner, AttachTerm::Xterm256Color);
+    set_inner_state(
+        inner,
+        WorkspaceContent::Terminal {
+            host_id: attached.host_id,
+            endpoint: attached.endpoint.distro().to_owned(),
+            session: attached.name,
+            presentation_id: next_presentation_id(inner),
+            surface,
+        },
+    );
+}
+
+fn create_fresh(
+    inner: &Inner,
+    request: &CreateRequest,
+    navigation_generation: u64,
+) -> Result<
+    (
+        TerminalWorker,
+        HostSnapshot,
+        session::DiscoveredSession,
+        TerminalGeometry,
+    ),
+    WorkspaceError,
+> {
+    let before = request
+        .host
+        .discover(&ConptyAdmissionAttacher::new())
+        .map_err(|error| WorkspaceError::new(error.to_string()))?;
+    if before.endpoint() != &request.endpoint {
+        return Err(WorkspaceError::new(
+            "the default WSL distro changed; refresh before creating the session",
+        ));
+    }
+    if inner.navigation_generation.load(Ordering::Acquire) != navigation_generation {
+        return Err(WorkspaceError::new("tmux creation was superseded"));
+    }
+    let authority = request.host.create_once_with_term(
+        before.endpoint(),
+        request.name.clone(),
+        AttachTerm::Xterm256Color,
+    );
+    let geometry = *inner
+        .terminal_geometry
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let worker = TerminalWorker::create_with_metadata(
+        authority,
+        geometry.grid,
+        geometry.sequence,
+        geometry.pixels,
+        ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
+        default_colors(&inner.appearance),
+    )
+    .map_err(|error| WorkspaceError::new(error.to_string()))?;
+    let cancellation = CancellationToken::new();
+    for attempt in 0..CREATE_DISCOVERY_ATTEMPTS {
+        if inner.navigation_generation.load(Ordering::Acquire) != navigation_generation {
+            drop(worker);
+            return Err(WorkspaceError::new("tmux creation was superseded"));
+        }
+        let snapshot = request
+            .host
+            .discover_after_create(before.endpoint(), before.runtime(), &cancellation)
+            .map_err(|error| WorkspaceError::new(error.to_string()))?;
+        if let Some(session) = snapshot
+            .sessions()
+            .iter()
+            .find(|session| session.name() == request.name.as_str())
+            .cloned()
+        {
+            return Ok((worker, snapshot, session, geometry));
+        }
+        if attempt + 1 < CREATE_DISCOVERY_ATTEMPTS {
+            thread::sleep(CREATE_DISCOVERY_DELAY);
+        }
+    }
+    drop(worker);
+    Err(WorkspaceError::new(
+        "the one-shot tmux client started, but the session did not appear; refresh to inspect the host before trying again",
+    ))
+}
+
+fn restore_inventory_after_creation_failure(
+    inner: &Inner,
+    previous: Option<PresentationKey>,
+    navigation_generation: u64,
+    message: String,
+) {
+    let _navigation = inner
+        .navigation
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if inner.navigation_generation.load(Ordering::Acquire) != navigation_generation {
+        return;
+    }
+    restore_presentation_inventory(inner);
+    if let Some(previous) = previous {
+        match activate_retained_presentation(inner, &previous, None) {
+            Ok(true) => {}
+            Ok(false) => set_local_notice(
+                inner,
+                "the previous terminal presentation is no longer available".to_owned(),
+            ),
+            Err(error) => set_local_notice(
+                inner,
+                format!("could not restore the previous terminal presentation: {error}"),
+            ),
+        }
+    }
+    publish_local_notice(inner, message);
 }
 
 fn run_attach(inner: &Inner, request: &AttachRequest, term: AttachTerm, generation: u64) {

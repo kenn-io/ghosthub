@@ -138,6 +138,11 @@ timeouts. Returning focus to a window refreshes a ready WSL inventory, matching
 the Swift app's activation-driven discovery without retrying disconnected or
 failed hosts in a loop. Later refreshes reuse the admitted host capability so
 they perform ordinary inventory reads instead of repeating tmux admission.
+The ready host also exposes explicit bare-session creation. Rust consumes one
+non-cloneable CreateOnce as an ordinary ConPTY client running atomic
+`new-session -A`; it then captures the fresh WSL runtime and tmux live identity
+and retains only attach authority. Creation failure never authorizes a rerun or
+server cleanup.
 
 Rust keeps backend and authority boundaries structural: the UI package has
 direct dependencies only on workspace, model, and surface, while persistence

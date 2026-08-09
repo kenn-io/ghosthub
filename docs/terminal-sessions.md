@@ -121,6 +121,16 @@ status 255 enters transport reconnect. Bare remote creation becomes
 attach-only before that loop; ordinary and protected kwt paths retain only
 their explicitly documented repair/open behavior.
 
+Rust local WSL creation follows the same one-shot rule as shipped local
+creation. After validating the normalized name, Ghosthub performs a fresh
+admitted-host read and consumes one CreateOnce by launching the ordinary
+ConPTY client with `tmux new-session -A -s <name>`. It captures the resulting
+runtime, server PID, session ID, and creation time before publishing the
+presentation; every later activation is attach-only. If creation and identity
+capture race another creator, `-A` attaches to the exact same-named session.
+If any step after launch fails, Ghosthub detaches the client and reports the
+failure but neither reruns creation nor destroys the possibly created session.
+
 Psmux 3.3.7 failed the required exact-kill proof and never established genuine
 ConPTY `attach-session -E` behavior. Its probe remains rejection evidence, but
 it is not the Rust Windows substrate. The Windows MVP uses real POSIX tmux in

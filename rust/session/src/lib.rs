@@ -4,10 +4,62 @@ use std::ffi::{OsStr, OsString};
 use std::fmt;
 
 use serde::Deserialize;
+use unicode_segmentation::UnicodeSegmentation;
 
 pub mod probe;
 
 pub const IDENTITY_MISMATCH_MARKER: &str = "__ghosthub_attach_identity_mismatch_v1__";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionName(String);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SessionNameError {
+    Empty,
+    TooLong,
+    ForbiddenCharacter,
+}
+
+impl SessionName {
+    /// Normalize and validate a user-supplied tmux session name.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an empty name, a name longer than 100 Unicode
+    /// grapheme clusters, or a name containing a control character, period,
+    /// or colon.
+    pub fn parse(value: &str) -> Result<Self, SessionNameError> {
+        let value = value.trim();
+        if value.is_empty() {
+            return Err(SessionNameError::Empty);
+        }
+        if value.graphemes(true).count() > 100 {
+            return Err(SessionNameError::TooLong);
+        }
+        if value
+            .chars()
+            .any(|character| character.is_control() || matches!(character, '.' | ':'))
+        {
+            return Err(SessionNameError::ForbiddenCharacter);
+        }
+        Ok(Self(value.to_owned()))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for SessionNameError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => formatter.write_str("Name the tmux session."),
+            Self::TooLong | Self::ForbiddenCharacter => formatter
+                .write_str("Use 1-100 characters without periods, colons, or control characters."),
+        }
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionIdentity {
@@ -81,6 +133,35 @@ pub struct AttachPlan {
     args: Vec<OsString>,
     target_name: String,
     identity: SessionIdentity,
+}
+
+/// One atomic local create-or-attach launch. The authority is intentionally
+/// neither cloneable nor serializable and is consumed by the terminal launcher.
+#[derive(Debug, Eq, PartialEq)]
+pub struct CreateOnce {
+    program: OsString,
+    args: Vec<OsString>,
+    target_name: SessionName,
+}
+
+impl CreateOnce {
+    #[must_use]
+    pub fn local_atomic(
+        program: impl Into<OsString>,
+        args: Vec<OsString>,
+        target_name: SessionName,
+    ) -> Self {
+        Self {
+            program: program.into(),
+            args,
+            target_name,
+        }
+    }
+
+    #[must_use]
+    pub fn into_parts(self) -> (OsString, Vec<OsString>, SessionName) {
+        (self.program, self.args, self.target_name)
+    }
 }
 
 /// One isolated capability probe that may exercise otherwise unavailable mux
@@ -381,4 +462,68 @@ fn parse_revision(output: &str) -> Option<String> {
     let line = output.lines().find(|line| line.starts_with("psmux "))?;
     let parenthesized = line.split_once('(')?.1.strip_suffix(')')?;
     parenthesized.split_whitespace().next().map(str::to_owned)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CreateOnce, SessionName, SessionNameError};
+    use static_assertions::assert_not_impl_any;
+
+    assert_not_impl_any!(CreateOnce: Clone, serde::Serialize);
+
+    #[test]
+    fn session_names_match_the_shipped_creation_contract() {
+        assert_eq!(
+            SessionName::parse("  release work  ")
+                .expect("valid name")
+                .as_str(),
+            "release work"
+        );
+        assert_eq!(SessionName::parse("  "), Err(SessionNameError::Empty));
+        assert_eq!(
+            SessionName::parse("has.period"),
+            Err(SessionNameError::ForbiddenCharacter)
+        );
+        assert_eq!(
+            SessionName::parse("has:colon"),
+            Err(SessionNameError::ForbiddenCharacter)
+        );
+        assert_eq!(
+            SessionName::parse("has\nnewline"),
+            Err(SessionNameError::ForbiddenCharacter)
+        );
+        assert_eq!(
+            SessionName::parse(&"x".repeat(101)),
+            Err(SessionNameError::TooLong)
+        );
+        assert!(
+            SessionName::parse(&"e\u{301}".repeat(100)).is_ok(),
+            "Swift-compatible character counting treats combining sequences as one name character"
+        );
+    }
+
+    #[test]
+    fn create_once_is_consumed_into_one_exact_argv() {
+        let plan = CreateOnce::local_atomic(
+            "wsl.exe",
+            vec![
+                "new-session".into(),
+                "-A".into(),
+                "-s".into(),
+                "demo".into(),
+            ],
+            SessionName::parse("demo").expect("valid name"),
+        );
+        let (program, args, target) = plan.into_parts();
+
+        assert_eq!(program, "wsl.exe");
+        assert_eq!(
+            args,
+            ["new-session", "-A", "-s", "demo"]
+                .into_iter()
+                .map(std::ffi::OsString::from)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(target.as_str(), "demo");
+    }
 }

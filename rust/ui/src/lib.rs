@@ -13,14 +13,14 @@ use gpui::{
     IntoElement, KeyBinding, KeyDownEvent, KeyUpEvent, MouseButton as GpuiMouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, Render, ScrollWheelEvent, TitlebarOptions,
     Window, WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowDecorations,
-    WindowOptions, actions, div, font, prelude::*, px, rgb, size,
+    WindowOptions, actions, div, font, prelude::*, px, rgb, rgba, size,
 };
 use model::PortStatus;
 use surface::{CellStyle, Damage, GridSize, Rgb, SurfaceFrame, SurfaceStore};
 use workspace::{
     HostConnectionState, HostItem, KeyEvent as InputKeyEvent, KeyInput,
-    Modifiers as InputModifiers, MouseAction, MouseButton, MouseInput, NamedKey, SessionSelection,
-    Workspace, WorkspaceContent, WorkspaceEvent,
+    Modifiers as InputModifiers, MouseAction, MouseButton, MouseInput, NamedKey, SessionName,
+    SessionSelection, Workspace, WorkspaceContent, WorkspaceEvent,
 };
 
 pub const WINDOW_TITLE: &str = "Ghosthub";
@@ -70,7 +70,7 @@ pub fn empty_inventory_text(host: &HostItem) -> String {
         .socket_directory()
         .unwrap_or("the default tmux socket namespace");
     format!(
-        "No tmux server is running in {} using {namespace}. Review WSL host settings or start a tmux session, then choose Refresh.",
+        "No tmux server is running in {} using {namespace}. Use + beside the host to create one, or review WSL host settings.",
         host.endpoint()
     )
 }
@@ -285,6 +285,7 @@ pub struct RootView {
     status: PortStatus,
     workspace: Workspace,
     focus: FocusHandle,
+    create_focus: FocusHandle,
     diagnostic: Option<String>,
     paste_confirmation: bool,
     observed_presentation_id: Option<u64>,
@@ -300,6 +301,13 @@ pub struct RootView {
     keyboard: TerminalKeyboard,
     pointer: TerminalPointer,
     sidebar_visible: bool,
+    new_session: Option<NewSessionDraft>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct NewSessionDraft {
+    host_id: String,
+    name: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -611,6 +619,7 @@ impl RootView {
             status,
             workspace,
             focus: cx.focus_handle(),
+            create_focus: cx.focus_handle(),
             diagnostic: None,
             paste_confirmation: false,
             observed_presentation_id: None,
@@ -626,6 +635,7 @@ impl RootView {
             keyboard: TerminalKeyboard::default(),
             pointer: TerminalPointer::default(),
             sidebar_visible: true,
+            new_session: None,
         };
         view.resize_for_window(window);
         view
@@ -694,6 +704,94 @@ impl RootView {
             self.diagnostic = None;
         }
         cx.notify();
+    }
+
+    fn open_new_session(&mut self, host_id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.new_session = Some(NewSessionDraft {
+            host_id: host_id.to_owned(),
+            name: String::new(),
+        });
+        self.diagnostic = None;
+        window.focus(&self.create_focus);
+        cx.notify();
+    }
+
+    fn cancel_new_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.new_session = None;
+        window.focus(&self.focus);
+        cx.notify();
+    }
+
+    fn submit_new_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(draft) = self.new_session.clone() else {
+            return;
+        };
+        let snapshot = self.workspace.snapshot();
+        if let Some(error) = new_session_validation(&snapshot, &draft) {
+            self.diagnostic = Some(error);
+            cx.notify();
+            return;
+        }
+        match self.workspace.create_session(&draft.host_id, &draft.name) {
+            Ok(()) => {
+                self.new_session = None;
+                self.diagnostic = None;
+                self.observed_presentation_id = None;
+                self.clear_terminal_input();
+                self.paint_cache.clear();
+                window.focus(&self.focus);
+            }
+            Err(error) => self.diagnostic = Some(error.to_string()),
+        }
+        cx.notify();
+    }
+
+    fn on_new_session_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if is_paste_shortcut(&event.keystroke) {
+            if !event.is_held
+                && let Some(text) = cx.read_from_clipboard().and_then(|item| item.text())
+                && let Some(draft) = &mut self.new_session
+            {
+                draft
+                    .name
+                    .extend(text.chars().filter(|character| !character.is_control()));
+                cx.notify();
+            }
+            cx.stop_propagation();
+            return;
+        }
+        let key = event.keystroke.key.to_ascii_lowercase();
+        match key.as_str() {
+            "escape" if !event.is_held => self.cancel_new_session(window, cx),
+            "enter" if !event.is_held => self.submit_new_session(window, cx),
+            "backspace" => {
+                if let Some(draft) = &mut self.new_session {
+                    draft.name.pop();
+                }
+                cx.notify();
+            }
+            _ if !event.keystroke.modifiers.control
+                && !event.keystroke.modifiers.alt
+                && !event.keystroke.modifiers.platform
+                && !event.keystroke.modifiers.function =>
+            {
+                if let Some(text) = &event.keystroke.key_char
+                    && let Some(draft) = &mut self.new_session
+                {
+                    draft
+                        .name
+                        .extend(text.chars().filter(|character| !character.is_control()));
+                    cx.notify();
+                }
+            }
+            _ => {}
+        }
+        cx.stop_propagation();
     }
 
     fn toggle_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1601,6 +1699,142 @@ impl RootView {
             .into_any_element()
     }
 
+    fn new_session_overlay(
+        &self,
+        snapshot: &workspace::WorkspaceSnapshot,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let draft = self.new_session.as_ref()?;
+        let host = snapshot
+            .hosts()
+            .iter()
+            .find(|host| host.id() == draft.host_id)?;
+        let validation = new_session_validation(snapshot, draft);
+        let can_create = validation.is_none();
+        let input_text = if draft.name.is_empty() {
+            "Session name".to_owned()
+        } else {
+            format!("{}▏", draft.name)
+        };
+        let helper = validation.unwrap_or_else(|| {
+            format!(
+                "Create and attach on {}. Closing Ghosthub only detaches.",
+                host.endpoint()
+            )
+        });
+
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(rgba(0x00_00_00_80))
+                .child(
+                    div()
+                        .id("new-session-dialog")
+                        .track_focus(&self.create_focus)
+                        .w(px(460.0))
+                        .flex()
+                        .flex_col()
+                        .rounded_lg()
+                        .border_1()
+                        .border_color(rgb(0x36_3c48))
+                        .bg(rgb(0x18_1b22))
+                        .shadow_lg()
+                        .on_key_down(cx.listener(|this, event, window, cx| {
+                            this.on_new_session_key_down(event, window, cx);
+                        }))
+                        .child(
+                            div()
+                                .px_4()
+                                .py_3()
+                                .border_b_1()
+                                .border_color(rgb(0x2a_2f39))
+                                .text_sm()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(rgb(0xe0_e4eb))
+                                .child(format!("New tmux session · {}", host.endpoint())),
+                        )
+                        .child(
+                            div()
+                                .m_4()
+                                .px_3()
+                                .h(px(38.0))
+                                .flex()
+                                .items_center()
+                                .rounded_md()
+                                .border_1()
+                                .border_color(rgb(0x4a_79a8))
+                                .bg(rgb(0x0f_1218))
+                                .text_sm()
+                                .text_color(rgb(if draft.name.is_empty() {
+                                    0x72_7986
+                                } else {
+                                    0xe1_e5ec
+                                }))
+                                .child(input_text),
+                        )
+                        .child(
+                            div()
+                                .px_4()
+                                .pb_3()
+                                .text_xs()
+                                .text_color(rgb(if can_create { 0x82_8995 } else { 0xd0_7070 }))
+                                .child(helper),
+                        )
+                        .child(Self::new_session_actions(can_create, cx)),
+                )
+                .into_any_element(),
+        )
+    }
+
+    fn new_session_actions(can_create: bool, cx: &mut Context<Self>) -> gpui::AnyElement {
+        div()
+            .px_4()
+            .py_3()
+            .border_t_1()
+            .border_color(rgb(0x2a_2f39))
+            .flex()
+            .justify_end()
+            .gap_2()
+            .child(
+                div()
+                    .id("cancel-new-session")
+                    .px_3()
+                    .py_1()
+                    .rounded_sm()
+                    .cursor_pointer()
+                    .text_sm()
+                    .text_color(rgb(0xb6_bcc7))
+                    .hover(|style| style.bg(rgb(0x29_2e38)))
+                    .child("Cancel")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.cancel_new_session(window, cx);
+                    })),
+            )
+            .child(
+                div()
+                    .id("create-new-session")
+                    .px_3()
+                    .py_1()
+                    .rounded_sm()
+                    .bg(rgb(if can_create { 0x1d_5f9a } else { 0x2b_3039 }))
+                    .text_sm()
+                    .text_color(rgb(if can_create { 0xf1_f5fa } else { 0x72_7986 }))
+                    .child("Create")
+                    .when(can_create, |element| {
+                        element
+                            .cursor_pointer()
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.submit_new_session(window, cx);
+                            }))
+                    }),
+            )
+            .into_any_element()
+    }
+
     fn workspace_tree(
         snapshot: &workspace::WorkspaceSnapshot,
         cx: &mut Context<Self>,
@@ -1759,22 +1993,42 @@ impl RootView {
                     ),
             );
         if host.connection() == HostConnectionState::Ready {
-            host_header = host_header.child(
-                div()
-                    .id(("refresh-host", host_index))
-                    .flex_none()
-                    .size(px(24.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded_sm()
-                    .cursor_pointer()
-                    .text_xs()
-                    .text_color(rgb(0x8f_96_a3))
-                    .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xd2_d7_df)))
-                    .child("↻")
-                    .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
-            );
+            let host_id = host.id().to_owned();
+            host_header = host_header
+                .child(
+                    div()
+                        .id(("create-session-host", host_index))
+                        .flex_none()
+                        .size(px(24.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .text_sm()
+                        .text_color(rgb(0x8f_96_a3))
+                        .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xd2_d7_df)))
+                        .child("+")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_new_session(&host_id, window, cx);
+                        })),
+                )
+                .child(
+                    div()
+                        .id(("refresh-host", host_index))
+                        .flex_none()
+                        .size(px(24.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .text_xs()
+                        .text_color(rgb(0x8f_96_a3))
+                        .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xd2_d7_df)))
+                        .child("↻")
+                        .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
+                );
         }
         host_header.into_any_element()
     }
@@ -1967,7 +2221,7 @@ impl RootView {
     fn host_landing_element(host: &HostItem, cx: &mut Context<Self>) -> gpui::AnyElement {
         if host.connection() == HostConnectionState::Ready {
             return centered(if host.sessions().is_empty() {
-                "Start a tmux session in WSL, then refresh."
+                "Use + beside WSL to create a tmux session."
             } else {
                 "Choose a session to open its terminal."
             });
@@ -2082,7 +2336,10 @@ impl RootView {
             ));
         if sessions.is_empty() {
             let empty = host.map_or_else(
-                || "No tmux server is running in this distro. Start a tmux session in WSL, then choose Refresh.".to_owned(),
+                || {
+                    "No tmux server is running in this distro. Use + beside WSL to create one."
+                        .to_owned()
+                },
                 empty_inventory_text,
             );
             list = list.child(div().p_4().rounded_md().bg(rgb(0x1a_1d24)).child(empty));
@@ -2311,8 +2568,8 @@ impl Render for RootView {
             self.observed_surface_generation = 0;
             self.paint_cache.clear();
         }
-        let title_bar = self.title_bar(title, cx);
         let content = self.content_element(&snapshot, cx);
+        let creation_overlay = self.new_session_overlay(&snapshot, cx);
         let mut root = div()
             .flex()
             .flex_col()
@@ -2322,8 +2579,9 @@ impl Render for RootView {
             .on_action(cx.listener(|this, _: &ToggleSidebar, window, cx| {
                 this.toggle_sidebar(window, cx);
             }))
-            .child(title_bar)
-            .child(div().flex_1().min_h_0().w_full().child(content));
+            .child(self.title_bar(title, cx))
+            .child(div().flex_1().min_h_0().w_full().child(content))
+            .children(creation_overlay);
 
         if let Some(notice) = snapshot.notice() {
             root = root.child(
@@ -2412,6 +2670,30 @@ fn centered(text: impl Into<String>) -> gpui::AnyElement {
         .text_color(rgb(0xb7_bc_c6))
         .child(text.into())
         .into_any_element()
+}
+
+fn new_session_validation(
+    snapshot: &workspace::WorkspaceSnapshot,
+    draft: &NewSessionDraft,
+) -> Option<String> {
+    let Some(host) = snapshot
+        .hosts()
+        .iter()
+        .find(|host| host.id() == draft.host_id.as_str())
+    else {
+        return Some("The selected host is no longer available.".to_owned());
+    };
+    if host.connection() != HostConnectionState::Ready {
+        return Some("Connect the WSL host before creating a session.".to_owned());
+    }
+    let name = match SessionName::parse(&draft.name) {
+        Ok(name) => name,
+        Err(error) => return Some(error.to_string()),
+    };
+    host.sessions()
+        .iter()
+        .any(|session| session.name() == name.as_str())
+        .then(|| "A tmux session with this name already exists.".to_owned())
 }
 
 fn window_control(
@@ -2900,23 +3182,52 @@ mod tests {
 
     use super::{
         APP_NAVIGATION_WIDTH, APP_TITLEBAR_HEIGHT, INPUT_BUFFER_FULL_DIAGNOSTIC,
-        INPUT_BUFFERED_DIAGNOSTIC, InputRefusal, LayoutKey, PendingUiInput, QueuedUiInput,
-        TerminalKeyIdentity, TerminalKeyboard, TerminalPointer, TerminalResize,
+        INPUT_BUFFERED_DIAGNOSTIC, InputRefusal, LayoutKey, NewSessionDraft, PendingUiInput,
+        QueuedUiInput, TerminalKeyIdentity, TerminalKeyboard, TerminalPointer, TerminalResize,
         UI_INPUT_BYTE_CAPACITY, UI_INPUT_CAPACITY, WheelBatch, active_session_selection,
         application_navigation_width, canonical_terminal_key_with, clear_terminal_input_state,
         clears_after_input_delivery, clears_when_input_queue_is_empty, coalesce_last_resize,
         coalesce_last_wheel, input_queue_has_capacity, is_toggle_sidebar_shortcut, named_key,
-        normalize_cell_width, queued_input_matches_presentation, retained_key_event_with,
-        terminal_cell_at_with_offset, terminal_key_input, terminal_key_input_with_canonical,
-        terminal_line_height, terminal_wheel_steps, transitioned_presentation, tree_sessions,
-        workspace_window_title,
+        new_session_validation, normalize_cell_width, queued_input_matches_presentation,
+        retained_key_event_with, terminal_cell_at_with_offset, terminal_key_input,
+        terminal_key_input_with_canonical, terminal_line_height, terminal_wheel_steps,
+        transitioned_presentation, tree_sessions, workspace_window_title,
     };
     use std::sync::Arc;
     use surface::{GridSize, SurfaceFrame, SurfaceStore};
     use workspace::{
         HostConnectionState, HostItem, KeyEvent, KeyInput, Modifiers, MouseAction, MouseButton,
-        MouseInput, NamedKey, SessionItem, SessionSelection, WorkspaceContent,
+        MouseInput, NamedKey, SessionItem, SessionSelection, WorkspaceContent, WorkspaceSnapshot,
     };
+
+    #[test]
+    fn new_session_dialog_matches_the_shipped_name_and_duplicate_rules() {
+        let snapshot = WorkspaceSnapshot::shell(
+            workspace::Appearance::default(),
+            vec![HostItem::wsl(
+                "Ubuntu",
+                None,
+                HostConnectionState::Ready,
+                vec![SessionItem::new("existing", 0)],
+                None,
+            )],
+        );
+        let mut draft = NewSessionDraft {
+            host_id: "wsl".to_owned(),
+            name: String::new(),
+        };
+
+        assert!(new_session_validation(&snapshot, &draft).is_some());
+        draft.name = "has.period".to_owned();
+        assert!(new_session_validation(&snapshot, &draft).is_some());
+        draft.name = "existing".to_owned();
+        assert_eq!(
+            new_session_validation(&snapshot, &draft).as_deref(),
+            Some("A tmux session with this name already exists.")
+        );
+        draft.name = "  release work  ".to_owned();
+        assert_eq!(new_session_validation(&snapshot, &draft), None);
+    }
 
     #[test]
     fn a_refused_input_stays_visible_until_later_input_is_delivered() {
