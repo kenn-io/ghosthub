@@ -2119,6 +2119,8 @@ dependencies = [
  "ghosthub-contracts",
  "serde",
  "serde_json",
+ "static_assertions",
+ "unicode-segmentation",
 ]
 
 [[package]]
