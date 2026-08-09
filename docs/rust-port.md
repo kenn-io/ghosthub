@@ -701,15 +701,20 @@ command. The chrome is shaped for additional admitted local mux hosts, but
 Slice 1 exposes only WSL tmux; psmux remains rejection evidence until it
 satisfies the same capability bar.
 
-The selected session row also exposes a separate destructive close action.
-It performs a fresh WSL runtime and tmux identity query before showing
-confirmation. Approval carries that non-persistable authority into one tmux
+The active presentation keeps a detach action that only closes its ordinary
+client. Every session in the current live inventory separately exposes Kill
+Session, including sessions that are not open. Kill performs a fresh WSL
+runtime and tmux identity query before showing confirmation for the exact
+endpoint. Approval carries that non-persistable authority into one tmux
 conditional that compares server PID, session ID, and creation time, then
 kills by the captured stable session ID only on a match. Cancellation changes
 nothing; lookup, runtime, identity, and command failures leave the presentation
 open. A successful kill removes only the matching active or retained
-presentation and refreshes inventory. This action never shares the ordinary
-detach path.
+presentation and refreshes inventory. Kill completion rechecks the active
+identity under the navigation lock before detaching, so a concurrent switch
+cannot close an unrelated presentation. This action never shares the ordinary
+detach path. Cached rows remain visible while a host is unavailable, but only
+retained presentations can be reopened until the host reconnects.
 
 The Windows shell draws one compact title bar in the same visual plane as the
 application chrome. It retains the native window controls and dynamic
@@ -728,8 +733,10 @@ to the surviving identity from a fresh process. An identity mismatch exits
 without attaching and becomes a classified refresh diagnostic.
 
 The same local WSL slice exposes explicit bare-session creation from the host
-tree. The dialog applies the shipped 1-100 character tmux-name rules and
-rejects names already present in current inventory. Its title, validation copy,
+tree. The dialog applies the shipped 1-100 character tmux-name rules,
+additionally rejects `#` before it can reach tmux format evaluation, and
+rejects names already present in current inventory. Discovered sessions are
+unaffected and remain attachable by live identity. Its title, validation copy,
 terminal-marked input, and compact actions present only task-relevant content;
 distro and lifecycle explanations are not shown in routine workflow chrome.
 The dialog

@@ -108,6 +108,14 @@ impl IsolatedServer {
             .expect("query isolated WSL tmux session");
         output.status.success()
     }
+
+    fn path_exists(path: &str) -> bool {
+        Command::new("wsl.exe")
+            .args(["--exec", "/usr/bin/test", "-e", path])
+            .status()
+            .expect("query isolated WSL path")
+            .success()
+    }
 }
 
 fn isolated_tmpdir(label: &str, process_id: u32, nonce: u128) -> String {
@@ -269,6 +277,33 @@ fn creates_attaches_and_detaches_one_atomic_local_session() {
             .is_err(),
         "current inventory prevents an accidental duplicate create action"
     );
+}
+
+#[test]
+#[ignore = "requires WSL2 and tmux; creates only an isolated TMUX_TMPDIR server"]
+fn user_created_names_cannot_execute_tmux_format_jobs() {
+    let _serial = WSL_LIVE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let server = IsolatedServer::empty("create-format-job");
+    let config = WslConfig::configured(None, "/usr/bin/tmux", Some(server.tmpdir.clone()))
+        .expect("valid isolated config");
+    let workspace = Workspace::start_wsl(config, TerminalAppearance::default());
+    wait_until_with_diagnostic(
+        || workspace.snapshot().hosts()[0].connection() == workspace::HostConnectionState::Ready,
+        || workspace_diagnostic(&workspace),
+    );
+    let endpoint = workspace.snapshot().hosts()[0].endpoint().to_owned();
+    let sentinel = format!("{}/owned", server.tmpdir);
+    let hostile_name = format!("#(touch {sentinel})");
+    assert!(hostile_name.chars().count() <= 100);
+
+    let error = workspace
+        .create_session("wsl", &endpoint, &hostile_name)
+        .expect_err("tmux format syntax must not enter the creation plan");
+
+    assert!(error.to_string().contains("number signs"));
+    assert!(!IsolatedServer::path_exists(&sentinel));
 }
 
 #[test]

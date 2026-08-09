@@ -842,6 +842,17 @@ impl RootView {
         cx.notify();
     }
 
+    fn detach_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.workspace.detach();
+        self.diagnostic = None;
+        self.observed_presentation_id = None;
+        self.clear_terminal_input();
+        self.paint_cache.clear();
+        self.resize_for_window(window);
+        window.focus(&self.focus);
+        cx.notify();
+    }
+
     fn cancel_session_kill(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.workspace.cancel_session_kill();
         window.focus(&self.focus);
@@ -1797,7 +1808,8 @@ impl RootView {
         confirmation: &workspace::SessionKillConfirmation,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let session = confirmation.selection().session().to_owned();
+        let title = kill_confirmation_title(confirmation.selection());
+        let description = kill_confirmation_description(confirmation.selection());
         div()
             .absolute()
             .inset_0()
@@ -1832,7 +1844,7 @@ impl RootView {
                             .text_sm()
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(rgb(0xe0_e4eb))
-                            .child(format!("Kill “{session}”?")),
+                            .child(title),
                     )
                     .child(
                         div()
@@ -1840,9 +1852,7 @@ impl RootView {
                             .py_4()
                             .text_sm()
                             .text_color(rgb(0xb6_bcc7))
-                            .child(
-                                "This permanently terminates every window, pane, and process in this tmux session on WSL.",
-                            ),
+                            .child(description),
                     )
                     .child(
                         div()
@@ -2228,9 +2238,7 @@ impl RootView {
             tree = tree.child(Self::tree_session_row(
                 host_index,
                 session_index,
-                &session.selection,
-                session.active,
-                session.show_endpoint,
+                session,
                 cx,
             ));
         }
@@ -2280,14 +2288,12 @@ impl RootView {
     fn tree_session_row(
         host_index: usize,
         index: usize,
-        selection: &SessionSelection,
-        is_active: bool,
-        show_endpoint: bool,
+        session: &TreeSession,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let selection = selection.clone();
-        let open_selection = selection.clone();
-        let kill_selection = selection.clone();
+        let selection = session.selection.clone();
+        let is_active = session.state.is_active();
+        let can_open = session.state.can_open();
         let name = selection.session().to_owned();
         let mut row = div()
             .id((
@@ -2301,9 +2307,13 @@ impl RootView {
             .gap_1()
             .pl(px(14.0))
             .pr_2()
-            .cursor_pointer()
             .bg(rgb(if is_active { 0x13_3d6a } else { 0x0f_1116 }))
-            .hover(|style| style.bg(rgb(if is_active { 0x17_477a } else { 0x1b_1f27 })))
+            .when(can_open, |element| {
+                element
+                    .cursor_pointer()
+                    .hover(|style| style.bg(rgb(if is_active { 0x17_477a } else { 0x1b_1f27 })))
+            })
+            .when(!can_open, |element| element.opacity(0.55))
             .child(
                 div()
                     .w(px(18.0))
@@ -2321,7 +2331,7 @@ impl RootView {
                     .text_color(rgb(if is_active { 0xe5_ed_f7 } else { 0xc4_c9_d2 }))
                     .child(name.clone()),
             );
-        if show_endpoint {
+        if session.show_endpoint {
             row = row.child(
                 div()
                     .flex_none()
@@ -2331,49 +2341,105 @@ impl RootView {
             );
         }
         if is_active {
-            row = row.child(
-                div()
-                    .id("kill-session")
-                    .flex_none()
-                    .size(px(24.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded_sm()
-                    .text_color(rgb(0xa9_c9_ea))
-                    .hover(|style| style.bg(rgb(0x25_527f)).text_color(rgb(0xff_ff_ff)))
-                    .child("×")
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.request_session_kill(&kill_selection, cx);
-                        cx.stop_propagation();
-                    })),
-            );
-        } else {
-            row = row.child(
-                div()
-                    .id((
-                        gpui::ElementId::named_usize("open-tree-session-host", host_index),
-                        index.to_string(),
-                    ))
-                    .flex_none()
-                    .px_1()
-                    .py_1()
-                    .rounded_sm()
-                    .cursor_pointer()
-                    .text_xs()
-                    .text_color(rgb(0x79_aee3))
-                    .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xb6_d8_f8)))
-                    .child("Open")
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.select_session(&open_selection, window, cx);
-                        cx.stop_propagation();
-                    })),
-            );
+            row = row.child(Self::tree_detach_action(cx));
+        } else if can_open {
+            row = row.child(Self::tree_open_action(
+                host_index,
+                index,
+                selection.clone(),
+                cx,
+            ));
         }
-        row.on_click(cx.listener(move |this, _, window, cx| {
-            this.select_session(&selection, window, cx);
-        }))
+        if session.state.can_kill() {
+            row = row.child(Self::tree_kill_action(
+                host_index,
+                index,
+                selection.clone(),
+                cx,
+            ));
+        }
+        row.when(can_open, |element| {
+            element.on_click(cx.listener(move |this, _, window, cx| {
+                this.select_session(&selection, window, cx);
+            }))
+        })
         .into_any_element()
+    }
+
+    fn tree_detach_action(cx: &mut Context<Self>) -> gpui::AnyElement {
+        div()
+            .id("detach-session")
+            .flex_none()
+            .px_1()
+            .py_1()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_sm()
+            .cursor_pointer()
+            .text_xs()
+            .text_color(rgb(0xa9_c9_ea))
+            .hover(|style| style.bg(rgb(0x25_527f)).text_color(rgb(0xff_ff_ff)))
+            .child("Detach")
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.detach_session(window, cx);
+                cx.stop_propagation();
+            }))
+            .into_any_element()
+    }
+
+    fn tree_open_action(
+        host_index: usize,
+        index: usize,
+        selection: SessionSelection,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        div()
+            .id((
+                gpui::ElementId::named_usize("open-tree-session-host", host_index),
+                index.to_string(),
+            ))
+            .flex_none()
+            .px_1()
+            .py_1()
+            .rounded_sm()
+            .cursor_pointer()
+            .text_xs()
+            .text_color(rgb(0x79_aee3))
+            .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xb6_d8_f8)))
+            .child("Open")
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.select_session(&selection, window, cx);
+                cx.stop_propagation();
+            }))
+            .into_any_element()
+    }
+
+    fn tree_kill_action(
+        host_index: usize,
+        index: usize,
+        selection: SessionSelection,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        div()
+            .id((
+                gpui::ElementId::named_usize("kill-tree-session-host", host_index),
+                index.to_string(),
+            ))
+            .flex_none()
+            .px_1()
+            .py_1()
+            .rounded_sm()
+            .cursor_pointer()
+            .text_xs()
+            .text_color(rgb(0xc7_7378))
+            .hover(|style| style.bg(rgb(0x3a_2025)).text_color(rgb(0xff_a3_a8)))
+            .child("Kill")
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.request_session_kill(&selection, cx);
+                cx.stop_propagation();
+            }))
+            .into_any_element()
     }
 
     fn host_landing_element(host: &HostItem, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -2563,8 +2629,35 @@ fn terminal_presentation_id(content: &WorkspaceContent) -> Option<u64> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct TreeSession {
     selection: SessionSelection,
-    active: bool,
+    state: TreeSessionState,
     show_endpoint: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TreeSessionState {
+    Active,
+    ActiveKillable,
+    Retained,
+    RetainedKillable,
+    Fresh,
+    Cached,
+}
+
+impl TreeSessionState {
+    const fn is_active(self) -> bool {
+        matches!(self, Self::Active | Self::ActiveKillable)
+    }
+
+    const fn can_open(self) -> bool {
+        !matches!(self, Self::Cached)
+    }
+
+    const fn can_kill(self) -> bool {
+        matches!(
+            self,
+            Self::ActiveKillable | Self::RetainedKillable | Self::Fresh
+        )
+    }
 }
 
 fn active_session_selection(content: &WorkspaceContent) -> Option<SessionSelection> {
@@ -2600,25 +2693,65 @@ fn tree_sessions(
     let mut selections = host
         .sessions()
         .iter()
-        .map(|session| SessionSelection::new(host.id(), host.endpoint(), session.name()))
+        .map(|session| {
+            (
+                SessionSelection::new(host.id(), host.endpoint(), session.name()),
+                true,
+            )
+        })
         .collect::<Vec<_>>();
     for selection in retained
         .iter()
         .filter(|selection| selection.host_id() == host.id())
         .chain(active_for_host)
     {
-        if !selections.contains(selection) {
-            selections.push(selection.clone());
+        if !selections
+            .iter()
+            .any(|(candidate, _)| candidate == selection)
+        {
+            selections.push((selection.clone(), false));
         }
     }
+    let host_accepts_actions = !matches!(
+        host.connection(),
+        HostConnectionState::Disconnected | HostConnectionState::Unavailable
+    );
     selections
         .into_iter()
-        .map(|selection| TreeSession {
-            active: active.as_ref() == Some(&selection),
-            show_endpoint: selection.endpoint() != host.endpoint(),
-            selection,
+        .map(|(selection, discovered)| {
+            let retained = retained.contains(&selection);
+            let is_active = active.as_ref() == Some(&selection);
+            let can_kill = discovered && host_accepts_actions;
+            let state = match (is_active, retained, host_accepts_actions, can_kill) {
+                (true, _, _, true) => TreeSessionState::ActiveKillable,
+                (true, _, _, false) => TreeSessionState::Active,
+                (false, true, _, true) => TreeSessionState::RetainedKillable,
+                (false, true, _, false) => TreeSessionState::Retained,
+                (false, false, true, _) => TreeSessionState::Fresh,
+                (false, false, false, _) => TreeSessionState::Cached,
+            };
+            TreeSession {
+                state,
+                show_endpoint: selection.endpoint() != host.endpoint(),
+                selection,
+            }
         })
         .collect()
+}
+
+fn kill_confirmation_title(selection: &SessionSelection) -> String {
+    format!(
+        "Kill “{}” on {}?",
+        selection.session(),
+        selection.endpoint()
+    )
+}
+
+fn kill_confirmation_description(selection: &SessionSelection) -> String {
+    format!(
+        "This permanently terminates every window, pane, and process in this tmux session on {}.",
+        selection.endpoint()
+    )
 }
 
 fn workspace_window_title(content: &WorkspaceContent) -> String {
@@ -2853,7 +2986,7 @@ fn new_session_validation(
         return None;
     }
     let Ok(name) = SessionName::parse(&draft.name) else {
-        return Some("Use 1–100 characters without periods, colons, or line breaks.".to_owned());
+        return Some("Use 1–100 characters without #, periods, colons, or line breaks.".to_owned());
     };
     host.sessions()
         .iter()
@@ -3352,11 +3485,12 @@ mod tests {
         UI_INPUT_BYTE_CAPACITY, UI_INPUT_CAPACITY, WheelBatch, active_session_selection,
         application_navigation_width, canonical_terminal_key_with, clear_terminal_input_state,
         clears_after_input_delivery, clears_when_input_queue_is_empty, coalesce_last_resize,
-        coalesce_last_wheel, input_queue_has_capacity, is_toggle_sidebar_shortcut, named_key,
-        new_session_validation, normalize_cell_width, queued_input_matches_presentation,
-        retained_key_event_with, terminal_cell_at_with_offset, terminal_key_input,
-        terminal_key_input_with_canonical, terminal_line_height, terminal_wheel_steps,
-        transitioned_presentation, tree_sessions, workspace_window_title,
+        coalesce_last_wheel, input_queue_has_capacity, is_toggle_sidebar_shortcut,
+        kill_confirmation_description, kill_confirmation_title, named_key, new_session_validation,
+        normalize_cell_width, queued_input_matches_presentation, retained_key_event_with,
+        terminal_cell_at_with_offset, terminal_key_input, terminal_key_input_with_canonical,
+        terminal_line_height, terminal_wheel_steps, transitioned_presentation, tree_sessions,
+        workspace_window_title,
     };
     use std::sync::Arc;
     use surface::{GridSize, SurfaceFrame, SurfaceStore};
@@ -3387,7 +3521,12 @@ mod tests {
         draft.name = "has.period".to_owned();
         assert_eq!(
             new_session_validation(&snapshot, &draft).as_deref(),
-            Some("Use 1–100 characters without periods, colons, or line breaks.")
+            Some("Use 1–100 characters without #, periods, colons, or line breaks.")
+        );
+        draft.name = "#(touch /tmp/ghosthub-owned)".to_owned();
+        assert_eq!(
+            new_session_validation(&snapshot, &draft).as_deref(),
+            Some("Use 1–100 characters without #, periods, colons, or line breaks.")
         );
         draft.name = "existing".to_owned();
         assert_eq!(
@@ -3528,10 +3667,33 @@ mod tests {
             let rows = tree_sessions(&host, &terminal, &[]);
             assert_eq!(rows.len(), 2);
             assert_eq!(rows[0].selection.session(), "other");
-            assert!(!rows[0].active);
+            assert!(!rows[0].state.is_active());
+            assert_eq!(
+                rows[0].state.can_open(),
+                state == HostConnectionState::Connecting
+            );
+            assert_eq!(
+                rows[0].state.can_kill(),
+                state == HostConnectionState::Connecting
+            );
             assert_eq!(rows[1].selection.session(), "demo");
-            assert!(rows[1].active);
+            assert!(rows[1].state.is_active());
+            assert!(rows[1].state.can_open());
         }
+    }
+
+    #[test]
+    fn kill_confirmation_names_the_exact_endpoint() {
+        let selection = SessionSelection::new("wsl", "Ubuntu-24.04", "release");
+
+        assert_eq!(
+            kill_confirmation_title(&selection),
+            "Kill “release” on Ubuntu-24.04?"
+        );
+        assert_eq!(
+            kill_confirmation_description(&selection),
+            "This permanently terminates every window, pane, and process in this tmux session on Ubuntu-24.04."
+        );
     }
 
     #[test]
@@ -3555,10 +3717,10 @@ mod tests {
         let rows = tree_sessions(&host, &terminal, &[]);
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].selection.endpoint(), "Debian");
-        assert!(!rows[0].active);
+        assert!(!rows[0].state.is_active());
         assert!(!rows[0].show_endpoint);
         assert_eq!(rows[1].selection.endpoint(), "Ubuntu");
-        assert!(rows[1].active);
+        assert!(rows[1].state.is_active());
         assert!(rows[1].show_endpoint);
     }
 
@@ -3578,8 +3740,11 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].selection.endpoint(), "Debian");
         assert!(!rows[0].show_endpoint);
+        assert!(rows[0].state.can_kill());
         assert_eq!(rows[1].selection.endpoint(), "Ubuntu");
         assert!(rows[1].show_endpoint);
+        assert!(rows[1].state.can_open());
+        assert!(!rows[1].state.can_kill());
     }
 
     #[test]
@@ -3601,7 +3766,27 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].selection.session(), "one");
         assert_eq!(rows[1].selection.session(), "two");
-        assert!(rows.iter().all(|row| !row.active));
+        assert!(rows.iter().all(|row| !row.state.is_active()));
+        assert!(rows.iter().all(|row| row.state.can_open()));
+        assert!(rows.iter().all(|row| !row.state.can_kill()));
+    }
+
+    #[test]
+    fn disconnected_cached_sessions_are_visible_but_cannot_start_fresh_actions() {
+        let host = HostItem::wsl(
+            "Ubuntu",
+            None,
+            HostConnectionState::Disconnected,
+            vec![SessionItem::new("cached", 0)],
+            None,
+        );
+
+        let rows = tree_sessions(&host, &WorkspaceContent::Shell, &[]);
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].selection.session(), "cached");
+        assert!(!rows[0].state.can_open());
+        assert!(!rows[0].state.can_kill());
     }
 
     #[test]

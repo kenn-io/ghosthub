@@ -27,7 +27,7 @@ impl SessionName {
     ///
     /// Returns an error for an empty name, a name longer than 100 Unicode
     /// grapheme clusters, or a name containing a control character, period,
-    /// or colon.
+    /// number sign, or colon.
     pub fn parse(value: &str) -> Result<Self, SessionNameError> {
         let value = value.trim();
         if value.is_empty() {
@@ -38,7 +38,7 @@ impl SessionName {
         }
         if value
             .chars()
-            .any(|character| character.is_control() || matches!(character, '.' | ':'))
+            .any(|character| character.is_control() || matches!(character, '#' | '.' | ':'))
         {
             return Err(SessionNameError::ForbiddenCharacter);
         }
@@ -56,7 +56,9 @@ impl fmt::Display for SessionNameError {
         match self {
             Self::Empty => formatter.write_str("Name the tmux session."),
             Self::TooLong | Self::ForbiddenCharacter => formatter
-                .write_str("Use 1-100 characters without periods, colons, or control characters."),
+                .write_str(
+                    "Use 1-100 characters without number signs, periods, colons, or control characters.",
+                ),
         }
     }
 }
@@ -494,6 +496,10 @@ mod tests {
         );
         assert_eq!(
             SessionName::parse("has:colon"),
+            Err(SessionNameError::ForbiddenCharacter)
+        );
+        assert_eq!(
+            SessionName::parse("#(touch /tmp/ghosthub-owned)"),
             Err(SessionNameError::ForbiddenCharacter)
         );
         assert_eq!(

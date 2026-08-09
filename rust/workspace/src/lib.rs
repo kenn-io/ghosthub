@@ -2074,10 +2074,24 @@ impl Workspace {
     }
 
     fn finish_session_kill(&self, target: &LiveSessionTarget) {
+        self.finish_killed_presentation(target.endpoint(), target.runtime(), target.identity());
+    }
+
+    fn finish_killed_presentation(
+        &self,
+        endpoint: &host::WslEndpoint,
+        runtime: &host::WslRuntimeIdentity,
+        identity: &session::SessionIdentity,
+    ) {
+        let _navigation = self
+            .inner
+            .navigation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let key_matches = |request: &AttachRequest| {
-            request.endpoint == *target.endpoint()
-                && request.runtime == *target.runtime()
-                && request.identity == *target.identity()
+            request.endpoint == *endpoint
+                && request.runtime == *runtime
+                && request.identity == *identity
         };
         let active_matches = self
             .inner
@@ -2087,7 +2101,7 @@ impl Workspace {
             .active()
             .is_some_and(|active| key_matches(&active.request));
         if active_matches {
-            self.detach();
+            self.detach_locked();
         }
         let changed = self
             .inner
@@ -2095,9 +2109,9 @@ impl Workspace {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove_matching(|key| {
-                key.endpoint == target.endpoint().distro()
-                    && key.runtime == *target.runtime()
-                    && key.identity == *target.identity()
+                key.endpoint == endpoint.distro()
+                    && key.runtime == *runtime
+                    && key.identity == *identity
             });
         if changed {
             self.inner.revision.fetch_add(1, Ordering::Release);
@@ -2190,6 +2204,10 @@ impl Workspace {
             .navigation
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.detach_locked();
+    }
+
+    fn detach_locked(&self) {
         self.begin_navigation();
         self.inner
             .attachment
@@ -6043,6 +6061,61 @@ mod tests {
             workspace.snapshot().content(),
             WorkspaceContent::Terminal { session, .. } if session == "work"
         ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn killed_presentation_cleanup_never_detaches_a_different_active_session() {
+        let workspace = Workspace::preview(WorkspaceSnapshot::ready(
+            Appearance::default(),
+            "Ubuntu",
+            Vec::new(),
+        ));
+        let snapshot = HostSnapshot::test_fixture("Ubuntu", "boot-id", 42, Vec::new());
+        let killed_identity = session::SessionIdentity::new(100, "$1", 200);
+        let active_identity = session::SessionIdentity::new(100, "$2", 201);
+        let active_request = attach_request_fixture(&snapshot, active_identity.clone(), "active");
+        workspace
+            .inner
+            .attachment
+            .lock()
+            .expect("attachment")
+            .reserve(active_request, AttachTerm::Xterm256Color)
+            .expect("reserve active attachment");
+        let size = GridSize::new(80, 24).expect("valid grid");
+        set_inner_state(
+            &workspace.inner,
+            WorkspaceContent::Terminal {
+                host_id: "wsl".to_owned(),
+                endpoint: "Ubuntu".to_owned(),
+                session: "active".to_owned(),
+                presentation_id: 1,
+                surface: Arc::new(SurfaceStore::new(surface::SurfaceFrame::blank(1, size))),
+            },
+        );
+
+        workspace.finish_killed_presentation(
+            snapshot.endpoint(),
+            snapshot.runtime(),
+            &killed_identity,
+        );
+
+        assert!(matches!(
+            workspace.snapshot().content(),
+            WorkspaceContent::Terminal { session, .. } if session == "active"
+        ));
+        assert_eq!(
+            workspace
+                .inner
+                .attachment
+                .lock()
+                .expect("attachment")
+                .active()
+                .expect("active attachment")
+                .request
+                .identity,
+            active_identity
+        );
     }
 
     #[test]
