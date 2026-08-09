@@ -12,3 +12,5 @@ src/assets/*.png.synced
 src/assets/.website-assets.placeholder
 src/assets/.website-assets.synced
 docs/content/assets/*.png
+# Generated from the repository-root canonical changelog.
+docs/content/changelog.md

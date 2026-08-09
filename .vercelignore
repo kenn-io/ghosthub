@@ -1,6 +1,7 @@
-# The Vercel project is linked at the repository root but builds from website/.
+# The Vercel project builds from website/ and reads the canonical changelog.
 /*
 !website
+!CHANGELOG.md
 
 # Build and machine-local state under the allowed website tree.
 website/node_modules

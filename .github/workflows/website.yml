@@ -4,10 +4,12 @@ on:
   push:
     branches: [main]
     paths:
+      - 'CHANGELOG.md'
       - 'website/**'
       - '.github/workflows/website.yml'
   pull_request:
     paths:
+      - 'CHANGELOG.md'
       - 'website/**'
       - '.github/workflows/website.yml'
   workflow_dispatch:
