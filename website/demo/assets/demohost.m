@@ -766,12 +766,14 @@ static void DemoCapture(NSString *path, BOOL matrix, BOOL exactWindow) {
                 message:found ? @"expected text is visible"
                               : @"expected text is not visible"];
     } else if ([action isEqualToString:@"expect-window-title"]) {
-      BOOL found = text.length > 0 &&
-          [DemoRootWindow().title containsString:text];
+      NSString *activeTitle = DemoRootWindow().title ?: @"";
+      BOOL found = text.length > 0 && [activeTitle containsString:text];
       [self acknowledge:requestID
                 success:found
                 message:found ? @"expected window title is active"
-                              : @"expected window title is not active"];
+                              : [NSString stringWithFormat:
+                                  @"expected %@ but active title is %@",
+                                  text, activeTitle]];
     } else if ([action isEqualToString:@"click"]) {
       NSArray<NSString *> *parts =
           [text componentsSeparatedByString:@","];

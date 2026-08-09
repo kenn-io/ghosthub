@@ -322,9 +322,7 @@ prepare_command_window() {
     palette "$query"
   fi
   sleep 3
-  if [[ "$select" != "none" ]]; then
-    demo_input expect-window-title "$query"
-  fi
+  demo_input expect-window-title "$query"
   demo_input hide-sidebar
 }
 
@@ -397,12 +395,9 @@ echo "==> guide: six-tab tmux workspace"
 demo_input new-window
 sleep 2
 if [[ "${GHOSTHUB_DEMO_TABS_ONLY:-}" != "1" ]]; then
-  # The preceding command-center capture leaves the shared Projects and
-  # agentsview disclosures expanded. Normalize the fresh window to the
-  # collapsed state used by the focused tabs-only workflow.
+  # The Overview captures leave Projects expanded. Collapse it so the first
+  # tab starts from the same sidebar state as the focused tabs-only workflow.
   demo_input frame "110,145,1500,820"
-  demo_input click "32,225"
-  sleep 0.5
   demo_input click "32,310"
   sleep 0.5
 fi
