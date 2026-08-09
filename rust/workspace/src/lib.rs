@@ -595,6 +595,12 @@ struct CreateRequest {
     name: SessionName,
 }
 
+struct PendingCreation {
+    navigation_generation: u64,
+    previous: Option<PresentationKey>,
+    cancellation: CancellationToken,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct PresentationKey {
     host_id: String,
@@ -1156,6 +1162,7 @@ struct Inner {
     worker: Mutex<WorkerState<TerminalWorker>>,
     retained_presentations: Mutex<RetainedPresentations<TerminalWorker>>,
     pending_paste: Mutex<Option<PendingPaste>>,
+    pending_creation: Mutex<Option<PendingCreation>>,
     pending_kill: Mutex<Option<PendingKill>>,
     kill_generation: AtomicU64,
     operation_events: Mutex<std::collections::VecDeque<WorkspaceEvent>>,
@@ -1219,6 +1226,7 @@ impl Workspace {
                 worker: Mutex::new(WorkerState::new()),
                 retained_presentations: Mutex::new(RetainedPresentations::new()),
                 pending_paste: Mutex::new(None),
+                pending_creation: Mutex::new(None),
                 pending_kill: Mutex::new(None),
                 kill_generation: AtomicU64::new(0),
                 operation_events: Mutex::new(std::collections::VecDeque::new()),
@@ -1280,6 +1288,7 @@ impl Workspace {
                 worker: Mutex::new(WorkerState::new()),
                 retained_presentations: Mutex::new(RetainedPresentations::new()),
                 pending_paste: Mutex::new(None),
+                pending_creation: Mutex::new(None),
                 pending_kill: Mutex::new(None),
                 kill_generation: AtomicU64::new(0),
                 operation_events: Mutex::new(std::collections::VecDeque::new()),
@@ -1325,6 +1334,7 @@ impl Workspace {
                 worker: Mutex::new(WorkerState::new()),
                 retained_presentations: Mutex::new(RetainedPresentations::new()),
                 pending_paste: Mutex::new(None),
+                pending_creation: Mutex::new(None),
                 pending_kill: Mutex::new(None),
                 kill_generation: AtomicU64::new(0),
                 operation_events: Mutex::new(std::collections::VecDeque::new()),
@@ -1613,6 +1623,16 @@ impl Workspace {
         let in_flight_fallback = self.supersede_inflight_attachment()?;
         let visible_previous = self.retain_active_presentation()?;
         let previous = in_flight_fallback.or(visible_previous);
+        let cancellation = CancellationToken::new();
+        *self
+            .inner
+            .pending_creation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(PendingCreation {
+            navigation_generation,
+            previous: previous.clone(),
+            cancellation: cancellation.clone(),
+        });
         clear_terminal_notice(&self.inner);
         set_inner_state(
             &self.inner,
@@ -1625,22 +1645,16 @@ impl Workspace {
 
         let inner = Arc::clone(&self.inner);
         let spawn_request = request.clone();
-        let spawn_previous = previous.clone();
         if let Err(error) = thread::Builder::new()
             .name("ghosthub-terminal-create".to_owned())
             .spawn(move || {
-                run_create(
-                    &inner,
-                    &spawn_request,
-                    spawn_previous,
-                    navigation_generation,
-                );
+                run_create(&inner, &spawn_request, navigation_generation, &cancellation);
             })
         {
             drop(navigation);
             restore_inventory_after_creation_failure(
                 &self.inner,
-                previous,
+                None,
                 navigation_generation,
                 format!("start tmux creation task: {error}"),
             );
@@ -1698,11 +1712,23 @@ impl Workspace {
         if !attaching {
             return Ok(None);
         }
-        let active = attachment.take_active().ok_or_else(|| {
-            WorkspaceError::new("the in-flight terminal presentation is not available")
-        })?;
-        let fallback = active.fallback.map(|fallback| fallback.presentation);
+        let active = attachment.take_active();
         drop(attachment);
+        let fallback = if let Some(active) = active {
+            active.fallback.map(|fallback| fallback.presentation)
+        } else {
+            let pending = self
+                .inner
+                .pending_creation
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+                .ok_or_else(|| {
+                    WorkspaceError::new("the in-flight terminal presentation is not available")
+                })?;
+            pending.cancellation.cancel();
+            pending.previous
+        };
         clear_pending_paste(&self.inner);
         self.restore_inventory_state();
         Ok(fallback)
@@ -3095,16 +3121,16 @@ fn fail_refresh_start(
 fn run_create(
     inner: &Inner,
     request: &CreateRequest,
-    previous: Option<PresentationKey>,
     navigation_generation: u64,
+    cancellation: &CancellationToken,
 ) {
-    let created = create_fresh(inner, request, navigation_generation);
+    let created = create_fresh(inner, request, navigation_generation, cancellation);
     let (worker, snapshot, session, initial_geometry, term) = match created {
         Ok(created) => created,
         Err(error) => {
             restore_inventory_after_creation_failure(
                 inner,
-                previous,
+                None,
                 navigation_generation,
                 error.to_string(),
             );
@@ -3122,7 +3148,7 @@ fn run_create(
             drop(worker);
             restore_inventory_after_creation_failure(
                 inner,
-                previous,
+                None,
                 navigation_generation,
                 error.to_string(),
             );
@@ -3138,8 +3164,46 @@ fn run_create(
         name: session.name().to_owned(),
         inventory_generation,
     };
+    publish_created_presentation(
+        inner,
+        attached,
+        worker,
+        initial_geometry,
+        term,
+        navigation_generation,
+    );
+}
+
+fn publish_created_presentation(
+    inner: &Inner,
+    attached: AttachRequest,
+    worker: TerminalWorker,
+    initial_geometry: TerminalGeometry,
+    term: AttachTerm,
+    navigation_generation: u64,
+) {
+    let navigation = inner
+        .navigation
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if inner.navigation_generation.load(Ordering::Acquire) != navigation_generation {
+        drop(navigation);
+        drop(worker);
+        return;
+    }
+    let pending = inner
+        .pending_creation
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+        .filter(|pending| pending.navigation_generation == navigation_generation);
+    let Some(pending) = pending else {
+        drop(navigation);
+        drop(worker);
+        return;
+    };
     let key = attached.presentation_key();
-    let fallback = previous.map(|presentation| FallbackAuthority {
+    let fallback = pending.previous.map(|presentation| FallbackAuthority {
         presentation,
         target: key,
         navigation_generation,
@@ -3148,15 +3212,11 @@ fn run_create(
         .attachment
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if inner.navigation_generation.load(Ordering::Acquire) != navigation_generation {
-        drop(attachment);
-        drop(worker);
-        return;
-    }
     let Some(generation) =
         attachment.reserve_with_fallback(attached.clone(), term, fallback.clone())
     else {
         drop(attachment);
+        drop(navigation);
         drop(worker);
         restore_inventory_after_creation_failure(
             inner,
@@ -3178,6 +3238,7 @@ fn run_create(
     ) {
         attachment.clear_if_current(generation);
         drop(attachment);
+        drop(navigation);
         restore_inventory_after_creation_failure(
             inner,
             fallback.map(|fallback| fallback.presentation),
@@ -3197,12 +3258,15 @@ fn run_create(
             surface,
         },
     );
+    drop(attachment);
+    drop(navigation);
 }
 
 fn create_fresh(
     inner: &Inner,
     request: &CreateRequest,
     navigation_generation: u64,
+    cancellation: &CancellationToken,
 ) -> Result<
     (
         TerminalWorker,
@@ -3215,7 +3279,7 @@ fn create_fresh(
 > {
     let before = request
         .host
-        .discover(&ConptyAdmissionAttacher::new())
+        .discover_with_cancel(&ConptyAdmissionAttacher::new(), cancellation)
         .map_err(|error| WorkspaceError::new(error.to_string()))?;
     if before.endpoint() != &request.endpoint {
         return Err(WorkspaceError::new(
@@ -3251,7 +3315,6 @@ fn create_fresh(
     let client_identity = worker
         .wait_for_creation_identity(CREATE_IDENTITY_TIMEOUT)
         .map_err(|error| WorkspaceError::new(error.to_string()))?;
-    let cancellation = CancellationToken::new();
     for attempt in 0..CREATE_DISCOVERY_ATTEMPTS {
         if inner.navigation_generation.load(Ordering::Acquire) != navigation_generation {
             drop(worker);
@@ -3259,7 +3322,7 @@ fn create_fresh(
         }
         let snapshot = request
             .host
-            .discover_after_create(before.endpoint(), &request.runtime, &cancellation)
+            .discover_after_create(before.endpoint(), &request.runtime, cancellation)
             .map_err(|error| WorkspaceError::new(error.to_string()))?;
         if let Some(session) = created_session(&snapshot, &client_identity) {
             return Ok((worker, snapshot, session, launch_geometry, term));
@@ -3309,6 +3372,16 @@ fn restore_inventory_after_creation_failure(
     if inner.navigation_generation.load(Ordering::Acquire) != navigation_generation {
         return;
     }
+    let pending = inner
+        .pending_creation
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+        .filter(|pending| pending.navigation_generation == navigation_generation);
+    if let Some(pending) = &pending {
+        pending.cancellation.cancel();
+    }
+    let previous = pending.and_then(|pending| pending.previous).or(previous);
     restore_presentation_inventory(inner);
     if let Some(previous) = previous {
         match activate_retained_presentation(inner, &previous, None) {
@@ -6026,6 +6099,62 @@ mod tests {
                 navigation_generation: selected_navigation,
             })
         );
+    }
+
+    #[test]
+    fn switching_sessions_cancels_pending_creation_and_restores_inventory() {
+        let workspace = Workspace::preview(WorkspaceSnapshot::ready(
+            Appearance::default(),
+            "Ubuntu",
+            vec![SessionItem::new("selected", 0)],
+        ));
+        let creation_navigation = workspace.begin_navigation();
+        let cancellation = CancellationToken::new();
+        *workspace
+            .inner
+            .pending_creation
+            .lock()
+            .expect("pending creation") = Some(PendingCreation {
+            navigation_generation: creation_navigation,
+            previous: None,
+            cancellation: cancellation.clone(),
+        });
+        set_inner_state(
+            &workspace.inner,
+            WorkspaceContent::Attaching {
+                host_id: "wsl".to_owned(),
+                endpoint: "Ubuntu".to_owned(),
+                session: "creating".to_owned(),
+            },
+        );
+
+        let _switch_navigation = workspace.begin_navigation();
+        let fallback = workspace
+            .supersede_inflight_attachment()
+            .expect("switch supersedes pending creation");
+
+        assert_eq!(fallback, None);
+        assert!(cancellation.is_cancelled());
+        assert!(
+            workspace
+                .inner
+                .pending_creation
+                .lock()
+                .expect("pending creation")
+                .is_none()
+        );
+        restore_inventory_after_creation_failure(
+            &workspace.inner,
+            None,
+            creation_navigation,
+            "stale creation failure".to_owned(),
+        );
+        assert!(matches!(
+            workspace.snapshot().content(),
+            WorkspaceContent::Ready { sessions, .. }
+                if sessions.iter().any(|session| session.name() == "selected")
+        ));
+        assert_eq!(workspace.snapshot().notice(), None);
     }
 
     #[test]

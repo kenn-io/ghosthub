@@ -755,7 +755,10 @@ never retries after consuming its authority. From that point the presentation
 holds only attach authority. A race that creates the same name
 after validation attaches to that exact existing session without changing its
 layout. A failure after launch may detach and report the result but never
-reruns creation or kills the session.
+reruns creation or kills the session. Until promotion to attach authority,
+workspace navigation owns a cancellable pending-creation reservation; choosing
+another session restores navigation immediately and invalidates the background
+task without gaining authority to destroy any session it may have created.
 
 Slice 1 reads font family, font size, and theme through:
 
