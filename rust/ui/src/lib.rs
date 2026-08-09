@@ -844,22 +844,17 @@ impl RootView {
         if !self.presentation_accepts_input(presentation_id) {
             return;
         }
-        if is_paste_shortcut(&event.keystroke) || is_toggle_sidebar_shortcut(&event.keystroke) {
-            cx.stop_propagation();
-            return;
-        }
-        let canonical = canonical_terminal_key(&event.keystroke);
-        if let Some(input) = self.keyboard.input_for(
-            &canonical.identity,
-            InputKeyEvent::Release,
-            canonical.modifiers,
-        ) {
+        if let Some((canonical, input)) = retained_key_release(&self.keyboard, &event.keystroke) {
             self.send_key_event(
                 presentation_id,
                 input,
                 &canonical.identity,
                 InputKeyEvent::Release,
             );
+            cx.stop_propagation();
+            return;
+        }
+        if is_paste_shortcut(&event.keystroke) || is_toggle_sidebar_shortcut(&event.keystroke) {
             cx.stop_propagation();
         }
     }
@@ -2574,6 +2569,27 @@ fn canonical_terminal_key(keystroke: &gpui::Keystroke) -> CanonicalTerminalKey {
     canonical_terminal_key_with(keystroke, platform_layout_key)
 }
 
+fn retained_key_release(
+    keyboard: &TerminalKeyboard,
+    keystroke: &gpui::Keystroke,
+) -> Option<(CanonicalTerminalKey, KeyInput)> {
+    retained_key_release_with(keyboard, keystroke, platform_layout_key)
+}
+
+fn retained_key_release_with(
+    keyboard: &TerminalKeyboard,
+    keystroke: &gpui::Keystroke,
+    resolve: impl FnOnce(char) -> Option<LayoutKey>,
+) -> Option<(CanonicalTerminalKey, KeyInput)> {
+    let canonical = canonical_terminal_key_with(keystroke, resolve);
+    let input = keyboard.input_for(
+        &canonical.identity,
+        InputKeyEvent::Release,
+        canonical.modifiers,
+    )?;
+    Some((canonical, input))
+}
+
 fn canonical_terminal_key_with(
     keystroke: &gpui::Keystroke,
     resolve: impl FnOnce(char) -> Option<LayoutKey>,
@@ -2808,9 +2824,10 @@ mod tests {
         application_navigation_width, canonical_terminal_key_with, clear_terminal_input_state,
         clears_after_input_delivery, clears_when_input_queue_is_empty, coalesce_last_resize,
         coalesce_last_wheel, input_queue_has_capacity, is_toggle_sidebar_shortcut, named_key,
-        normalize_cell_width, queued_input_matches_presentation, terminal_cell_at_with_offset,
-        terminal_key_input, terminal_key_input_with_canonical, terminal_line_height,
-        terminal_wheel_steps, transitioned_presentation, tree_sessions, workspace_window_title,
+        normalize_cell_width, queued_input_matches_presentation, retained_key_release_with,
+        terminal_cell_at_with_offset, terminal_key_input, terminal_key_input_with_canonical,
+        terminal_line_height, terminal_wheel_steps, transitioned_presentation, tree_sessions,
+        workspace_window_title,
     };
     use std::sync::Arc;
     use surface::{GridSize, SurfaceFrame, SurfaceStore};
@@ -3164,6 +3181,62 @@ mod tests {
         assert_eq!(terminal_key_input(&keystroke, KeyEvent::Press), None);
         assert_eq!(terminal_key_input(&keystroke, KeyEvent::Repeat), None);
         assert_eq!(terminal_key_input(&keystroke, KeyEvent::Release), None);
+    }
+
+    #[test]
+    fn retained_ctrl_key_release_precedes_sidebar_shortcut_classification() {
+        let layout = LayoutKey {
+            virtual_key: 0x42,
+            unshifted: 'b',
+            shifted: 'B',
+            shift_required: false,
+        };
+        let press = gpui::Keystroke {
+            modifiers: gpui::Modifiers::control(),
+            key: "b".to_owned(),
+            key_char: None,
+        };
+        let release = gpui::Keystroke {
+            modifiers: gpui::Modifiers {
+                control: true,
+                shift: true,
+                ..gpui::Modifiers::default()
+            },
+            key: "b".to_owned(),
+            key_char: None,
+        };
+        assert!(is_toggle_sidebar_shortcut(&release));
+
+        let press_key = canonical_terminal_key_with(&press, |_| Some(layout));
+        let press_input = terminal_key_input_with_canonical(&press, KeyEvent::Press, &press_key)
+            .expect("Ctrl+B is terminal input");
+        let mut keyboard = TerminalKeyboard::default();
+        keyboard.finish_accepted(
+            &press_key.identity,
+            Some(press_input.clone()),
+            KeyEvent::Press,
+        );
+
+        let (release_key, release_input) =
+            retained_key_release_with(&keyboard, &release, |_| Some(layout))
+                .expect("the retained terminal press owns its release");
+        assert_eq!(release_key.identity, press_key.identity);
+        assert_eq!(
+            release_input,
+            KeyInput::text_with_key(
+                "b",
+                "b",
+                Modifiers {
+                    shift: true,
+                    control: true,
+                    ..Modifiers::default()
+                },
+            )
+            .with_event(KeyEvent::Release)
+        );
+        keyboard.finish_accepted(&release_key.identity, None, KeyEvent::Release);
+        assert_eq!(keyboard.reserved_releases(), 0);
+        assert!(retained_key_release_with(&keyboard, &release, |_| Some(layout)).is_none());
     }
 
     #[test]
