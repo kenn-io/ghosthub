@@ -2574,8 +2574,15 @@ fn ctrl_key_input(
         return None;
     }
 
-    let (logical, produced) = if canonical.modifiers.shift && raw.is_ascii_lowercase() {
-        (raw, raw.to_ascii_uppercase())
+    let (logical, produced) = if canonical.modifiers.shift {
+        (
+            raw,
+            if raw.is_ascii_lowercase() {
+                raw.to_ascii_uppercase()
+            } else {
+                shifted_ascii_key(raw).unwrap_or(raw)
+            },
+        )
     } else {
         (raw, raw)
     };
@@ -2591,6 +2598,33 @@ fn ctrl_key_input(
         )
         .with_event(event),
     )
+}
+
+const fn shifted_ascii_key(character: char) -> Option<char> {
+    match character {
+        '`' => Some('~'),
+        '1' => Some('!'),
+        '2' => Some('@'),
+        '3' => Some('#'),
+        '4' => Some('$'),
+        '5' => Some('%'),
+        '6' => Some('^'),
+        '7' => Some('&'),
+        '8' => Some('*'),
+        '9' => Some('('),
+        '0' => Some(')'),
+        '-' => Some('_'),
+        '=' => Some('+'),
+        '[' => Some('{'),
+        ']' => Some('}'),
+        '\\' => Some('|'),
+        ';' => Some(':'),
+        '\'' => Some('"'),
+        ',' => Some('<'),
+        '.' => Some('>'),
+        '/' => Some('?'),
+        _ => None,
+    }
 }
 
 fn canonical_terminal_key(keystroke: &gpui::Keystroke) -> CanonicalTerminalKey {
@@ -3386,6 +3420,38 @@ mod tests {
                     produced,
                     logical,
                     expected_modifiers
+                ))
+            );
+        }
+    }
+
+    #[test]
+    fn no_layout_fallback_shifts_ascii_control_punctuation() {
+        let modifiers = gpui::Modifiers {
+            control: true,
+            shift: true,
+            ..gpui::Modifiers::default()
+        };
+        let expected_modifiers = Modifiers {
+            control: true,
+            shift: true,
+            ..Modifiers::default()
+        };
+        for (logical, produced) in [("-", "_"), ("/", "?")] {
+            let keystroke = gpui::Keystroke {
+                modifiers,
+                key: logical.to_owned(),
+                key_char: None,
+            };
+            let canonical = canonical_terminal_key_with(&keystroke, |_| None);
+
+            assert_eq!(canonical.layout, None);
+            assert_eq!(
+                terminal_key_input_with_canonical(&keystroke, KeyEvent::Press, &canonical),
+                Some(KeyInput::text_with_key(
+                    produced,
+                    logical,
+                    expected_modifiers,
                 ))
             );
         }
