@@ -863,14 +863,23 @@ scaffolding. Windows tests use a unique WSL tmux socket namespace and assert
 before and after each run that the user's default server is untouched.
 
 The live gate runs separately from ordinary pull-request CI on a Windows x64
-acceptance runner labeled `ghosthub-wsl2`. That runner must have a usable WSL2
-default distro, `/usr/bin/tmux`, and the Windows Rust build toolchain. The
-manually dispatched `rust-wsl-live.yml` workflow runs the same terminal and
-workspace suites as `make rust-test-wsl-live`; a successful live run is
-required acceptance evidence for changes to WSL attachment, creation, guarded
-kill, or client-lifetime behavior. GitHub-hosted Windows runners remain the
-fast compile, unit, contract, and lint gate because their installed WSL tooling
-does not guarantee a usable WSL2 distro or nested virtualization.
+runner in the dedicated `ghosthub-wsl-acceptance` group. That runner must have
+a usable WSL2 default distro, `/usr/bin/tmux`, and the Windows Rust build
+toolchain. The group's GitHub settings permit only the canonical repository
+and the exact `rust-wsl-live.yml` workflow.
+
+The workflow is manual-only. It rejects every repository and ref except
+`kenn-io/ghosthub`'s `rust-port` integration branch, then explicitly checks out
+the immutable dispatch SHA. It never executes feature-branch or fork code on
+the persistent runner. Feature changes run `make rust-test-wsl-live` on an
+isolated developer machine before merge; after merge, the trusted integration
+SHA receives the GitHub acceptance run. A successful live run is required
+acceptance evidence for changes to WSL attachment, creation, guarded kill, or
+client-lifetime behavior.
+
+GitHub-hosted Windows runners remain the fast compile, unit, contract, and lint
+gate because their installed WSL tooling does not guarantee a usable WSL2
+distro or nested virtualization.
 
 The Rust port adds no Swift or macOS live-attach work. Linux compilation is not
 used as evidence for the Windows ConPTY-to-WSL relay path.

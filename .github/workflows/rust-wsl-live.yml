@@ -1,7 +1,6 @@
 name: Rust WSL Live Acceptance
 
 on:
-  workflow_call:
   workflow_dispatch:
 
 permissions:
@@ -14,7 +13,10 @@ concurrency:
 jobs:
   wsl-live:
     name: WSL2 terminal lifecycle
-    runs-on: [self-hosted, Windows, X64, ghosthub-wsl2]
+    if: github.repository == 'kenn-io/ghosthub' && github.ref == 'refs/heads/rust-port'
+    runs-on:
+      group: ghosthub-wsl-acceptance
+      labels: [self-hosted, Windows, X64]
     timeout-minutes: 45
     defaults:
       run:
@@ -23,6 +25,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Verify the WSL2 acceptance environment
