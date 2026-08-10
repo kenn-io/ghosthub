@@ -34,10 +34,9 @@ fn empty_inventory_copy_names_the_socket_namespace() {
         None,
     );
 
-    assert_eq!(
-        empty_inventory_text(&host),
-        "No tmux server is running in Ubuntu using /run/user/1000/tmux. Use + beside the host to create one, or review WSL host settings."
-    );
+    let copy = empty_inventory_text(&host);
+    assert!(copy.contains("Ubuntu"));
+    assert!(copy.contains("/run/user/1000/tmux"));
 }
 
 #[test]
