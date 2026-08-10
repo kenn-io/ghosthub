@@ -230,8 +230,9 @@ environment so zero sessions cannot silently conceal where Ghosthub looked.
 
 Herdr is discovered as an optional capability of the resolved WSL endpoint,
 not as a second host and not as an application startup requirement. After tmux
-admission, Host resolves an exact absolute `herdr` executable through the WSL
-account login environment, removes every inherited Herdr routing variable named
+admission, Host resolves an exact absolute `herdr` executable through WSL's
+POSIX login profile (`/bin/sh -lc` with a fixed Ghosthub-owned probe), removes
+every inherited Herdr routing variable named
 in [Terminal Sessions](terminal-sessions.md), and invokes
 `herdr session list --json` through direct argv. Exit 127 is silent absence.
 Other executable, permission, transport, and malformed-output failures remain a

@@ -69,10 +69,7 @@ pub fn empty_inventory_text(host: &HostItem) -> String {
     let namespace = host
         .socket_directory()
         .unwrap_or("the default tmux socket namespace");
-    format!(
-        "No tmux server is running in {} using {namespace}. Use + beside the host to create one, or review WSL host settings.",
-        host.endpoint()
-    )
+    format!("No tmux sessions in {} using {namespace}.", host.endpoint())
 }
 
 #[must_use]
@@ -2094,37 +2091,13 @@ impl RootView {
                 .flex_col()
                 .child(Self::host_header(host_index, host, is_selected, cx));
 
-        match host.connection() {
-            HostConnectionState::Connecting => {
-                if host.sessions().is_empty() && host.herdr_sessions().is_empty() {
-                    host_tree = host_tree.child(Self::host_status_row(
-                        host_index,
-                        "Refreshing sessions…".to_owned(),
-                        "Cancel",
-                        true,
-                        cx,
-                    ));
-                }
-            }
-            HostConnectionState::Unavailable => {
-                let message = host.diagnostic().map_or_else(
-                    || "Host unavailable".to_owned(),
-                    |diagnostic| diagnostic.message().to_owned(),
-                );
-                host_tree = host_tree.child(Self::host_status_row(
-                    host_index, message, "Retry", false, cx,
-                ));
-            }
-            HostConnectionState::Disconnected => {
-                host_tree = host_tree.child(Self::host_status_row(
-                    host_index,
-                    "Host disconnected".to_owned(),
-                    "Connect",
-                    false,
-                    cx,
-                ));
-            }
-            HostConnectionState::Ready => {}
+        if let Some(status) = host_tree_status(host) {
+            host_tree = host_tree.child(Self::host_status_row(
+                host_index,
+                status.message,
+                status.action,
+                cx,
+            ));
         }
 
         let sessions = tree_sessions(host, content, retained);
@@ -2201,6 +2174,23 @@ impl RootView {
                     .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xd2_d7_df)))
                     .child("↻")
                     .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
+            );
+        } else if host.connection() == HostConnectionState::Connecting {
+            host_header = host_header.child(
+                div()
+                    .id(("cancel-host-refresh", host_index))
+                    .flex_none()
+                    .size(px(24.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_sm()
+                    .cursor_pointer()
+                    .text_sm()
+                    .text_color(rgb(0x8f_96_a3))
+                    .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xd2_d7_df)))
+                    .child("×")
+                    .on_click(cx.listener(|this, _, _, cx| this.cancel_refresh(cx))),
             );
         }
         host_header.into_any_element()
@@ -2459,14 +2449,8 @@ impl RootView {
         host_index: usize,
         message: String,
         action: &'static str,
-        cancel: bool,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let action_id = if cancel {
-            "cancel-host-refresh"
-        } else {
-            "retry-host-refresh"
-        };
         div()
             .mx_2()
             .mb_1()
@@ -2477,20 +2461,14 @@ impl RootView {
             .child(div().text_xs().text_color(rgb(0x9b_a2ae)).child(message))
             .child(
                 div()
-                    .id((action_id, host_index))
+                    .id(("retry-host-refresh", host_index))
                     .mt_1()
                     .cursor_pointer()
                     .text_xs()
                     .text_color(rgb(0x79_aee3))
                     .hover(|style| style.text_color(rgb(0xb6_d8_f8)))
                     .child(action)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if cancel {
-                            this.cancel_refresh(cx);
-                        } else {
-                            this.refresh(cx);
-                        }
-                    })),
+                    .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
             )
             .into_any_element()
     }
@@ -2655,7 +2633,7 @@ impl RootView {
     fn host_landing_element(host: &HostItem, cx: &mut Context<Self>) -> gpui::AnyElement {
         if host.connection() == HostConnectionState::Ready {
             return centered(if host.sessions().is_empty() {
-                "Use + beside WSL to create a tmux session."
+                "No tmux sessions."
             } else {
                 "Choose a session to open its terminal."
             });
@@ -2769,13 +2747,7 @@ impl RootView {
                 "Select an existing session. Ghosthub attaches as an ordinary tmux client.",
             ));
         if sessions.is_empty() {
-            let empty = host.map_or_else(
-                || {
-                    "No tmux server is running in this distro. Use + beside WSL to create one."
-                        .to_owned()
-                },
-                empty_inventory_text,
-            );
+            let empty = host.map_or_else(|| "No tmux sessions.".to_owned(), empty_inventory_text);
             list = list.child(div().p_4().rounded_md().bg(rgb(0x1a_1d24)).child(empty));
         }
         for (index, session) in sessions.iter().enumerate() {
@@ -2841,6 +2813,29 @@ struct TreeSession {
     selection: SessionSelection,
     state: TreeSessionState,
     show_endpoint: bool,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct HostTreeStatus {
+    message: String,
+    action: &'static str,
+}
+
+fn host_tree_status(host: &HostItem) -> Option<HostTreeStatus> {
+    match host.connection() {
+        HostConnectionState::Connecting | HostConnectionState::Ready => None,
+        HostConnectionState::Unavailable => Some(HostTreeStatus {
+            message: host.diagnostic().map_or_else(
+                || "Host unavailable".to_owned(),
+                |diagnostic| diagnostic.message().to_owned(),
+            ),
+            action: "Retry",
+        }),
+        HostConnectionState::Disconnected => Some(HostTreeStatus {
+            message: "Host disconnected".to_owned(),
+            action: "Connect",
+        }),
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -3725,7 +3720,7 @@ mod tests {
         TerminalResize, UI_INPUT_BYTE_CAPACITY, UI_INPUT_CAPACITY, WheelBatch,
         active_session_selection, application_navigation_width, canonical_terminal_key_with,
         clear_terminal_input_state, clears_after_input_delivery, clears_when_input_queue_is_empty,
-        coalesce_last_resize, coalesce_last_wheel, input_queue_has_capacity,
+        coalesce_last_resize, coalesce_last_wheel, host_tree_status, input_queue_has_capacity,
         is_toggle_sidebar_shortcut, kill_confirmation_description, kill_confirmation_title,
         named_key, new_session_validation, normalize_cell_width, queued_input_matches_presentation,
         retained_key_event_with, terminal_cell_at_with_offset, terminal_key_input,
@@ -3936,6 +3931,19 @@ mod tests {
             assert!(rows[1].state.is_active());
             assert!(rows[1].state.can_open());
         }
+    }
+
+    #[test]
+    fn focus_refresh_does_not_insert_a_transient_navigation_status_row() {
+        let host = HostItem::wsl(
+            "Ubuntu",
+            None,
+            HostConnectionState::Connecting,
+            Vec::new(),
+            None,
+        );
+
+        assert_eq!(host_tree_status(&host), None);
     }
 
     #[test]

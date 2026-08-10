@@ -169,7 +169,7 @@ timeouts. Returning focus to a window refreshes a ready WSL inventory, matching
 the Swift app's activation-driven discovery without retrying disconnected or
 failed hosts in a loop. Later refreshes reuse the admitted host capability so
 they perform ordinary inventory reads instead of repeating tmux admission. The
-same refresh resolves optional Herdr through the WSL account environment,
+same refresh resolves optional Herdr through WSL's POSIX login profile,
 scrubs inherited Herdr routing variables, and publishes running and stopped
 sessions separately from tmux. Missing Herdr is silent; a broken Herdr probe is
 scoped to that capability and never makes the WSL tmux host unavailable. Tmux

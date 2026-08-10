@@ -3,13 +3,6 @@ use session::{HerdrSessionRecord, HerdrSessionState};
 
 pub(crate) const PATH_MARKER: &str = "GHOSTHUB_HERDR_PATH";
 
-pub(crate) const ACCOUNT_LOGIN_HANDOFF: &str = concat!(
-    "ghosthub_account_shell=$(/usr/bin/getent passwd \"$(/usr/bin/id -u)\" ",
-    "| /usr/bin/cut -d: -f7); ",
-    "[ -n \"$ghosthub_account_shell\" ] && [ -x \"$ghosthub_account_shell\" ] || exit 127; ",
-    "exec \"$ghosthub_account_shell\" -lc \"$1\""
-);
-
 pub(crate) const RESOLVE_SCRIPT: &str = concat!(
     "unset HERDR_ENV HERDR_SESSION HERDR_SOCKET_PATH HERDR_CLIENT_SOCKET_PATH ",
     "HERDR_PANE_ID HERDR_TAB_ID HERDR_WORKSPACE_ID HERDR_BIN_PATH ",

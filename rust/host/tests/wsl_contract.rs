@@ -941,6 +941,22 @@ fn herdr_inventory_is_additive_and_scrubs_control_environment() {
     assert_eq!(sessions.len(), 2);
     assert_eq!(sessions[0].state(), HerdrSessionState::Running);
     assert_eq!(sessions[1].state(), HerdrSessionState::Stopped);
+    let resolve_call = host
+        .runner()
+        .all_calls()
+        .into_iter()
+        .find(|(_, args)| {
+            args.last()
+                .is_some_and(|argument| argument.to_string_lossy().contains("command -v herdr"))
+        })
+        .expect("Herdr executable resolution call");
+    assert!(
+        resolve_call
+            .1
+            .windows(2)
+            .any(|arguments| arguments == ["/bin/sh", "-lc"]),
+        "WSL capability resolution must load the POSIX login profile"
+    );
     let list_call = host
         .runner()
         .all_calls()

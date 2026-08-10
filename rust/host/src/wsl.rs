@@ -965,15 +965,9 @@ impl<R: CommandRunner> WslHost<R> {
     ) -> Result<ExecutableProbe, HostError> {
         let mut args = pinned_prefix(endpoint);
         args.extend(
-            [
-                "/bin/sh",
-                "-c",
-                herdr::ACCOUNT_LOGIN_HANDOFF,
-                "ghosthub-herdr-resolve",
-                herdr::RESOLVE_SCRIPT,
-            ]
-            .into_iter()
-            .map(OsString::from),
+            ["/bin/sh", "-lc", herdr::RESOLVE_SCRIPT]
+                .into_iter()
+                .map(OsString::from),
         );
         let output = self.run(&args, cancellation)?;
         if output.status != 0 && output.status != 127 {
