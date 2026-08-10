@@ -21,15 +21,18 @@ struct ShortcutRecorderTests {
         )
         let first = UUID()
         let second = UUID()
+        let windowScope = makeRecorderWindowScope()
 
         coordinator.start(
             owner: first,
-            onSuperseded: { firstWasSuperseded = true },
+            windowScope: windowScope,
+            onCancelled: { firstWasSuperseded = true },
             handler: { $0 }
         )
         coordinator.start(
             owner: second,
-            onSuperseded: {},
+            windowScope: windowScope,
+            onCancelled: {},
             handler: { $0 }
         )
 
@@ -50,6 +53,7 @@ struct ShortcutRecorderTests {
             remove: { _ in removed += 1 }
         )
         let owner = UUID()
+        let windowScope = makeRecorderWindowScope()
         var state = ShortcutRecorderState(
             action: .nextSibling,
             overrides: [:]
@@ -57,7 +61,8 @@ struct ShortcutRecorderTests {
         state.startRecording()
         coordinator.start(
             owner: owner,
-            onSuperseded: {},
+            windowScope: windowScope,
+            onCancelled: {},
             handler: { $0 }
         )
 
@@ -74,7 +79,8 @@ struct ShortcutRecorderTests {
         state.startRecording()
         coordinator.start(
             owner: owner,
-            onSuperseded: {},
+            windowScope: windowScope,
+            onCancelled: {},
             handler: { $0 }
         )
         let wasRecordingAgain = state.isRecording
@@ -86,6 +92,69 @@ struct ShortcutRecorderTests {
         )
 
         #expect(removed == 2)
+    }
+
+    @Test("events from another window pass through")
+    func unrelatedWindowInputPassesThrough() throws {
+        var installedHandler: ShortcutRecorderMonitorCoordinator.Handler?
+        let coordinator = ShortcutRecorderMonitorCoordinator(
+            install: { handler in
+                installedHandler = handler
+                return NSObject()
+            },
+            remove: { _ in }
+        )
+        let recordingWindow = makeRecorderWindowScope(windowNumber: 41)
+        coordinator.start(
+            owner: UUID(),
+            windowScope: recordingWindow,
+            onCancelled: {},
+            handler: { _ in nil }
+        )
+        let event = try #require(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [.command],
+            timestamp: 0,
+            windowNumber: 42,
+            context: nil,
+            characters: "k",
+            charactersIgnoringModifiers: "k",
+            isARepeat: false,
+            keyCode: 40
+        ))
+
+        let routedEvent = try #require(installedHandler?(event))
+
+        #expect(routedEvent === event)
+    }
+
+    @Test("recording cancels when its window resigns key")
+    func ownerWindowResignCancelsRecording() {
+        var removed = 0
+        var wasCancelled = false
+        let coordinator = ShortcutRecorderMonitorCoordinator(
+            install: { _ in NSObject() },
+            remove: { _ in removed += 1 }
+        )
+        let owner = UUID()
+        let windowScope = makeRecorderWindowScope()
+        coordinator.start(
+            owner: owner,
+            windowScope: windowScope,
+            onCancelled: { wasCancelled = true },
+            handler: { $0 }
+        )
+
+        NotificationCenter.default.post(
+            name: NSWindow.didResignKeyNotification,
+            object: windowScope.notificationObject
+        )
+
+        #expect(wasCancelled)
+        #expect(removed == 1)
+        coordinator.stop(owner: owner)
+        #expect(removed == 1)
     }
 
     @Test("recording, cancel, clear, and restore preserve override intent")
@@ -153,4 +222,15 @@ struct ShortcutRecorderTests {
         #expect(state.validationMessage == "This key cannot be saved.")
         #expect(state.isRecording)
     }
+}
+
+@MainActor
+private func makeRecorderWindowScope(
+    windowNumber: Int = 1
+) -> ShortcutRecorderWindowScope {
+    ShortcutRecorderWindowScope(
+        notificationObject: NSObject(),
+        windowNumber: windowNumber,
+        isKeyWindow: { true }
+    )
 }

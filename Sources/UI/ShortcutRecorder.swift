@@ -67,6 +67,31 @@ struct ShortcutRecorderState: Equatable {
 }
 
 @MainActor
+struct ShortcutRecorderWindowScope {
+    let notificationObject: AnyObject
+    let windowNumber: Int
+    let isKeyWindow: () -> Bool
+
+    init(window: NSWindow) {
+        notificationObject = window
+        windowNumber = window.windowNumber
+        isKeyWindow = { [weak window] in
+            window?.isKeyWindow == true
+        }
+    }
+
+    init(
+        notificationObject: AnyObject,
+        windowNumber: Int,
+        isKeyWindow: @escaping () -> Bool
+    ) {
+        self.notificationObject = notificationObject
+        self.windowNumber = windowNumber
+        self.isKeyWindow = isKeyWindow
+    }
+}
+
+@MainActor
 final class ShortcutRecorderMonitorCoordinator {
     typealias Handler = (NSEvent) -> NSEvent?
     typealias Install = (@escaping Handler) -> Any?
@@ -74,10 +99,12 @@ final class ShortcutRecorderMonitorCoordinator {
 
     private let install: Install
     private let remove: Remove
+    private let notificationCenter: NotificationCenter
     private var active: (
         owner: UUID,
         monitor: Any,
-        onSuperseded: () -> Void
+        resignObserver: NSObjectProtocol,
+        onCancelled: () -> Void
     )?
 
     convenience init() {
@@ -88,26 +115,44 @@ final class ShortcutRecorderMonitorCoordinator {
                     handler: handler
                 )
             },
-            remove: NSEvent.removeMonitor
+            remove: NSEvent.removeMonitor,
+            notificationCenter: .default
         )
     }
 
     init(
         install: @escaping Install,
-        remove: @escaping Remove
+        remove: @escaping Remove,
+        notificationCenter: NotificationCenter = .default
     ) {
         self.install = install
         self.remove = remove
+        self.notificationCenter = notificationCenter
     }
 
     func start(
         owner: UUID,
-        onSuperseded: @escaping () -> Void,
+        windowScope: ShortcutRecorderWindowScope,
+        onCancelled: @escaping () -> Void,
         handler: @escaping Handler
     ) {
-        stopActive(notifySuperseded: true)
-        guard let monitor = install(handler) else { return }
-        active = (owner, monitor, onSuperseded)
+        stopActive(notifyCancelled: true)
+        guard let monitor = install({ event in
+            guard windowScope.isKeyWindow(),
+                  event.windowNumber == windowScope.windowNumber
+            else { return event }
+            return handler(event)
+        }) else { return }
+        let resignObserver = notificationCenter.addObserver(
+            forName: NSWindow.didResignKeyNotification,
+            object: windowScope.notificationObject,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.cancel(owner: owner)
+            }
+        }
+        active = (owner, monitor, resignObserver, onCancelled)
     }
 
     func recordingChanged(
@@ -121,15 +166,21 @@ final class ShortcutRecorderMonitorCoordinator {
 
     func stop(owner: UUID) {
         guard active?.owner == owner else { return }
-        stopActive(notifySuperseded: false)
+        stopActive(notifyCancelled: false)
     }
 
-    private func stopActive(notifySuperseded: Bool) {
+    private func cancel(owner: UUID) {
+        guard active?.owner == owner else { return }
+        stopActive(notifyCancelled: true)
+    }
+
+    private func stopActive(notifyCancelled: Bool) {
         guard let previous = active else { return }
         active = nil
         remove(previous.monitor)
-        if notifySuperseded {
-            previous.onSuperseded()
+        notificationCenter.removeObserver(previous.resignObserver)
+        if notifyCancelled {
+            previous.onCancelled()
         }
     }
 }
@@ -185,9 +236,11 @@ struct ShortcutRecorder: View {
     }
 
     private func beginRecording() {
+        guard let window = NSApp.keyWindow else { return }
         monitorCoordinator.start(
             owner: monitorOwner,
-            onSuperseded: { update { $0.cancelRecording() } }
+            windowScope: ShortcutRecorderWindowScope(window: window),
+            onCancelled: { update { $0.cancelRecording() } }
         ) { event in
             if event.keyCode == 53,
                event.modifierFlags.intersection(
