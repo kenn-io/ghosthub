@@ -597,7 +597,15 @@ impl RootView {
         })
         .detach();
 
-        cx.on_next_frame(window, |view, _window, cx| {
+        cx.observe_window_activation(window, |view, window, _cx| {
+            view.workspace
+                .set_inventory_polling_enabled(window.is_window_active());
+        })
+        .detach();
+
+        cx.on_next_frame(window, |view, window, cx| {
+            view.workspace
+                .set_inventory_polling_enabled(window.is_window_active());
             if let Err(error) = view.workspace.connect_enabled_hosts() {
                 view.diagnostic = Some(error.to_string());
             }

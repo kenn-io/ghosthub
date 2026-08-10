@@ -40,7 +40,7 @@ const HERDR_STARTUP_BACKOFF: [Duration; 8] = [
 ];
 const CREATE_IDENTITY_TIMEOUT: Duration = Duration::from_secs(5);
 const CREATE_IDENTITY_MIN_COLUMNS: usize = 120;
-const INVENTORY_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
+const INVENTORY_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Appearance {
@@ -1647,6 +1647,7 @@ struct Inner {
     refresh_finished: AtomicU64,
     refresh_publication: Mutex<()>,
     inventory_cadence_started: AtomicBool,
+    inventory_polling_enabled: AtomicBool,
     discovery: Arc<dyn WslDiscovery>,
     refresh_runtime: Arc<dyn RefreshRuntime>,
     attachment: Mutex<AttachmentState<AttachRequest>>,
@@ -1750,6 +1751,7 @@ impl Workspace {
                 refresh_finished: AtomicU64::new(0),
                 refresh_publication: Mutex::new(()),
                 inventory_cadence_started: AtomicBool::new(false),
+                inventory_polling_enabled: AtomicBool::new(false),
                 discovery: Arc::new(SystemWslDiscovery::new()),
                 refresh_runtime: Arc::new(ThreadRefreshRuntime),
                 attachment: Mutex::new(AttachmentState::new()),
@@ -1817,6 +1819,7 @@ impl Workspace {
                 refresh_finished: AtomicU64::new(0),
                 refresh_publication: Mutex::new(()),
                 inventory_cadence_started: AtomicBool::new(false),
+                inventory_polling_enabled: AtomicBool::new(false),
                 discovery,
                 refresh_runtime,
                 attachment: Mutex::new(AttachmentState::new()),
@@ -1868,6 +1871,7 @@ impl Workspace {
                 refresh_finished: AtomicU64::new(0),
                 refresh_publication: Mutex::new(()),
                 inventory_cadence_started: AtomicBool::new(false),
+                inventory_polling_enabled: AtomicBool::new(false),
                 discovery: Arc::new(SystemWslDiscovery::new()),
                 refresh_runtime: Arc::new(ThreadRefreshRuntime),
                 attachment: Mutex::new(AttachmentState::new()),
@@ -1950,6 +1954,16 @@ impl Workspace {
             )));
         }
         Ok(())
+    }
+
+    /// Enable or suspend automatic inventory reads for the visible window.
+    ///
+    /// This changes only an in-memory flag. It never starts discovery and is
+    /// therefore safe to call from the window-activation callback.
+    pub fn set_inventory_polling_enabled(&self, enabled: bool) {
+        self.inner
+            .inventory_polling_enabled
+            .store(enabled, Ordering::Release);
     }
 
     fn refresh_if_ready(&self) -> Result<bool, WorkspaceError> {
@@ -4527,7 +4541,9 @@ fn schedule_inventory_refresh(inner: &Arc<Inner>) -> std::io::Result<()> {
             let workspace = Workspace {
                 inner: Arc::clone(&inner),
             };
-            let _refresh_started = workspace.refresh_if_ready();
+            if inner.inventory_polling_enabled.load(Ordering::Acquire) {
+                let _refresh_started = workspace.refresh_if_ready();
+            }
             if let Err(error) = schedule_inventory_refresh(&inner) {
                 inner
                     .inventory_cadence_started
@@ -10033,6 +10049,7 @@ mod tests {
         workspace
             .start_inventory_cadence()
             .expect("start inventory cadence");
+        workspace.set_inventory_polling_enabled(true);
         workspace
             .start_inventory_cadence()
             .expect("cadence start is idempotent");
@@ -10092,6 +10109,36 @@ mod tests {
                 .inventory_cadence_started
                 .load(Ordering::Acquire)
         );
+    }
+
+    #[test]
+    fn inactive_inventory_cadence_does_not_start_host_work() {
+        let runtime = Arc::new(ManualRefreshRuntime::default());
+        let discovery = Arc::new(FixedDiscovery::new(HostSnapshot::test_fixture(
+            "Ubuntu",
+            "boot",
+            42,
+            Vec::new(),
+        )));
+        let spec = WslHostSpec::available(
+            WslConfig::with_distro("Ubuntu").expect("valid config"),
+            WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
+                .expect("absolute WSL path"),
+        );
+        let workspace = Workspace::application_with_services(
+            TerminalAppearance::default(),
+            Some(spec),
+            discovery,
+            runtime.clone(),
+        );
+
+        workspace
+            .start_inventory_cadence()
+            .expect("start inventory cadence");
+        runtime.run_next_deadline();
+
+        assert!(runtime.work.lock().expect("work queue").is_empty());
+        assert_eq!(runtime.deadline_delays(), vec![INVENTORY_REFRESH_INTERVAL]);
     }
 
     #[test]

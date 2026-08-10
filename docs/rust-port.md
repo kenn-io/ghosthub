@@ -152,11 +152,12 @@ Expiry cancels the active generation and discards late publication. Retry
 supersedes the earlier generation without changing the configured distro,
 binary, socket directory, or identity rules.
 
-An application-owned background cadence refreshes a ready WSL host every three
-seconds so sessions created or removed elsewhere appear without an explicit
-Refresh click. Window activation is presentation-only: it may update focus and
-other in-memory view state, but it never starts host discovery, process
-sampling, filesystem access, database work, or inventory reconciliation.
+An application-owned background cadence refreshes a ready WSL host every ten
+seconds while the window is active, so sessions created or removed elsewhere
+appear without an explicit Refresh click without polling WSL from an inactive
+window. Window activation is presentation-only: it updates an in-memory polling
+flag, focus, and other in-memory view state, but it never starts host discovery,
+process sampling, filesystem access, database work, or inventory reconciliation.
 Connecting, disconnected, and unavailable hosts do not retry automatically;
 their existing Cancel, Connect, and Retry actions remain authoritative. Refresh
 retains the last published session rows while work is in flight and reuses the
