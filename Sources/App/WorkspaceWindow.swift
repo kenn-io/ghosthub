@@ -19,6 +19,10 @@ struct TerminalKeyboardFocusKey: FocusedValueKey {
     typealias Value = Bool
 }
 
+struct SiblingShortcutAvailabilityKey: FocusedValueKey {
+    typealias Value = Set<ApplicationShortcutAction>
+}
+
 extension FocusedValues {
     var sceneModel: WorkspaceSceneModel? {
         get { self[FocusedSceneModelKey.self] }
@@ -28,6 +32,11 @@ extension FocusedValues {
     var terminalHasEffectiveKeyboardFocus: Bool? {
         get { self[TerminalKeyboardFocusKey.self] }
         set { self[TerminalKeyboardFocusKey.self] = newValue }
+    }
+
+    var availableSiblingShortcuts: Set<ApplicationShortcutAction>? {
+        get { self[SiblingShortcutAvailabilityKey.self] }
+        set { self[SiblingShortcutAvailabilityKey.self] = newValue }
     }
 }
 
@@ -147,6 +156,7 @@ private struct WindowFocusTracker: NSViewRepresentable {
             window.tabbingMode = .preferred
             window.tabbingIdentifier =
                 WorkspaceWindowIdentity.tabbingIdentifier
+            NativeTabCommands.installBracketShortcuts()
             tabObservation = window.observe(
                 \.tabbedWindows,
                 options: [.initial, .new]
@@ -654,6 +664,8 @@ struct WorkspaceWindow: View {
                 sceneModel.activeBorrowedTmuxSessionIsConnected,
                 activeTmuxSessionCanApplyTheme:
                 sceneModel.canApplyThemeToActiveTmuxSession,
+                availableApplicationShortcuts:
+                sceneModel.availablePaletteApplicationShortcuts,
                 activeHerdrSession:
                 sceneModel.activeBorrowedHerdrSelection,
                 pendingHerdrSessions:
@@ -822,6 +834,12 @@ struct WorkspaceWindow: View {
                 reloadTerminalConfig: {
                     sceneModel.reloadTerminalConfig()
                 },
+                performApplicationShortcut: { [sceneModel] action in
+                    _ = sceneModel.performApplicationShortcut(
+                        action,
+                        invocation: .menu
+                    )
+                },
                 selectWorkspace: { [sceneModel] selection in
                     sceneModel.selectFromUser(selection)
                 },
@@ -966,6 +984,10 @@ struct WorkspaceWindow: View {
             )
         )
         .focusedSceneValue(\.sceneModel, sceneModel)
+        .focusedSceneValue(
+            \.availableSiblingShortcuts,
+            sceneModel.availableSiblingShortcuts
+        )
         .background(WorkspaceSurfaceColor.color.ignoresSafeArea())
         .overlay(alignment: .top) {
             if let notice = visibleConfigReloadNotice {

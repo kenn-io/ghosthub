@@ -161,6 +161,99 @@ final class SettingsStoreTests {
         #expect(store.worktreePreferences.hideKwtManagedSessions)
         #expect(store.tmuxSessionPreferences.hiddenSessionPatterns.isEmpty)
         #expect(store.shareAnonymousUsageData)
+        #expect(
+            store.shortcutPreferences.resolved
+                == ApplicationShortcutCatalog.compiledDefaults
+        )
+    }
+
+    @Test("startup uses defaults and reports invalid shortcut config")
+    func invalidStartupShortcutConfigUsesDefaults() throws {
+        try writeAppConfig(toml: """
+        [keyboard.shortcuts]
+        next-sibling = "shift+tab"
+        """)
+
+        let store = makeSUT()
+
+        #expect(
+            store.shortcutPreferences.resolved
+                == ApplicationShortcutCatalog.compiledDefaults
+        )
+        #expect(store.shortcutConfigurationIssue?.action == .nextSibling)
+
+        #expect(store.setShortcutOverrides(
+            store.shortcutPreferences.overrides
+        ))
+        #expect(try !readAppConfig().contains("next-sibling"))
+        #expect(store.shortcutConfigurationIssue == nil)
+    }
+
+    @Test("invalid live reload retains the last valid registry")
+    func invalidLiveReloadRetainsShortcuts() throws {
+        try writeAppConfig(toml: """
+        [keyboard.shortcuts]
+        next-sibling = "cmd+k"
+        """)
+        let store = makeSUT()
+        let valid = store.shortcutPreferences
+        try writeAppConfig(toml: """
+        [keyboard.shortcuts]
+        next-sibling = 42
+        """)
+
+        store.reloadShortcutConfiguration()
+
+        #expect(store.shortcutPreferences == valid)
+        #expect(store.shortcutConfigurationIssue?.action == .nextSibling)
+    }
+
+    @Test("shortcut persistence validates before changing disk or state")
+    func invalidShortcutPersistenceIsAtomic() throws {
+        try writeAppConfig(toml: """
+        [keyboard.shortcuts]
+        future-action = "future"
+        """)
+        let store = makeSUT()
+        let original = try readAppConfig()
+        let originalPreferences = store.shortcutPreferences
+
+        let didPersist = store.setShortcutOverrides([
+            .nextSibling: .binding(
+                try ApplicationKeyBinding(parsing: "cmd+k")
+            ),
+            .previousSibling: .binding(
+                try ApplicationKeyBinding(parsing: "cmd+k")
+            ),
+        ])
+
+        #expect(!didPersist)
+        #expect(try readAppConfig() == original)
+        #expect(store.shortcutPreferences == originalPreferences)
+    }
+
+    @Test("shortcut persistence writes normalized values once")
+    func persistsShortcutOverrides() throws {
+        try writeAppConfig(toml: """
+        [keyboard.shortcuts]
+        next-sibling = "ctrl+tab"
+        future-action = "future"
+        """)
+        let store = makeSUT()
+
+        let didPersist = store.setShortcutOverrides([
+            .nextSibling: .binding(
+                try ApplicationKeyBinding(parsing: "CMD+K")
+            ),
+            .splitRight: .unbound,
+        ])
+
+        #expect(didPersist)
+        #expect(store.shortcutConfigurationIssue == nil)
+        let contents = try readAppConfig()
+        #expect(contents.contains("next-sibling = \"cmd+k\""))
+        #expect(contents.contains("split-right = \"none\""))
+        #expect(contents.contains("future-action = \"future\""))
     }
 
     @Test("quit confirmation is enabled by default")

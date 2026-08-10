@@ -1,5 +1,6 @@
 import AppKit
 import GhosthubSettings
+import GhosthubTerminalSupport
 import SwiftUI
 import GhosthubWorkspace
 
@@ -95,6 +96,17 @@ public struct RootView: View {
     private var activeHerdrSession: WorkspaceHerdrSessionSelection? {
         display.activeHerdrSession
     }
+
+    nonisolated static func applicationShortcutProject(
+        in snapshot: WorkspaceSnapshot,
+        selection: WorkspaceSelection
+    ) -> ProjectSummary? {
+        WorkspaceSelectionResolver.selectedProject(
+            in: snapshot,
+            selection: selection
+        )
+    }
+
     public var body: some View {
         contentWithNotifications
             .onAppear {
@@ -336,9 +348,53 @@ public struct RootView: View {
             ) { _ in handleToggleSidebar() }
             .onReceive(
                 NotificationCenter.default.publisher(
+                    for: .ghosthubApplicationShortcutRequest,
+                    object: sidebarToggleTarget
+                )
+            ) { notification in
+                handleApplicationShortcut(notification)
+            }
+            .onReceive(
+                NotificationCenter.default.publisher(
                     for: .ghosthubApplyThemeToCurrentSession
                 )
             ) { _ in handleApplyThemeNotification() }
+    }
+
+    private func handleApplicationShortcut(_ notification: Notification) {
+        guard let rawAction = notification.userInfo?[
+            applicationShortcutActionUserInfoKey
+        ] as? String,
+            let action = ApplicationShortcutAction(rawValue: rawAction)
+        else { return }
+
+        switch action {
+        case .toggleSidebar:
+            handleToggleSidebar()
+        case .newWorktree:
+            if let project = Self.applicationShortcutProject(
+                in: snapshot,
+                selection: selection
+            ) {
+                openNewWorktree(project)
+            }
+        case .importPullRequest:
+            if let project = Self.applicationShortcutProject(
+                in: snapshot,
+                selection: selection
+            ) {
+                openImportPullRequest(project)
+            }
+        case .newTmuxSession:
+            newTmuxSessionHost = snapshot.host(id: selection.selectedHostID)
+        case .newHerdrSession:
+            let host = snapshot.host(id: selection.selectedHostID)
+            if host?.herdrAvailable == true {
+                newHerdrSessionHost = host
+            }
+        default:
+            break
+        }
     }
 
     private var logViewerSheet: some View {
@@ -1552,8 +1608,11 @@ public struct RootView: View {
             supportsSettings: content.settingsSheetBuilder != nil,
             worktreeOrderRawValue: worktreeOrderRawValue,
             tmuxSessionOrderRawValue: tmuxSessionOrderRawValue,
+            availableApplicationShortcuts:
+            display.availableApplicationShortcuts,
             herdrSessionOrderRawValue: herdrSessionOrderRawValue,
-            pendingHerdrSessions: display.pendingHerdrSessions
+            pendingHerdrSessions: display.pendingHerdrSessions,
+            shortcuts: settingsStore.shortcutPreferences.resolved
         )
     }
 
@@ -1592,26 +1651,6 @@ public struct RootView: View {
             openConfigDirectory()
         case .reloadTerminalConfig:
             handlers.reloadTerminalConfig?()
-        case .previousWorktree:
-            if let updatedSelection = KeyboardNavigationModel.steppedSelection(
-                from: selection,
-                in: snapshot,
-                step: -1,
-                visibility: worktreeVisibility,
-                worktreeOrderRawValue: worktreeOrderRawValue
-            ) {
-                selectWorkspace(updatedSelection)
-            }
-        case .nextWorktree:
-            if let updatedSelection = KeyboardNavigationModel.steppedSelection(
-                from: selection,
-                in: snapshot,
-                step: 1,
-                visibility: worktreeVisibility,
-                worktreeOrderRawValue: worktreeOrderRawValue
-            ) {
-                selectWorkspace(updatedSelection)
-            }
         case let .newTmuxSession(hostID):
             guard let host = snapshot.host(id: hostID) else { return }
             newTmuxSessionHost = host
@@ -1670,6 +1709,8 @@ public struct RootView: View {
             selectWorkspace(target)
         case .showLogViewer:
             isLogViewerPresented = true
+        case let .applicationShortcut(action):
+            handlers.performApplicationShortcut?(action)
         }
     }
 
@@ -1778,18 +1819,6 @@ public struct RootView: View {
             in: snapshot,
             visibility: visibility
         )
-    }
-
-    private func selectIndexedWorktree(_ index: Int) {
-        if let updatedSelection = KeyboardNavigationModel.selectionForShortcutIndex(
-            index,
-            from: selection,
-            in: snapshot,
-            visibility: worktreeVisibility,
-            worktreeOrderRawValue: worktreeOrderRawValue
-        ) {
-            selectWorkspace(updatedSelection)
-        }
     }
 
     private func selectWorkspace(_ target: WorkspaceNavigationTarget) {

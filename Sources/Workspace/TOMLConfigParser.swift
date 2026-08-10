@@ -1,5 +1,15 @@
 import Foundation
 
+public struct AppConfigAssignment: Equatable, Sendable {
+    public var key: String
+    public var value: String
+
+    public init(key: String, value: String) {
+        self.key = key
+        self.value = value
+    }
+}
+
 /// Pure-function helpers for parsing and rendering TOML config values.
 /// Extracted from SettingsStore to keep parsing logic isolated and testable.
 public enum TOMLConfigParser {
@@ -205,6 +215,38 @@ public enum TOMLConfigParser {
     }
 
     // MARK: - Section-Scoped Config Parsing
+
+    /// Return every single-line assignment in a named section.
+    public static func appConfigAssignments(
+        sectionName: String,
+        in contents: String
+    ) -> [AppConfigAssignment] {
+        var currentSection: String?
+        var assignments: [AppConfigAssignment] = []
+
+        for rawLine in contents.split(
+            omittingEmptySubsequences: false,
+            whereSeparator: \.isNewline
+        ) {
+            let line = strippedTOMLLine(String(rawLine))
+            guard !line.isEmpty else { continue }
+            if let headerName = sectionHeaderName(from: line) {
+                currentSection = headerName
+                continue
+            }
+            guard currentSection == sectionName,
+                  let separatorIndex = line.firstIndex(of: "=")
+            else { continue }
+
+            let key = line[..<separatorIndex]
+                .trimmingCharacters(in: CharacterSet.whitespaces)
+            guard !key.isEmpty else { continue }
+            let value = line[line.index(after: separatorIndex)...]
+                .trimmingCharacters(in: CharacterSet.whitespaces)
+            assignments.append(.init(key: key, value: value))
+        }
+        return assignments
+    }
 
     /// Parse a value under a named `[section]` header.
     public static func parseAppConfigValue(

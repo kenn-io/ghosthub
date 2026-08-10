@@ -2,6 +2,25 @@ import Testing
 @testable import GhosthubWorkspace
 
 struct TOMLConfigParserTests {
+    @Test("section assignments retain raw keys and scalar values")
+    func sectionAssignmentsRetainRawValues() {
+        let assignments = TOMLConfigParser.appConfigAssignments(
+            sectionName: "keyboard.shortcuts",
+            in: """
+            [keyboard.shortcuts]
+            next-sibling = "ctrl+tab" # preferred
+            future-action = 42
+
+            [tmux]
+            ignored = true
+            """
+        )
+
+        #expect(assignments == [
+            .init(key: "next-sibling", value: #""ctrl+tab""#),
+            .init(key: "future-action", value: "42"),
+        ])
+    }
 
     // MARK: - strippedTOMLLine
 

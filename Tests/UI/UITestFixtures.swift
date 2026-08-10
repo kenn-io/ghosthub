@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import GhosthubTestSupport
+import GhosthubTerminalSupport
 import SwiftUI
 import Testing
 @testable import GhosthubUI
@@ -417,7 +418,7 @@ func expectDescriptor(
 extension [WorkspaceCommandItem] {
     func expectContains(
         title: String,
-        shortcut: WorkspaceCommandShortcut? = nil,
+        shortcut: ApplicationShortcutAction? = nil,
         expectNilShortcut: Bool = false,
         sourceLocation: SourceLocation = #_sourceLocation
     ) {
@@ -426,7 +427,7 @@ extension [WorkspaceCommandItem] {
             if expectNilShortcut {
                 return $0.shortcut == nil
             }
-            return shortcut == nil || $0.shortcut == shortcut
+            return shortcut == nil || $0.shortcutAction == shortcut
         }
         #expect(
             found,

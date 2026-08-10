@@ -92,6 +92,10 @@ public final class SettingsStore: ObservableObject {
     @Published public private(set) var sshHosts: [SSHHost]
     @Published public private(set) var exeAccounts: [ExeAccount]
     @Published public private(set) var lastErrorMessage: String?
+    @Published public private(set) var shortcutPreferences: ShortcutPreferences
+    @Published public private(
+        set
+    ) var shortcutConfigurationIssue: ShortcutConfigurationIssue?
 
     private let configPipeline: LibghosttyConfigPipeline
     private let userDefaults: UserDefaults
@@ -153,6 +157,12 @@ public final class SettingsStore: ObservableObject {
             )
         let loadedSSHHosts = Self.loadSSHHosts(using: userDefaults)
         let loadedExeAccounts = Self.loadExeAccounts(using: userDefaults)
+        let loadedShortcuts = ShortcutPreferences.load(
+            from: configPipeline.paths.configDirectory.appendingPathComponent(
+                "config.toml",
+                isDirectory: false
+            )
+        )
 
         confirmBeforeQuitting = loadedConfirmBeforeQuitting
         interfaceAppearance = loadedAppearance
@@ -165,6 +175,14 @@ public final class SettingsStore: ObservableObject {
         shareAnonymousUsageData = loadedShareAnonymousUsageData
         sshHosts = loadedSSHHosts
         exeAccounts = loadedExeAccounts
+        switch loadedShortcuts {
+        case let .success(preferences):
+            shortcutPreferences = preferences
+            shortcutConfigurationIssue = nil
+        case let .failure(issue):
+            shortcutPreferences = .compiledDefaults
+            shortcutConfigurationIssue = issue
+        }
         persistTerminalPreferences()
         persistTerminalAppearancePreferences()
     }
@@ -200,7 +218,18 @@ public final class SettingsStore: ObservableObject {
 
         sshHosts = Self.loadSSHHosts(using: userDefaults)
         exeAccounts = Self.loadExeAccounts(using: userDefaults)
+        reloadShortcutConfiguration()
         lastErrorMessage = nil
+    }
+
+    public func reloadShortcutConfiguration() {
+        switch ShortcutPreferences.load(from: appConfigFile) {
+        case let .success(preferences):
+            shortcutPreferences = preferences
+            shortcutConfigurationIssue = nil
+        case let .failure(issue):
+            shortcutConfigurationIssue = issue
+        }
     }
 
     public func setInterfaceAppearance(
@@ -415,6 +444,74 @@ public final class SettingsStore: ObservableObject {
             return true
         } catch {
             lastErrorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    @discardableResult
+    public func setShortcutOverrides(
+        _ overrides: [
+            ApplicationShortcutAction: ApplicationShortcutOverride
+        ]
+    ) -> Bool {
+        let candidate: ShortcutPreferences
+        do {
+            candidate = try ShortcutPreferences(overrides: overrides)
+        } catch let error as ApplicationShortcutResolutionError {
+            shortcutConfigurationIssue = .init(
+                action: error.affectedAction,
+                message: error.localizedDescription
+            )
+            return false
+        } catch {
+            shortcutConfigurationIssue = .init(
+                action: nil,
+                message: error.localizedDescription
+            )
+            return false
+        }
+        guard candidate != shortcutPreferences
+            || shortcutConfigurationIssue != nil
+        else { return true }
+
+        do {
+            try configPipeline.fileManager.createDirectory(
+                at: configPipeline.paths.configDirectory,
+                withIntermediateDirectories: true,
+                attributes: nil
+            )
+            let contents = if configPipeline.fileManager.fileExists(
+                atPath: appConfigFile.path
+            ) {
+                try String(contentsOf: appConfigFile, encoding: .utf8)
+            } else {
+                ""
+            }
+            var values: [String: String?] = [:]
+            for definition in ApplicationShortcutCatalog.definitions {
+                values.updateValue(
+                    overrides[definition.action]?.configValue,
+                    forKey: definition.configKey
+                )
+            }
+            let updated = AppConfigEditor.replacingStrings(
+                sectionName: "keyboard.shortcuts",
+                values: values,
+                in: contents
+            )
+            try updated.write(
+                to: appConfigFile,
+                atomically: true,
+                encoding: .utf8
+            )
+            shortcutPreferences = candidate
+            shortcutConfigurationIssue = nil
+            return true
+        } catch {
+            shortcutConfigurationIssue = .init(
+                action: nil,
+                message: "Could not save shortcut configuration: \(error.localizedDescription)"
+            )
             return false
         }
     }

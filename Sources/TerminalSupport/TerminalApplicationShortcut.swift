@@ -15,26 +15,41 @@ public enum TerminalApplicationShortcut {
         flags: NSEvent.ModifierFlags,
         chars: String?,
         keyCode: UInt16,
-        hasPaneCloseHandler: Bool
+        hasPaneCloseHandler: Bool,
+        shortcuts: ResolvedApplicationShortcuts =
+            ApplicationShortcutCatalog.compiledDefaults
     ) -> Bool {
-        if flags == .command {
-            switch chars {
-            case "q", ",", "b", "n", "t":
-                return true
-            case "w":
-                return !hasPaneCloseHandler
-            default:
-                return false
-            }
+        guard let binding = ApplicationKeyBinding(
+            appKitModifierFlags: flags,
+            charactersIgnoringModifiers: chars,
+            keyCode: keyCode
+        ) else {
+            return false
         }
-        if flags == [.command, .shift] {
-            switch chars {
-            case "n", "p", "w":
-                return true
-            default:
-                return false
-            }
+
+        if binding == commandW, hasPaneCloseHandler {
+            return false
         }
-        return false
+        if terminalFixedBindings.contains(binding) {
+            return true
+        }
+
+        return binding.modifiers.contains(.command)
+            && shortcuts.action(for: binding) != nil
     }
+
+    private static let commandW = try! ApplicationKeyBinding(
+        parsing: "cmd+w"
+    )
+
+    private static let terminalFixedBindings = Set([
+        "cmd+q",
+        "cmd+,",
+        "cmd+n",
+        "cmd+t",
+        "cmd+w",
+        "cmd+shift+w",
+        "cmd+shift+[",
+        "cmd+shift+]",
+    ].map { try! ApplicationKeyBinding(parsing: $0) })
 }

@@ -1,5 +1,6 @@
 import Foundation
 import GhosthubSettings
+import GhosthubTerminalSupport
 import GhosthubWorkspace
 import SwiftUI
 
@@ -25,6 +26,8 @@ public struct WorkspaceDisplayState {
     public let activeTmuxSession: WorkspaceTmuxSessionSelection?
     public let activeTmuxSessionIsConnected: Bool
     public let activeTmuxSessionCanApplyTheme: Bool
+    public let availableApplicationShortcuts:
+        Set<ApplicationShortcutAction>
     public let activeHerdrSession: WorkspaceHerdrSessionSelection?
     public let pendingHerdrSessions: Set<WorkspaceHerdrSessionSelection>
     public let sessionConnectionRecoveryRequest:
@@ -52,6 +55,8 @@ public struct WorkspaceDisplayState {
         activeTmuxSession: WorkspaceTmuxSessionSelection? = nil,
         activeTmuxSessionIsConnected: Bool = false,
         activeTmuxSessionCanApplyTheme: Bool = false,
+        availableApplicationShortcuts:
+        Set<ApplicationShortcutAction> = [],
         activeHerdrSession: WorkspaceHerdrSessionSelection? = nil,
         pendingHerdrSessions: Set<WorkspaceHerdrSessionSelection> = [],
         sessionConnectionRecoveryRequest:
@@ -84,6 +89,8 @@ public struct WorkspaceDisplayState {
             activeTmuxSessionIsConnected
         self.activeTmuxSessionCanApplyTheme =
             activeTmuxSessionCanApplyTheme
+        self.availableApplicationShortcuts =
+            availableApplicationShortcuts
         self.activeHerdrSession = activeHerdrSession
         self.pendingHerdrSessions = pendingHerdrSessions
         self.sessionConnectionRecoveryRequest =
@@ -308,6 +315,8 @@ public struct InteractionHandlers {
     public let closeWindow: (() -> Void)?
     public let dismissLogViewer: (() -> Void)?
     public let reloadTerminalConfig: (() -> Void)?
+    public let performApplicationShortcut:
+        ((ApplicationShortcutAction) -> Void)?
     public let selectWorkspace: ((WorkspaceSelection) -> Void)?
     public let openTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)?
     public let hideTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)?
@@ -369,6 +378,8 @@ public struct InteractionHandlers {
         closeWindow: (() -> Void)? = nil,
         dismissLogViewer: (() -> Void)? = nil,
         reloadTerminalConfig: (() -> Void)? = nil,
+        performApplicationShortcut:
+        ((ApplicationShortcutAction) -> Void)? = nil,
         selectWorkspace: ((WorkspaceSelection) -> Void)? = nil,
         openTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)? = nil,
         hideTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)? = nil,
@@ -429,6 +440,7 @@ public struct InteractionHandlers {
         self.closeWindow = closeWindow
         self.dismissLogViewer = dismissLogViewer
         self.reloadTerminalConfig = reloadTerminalConfig
+        self.performApplicationShortcut = performApplicationShortcut
         self.selectWorkspace = selectWorkspace
         self.openTmuxSession = openTmuxSession
         self.hideTmuxSession = hideTmuxSession

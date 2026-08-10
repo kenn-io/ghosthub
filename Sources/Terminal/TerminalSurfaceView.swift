@@ -153,6 +153,8 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     /// Installed only for native session surfaces whose backend supports
     /// semantic pane splitting.
     public var paneSplitShortcutHandler: ((TerminalPaneSplitShortcut) -> Void)?
+    public var applicationShortcutsProvider:
+        (() -> ResolvedApplicationShortcuts)?
     /// Control-mode surfaces render through a silent local child, so their
     /// meaningful process liveness comes from the tmux pane rather than
     /// `childProcessID`. When supplied, close confirmation uses this source.
@@ -1684,13 +1686,16 @@ extension TerminalSurfaceView {
         flags: NSEvent.ModifierFlags,
         chars: String?,
         keyCode: UInt16,
-        hasPaneCloseHandler: Bool
+        hasPaneCloseHandler: Bool,
+        shortcuts: ResolvedApplicationShortcuts =
+            ApplicationShortcutCatalog.compiledDefaults
     ) -> Bool {
         TerminalApplicationShortcut.isReserved(
             flags: flags,
             chars: chars,
             keyCode: keyCode,
-            hasPaneCloseHandler: hasPaneCloseHandler
+            hasPaneCloseHandler: hasPaneCloseHandler,
+            shortcuts: shortcuts
         )
     }
 
@@ -1707,9 +1712,17 @@ private extension TerminalSurfaceView {
         for event: NSEvent
     ) -> TerminalPaneSplitShortcut? {
         guard paneSplitShortcutHandler != nil else { return nil }
-        return TerminalPaneSplitShortcut.matching(
-            flags: event.modifierFlags,
-            charactersIgnoringModifiers: event.charactersIgnoringModifiers
+        guard let binding = ApplicationKeyBinding(
+            appKitModifierFlags: event.modifierFlags,
+            charactersIgnoringModifiers: event.charactersIgnoringModifiers,
+            keyCode: event.keyCode
+        ), let action = (applicationShortcutsProvider?()
+            ?? ApplicationShortcutCatalog.compiledDefaults).action(
+            for: binding
+        )
+        else { return nil }
+        return TerminalPaneSplitShortcut(
+            applicationShortcutAction: action
         )
     }
 
@@ -1764,7 +1777,9 @@ private extension TerminalSurfaceView {
                 .intersection(.deviceIndependentFlagsMask),
             chars: event.charactersIgnoringModifiers?.lowercased(),
             keyCode: event.keyCode,
-            hasPaneCloseHandler: hasPaneCloseHandler
+            hasPaneCloseHandler: hasPaneCloseHandler,
+            shortcuts: applicationShortcutsProvider?()
+                ?? ApplicationShortcutCatalog.compiledDefaults
         )
     }
 }

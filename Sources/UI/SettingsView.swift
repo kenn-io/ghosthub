@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import GhosthubSettings
+import GhosthubTerminalSupport
 import SwiftUI
 import GhosthubWorkspace
 
@@ -248,7 +249,9 @@ public struct SettingsView: View {
             content.toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") {
-                        if persist().didPersistTmuxSessionPatterns {
+                        let result = persist()
+                        if result.didPersistTmuxSessionPatterns,
+                           result.didPersistShortcuts {
                             dismiss()
                         }
                     }
@@ -443,7 +446,10 @@ public struct SettingsView: View {
     }
 
     private var keyboardDetail: some View {
-        ApplicationShortcutsView()
+        ApplicationShortcutsView(
+            overrides: $draft.shortcutOverrides,
+            configurationIssue: store.shortcutConfigurationIssue?.message
+        )
     }
 
     private var worktreesDetail: some View {

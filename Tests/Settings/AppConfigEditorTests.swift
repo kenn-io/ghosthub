@@ -3,6 +3,67 @@ import Testing
 import GhosthubWorkspace
 
 struct AppConfigEditorTests {
+    @Test("scalar replacement preserves comments and newline style")
+    func replacesScalarSurgically() {
+        let original = "[keyboard.shortcuts]\r\n"
+            + "# navigation\r\n"
+            + "next-sibling = \"ctrl+tab\" # keep this\r\n"
+            + "future-action = \"future\"\r\n"
+
+        let updated = AppConfigEditor.replacingString(
+            sectionName: "keyboard.shortcuts",
+            key: "next-sibling",
+            value: "cmd+n",
+            in: original
+        )
+
+        #expect(updated.contains(
+            "next-sibling = \"cmd+n\" # keep this\r\n"
+        ))
+        #expect(updated.contains("future-action = \"future\"\r\n"))
+        #expect(!updated.replacingOccurrences(of: "\r\n", with: "")
+            .contains("\n"))
+    }
+
+    @Test("removing a scalar preserves its inline comment")
+    func removesScalarAndPreservesComment() {
+        let updated = AppConfigEditor.replacingString(
+            sectionName: "keyboard.shortcuts",
+            key: "next-sibling",
+            value: nil,
+            in: """
+            [keyboard.shortcuts]
+            next-sibling = "ctrl+tab" # chosen for navigation
+            future-action = "future"
+            """
+        )
+
+        #expect(!updated.contains("next-sibling"))
+        #expect(updated.contains("# chosen for navigation"))
+        #expect(updated.contains("future-action = \"future\""))
+    }
+
+    @Test("batch replacement adds one table and preserves unknown keys")
+    func replacesScalarsInOnePass() {
+        let updated = AppConfigEditor.replacingStrings(
+            sectionName: "keyboard.shortcuts",
+            values: [
+                "next-sibling": "ctrl+shift+tab",
+                "split-right": "none",
+            ],
+            in: "[general]\nappearance = \"system\"\n"
+        )
+
+        #expect(updated.components(
+            separatedBy: "[keyboard.shortcuts]"
+        ).count == 2)
+        #expect(updated.contains(
+            "next-sibling = \"ctrl+shift+tab\""
+        ))
+        #expect(updated.contains("split-right = \"none\""))
+        #expect(updated.contains("appearance = \"system\""))
+    }
+
     @Test("string array replacement preserves surrounding config")
     func replacesStringArray() {
         let original = """

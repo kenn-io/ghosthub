@@ -45,6 +45,21 @@ struct SettingsViewDraftTests {
         #expect(draft.sshHosts.map(\.configKey) == ["epyc"])
         #expect(draft.selectedSSHHostDraftID == draft.sshHosts.first?.id)
         #expect(draft.exeAccounts.map(\.configKey) == ["personal"])
+        #expect(draft.shortcutOverrides == store.shortcutPreferences.overrides)
+    }
+
+    @Test("draft persists shortcut overrides as one result")
+    func persistsShortcutOverrides() throws {
+        let store = makeStore()
+        var draft = SettingsViewDraft(store: store)
+        draft.shortcutOverrides[.nextSibling] = .binding(
+            try ApplicationKeyBinding(parsing: "cmd+k")
+        )
+
+        let result = draft.persist(to: store)
+
+        #expect(result.didPersistShortcuts)
+        #expect(store.shortcutPreferences.overrides == draft.shortcutOverrides)
     }
 
     @Test("tmux theme opt-in persists without reloading libghostty")

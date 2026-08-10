@@ -83,10 +83,16 @@ struct WorkspaceHerdrPresentationTests {
         try await model.openBorrowedHerdrSession(selection)
         await launchHerdrSurface(model, store: store)
         await waitUntilMainActor { model.canSplitActivePane }
-        model.splitActivePane(.down)
+        model.isFocusedWindow = false
+        #expect(model.performApplicationShortcut(
+            .splitDown,
+            invocation: .menu
+        ))
         await waitUntilMainActor { commands.withLock(\.count) == 1 }
 
-        #expect(commands.withLock { $0[0] }.contains("'--direction' 'down'"))
+        let recordedCommand = commands.withLock { $0.first }
+        let command = try #require(recordedCommand)
+        #expect(command.contains("'--direction' 'down'"))
         await model.shutdown()
     }
 
@@ -115,6 +121,42 @@ struct WorkspaceHerdrPresentationTests {
         try await model.openBorrowedHerdrSession(second)
         #expect(model.activeBorrowedHerdrSelection == second)
         #expect(store.removedKeys.contains(firstKey))
+        await model.shutdown()
+    }
+
+    @Test("repeated sibling shortcuts advance pending Herdr navigation")
+    func repeatedSiblingShortcutsAdvancePendingHerdrNavigation() async throws {
+        var environment = try environment()
+        let third = HerdrSessionSummary(
+            name: "zeta",
+            isDefault: false,
+            state: .running
+        )
+        environment.snapshot.hosts[0].herdrSessions.append(third)
+        let model = try makeHerdrModel(
+            environment,
+            store: RecordingNativeSessionSurfaceStore()
+        )
+        let first = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID,
+            name: "api"
+        )
+        try await model.openBorrowedHerdrSession(first)
+        model.selection.select(
+            .herdrSession(hostID: first.hostID, name: first.name),
+            in: environment.snapshot
+        )
+        model.isFocusedWindow = true
+
+        #expect(model.performApplicationShortcut(.nextSibling))
+        #expect(model.performApplicationShortcut(.nextSibling))
+        await waitUntilMainActor {
+            model.activeBorrowedHerdrSelection != first
+        }
+        #expect(model.activeBorrowedHerdrSelection == .init(
+            hostID: environment.hostID,
+            name: third.name
+        ))
         await model.shutdown()
     }
 
