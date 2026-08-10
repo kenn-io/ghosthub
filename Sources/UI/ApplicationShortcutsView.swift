@@ -1,55 +1,70 @@
+import GhosthubTerminalSupport
 import SwiftUI
 
 enum ApplicationShortcutReference {
-    struct Shortcut: Identifiable, Equatable {
-        let title: String
-        let keys: String
-
-        var id: String { title }
+    static func definitions(
+        in group: ApplicationShortcutSettingsGroup
+    ) -> [ApplicationShortcutDefinition] {
+        ApplicationShortcutCatalog.definitions.filter {
+            $0.settingsGroup == group
+        }
     }
 
-    static let shortcuts = [
-        Shortcut(title: "Settings", keys: "⌘,"),
-        Shortcut(title: "Reload configuration", keys: "⇧⌘,"),
-        Shortcut(title: "Command palette", keys: "⇧⌘P"),
-        Shortcut(title: "Toggle sidebar", keys: "⌘B"),
-        Shortcut(title: "Select worktree 1–9", keys: "⌘1–⌘9"),
-        Shortcut(title: "Previous worktree", keys: "⌥⌘↑"),
-        Shortcut(title: "Next worktree", keys: "⌥⌘↓"),
-        Shortcut(title: "New worktree", keys: "⇧⌘N"),
-        Shortcut(title: "New window", keys: "⌘N"),
-        Shortcut(title: "New tab", keys: "⌘T"),
-        Shortcut(title: "Close session presentation", keys: "⌘W"),
-        Shortcut(title: "Close window", keys: "⇧⌘W"),
-        Shortcut(title: "Application log", keys: "⌥⌘L"),
-        Shortcut(title: "Quit Ghosthub", keys: "⌘Q"),
-    ]
+    static let systemShortcuts = ApplicationShortcutCatalog.fixedShortcuts
 }
 
 struct ApplicationShortcutsView: View {
+    @Binding var overrides:
+        [ApplicationShortcutAction: ApplicationShortcutOverride]
+    let configurationIssue: String?
+
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            settingsSection("Application Shortcuts") {
-                ForEach(ApplicationShortcutReference.shortcuts) { shortcut in
+            if let configurationIssue {
+                Text(configurationIssue)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.red)
+            }
+            ForEach(ApplicationShortcutSettingsGroup.allCases, id: \.self) {
+                group in
+                settingsSection(group.rawValue) {
+                    ForEach(
+                        ApplicationShortcutReference.definitions(in: group),
+                        id: \.action
+                    ) { definition in
+                        HStack(alignment: .top) {
+                            Text(definition.title)
+                            Spacer()
+                            ShortcutRecorder(
+                                action: definition.action,
+                                overrides: $overrides
+                            )
+                        }
+                    }
+                }
+            }
+
+            settingsSection("System Shortcuts") {
+                ForEach(
+                    ApplicationShortcutReference.systemShortcuts,
+                    id: \.title
+                ) { shortcut in
                     HStack {
                         Text(shortcut.title)
                         Spacer()
-                        Text(shortcut.keys)
+                        Text(shortcut.binding.displayText)
                             .font(.system(size: 12, design: .monospaced))
                             .foregroundStyle(.secondary)
                     }
                 }
             }
 
-            settingsSection("Tmux Shortcuts") {
+            settingsSection("Tmux and Herdr Shortcuts") {
                 Text(
-                    "Pane, window, copy-mode, and session shortcuts are"
-                        + " configured and handled by tmux. Ghosthub sends"
-                        + " ordinary terminal input unchanged."
+                    "Pane, window, copy-mode, and session shortcuts remain configured and handled by tmux or Herdr."
                 )
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
             }
         }
     }

@@ -1,5 +1,6 @@
 import Foundation
 import GhosthubSettings
+import GhosthubTerminalSupport
 import GhosthubWorkspace
 import SwiftUI
 
@@ -308,6 +309,8 @@ public struct InteractionHandlers {
     public let closeWindow: (() -> Void)?
     public let dismissLogViewer: (() -> Void)?
     public let reloadTerminalConfig: (() -> Void)?
+    public let performApplicationShortcut:
+        ((ApplicationShortcutAction) -> Void)?
     public let selectWorkspace: ((WorkspaceSelection) -> Void)?
     public let openTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)?
     public let hideTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)?
@@ -369,6 +372,8 @@ public struct InteractionHandlers {
         closeWindow: (() -> Void)? = nil,
         dismissLogViewer: (() -> Void)? = nil,
         reloadTerminalConfig: (() -> Void)? = nil,
+        performApplicationShortcut:
+        ((ApplicationShortcutAction) -> Void)? = nil,
         selectWorkspace: ((WorkspaceSelection) -> Void)? = nil,
         openTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)? = nil,
         hideTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)? = nil,
@@ -429,6 +434,7 @@ public struct InteractionHandlers {
         self.closeWindow = closeWindow
         self.dismissLogViewer = dismissLogViewer
         self.reloadTerminalConfig = reloadTerminalConfig
+        self.performApplicationShortcut = performApplicationShortcut
         self.selectWorkspace = selectWorkspace
         self.openTmuxSession = openTmuxSession
         self.hideTmuxSession = hideTmuxSession

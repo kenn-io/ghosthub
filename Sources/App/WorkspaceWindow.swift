@@ -147,6 +147,7 @@ private struct WindowFocusTracker: NSViewRepresentable {
             window.tabbingMode = .preferred
             window.tabbingIdentifier =
                 WorkspaceWindowIdentity.tabbingIdentifier
+            NativeTabCommands.installBracketShortcuts()
             tabObservation = window.observe(
                 \.tabbedWindows,
                 options: [.initial, .new]
@@ -821,6 +822,12 @@ struct WorkspaceWindow: View {
                 },
                 reloadTerminalConfig: {
                     sceneModel.reloadTerminalConfig()
+                },
+                performApplicationShortcut: { [sceneModel] action in
+                    _ = sceneModel.performApplicationShortcut(
+                        action,
+                        invocation: .menu
+                    )
                 },
                 selectWorkspace: { [sceneModel] selection in
                     sceneModel.selectFromUser(selection)

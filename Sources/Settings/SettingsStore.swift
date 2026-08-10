@@ -470,6 +470,7 @@ public final class SettingsStore: ObservableObject {
             )
             return false
         }
+        guard candidate != shortcutPreferences else { return true }
 
         do {
             try configPipeline.fileManager.createDirectory(

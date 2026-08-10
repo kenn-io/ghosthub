@@ -80,6 +80,8 @@ public final class TerminalSurfaceView: ObservableObject {
     public var shouldConfirmClose: (() -> Bool)?
     @Published public var paneSplitErrorMessage: String?
     public var paneSplitShortcutHandler: ((TerminalPaneSplitShortcut) -> Void)?
+    public var applicationShortcutsProvider:
+        (() -> ResolvedApplicationShortcuts)?
     package var hasEffectiveKeyboardFocus = false
     public var hasRunningChildProcessOverride: (() -> Bool)?
     public var onSurfaceClosed: ((Bool) -> Void)?
@@ -186,13 +188,16 @@ extension TerminalSurfaceView {
         flags: NSEvent.ModifierFlags,
         chars: String?,
         keyCode: UInt16,
-        hasPaneCloseHandler: Bool
+        hasPaneCloseHandler: Bool,
+        shortcuts: ResolvedApplicationShortcuts =
+            ApplicationShortcutCatalog.compiledDefaults
     ) -> Bool {
         TerminalApplicationShortcut.isReserved(
             flags: flags,
             chars: chars,
             keyCode: keyCode,
-            hasPaneCloseHandler: hasPaneCloseHandler
+            hasPaneCloseHandler: hasPaneCloseHandler,
+            shortcuts: shortcuts
         )
     }
 }
@@ -202,6 +207,8 @@ public final class TerminalSurfaceCoordinator: ObservableObject {
     private let runtime: LibghosttyRuntime
     private var surfaces: [(key: SurfaceKey, view: TerminalSurfaceView)] = []
     public var onSurfaceCreated: ((SurfaceKey, TerminalSurfaceView) -> Void)?
+    public var applicationShortcutsProvider:
+        (() -> ResolvedApplicationShortcuts)?
 
     public init(runtime: LibghosttyRuntime) {
         self.runtime = runtime
@@ -217,6 +224,7 @@ public final class TerminalSurfaceCoordinator: ObservableObject {
         let view = TerminalSurfaceView(
             configuration: configuration
         )
+        view.applicationShortcutsProvider = applicationShortcutsProvider
         surfaces.append((key: key, view: view))
         onSurfaceCreated?(key, view)
         return view

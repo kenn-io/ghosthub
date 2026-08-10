@@ -11,4 +11,8 @@ extension Notification.Name {
         Notification.Name("ghosthubToggleSidebar")
     public static let ghosthubApplyThemeToCurrentSession =
         Notification.Name("ghosthubApplyThemeToCurrentSession")
+    public static let ghosthubApplicationShortcutRequest =
+        Notification.Name("ghosthubApplicationShortcutRequest")
 }
+
+public let applicationShortcutActionUserInfoKey = "action"

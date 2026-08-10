@@ -1,48 +1,12 @@
 import Foundation
 import GhosthubSettings
+import GhosthubTerminalSupport
 import GhosthubWorkspace
-
-public enum WorkspaceCommandShortcut: Equatable, Sendable {
-    case commandB
-    case commandShiftP
-    case commandShiftComma
-    case commandShiftN
-    case commandShiftI
-    case commandShiftDelete
-    case commandOptionUp
-    case commandOptionDown
-    case commandDigit(Int)
-
-    public var displayText: String {
-        switch self {
-        case .commandB:
-            return "Cmd+B"
-        case .commandShiftP:
-            return "Cmd+Shift+P"
-        case .commandShiftComma:
-            return "Cmd+Shift+,"
-        case .commandShiftN:
-            return "Cmd+Shift+N"
-        case .commandShiftI:
-            return "Cmd+Shift+I"
-        case .commandShiftDelete:
-            return "Cmd+Shift+Delete"
-        case .commandOptionUp:
-            return "Cmd+Opt+Up"
-        case .commandOptionDown:
-            return "Cmd+Opt+Down"
-        case let .commandDigit(index):
-            return "Cmd+\(index)"
-        }
-    }
-}
 
 public enum WorkspaceCommandAction: Equatable, Sendable {
     case toggleSidebar
     case openConfigDirectory
     case reloadTerminalConfig
-    case previousWorktree
-    case nextWorktree
     case newTmuxSession(UUID)
     case newHerdrSession(UUID)
     case addProject(UUID)
@@ -61,6 +25,7 @@ public enum WorkspaceCommandAction: Equatable, Sendable {
     case setInterfaceAppearance(AppearancePreference)
     case select(WorkspaceNavigationTarget)
     case showLogViewer
+    case applicationShortcut(ApplicationShortcutAction)
 }
 
 public struct WorkspaceCommandItem: Identifiable, Equatable, Sendable {
@@ -68,7 +33,8 @@ public struct WorkspaceCommandItem: Identifiable, Equatable, Sendable {
     public let title: String
     public let subtitle: String
     public let keywords: [String]
-    public let shortcut: WorkspaceCommandShortcut?
+    public let shortcutAction: ApplicationShortcutAction?
+    public let shortcut: ApplicationKeyBinding?
     public let action: WorkspaceCommandAction
 
     public init(
@@ -76,13 +42,15 @@ public struct WorkspaceCommandItem: Identifiable, Equatable, Sendable {
         title: String,
         subtitle: String,
         keywords: [String] = [],
-        shortcut: WorkspaceCommandShortcut? = nil,
+        shortcutAction: ApplicationShortcutAction? = nil,
+        shortcut: ApplicationKeyBinding? = nil,
         action: WorkspaceCommandAction
     ) {
         self.id = id
         self.title = title
         self.subtitle = subtitle
         self.keywords = keywords
+        self.shortcutAction = shortcutAction
         self.shortcut = shortcut
         self.action = action
     }
@@ -138,7 +106,9 @@ public enum CommandPaletteModel {
         worktreeOrderRawValue: String = "",
         tmuxSessionOrderRawValue: String = "",
         herdrSessionOrderRawValue: String = "",
-        pendingHerdrSessions: Set<WorkspaceHerdrSessionSelection> = []
+        pendingHerdrSessions: Set<WorkspaceHerdrSessionSelection> = [],
+        shortcuts: ResolvedApplicationShortcuts =
+            ApplicationShortcutCatalog.compiledDefaults
     ) -> [WorkspaceCommandItem] {
         var commands = [
             WorkspaceCommandItem(
@@ -146,7 +116,8 @@ public enum CommandPaletteModel {
                 title: isSidebarVisible ? "Hide Sidebar" : "Show Sidebar",
                 subtitle: "Toggle the project and worktree navigation sidebar.",
                 keywords: ["sidebar", "navigation", "toggle"],
-                shortcut: .commandB,
+                shortcutAction: .toggleSidebar,
+                shortcut: shortcuts[.toggleSidebar],
                 action: .toggleSidebar
             ),
             WorkspaceCommandItem(
@@ -163,7 +134,8 @@ public enum CommandPaletteModel {
                 keywords: [
                     "reload", "terminal", "config", "ghostty.conf",
                 ],
-                shortcut: .commandShiftComma,
+                shortcutAction: .reloadConfiguration,
+                shortcut: shortcuts[.reloadConfiguration],
                 action: .reloadTerminalConfig
             ),
             WorkspaceCommandItem(
@@ -171,23 +143,43 @@ public enum CommandPaletteModel {
                 title: "Show Application Log",
                 subtitle: "Open a terminal viewing the Ghosthub log file.",
                 keywords: ["log", "viewer", "debug", "diagnostic", "tail"],
+                shortcutAction: .openApplicationLog,
+                shortcut: shortcuts[.openApplicationLog],
                 action: .showLogViewer
             ),
             WorkspaceCommandItem(
-                id: "previous-worktree",
-                title: "Previous Worktree",
-                subtitle: "Cycle backward through worktrees in sidebar order.",
-                keywords: ["previous", "worktree", "cycle"],
-                shortcut: .commandOptionUp,
-                action: .previousWorktree
+                id: "previous-sibling",
+                title: "Previous Sibling",
+                subtitle: "Cycle backward within the current session group.",
+                keywords: ["previous", "session", "sibling", "cycle"],
+                shortcutAction: .previousSibling,
+                shortcut: shortcuts[.previousSibling],
+                action: .applicationShortcut(.previousSibling)
             ),
             WorkspaceCommandItem(
-                id: "next-worktree",
-                title: "Next Worktree",
-                subtitle: "Cycle forward through worktrees in sidebar order.",
-                keywords: ["next", "worktree", "cycle"],
-                shortcut: .commandOptionDown,
-                action: .nextWorktree
+                id: "next-sibling",
+                title: "Next Sibling",
+                subtitle: "Cycle forward within the current session group.",
+                keywords: ["next", "session", "sibling", "cycle"],
+                shortcutAction: .nextSibling,
+                shortcut: shortcuts[.nextSibling],
+                action: .applicationShortcut(.nextSibling)
+            ),
+            WorkspaceCommandItem(
+                id: "split-right",
+                title: "Split Right",
+                subtitle: "Split the active tmux or Herdr pane to the right.",
+                shortcutAction: .splitRight,
+                shortcut: shortcuts[.splitRight],
+                action: .applicationShortcut(.splitRight)
+            ),
+            WorkspaceCommandItem(
+                id: "split-down",
+                title: "Split Down",
+                subtitle: "Split the active tmux or Herdr pane downward.",
+                shortcutAction: .splitDown,
+                shortcut: shortcuts[.splitDown],
+                action: .applicationShortcut(.splitDown)
             ),
         ]
 
@@ -196,7 +188,11 @@ public enum CommandPaletteModel {
             supportsSettings: supportsSettings
         ))
         commands.append(contentsOf: hostCommands(in: snapshot))
-        commands.append(contentsOf: hostActionCommands(in: snapshot))
+        commands.append(contentsOf: hostActionCommands(
+            in: snapshot,
+            selection: selection,
+            shortcuts: shortcuts
+        ))
         commands.append(contentsOf: activeTmuxThemeCommands(
             activeSelection: activeTmuxSession,
             activeSelectionIsConnected:
@@ -223,11 +219,13 @@ public enum CommandPaletteModel {
         ))
         commands.append(contentsOf: newWorktreeCommands(
             in: snapshot,
-            selection: selection
+            selection: selection,
+            shortcuts: shortcuts
         ))
         commands.append(contentsOf: importPullRequestCommands(
             in: snapshot,
-            selection: selection
+            selection: selection,
+            shortcuts: shortcuts
         ))
         commands.append(contentsOf: projectCommands(
             in: snapshot,
@@ -376,7 +374,9 @@ public enum CommandPaletteModel {
     }
 
     private static func hostActionCommands(
-        in snapshot: WorkspaceSnapshot
+        in snapshot: WorkspaceSnapshot,
+        selection: WorkspaceSelection,
+        shortcuts: ResolvedApplicationShortcuts
     ) -> [WorkspaceCommandItem] {
         snapshot.hosts.flatMap { host in
             var commands = [
@@ -388,6 +388,10 @@ public enum CommandPaletteModel {
                         "new", "create", "tmux", "session",
                         host.name, host.sshDestination ?? "",
                     ],
+                    shortcutAction: host.id == selection.selectedHostID
+                        ? .newTmuxSession : nil,
+                    shortcut: host.id == selection.selectedHostID
+                        ? shortcuts[.newTmuxSession] : nil,
                     action: .newTmuxSession(host.id)
                 ),
             ]
@@ -400,6 +404,10 @@ public enum CommandPaletteModel {
                         "new", "create", "herdr", "session",
                         host.name, host.sshDestination ?? "",
                     ],
+                    shortcutAction: host.id == selection.selectedHostID
+                        ? .newHerdrSession : nil,
+                    shortcut: host.id == selection.selectedHostID
+                        ? shortcuts[.newHerdrSession] : nil,
                     action: .newHerdrSession(host.id)
                 ))
             }
@@ -662,7 +670,8 @@ public enum CommandPaletteModel {
 
     private static func newWorktreeCommands(
         in snapshot: WorkspaceSnapshot,
-        selection: WorkspaceSelection
+        selection: WorkspaceSelection,
+        shortcuts: ResolvedApplicationShortcuts
     ) -> [WorkspaceCommandItem] {
         orderedSidebarProjects(in: snapshot, selection: selection)
             .filter { snapshot.canCreateWorktree(in: $0.project) }
@@ -679,10 +688,14 @@ public enum CommandPaletteModel {
                         "new", "create", "worktree", "kwt",
                         projectName, project.rootPath,
                     ],
+                    shortcutAction: project.id == selectedProjectID(
+                        from: selection,
+                        in: snapshot
+                    ) ? .newWorktree : nil,
                     shortcut: project.id == selectedProjectID(
                         from: selection,
                         in: snapshot
-                    ) ? .commandShiftN : nil,
+                    ) ? shortcuts[.newWorktree] : nil,
                     action: .newWorktree(project.id)
                 )
             }
@@ -690,7 +703,8 @@ public enum CommandPaletteModel {
 
     private static func importPullRequestCommands(
         in snapshot: WorkspaceSnapshot,
-        selection: WorkspaceSelection
+        selection: WorkspaceSelection,
+        shortcuts: ResolvedApplicationShortcuts
     ) -> [WorkspaceCommandItem] {
         orderedSidebarProjects(in: snapshot, selection: selection)
             .filter {
@@ -710,10 +724,14 @@ public enum CommandPaletteModel {
                         "import", "pull", "request", "pr", "kwt",
                         projectName, project.rootPath,
                     ],
+                    shortcutAction: project.id == selectedProjectID(
+                        from: selection,
+                        in: snapshot
+                    ) ? .importPullRequest : nil,
                     shortcut: project.id == selectedProjectID(
                         from: selection,
                         in: snapshot
-                    ) ? .commandShiftI : nil,
+                    ) ? shortcuts[.importPullRequest] : nil,
                     action: .importPullRequest(project.id)
                 )
             }
@@ -763,7 +781,7 @@ public enum CommandPaletteModel {
             }
         }
 
-        return rows.enumerated().compactMap { index, item in
+        return rows.compactMap { item in
             guard case let .worktree(worktreeID) = item.row.target,
                   let worktree = snapshot.worktree(id: worktreeID)
             else {
@@ -785,7 +803,6 @@ public enum CommandPaletteModel {
                     item.project.row.title,
                     item.section.row.title,
                 ],
-                shortcut: index < 9 ? .commandDigit(index + 1) : nil,
                 action: item.row.selectAction
             )
         }

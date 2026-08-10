@@ -1,4 +1,5 @@
 import Foundation
+import GhosthubTerminalSupport
 import GhosthubWorkspace
 
 @MainActor
@@ -10,6 +11,8 @@ public final class TerminalSurfaceCoordinator: ObservableObject {
     private var fontZoomOverridePoints: CGFloat?
 
     public var onSurfaceCreated: ((SurfaceKey, TerminalSurfaceView) -> Void)?
+    public var applicationShortcutsProvider:
+        (() -> ResolvedApplicationShortcuts)?
 
     public init(runtime: LibghosttyRuntime) {
         self.runtime = runtime
@@ -41,6 +44,7 @@ public final class TerminalSurfaceCoordinator: ObservableObject {
             app: appHandle,
             configuration: configuration
         )
+        view.applicationShortcutsProvider = applicationShortcutsProvider
         view.onSurfaceDestroyed = { [weak runtime] identity in
             runtime?.unregisterSurfaceForResolvedColors(identity)
         }

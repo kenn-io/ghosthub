@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import GhosthubSettings
+import GhosthubTerminalSupport
 import SwiftUI
 import GhosthubWorkspace
 
@@ -445,7 +446,10 @@ public struct SettingsView: View {
     }
 
     private var keyboardDetail: some View {
-        ApplicationShortcutsView()
+        ApplicationShortcutsView(
+            overrides: $draft.shortcutOverrides,
+            configurationIssue: store.shortcutConfigurationIssue?.message
+        )
     }
 
     private var worktreesDetail: some View {

@@ -1208,7 +1208,13 @@ final class WorkspaceSceneModel: ObservableObject {
         self.configuredExeHostsProvider = configuredExeHostsProvider
         self.refreshExeHosts = refreshExeHosts
         self.startExeHostInventory = startExeHostInventory
-        terminalCoordinator = TerminalSurfaceCoordinator(runtime: terminalRuntime)
+        let terminalCoordinator = TerminalSurfaceCoordinator(
+            runtime: terminalRuntime
+        )
+        terminalCoordinator.applicationShortcutsProvider = {
+            SettingsStore.shared.shortcutPreferences.resolved
+        }
+        self.terminalCoordinator = terminalCoordinator
         self.notificationService = notificationService
         self.tmuxSessionActivityController =
             tmuxSessionActivityController
@@ -4869,6 +4875,12 @@ final class WorkspaceSceneModel: ObservableObject {
     }
 
     func reloadTerminalConfig() {
+        SettingsStore.shared.reloadShortcutConfiguration()
+        if let issue = SettingsStore.shared.shortcutConfigurationIssue {
+            AppLogger.shared.error(
+                "shortcut configuration: \(issue.message)"
+            )
+        }
         terminalRuntime.reloadConfig(
             projectRoot: selection.terminalConfigRoot(
                 in: snapshot

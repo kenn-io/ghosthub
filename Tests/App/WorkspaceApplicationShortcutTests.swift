@@ -1,0 +1,63 @@
+import Foundation
+import GhosthubPersistence
+import GhosthubTerminalSupport
+import GhosthubTestSupport
+import GhosthubWorkspace
+import Testing
+@testable import GhosthubApp
+
+@Suite("Workspace application shortcuts", .serialized)
+@MainActor
+struct WorkspaceApplicationShortcutTests {
+    @Test("focused sibling navigation selects within the current project")
+    func focusedSiblingNavigation() async throws {
+        let host = HostSummary.fixture()
+        let project = ProjectSummary.fixture(hostID: host.id)
+        let first = WorktreeSummary.fixture(
+            hostID: host.id, projectID: project.id, name: "first"
+        )
+        let second = WorktreeSummary.fixture(
+            hostID: host.id, projectID: project.id, name: "second"
+        )
+        let snapshot = WorkspaceSnapshot(
+            hosts: [host], projects: [project],
+            worktrees: [first, second]
+        )
+        let model = try makeModel(
+            database: .inMemory(), localHostID: host.id,
+            snapshot: snapshot
+        )
+        model.selection = .init(
+            selectedHostID: host.id,
+            selectedProjectID: project.id,
+            selectedWorktreeID: first.id
+        )
+
+        #expect(!model.performApplicationShortcut(.nextSibling))
+        model.isFocusedWindow = true
+        #expect(model.performApplicationShortcut(.nextSibling))
+        #expect(model.selection.selectedWorktreeID == second.id)
+        #expect(model.performApplicationShortcut(.previousSibling))
+        #expect(model.selection.selectedWorktreeID == first.id)
+        await model.shutdown()
+    }
+
+    @Test("presentation actions report availability and mutate once")
+    func presentationActions() async throws {
+        let environment = try setupHostEnvironment()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot
+        )
+        model.isFocusedWindow = true
+
+        #expect(model.performApplicationShortcut(.commandPalette))
+        #expect(model.isCommandPalettePresented)
+        #expect(model.performApplicationShortcut(.openApplicationLog))
+        #expect(model.isLogViewerPresented)
+        #expect(!model.performApplicationShortcut(.splitRight))
+        #expect(!model.performApplicationShortcut(.newHerdrSession))
+        await model.shutdown()
+    }
+}

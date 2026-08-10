@@ -395,7 +395,7 @@ public enum ApplicationShortcutCatalog {
         definition(.toggleSidebar, "Toggle Sidebar", .application, "cmd+b"),
         definition(.newWorktree, "New Worktree", .application, "cmd+shift+n"),
         definition(.importPullRequest, "Import Pull Request", .application, "cmd+shift+i"),
-        definition(.newTmuxSession, "New Tmux Session", .application, nil),
+        definition(.newTmuxSession, "New tmux Session", .application, nil),
         definition(.newHerdrSession, "New Herdr Session", .application, nil),
         definition(.splitRight, "Split Right", .multiplexer, "cmd+d"),
         definition(.splitDown, "Split Down", .multiplexer, "cmd+shift+d"),
@@ -466,6 +466,34 @@ public enum ApplicationShortcutCatalog {
         for action: ApplicationShortcutAction
     ) -> ApplicationShortcutDefinition {
         definitions.first { $0.action == action }!
+    }
+
+    public static func validationMessage(
+        for binding: ApplicationKeyBinding,
+        action: ApplicationShortcutAction,
+        overrides: [ApplicationShortcutAction: ApplicationShortcutOverride]
+    ) -> String? {
+        guard !binding.modifiers.intersection(.nonShift).isEmpty else {
+            return "Add Command, Control, or Option to avoid intercepting terminal input."
+        }
+        if let fixed = fixedShortcuts.first(where: {
+            $0.binding == binding
+        }) {
+            return "Reserved for \(fixed.title)."
+        }
+        for definition in definitions where definition.action != action {
+            let otherBinding: ApplicationKeyBinding? = switch overrides[
+                definition.action
+            ] {
+            case let .binding(value): value
+            case .unbound: nil
+            case nil: definition.defaultBinding
+            }
+            if otherBinding == binding {
+                return "Already used by \(definition.title)."
+            }
+        }
+        return nil
     }
 
     private static func definition(

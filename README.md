@@ -193,12 +193,19 @@ page can expose those duplicate session rows.
 | Shortcut | Action |
 | --- | --- |
 | <kbd>⌘</kbd><kbd>⇧</kbd><kbd>P</kbd> | Open Command Palette |
+| <kbd>⌃</kbd><kbd>Tab</kbd> / <kbd>⌃</kbd><kbd>⇧</kbd><kbd>Tab</kbd> | Select the next / previous local sibling |
+| <kbd>⌘</kbd><kbd>⇧</kbd><kbd>[</kbd> / <kbd>]</kbd> | Select the previous / next native tab |
 | <kbd>⌘</kbd><kbd>T</kbd> | Open a new workspace tab |
 | <kbd>⌘</kbd><kbd>N</kbd> | Open a new workspace window |
 | <kbd>⌘</kbd><kbd>B</kbd> | Show or hide the sidebar |
 | <kbd>⌘</kbd><kbd>⇧</kbd><kbd>N</kbd> | Create a worktree |
 | <kbd>⌘</kbd><kbd>W</kbd> | Detach the current presentation |
 | <kbd>⌘</kbd><kbd>,</kbd> | Open Settings |
+
+Sibling navigation follows the visible sidebar order within the current
+project or host. Application shortcuts can be changed in **Settings →
+Keyboard** or `~/.config/ghosthub/config.toml`; unavailable shortcuts pass
+through to the active terminal.
 
 ## Terminal configuration
 

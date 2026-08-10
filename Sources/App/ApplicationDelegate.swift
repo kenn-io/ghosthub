@@ -176,12 +176,16 @@ final class ApplicationDelegate: NSObject,
         // Cmd-N must stay an independent window even when the user's system
         // preference normally groups newly opened windows into tabs.
         NSWindow.allowsAutomaticWindowTabbing = false
+        DispatchQueue.main.async {
+            NativeTabCommands.installBracketShortcuts()
+        }
     }
 
     func applicationDidBecomeActive(
         _ notification: Notification
     ) {
         TelemetryController.shared.applicationDidBecomeActive()
+        NativeTabCommands.installBracketShortcuts()
     }
 
     func applicationWillResignActive(
@@ -232,6 +236,7 @@ final class ApplicationDelegate: NSObject,
         else { return }
         parent.addTabbedWindow(window, ordered: .above)
         window.makeKeyAndOrderFront(nil)
+        NativeTabCommands.installBracketShortcuts()
     }
 
     private func requestWorkspaceWindow(

@@ -873,6 +873,11 @@ struct WorkspaceRestorationTests {
             localHostID: environment.host.id,
             snapshot: snapshot
         )
+        model.synchronizeSelection(WorkspaceSelection(
+            selectedHostID: environment.host.id,
+            selectedProjectID: environment.project.id,
+            selectedWorktreeID: environment.worktree.id
+        ))
         let pending = WorkspaceWindowState(
             windowID: UUID(),
             navigation: .init(
@@ -884,7 +889,8 @@ struct WorkspaceRestorationTests {
         )
         model.beginRestoration(pending)
 
-        model.selectIndexedWorktree(2)
+        model.isFocusedWindow = true
+        #expect(model.performApplicationShortcut(.selectSibling2))
 
         #expect(model.selection.selectedWorktreeID == secondWorktree.id)
         #expect(
@@ -930,7 +936,10 @@ struct WorkspaceRestorationTests {
         )
         model.beginRestoration(pending)
 
-        model.stepWorktree(by: step)
+        model.isFocusedWindow = true
+        #expect(model.performApplicationShortcut(
+            step < 0 ? .previousSibling : .nextSibling
+        ))
 
         #expect(model.selection.selectedWorktreeID == secondWorktree.id)
         #expect(

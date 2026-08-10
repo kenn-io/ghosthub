@@ -1,26 +1,22 @@
-import AppKit
 import Testing
 @testable import GhosthubTerminalSupport
 
 @Suite("Pane split shortcuts")
 struct TerminalPaneSplitShortcutTests {
-    @Test("Ghostty split chords map to semantic directions")
+    @Test("application actions map to semantic directions")
     func splitDirections() throws {
         let cases: [(
-            flags: NSEvent.ModifierFlags,
+            action: ApplicationShortcutAction,
             shortcut: TerminalPaneSplitShortcut
         )] = [
-            (NSEvent.ModifierFlags.command, .right),
-            ([.command, .capsLock], .right),
-            ([.command, .shift], .down),
-            ([.command, .shift, .capsLock], .down),
+            (.splitRight, .right),
+            (.splitDown, .down),
         ]
 
         for testCase in cases {
             let shortcut = try #require(
-                TerminalPaneSplitShortcut.matching(
-                    flags: testCase.flags,
-                    charactersIgnoringModifiers: "d"
+                TerminalPaneSplitShortcut(
+                    applicationShortcutAction: testCase.action
                 )
             )
 
@@ -28,15 +24,10 @@ struct TerminalPaneSplitShortcutTests {
         }
     }
 
-    @Test("other Command chords remain terminal input")
-    func unrelatedInput() {
-        #expect(TerminalPaneSplitShortcut.matching(
-            flags: [.command, .option],
-            charactersIgnoringModifiers: "d"
-        ) == nil)
-        #expect(TerminalPaneSplitShortcut.matching(
-            flags: .command,
-            charactersIgnoringModifiers: "k"
+    @Test("other application actions do not request a split")
+    func unrelatedActions() {
+        #expect(TerminalPaneSplitShortcut(
+            applicationShortcutAction: .toggleSidebar
         ) == nil)
     }
 }

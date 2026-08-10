@@ -27,7 +27,7 @@ struct WorkspaceAccessibilityModelTests {
                 for: try #require(command)
             ),
             label: "Hide Sidebar",
-            value: "Cmd+B",
+            value: "⌘B",
             hint: "Toggle the project and worktree navigation sidebar."
         )
     }

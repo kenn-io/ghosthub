@@ -16,29 +16,26 @@ enum QuitPolicy {
     }
 }
 
-#if canImport(AppKit)
-enum PaneSplitCommand {
-    static func usesKeyboardShortcut(
-        canSplit: Bool,
-        hasEffectiveKeyboardFocus: Bool
-    ) -> Bool {
-        canSplit && hasEffectiveKeyboardFocus
-    }
+struct ApplicationShortcutMenuItem: Equatable {
+    let action: ApplicationShortcutAction
+    let title: String
+    let binding: ApplicationKeyBinding?
+}
 
-    @MainActor
-    static func requiresKeyboardFocus(
-        _ shortcut: TerminalPaneSplitShortcut,
-        currentEvent: NSEvent? = NSApplication.shared.currentEvent
-    ) -> Bool {
-        guard currentEvent?.type == .keyDown else { return false }
-        return TerminalPaneSplitShortcut.matching(
-            flags: currentEvent?.modifierFlags ?? [],
-            charactersIgnoringModifiers:
-            currentEvent?.charactersIgnoringModifiers
-        ) == shortcut
+enum ApplicationShortcutMenuModel {
+    static func items(
+        _ actions: [ApplicationShortcutAction],
+        shortcuts: ResolvedApplicationShortcuts
+    ) -> [ApplicationShortcutMenuItem] {
+        actions.map { action in
+            ApplicationShortcutMenuItem(
+                action: action,
+                title: action.definition.title,
+                binding: shortcuts[action]
+            )
+        }
     }
 }
-#endif
 
 @main
 struct GhosthubApp: App {
@@ -50,8 +47,6 @@ struct GhosthubApp: App {
     private let updateRelaunchRestorer = UpdateRelaunchRestorer()
     #endif
     @FocusedValue(\.sceneModel) private var focusedSceneModel
-    @FocusedValue(\.terminalHasEffectiveKeyboardFocus)
-    private var terminalHasEffectiveKeyboardFocus
     @Environment(\.openWindow) private var openWindow
     @State private var didRequestLaunchActivation = false
     #if canImport(AppKit)
@@ -62,6 +57,11 @@ struct GhosthubApp: App {
     init() {
         LibghosttyBootstrap.preconditionReady()
         AppLogger.shared.info("Ghosthub launched")
+        if let issue = SettingsStore.shared.shortcutConfigurationIssue {
+            AppLogger.shared.error(
+                "shortcut configuration: \(issue.message)"
+            )
+        }
         WorkspaceSceneBootstrap.ensureBootstrapped()
     }
 
@@ -132,6 +132,7 @@ struct GhosthubApp: App {
                     }
                 )
                 updateController.start()
+                NativeTabCommands.installBracketShortcuts()
                 requestLaunchActivationIfNeeded()
                 #endif
             }
@@ -175,27 +176,31 @@ struct GhosthubApp: App {
                 }
                 .keyboardShortcut(",")
                 Button("Reload Configuration") {
-                    focusedSceneModel?.reloadTerminalConfig()
+                    invoke(.reloadConfiguration)
                 }
-                .keyboardShortcut(
-                    ",",
-                    modifiers: [.command, .shift]
-                )
+                .keyboardShortcut(shortcut(.reloadConfiguration))
                 Divider()
                 Button("Application Log") {
-                    focusedSceneModel?
-                        .isLogViewerPresented = true
+                    invoke(.openApplicationLog)
                 }
-                .keyboardShortcut(
-                    "l",
-                    modifiers: [.command, .option]
-                )
+                .keyboardShortcut(shortcut(.openApplicationLog))
             }
             CommandGroup(replacing: .toolbar) {}
             editMenuCommands
             fileMenuCommands
             sessionMenuCommands
             viewMenuCommands
+            CommandGroup(after: .windowArrangement) {
+                Button("Previous Tab") {
+                    NativeTabCommands.selectPrevious()
+                }
+                .keyboardShortcut("[", modifiers: [.command, .shift])
+
+                Button("Next Tab") {
+                    NativeTabCommands.selectNext()
+                }
+                .keyboardShortcut("]", modifiers: [.command, .shift])
+            }
             #endif
         }
     }
@@ -283,13 +288,19 @@ struct GhosthubApp: App {
     private var fileMenuCommands: some Commands {
         CommandGroup(replacing: .newItem) {
             Button("New Worktree…") {
-                NotificationCenter.default.post(
-                    name: .ghosthubNewWorktree,
-                    object: nil
-                )
+                invoke(.newWorktree)
             }
-            .keyboardShortcut("n", modifiers: [.command, .shift])
+            .keyboardShortcut(shortcut(.newWorktree))
             .disabled(focusedSceneModel?.selectedProject == nil)
+
+            Button("Import Pull Request…") {
+                invoke(.importPullRequest)
+            }
+            .keyboardShortcut(shortcut(.importPullRequest))
+            .disabled(
+                focusedSceneModel?.canImportPullRequestInSelectedProject
+                    != true
+            )
 
             Divider()
 
@@ -306,40 +317,15 @@ struct GhosthubApp: App {
             Divider()
 
             Button("Split Right") {
-                focusedSceneModel?.splitActivePane(
-                    .right,
-                    requiresKeyboardFocus: PaneSplitCommand
-                        .requiresKeyboardFocus(.right)
-                )
+                invoke(.splitRight)
             }
-            .keyboardShortcut(
-                PaneSplitCommand.usesKeyboardShortcut(
-                    canSplit:
-                    focusedSceneModel?.canSplitActivePane == true,
-                    hasEffectiveKeyboardFocus:
-                    terminalHasEffectiveKeyboardFocus == true
-                ) ? KeyboardShortcut("d") : nil
-            )
+            .keyboardShortcut(shortcut(.splitRight))
             .disabled(focusedSceneModel?.canSplitActivePane != true)
 
             Button("Split Down") {
-                focusedSceneModel?.splitActivePane(
-                    .down,
-                    requiresKeyboardFocus: PaneSplitCommand
-                        .requiresKeyboardFocus(.down)
-                )
+                invoke(.splitDown)
             }
-            .keyboardShortcut(
-                PaneSplitCommand.usesKeyboardShortcut(
-                    canSplit:
-                    focusedSceneModel?.canSplitActivePane == true,
-                    hasEffectiveKeyboardFocus:
-                    terminalHasEffectiveKeyboardFocus == true
-                ) ? KeyboardShortcut(
-                    "d",
-                    modifiers: [.command, .shift]
-                ) : nil
-            )
+            .keyboardShortcut(shortcut(.splitDown))
             .disabled(focusedSceneModel?.canSplitActivePane != true)
 
             Divider()
@@ -369,6 +355,32 @@ struct GhosthubApp: App {
     @CommandsBuilder
     private var sessionMenuCommands: some Commands {
         CommandMenu("Session") {
+            Button("Previous Sibling") {
+                invoke(.previousSibling)
+            }
+            .keyboardShortcut(shortcut(.previousSibling))
+
+            Button("Next Sibling") {
+                invoke(.nextSibling)
+            }
+            .keyboardShortcut(shortcut(.nextSibling))
+
+            Menu("Select Sibling") {
+                ForEach(
+                    ApplicationShortcutCatalog.definitions.filter {
+                        $0.action.siblingIndex != nil
+                    },
+                    id: \.action
+                ) { definition in
+                    Button(definition.title) {
+                        invoke(definition.action)
+                    }
+                    .keyboardShortcut(shortcut(definition.action))
+                }
+            }
+
+            Divider()
+
             Button("Apply Theme to Current Session") {
                 NotificationCenter.default.post(
                     name: .ghosthubApplyThemeToCurrentSession,
@@ -389,27 +401,72 @@ struct GhosthubApp: App {
         CommandGroup(after: .sidebar) {
             Divider()
             Button("Command Palette") {
-                NotificationCenter.default.post(
-                    name: .ghosthubCommandPalette,
-                    object: nil
-                )
+                invoke(.commandPalette)
             }
-            .keyboardShortcut(
-                "p",
-                modifiers: [.command, .shift]
-            )
+            .keyboardShortcut(shortcut(.commandPalette))
 
             Divider()
 
             Button("Toggle Sidebar") {
-                guard let focusedSceneModel else { return }
-                NotificationCenter.default.post(
-                    name: .ghosthubToggleSidebar,
-                    object: focusedSceneModel
-                )
+                invoke(.toggleSidebar)
             }
-            .keyboardShortcut("b")
+            .keyboardShortcut(shortcut(.toggleSidebar))
             .disabled(focusedSceneModel == nil)
         }
+    }
+
+    private func shortcut(
+        _ action: ApplicationShortcutAction
+    ) -> KeyboardShortcut? {
+        settingsStore.shortcutPreferences.resolved[action]?.swiftUI
+    }
+
+    private func invoke(_ action: ApplicationShortcutAction) {
+        let invocation: ApplicationShortcutInvocation =
+            NSApplication.shared.currentEvent?.type == .keyDown
+                ? .keyEvent : .menu
+        _ = focusedSceneModel?.performApplicationShortcut(
+            action,
+            invocation: invocation
+        )
+    }
+}
+
+private extension ApplicationKeyBinding {
+    var swiftUI: KeyboardShortcut {
+        KeyboardShortcut(swiftUIKey, modifiers: swiftUIModifiers)
+    }
+
+    var swiftUIKey: KeyEquivalent {
+        switch key {
+        case let .character(character): KeyEquivalent(character)
+        case .tab: .tab
+        case .return: .return
+        case .escape: .escape
+        case .delete: .delete
+        case .leftArrow: .leftArrow
+        case .rightArrow: .rightArrow
+        case .upArrow: .upArrow
+        case .downArrow: .downArrow
+        case let .function(number):
+            KeyEquivalent(Character(UnicodeScalar(0xF703 + number)!))
+        }
+    }
+
+    var swiftUIModifiers: EventModifiers {
+        var result: EventModifiers = []
+        if modifiers.contains(.command) {
+            result.insert(.command)
+        }
+        if modifiers.contains(.control) {
+            result.insert(.control)
+        }
+        if modifiers.contains(.option) {
+            result.insert(.option)
+        }
+        if modifiers.contains(.shift) {
+            result.insert(.shift)
+        }
+        return result
     }
 }

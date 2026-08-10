@@ -11,6 +11,18 @@ public enum WorkspaceSidebarOrderStorage {
     ) -> String {
         defaults.string(forKey: worktreeKey) ?? ""
     }
+
+    public static func tmuxSessionRawValue(
+        in defaults: UserDefaults = .standard
+    ) -> String {
+        defaults.string(forKey: tmuxSessionKey) ?? ""
+    }
+
+    public static func herdrSessionRawValue(
+        in defaults: UserDefaults = .standard
+    ) -> String {
+        defaults.string(forKey: herdrSessionKey) ?? ""
+    }
 }
 
 struct WorkspaceSidebarOrder: Equatable {

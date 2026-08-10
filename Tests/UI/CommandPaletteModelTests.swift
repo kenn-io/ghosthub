@@ -1,5 +1,6 @@
 import Foundation
 import GhosthubTestSupport
+import GhosthubTerminalSupport
 @testable import GhosthubUI
 import GhosthubWorkspace
 import Testing
@@ -10,21 +11,21 @@ struct CommandPaletteModelTests {
         let commands = makeCommandPaletteCommands()
 
         commands.expectCommandContains(
-            title: "Hide Sidebar", shortcut: .commandB
+            title: "Hide Sidebar", shortcut: .toggleSidebar
         )
         commands.expectCommandNotContains(title: "Add Repository")
         commands.expectCommandContains(
             title: "New Worktree in ghosthub",
-            shortcut: .commandShiftN
+            shortcut: .newWorktree
         )
         commands.expectCommandNotContains(
             title: "Import Pull Request in ghosthub"
         )
         commands.expectCommandContains(
-            title: "Previous Worktree", shortcut: .commandOptionUp
+            title: "Previous Sibling", shortcut: .previousSibling
         )
         commands.expectCommandContains(
-            title: "Next Worktree", shortcut: .commandOptionDown
+            title: "Next Sibling", shortcut: .nextSibling
         )
         commands.expectCommandContains(
             title: "Use Light Appearance", expectNilShortcut: true
@@ -53,7 +54,7 @@ struct CommandPaletteModelTests {
         )
         commands.expectCommandContains(
             title: "Reload Configuration",
-            shortcut: .commandShiftComma
+            shortcut: .reloadConfiguration
         )
         commands.expectCommandNotContains(title: "Launch Layout: Claude Driver")
         commands.expectCommandNotContains(title: "Focus Worktree Shell")
@@ -79,19 +80,15 @@ struct CommandPaletteModelTests {
                 "Switch to Worktree: worker-rollout",
             ]
         )
-        #expect(worktreeCommands[0].shortcut == .commandDigit(1))
-        #expect(worktreeCommands[1].shortcut == .commandDigit(2))
-        #expect(worktreeCommands[2].shortcut == .commandDigit(3))
-        #expect(worktreeCommands[3].shortcut == .commandDigit(4))
-        #expect(worktreeCommands[4].shortcut == .commandDigit(5))
+        #expect(worktreeCommands.allSatisfy { $0.shortcut == nil })
     }
 
     @Test("worktree commands follow persisted sidebar order")
     func worktreeCommandsFollowPersistedSidebarOrder() {
         let bootstrap = WorkspaceBootstrap.preview()
-        let baseline = KeyboardNavigationModel.orderedWorktrees(
+        let baseline = WorkspaceSidebarModel.sections(
             in: bootstrap.snapshot
-        )
+        ).flatMap { $0.projects.flatMap(\.worktrees) }
         let rawOrder = [baseline[1].id, baseline[0].id]
             .map(\.uuidString)
             .joined(separator: "\n")
@@ -105,9 +102,9 @@ struct CommandPaletteModelTests {
         }
 
         #expect(commands[0].action == .select(.worktree(baseline[1].id)))
-        #expect(commands[0].shortcut == .commandDigit(1))
+        #expect(commands[0].shortcut == nil)
         #expect(commands[1].action == .select(.worktree(baseline[0].id)))
-        #expect(commands[1].shortcut == .commandDigit(2))
+        #expect(commands[1].shortcut == nil)
     }
 
     @Test("command palette omits settings commands when settings are unavailable")
@@ -385,11 +382,11 @@ struct CommandPaletteModelTests {
         )
         commands.expectCommandContains(
             title: "New Worktree in Untitled",
-            shortcut: .commandShiftN
+            shortcut: .newWorktree
         )
         commands.expectCommandContains(
             title: "Switch to Worktree: Untitled",
-            shortcut: .commandDigit(1)
+            expectNilShortcut: true
         )
 
         let sidebarWorktreeRow = WorkspaceSidebarModel.sections(
@@ -551,7 +548,7 @@ struct CommandPaletteModelTests {
         commands.expectCommandNotContains(title: "Add Repository")
         commands.expectCommandContains(
             title: "New Worktree in ghosthub",
-            shortcut: .commandShiftN
+            shortcut: .newWorktree
         )
         commands.expectCommandNotContains(title: "Import Pull Request in ghosthub")
     }
@@ -582,7 +579,7 @@ struct CommandPaletteModelTests {
 
         commands.expectCommandContains(
             title: "Import Pull Request in ghosthub",
-            shortcut: .commandShiftI
+            shortcut: .importPullRequest
         )
     }
 
@@ -1025,7 +1022,7 @@ struct CommandPaletteModelTests {
 
         commands.expectCommandContains(
             title: "New Worktree in ghosthub",
-            shortcut: .commandShiftN
+            shortcut: .newWorktree
         )
         commands.expectCommandNotContains(
             title: "Import Pull Request in ghosthub"
@@ -1115,7 +1112,7 @@ private func makeCommandPaletteWorkspaceEnvironment(
 private extension [WorkspaceCommandItem] {
     func expectCommandContains(
         title: String,
-        shortcut: WorkspaceCommandShortcut? = nil,
+        shortcut: ApplicationShortcutAction? = nil,
         expectNilShortcut: Bool = false,
         sourceLocation: SourceLocation = #_sourceLocation
     ) {
@@ -1124,7 +1121,7 @@ private extension [WorkspaceCommandItem] {
             if expectNilShortcut {
                 return $0.shortcut == nil
             }
-            return shortcut == nil || $0.shortcut == shortcut
+            return shortcut == nil || $0.shortcutAction == shortcut
         }
         #expect(
             found,
