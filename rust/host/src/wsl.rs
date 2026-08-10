@@ -348,15 +348,26 @@ impl HostSnapshot {
     pub fn with_herdr_lifecycle(
         mut self,
         action: HerdrLifecycleAction,
+        expected_executable: &str,
         confirmed: &HerdrSessionRecord,
         record: HerdrSessionRecord,
     ) -> Option<Self> {
-        let HerdrInventory::Available { sessions, .. } = self.herdr.as_mut() else {
+        let HerdrInventory::Available {
+            executable,
+            sessions,
+        } = self.herdr.as_mut()
+        else {
             return None;
         };
-        let index = sessions
-            .iter()
-            .position(|session| session.name() == confirmed.name())?;
+        if executable != expected_executable {
+            return None;
+        }
+        let index = sessions.iter().position(|session| {
+            session.name() == confirmed.name()
+                && session.is_default() == confirmed.is_default()
+                && session.session_directory() == confirmed.session_directory()
+                && session.socket_path() == confirmed.socket_path()
+        })?;
         match action {
             HerdrLifecycleAction::Stop => sessions[index] = record,
             HerdrLifecycleAction::Delete => {
@@ -2927,7 +2938,7 @@ mod tests {
             sessions: Vec::new(),
             herdr: Box::new(HerdrInventory::Available {
                 executable: "/usr/bin/herdr".to_owned(),
-                sessions: vec![running, other.clone()],
+                sessions: vec![running.clone(), other.clone()],
             }),
         };
         let stopped = HerdrSessionRecord::new(
@@ -2939,7 +2950,12 @@ mod tests {
         );
 
         let stopped_snapshot = snapshot
-            .with_herdr_lifecycle(HerdrLifecycleAction::Stop, &stopped, stopped.clone())
+            .with_herdr_lifecycle(
+                HerdrLifecycleAction::Stop,
+                "/usr/bin/herdr",
+                &running,
+                stopped.clone(),
+            )
             .expect("stop response applies");
         assert_eq!(
             stopped_snapshot.herdr().sessions(),
@@ -2947,10 +2963,76 @@ mod tests {
         );
 
         let deleted_snapshot = stopped_snapshot
-            .with_herdr_lifecycle(HerdrLifecycleAction::Delete, &other, other.clone())
+            .with_herdr_lifecycle(
+                HerdrLifecycleAction::Delete,
+                "/usr/bin/herdr",
+                &other,
+                other.clone(),
+            )
             .expect("delete response applies");
         assert_eq!(deleted_snapshot.herdr().sessions().len(), 1);
         assert_eq!(deleted_snapshot.herdr().sessions()[0].name(), "work");
+    }
+
+    #[test]
+    fn lifecycle_publication_rejects_changed_inventory_identity() {
+        let confirmed = HerdrSessionRecord::new(
+            "work",
+            false,
+            HerdrSessionState::Running,
+            "/tmp/work",
+            "/tmp/work.sock",
+        );
+        let stopped = HerdrSessionRecord::new(
+            "work",
+            false,
+            HerdrSessionState::Stopped,
+            "/tmp/work",
+            "/tmp/work.sock",
+        );
+        let snapshot = |executable: &str, session: HerdrSessionRecord| HostSnapshot {
+            endpoint: WslEndpoint {
+                distro: "Ubuntu".to_owned(),
+            },
+            runtime: WslRuntimeIdentity {
+                kernel_boot_id: "boot".to_owned(),
+                init_start_ticks: 1,
+            },
+            creation_term: AttachTerm::Xterm256Color,
+            sessions: Vec::new(),
+            herdr: Box::new(HerdrInventory::Available {
+                executable: executable.to_owned(),
+                sessions: vec![session],
+            }),
+        };
+        let replacement = HerdrSessionRecord::new(
+            "work",
+            false,
+            HerdrSessionState::Running,
+            "/tmp/replacement",
+            "/tmp/replacement.sock",
+        );
+
+        assert!(
+            snapshot("/opt/herdr-v2", confirmed.clone())
+                .with_herdr_lifecycle(
+                    HerdrLifecycleAction::Stop,
+                    "/usr/bin/herdr",
+                    &confirmed,
+                    stopped.clone(),
+                )
+                .is_none()
+        );
+        assert!(
+            snapshot("/usr/bin/herdr", replacement)
+                .with_herdr_lifecycle(
+                    HerdrLifecycleAction::Stop,
+                    "/usr/bin/herdr",
+                    &confirmed,
+                    stopped,
+                )
+                .is_none()
+        );
     }
 
     #[test]

@@ -4719,6 +4719,7 @@ fn create_herdr_fresh(
         },
     )?;
 
+    let expected_name = request.name.as_str();
     for attempt in 0..CREATE_DISCOVERY_ATTEMPTS {
         if inner.navigation_generation.load(Ordering::Acquire) != navigation_generation {
             drop(worker);
@@ -4742,9 +4743,7 @@ fn create_herdr_fresh(
             && let Some(session) = sessions
                 .iter()
                 .find(|session| {
-                    session.name() == request.name.as_str()
-                        && session.is_default() == request.precondition.is_default()
-                        && session.state() == HerdrSessionState::Running
+                    herdr_launch_result_matches(&request.precondition, expected_name, session)
                 })
                 .cloned()
         {
@@ -4791,6 +4790,26 @@ fn validate_herdr_launch_precondition(
         }
     }
     Ok(())
+}
+
+fn herdr_launch_result_matches(
+    precondition: &HerdrLaunchPrecondition,
+    expected_name: &str,
+    current: &session::HerdrSessionRecord,
+) -> bool {
+    if current.name() != expected_name
+        || current.is_default() != precondition.is_default()
+        || current.state() != HerdrSessionState::Running
+    {
+        return false;
+    }
+    match precondition {
+        HerdrLaunchPrecondition::Absent => true,
+        HerdrLaunchPrecondition::Stopped(expected) => {
+            current.session_directory() == expected.session_directory()
+                && current.socket_path() == expected.socket_path()
+        }
+    }
 }
 
 fn publish_created_presentation(
@@ -5340,7 +5359,7 @@ fn publish_herdr_lifecycle_response(
                 "the WSL endpoint changed while publishing the Herdr lifecycle response",
             )
         })?
-        .with_herdr_lifecycle(pending.action, &pending.record, record)
+        .with_herdr_lifecycle(pending.action, &pending.executable, &pending.record, record)
         .ok_or_else(|| {
             WorkspaceError::new(
                 "the Herdr lifecycle response no longer matches published inventory",
@@ -9337,6 +9356,30 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn restart_result_rejects_a_same_named_replacement() {
+        let expected = session::HerdrSessionRecord::new(
+            "review",
+            false,
+            HerdrSessionState::Stopped,
+            "/tmp/herdr/review",
+            "/tmp/herdr/review/herdr.sock",
+        );
+        let replacement = session::HerdrSessionRecord::new(
+            "review",
+            false,
+            HerdrSessionState::Running,
+            "/tmp/herdr/replacement",
+            "/tmp/herdr/replacement/herdr.sock",
+        );
+
+        assert!(!herdr_launch_result_matches(
+            &HerdrLaunchPrecondition::Stopped(expected),
+            "review",
+            &replacement,
+        ));
     }
 
     #[test]
