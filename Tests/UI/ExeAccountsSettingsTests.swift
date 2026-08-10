@@ -87,6 +87,7 @@ struct ExeAccountsSettingsTests {
     }
 
     @Test("discovery counts name the tags they were scoped to")
+    @MainActor
     func discoveryCountsNameScopedTags() {
         #expect(ExeAccountsSettingsView.loadedSummary(
             totalVMs: 4,
@@ -120,6 +121,7 @@ struct ExeAccountsSettingsTests {
             ("exe.dev", "dev", "other.exe.dev", "prod", "Destination and tags"),
         ]
     )
+    @MainActor
     func editedAccountsDoNotRelabelStaleCounts(
         discoveredDestination: String,
         discoveredTags: String,
