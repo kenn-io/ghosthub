@@ -364,6 +364,7 @@ impl HostSnapshot {
         }
         let index = sessions.iter().position(|session| {
             session.name() == confirmed.name()
+                && session.state() == confirmed.state()
                 && session.is_default() == confirmed.is_default()
                 && session.session_directory() == confirmed.session_directory()
                 && session.socket_path() == confirmed.socket_path()
@@ -3025,6 +3026,16 @@ mod tests {
         );
         assert!(
             snapshot("/usr/bin/herdr", replacement)
+                .with_herdr_lifecycle(
+                    HerdrLifecycleAction::Stop,
+                    "/usr/bin/herdr",
+                    &confirmed,
+                    stopped.clone(),
+                )
+                .is_none()
+        );
+        assert!(
+            snapshot("/usr/bin/herdr", stopped.clone())
                 .with_herdr_lifecycle(
                     HerdrLifecycleAction::Stop,
                     "/usr/bin/herdr",

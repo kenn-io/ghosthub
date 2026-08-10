@@ -26,8 +26,18 @@ use terminal::{
 
 const REDUCED_COLOR_NOTICE: &str =
     "Using TERM=xterm because xterm-256color terminfo is unavailable in WSL";
-const CREATE_DISCOVERY_ATTEMPTS: usize = 5;
-const CREATE_DISCOVERY_DELAY: Duration = Duration::from_millis(40);
+const TMUX_CREATE_DISCOVERY_ATTEMPTS: usize = 5;
+const TMUX_CREATE_DISCOVERY_DELAY: Duration = Duration::from_millis(40);
+const HERDR_STARTUP_BACKOFF: [Duration; 8] = [
+    Duration::from_millis(50),
+    Duration::from_millis(100),
+    Duration::from_millis(200),
+    Duration::from_millis(400),
+    Duration::from_millis(800),
+    Duration::from_secs(1),
+    Duration::from_secs(1),
+    Duration::from_secs(1),
+];
 const CREATE_IDENTITY_TIMEOUT: Duration = Duration::from_secs(5);
 const CREATE_IDENTITY_MIN_COLUMNS: usize = 120;
 
@@ -4587,11 +4597,7 @@ fn run_herdr_lifecycle(workspace: &Workspace, pending: &PendingHerdrLifecycle) {
                 );
             } else {
                 finish_herdr_lifecycle_state(&workspace.inner, pending.generation);
-                let _reconciled = reconcile_herdr_lifecycle_inventory(
-                    &workspace.inner,
-                    pending,
-                    HerdrReconcileMode::ConfirmedOutcome,
-                );
+                let _reconciled = reconcile_herdr_lifecycle_inventory(&workspace.inner, pending);
             }
         }
         Err(error) => {
@@ -4606,11 +4612,7 @@ fn reconcile_herdr_lifecycle_failure(
     operation_error: String,
     suppressed: Option<SuppressedHerdrPresentation>,
 ) {
-    match reconcile_herdr_lifecycle_inventory(
-        &workspace.inner,
-        pending,
-        HerdrReconcileMode::CurrentInventory,
-    ) {
+    match reconcile_herdr_lifecycle_inventory(&workspace.inner, pending) {
         Ok(snapshot) => {
             finish_herdr_lifecycle_state(&workspace.inner, pending.generation);
             if herdr_session_is_still_running(&snapshot, pending) {
@@ -4720,9 +4722,8 @@ fn create_herdr_fresh(
     )?;
 
     let expected_name = request.name.as_str();
-    for attempt in 0..CREATE_DISCOVERY_ATTEMPTS {
+    let discovered = poll_herdr_startup(cancellation, &HERDR_STARTUP_BACKOFF, || {
         if inner.navigation_generation.load(Ordering::Acquire) != navigation_generation {
-            drop(worker);
             return Err(WorkspaceError::new("Herdr creation was superseded"));
         }
         let snapshot = request
@@ -4730,33 +4731,54 @@ fn create_herdr_fresh(
             .discover_with_cancel(&ConptyAdmissionAttacher::new(), cancellation)
             .map_err(|error| WorkspaceError::new(error.to_string()))?;
         if snapshot.endpoint() != &request.endpoint || snapshot.runtime() != &request.runtime {
-            drop(worker);
             return Err(WorkspaceError::new(
                 "WSL changed while creating the Herdr session",
             ));
         }
-        if let HerdrInventory::Available {
-            executable,
-            sessions,
-        } = snapshot.herdr()
-            && executable == &request.executable
-            && let Some(session) = sessions
+        let session = match snapshot.herdr() {
+            HerdrInventory::Available {
+                executable,
+                sessions,
+            } if executable == &request.executable => sessions
                 .iter()
                 .find(|session| {
                     herdr_launch_result_matches(&request.precondition, expected_name, session)
                 })
-                .cloned()
-        {
-            return Ok((worker, snapshot, session, geometry));
-        }
-        if attempt + 1 < CREATE_DISCOVERY_ATTEMPTS {
-            thread::sleep(CREATE_DISCOVERY_DELAY);
-        }
+                .cloned(),
+            _ => None,
+        };
+        Ok(session.map(|session| (snapshot, session)))
+    })?;
+    if let Some((snapshot, session)) = discovered {
+        return Ok((worker, snapshot, session, geometry));
     }
     drop(worker);
     Err(WorkspaceError::new(
         "Herdr started, but the new session did not appear in inventory; refresh before trying again",
     ))
+}
+
+fn poll_herdr_startup<T>(
+    cancellation: &CancellationToken,
+    delays: &[Duration],
+    mut probe: impl FnMut() -> Result<Option<T>, WorkspaceError>,
+) -> Result<Option<T>, WorkspaceError> {
+    let mut delay_index = 0;
+    loop {
+        if cancellation.is_cancelled() {
+            return Err(WorkspaceError::new("Herdr startup was cancelled"));
+        }
+        if let Some(value) = probe()? {
+            return Ok(Some(value));
+        }
+        let Some(delay) = delays.get(delay_index).copied() else {
+            return Ok(None);
+        };
+        delay_index += 1;
+        if cancellation.wait_cancelled(delay) {
+            return Err(WorkspaceError::new("Herdr startup was cancelled"));
+        }
+    }
 }
 
 fn validate_herdr_launch_precondition(
@@ -4961,7 +4983,7 @@ fn create_fresh(
     let client_identity = worker
         .wait_for_creation_identity(CREATE_IDENTITY_TIMEOUT)
         .map_err(|error| WorkspaceError::new(error.to_string()))?;
-    for attempt in 0..CREATE_DISCOVERY_ATTEMPTS {
+    for attempt in 0..TMUX_CREATE_DISCOVERY_ATTEMPTS {
         if inner.navigation_generation.load(Ordering::Acquire) != navigation_generation {
             drop(worker);
             return Err(WorkspaceError::new("tmux creation was superseded"));
@@ -4979,8 +5001,8 @@ fn create_fresh(
         if let Some(session) = created_session(&snapshot, &client_identity) {
             return Ok((worker, snapshot, session, launch_geometry, term));
         }
-        if attempt + 1 < CREATE_DISCOVERY_ATTEMPTS {
-            thread::sleep(CREATE_DISCOVERY_DELAY);
+        if attempt + 1 < TMUX_CREATE_DISCOVERY_ATTEMPTS {
+            thread::sleep(TMUX_CREATE_DISCOVERY_DELAY);
         }
     }
     drop(worker);
@@ -5368,16 +5390,9 @@ fn publish_herdr_lifecycle_response(
     merge_herdr_lifecycle_inventory(inner, pending, snapshot, publication_generation)
 }
 
-#[derive(Clone, Copy)]
-enum HerdrReconcileMode {
-    CurrentInventory,
-    ConfirmedOutcome,
-}
-
 fn reconcile_herdr_lifecycle_inventory(
     inner: &Inner,
     pending: &PendingHerdrLifecycle,
-    mode: HerdrReconcileMode,
 ) -> Result<HostSnapshot, WorkspaceError> {
     let publication_generation = reserve_constructive_inventory(inner);
     let snapshot = match pending.host.discover(&ConptyAdmissionAttacher::new()) {
@@ -5399,12 +5414,6 @@ fn reconcile_herdr_lifecycle_inventory(
                 "Herdr became unavailable while reconciling the lifecycle action",
             ));
         }
-    }
-    if matches!(mode, HerdrReconcileMode::ConfirmedOutcome)
-        && !herdr_lifecycle_is_reflected(&snapshot, pending)
-    {
-        settle_constructive_inventory(inner, publication_generation);
-        return Ok(snapshot);
     }
     merge_herdr_lifecycle_inventory(inner, pending, snapshot.clone(), publication_generation)?;
     Ok(snapshot)
@@ -5432,6 +5441,7 @@ fn herdr_session_is_still_running(
         )
 }
 
+#[cfg(test)]
 fn herdr_lifecycle_is_reflected(snapshot: &HostSnapshot, pending: &PendingHerdrLifecycle) -> bool {
     let HerdrInventory::Available { sessions, .. } = snapshot.herdr() else {
         return false;
@@ -9254,7 +9264,7 @@ mod tests {
     }
 
     #[test]
-    fn lifecycle_response_is_published_without_full_host_discovery() {
+    fn fresh_inventory_supersedes_a_synthetic_lifecycle_response() {
         let (workspace, _runtime) = herdr_workspace_fixture();
         let running = SessionSelection::herdr("wsl", "Ubuntu", "default");
         workspace
@@ -9305,6 +9315,20 @@ mod tests {
             .snapshot
             .clone();
         assert!(herdr_lifecycle_is_reflected(&published, &pending));
+
+        let fresh_generation = reserve_constructive_inventory(&workspace.inner);
+        merge_herdr_lifecycle_inventory(
+            &workspace.inner,
+            &pending,
+            before.clone(),
+            fresh_generation,
+        )
+        .expect("fresh contradictory inventory publishes");
+        assert!(!herdr_lifecycle_is_reflected(&before, &pending));
+        assert_eq!(
+            workspace.snapshot().hosts()[0].herdr_sessions()[0].state(),
+            HerdrSessionState::Running,
+        );
     }
 
     #[test]
@@ -9380,6 +9404,25 @@ mod tests {
             "review",
             &replacement,
         ));
+    }
+
+    #[test]
+    fn herdr_startup_polling_accepts_a_session_after_early_misses() {
+        let cancellation = CancellationToken::new();
+        let mut probes = 0;
+
+        let result = poll_herdr_startup(
+            &cancellation,
+            &[Duration::ZERO; 6],
+            || -> Result<Option<&'static str>, WorkspaceError> {
+                probes += 1;
+                Ok((probes == 6).then_some("running"))
+            },
+        )
+        .expect("polling succeeds");
+
+        assert_eq!(result, Some("running"));
+        assert_eq!(probes, 6);
     }
 
     #[test]
