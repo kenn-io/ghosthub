@@ -64,6 +64,16 @@ If the current target is not session-like, the target is stale, or fewer than
 two eligible siblings exist, Ghosthub does not consume the shortcut. The event
 continues through the normal responder chain and can reach the active terminal.
 
+Ghosthub explicitly owns the native-tab commands in the Window menu. It
+removes or replaces any AppKit-provided Control-Tab and
+Control-Shift-Tab equivalents for `selectNextTab(_:)` and
+`selectPreviousTab(_:)`, leaving only the fixed Command-Shift-Left Bracket and
+Command-Shift-Right Bracket equivalents described below. Therefore Control-Tab
+and Control-Shift-Tab always mean Next Sibling and Previous Sibling when those
+actions are available. When either action is unavailable or unbound, its event
+passes toward the active terminal even if the window contains multiple native
+tabs; neither combination changes native tabs as a fallback.
+
 The existing global worktree-cycle actions and their Command-Option-Up Arrow
 and Command-Option-Down Arrow defaults are removed. The default Command-1
 through Command-9 worktree shortcuts are also removed. Ghosthub retains
@@ -97,10 +107,28 @@ The first registry includes:
 - Select sibling 1 through 9.
 - Command palette.
 - Toggle sidebar.
-- New worktree, tmux session, and Herdr session.
+- New worktree, import pull request, new tmux session, and new Herdr session.
 - Split right and split down.
 - Reload configuration.
 - Open application log.
+
+The compiled defaults are:
+
+| Action | Default |
+| --- | --- |
+| Next Sibling | `ctrl+tab` |
+| Previous Sibling | `ctrl+shift+tab` |
+| Select Sibling 1 through 9 | Unbound |
+| Command Palette | `cmd+shift+p` |
+| Toggle Sidebar | `cmd+b` |
+| New Worktree | `cmd+shift+n` |
+| Import Pull Request | `cmd+shift+i` |
+| New Tmux Session | Unbound |
+| New Herdr Session | Unbound |
+| Split Right | `cmd+d` |
+| Split Down | `cmd+shift+d` |
+| Reload Configuration | `cmd+shift+,` |
+| Open Application Log | `cmd+opt+l` |
 
 Standard macOS shortcuts remain outside this registry. This includes native
 tab and window commands, Settings, Quit, Close, and Edit commands.
@@ -133,17 +161,24 @@ Configuration rules:
 - Supported modifiers are `cmd`, `ctrl`, `opt`, and `shift`.
 - Supported keys include letters, digits, punctuation, arrows, Tab, Return,
   Escape, and function keys.
-- Bare printable keys and bare Tab are invalid because they would intercept
-  ordinary terminal input.
+- Every configurable binding must include at least one non-Shift modifier:
+  `cmd`, `ctrl`, or `opt`. Shift alone does not satisfy this rule. This rejects
+  bare and Shift-only printable keys, Tab, Backtab, arrows, Return, Escape, and
+  function keys so Ghosthub cannot accidentally intercept ordinary terminal
+  or text input.
 - Fixed macOS shortcuts are reserved and cannot be assigned.
 - Two actions cannot have the same effective binding.
 - Unknown shortcut keys are preserved for forward compatibility but do not
   create runtime actions.
 
 Manual configuration validation is atomic. If a known shortcut is malformed,
-reserved, or duplicated, Ghosthub keeps the last valid resolved set. On first
-launch it falls back to compiled defaults. Ghosthub reports the exact error in
+reserved, or duplicated, Ghosthub keeps the last valid resolved set. During
+process startup, there is no hidden persisted last-valid cache: an invalid
+shortcut table causes the entire registry to use compiled defaults until the
+file is fixed and reloaded. Ghosthub reports the exact error in
 Keyboard Settings and the application log without rewriting the invalid file.
+This intentionally means a bad live reload retains the current valid set while
+relaunching with the same bad file starts from defaults.
 
 Settings writes only the affected shortcut key and preserves comments,
 unknown keys, line endings, and unrelated TOML sections. Restore Default
@@ -158,6 +193,11 @@ The Keyboard pane becomes an editor with four sections:
 3. **Multiplexer**: split right and split down.
 4. **System Shortcuts**: read-only native tab, window, Settings, Edit, and Quit
    bindings.
+
+The read-only native-tab rows show only Command-Shift-Left Bracket and
+Command-Shift-Right Bracket. They do not advertise Control-Tab alternatives;
+those combinations belong to configurable sibling navigation and terminal
+pass-through.
 
 Each configurable row shows the action name and a shortcut recorder. Clicking
 the recorder enters recording mode. The next valid combination updates the
@@ -187,7 +227,14 @@ equivalent.
 The Window menu supplies fixed Previous Tab and Next Tab commands. The Session
 menu supplies Next Sibling, Previous Sibling, and any other navigation actions
 appropriate for direct discovery. Other existing menu locations retain their
-actions but display the configured effective binding.
+actions but display the configured effective binding. Ghosthub suppresses
+AppKit-provided Control-Tab equivalents for native tab selection so the Window
+menu advertises and dispatches only the fixed bracket bindings.
+
+Every command-palette shortcut label comes from the registry. Import Pull
+Request joins the registry with a real Command-Shift-I default and dispatch
+path. The unused Command-Shift-Delete shortcut case is removed. No command may
+display a shortcut that the application does not dispatch.
 
 Reload Configuration reloads and validates the shortcut table along with the
 other Ghosthub configuration. A successful reload publishes the entire
@@ -235,9 +282,13 @@ Unit and integration coverage verifies observable contracts:
 
 - Key-binding parsing, normalization, display formatting, defaults, explicit
   unbinding, reserved combinations, and duplicates.
+- Bare and Shift-only combinations fail validation, including Shift-Tab.
+- The complete compiled-default table matches effective menu and
+  command-palette bindings.
 - Targeted TOML edits preserve comments, unknown keys, unrelated sections, and
   line endings.
-- Invalid manual configuration keeps the last valid set atomically.
+- Invalid manual configuration keeps the last valid set during a live reload
+  and uses the complete compiled-default set after a fresh process launch.
 - Sibling resolution covers worktrees, directory workspaces, standalone tmux
   sessions, and running and stopped Herdr sessions.
 - Sidebar order, hidden items, wrapping, stale targets, and zero or one sibling
@@ -251,6 +302,12 @@ Unit and integration coverage verifies observable contracts:
   accessible operation.
 - Command-Shift-Left Bracket and Command-Shift-Right Bracket navigate native
   tabs.
+- Control-Tab and Control-Shift-Tab never select native tabs: they select an
+  available sibling or pass toward the terminal when sibling navigation is
+  unavailable or unbound, including in a window with multiple native tabs.
+- AppKit-provided native-tab items do not retain Control-Tab equivalents.
+- Import Pull Request has a real Command-Shift-I action, and no palette command
+  advertises a shortcut without a dispatch path.
 
 Because the implementation changes Swift UI, terminal key handling, and native
 session selection, verification includes:
