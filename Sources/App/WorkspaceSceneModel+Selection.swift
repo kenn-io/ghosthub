@@ -47,7 +47,7 @@ extension WorkspaceSceneModel {
         _ action: ApplicationShortcutAction,
         invocation: ApplicationShortcutInvocation = .keyEvent
     ) -> Bool {
-        guard isFocusedWindow else { return false }
+        guard invocation == .menu || isFocusedWindow else { return false }
         switch action {
         case .nextSibling:
             return navigateSibling(step: 1)
@@ -68,8 +68,11 @@ extension WorkspaceSceneModel {
                   snapshot.canCreateWorktree(in: project) else { return false }
             return postShortcutRequest(action)
         case .importPullRequest:
-            guard let project = selectedProject,
-                  snapshot.canImportPullRequest(in: project) else {
+            guard let project = WorkspaceSelectionResolver.selectedProject(
+                in: snapshot,
+                selection: selection
+            ),
+                snapshot.canImportPullRequest(in: project) else {
                 return false
             }
             return postShortcutRequest(action)

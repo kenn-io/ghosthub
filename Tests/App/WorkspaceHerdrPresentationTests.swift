@@ -83,7 +83,7 @@ struct WorkspaceHerdrPresentationTests {
         try await model.openBorrowedHerdrSession(selection)
         await launchHerdrSurface(model, store: store)
         await waitUntilMainActor { model.canSplitActivePane }
-        model.isFocusedWindow = true
+        model.isFocusedWindow = false
         #expect(model.performApplicationShortcut(
             .splitDown,
             invocation: .menu

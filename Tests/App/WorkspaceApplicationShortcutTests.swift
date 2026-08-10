@@ -72,6 +72,70 @@ struct WorkspaceApplicationShortcutTests {
         await model.shutdown()
     }
 
+    @Test("menu sibling navigation uses its captured scene")
+    func menuSiblingNavigation() async throws {
+        let host = HostSummary.fixture()
+        let project = ProjectSummary.fixture(hostID: host.id)
+        let first = WorktreeSummary.fixture(
+            hostID: host.id, projectID: project.id, name: "first"
+        )
+        let second = WorktreeSummary.fixture(
+            hostID: host.id, projectID: project.id, name: "second"
+        )
+        let model = try makeModel(
+            database: .inMemory(), localHostID: host.id,
+            snapshot: WorkspaceSnapshot(
+                hosts: [host], projects: [project],
+                worktrees: [first, second]
+            )
+        )
+        model.selection = .init(
+            selectedHostID: host.id,
+            selectedProjectID: project.id,
+            selectedWorktreeID: first.id
+        )
+        model.isFocusedWindow = false
+
+        #expect(model.performApplicationShortcut(
+            .nextSibling,
+            invocation: .menu
+        ))
+        #expect(model.selection.selectedWorktreeID == second.id)
+        await model.shutdown()
+    }
+
+    @Test("pull request import does not require worktree creation")
+    func pullRequestImportWithoutCreation() async throws {
+        let host = HostSummary.fixture(operationAvailability: [
+            "worktreeCreate": .init(available: false),
+            "pullRequestImport": .init(available: true),
+        ])
+        let project = ProjectSummary(
+            id: UUID(),
+            hostID: host.id,
+            scopedKey: "github.com/example/project-a",
+            name: "project-a",
+            rootPath: "/tmp/project-a"
+        )
+        let snapshot = WorkspaceSnapshot(
+            hosts: [host], projects: [project], worktrees: []
+        )
+        let model = try makeModel(
+            database: .inMemory(), localHostID: host.id,
+            snapshot: snapshot
+        )
+        model.selection = .init(
+            selectedHostID: host.id,
+            selectedProjectID: project.id
+        )
+        model.isFocusedWindow = true
+
+        #expect(!snapshot.canCreateWorktree(in: project))
+        #expect(snapshot.canImportPullRequest(in: project))
+        #expect(model.performApplicationShortcut(.importPullRequest))
+        await model.shutdown()
+    }
+
     @Test("presentation actions report availability and mutate once")
     func presentationActions() async throws {
         let environment = try setupHostEnvironment()
