@@ -63,11 +63,14 @@ struct ShortcutMonitorTests {
         #expect(actions == [.nextSibling])
     }
 
-    @Test("only navigation actions accept key repeat")
-    func repeatPolicyComesFromCatalog() throws {
+    @Test("handled non-repeating shortcuts consume repeats without dispatch")
+    func handledNonRepeatingShortcutConsumesRepeat() throws {
         let navigation = try #require(keyEvent(
             modifiers: [.control], characters: "\t", keyCode: 48,
             isRepeat: true
+        ))
+        let paletteKeyDown = try #require(keyEvent(
+            modifiers: [.command, .shift], characters: "p", keyCode: 35
         ))
         let palette = try #require(keyEvent(
             modifiers: [.command, .shift], characters: "p", keyCode: 35,
@@ -82,8 +85,32 @@ struct ShortcutMonitorTests {
         )
 
         #expect(monitor.processForTesting(navigation) == nil)
-        #expect(monitor.processForTesting(palette) === palette)
-        #expect(actions == [.nextSibling])
+        #expect(monitor.processForTesting(paletteKeyDown) == nil)
+        #expect(monitor.processForTesting(palette) == nil)
+        #expect(actions == [.nextSibling, .commandPalette])
+    }
+
+    @Test("unavailable non-repeating shortcuts pass through every key-down")
+    func unavailableNonRepeatingShortcutPassesThrough() throws {
+        let keyDown = try #require(keyEvent(
+            modifiers: [.command, .shift], characters: "p", keyCode: 35
+        ))
+        let keyRepeat = try #require(keyEvent(
+            modifiers: [.command, .shift], characters: "p", keyCode: 35,
+            isRepeat: true
+        ))
+        var attempts = 0
+        let monitor = ShortcutMonitor(
+            shortcuts: { ApplicationShortcutCatalog.compiledDefaults },
+            perform: { _ in
+                attempts += 1
+                return false
+            }
+        )
+
+        #expect(monitor.processForTesting(keyDown) === keyDown)
+        #expect(monitor.processForTesting(keyRepeat) === keyRepeat)
+        #expect(attempts == 1)
     }
 
     private func binding(

@@ -6,6 +6,7 @@ final class ShortcutMonitor {
     private nonisolated(unsafe) var monitor: Any?
     private let shortcuts: () -> ResolvedApplicationShortcuts
     private let perform: (ApplicationShortcutAction) -> Bool
+    private var handledBindings: Set<ApplicationKeyBinding> = []
 
     init(
         shortcuts: @escaping () -> ResolvedApplicationShortcuts,
@@ -41,10 +42,21 @@ final class ShortcutMonitor {
             charactersIgnoringModifiers: event.charactersIgnoringModifiers,
             keyCode: event.keyCode
         ),
-            let action = shortcuts().action(for: binding),
-            !event.isARepeat || action.definition.allowsKeyRepeat,
-            perform(action)
+            let action = shortcuts().action(for: binding)
         else { return event }
-        return nil
+
+        if event.isARepeat, !action.definition.allowsKeyRepeat {
+            return handledBindings.contains(binding) ? nil : event
+        }
+
+        let handled = perform(action)
+        if !event.isARepeat {
+            if handled {
+                handledBindings.insert(binding)
+            } else {
+                handledBindings.remove(binding)
+            }
+        }
+        return handled ? nil : event
     }
 }

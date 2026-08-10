@@ -1,8 +1,93 @@
+import AppKit
+import Foundation
 import GhosthubTerminalSupport
 import Testing
 @testable import GhosthubUI
 
+@Suite("Shortcut recorder", .serialized)
+@MainActor
 struct ShortcutRecorderTests {
+    @Test("starting a recorder replaces the active owner")
+    func latestRecorderOwnsKeyboardInput() {
+        var installed = 0
+        var removed = 0
+        var firstWasSuperseded = false
+        let coordinator = ShortcutRecorderMonitorCoordinator(
+            install: { _ in
+                installed += 1
+                return NSObject()
+            },
+            remove: { _ in removed += 1 }
+        )
+        let first = UUID()
+        let second = UUID()
+
+        coordinator.start(
+            owner: first,
+            onSuperseded: { firstWasSuperseded = true },
+            handler: { $0 }
+        )
+        coordinator.start(
+            owner: second,
+            onSuperseded: {},
+            handler: { $0 }
+        )
+
+        #expect(installed == 2)
+        #expect(removed == 1)
+        #expect(firstWasSuperseded)
+        coordinator.stop(owner: first)
+        #expect(removed == 1)
+        coordinator.stop(owner: second)
+        #expect(removed == 2)
+    }
+
+    @Test("clear and restore default remove the owned monitor")
+    func endingRecordingStopsMonitoring() {
+        var removed = 0
+        let coordinator = ShortcutRecorderMonitorCoordinator(
+            install: { _ in NSObject() },
+            remove: { _ in removed += 1 }
+        )
+        let owner = UUID()
+        var state = ShortcutRecorderState(
+            action: .nextSibling,
+            overrides: [:]
+        )
+        state.startRecording()
+        coordinator.start(
+            owner: owner,
+            onSuperseded: {},
+            handler: { $0 }
+        )
+
+        let wasRecording = state.isRecording
+        state.clear()
+        coordinator.recordingChanged(
+            owner: owner,
+            from: wasRecording,
+            to: state.isRecording
+        )
+
+        #expect(removed == 1)
+
+        state.startRecording()
+        coordinator.start(
+            owner: owner,
+            onSuperseded: {},
+            handler: { $0 }
+        )
+        let wasRecordingAgain = state.isRecording
+        state.restoreDefault()
+        coordinator.recordingChanged(
+            owner: owner,
+            from: wasRecordingAgain,
+            to: state.isRecording
+        )
+
+        #expect(removed == 2)
+    }
+
     @Test("recording, cancel, clear, and restore preserve override intent")
     func recorderLifecycle() {
         var state = ShortcutRecorderState(

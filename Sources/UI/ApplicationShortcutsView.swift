@@ -17,6 +17,8 @@ struct ApplicationShortcutsView: View {
     @Binding var overrides:
         [ApplicationShortcutAction: ApplicationShortcutOverride]
     let configurationIssue: String?
+    @State private var recorderMonitor =
+        ShortcutRecorderMonitorCoordinator()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -37,7 +39,8 @@ struct ApplicationShortcutsView: View {
                             Spacer()
                             ShortcutRecorder(
                                 action: definition.action,
-                                overrides: $overrides
+                                overrides: $overrides,
+                                monitorCoordinator: recorderMonitor
                             )
                         }
                     }
