@@ -320,7 +320,10 @@ struct GhosthubApp: App {
                 invoke(.newWorktree)
             }
             .keyboardShortcut(shortcut(.newWorktree))
-            .disabled(focusedSceneModel?.selectedProject == nil)
+            .disabled(
+                focusedSceneModel?.canCreateWorktreeInSelectedProject
+                    != true
+            )
 
             Button("Import Pull Request…") {
                 invoke(.importPullRequest)

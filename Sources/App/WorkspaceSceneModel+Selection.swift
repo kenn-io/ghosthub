@@ -19,6 +19,10 @@ extension WorkspaceSceneModel {
         return project
     }
 
+    var canCreateWorktreeInSelectedProject: Bool {
+        selectedProject != nil
+    }
+
     var canImportPullRequestInSelectedProject: Bool {
         guard let project = WorkspaceSelectionResolver.selectedProject(
             in: snapshot,

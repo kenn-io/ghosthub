@@ -136,6 +136,29 @@ struct WorkspaceApplicationShortcutTests {
         await model.shutdown()
     }
 
+    @Test("worktree menu availability requires creation capability")
+    func worktreeMenuAvailabilityRequiresCreation() async throws {
+        let host = HostSummary.fixture(operationAvailability: [
+            "worktreeCreate": .init(available: false),
+        ])
+        let project = ProjectSummary.fixture(hostID: host.id)
+        let model = try makeModel(
+            database: .inMemory(), localHostID: host.id,
+            snapshot: WorkspaceSnapshot(
+                hosts: [host], projects: [project], worktrees: []
+            )
+        )
+        model.selection = .init(
+            selectedHostID: host.id,
+            selectedProjectID: project.id
+        )
+        model.isFocusedWindow = true
+
+        #expect(!model.canCreateWorktreeInSelectedProject)
+        #expect(!model.performApplicationShortcut(.newWorktree))
+        await model.shutdown()
+    }
+
     @Test("presentation actions report availability and mutate once")
     func presentationActions() async throws {
         let environment = try setupHostEnvironment()
