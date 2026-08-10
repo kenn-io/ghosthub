@@ -2549,6 +2549,7 @@ impl RootView {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let running = session.state() == HerdrSessionState::Running;
+        let lifecycle_action = session.lifecycle_action();
         let selection = SessionSelection::herdr(host.id(), host.endpoint(), session.name());
         let active = active_session_selection(content).as_ref() == Some(&selection);
         let actions = herdr_row_actions(session);
@@ -2565,8 +2566,11 @@ impl RootView {
             .pl(px(14.0))
             .pr_2()
             .bg(rgb(if active { 0x18_3f_68 } else { 0x0f_1116 }))
-            .cursor_pointer()
-            .hover(|style| style.bg(rgb(0x1c_2028)))
+            .when(lifecycle_action.is_none(), |element| {
+                element
+                    .cursor_pointer()
+                    .hover(|style| style.bg(rgb(0x1c_2028)))
+            })
             .child(
                 div()
                     .w(px(18.0))
@@ -2584,10 +2588,24 @@ impl RootView {
                     .text_color(rgb(if running { 0xc4_c9_d2 } else { 0x7f_8794 }))
                     .child(session.name().to_owned()),
             )
+            .when_some(lifecycle_action, |element, action| {
+                element.child(
+                    div()
+                        .flex_none()
+                        .text_xs()
+                        .text_color(rgb(0x8f_96_a3))
+                        .child(match action {
+                            workspace::HerdrLifecycleAction::Stop => "Stopping…",
+                            workspace::HerdrLifecycleAction::Delete => "Deleting…",
+                        }),
+                )
+            })
             .children(actions.into_iter().map(|action| {
                 Self::herdr_row_action(host_index, index, selection.clone(), action, cx)
             }));
-        row = if running {
+        row = if lifecycle_action.is_some() {
+            row
+        } else if running {
             row.on_click(cx.listener(move |this, _, window, cx| {
                 this.select_session(&selection, window, cx);
             }))
@@ -3061,6 +3079,9 @@ fn herdr_lifecycle_copy(
 }
 
 fn herdr_row_actions(session: &workspace::HerdrSessionItem) -> Vec<HerdrRowAction> {
+    if session.lifecycle_action().is_some() {
+        return Vec::new();
+    }
     match session.state() {
         HerdrSessionState::Running => vec![HerdrRowAction::Stop],
         HerdrSessionState::Stopped if session.is_default() => vec![HerdrRowAction::Restart],

@@ -220,6 +220,7 @@ pub struct HerdrSessionItem {
     name: String,
     is_default: bool,
     state: HerdrSessionState,
+    lifecycle_action: Option<HerdrLifecycleAction>,
 }
 
 impl HerdrSessionItem {
@@ -229,6 +230,7 @@ impl HerdrSessionItem {
             name: name.into(),
             is_default,
             state,
+            lifecycle_action: None,
         }
     }
 
@@ -245,6 +247,11 @@ impl HerdrSessionItem {
     #[must_use]
     pub const fn state(&self) -> HerdrSessionState {
         self.state
+    }
+
+    #[must_use]
+    pub const fn lifecycle_action(&self) -> Option<HerdrLifecycleAction> {
+        self.lifecycle_action
     }
 }
 
@@ -690,6 +697,80 @@ struct PendingHerdrLifecycle {
     record: session::HerdrSessionRecord,
 }
 
+impl PendingHerdrLifecycle {
+    fn key(&self) -> HerdrOperationKey {
+        HerdrOperationKey {
+            endpoint: self.endpoint.clone(),
+            runtime: self.runtime.clone(),
+            name: self.record.name().to_owned(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct HerdrOperationKey {
+    endpoint: host::WslEndpoint,
+    runtime: host::WslRuntimeIdentity,
+    name: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct InFlightHerdrLifecycle {
+    generation: u64,
+    key: HerdrOperationKey,
+    action: HerdrLifecycleAction,
+}
+
+#[derive(Default)]
+struct HerdrLifecycleState {
+    pending: Option<PendingHerdrLifecycle>,
+    in_flight: Vec<InFlightHerdrLifecycle>,
+}
+
+impl HerdrLifecycleState {
+    fn in_flight_action(&self, key: &HerdrOperationKey) -> Option<HerdrLifecycleAction> {
+        self.in_flight
+            .iter()
+            .find(|operation| &operation.key == key)
+            .map(|operation| operation.action)
+    }
+
+    fn start(&mut self, pending: &PendingHerdrLifecycle) -> bool {
+        let key = pending.key();
+        if self.in_flight_action(&key).is_some() {
+            return false;
+        }
+        self.in_flight.push(InFlightHerdrLifecycle {
+            generation: pending.generation,
+            key,
+            action: pending.action,
+        });
+        true
+    }
+
+    fn finish(&mut self, generation: u64) -> bool {
+        let previous_len = self.in_flight.len();
+        self.in_flight
+            .retain(|operation| operation.generation != generation);
+        self.in_flight.len() != previous_len
+    }
+}
+
+fn with_herdr_launch_fence<T, E>(
+    lifecycle: &Mutex<HerdrLifecycleState>,
+    key: &HerdrOperationKey,
+    blocked: impl FnOnce() -> E,
+    launch: impl FnOnce() -> Result<T, E>,
+) -> Result<T, E> {
+    let lifecycle = lifecycle
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if lifecycle.in_flight_action(key).is_some() {
+        return Err(blocked());
+    }
+    launch()
+}
+
 #[derive(Clone)]
 struct AttachRequest {
     host_id: String,
@@ -699,6 +780,16 @@ struct AttachRequest {
     target: AttachTarget,
     name: String,
     inventory_generation: u64,
+}
+
+impl AttachRequest {
+    fn herdr_operation_key(&self) -> Option<HerdrOperationKey> {
+        (self.target.kind() == SessionKind::Herdr).then(|| HerdrOperationKey {
+            endpoint: self.endpoint.clone(),
+            runtime: self.runtime.clone(),
+            name: self.name.clone(),
+        })
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -760,6 +851,16 @@ struct HerdrCreateRequest {
     executable: String,
     name: HerdrSessionName,
     precondition: HerdrLaunchPrecondition,
+}
+
+impl HerdrCreateRequest {
+    fn operation_key(&self) -> HerdrOperationKey {
+        HerdrOperationKey {
+            endpoint: self.endpoint.clone(),
+            runtime: self.runtime.clone(),
+            name: self.name.as_str().to_owned(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -1377,7 +1478,7 @@ struct Inner {
     pending_creation: Mutex<Option<PendingCreation>>,
     pending_kill: Mutex<Option<PendingKill>>,
     kill_generation: AtomicU64,
-    pending_herdr_lifecycle: Mutex<Option<PendingHerdrLifecycle>>,
+    herdr_lifecycle: Mutex<HerdrLifecycleState>,
     herdr_lifecycle_generation: AtomicU64,
     operation_events: Mutex<std::collections::VecDeque<WorkspaceEvent>>,
     terminal_geometry: Mutex<TerminalGeometry>,
@@ -1443,7 +1544,7 @@ impl Workspace {
                 pending_creation: Mutex::new(None),
                 pending_kill: Mutex::new(None),
                 kill_generation: AtomicU64::new(0),
-                pending_herdr_lifecycle: Mutex::new(None),
+                herdr_lifecycle: Mutex::new(HerdrLifecycleState::default()),
                 herdr_lifecycle_generation: AtomicU64::new(0),
                 operation_events: Mutex::new(std::collections::VecDeque::new()),
                 terminal_geometry: Mutex::new(default_terminal_geometry()),
@@ -1507,7 +1608,7 @@ impl Workspace {
                 pending_creation: Mutex::new(None),
                 pending_kill: Mutex::new(None),
                 kill_generation: AtomicU64::new(0),
-                pending_herdr_lifecycle: Mutex::new(None),
+                herdr_lifecycle: Mutex::new(HerdrLifecycleState::default()),
                 herdr_lifecycle_generation: AtomicU64::new(0),
                 operation_events: Mutex::new(std::collections::VecDeque::new()),
                 terminal_geometry: Mutex::new(default_terminal_geometry()),
@@ -1555,7 +1656,7 @@ impl Workspace {
                 pending_creation: Mutex::new(None),
                 pending_kill: Mutex::new(None),
                 kill_generation: AtomicU64::new(0),
-                pending_herdr_lifecycle: Mutex::new(None),
+                herdr_lifecycle: Mutex::new(HerdrLifecycleState::default()),
                 herdr_lifecycle_generation: AtomicU64::new(0),
                 operation_events: Mutex::new(std::collections::VecDeque::new()),
                 terminal_geometry: Mutex::new(default_terminal_geometry()),
@@ -1649,6 +1750,29 @@ impl Workspace {
 
     #[must_use]
     pub fn snapshot(&self) -> WorkspaceSnapshot {
+        let mut hosts = self
+            .inner
+            .hosts
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let current_runtime = self
+            .inner
+            .host
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(|published| {
+                (
+                    published.value.snapshot.endpoint().clone(),
+                    published.value.snapshot.runtime().clone(),
+                )
+            });
+        project_herdr_lifecycle(
+            &mut hosts,
+            current_runtime.as_ref(),
+            &self.inner.herdr_lifecycle,
+        );
         WorkspaceSnapshot {
             revision: self.inner.revision.load(Ordering::Acquire),
             appearance: self.inner.appearance.clone(),
@@ -1658,12 +1782,7 @@ impl Workspace {
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone(),
-            hosts: self
-                .inner
-                .hosts
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone(),
+            hosts,
             selected_host: self
                 .inner
                 .selected_host
@@ -2427,11 +2546,28 @@ impl Workspace {
         }
         self.cancel_session_kill();
         let pending = capture_herdr_lifecycle(&self.inner, selection, action, generation)?;
-        *self
+        let mut lifecycle = self
             .inner
-            .pending_herdr_lifecycle
+            .herdr_lifecycle
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(pending);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if lifecycle.in_flight_action(&pending.key()).is_some() {
+            return Err(WorkspaceError::new(
+                "a lifecycle action is already running for this Herdr session",
+            ));
+        }
+        if self
+            .inner
+            .herdr_lifecycle_generation
+            .load(Ordering::Acquire)
+            != generation
+        {
+            return Err(WorkspaceError::new(
+                "Herdr lifecycle request is no longer current",
+            ));
+        }
+        lifecycle.pending = Some(pending);
+        drop(lifecycle);
         self.inner.revision.fetch_add(1, Ordering::Release);
         Ok(())
     }
@@ -2443,9 +2579,10 @@ impl Workspace {
             .herdr_lifecycle_generation
             .load(Ordering::Acquire);
         self.inner
-            .pending_herdr_lifecycle
+            .herdr_lifecycle
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pending
             .as_ref()
             .filter(|pending| pending.generation == generation)
             .map(|pending| HerdrLifecycleConfirmation {
@@ -2468,15 +2605,14 @@ impl Workspace {
     /// Returns an error when no confirmation is pending or the lifecycle task
     /// cannot be started.
     pub fn confirm_herdr_lifecycle(&self) -> Result<(), WorkspaceError> {
-        let pending = self
+        let mut lifecycle = self
             .inner
-            .pending_herdr_lifecycle
+            .herdr_lifecycle
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
-            .ok_or_else(|| {
-                WorkspaceError::new("no Herdr lifecycle action is awaiting confirmation")
-            })?;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let pending = lifecycle.pending.take().ok_or_else(|| {
+            WorkspaceError::new("no Herdr lifecycle action is awaiting confirmation")
+        })?;
         if self
             .inner
             .herdr_lifecycle_generation
@@ -2487,38 +2623,35 @@ impl Workspace {
                 "Herdr lifecycle confirmation is no longer current",
             ));
         }
+        if !lifecycle.start(&pending) {
+            return Err(WorkspaceError::new(
+                "a lifecycle action is already running for this Herdr session",
+            ));
+        }
+        drop(lifecycle);
         self.inner.revision.fetch_add(1, Ordering::Release);
         let workspace = self.clone();
         let retry = pending.clone();
         if let Err(error) = thread::Builder::new()
             .name(format!("ghosthub-herdr-{}", pending.action.command()))
-            .spawn(move || {
-                if pending.action == HerdrLifecycleAction::Stop {
-                    workspace.finish_herdr_presentation(
-                        &pending.endpoint,
-                        &pending.runtime,
-                        &pending.record,
-                    );
-                }
-                let result = pending.host.mutate_herdr_session(
-                    &pending.endpoint,
-                    &pending.runtime,
-                    &pending.record,
-                    pending.action,
-                    &CancellationToken::new(),
-                );
-                if let Err(error) = result {
-                    workspace.push_operation_error(error.to_string());
-                }
-                let _refresh_started = workspace.refresh();
-                workspace.inner.revision.fetch_add(1, Ordering::Release);
-            })
+            .spawn(move || run_herdr_lifecycle(&workspace, &pending))
         {
-            *self
+            let mut lifecycle = self
                 .inner
-                .pending_herdr_lifecycle
+                .herdr_lifecycle
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(retry);
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            lifecycle.finish(retry.generation);
+            if self
+                .inner
+                .herdr_lifecycle_generation
+                .load(Ordering::Acquire)
+                == retry.generation
+                && lifecycle.pending.is_none()
+            {
+                lifecycle.pending = Some(retry);
+            }
+            drop(lifecycle);
             self.inner.revision.fetch_add(1, Ordering::Release);
             return Err(WorkspaceError::new(format!(
                 "start Herdr lifecycle task: {error}"
@@ -3200,15 +3333,15 @@ fn invalidate_pending_kill(inner: &Inner) -> (u64, bool) {
 }
 
 fn invalidate_pending_herdr_lifecycle(inner: &Inner) -> (u64, bool) {
-    let mut pending = inner
-        .pending_herdr_lifecycle
+    let mut lifecycle = inner
+        .herdr_lifecycle
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let generation = inner
         .herdr_lifecycle_generation
         .fetch_add(1, Ordering::AcqRel)
         + 1;
-    (generation, pending.take().is_some())
+    (generation, lifecycle.pending.take().is_some())
 }
 
 fn activate_retained_presentation(
@@ -3977,6 +4110,39 @@ fn run_herdr_create(
     );
 }
 
+fn run_herdr_lifecycle(workspace: &Workspace, pending: &PendingHerdrLifecycle) {
+    if pending.action == HerdrLifecycleAction::Stop {
+        workspace.finish_herdr_presentation(&pending.endpoint, &pending.runtime, &pending.record);
+    }
+    let result = pending
+        .host
+        .mutate_herdr_session(
+            &pending.endpoint,
+            &pending.runtime,
+            &pending.record,
+            pending.action,
+            &CancellationToken::new(),
+        )
+        .map_err(|error| WorkspaceError::new(error.to_string()))
+        .and_then(|_record| {
+            pending
+                .host
+                .discover(&ConptyAdmissionAttacher::new())
+                .map_err(|error| WorkspaceError::new(error.to_string()))
+        })
+        .and_then(|snapshot| merge_herdr_lifecycle_inventory(&workspace.inner, pending, snapshot));
+    if let Err(error) = result {
+        workspace.push_operation_error(error.to_string());
+    }
+    workspace
+        .inner
+        .herdr_lifecycle
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .finish(pending.generation);
+    workspace.inner.revision.fetch_add(1, Ordering::Release);
+}
+
 fn create_herdr_fresh(
     inner: &Inner,
     request: &HerdrCreateRequest,
@@ -4019,25 +4185,37 @@ fn create_herdr_fresh(
     if inner.navigation_generation.load(Ordering::Acquire) != navigation_generation {
         return Err(WorkspaceError::new("Herdr creation was superseded"));
     }
-    let authority = request.host.herdr_launch_once(
-        before.endpoint(),
-        &request.executable,
-        request.name.clone(),
-        request.precondition.is_default(),
-    );
-    let geometry = *inner
-        .terminal_geometry
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let worker = TerminalWorker::launch_herdr_with_metadata(
-        authority,
-        geometry.grid,
-        geometry.sequence,
-        geometry.pixels,
-        ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
-        default_colors(&inner.appearance),
-    )
-    .map_err(|error| WorkspaceError::new(error.to_string()))?;
+    let (worker, geometry) = with_herdr_launch_fence(
+        &inner.herdr_lifecycle,
+        &request.operation_key(),
+        || {
+            WorkspaceError::new(
+                "Herdr session lifecycle is changing; wait for inventory to refresh",
+            )
+        },
+        || {
+            let authority = request.host.herdr_launch_once(
+                before.endpoint(),
+                &request.executable,
+                request.name.clone(),
+                request.precondition.is_default(),
+            );
+            let geometry = *inner
+                .terminal_geometry
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let worker = TerminalWorker::launch_herdr_with_metadata(
+                authority,
+                geometry.grid,
+                geometry.sequence,
+                geometry.pixels,
+                ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
+                default_colors(&inner.appearance),
+            )
+            .map_err(|error| WorkspaceError::new(error.to_string()))?;
+            Ok((worker, geometry))
+        },
+    )?;
 
     for attempt in 0..CREATE_DISCOVERY_ATTEMPTS {
         if inner.navigation_generation.load(Ordering::Acquire) != navigation_generation {
@@ -4566,7 +4744,7 @@ fn merge_created_inventory(
         &request.endpoint,
         &request.runtime,
         snapshot,
-        "tmux",
+        "the created tmux session",
     )
 }
 
@@ -4581,7 +4759,22 @@ fn merge_herdr_created_inventory(
         &request.endpoint,
         &request.runtime,
         snapshot,
-        "Herdr",
+        "the created Herdr session",
+    )
+}
+
+fn merge_herdr_lifecycle_inventory(
+    inner: &Inner,
+    pending: &PendingHerdrLifecycle,
+    snapshot: HostSnapshot,
+) -> Result<u64, WorkspaceError> {
+    merge_constructive_inventory(
+        inner,
+        &pending.host,
+        &pending.endpoint,
+        &pending.runtime,
+        snapshot,
+        "the Herdr lifecycle result",
     )
 }
 
@@ -4591,7 +4784,7 @@ fn merge_constructive_inventory(
     endpoint: &host::WslEndpoint,
     runtime: &host::WslRuntimeIdentity,
     snapshot: HostSnapshot,
-    session_type: &str,
+    operation: &str,
 ) -> Result<u64, WorkspaceError> {
     let _publication = inner
         .refresh_publication
@@ -4599,7 +4792,7 @@ fn merge_constructive_inventory(
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if snapshot.endpoint() != endpoint || snapshot.runtime() != runtime {
         return Err(WorkspaceError::new(format!(
-            "WSL changed while publishing the created {session_type} session"
+            "WSL changed while publishing {operation}"
         )));
     }
     let published_generation = inner
@@ -4614,7 +4807,7 @@ fn merge_constructive_inventory(
         })
         .ok_or_else(|| {
             WorkspaceError::new(format!(
-                "the WSL endpoint changed while creating the {session_type} session; refresh before trying again"
+                "the WSL endpoint changed while publishing {operation}; refresh before trying again"
             ))
         })?;
     let current_generation = inner.refresh_generation.load(Ordering::Acquire);
@@ -5004,22 +5197,38 @@ fn launch_fresh_herdr(
     let AttachTarget::Herdr { executable, .. } = &request.target else {
         unreachable!("Herdr launch requires a Herdr target");
     };
-    let plan = request
-        .host
-        .herdr_attach_plan(fresh.endpoint(), executable, session, term);
-    let geometry = *inner
-        .terminal_geometry
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let worker = TerminalWorker::attach_herdr_with_metadata(
-        &plan,
-        geometry.grid,
-        geometry.sequence,
-        geometry.pixels,
-        ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
-        default_colors(&inner.appearance),
-    )
-    .map_err(|error| AttachFreshError::Host(WorkspaceError::new(error.to_string())))?;
+    let operation_key = request
+        .herdr_operation_key()
+        .expect("Herdr launch has an operation key");
+    let (worker, geometry) = with_herdr_launch_fence(
+        &inner.herdr_lifecycle,
+        &operation_key,
+        || AttachFreshError::SessionChanged {
+            error: WorkspaceError::new(
+                "Herdr session lifecycle is changing; wait for inventory to refresh",
+            ),
+            snapshot: fresh.clone(),
+        },
+        || {
+            let plan = request
+                .host
+                .herdr_attach_plan(fresh.endpoint(), executable, session, term);
+            let geometry = *inner
+                .terminal_geometry
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let worker = TerminalWorker::attach_herdr_with_metadata(
+                &plan,
+                geometry.grid,
+                geometry.sequence,
+                geometry.pixels,
+                ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
+                default_colors(&inner.appearance),
+            )
+            .map_err(|error| AttachFreshError::Host(WorkspaceError::new(error.to_string())))?;
+            Ok((worker, geometry))
+        },
+    )?;
     Ok((worker, fresh.clone(), session.name().to_owned(), geometry))
 }
 
@@ -5100,6 +5309,32 @@ fn set_herdr_inventory(inner: &Inner, inventory: &HerdrInventory) {
         HerdrInventory::Failed(error) => {
             host.herdr_diagnostic = Some(HostDiagnostic::new(error.kind(), error.to_string()));
         }
+    }
+}
+
+fn project_herdr_lifecycle(
+    hosts: &mut [HostItem],
+    current_runtime: Option<&(host::WslEndpoint, host::WslRuntimeIdentity)>,
+    lifecycle: &Mutex<HerdrLifecycleState>,
+) {
+    let Some((endpoint, runtime)) = current_runtime else {
+        return;
+    };
+    let lifecycle = lifecycle
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(host) = hosts
+        .iter_mut()
+        .find(|host| host.endpoint == endpoint.distro())
+    else {
+        return;
+    };
+    for session in &mut host.herdr_sessions {
+        session.lifecycle_action = lifecycle.in_flight_action(&HerdrOperationKey {
+            endpoint: endpoint.clone(),
+            runtime: runtime.clone(),
+            name: session.name.clone(),
+        });
     }
 }
 
@@ -5310,6 +5545,55 @@ mod tests {
     use super::*;
     use std::collections::VecDeque;
     use std::sync::{Barrier, atomic::AtomicUsize};
+
+    #[test]
+    fn lifecycle_registration_waits_for_the_herdr_launch_fence() {
+        let snapshot = HostSnapshot::test_fixture("Ubuntu", "boot", 42, Vec::new());
+        let key = HerdrOperationKey {
+            endpoint: snapshot.endpoint().clone(),
+            runtime: snapshot.runtime().clone(),
+            name: "review".to_owned(),
+        };
+        let lifecycle = Mutex::new(HerdrLifecycleState::default());
+
+        with_herdr_launch_fence(
+            &lifecycle,
+            &key,
+            || (),
+            || {
+                assert!(
+                    lifecycle.try_lock().is_err(),
+                    "client launch must hold the lifecycle registration lock"
+                );
+                Ok(())
+            },
+        )
+        .expect("launch without an operation");
+
+        lifecycle
+            .lock()
+            .expect("lifecycle state")
+            .in_flight
+            .push(InFlightHerdrLifecycle {
+                generation: 1,
+                key: key.clone(),
+                action: HerdrLifecycleAction::Stop,
+            });
+        let mut launched = false;
+        assert!(
+            with_herdr_launch_fence(
+                &lifecycle,
+                &key,
+                || "blocked",
+                || {
+                    launched = true;
+                    Ok("launched")
+                },
+            )
+            .is_err()
+        );
+        assert!(!launched, "an in-flight Stop must fence client launch");
+    }
 
     #[derive(Default)]
     struct ManualRefreshRuntime {
@@ -7557,8 +7841,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn successful_refresh_projects_herdr_without_changing_tmux_readiness() {
+    fn herdr_workspace_fixture() -> (Workspace, Arc<ManualRefreshRuntime>) {
         let runtime = Arc::new(ManualRefreshRuntime::default());
         let snapshot = HostSnapshot::test_fixture_with_herdr(
             "Ubuntu",
@@ -7604,6 +7887,12 @@ mod tests {
 
         workspace.connect_enabled_hosts().expect("start refresh");
         runtime.run_next_work();
+        (workspace, runtime)
+    }
+
+    #[test]
+    fn successful_refresh_projects_herdr_without_changing_tmux_readiness() {
+        let (workspace, _runtime) = herdr_workspace_fixture();
 
         let snapshot = workspace.snapshot();
         let host = &snapshot.hosts()[0];
@@ -7614,6 +7903,11 @@ mod tests {
         assert!(host.herdr_sessions()[0].is_default());
         assert_eq!(host.herdr_sessions()[1].state(), HerdrSessionState::Stopped);
         assert!(host.herdr_diagnostic().is_none());
+    }
+
+    #[test]
+    fn in_flight_herdr_lifecycle_is_visible_and_rejects_duplicates() {
+        let (workspace, _runtime) = herdr_workspace_fixture();
 
         let running = SessionSelection::herdr("wsl", "Ubuntu", "default");
         workspace
@@ -7626,7 +7920,36 @@ mod tests {
                 .action(),
             HerdrLifecycleAction::Stop
         );
-        workspace.cancel_herdr_lifecycle();
+        let stop_generation = {
+            let mut lifecycle = workspace
+                .inner
+                .herdr_lifecycle
+                .lock()
+                .expect("lifecycle state");
+            let pending = lifecycle.pending.take().expect("pending stop");
+            assert!(lifecycle.start(&pending));
+            pending.generation
+        };
+        assert_eq!(
+            workspace.snapshot().hosts()[0].herdr_sessions()[0].lifecycle_action(),
+            Some(HerdrLifecycleAction::Stop)
+        );
+        assert!(
+            workspace
+                .request_herdr_lifecycle(&running, HerdrLifecycleAction::Stop)
+                .is_err(),
+            "a duplicate lifecycle action is rejected while Stop is in flight"
+        );
+        workspace
+            .inner
+            .herdr_lifecycle
+            .lock()
+            .expect("lifecycle state")
+            .finish(stop_generation);
+        assert_eq!(
+            workspace.snapshot().hosts()[0].herdr_sessions()[0].lifecycle_action(),
+            None
+        );
 
         let stopped = SessionSelection::herdr("wsl", "Ubuntu", "review");
         let restart = capture_herdr_restart_request(&workspace.inner, &stopped)

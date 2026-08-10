@@ -1021,7 +1021,11 @@ fn malformed_herdr_inventory_does_not_hide_tmux_sessions() {
 
 #[test]
 fn herdr_stop_revalidates_state_and_paths_before_direct_mutation() {
-    let runner = RecordingRunner::new(vec![instance_output(), instance_output()]);
+    let runner = RecordingRunner::new(vec![
+        instance_output(),
+        instance_output(),
+        instance_output(),
+    ]);
     runner.set_herdr_outputs(vec![
         output(0, "GHOSTHUB_HERDR_PATH\n/opt/herdr/bin/herdr\n", ""),
         output(
@@ -1079,6 +1083,58 @@ fn herdr_stop_revalidates_state_and_paths_before_direct_mutation() {
         OsString::from("review"),
         OsString::from("--json"),
     ]));
+}
+
+#[test]
+fn herdr_lifecycle_rechecks_runtime_after_discovery_before_mutation() {
+    let runner = RecordingRunner::new(vec![
+        instance_output(),
+        instance_output_with("91d83b4d-2b1a-47b7-bd2d-5d5bb698bdf7", 200),
+    ]);
+    runner.set_herdr_outputs(vec![
+        output(0, "GHOSTHUB_HERDR_PATH\n/opt/herdr/bin/herdr\n", ""),
+        output(
+            0,
+            r#"{"sessions":[{"name":"review","default":false,"running":true,"session_dir":"/tmp/herdr/review","socket_path":"/tmp/herdr/review/herdr.sock"}]}"#,
+            "",
+        ),
+    ]);
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        runner,
+    );
+    let identity = host::HostSnapshot::test_fixture(
+        "Ubuntu",
+        "65c18272-9676-4d59-9f67-ff4556cd1601",
+        987_654,
+        Vec::new(),
+    );
+    let confirmed = HerdrSessionRecord::new(
+        "review",
+        false,
+        HerdrSessionState::Running,
+        "/tmp/herdr/review",
+        "/tmp/herdr/review/herdr.sock",
+    );
+
+    let error = host
+        .mutate_herdr_session(
+            identity.endpoint(),
+            identity.runtime(),
+            &confirmed,
+            HerdrLifecycleAction::Stop,
+            &CancellationToken::new(),
+        )
+        .expect_err("a restarted distro must block mutation");
+
+    assert_eq!(error.kind(), HostErrorKind::Transport);
+    assert!(
+        !host
+            .runner()
+            .all_calls()
+            .iter()
+            .any(|(_, args)| { args.windows(2).any(|pair| pair == ["session", "stop"]) })
+    );
 }
 
 #[test]

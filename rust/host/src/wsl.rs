@@ -711,6 +711,8 @@ impl<R: CommandRunner> WslHost<R> {
             ));
         }
 
+        self.require_runtime(endpoint, expected_runtime, cancellation)?;
+
         let mut args = pinned_prefix(endpoint);
         append_herdr_environment(&mut args);
         args.extend(

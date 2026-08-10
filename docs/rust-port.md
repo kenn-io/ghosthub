@@ -257,10 +257,13 @@ stopped row restarts it through the one-shot launch path: the default session
 uses plain `herdr`, while a named session uses `herdr --session <exact-name>`.
 Stop and Delete require confirmation, then Host freshly revalidates the WSL
 runtime, executable, expected running or stopped state, session directory, and
-socket before invoking the direct lifecycle command. Stop first closes every
-matching client presentation; Delete is offered only for stopped non-default
-sessions. Rust does not reinterpret Herdr as a tmux-compatible server or use
-Herdr's remote mode.
+socket, followed by a final runtime check immediately before invoking the
+direct lifecycle command. A per-session in-flight guard disables duplicate
+actions and serializes client launch against Stop or Delete. Stop first closes
+every matching client presentation; Delete is offered only for stopped
+non-default sessions. The guard remains until fresh inventory publishes or a
+classified operation failure is reported. Rust does not reinterpret Herdr as a
+tmux-compatible server or use Herdr's remote mode.
 
 ### Terminal ownership
 
