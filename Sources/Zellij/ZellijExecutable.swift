@@ -49,7 +49,7 @@ public enum ZellijExecutable {
         ).map(String.init)
         guard let markerIndex = lines.lastIndex(of: marker),
               lines.indices.contains(markerIndex + 1)
-        else { return .unavailable }
+        else { return .failure(.missingMarker) }
         let path = lines[markerIndex + 1]
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard path.hasPrefix("/") else { return .unavailable }

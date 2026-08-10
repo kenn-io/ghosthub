@@ -123,6 +123,9 @@ extension WorkspaceSceneModel {
     }
 
     private var activeNavigationTarget: WorkspaceNavigationTarget {
+        if let pending = pendingZellijPresentationSelection {
+            return .zellijSession(hostID: pending.hostID, name: pending.name)
+        }
         if let pending = pendingHerdrShortcutSelection {
             return .herdrSession(
                 hostID: pending.hostID,
@@ -131,6 +134,9 @@ extension WorkspaceSceneModel {
         }
         if let active = activeBorrowedHerdrSelection {
             return .herdrSession(hostID: active.hostID, name: active.name)
+        }
+        if let active = activeBorrowedZellijSelection {
+            return .zellijSession(hostID: active.hostID, name: active.name)
         }
         if let active = activeBorrowedTmuxSelection {
             if let worktreeID = active.worktreeID {

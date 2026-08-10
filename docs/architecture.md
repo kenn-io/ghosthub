@@ -632,12 +632,13 @@ never changes tmux reachability, kwt availability, or blocking workspace state.
 Zellij's unformatted session list is independently authoritative for active
 Zellij sessions. Exited entries are excluded. Missing Zellij is silent, while
 malformed output or another failure produces only a host-scoped warning.
-Tmux, Herdr, and Zellij fleet sweeps accumulate their host results and publish
-the completed runtime inventory once. Session-only publication uses the
-runtime overlay, which cannot reconcile kwt projects or worktrees and cannot
-normalize their paths. The full overlay remains reserved for authoritative kwt
-changes. Application activation starts neither inventory discovery nor process
-sampling; explicit refresh and lifecycle reconciliation own those costs.
+Zellij fleet sweeps accumulate their host results and publish the completed
+runtime inventory once. Tmux and Herdr publish host-scoped runtime results as
+hosts complete. Session-only publication uses the runtime overlay, which cannot
+reconcile kwt projects or worktrees and cannot normalize their paths. The full
+overlay remains reserved for authoritative kwt changes. Application activation
+starts neither inventory discovery nor process sampling; explicit refresh and
+lifecycle reconciliation own those costs.
 
 Ghosthub local persistence stores app-owned state:
 

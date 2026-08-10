@@ -546,6 +546,10 @@ final class WorkspaceSceneModel: ObservableObject {
     }
     private var zellijPresentationIntent: ZellijPresentationIntent?
     private var zellijPresentationRevision: UInt64 = 0
+    var pendingZellijPresentationSelection:
+        WorkspaceZellijSessionSelection? {
+        zellijPresentationIntent?.selection
+    }
     private struct SuppressedZellijKillPresentation {
         var selection: WorkspaceZellijSessionSelection
         var navigationRevision: UInt64
@@ -1866,9 +1870,12 @@ final class WorkspaceSceneModel: ObservableObject {
 
     func synchronizeSelection(_ newSelection: WorkspaceSelection) {
         guard newSelection != selection else { return }
-        userNavigationRevision &+= 1
         invalidateZellijPresentationIntent()
         selection = newSelection
+    }
+
+    func cancelPendingZellijPresentation() {
+        invalidateZellijPresentationIntent()
     }
 
     private func invalidateZellijPresentationIntent() {
@@ -6329,11 +6336,7 @@ final class WorkspaceSceneModel: ObservableObject {
         else {
             throw ZellijSessionPresentationError.hostChanged(selection.name)
         }
-        guard case let .available(names) = result,
-              names.contains(selection.name)
-        else {
-            throw ZellijSessionPresentationError.sessionMissing(selection.name)
-        }
+        try requireActiveZellijSession(selection.name, in: result)
         let authorityID = UUID()
         zellijKillAuthorities[authorityID] = ZellijKillAuthority(
             hostID: selection.hostID,
@@ -6408,11 +6411,7 @@ final class WorkspaceSceneModel: ObservableObject {
         else {
             throw ZellijSessionPresentationError.hostChanged(selection.name)
         }
-        guard case let .available(names) = result,
-              names.contains(selection.name)
-        else {
-            throw ZellijSessionPresentationError.sessionMissing(selection.name)
-        }
+        try requireActiveZellijSession(selection.name, in: result)
         let killResult = await zellijSessionKiller(
             selection.name,
             postDiscoveryHost,
@@ -6430,6 +6429,22 @@ final class WorkspaceSceneModel: ObservableObject {
         _ request: ZellijSessionKillRequest
     ) {
         zellijKillAuthorities.removeValue(forKey: request.authorityID)
+    }
+
+    private func requireActiveZellijSession(
+        _ name: String,
+        in result: ZellijDiscoveryResult
+    ) throws {
+        switch result {
+        case let .available(names):
+            guard names.contains(name) else {
+                throw ZellijSessionPresentationError.sessionMissing(name)
+            }
+        case .unavailable:
+            throw ZellijSessionPresentationError.unavailable
+        case let .failure(error):
+            throw error
+        }
     }
 
     private func zellijConnectionSnapshot(
@@ -8231,7 +8246,9 @@ final class WorkspaceSceneModel: ObservableObject {
             )
             scheduleZellijSessionDiscovery()
             return .stop
-        case let .failure(.commandFailed(status, stderr)) where status == 255:
+        case let .failure(.commandFailed(status, stderr))
+            where status == 255
+            || status == AccountCommandRunner.timedOutStatus:
             let classification = SSHConnectionFailure.classify(
                 status: status,
                 output: stderr

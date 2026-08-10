@@ -355,6 +355,7 @@ public struct InteractionHandlers {
     public let openZellijSession: ((WorkspaceZellijSessionSelection) -> Void)?
     public let createZellijSession: ((WorkspaceZellijSessionSelection) -> Void)?
     public let closeZellijSession: ((WorkspaceZellijSessionSelection) -> Void)?
+    public let cancelPendingZellijPresentation: (() -> Void)?
     public let prepareZellijSessionKill:
         ((WorkspaceZellijSessionSelection) async throws
             -> ZellijSessionKillRequest)?
@@ -431,6 +432,7 @@ public struct InteractionHandlers {
         ((WorkspaceZellijSessionSelection) -> Void)? = nil,
         closeZellijSession:
         ((WorkspaceZellijSessionSelection) -> Void)? = nil,
+        cancelPendingZellijPresentation: (() -> Void)? = nil,
         prepareZellijSessionKill:
         ((WorkspaceZellijSessionSelection) async throws
             -> ZellijSessionKillRequest)? = nil,
@@ -499,6 +501,7 @@ public struct InteractionHandlers {
         self.openZellijSession = openZellijSession
         self.createZellijSession = createZellijSession
         self.closeZellijSession = closeZellijSession
+        self.cancelPendingZellijPresentation = cancelPendingZellijPresentation
         self.prepareZellijSessionKill = prepareZellijSessionKill
         self.killZellijSession = killZellijSession
         self.cancelZellijSessionKill = cancelZellijSessionKill

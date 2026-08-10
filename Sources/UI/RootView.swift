@@ -663,6 +663,7 @@ public struct RootView: View {
             onNavigateAwayFromSession: {
                 hideTmuxSession()
                 deactivateHerdrSession()
+                handlers.cancelPendingZellijPresentation?()
                 deactivateZellijSession()
             },
             onRequestKillTmuxSession: requestSessionKill,

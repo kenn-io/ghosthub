@@ -884,6 +884,9 @@ struct WorkspaceWindow: View {
                 closeZellijSession: { [sceneModel] selection in
                     sceneModel.closeBorrowedZellijSession(selection)
                 },
+                cancelPendingZellijPresentation: { [sceneModel] in
+                    sceneModel.cancelPendingZellijPresentation()
+                },
                 prepareZellijSessionKill: { [sceneModel] selection in
                     try await sceneModel.prepareZellijSessionKill(selection)
                 },

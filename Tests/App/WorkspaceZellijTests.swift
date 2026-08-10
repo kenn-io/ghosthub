@@ -37,6 +37,15 @@ struct ZellijTerminalReconnectFailureCase:
     var testDescription: String { name }
 }
 
+struct ZellijKillValidationFailureCase:
+    Sendable, CustomTestStringConvertible {
+    var name: String
+    var result: ZellijDiscoveryResult
+    var expectsUnavailable: Bool
+
+    var testDescription: String { name }
+}
+
 @Suite("Workspace Zellij support", .serialized)
 @MainActor
 struct WorkspaceZellijTests {
@@ -305,8 +314,8 @@ struct WorkspaceZellijTests {
         await model.shutdown()
     }
 
-    @Test("sidebar navigation cancels delayed Zellij validation")
-    func sidebarNavigationCancelsDelayedValidation() async throws {
+    @Test("same-host sidebar navigation cancels delayed Zellij validation")
+    func sameHostSidebarNavigationCancelsDelayedValidation() async throws {
         let environment = try zellijEnvironment(sessions: ["zellij-work"])
         let zellijStore = RecordingNativeSessionSurfaceStore()
         let probeStarted = Mutex(false)
@@ -334,7 +343,10 @@ struct WorkspaceZellijTests {
 
         model.openBorrowedZellijSession(zellij)
         await waitUntilMainActor { probeStarted.withLock { $0 } }
-        model.synchronizeSelection(WorkspaceSelection(selectedHostID: UUID()))
+        model.cancelPendingZellijPresentation()
+        model.synchronizeSelection(WorkspaceSelection(
+            selectedHostID: environment.host.id
+        ))
         let continuation = probeContinuation.withLock {
             let continuation = $0
             $0 = nil
@@ -346,6 +358,62 @@ struct WorkspaceZellijTests {
 
         #expect(model.activeBorrowedZellijSelection == nil)
         #expect(zellijStore.requestedConfigurations.isEmpty)
+        await model.shutdown()
+    }
+
+    @Test("runner timeout retries an active Zellij reconnect")
+    func runnerTimeoutRetriesReconnect() async throws {
+        let host = HostSummary(
+            id: UUID(),
+            configKey: "builder",
+            name: "Builder",
+            kind: .remote,
+            platform: .linux,
+            sshDestination: "dev@builder",
+            zellijSessions: [ZellijSessionSummary(name: "api")],
+            zellijAvailable: true
+        )
+        let store = RecordingNativeSessionSurfaceStore()
+        let results = Mutex<[ZellijDiscoveryResult]>([
+            .available(["api"]),
+            .failure(.commandFailed(
+                status: AccountCommandRunner.timedOutStatus,
+                stderr: "SSH command timed out."
+            )),
+            .available(["api"]),
+        ])
+        let model = try makeModel(
+            database: .inMemory(),
+            localHostID: UUID(),
+            snapshot: WorkspaceSnapshot(
+                hosts: [host], projects: [], worktrees: []
+            ),
+            nativeZellijSurfaceStore: store,
+            nativeZellijPathProvider: { _ in .success("/usr/bin/zellij") },
+            zellijSessionDiscovery: { _ in
+                results.withLock { $0.removeFirst() }
+            },
+            tmuxReconnectIntervals: [.zero, .zero],
+            tmuxReconnectProbeDeadline: .seconds(1)
+        )
+        let selection = WorkspaceZellijSessionSelection(
+            hostID: host.id,
+            name: "api"
+        )
+
+        model.openBorrowedZellijSession(selection)
+        await waitUntilMainActor {
+            store.requestedConfigurations.count == 1
+                && !store.surface.closeObservers.isEmpty
+        }
+        let close = try #require(store.surface.closeObservers.values.first)
+        close(false, 255)
+        await waitUntilMainActor(timeout: .seconds(1)) {
+            store.requestedConfigurations.count == 2
+        }
+
+        #expect(model.activeBorrowedZellijConnectionState == .connected)
+        #expect(results.withLock { $0.isEmpty })
         await model.shutdown()
     }
 
@@ -1940,6 +2008,118 @@ struct WorkspaceZellijTests {
         #expect(kills.withLock { $0.first?.1 } == .local)
         #expect(model.snapshot.host(id: environment.host.id)?
             .zellijSessions.isEmpty == true)
+        await model.shutdown()
+    }
+
+    @Test(
+        "kill preparation preserves validation failures",
+        arguments: [
+            ZellijKillValidationFailureCase(
+                name: "unavailable executable",
+                result: .unavailable,
+                expectsUnavailable: true
+            ),
+            ZellijKillValidationFailureCase(
+                name: "command failure",
+                result: .failure(.commandFailed(
+                    status: 23,
+                    stderr: "probe failed"
+                )),
+                expectsUnavailable: false
+            ),
+        ]
+    )
+    func killPreparationPreservesValidationFailure(
+        _ failure: ZellijKillValidationFailureCase
+    ) async throws {
+        let environment = try zellijEnvironment(sessions: ["api"])
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            zellijSessionValidationDiscovery: { _, _ in failure.result }
+        )
+        let selection = WorkspaceZellijSessionSelection(
+            hostID: environment.host.id,
+            name: "api"
+        )
+
+        do {
+            _ = try await model.prepareZellijSessionKill(selection)
+            Issue.record("Expected kill preparation to fail")
+        } catch {
+            if failure.expectsUnavailable {
+                #expect(error as? ZellijSessionPresentationError == .unavailable)
+            } else {
+                #expect(error as? ZellijCommandError == .commandFailed(
+                    status: 23,
+                    stderr: "probe failed"
+                ))
+            }
+        }
+        await model.shutdown()
+    }
+
+    @Test(
+        "final kill validation preserves failures",
+        arguments: [
+            ZellijKillValidationFailureCase(
+                name: "unavailable executable",
+                result: .unavailable,
+                expectsUnavailable: true
+            ),
+            ZellijKillValidationFailureCase(
+                name: "command failure",
+                result: .failure(.commandFailed(
+                    status: 23,
+                    stderr: "probe failed"
+                )),
+                expectsUnavailable: false
+            ),
+        ]
+    )
+    func finalKillValidationPreservesFailure(
+        _ failure: ZellijKillValidationFailureCase
+    ) async throws {
+        let environment = try zellijEnvironment(sessions: ["api"])
+        let attempts = Mutex(0)
+        let kills = Mutex(0)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            zellijSessionValidationDiscovery: { _, _ in
+                let attempt = attempts.withLock {
+                    $0 += 1
+                    return $0
+                }
+                return attempt == 1 ? .available(["api"]) : failure.result
+            },
+            zellijSessionKiller: { _, _, _ in
+                kills.withLock { $0 += 1 }
+                return .success(())
+            }
+        )
+        let selection = WorkspaceZellijSessionSelection(
+            hostID: environment.host.id,
+            name: "api"
+        )
+        let request = try await model.prepareZellijSessionKill(selection)
+
+        do {
+            try await model.killZellijSession(request)
+            Issue.record("Expected final kill validation to fail")
+        } catch {
+            if failure.expectsUnavailable {
+                #expect(error as? ZellijSessionPresentationError == .unavailable)
+            } else {
+                #expect(error as? ZellijCommandError == .commandFailed(
+                    status: 23,
+                    stderr: "probe failed"
+                ))
+            }
+        }
+        #expect(kills.withLock { $0 } == 0)
         await model.shutdown()
     }
 
