@@ -222,6 +222,7 @@ pub struct HerdrSessionItem {
     is_default: bool,
     state: HerdrSessionState,
     lifecycle_action: Option<HerdrLifecycleAction>,
+    launch_pending: bool,
 }
 
 impl HerdrSessionItem {
@@ -232,6 +233,7 @@ impl HerdrSessionItem {
             is_default,
             state,
             lifecycle_action: None,
+            launch_pending: false,
         }
     }
 
@@ -253,6 +255,11 @@ impl HerdrSessionItem {
     #[must_use]
     pub const fn lifecycle_action(&self) -> Option<HerdrLifecycleAction> {
         self.lifecycle_action
+    }
+
+    #[must_use]
+    pub const fn launch_pending(&self) -> bool {
+        self.launch_pending
     }
 }
 
@@ -283,6 +290,12 @@ impl HostItem {
     pub fn with_herdr_sessions(mut self, sessions: Vec<HerdrSessionItem>) -> Self {
         self.herdr_available = true;
         self.herdr_sessions = sessions;
+        self
+    }
+
+    #[must_use]
+    pub fn with_herdr_diagnostic(mut self, diagnostic: HostDiagnostic) -> Self {
+        self.herdr_diagnostic = Some(diagnostic);
         self
     }
 
@@ -734,9 +747,28 @@ struct InFlightHerdrLifecycle {
 struct HerdrLifecycleState {
     pending: Option<PendingHerdrLifecycle>,
     in_flight: Vec<InFlightHerdrLifecycle>,
+    launches: Vec<HerdrOperationKey>,
 }
 
 impl HerdrLifecycleState {
+    fn reserve_launch(&mut self, key: &HerdrOperationKey) -> bool {
+        if self.launches.contains(key) || self.in_flight_action(key).is_some() {
+            return false;
+        }
+        self.launches.push(key.clone());
+        true
+    }
+
+    fn finish_launch(&mut self, key: &HerdrOperationKey) -> bool {
+        let previous_len = self.launches.len();
+        self.launches.retain(|candidate| candidate != key);
+        self.launches.len() != previous_len
+    }
+
+    fn launch_pending(&self, key: &HerdrOperationKey) -> bool {
+        self.launches.contains(key)
+    }
+
     fn in_flight_action(&self, key: &HerdrOperationKey) -> Option<HerdrLifecycleAction> {
         self.in_flight
             .iter()
@@ -906,6 +938,7 @@ struct PendingCreation {
     navigation_generation: u64,
     previous: Option<PresentationKey>,
     cancellation: CancellationToken,
+    herdr_operation: Option<HerdrOperationKey>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -915,6 +948,11 @@ struct PresentationKey {
     socket_directory: Option<String>,
     runtime: host::WslRuntimeIdentity,
     target: AttachTarget,
+}
+
+struct SuppressedHerdrPresentation {
+    key: PresentationKey,
+    navigation_generation: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1938,6 +1976,13 @@ impl Workspace {
         if same_visible_selection && !has_active_attachment {
             return Ok(());
         }
+        if selection.kind() == SessionKind::Herdr
+            && herdr_operation_pending_for_selection(&self.inner, selection)
+        {
+            return Err(WorkspaceError::new(
+                "this Herdr session is already starting or changing lifecycle",
+            ));
+        }
 
         let (key, request) = self.navigation_target(selection)?;
         if self
@@ -2034,6 +2079,7 @@ impl Workspace {
             navigation_generation,
             previous: previous.clone(),
             cancellation: cancellation.clone(),
+            herdr_operation: None,
         });
         clear_terminal_notice(&self.inner);
         set_inner_state(
@@ -2123,9 +2169,33 @@ impl Workspace {
         navigation: std::sync::MutexGuard<'_, ()>,
     ) -> Result<(), WorkspaceError> {
         let _snapshot_write = begin_snapshot_write(&self.inner);
+        let operation_key = request.operation_key();
+        if !self
+            .inner
+            .herdr_lifecycle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .reserve_launch(&operation_key)
+        {
+            return Err(WorkspaceError::new(
+                "this Herdr session is already starting or changing lifecycle",
+            ));
+        }
         let navigation_generation = self.begin_navigation();
-        let in_flight_fallback = self.supersede_inflight_attachment()?;
-        let visible_previous = self.retain_active_presentation()?;
+        let in_flight_fallback = match self.supersede_inflight_attachment() {
+            Ok(fallback) => fallback,
+            Err(error) => {
+                finish_herdr_launch(&self.inner, &operation_key);
+                return Err(error);
+            }
+        };
+        let visible_previous = match self.retain_active_presentation() {
+            Ok(previous) => previous,
+            Err(error) => {
+                finish_herdr_launch(&self.inner, &operation_key);
+                return Err(error);
+            }
+        };
         let previous = in_flight_fallback.or(visible_previous);
         let cancellation = CancellationToken::new();
         *self
@@ -2136,6 +2206,7 @@ impl Workspace {
             navigation_generation,
             previous: previous.clone(),
             cancellation: cancellation.clone(),
+            herdr_operation: Some(operation_key),
         });
         clear_terminal_notice(&self.inner);
         set_inner_state(
@@ -2228,6 +2299,7 @@ impl Workspace {
                     WorkspaceError::new("the in-flight terminal presentation is not available")
                 })?;
             pending.cancellation.cancel();
+            finish_pending_creation(&self.inner, &pending);
             pending.previous
         };
         clear_pending_paste(&self.inner);
@@ -2622,6 +2694,9 @@ impl Workspace {
                 "a lifecycle action is already running for this Herdr session",
             ));
         }
+        if lifecycle.launch_pending(&pending.key()) {
+            return Err(WorkspaceError::new("this Herdr session is still starting"));
+        }
         if self
             .inner
             .herdr_lifecycle_generation
@@ -2833,6 +2908,60 @@ impl Workspace {
         }
     }
 
+    fn suppress_active_herdr_presentation(
+        &self,
+        pending: &PendingHerdrLifecycle,
+    ) -> Option<SuppressedHerdrPresentation> {
+        let _navigation = self
+            .inner
+            .navigation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let active_matches = self
+            .inner
+            .attachment
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .active()
+            .is_some_and(|active| {
+                active.request.endpoint == pending.endpoint
+                    && active.request.runtime == pending.runtime
+                    && active.request.name == pending.record.name()
+                    && active.request.target.herdr_matches(&pending.record)
+            });
+        if !active_matches {
+            return None;
+        }
+        let navigation_generation = self.inner.navigation_generation.load(Ordering::Acquire);
+        self.retain_active_presentation()
+            .ok()
+            .flatten()
+            .map(|key| SuppressedHerdrPresentation {
+                key,
+                navigation_generation,
+            })
+    }
+
+    fn restore_suppressed_herdr_presentation(
+        &self,
+        suppressed: Option<&SuppressedHerdrPresentation>,
+    ) {
+        let Some(suppressed) = suppressed else {
+            return;
+        };
+        let _navigation = self
+            .inner
+            .navigation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.inner.navigation_generation.load(Ordering::Acquire)
+            != suppressed.navigation_generation
+        {
+            return;
+        }
+        let _restored = self.activate_retained_presentation(&suppressed.key, None);
+    }
+
     /// Update the desired grid and resize an active VT/PTTY pair together.
     ///
     /// # Errors
@@ -2933,6 +3062,7 @@ impl Workspace {
             .take()
         {
             pending.cancellation.cancel();
+            finish_pending_creation(&self.inner, &pending);
         }
         self.inner
             .attachment
@@ -3412,6 +3542,23 @@ fn invalidate_pending_herdr_lifecycle(inner: &Inner) -> (u64, bool) {
     (generation, lifecycle.pending.take().is_some())
 }
 
+fn finish_herdr_launch(inner: &Inner, key: &HerdrOperationKey) {
+    if inner
+        .herdr_lifecycle
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .finish_launch(key)
+    {
+        inner.revision.fetch_add(1, Ordering::Release);
+    }
+}
+
+fn finish_pending_creation(inner: &Inner, pending: &PendingCreation) {
+    if let Some(key) = &pending.herdr_operation {
+        finish_herdr_launch(inner, key);
+    }
+}
+
 fn activate_retained_presentation(
     inner: &Inner,
     key: &PresentationKey,
@@ -3548,6 +3695,9 @@ fn capture_attach_request(
     inner: &Inner,
     selection: &SessionSelection,
 ) -> Result<AttachRequest, WorkspaceError> {
+    if selection.kind() == SessionKind::Herdr {
+        require_host_session_actions(inner, selection)?;
+    }
     let selected_host = inner
         .selected_host
         .read()
@@ -3840,6 +3990,10 @@ fn capture_herdr_create_request(
     {
         return Err(WorkspaceError::new("host is not selected"));
     }
+    require_host_session_actions(
+        inner,
+        &SessionSelection::herdr(host_id, endpoint, name.as_str()),
+    )?;
     let host = inner
         .host
         .lock()
@@ -3953,7 +4107,25 @@ fn require_host_session_actions(
             "connect the WSL host before changing a Herdr session",
         ));
     }
+    if host.herdr_diagnostic.is_some() {
+        return Err(WorkspaceError::new(
+            "refresh Herdr inventory before changing a session",
+        ));
+    }
     Ok(())
+}
+
+fn herdr_operation_pending_for_selection(inner: &Inner, selection: &SessionSelection) -> bool {
+    let lifecycle = inner
+        .herdr_lifecycle
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    lifecycle.launches.iter().any(|operation| {
+        operation.endpoint.distro() == selection.endpoint() && operation.name == selection.session()
+    }) || lifecycle.in_flight.iter().any(|operation| {
+        operation.key.endpoint.distro() == selection.endpoint()
+            && operation.key.name == selection.session()
+    })
 }
 
 fn choose_navigation_target(
@@ -4285,18 +4457,25 @@ fn run_herdr_lifecycle(workspace: &Workspace, pending: &PendingHerdrLifecycle) {
         .session_operations
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if pending.action == HerdrLifecycleAction::Stop {
-        workspace.finish_herdr_presentation(&pending.endpoint, &pending.runtime, &pending.record);
-    }
+    let mut suppressed = None;
     match pending.host.mutate_herdr_session(
-        &pending.endpoint,
-        &pending.runtime,
+        (&pending.endpoint, &pending.runtime),
         &pending.executable,
         &pending.record,
         pending.action,
         &CancellationToken::new(),
+        || {
+            if pending.action == HerdrLifecycleAction::Stop {
+                suppressed = workspace.suppress_active_herdr_presentation(pending);
+            }
+        },
     ) {
         Ok(record) => {
+            workspace.finish_herdr_presentation(
+                &pending.endpoint,
+                &pending.runtime,
+                &pending.record,
+            );
             if let Err(error) = publish_herdr_lifecycle_response(&workspace.inner, pending, record)
             {
                 reconcile_herdr_lifecycle_failure(
@@ -4306,6 +4485,7 @@ fn run_herdr_lifecycle(workspace: &Workspace, pending: &PendingHerdrLifecycle) {
                         "Herdr {} succeeded, but Ghosthub could not publish the result: {error}",
                         pending.action.command()
                     ),
+                    None,
                 );
             } else {
                 finish_herdr_lifecycle_state(&workspace.inner, pending.generation);
@@ -4316,7 +4496,14 @@ fn run_herdr_lifecycle(workspace: &Workspace, pending: &PendingHerdrLifecycle) {
                 );
             }
         }
-        Err(error) => reconcile_herdr_lifecycle_failure(workspace, pending, error.to_string()),
+        Err(error) => {
+            reconcile_herdr_lifecycle_failure(
+                workspace,
+                pending,
+                error.to_string(),
+                suppressed.as_ref(),
+            );
+        }
     }
 }
 
@@ -4324,14 +4511,24 @@ fn reconcile_herdr_lifecycle_failure(
     workspace: &Workspace,
     pending: &PendingHerdrLifecycle,
     operation_error: String,
+    suppressed: Option<&SuppressedHerdrPresentation>,
 ) {
     match reconcile_herdr_lifecycle_inventory(
         &workspace.inner,
         pending,
         HerdrReconcileMode::CurrentInventory,
     ) {
-        Ok(()) => {
+        Ok(snapshot) => {
             finish_herdr_lifecycle_state(&workspace.inner, pending.generation);
+            if herdr_session_is_still_running(&snapshot, pending) {
+                workspace.restore_suppressed_herdr_presentation(suppressed);
+            } else {
+                workspace.finish_herdr_presentation(
+                    &pending.endpoint,
+                    &pending.runtime,
+                    &pending.record,
+                );
+            }
             workspace.push_operation_error(operation_error);
         }
         Err(reconciliation_error) => {
@@ -4533,11 +4730,14 @@ fn publish_created_presentation(
         return;
     };
     let key = attached.presentation_key();
-    let fallback = pending.previous.map(|presentation| FallbackAuthority {
-        presentation,
-        target: key,
-        navigation_generation,
-    });
+    let fallback = pending
+        .previous
+        .clone()
+        .map(|presentation| FallbackAuthority {
+            presentation,
+            target: key,
+            navigation_generation,
+        });
     let mut attachment = inner
         .attachment
         .lock()
@@ -4545,6 +4745,7 @@ fn publish_created_presentation(
     let Some(generation) =
         attachment.reserve_with_fallback(attached.clone(), term, fallback.clone())
     else {
+        finish_pending_creation(inner, &pending);
         drop(attachment);
         drop(navigation);
         drop(worker);
@@ -4567,6 +4768,7 @@ fn publish_created_presentation(
         },
     ) {
         attachment.clear_if_current(generation);
+        finish_pending_creation(inner, &pending);
         drop(attachment);
         drop(navigation);
         restore_inventory_after_creation_failure(
@@ -4589,6 +4791,7 @@ fn publish_created_presentation(
             surface,
         },
     );
+    finish_pending_creation(inner, &pending);
     drop(attachment);
     drop(navigation);
 }
@@ -4718,6 +4921,7 @@ fn restore_inventory_after_creation_failure(
         .filter(|pending| pending.navigation_generation == navigation_generation);
     if let Some(pending) = &pending {
         pending.cancellation.cancel();
+        finish_pending_creation(inner, pending);
     }
     let previous = pending.and_then(|pending| pending.previous).or(previous);
     restore_presentation_inventory(inner);
@@ -5062,7 +5266,7 @@ fn reconcile_herdr_lifecycle_inventory(
     inner: &Inner,
     pending: &PendingHerdrLifecycle,
     mode: HerdrReconcileMode,
-) -> Result<(), WorkspaceError> {
+) -> Result<HostSnapshot, WorkspaceError> {
     let publication_generation = inner.refresh_generation.load(Ordering::Acquire);
     let snapshot = pending
         .host
@@ -5071,9 +5275,32 @@ fn reconcile_herdr_lifecycle_inventory(
     if matches!(mode, HerdrReconcileMode::ConfirmedOutcome)
         && !herdr_lifecycle_is_reflected(&snapshot, pending)
     {
-        return Ok(());
+        return Ok(snapshot);
     }
-    merge_herdr_lifecycle_inventory(inner, pending, snapshot, publication_generation).map(|_| ())
+    merge_herdr_lifecycle_inventory(inner, pending, snapshot.clone(), publication_generation)?;
+    Ok(snapshot)
+}
+
+fn herdr_session_is_still_running(
+    snapshot: &HostSnapshot,
+    pending: &PendingHerdrLifecycle,
+) -> bool {
+    snapshot.endpoint() == &pending.endpoint
+        && snapshot.runtime() == &pending.runtime
+        && matches!(
+            snapshot.herdr(),
+            HerdrInventory::Available {
+                executable,
+                sessions,
+            } if executable == &pending.executable
+                && sessions.iter().any(|record| {
+                    record.name() == pending.record.name()
+                        && record.state() == HerdrSessionState::Running
+                        && record.is_default() == pending.record.is_default()
+                        && record.session_directory() == pending.record.session_directory()
+                        && record.socket_path() == pending.record.socket_path()
+                })
+        )
 }
 
 fn herdr_lifecycle_is_reflected(snapshot: &HostSnapshot, pending: &PendingHerdrLifecycle) -> bool {
@@ -5663,11 +5890,13 @@ fn project_herdr_lifecycle(
         return;
     };
     for session in &mut host.herdr_sessions {
-        session.lifecycle_action = lifecycle.in_flight_action(&HerdrOperationKey {
+        let key = HerdrOperationKey {
             endpoint: endpoint.clone(),
             runtime: runtime.clone(),
             name: session.name.clone(),
-        });
+        };
+        session.lifecycle_action = lifecycle.in_flight_action(&key);
+        session.launch_pending = lifecycle.launch_pending(&key);
     }
 }
 
@@ -8049,6 +8278,7 @@ mod tests {
             navigation_generation: creation_navigation,
             previous: None,
             cancellation: cancellation.clone(),
+            herdr_operation: None,
         });
         set_inner_state(
             &workspace.inner,
@@ -8106,6 +8336,7 @@ mod tests {
             navigation_generation: creation_navigation,
             previous: None,
             cancellation: cancellation.clone(),
+            herdr_operation: None,
         });
         set_inner_state(
             &workspace.inner,
@@ -8582,6 +8813,102 @@ mod tests {
                 .expect("delete confirmation")
                 .action(),
             HerdrLifecycleAction::Delete
+        );
+    }
+
+    #[test]
+    fn pending_herdr_launch_is_visible_and_rejects_duplicate_operations() {
+        let (workspace, _runtime) = herdr_workspace_fixture();
+        let stopped = SessionSelection::herdr("wsl", "Ubuntu", "review");
+        let request = capture_herdr_restart_request(&workspace.inner, &stopped)
+            .expect("stopped session may restart");
+        let key = request.operation_key();
+
+        assert!(
+            workspace
+                .inner
+                .herdr_lifecycle
+                .lock()
+                .expect("lifecycle state")
+                .reserve_launch(&key)
+        );
+
+        let snapshot = workspace.snapshot();
+        let review = snapshot.hosts()[0]
+            .herdr_sessions()
+            .iter()
+            .find(|session| session.name() == "review")
+            .expect("review session");
+        assert!(review.launch_pending());
+        assert!(
+            !workspace
+                .inner
+                .herdr_lifecycle
+                .lock()
+                .expect("lifecycle state")
+                .reserve_launch(&key)
+        );
+        assert!(
+            workspace
+                .switch_session(&stopped)
+                .expect_err("a pending restart blocks presentation changes")
+                .to_string()
+                .contains("already starting")
+        );
+        assert!(
+            workspace
+                .request_herdr_lifecycle(&stopped, HerdrLifecycleAction::Delete)
+                .expect_err("lifecycle mutation is blocked while restart is pending")
+                .to_string()
+                .contains("still starting")
+        );
+
+        finish_herdr_launch(&workspace.inner, &key);
+        assert!(!workspace.snapshot().hosts()[0].herdr_sessions()[1].launch_pending());
+    }
+
+    #[test]
+    fn failed_herdr_inventory_blocks_fresh_and_mutating_actions() {
+        let (workspace, _runtime) = herdr_workspace_fixture();
+        set_herdr_inventory(
+            &workspace.inner,
+            &HerdrInventory::Failed(
+                WslExecutable::from_absolute("wsl.exe").expect_err("relative path is rejected"),
+            ),
+        );
+
+        let create = capture_herdr_create_request(
+            &workspace.inner,
+            "wsl",
+            "Ubuntu",
+            HerdrSessionName::parse("created").expect("valid name"),
+        )
+        .err()
+        .expect("failed inventory blocks creation");
+        assert!(create.to_string().contains("refresh Herdr inventory"));
+
+        let stopped = SessionSelection::herdr("wsl", "Ubuntu", "review");
+        let running = SessionSelection::herdr("wsl", "Ubuntu", "default");
+        assert!(
+            workspace
+                .switch_session(&running)
+                .expect_err("failed inventory blocks a fresh open")
+                .to_string()
+                .contains("refresh Herdr inventory")
+        );
+        assert!(
+            capture_herdr_restart_request(&workspace.inner, &stopped)
+                .err()
+                .expect("failed inventory blocks restart")
+                .to_string()
+                .contains("refresh Herdr inventory")
+        );
+        assert!(
+            workspace
+                .request_herdr_lifecycle(&stopped, HerdrLifecycleAction::Delete)
+                .expect_err("failed inventory blocks mutation")
+                .to_string()
+                .contains("refresh Herdr inventory")
         );
     }
 

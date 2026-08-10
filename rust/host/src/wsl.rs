@@ -690,13 +690,14 @@ impl<R: CommandRunner> WslHost<R> {
     /// record no longer matches the confirmation, or Herdr rejects the action.
     pub fn mutate_herdr_session(
         &self,
-        endpoint: &WslEndpoint,
-        expected_runtime: &WslRuntimeIdentity,
+        expected_host: (&WslEndpoint, &WslRuntimeIdentity),
         expected_executable: &str,
         confirmed: &HerdrSessionRecord,
         action: HerdrLifecycleAction,
         cancellation: &CancellationToken,
+        before_mutation: impl FnOnce(),
     ) -> Result<HerdrSessionRecord, HostError> {
+        let (endpoint, expected_runtime) = expected_host;
         let runtime = self.resolve_runtime(endpoint, cancellation)?;
         if &runtime != expected_runtime {
             return Err(HostError::new(
@@ -735,6 +736,7 @@ impl<R: CommandRunner> WslHost<R> {
         validate_herdr_lifecycle_target(confirmed, current, action)?;
 
         self.require_runtime(endpoint, expected_runtime, cancellation)?;
+        before_mutation();
 
         let mut args = pinned_prefix(endpoint);
         append_herdr_environment(&mut args);

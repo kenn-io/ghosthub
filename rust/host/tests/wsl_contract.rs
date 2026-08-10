@@ -1058,18 +1058,20 @@ fn herdr_stop_revalidates_state_and_paths_before_direct_mutation() {
         "/tmp/herdr/review",
         "/tmp/herdr/review/herdr.sock",
     );
+    let validation_completed = AtomicBool::new(false);
 
     let stopped = host
         .mutate_herdr_session(
-            &endpoint,
-            &runtime,
+            (&endpoint, &runtime),
             "/opt/herdr/bin/herdr",
             &confirmed,
             HerdrLifecycleAction::Stop,
             &CancellationToken::new(),
+            || validation_completed.store(true, Ordering::Release),
         )
         .expect("confirmed stop");
 
+    assert!(validation_completed.load(Ordering::Acquire));
     assert_eq!(stopped.state(), HerdrSessionState::Stopped);
     let action = host
         .runner()
@@ -1114,20 +1116,22 @@ fn herdr_lifecycle_rejects_an_executable_changed_after_confirmation() {
         "/tmp/herdr/review",
         "/tmp/herdr/review/herdr.sock",
     );
+    let validation_completed = AtomicBool::new(false);
 
     let error = host
         .mutate_herdr_session(
-            identity.endpoint(),
-            identity.runtime(),
+            (identity.endpoint(), identity.runtime()),
             "/opt/herdr/bin/herdr",
             &confirmed,
             HerdrLifecycleAction::Stop,
             &CancellationToken::new(),
+            || validation_completed.store(true, Ordering::Release),
         )
         .expect_err("changed executable invalidates confirmation");
 
     assert_eq!(error.kind(), HostErrorKind::Transport);
     assert!(error.to_string().contains("executable changed"));
+    assert!(!validation_completed.load(Ordering::Acquire));
     assert!(
         !host
             .runner()
@@ -1171,12 +1175,12 @@ fn herdr_lifecycle_rechecks_runtime_after_discovery_before_mutation() {
 
     let error = host
         .mutate_herdr_session(
-            identity.endpoint(),
-            identity.runtime(),
+            (identity.endpoint(), identity.runtime()),
             "/opt/herdr/bin/herdr",
             &confirmed,
             HerdrLifecycleAction::Stop,
             &CancellationToken::new(),
+            || {},
         )
         .expect_err("a restarted distro must block mutation");
 
@@ -1221,12 +1225,12 @@ fn herdr_delete_rejects_a_session_that_became_the_default() {
 
     let error = host
         .mutate_herdr_session(
-            identity.endpoint(),
-            identity.runtime(),
+            (identity.endpoint(), identity.runtime()),
             "/opt/herdr/bin/herdr",
             &confirmed,
             HerdrLifecycleAction::Delete,
             &CancellationToken::new(),
+            || {},
         )
         .expect_err("the current default session must never be deleted");
 
@@ -1271,12 +1275,12 @@ fn herdr_stop_rejects_a_changed_default_role() {
 
     let error = host
         .mutate_herdr_session(
-            identity.endpoint(),
-            identity.runtime(),
+            (identity.endpoint(), identity.runtime()),
             "/opt/herdr/bin/herdr",
             &confirmed,
             HerdrLifecycleAction::Stop,
             &CancellationToken::new(),
+            || {},
         )
         .expect_err("a changed default role invalidates confirmation");
 

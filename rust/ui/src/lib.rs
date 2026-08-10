@@ -2451,7 +2451,10 @@ impl RootView {
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(rgb(0x73_7a87))
                     .child(div().flex_1().child("HERDR SESSIONS"));
-                if host.connection() == HostConnectionState::Ready && host.herdr_available() {
+                if host.connection() == HostConnectionState::Ready
+                    && host.herdr_available()
+                    && host.herdr_diagnostic().is_none()
+                {
                     header = header.child(
                         div()
                             .id(("create-herdr-session", host_index))
@@ -2549,10 +2552,8 @@ impl RootView {
             .inventory
             .as_ref()
             .is_none_or(|inventory| inventory.state() == HerdrSessionState::Running);
-        let lifecycle_action = session
-            .inventory
-            .as_ref()
-            .and_then(workspace::HerdrSessionItem::lifecycle_action);
+        let operation_label = session.inventory.as_ref().and_then(herdr_operation_label);
+        let operation_pending = operation_label.is_some();
         let selection = session.selection.clone();
         let active = session.active;
         let actions = if session.access.can_mutate() {
@@ -2581,7 +2582,7 @@ impl RootView {
             .pl(px(14.0))
             .pr_2()
             .bg(rgb(if active { 0x18_3f_68 } else { 0x0f_1116 }))
-            .when(lifecycle_action.is_none() && row_is_actionable, |element| {
+            .when(!operation_pending && row_is_actionable, |element| {
                 element
                     .cursor_pointer()
                     .hover(|style| style.bg(rgb(0x1c_2028)))
@@ -2603,16 +2604,13 @@ impl RootView {
                     .text_color(rgb(if running { 0xc4_c9_d2 } else { 0x7f_8794 }))
                     .child(selection.session().to_owned()),
             )
-            .when_some(lifecycle_action, |element, action| {
+            .when_some(operation_label, |element, label| {
                 element.child(
                     div()
                         .flex_none()
                         .text_xs()
                         .text_color(rgb(0x8f_96_a3))
-                        .child(match action {
-                            workspace::HerdrLifecycleAction::Stop => "Stopping…",
-                            workspace::HerdrLifecycleAction::Delete => "Deleting…",
-                        }),
+                        .child(label),
                 )
             });
         if session.show_endpoint {
@@ -2630,7 +2628,7 @@ impl RootView {
         row = row.children(actions.into_iter().map(|action| {
             Self::herdr_row_action(host_index, index, selection.clone(), action, cx)
         }));
-        row = if lifecycle_action.is_some() {
+        row = if operation_pending {
             row
         } else if running && session.access.can_open() {
             row.on_click(cx.listener(move |this, _, window, cx| {
@@ -3134,13 +3132,22 @@ fn herdr_lifecycle_copy(
 }
 
 fn herdr_row_actions(session: &workspace::HerdrSessionItem) -> Vec<HerdrRowAction> {
-    if session.lifecycle_action().is_some() {
+    if session.lifecycle_action().is_some() || session.launch_pending() {
         return Vec::new();
     }
     match session.state() {
         HerdrSessionState::Running => vec![HerdrRowAction::Stop],
         HerdrSessionState::Stopped if session.is_default() => vec![HerdrRowAction::Restart],
         HerdrSessionState::Stopped => vec![HerdrRowAction::Restart, HerdrRowAction::Delete],
+    }
+}
+
+fn herdr_operation_label(session: &workspace::HerdrSessionItem) -> Option<&'static str> {
+    match session.lifecycle_action() {
+        Some(workspace::HerdrLifecycleAction::Stop) => Some("Stopping…"),
+        Some(workspace::HerdrLifecycleAction::Delete) => Some("Deleting…"),
+        None if session.launch_pending() => Some("Starting…"),
+        None => None,
     }
 }
 
@@ -3329,7 +3336,7 @@ fn tree_herdr_sessions(
     let host_accepts_actions = !matches!(
         host.connection(),
         HostConnectionState::Disconnected | HostConnectionState::Unavailable
-    );
+    ) && host.herdr_diagnostic().is_none();
     for session in &mut sessions {
         session.active = active.as_ref() == Some(&session.selection);
         let retained = retained.contains(&session.selection);
@@ -3605,7 +3612,7 @@ fn new_session_validation(
                 .then(|| "A tmux session with this name already exists on this host.".to_owned())
         }
         NewSessionKind::Herdr => {
-            if !host.herdr_available() {
+            if !host.herdr_available() || host.herdr_diagnostic().is_some() {
                 return Some("Herdr is not available on this host.".to_owned());
             }
             let Ok(name) = workspace::HerdrSessionName::parse(&draft.name) else {
@@ -4109,26 +4116,27 @@ mod tests {
     use std::collections::VecDeque;
 
     use super::{
-        APP_NAVIGATION_WIDTH, APP_TITLEBAR_HEIGHT, HerdrRowAction, INPUT_BUFFER_FULL_DIAGNOSTIC,
-        INPUT_BUFFERED_DIAGNOSTIC, InputRefusal, LayoutKey, NewSessionDraft, NewSessionKind,
-        PendingUiInput, QueuedUiInput, TerminalKeyIdentity, TerminalKeyboard, TerminalPointer,
-        TerminalResize, UI_INPUT_BYTE_CAPACITY, UI_INPUT_CAPACITY, WheelBatch,
-        active_session_selection, application_navigation_width, canonical_terminal_key_with,
-        clear_terminal_input_state, clears_after_input_delivery, clears_when_input_queue_is_empty,
-        coalesce_last_resize, coalesce_last_wheel, herdr_row_actions, host_tree_status,
-        input_queue_has_capacity, is_toggle_sidebar_shortcut, kill_confirmation_description,
-        kill_confirmation_title, named_key, new_session_validation, normalize_cell_width,
-        queued_input_matches_presentation, retained_key_event_with, session_group_visibility,
-        terminal_cell_at_with_offset, terminal_key_input, terminal_key_input_with_canonical,
-        terminal_line_height, terminal_wheel_steps, transitioned_presentation, tree_herdr_sessions,
-        tree_sessions, workspace_window_title,
+        APP_NAVIGATION_WIDTH, APP_TITLEBAR_HEIGHT, HerdrRowAccess, HerdrRowAction,
+        INPUT_BUFFER_FULL_DIAGNOSTIC, INPUT_BUFFERED_DIAGNOSTIC, InputRefusal, LayoutKey,
+        NewSessionDraft, NewSessionKind, PendingUiInput, QueuedUiInput, TerminalKeyIdentity,
+        TerminalKeyboard, TerminalPointer, TerminalResize, UI_INPUT_BYTE_CAPACITY,
+        UI_INPUT_CAPACITY, WheelBatch, active_session_selection, application_navigation_width,
+        canonical_terminal_key_with, clear_terminal_input_state, clears_after_input_delivery,
+        clears_when_input_queue_is_empty, coalesce_last_resize, coalesce_last_wheel,
+        herdr_row_actions, host_tree_status, input_queue_has_capacity, is_toggle_sidebar_shortcut,
+        kill_confirmation_description, kill_confirmation_title, named_key, new_session_validation,
+        normalize_cell_width, queued_input_matches_presentation, retained_key_event_with,
+        session_group_visibility, terminal_cell_at_with_offset, terminal_key_input,
+        terminal_key_input_with_canonical, terminal_line_height, terminal_wheel_steps,
+        transitioned_presentation, tree_herdr_sessions, tree_sessions, workspace_window_title,
     };
+    use model::DiagnosticKind;
     use std::sync::Arc;
     use surface::{GridSize, SurfaceFrame, SurfaceStore};
     use workspace::{
-        HerdrSessionItem, HerdrSessionState, HostConnectionState, HostItem, KeyEvent, KeyInput,
-        Modifiers, MouseAction, MouseButton, MouseInput, NamedKey, SessionItem, SessionSelection,
-        WorkspaceContent, WorkspaceSnapshot,
+        HerdrSessionItem, HerdrSessionState, HostConnectionState, HostDiagnostic, HostItem,
+        KeyEvent, KeyInput, Modifiers, MouseAction, MouseButton, MouseInput, NamedKey, SessionItem,
+        SessionSelection, WorkspaceContent, WorkspaceSnapshot,
     };
 
     #[test]
@@ -4403,6 +4411,27 @@ mod tests {
 
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].selection.session(), "cached");
+        assert!(!rows[0].access.can_open());
+        assert!(!rows[0].access.can_mutate());
+    }
+
+    #[test]
+    fn failed_current_herdr_inventory_exposes_cached_rows_only() {
+        let host = HostItem::wsl("Ubuntu", None, HostConnectionState::Ready, Vec::new(), None)
+            .with_herdr_sessions(vec![HerdrSessionItem::new(
+                "cached",
+                false,
+                HerdrSessionState::Running,
+            )])
+            .with_herdr_diagnostic(HostDiagnostic::new(
+                DiagnosticKind::MalformedOutput,
+                "invalid Herdr inventory",
+            ));
+
+        let rows = tree_herdr_sessions(&host, &WorkspaceContent::Shell, &[]);
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].access, HerdrRowAccess::Cached);
         assert!(!rows[0].access.can_open());
         assert!(!rows[0].access.can_mutate());
     }
