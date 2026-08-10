@@ -113,6 +113,52 @@ struct ShortcutMonitorTests {
         #expect(attempts == 1)
     }
 
+    @Test("consumed key-downs consume only their matching release")
+    func consumedKeyDownConsumesMatchingRelease() throws {
+        var actions: [ApplicationShortcutAction] = []
+        let monitor = ShortcutMonitor(
+            shortcuts: { ApplicationShortcutCatalog.compiledDefaults },
+            perform: { actions.append($0)
+                return true
+            }
+        )
+        let keyDown = try #require(keyEvent(
+            modifiers: [.control], characters: "\t", keyCode: 48
+        ))
+        let unrelatedKeyUp = try #require(keyEvent(
+            type: .keyUp,
+            modifiers: [.command, .shift], characters: "p", keyCode: 35
+        ))
+        let matchingKeyUp = try #require(keyEvent(
+            type: .keyUp,
+            modifiers: [], characters: "", keyCode: 48
+        ))
+
+        #expect(monitor.processForTesting(keyDown) == nil)
+        #expect(monitor.processForTesting(unrelatedKeyUp) === unrelatedKeyUp)
+        #expect(monitor.processForTesting(matchingKeyUp) == nil)
+        #expect(monitor.processForTesting(matchingKeyUp) === matchingKeyUp)
+        #expect(actions == [.nextSibling])
+    }
+
+    @Test("unavailable key-downs leave their release for the terminal")
+    func unavailableKeyDownLeavesRelease() throws {
+        let monitor = ShortcutMonitor(
+            shortcuts: { ApplicationShortcutCatalog.compiledDefaults },
+            perform: { _ in false }
+        )
+        let keyDown = try #require(keyEvent(
+            modifiers: [.control], characters: "\t", keyCode: 48
+        ))
+        let keyUp = try #require(keyEvent(
+            type: .keyUp,
+            modifiers: [], characters: "", keyCode: 48
+        ))
+
+        #expect(monitor.processForTesting(keyDown) === keyDown)
+        #expect(monitor.processForTesting(keyUp) === keyUp)
+    }
+
     private func binding(
         _ modifiers: NSEvent.ModifierFlags,
         _ characters: String?,
@@ -126,13 +172,14 @@ struct ShortcutMonitorTests {
     }
 
     private func keyEvent(
+        type: NSEvent.EventType = .keyDown,
         modifiers: NSEvent.ModifierFlags,
         characters: String,
         keyCode: UInt16,
         isRepeat: Bool = false
     ) -> NSEvent? {
         NSEvent.keyEvent(
-            with: .keyDown,
+            with: type,
             location: .zero,
             modifierFlags: modifiers,
             timestamp: 0,
