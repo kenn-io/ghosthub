@@ -83,6 +83,21 @@ struct CommandPaletteModelTests {
         #expect(worktreeCommands.allSatisfy { $0.shortcut == nil })
     }
 
+    @Test("scene-dependent application commands follow availability")
+    func sceneDependentCommandsFollowAvailability() {
+        let commands = makeCommandPaletteCommands(
+            availableApplicationShortcuts: [
+                .nextSibling,
+                .splitDown,
+            ]
+        )
+
+        commands.expectCommandNotContains(title: "Previous Sibling")
+        commands.expectCommandContains(title: "Next Sibling")
+        commands.expectCommandNotContains(title: "Split Right")
+        commands.expectCommandContains(title: "Split Down")
+    }
+
     @Test("worktree commands follow persisted sidebar order")
     func worktreeCommandsFollowPersistedSidebarOrder() {
         let bootstrap = WorkspaceBootstrap.preview()
@@ -1043,7 +1058,13 @@ private func makeCommandPaletteCommands(
     tmuxSessionVisibility: TmuxSessionVisibility = TmuxSessionVisibility(),
     supportsSettings: Bool = true,
     worktreeOrderRawValue: String = "",
-    tmuxSessionOrderRawValue: String = ""
+    tmuxSessionOrderRawValue: String = "",
+    availableApplicationShortcuts: Set<ApplicationShortcutAction> = [
+        .previousSibling,
+        .nextSibling,
+        .splitRight,
+        .splitDown,
+    ]
 ) -> [WorkspaceCommandItem] {
     let bootstrap = WorkspaceBootstrap.preview()
     let snap = snapshot ?? bootstrap.snapshot
@@ -1062,7 +1083,8 @@ private func makeCommandPaletteCommands(
         tmuxSessionVisibility: tmuxSessionVisibility,
         supportsSettings: supportsSettings,
         worktreeOrderRawValue: worktreeOrderRawValue,
-        tmuxSessionOrderRawValue: tmuxSessionOrderRawValue
+        tmuxSessionOrderRawValue: tmuxSessionOrderRawValue,
+        availableApplicationShortcuts: availableApplicationShortcuts
     )
 }
 

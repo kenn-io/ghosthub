@@ -1608,6 +1608,8 @@ public struct RootView: View {
             supportsSettings: content.settingsSheetBuilder != nil,
             worktreeOrderRawValue: worktreeOrderRawValue,
             tmuxSessionOrderRawValue: tmuxSessionOrderRawValue,
+            availableApplicationShortcuts:
+            display.availableApplicationShortcuts,
             herdrSessionOrderRawValue: herdrSessionOrderRawValue,
             pendingHerdrSessions: display.pendingHerdrSessions,
             shortcuts: settingsStore.shortcutPreferences.resolved

@@ -26,6 +26,8 @@ public struct WorkspaceDisplayState {
     public let activeTmuxSession: WorkspaceTmuxSessionSelection?
     public let activeTmuxSessionIsConnected: Bool
     public let activeTmuxSessionCanApplyTheme: Bool
+    public let availableApplicationShortcuts:
+        Set<ApplicationShortcutAction>
     public let activeHerdrSession: WorkspaceHerdrSessionSelection?
     public let pendingHerdrSessions: Set<WorkspaceHerdrSessionSelection>
     public let sessionConnectionRecoveryRequest:
@@ -53,6 +55,8 @@ public struct WorkspaceDisplayState {
         activeTmuxSession: WorkspaceTmuxSessionSelection? = nil,
         activeTmuxSessionIsConnected: Bool = false,
         activeTmuxSessionCanApplyTheme: Bool = false,
+        availableApplicationShortcuts:
+        Set<ApplicationShortcutAction> = [],
         activeHerdrSession: WorkspaceHerdrSessionSelection? = nil,
         pendingHerdrSessions: Set<WorkspaceHerdrSessionSelection> = [],
         sessionConnectionRecoveryRequest:
@@ -85,6 +89,8 @@ public struct WorkspaceDisplayState {
             activeTmuxSessionIsConnected
         self.activeTmuxSessionCanApplyTheme =
             activeTmuxSessionCanApplyTheme
+        self.availableApplicationShortcuts =
+            availableApplicationShortcuts
         self.activeHerdrSession = activeHerdrSession
         self.pendingHerdrSessions = pendingHerdrSessions
         self.sessionConnectionRecoveryRequest =

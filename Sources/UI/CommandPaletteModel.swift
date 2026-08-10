@@ -105,6 +105,12 @@ public enum CommandPaletteModel {
         supportsSettings: Bool = true,
         worktreeOrderRawValue: String = "",
         tmuxSessionOrderRawValue: String = "",
+        availableApplicationShortcuts: Set<ApplicationShortcutAction> = [
+            .previousSibling,
+            .nextSibling,
+            .splitRight,
+            .splitDown,
+        ],
         herdrSessionOrderRawValue: String = "",
         pendingHerdrSessions: Set<WorkspaceHerdrSessionSelection> = [],
         shortcuts: ResolvedApplicationShortcuts =
@@ -182,6 +188,12 @@ public enum CommandPaletteModel {
                 action: .applicationShortcut(.splitDown)
             ),
         ]
+
+        commands.removeAll { command in
+            guard case let .applicationShortcut(action) = command.action
+            else { return false }
+            return !availableApplicationShortcuts.contains(action)
+        }
 
         commands.append(contentsOf: appearanceCommands(current: interfaceAppearance))
         commands.append(contentsOf: settingsCommands(

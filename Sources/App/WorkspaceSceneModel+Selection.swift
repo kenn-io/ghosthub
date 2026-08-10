@@ -185,6 +185,15 @@ extension WorkspaceSceneModel {
         })
     }
 
+    var availablePaletteApplicationShortcuts:
+        Set<ApplicationShortcutAction> {
+        var actions = availableSiblingShortcuts
+        if canSplitActivePane {
+            actions.formUnion([.splitRight, .splitDown])
+        }
+        return actions
+    }
+
     private func navigateSibling(step: Int) -> Bool {
         guard let target = KeyboardNavigationModel.steppedTarget(
             from: activeNavigationTarget,

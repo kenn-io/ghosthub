@@ -182,12 +182,11 @@ final class SettingsStoreTests {
         )
         #expect(store.shortcutConfigurationIssue?.action == .nextSibling)
 
-        let original = try readAppConfig()
         #expect(store.setShortcutOverrides(
             store.shortcutPreferences.overrides
         ))
-        #expect(try readAppConfig() == original)
-        #expect(store.shortcutConfigurationIssue?.action == .nextSibling)
+        #expect(try !readAppConfig().contains("next-sibling"))
+        #expect(store.shortcutConfigurationIssue == nil)
     }
 
     @Test("invalid live reload retains the last valid registry")
