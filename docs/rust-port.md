@@ -152,15 +152,18 @@ Expiry cancels the active generation and discards late publication. Retry
 supersedes the earlier generation without changing the configured distro,
 binary, socket directory, or identity rules.
 
-When a Ghosthub window becomes active, workspace refreshes a ready WSL host so
-sessions created or removed in another terminal appear without an explicit
-Refresh click. Connecting, disconnected, and unavailable hosts do not start an
-activation retry; their existing Cancel, Connect, and Retry actions remain
-authoritative. Refresh retains the last published session rows while work is in
-flight and reuses the admitted WSL host capability, including its endpoint- and
-runtime-bound tmux verification cache. A resolved default-distro change always
-requires fresh admission even when two WSL distributions report the same
-kernel boot ID and PID 1 start time.
+An application-owned background cadence refreshes a ready WSL host every three
+seconds so sessions created or removed elsewhere appear without an explicit
+Refresh click. Window activation is presentation-only: it may update focus and
+other in-memory view state, but it never starts host discovery, process
+sampling, filesystem access, database work, or inventory reconciliation.
+Connecting, disconnected, and unavailable hosts do not retry automatically;
+their existing Cancel, Connect, and Retry actions remain authoritative. Refresh
+retains the last published session rows while work is in flight and reuses the
+admitted WSL host capability, including its endpoint- and runtime-bound tmux
+verification cache. A resolved default-distro change always requires fresh
+admission even when two WSL distributions report the same kernel boot ID and
+PID 1 start time.
 
 Each host command runs in a disposable descendant container: a kill-on-close
 Job Object on Windows and a dedicated process group on Unix. Stdout and stderr
@@ -657,6 +660,16 @@ Per host:
   connection testing
 - reads are cancellable and superseded by newer reads of the same kind
 - every operation has a timeout
+
+UI responsiveness is a hard architecture invariant. GPUI activation, input,
+painting, and snapshot reads never execute host commands, filesystem probes,
+database transactions, Kwt reconciliation, or resource sampling. Host reads
+and future project/worktree inventory merges run on cancellable background read
+lanes. They build owned results before entering the short publication section;
+no snapshot publication guard may cross external I/O, process waits, or an
+await point. Runtime-only tmux or Herdr updates cannot replay project/worktree
+reconciliation. Each host publishes independently, so one slow host cannot
+delay completed inventory from another host.
 
 Refresh generations are allocated monotonically. A result publishes only when
 its generation is newer than the published generation. Cancelled, timed-out,

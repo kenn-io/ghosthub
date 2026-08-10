@@ -597,23 +597,11 @@ impl RootView {
         })
         .detach();
 
-        cx.observe_window_activation(window, |view, window, cx| {
-            if !window.is_window_active() {
-                return;
-            }
-            match view.workspace.refresh_if_ready() {
-                Ok(true) => cx.notify(),
-                Ok(false) => {}
-                Err(error) => {
-                    view.diagnostic = Some(error.to_string());
-                    cx.notify();
-                }
-            }
-        })
-        .detach();
-
         cx.on_next_frame(window, |view, _window, cx| {
             if let Err(error) = view.workspace.connect_enabled_hosts() {
+                view.diagnostic = Some(error.to_string());
+            }
+            if let Err(error) = view.workspace.start_inventory_cadence() {
                 view.diagnostic = Some(error.to_string());
             }
             cx.notify();
@@ -4339,7 +4327,7 @@ mod tests {
     }
 
     #[test]
-    fn focus_refresh_does_not_insert_a_transient_navigation_status_row() {
+    fn background_refresh_does_not_insert_a_transient_navigation_status_row() {
         let host = HostItem::wsl(
             "Ubuntu",
             None,

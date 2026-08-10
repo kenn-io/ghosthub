@@ -1,7 +1,7 @@
 //! Application workflow and capability boundary for GPUI.
 
 use std::fmt;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::Duration;
@@ -40,6 +40,7 @@ const HERDR_STARTUP_BACKOFF: [Duration; 8] = [
 ];
 const CREATE_IDENTITY_TIMEOUT: Duration = Duration::from_secs(5);
 const CREATE_IDENTITY_MIN_COLUMNS: usize = 120;
+const INVENTORY_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Appearance {
@@ -1645,6 +1646,7 @@ struct Inner {
     refresh_generation: AtomicU64,
     refresh_finished: AtomicU64,
     refresh_publication: Mutex<()>,
+    inventory_cadence_started: AtomicBool,
     discovery: Arc<dyn WslDiscovery>,
     refresh_runtime: Arc<dyn RefreshRuntime>,
     attachment: Mutex<AttachmentState<AttachRequest>>,
@@ -1747,6 +1749,7 @@ impl Workspace {
                 refresh_generation: AtomicU64::new(0),
                 refresh_finished: AtomicU64::new(0),
                 refresh_publication: Mutex::new(()),
+                inventory_cadence_started: AtomicBool::new(false),
                 discovery: Arc::new(SystemWslDiscovery::new()),
                 refresh_runtime: Arc::new(ThreadRefreshRuntime),
                 attachment: Mutex::new(AttachmentState::new()),
@@ -1813,6 +1816,7 @@ impl Workspace {
                 refresh_generation: AtomicU64::new(0),
                 refresh_finished: AtomicU64::new(0),
                 refresh_publication: Mutex::new(()),
+                inventory_cadence_started: AtomicBool::new(false),
                 discovery,
                 refresh_runtime,
                 attachment: Mutex::new(AttachmentState::new()),
@@ -1863,6 +1867,7 @@ impl Workspace {
                 refresh_generation: AtomicU64::new(0),
                 refresh_finished: AtomicU64::new(0),
                 refresh_publication: Mutex::new(()),
+                inventory_cadence_started: AtomicBool::new(false),
                 discovery: Arc::new(SystemWslDiscovery::new()),
                 refresh_runtime: Arc::new(ThreadRefreshRuntime),
                 attachment: Mutex::new(AttachmentState::new()),
@@ -1915,16 +1920,39 @@ impl Workspace {
         Ok(())
     }
 
-    /// Refresh a connected WSL host without turning activation into an
-    /// automatic retry loop for disconnected or failed hosts.
+    /// Start the application-owned inventory cadence after the first frame.
     ///
-    /// Returns `true` when a ready host started a refresh.
+    /// The timer and every host read execute through the background refresh
+    /// runtime. Calling this method never performs discovery itself and is
+    /// idempotent for the lifetime of the workspace.
     ///
     /// # Errors
     ///
-    /// Returns an error only when a ready host no longer has refresh
-    /// configuration.
-    pub fn refresh_if_ready(&self) -> Result<bool, WorkspaceError> {
+    /// Returns an error when the background cadence cannot be scheduled.
+    pub fn start_inventory_cadence(&self) -> Result<(), WorkspaceError> {
+        if self.inner.wsl_config.is_none() {
+            return Ok(());
+        }
+        if self
+            .inner
+            .inventory_cadence_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Ok(());
+        }
+        if let Err(error) = schedule_inventory_refresh(&self.inner) {
+            self.inner
+                .inventory_cadence_started
+                .store(false, Ordering::Release);
+            return Err(WorkspaceError::new(format!(
+                "schedule inventory refresh cadence: {error}"
+            )));
+        }
+        Ok(())
+    }
+
+    fn refresh_if_ready(&self) -> Result<bool, WorkspaceError> {
         let ready = self
             .inner
             .hosts
@@ -4486,6 +4514,31 @@ fn cancel_refresh(inner: &Inner) -> bool {
     true
 }
 
+fn schedule_inventory_refresh(inner: &Arc<Inner>) -> std::io::Result<()> {
+    let weak_inner = Arc::downgrade(inner);
+    inner.refresh_runtime.spawn_after(
+        "ghosthub-inventory-cadence",
+        INVENTORY_REFRESH_INTERVAL,
+        CancellationToken::new(),
+        Box::new(move || {
+            let Some(inner) = weak_inner.upgrade() else {
+                return;
+            };
+            let workspace = Workspace {
+                inner: Arc::clone(&inner),
+            };
+            let _refresh_started = workspace.refresh_if_ready();
+            if let Err(error) = schedule_inventory_refresh(&inner) {
+                inner
+                    .inventory_cadence_started
+                    .store(false, Ordering::Release);
+                workspace
+                    .push_operation_error(format!("inventory refresh cadence stopped: {error}"));
+            }
+        }),
+    )
+}
+
 const fn refresh_budget(generation: u64) -> Duration {
     if generation == 1 {
         Duration::from_secs(45)
@@ -6740,6 +6793,37 @@ mod tests {
                 .expect("deadline queue")
                 .push_back((delay, cancellation, task));
             Ok(())
+        }
+    }
+
+    struct BlockingDiscovery {
+        snapshot: HostSnapshot,
+        entered: Mutex<Option<mpsc::SyncSender<()>>>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+
+    impl WslDiscovery for BlockingDiscovery {
+        fn discover(
+            &self,
+            config: WslConfig,
+            executable: WslExecutable,
+            existing_host: Option<RuntimeHost>,
+            _cancellation: &CancellationToken,
+        ) -> Result<HostContext, HostError> {
+            if let Some(entered) = self.entered.lock().expect("entered signal").take() {
+                entered.send(()).expect("announce blocked discovery");
+            }
+            self.release
+                .lock()
+                .expect("release signal")
+                .recv()
+                .expect("release blocked discovery");
+            let host = existing_host
+                .unwrap_or_else(|| WslHost::new(config, Arc::new(StdCommandRunner), executable));
+            Ok(HostContext {
+                host,
+                snapshot: self.snapshot.clone(),
+            })
         }
     }
 
@@ -9044,6 +9128,68 @@ mod tests {
     }
 
     #[test]
+    fn blocked_host_discovery_does_not_block_snapshot_reads() {
+        let snapshot = HostSnapshot::test_fixture(
+            "Ubuntu",
+            "boot",
+            42,
+            vec![session::DiscoveredSession::new(
+                "work",
+                session::SessionIdentity::new(100, "$1", 200),
+                0,
+            )],
+        );
+        let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+        let (release_tx, release_rx) = mpsc::sync_channel(1);
+        let discovery = Arc::new(BlockingDiscovery {
+            snapshot,
+            entered: Mutex::new(Some(entered_tx)),
+            release: Mutex::new(release_rx),
+        });
+        let spec = WslHostSpec::available(
+            WslConfig::with_distro("Ubuntu").expect("valid config"),
+            WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
+                .expect("absolute WSL path"),
+        );
+        let workspace = Workspace::application_with_services(
+            TerminalAppearance::default(),
+            Some(spec),
+            discovery,
+            Arc::new(ThreadRefreshRuntime),
+        );
+        workspace.connect_enabled_hosts().expect("start refresh");
+        entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("discovery reached blocking host read");
+
+        let snapshot_workspace = workspace.clone();
+        let (snapshot_tx, snapshot_rx) = mpsc::sync_channel(1);
+        let snapshot_reader = thread::spawn(move || {
+            let snapshot = snapshot_workspace.snapshot();
+            snapshot_tx
+                .send(snapshot.hosts()[0].connection())
+                .expect("publish snapshot result");
+        });
+        let connection = snapshot_rx
+            .recv_timeout(Duration::from_millis(250))
+            .expect("snapshot remains responsive during host I/O");
+        assert_eq!(connection, HostConnectionState::Connecting);
+
+        release_tx.send(()).expect("release host discovery");
+        snapshot_reader.join().expect("snapshot reader");
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while workspace.snapshot().hosts()[0].connection() != HostConnectionState::Ready
+            && std::time::Instant::now() < deadline
+        {
+            thread::yield_now();
+        }
+        assert_eq!(
+            workspace.snapshot().hosts()[0].connection(),
+            HostConnectionState::Ready
+        );
+    }
+
+    #[test]
     fn refresh_deadlines_and_retry_order_are_manually_driven() {
         let runtime = Arc::new(ManualRefreshRuntime::default());
         let discovery = Arc::new(FixedDiscovery::new(HostSnapshot::test_fixture(
@@ -9851,7 +9997,7 @@ mod tests {
     }
 
     #[test]
-    fn activation_refreshes_only_ready_hosts_and_reuses_the_admitted_host() {
+    fn background_cadence_refreshes_ready_hosts_and_reuses_the_admitted_host() {
         let runtime = Arc::new(ManualRefreshRuntime::default());
         let discovery = Arc::new(FixedDiscovery::new(HostSnapshot::test_fixture(
             "Ubuntu",
@@ -9875,7 +10021,6 @@ mod tests {
             runtime.clone(),
         );
 
-        assert!(!workspace.refresh_if_ready().expect("disconnected no-op"));
         workspace.connect_enabled_hosts().expect("connect host");
         assert!(!workspace.refresh_if_ready().expect("connecting no-op"));
         runtime.run_next_work();
@@ -9883,8 +10028,20 @@ mod tests {
             workspace.snapshot().hosts()[0].connection(),
             HostConnectionState::Ready
         );
+        runtime.run_next_deadline();
 
-        assert!(workspace.refresh_if_ready().expect("refresh ready host"));
+        workspace
+            .start_inventory_cadence()
+            .expect("start inventory cadence");
+        workspace
+            .start_inventory_cadence()
+            .expect("cadence start is idempotent");
+        assert_eq!(runtime.deadline_delays(), vec![INVENTORY_REFRESH_INTERVAL]);
+        runtime.run_next_deadline();
+        assert_eq!(
+            workspace.snapshot().hosts()[0].connection(),
+            HostConnectionState::Connecting
+        );
         assert!(
             capture_create_request(
                 &workspace.inner,
@@ -9911,6 +10068,29 @@ mod tests {
         assert_eq!(
             workspace.snapshot().hosts()[0].connection(),
             HostConnectionState::Ready
+        );
+    }
+
+    #[test]
+    fn inventory_cadence_is_a_no_op_without_an_enabled_host() {
+        let runtime = Arc::new(ManualRefreshRuntime::default());
+        let workspace = Workspace::application_with_services(
+            TerminalAppearance::default(),
+            None,
+            Arc::new(SystemWslDiscovery::new()),
+            runtime.clone(),
+        );
+
+        workspace
+            .start_inventory_cadence()
+            .expect("missing WSL host is not a scheduling error");
+
+        assert!(runtime.deadline_delays().is_empty());
+        assert!(
+            !workspace
+                .inner
+                .inventory_cadence_started
+                .load(Ordering::Acquire)
         );
     }
 
