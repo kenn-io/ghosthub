@@ -2841,16 +2841,20 @@ mod tests {
             "/tmp/other",
             "/tmp/other.sock",
         );
-        let snapshot = HostSnapshot::test_fixture_with_herdr(
-            "Ubuntu",
-            "boot",
-            1,
-            Vec::new(),
-            HerdrInventory::Available {
+        let snapshot = HostSnapshot {
+            endpoint: WslEndpoint {
+                distro: "Ubuntu".to_owned(),
+            },
+            runtime: WslRuntimeIdentity {
+                kernel_boot_id: "boot".to_owned(),
+                init_start_ticks: 1,
+            },
+            sessions: Vec::new(),
+            herdr: Box::new(HerdrInventory::Available {
                 executable: "/usr/bin/herdr".to_owned(),
                 sessions: vec![running, other.clone()],
-            },
-        );
+            }),
+        };
         let stopped = HerdrSessionRecord::new(
             "work",
             false,
