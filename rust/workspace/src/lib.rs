@@ -1487,6 +1487,16 @@ pub struct Workspace {
     inner: Arc<Inner>,
 }
 
+fn read_revision_consistent<T>(revision: &AtomicU64, mut read: impl FnMut(u64) -> T) -> T {
+    loop {
+        let before = revision.load(Ordering::Acquire);
+        let value = read(before);
+        if revision.load(Ordering::Acquire) == before {
+            return value;
+        }
+    }
+}
+
 impl Workspace {
     #[must_use]
     pub fn startup_error(appearance: TerminalAppearance, message: impl Into<String>) -> Self {
@@ -1743,58 +1753,60 @@ impl Workspace {
 
     #[must_use]
     pub fn snapshot(&self) -> WorkspaceSnapshot {
-        let mut hosts = self
-            .inner
-            .hosts
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        let current_runtime = self
-            .inner
-            .host
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .map(|published| {
-                (
-                    published.value.snapshot.endpoint().clone(),
-                    published.value.snapshot.runtime().clone(),
-                )
-            });
-        project_herdr_lifecycle(
-            &mut hosts,
-            current_runtime.as_ref(),
-            &self.inner.herdr_lifecycle,
-        );
-        WorkspaceSnapshot {
-            revision: self.inner.revision.load(Ordering::Acquire),
-            appearance: self.inner.appearance.clone(),
-            content: self
+        read_revision_consistent(&self.inner.revision, |revision| {
+            let mut hosts = self
                 .inner
-                .state
+                .hosts
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone(),
-            hosts,
-            selected_host: self
+                .clone();
+            let current_runtime = self
                 .inner
-                .selected_host
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone(),
-            notice: self
-                .inner
-                .terminal_notice
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone(),
-            retained_selections: self
-                .inner
-                .retained_presentations
+                .host
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .selections(),
-        }
+                .as_ref()
+                .map(|published| {
+                    (
+                        published.value.snapshot.endpoint().clone(),
+                        published.value.snapshot.runtime().clone(),
+                    )
+                });
+            project_herdr_lifecycle(
+                &mut hosts,
+                current_runtime.as_ref(),
+                &self.inner.herdr_lifecycle,
+            );
+            WorkspaceSnapshot {
+                revision,
+                appearance: self.inner.appearance.clone(),
+                content: self
+                    .inner
+                    .state
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone(),
+                hosts,
+                selected_host: self
+                    .inner
+                    .selected_host
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone(),
+                notice: self
+                    .inner
+                    .terminal_notice
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone(),
+                retained_selections: self
+                    .inner
+                    .retained_presentations
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .selections(),
+            }
+        })
     }
 
     /// Begin an attach-only presentation for one discovered session.
@@ -5570,6 +5582,22 @@ mod tests {
     use super::*;
     use std::collections::VecDeque;
     use std::sync::{Barrier, atomic::AtomicUsize, mpsc};
+
+    #[test]
+    fn revision_consistent_read_retries_a_projection_crossing_an_update() {
+        let revision = AtomicU64::new(1);
+        let mut reads = 0;
+
+        let observed = read_revision_consistent(&revision, |captured| {
+            reads += 1;
+            if reads == 1 {
+                revision.fetch_add(1, Ordering::Release);
+            }
+            (captured, reads)
+        });
+
+        assert_eq!(observed, (2, 2));
+    }
 
     #[test]
     fn session_operation_fence_spans_launch_until_publication() {
