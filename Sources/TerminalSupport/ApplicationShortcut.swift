@@ -134,8 +134,18 @@ public struct ApplicationKeyBinding: Hashable, Sendable {
         modifiers: ApplicationShortcutModifiers,
         key: ApplicationShortcutKey
     ) {
+        var modifiers = modifiers
+        switch key {
+        case .character("+"):
+            modifiers.remove(.shift)
+            self.key = key
+        case .character("=") where modifiers.contains(.shift):
+            modifiers.remove(.shift)
+            self.key = .character("+")
+        default:
+            self.key = key
+        }
         self.modifiers = modifiers
-        self.key = key
     }
 
     public init(parsing value: String) throws {

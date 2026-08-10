@@ -35,6 +35,23 @@ enum ApplicationShortcutMenuModel {
             )
         }
     }
+
+    static func invocation(
+        currentEvent: NSEvent?,
+        binding: ApplicationKeyBinding?
+    ) -> ApplicationShortcutInvocation {
+        guard let currentEvent,
+              currentEvent.type == .keyDown,
+              let binding,
+              ApplicationKeyBinding(
+                  appKitModifierFlags: currentEvent.modifierFlags,
+                  charactersIgnoringModifiers:
+                  currentEvent.charactersIgnoringModifiers,
+                  keyCode: currentEvent.keyCode
+              ) == binding
+        else { return .menu }
+        return .keyEvent
+    }
 }
 
 @main
@@ -435,9 +452,10 @@ struct GhosthubApp: App {
     }
 
     private func invoke(_ action: ApplicationShortcutAction) {
-        let invocation: ApplicationShortcutInvocation =
-            NSApplication.shared.currentEvent?.type == .keyDown
-                ? .keyEvent : .menu
+        let invocation = ApplicationShortcutMenuModel.invocation(
+            currentEvent: NSApplication.shared.currentEvent,
+            binding: settingsStore.shortcutPreferences.resolved[action]
+        )
         _ = focusedSceneModel?.performApplicationShortcut(
             action,
             invocation: invocation
@@ -445,13 +463,14 @@ struct GhosthubApp: App {
     }
 }
 
-private extension ApplicationKeyBinding {
+extension ApplicationKeyBinding {
     var swiftUI: KeyboardShortcut {
         KeyboardShortcut(swiftUIKey, modifiers: swiftUIModifiers)
     }
 
     var swiftUIKey: KeyEquivalent {
         switch key {
+        case .character("+"): KeyEquivalent("=")
         case let .character(character): KeyEquivalent(character)
         case .tab: .tab
         case .return: .return
@@ -478,6 +497,9 @@ private extension ApplicationKeyBinding {
             result.insert(.option)
         }
         if modifiers.contains(.shift) {
+            result.insert(.shift)
+        }
+        if key == .character("+") {
             result.insert(.shift)
         }
         return result

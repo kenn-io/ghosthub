@@ -27,6 +27,21 @@ struct ApplicationShortcutTests {
         )
     }
 
+    @Test("plus normalizes its physical Shift-equals chord")
+    func normalizesPlus() throws {
+        let configured = try ApplicationKeyBinding(parsing: "cmd+plus")
+        let physical = try ApplicationKeyBinding(parsing: "cmd+shift+=")
+        let translated = ApplicationKeyBinding(
+            appKitModifierFlags: [.command, .shift],
+            charactersIgnoringModifiers: "=",
+            keyCode: 24
+        )
+
+        #expect(physical == configured)
+        #expect(physical.configValue == "cmd+plus")
+        #expect(translated == configured)
+    }
+
     @Test("catalog exposes the complete stable action set and defaults")
     func catalogDefaults() {
         #expect(ApplicationShortcutCatalog.definitions.map(\.action) == ApplicationShortcutAction
