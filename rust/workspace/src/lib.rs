@@ -741,6 +741,7 @@ struct InFlightHerdrLifecycle {
     generation: u64,
     key: HerdrOperationKey,
     action: HerdrLifecycleAction,
+    reconcile_after_generation: Option<u64>,
 }
 
 #[derive(Default)]
@@ -785,6 +786,7 @@ impl HerdrLifecycleState {
             generation: pending.generation,
             key,
             action: pending.action,
+            reconcile_after_generation: None,
         });
         true
     }
@@ -796,16 +798,37 @@ impl HerdrLifecycleState {
         self.in_flight.len() != previous_len
     }
 
-    fn reconcile(&mut self, snapshot: &HostSnapshot) -> bool {
+    fn mark_uncertain(&mut self, generation: u64, reconcile_after_generation: u64) -> bool {
+        let Some(operation) = self
+            .in_flight
+            .iter_mut()
+            .find(|operation| operation.generation == generation)
+        else {
+            return false;
+        };
+        operation.reconcile_after_generation = Some(reconcile_after_generation);
+        true
+    }
+
+    fn reconcile(&mut self, snapshot: &HostSnapshot, publication_generation: u64) -> bool {
         let previous_len = self.in_flight.len();
         self.in_flight.retain(|operation| {
+            let Some(reconcile_after_generation) = operation.reconcile_after_generation else {
+                return true;
+            };
+            if publication_generation <= reconcile_after_generation {
+                return true;
+            }
             if operation.key.endpoint != *snapshot.endpoint() {
+                return true;
+            }
+            if !matches!(snapshot.herdr(), HerdrInventory::Available { .. }) {
                 return true;
             }
             if operation.key.runtime != *snapshot.runtime() {
                 return false;
             }
-            matches!(snapshot.herdr(), HerdrInventory::Failed(_))
+            false
         });
         self.in_flight.len() != previous_len
     }
@@ -4232,7 +4255,7 @@ fn publish_refresh(inner: &Inner, generation: u64, publish: impl FnOnce()) -> bo
 
 fn publish_discovered_host(inner: &Inner, context: HostContext, generation: u64) {
     let state = ready_content(&context.snapshot);
-    reconcile_herdr_lifecycle_fences(inner, &context.snapshot);
+    reconcile_herdr_lifecycle_fences(inner, &context.snapshot, generation);
     set_herdr_inventory(inner, context.snapshot.herdr());
     *inner
         .host
@@ -4465,6 +4488,7 @@ fn run_herdr_lifecycle(workspace: &Workspace, pending: &PendingHerdrLifecycle) {
         pending.action,
         &CancellationToken::new(),
         || {
+            reserve_constructive_inventory(&workspace.inner);
             if pending.action == HerdrLifecycleAction::Stop {
                 suppressed = workspace.suppress_active_herdr_presentation(pending);
             }
@@ -5267,14 +5291,31 @@ fn reconcile_herdr_lifecycle_inventory(
     pending: &PendingHerdrLifecycle,
     mode: HerdrReconcileMode,
 ) -> Result<HostSnapshot, WorkspaceError> {
-    let publication_generation = inner.refresh_generation.load(Ordering::Acquire);
-    let snapshot = pending
-        .host
-        .discover(&ConptyAdmissionAttacher::new())
-        .map_err(|error| WorkspaceError::new(error.to_string()))?;
+    let publication_generation = reserve_constructive_inventory(inner);
+    let snapshot = match pending.host.discover(&ConptyAdmissionAttacher::new()) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            settle_constructive_inventory(inner, publication_generation);
+            return Err(WorkspaceError::new(error.to_string()));
+        }
+    };
+    match snapshot.herdr() {
+        HerdrInventory::Available { .. } => {}
+        HerdrInventory::Failed(error) => {
+            settle_constructive_inventory(inner, publication_generation);
+            return Err(WorkspaceError::new(error.to_string()));
+        }
+        HerdrInventory::Unavailable => {
+            settle_constructive_inventory(inner, publication_generation);
+            return Err(WorkspaceError::new(
+                "Herdr became unavailable while reconciling the lifecycle action",
+            ));
+        }
+    }
     if matches!(mode, HerdrReconcileMode::ConfirmedOutcome)
         && !herdr_lifecycle_is_reflected(&snapshot, pending)
     {
+        settle_constructive_inventory(inner, publication_generation);
         return Ok(snapshot);
     }
     merge_herdr_lifecycle_inventory(inner, pending, snapshot.clone(), publication_generation)?;
@@ -5327,6 +5368,12 @@ fn publish_herdr_lifecycle_uncertain(
     message: &str,
 ) {
     let _snapshot_write = begin_snapshot_write(inner);
+    let reconcile_after_generation = inner.refresh_generation.load(Ordering::Acquire);
+    inner
+        .herdr_lifecycle
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .mark_uncertain(pending.generation, reconcile_after_generation);
     let mut hosts = inner
         .hosts
         .write()
@@ -5390,7 +5437,7 @@ fn merge_constructive_inventory(
     let inventory_generation = publication_generation;
 
     let inventory_state = ready_content(&snapshot);
-    reconcile_herdr_lifecycle_fences(inner, &snapshot);
+    reconcile_herdr_lifecycle_fences(inner, &snapshot, publication_generation);
     set_herdr_inventory(inner, snapshot.herdr());
     reconcile_retained_session_names(inner, &snapshot, runtime_host.socket_directory());
     *inner
@@ -5900,12 +5947,16 @@ fn project_herdr_lifecycle(
     }
 }
 
-fn reconcile_herdr_lifecycle_fences(inner: &Inner, snapshot: &HostSnapshot) -> bool {
+fn reconcile_herdr_lifecycle_fences(
+    inner: &Inner,
+    snapshot: &HostSnapshot,
+    publication_generation: u64,
+) -> bool {
     inner
         .herdr_lifecycle
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .reconcile(snapshot)
+        .reconcile(snapshot, publication_generation)
 }
 
 fn set_inner_state(inner: &Inner, state: WorkspaceContent) {
@@ -6232,6 +6283,7 @@ mod tests {
                 generation: 1,
                 key: key.clone(),
                 action: HerdrLifecycleAction::Stop,
+                reconcile_after_generation: None,
             });
         let mut launched = false;
         assert!(
@@ -8954,7 +9006,43 @@ mod tests {
             .value
             .snapshot
             .clone();
-        assert!(reconcile_herdr_lifecycle_fences(&workspace.inner, &fresh));
+        let reconciliation_floor = workspace.inner.refresh_generation.load(Ordering::Acquire);
+        assert!(!reconcile_herdr_lifecycle_fences(
+            &workspace.inner,
+            &fresh,
+            reconciliation_floor,
+        ));
+        let failed = HostSnapshot::test_fixture_with_herdr(
+            "Ubuntu",
+            "boot",
+            42,
+            Vec::new(),
+            HerdrInventory::Failed(
+                WslExecutable::from_absolute("wsl.exe").expect_err("relative path is rejected"),
+            ),
+        );
+        assert!(!reconcile_herdr_lifecycle_fences(
+            &workspace.inner,
+            &failed,
+            reconciliation_floor + 1,
+        ));
+        let unavailable_after_restart = HostSnapshot::test_fixture_with_herdr(
+            "Ubuntu",
+            "restarted-boot",
+            84,
+            Vec::new(),
+            HerdrInventory::Unavailable,
+        );
+        assert!(!reconcile_herdr_lifecycle_fences(
+            &workspace.inner,
+            &unavailable_after_restart,
+            reconciliation_floor + 2,
+        ));
+        assert!(reconcile_herdr_lifecycle_fences(
+            &workspace.inner,
+            &fresh,
+            reconciliation_floor + 3,
+        ));
         set_herdr_inventory(&workspace.inner, fresh.herdr());
         workspace.inner.revision.fetch_add(1, Ordering::Release);
 
@@ -8962,6 +9050,44 @@ mod tests {
         let host = &reconciled.hosts()[0];
         assert_eq!(host.herdr_sessions()[0].lifecycle_action(), None);
         assert!(host.herdr_diagnostic().is_none());
+    }
+
+    #[test]
+    fn ordinary_refresh_cannot_reconcile_an_active_lifecycle_operation() {
+        let (workspace, _runtime) = herdr_workspace_fixture();
+        let running = SessionSelection::herdr("wsl", "Ubuntu", "default");
+        workspace
+            .request_herdr_lifecycle(&running, HerdrLifecycleAction::Stop)
+            .expect("running session may be stopped");
+        {
+            let mut lifecycle = workspace
+                .inner
+                .herdr_lifecycle
+                .lock()
+                .expect("lifecycle state");
+            let pending = lifecycle.pending.take().expect("pending stop");
+            assert!(lifecycle.start(&pending));
+        }
+        let snapshot = workspace
+            .inner
+            .host
+            .lock()
+            .expect("host context")
+            .as_ref()
+            .expect("published host")
+            .value
+            .snapshot
+            .clone();
+
+        assert!(!reconcile_herdr_lifecycle_fences(
+            &workspace.inner,
+            &snapshot,
+            u64::MAX,
+        ));
+        assert_eq!(
+            workspace.snapshot().hosts()[0].herdr_sessions()[0].lifecycle_action(),
+            Some(HerdrLifecycleAction::Stop),
+        );
     }
 
     #[test]
