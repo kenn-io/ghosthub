@@ -24,6 +24,104 @@ struct WorkspaceTmuxDiscoveryTests {
             .joined(separator: "\n")
     }
 
+    @Test("application activation does not refresh tmux inventory")
+    @MainActor
+    func applicationActivationDoesNotRefreshTmuxInventory() async throws {
+        let environment = try setupStandardEnvironment()
+        let discoveries = Counter()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            tmuxSessionDiscovery: { _ in
+                _ = discoveries.increment()
+                return .success([])
+            }
+        )
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor { discoveries.count == 1 }
+
+        model.handleApplicationDidBecomeActiveForResourceMonitoring()
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(discoveries.count == 1)
+        await model.shutdown()
+    }
+
+    @Test("local tmux inventory publishes while a remote probe is blocked")
+    @MainActor
+    func localTmuxInventoryPublishesBeforeRemoteCompletes() async throws {
+        let environment = try setupRemoteTmuxEnvironment()
+        let remoteGate = BlockingGate()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.localHostID,
+            snapshot: environment.snapshot,
+            tmuxSessionDiscovery: { host in
+                guard host.isRemote else {
+                    return .success([
+                        DiscoveredTmuxSession(
+                            name: "local-fast",
+                            windowCount: 1,
+                            createdAt: "1721552400",
+                            managed: false
+                        ),
+                    ])
+                }
+                remoteGate.wait()
+                return .success([])
+            }
+        )
+
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor { remoteGate.didStart }
+        await waitUntilMainActor {
+            model.snapshot.host(id: environment.localHostID)?
+                .tmuxSessions.map(\.name) == ["local-fast"]
+        }
+        let localSessions = model.snapshot.host(
+            id: environment.localHostID
+        )?.tmuxSessions.map(\.name)
+
+        remoteGate.release()
+        #expect(localSessions == ["local-fast"])
+        await model.shutdown()
+    }
+
+    @Test("local kwt inventory publishes while a remote load is blocked")
+    @MainActor
+    func localKwtInventoryPublishesBeforeRemoteCompletes() async throws {
+        let environment = try setupRemoteTmuxEnvironment()
+        let remoteGate = BlockingGate()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.localHostID,
+            snapshot: environment.snapshot,
+            kwtInventoryLoader: { host in
+                guard host.isRemote else {
+                    return KwtHostInventory(projects: [])
+                }
+                remoteGate.wait()
+                return KwtHostInventory(projects: [])
+            }
+        )
+
+        model.startKwtInventory()
+        await waitUntilMainActor { remoteGate.didStart }
+        await waitUntilMainActor {
+            model.snapshot.projects.allSatisfy {
+                $0.hostID != environment.localHostID
+            }
+        }
+        let hasLocalProject = model.snapshot.projects.contains {
+            $0.hostID == environment.localHostID
+        }
+
+        remoteGate.release()
+        #expect(!hasLocalProject)
+        await model.shutdown()
+    }
+
     @Test("workspace refresh includes exe.dev inventory")
     @MainActor
     func workspaceRefreshIncludesExeInventory() async throws {

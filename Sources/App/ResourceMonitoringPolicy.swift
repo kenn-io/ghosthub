@@ -36,7 +36,7 @@ enum ResourceMonitoringPolicy {
             refreshIntervalSeconds: refreshIntervalSeconds(
                 isAppActive: isAppActive
             ),
-            sampleImmediately: isAppActive
+            sampleImmediately: false
         )
     }
 }

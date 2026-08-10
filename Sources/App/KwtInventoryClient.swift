@@ -449,14 +449,60 @@ struct KwtInventoryClient: Sendable {
 }
 
 enum KwtSnapshotMerger {
+    private struct WorktreePathKey: Hashable {
+        let projectID: UUID
+        let path: String
+    }
+
+    private struct WorktreeGenerationKey: Hashable {
+        let projectID: UUID
+        let generation: String
+    }
+
     static func merge(
         _ inventory: KwtHostInventory,
         hostID: UUID,
-        into snapshot: WorkspaceSnapshot
+        into snapshot: WorkspaceSnapshot,
+        normalizePath: (String) -> String = normalizedPath
     ) -> WorkspaceSnapshot {
         var updated = snapshot
         let existingProjects = snapshot.projects.filter { $0.hostID == hostID }
         let existingWorktrees = snapshot.worktrees.filter { $0.hostID == hostID }
+        let existingProjectsByRepository = Dictionary(
+            grouping: existingProjects.filter { !$0.scopedKey.isEmpty },
+            by: \.scopedKey
+        )
+        let existingProjectsByPath = Dictionary(
+            grouping: existingProjects,
+            by: { normalizePath($0.rootPath) }
+        )
+        let existingWorktreesByProject = Dictionary(
+            grouping: existingWorktrees,
+            by: \.projectID
+        )
+        let existingWorktreesByProjectAndPath = Dictionary(
+            grouping: existingWorktrees,
+            by: {
+                WorktreePathKey(
+                    projectID: $0.projectID,
+                    path: normalizePath($0.path)
+                )
+            }
+        )
+        var existingSocketByProjectAndGeneration:
+            [WorktreeGenerationKey: String] = [:]
+        var seenWorktreeGenerations = Set<WorktreeGenerationKey>()
+        for worktree in existingWorktrees {
+            guard let generation = worktree.generation else { continue }
+            let key = WorktreeGenerationKey(
+                projectID: worktree.projectID,
+                generation: generation
+            )
+            guard seenWorktreeGenerations.insert(key).inserted,
+                  let socketName = worktree.tmuxSocketName
+            else { continue }
+            existingSocketByProjectAndGeneration[key] = socketName
+        }
         var projects: [ProjectSummary] = []
         var worktrees: [WorktreeSummary] = []
         if inventory.projectsWarning != nil,
@@ -475,6 +521,12 @@ enum KwtSnapshotMerger {
         let existingDirectoryWorkspaces = snapshot.directoryWorkspaces.filter {
             $0.hostID == hostID
         }
+        let existingDirectoryWorkspacesByPath = Dictionary(
+            existingDirectoryWorkspaces.map {
+                (normalizePath($0.path), $0)
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
         let directoryRecords = inventory.directoryWorkspaceWarning != nil
             && inventory.directoryWorkspaces.isEmpty
             ? existingDirectoryWorkspaces.map {
@@ -487,13 +539,12 @@ enum KwtSnapshotMerger {
             }
             : inventory.directoryWorkspaces
         let directoryWorkspaces = directoryRecords.map { record in
-            let existing = existingDirectoryWorkspaces.first {
-                normalizedPath($0.path) == normalizedPath(record.path)
-            }
+            let recordPath = normalizePath(record.path)
+            let existing = existingDirectoryWorkspacesByPath[recordPath]
             var workspace = existing ?? DirectoryWorkspaceSummary(
                 id: stableID(
                     "directory-workspace|\(hostID.uuidString)"
-                        + "|\(normalizedPath(record.path))"
+                        + "|\(recordPath)"
                 ),
                 hostID: hostID,
                 name: record.name,
@@ -515,26 +566,24 @@ enum KwtSnapshotMerger {
         var reconciledProjectIDs = Set<UUID>()
         for item in inventory.projects {
             let record = item.project
-            let recordPath = normalizedPath(record.path)
-            let repositoryMatch = existingProjects.first {
-                !record.repository.isEmpty
-                    && !$0.scopedKey.isEmpty
-                    && $0.scopedKey == record.repository
-                    && !reconciledProjectIDs.contains($0.id)
-            }
+            let recordPath = normalizePath(record.path)
+            let repositoryMatch = record.repository.isEmpty
+                ? nil
+                : existingProjectsByRepository[record.repository]?.first {
+                    !reconciledProjectIDs.contains($0.id)
+                }
             // Repository identity survives a move. Path is only a legacy
             // fallback for transitional records or when it does not belong to
             // a different repository, and an existing runtime ID can be
             // consumed at most once.
             let existingProject = repositoryMatch
-                ?? existingProjects.first { candidate in
-                    normalizedPath(candidate.rootPath) == recordPath
-                        && ((candidate.registryID != nil
-                                && !inventoryRepositories.contains(
-                                    candidate.scopedKey
-                                ))
-                            || candidate.scopedKey.isEmpty
-                            || candidate.scopedKey == record.repository)
+                ?? existingProjectsByPath[recordPath]?.first { candidate in
+                    ((candidate.registryID != nil
+                            && !inventoryRepositories.contains(
+                                candidate.scopedKey
+                            ))
+                        || candidate.scopedKey.isEmpty
+                        || candidate.scopedKey == record.repository)
                         && !reconciledProjectIDs.contains(candidate.id)
                 }
             let projectID = existingProject?.id ?? stableID(
@@ -560,9 +609,9 @@ enum KwtSnapshotMerger {
 
             if item.warning != nil, item.worktrees.isEmpty {
                 worktrees.append(
-                    contentsOf: existingWorktrees.filter {
-                        $0.projectID == existingProject?.id
-                    }.map { existing in
+                    contentsOf: (existingProject.flatMap {
+                        existingWorktreesByProject[$0.id]
+                    } ?? []).map { existing in
                         var retained = existing
                         retained.hostID = hostID
                         retained.projectID = projectID
@@ -574,11 +623,13 @@ enum KwtSnapshotMerger {
             }
 
             for record in item.worktrees {
-                let recordPath = normalizedPath(record.path)
-                let existing = existingWorktrees.first {
-                    $0.projectID == projectID
-                        && normalizedPath($0.path) == recordPath
-                }
+                let recordPath = normalizePath(record.path)
+                let existing = existingWorktreesByProjectAndPath[
+                    WorktreePathKey(
+                        projectID: projectID,
+                        path: recordPath
+                    )
+                ]?.first
                 let consistentExisting = existing.flatMap { candidate in
                     candidate.branch == record.branch
                         && candidate.isPrimary == record.isMain
@@ -627,10 +678,12 @@ enum KwtSnapshotMerger {
                     record.generation
                 ) {
                     worktree.tmuxSocketName = record.tmuxSocketName
-                        ?? existingWorktrees.first {
-                            $0.projectID == projectID
-                                && $0.generation == generation
-                        }?.tmuxSocketName
+                        ?? existingSocketByProjectAndGeneration[
+                            WorktreeGenerationKey(
+                                projectID: projectID,
+                                generation: generation
+                            )
+                        ]
                 } else {
                     worktree.tmuxSocketName = record.tmuxSocketName
                         ?? consistentExisting?.tmuxSocketName
@@ -657,7 +710,28 @@ enum KwtSnapshotMerger {
     }
 
     private static func normalizedPath(_ path: String) -> String {
-        URL(fileURLWithPath: path).standardizedFileURL.path
+        guard path.contains("/") else { return path }
+        let isAbsolute = path.hasPrefix("/")
+        var components: [Substring] = []
+        for component in path.split(separator: "/") {
+            switch component {
+            case ".":
+                continue
+            case "..":
+                if components.last.map({ $0 != ".." }) == true {
+                    components.removeLast()
+                } else if !isAbsolute {
+                    components.append(component)
+                }
+            default:
+                components.append(component)
+            }
+        }
+        let normalized = components.joined(separator: "/")
+        if isAbsolute {
+            return normalized.isEmpty ? "/" : "/\(normalized)"
+        }
+        return normalized.isEmpty ? "." : normalized
     }
 
     private static func stableID(_ material: String) -> UUID {
@@ -684,13 +758,53 @@ enum HostInventoryOverlay {
         tmuxLastSeenByHost: [UUID: Date] = [:],
         to source: WorkspaceSnapshot
     ) -> WorkspaceSnapshot {
-        var updated = kwtInventoriesByHost.reduce(source) { partial, entry in
+        let updated = kwtInventoriesByHost.reduce(source) { partial, entry in
             KwtSnapshotMerger.merge(
                 entry.value,
                 hostID: entry.key,
                 into: partial
             )
         }
+        return applyHostState(
+            kwtAvailabilityByHost: kwtAvailabilityByHost,
+            tmuxSessionsByHost: tmuxSessionsByHost,
+            herdrSessionsByHost: herdrSessionsByHost,
+            herdrAvailabilityByHost: herdrAvailabilityByHost,
+            tmuxReachabilityByHost: tmuxReachabilityByHost,
+            tmuxLastSeenByHost: tmuxLastSeenByHost,
+            to: updated
+        )
+    }
+
+    static func applyRuntimeSessions(
+        tmuxSessionsByHost: [UUID: [TmuxSessionSummary]],
+        herdrSessionsByHost: [UUID: [HerdrSessionSummary]] = [:],
+        herdrAvailabilityByHost: [UUID: Bool] = [:],
+        tmuxReachabilityByHost: [UUID: Bool] = [:],
+        tmuxLastSeenByHost: [UUID: Date] = [:],
+        to source: WorkspaceSnapshot
+    ) -> WorkspaceSnapshot {
+        applyHostState(
+            kwtAvailabilityByHost: [:],
+            tmuxSessionsByHost: tmuxSessionsByHost,
+            herdrSessionsByHost: herdrSessionsByHost,
+            herdrAvailabilityByHost: herdrAvailabilityByHost,
+            tmuxReachabilityByHost: tmuxReachabilityByHost,
+            tmuxLastSeenByHost: tmuxLastSeenByHost,
+            to: source
+        )
+    }
+
+    private static func applyHostState(
+        kwtAvailabilityByHost: [UUID: Bool],
+        tmuxSessionsByHost: [UUID: [TmuxSessionSummary]],
+        herdrSessionsByHost: [UUID: [HerdrSessionSummary]],
+        herdrAvailabilityByHost: [UUID: Bool],
+        tmuxReachabilityByHost: [UUID: Bool],
+        tmuxLastSeenByHost: [UUID: Date],
+        to source: WorkspaceSnapshot
+    ) -> WorkspaceSnapshot {
+        var updated = source
         for (hostID, sessions) in tmuxSessionsByHost {
             guard let index = updated.hosts.firstIndex(where: {
                 $0.id == hostID
