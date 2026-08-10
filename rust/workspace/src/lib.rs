@@ -3041,17 +3041,22 @@ impl Workspace {
         let Some(suppressed) = suppressed else {
             return;
         };
-        let _snapshot_write = begin_snapshot_write(&self.inner);
-        if let Some(retained) = suppressed.retained
-            && let Err(error) = restore_closed_retained_herdr_presentation(&self.inner, retained)
-        {
-            self.push_operation_error(format!(
-                "could not restore a retained Herdr presentation after a failed lifecycle action: {error}"
-            ));
+        if let Some(retained) = suppressed.retained {
+            match reopen_closed_retained_herdr_presentation(&self.inner, retained) {
+                Ok(presentation) => {
+                    publish_restored_retained_herdr_presentation(&self.inner, presentation);
+                }
+                Err(error) => {
+                    self.push_operation_error(format!(
+                        "could not restore a retained Herdr presentation after a failed lifecycle action: {error}"
+                    ));
+                }
+            }
         }
         let Some(selection) = suppressed.active_selection else {
             return;
         };
+        let _snapshot_write = begin_snapshot_write(&self.inner);
         let _navigation = self
             .inner
             .navigation
@@ -5705,10 +5710,10 @@ fn restore_presentation_inventory(inner: &Inner) {
     set_inner_state(inner, state);
 }
 
-fn restore_closed_retained_herdr_presentation(
+fn reopen_closed_retained_herdr_presentation(
     inner: &Inner,
     mut closed: ClosedRetainedHerdrPresentation,
-) -> Result<(), WorkspaceError> {
+) -> Result<RetainedPresentation<TerminalWorker>, WorkspaceError> {
     let term = closed.attachment.term;
     let (worker, _snapshot, attached_name, initial_geometry) =
         attach_fresh(inner, &closed.attachment.request, term).map_err(|error| match error {
@@ -5730,19 +5735,26 @@ fn restore_closed_retained_herdr_presentation(
     attached_name.clone_into(&mut closed.attachment.request.name);
     let selection = closed.attachment.request.selection();
     worker.set_clipboard_writes_enabled(false);
+    Ok(RetainedPresentation {
+        key: closed.key,
+        selection,
+        attachment: closed.attachment,
+        worker,
+        presentation_id: closed.presentation_id,
+    })
+}
+
+fn publish_restored_retained_herdr_presentation(
+    inner: &Inner,
+    presentation: RetainedPresentation<TerminalWorker>,
+) {
+    let _snapshot_write = begin_snapshot_write(inner);
     inner
         .retained_presentations
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(RetainedPresentation {
-            key: closed.key,
-            selection,
-            attachment: closed.attachment,
-            worker,
-            presentation_id: closed.presentation_id,
-        });
+        .insert(presentation);
     inner.revision.fetch_add(1, Ordering::Release);
-    Ok(())
 }
 
 fn attach_fresh(
@@ -6437,6 +6449,110 @@ mod tests {
             .is_err()
         );
         assert!(!launched, "an in-flight Stop must fence client launch");
+    }
+
+    struct BlockingRestoreRunner {
+        entered: Mutex<Option<mpsc::SyncSender<()>>>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+
+    impl CommandRunner for BlockingRestoreRunner {
+        fn run(
+            &self,
+            _program: &std::ffi::OsStr,
+            _args: &[std::ffi::OsString],
+            _cancellation: &CancellationToken,
+            _timeout: Duration,
+        ) -> std::io::Result<host::CommandOutput> {
+            if let Some(entered) = self.entered.lock().expect("entered signal").take() {
+                entered.send(()).expect("announce blocked discovery");
+                self.release
+                    .lock()
+                    .expect("release signal")
+                    .recv()
+                    .expect("release blocked discovery");
+            }
+            Err(std::io::Error::new(
+                std::io::ErrorKind::ConnectionAborted,
+                "fixture discovery stopped",
+            ))
+        }
+    }
+
+    #[test]
+    fn retained_herdr_recovery_does_not_block_snapshots_during_discovery() {
+        let workspace =
+            Workspace::preview(WorkspaceSnapshot::shell(Appearance::default(), Vec::new()));
+        let snapshot = HostSnapshot::test_fixture_with_herdr(
+            "Ubuntu",
+            "boot",
+            42,
+            Vec::new(),
+            HerdrInventory::Unavailable,
+        );
+        let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+        let (release_tx, release_rx) = mpsc::sync_channel(1);
+        let runner: SharedCommandRunner = Arc::new(BlockingRestoreRunner {
+            entered: Mutex::new(Some(entered_tx)),
+            release: Mutex::new(release_rx),
+        });
+        let host = WslHost::new(
+            WslConfig::with_distro("Ubuntu").expect("valid config"),
+            runner,
+            WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
+                .expect("absolute WSL path"),
+        );
+        let request = AttachRequest {
+            host_id: "wsl".to_owned(),
+            host,
+            endpoint: snapshot.endpoint().clone(),
+            runtime: snapshot.runtime().clone(),
+            target: AttachTarget::Herdr {
+                executable: "/opt/herdr/bin/herdr".to_owned(),
+                is_default: false,
+                session_directory: "/tmp/herdr/review".to_owned(),
+                socket_path: "/tmp/herdr/review/herdr.sock".to_owned(),
+            },
+            name: "review".to_owned(),
+            inventory_generation: 1,
+        };
+        let suppressed = SuppressedHerdrPresentation {
+            active_selection: None,
+            retained: Some(ClosedRetainedHerdrPresentation {
+                key: request.presentation_key(),
+                attachment: ActiveAttachment {
+                    request,
+                    term: AttachTerm::Xterm256Color,
+                    generation: 1,
+                    fallback: None,
+                },
+                presentation_id: 1,
+            }),
+            navigation_generation: 0,
+        };
+        let recovery_workspace = workspace.clone();
+        let recovery = thread::spawn(move || {
+            recovery_workspace.restore_suppressed_herdr_presentation(Some(suppressed));
+        });
+        entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("recovery reached WSL discovery");
+
+        let snapshot_workspace = workspace.clone();
+        let (snapshot_tx, snapshot_rx) = mpsc::sync_channel(1);
+        let snapshot_reader = thread::spawn(move || {
+            let _snapshot = snapshot_workspace.snapshot();
+            snapshot_tx.send(()).expect("publish completed read");
+        });
+        let snapshot_completed = snapshot_rx.recv_timeout(Duration::from_millis(250)).is_ok();
+
+        release_tx.send(()).expect("release WSL discovery");
+        recovery.join().expect("recovery task");
+        snapshot_reader.join().expect("snapshot reader");
+        assert!(
+            snapshot_completed,
+            "slow retained recovery must not hold the snapshot publication guard"
+        );
     }
 
     #[derive(Default)]
