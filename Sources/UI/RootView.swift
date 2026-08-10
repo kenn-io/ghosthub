@@ -96,6 +96,17 @@ public struct RootView: View {
     private var activeHerdrSession: WorkspaceHerdrSessionSelection? {
         display.activeHerdrSession
     }
+
+    nonisolated static func applicationShortcutProject(
+        in snapshot: WorkspaceSnapshot,
+        selection: WorkspaceSelection
+    ) -> ProjectSummary? {
+        WorkspaceSelectionResolver.selectedProject(
+            in: snapshot,
+            selection: selection
+        )
+    }
+
     public var body: some View {
         contentWithNotifications
             .onAppear {
@@ -361,13 +372,17 @@ public struct RootView: View {
         case .toggleSidebar:
             handleToggleSidebar()
         case .newWorktree:
-            if let project = selection.selectedProjectID
-                .flatMap(snapshot.project(id:)) {
+            if let project = Self.applicationShortcutProject(
+                in: snapshot,
+                selection: selection
+            ) {
                 openNewWorktree(project)
             }
         case .importPullRequest:
-            if let project = selection.selectedProjectID
-                .flatMap(snapshot.project(id:)) {
+            if let project = Self.applicationShortcutProject(
+                in: snapshot,
+                selection: selection
+            ) {
                 openImportPullRequest(project)
             }
         case .newTmuxSession:
