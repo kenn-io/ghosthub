@@ -1384,4 +1384,106 @@ struct KwtInventoryClientTests {
         #expect(overlaid.hosts[0].lastKnownReachable)
         #expect(overlaid.hosts[0].remoteDiagnostics == [diagnostic])
     }
+
+    @Test("Zellij inventory overlays only Zellij runtime state")
+    func zellijInventoryIsAdditive() {
+        let hostID = UUID()
+        let project = ProjectSummary(
+            id: UUID(),
+            hostID: hostID,
+            scopedKey: "repo",
+            name: "repo",
+            rootPath: "/code/repo"
+        )
+        let worktree = WorktreeSummary(
+            id: UUID(),
+            hostID: hostID,
+            projectID: project.id,
+            name: "main",
+            path: "/code/repo",
+            branch: "main"
+        )
+        let tmux = TmuxSessionSummary(
+            name: "tmux-kept",
+            managed: false,
+            windows: []
+        )
+        let herdr = HerdrSessionSummary(
+            name: "herdr-kept",
+            isDefault: false,
+            state: .running
+        )
+        let stored = WorkspaceSnapshot(
+            hosts: [HostSummary(
+                id: hostID,
+                name: "build-box",
+                kind: .remote,
+                platform: .linux,
+                tmuxSessions: [tmux],
+                herdrSessions: [herdr],
+                herdrAvailable: true,
+                zellijSessions: [ZellijSessionSummary(name: "stale")]
+            )],
+            projects: [project],
+            worktrees: [worktree]
+        )
+        let zellij = ZellijSessionSummary(name: "editor")
+
+        let overlaid = HostInventoryOverlay.applyRuntimeSessions(
+            tmuxSessionsByHost: [:],
+            zellijSessionsByHost: [hostID: [zellij]],
+            zellijAvailabilityByHost: [hostID: true],
+            to: stored
+        )
+
+        #expect(overlaid.hosts[0].zellijSessions == [zellij])
+        #expect(overlaid.hosts[0].zellijAvailable)
+        #expect(overlaid.hosts[0].tmuxSessions == [tmux])
+        #expect(overlaid.hosts[0].herdrSessions == [herdr])
+        #expect(overlaid.hosts[0].herdrAvailable)
+        #expect(overlaid.projects == [project])
+        #expect(overlaid.worktrees == [worktree])
+    }
+
+    @Test("Zellij runtime inventory preserves noncanonical KWT paths")
+    func zellijRuntimeInventorySkipsKwtPathNormalization() {
+        let hostID = UUID()
+        let project = ProjectSummary(
+            id: UUID(),
+            hostID: hostID,
+            scopedKey: "repo",
+            name: "repo",
+            rootPath: "/code/./repo"
+        )
+        let worktree = WorktreeSummary(
+            id: UUID(),
+            hostID: hostID,
+            projectID: project.id,
+            name: "main",
+            path: "/code/repo/../repo",
+            branch: "main"
+        )
+        let stored = WorkspaceSnapshot(
+            hosts: [HostSummary(
+                id: hostID,
+                name: "build-box",
+                kind: .remote,
+                platform: .linux
+            )],
+            projects: [project],
+            worktrees: [worktree]
+        )
+
+        let overlaid = HostInventoryOverlay.applyRuntimeSessions(
+            tmuxSessionsByHost: [:],
+            zellijSessionsByHost: [
+                hostID: [ZellijSessionSummary(name: "editor")],
+            ],
+            zellijAvailabilityByHost: [hostID: true],
+            to: stored
+        )
+
+        #expect(overlaid.projects[0].rootPath == "/code/./repo")
+        #expect(overlaid.worktrees[0].path == "/code/repo/../repo")
+    }
 }

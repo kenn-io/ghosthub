@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Faux Zellij inventory for the isolated remote screenshot host.
+set -euo pipefail
+
+scratch="${GHOSTHUB_DEMO_REMOTE_SCRATCH:-/tmp}"
+
+if [[ "${1:-}" == "list-sessions" && "${2:-}" == "--no-formatting" \
+  && "$#" -eq 2 ]]; then
+  [[ -f "$scratch/zellij-killed-gpu-console" ]] \
+    || printf 'gpu-console [Created 42m 8s ago]\n'
+  printf 'old-benchmark [Created 4d 2h ago] (EXITED - attach to resurrect)\n'
+  exit 0
+fi
+
+if [[ "${1:-}" == "attach" && "${2:-}" == "--" \
+  && -n "${3:-}" && "$#" -eq 3 ]]; then
+  name="$3"
+  [[ -f "$scratch/zellij-killed-$name" ]] && exit 1
+  printf 'Remote Zellij demo session: %s\n' "$name"
+  while true; do sleep 3600; done
+fi
+
+if [[ "${1:-}" == --session=* && "$#" -eq 1 ]]; then
+  name="${1#--session=}"
+  [[ -n "$name" ]] || exit 64
+  [[ "$name" == "gpu-console" || "$name" == "old-benchmark" \
+    || -f "$scratch/zellij-killed-$name" ]] && exit 1
+  printf 'Remote Zellij demo session: %s\n' "$name"
+  while true; do sleep 3600; done
+fi
+
+if [[ "${1:-}" == "kill-session" && "${2:-}" == "--" \
+  && "${3:-}" == "gpu-console" && "$#" -eq 3 ]]; then
+  touch "$scratch/zellij-killed-gpu-console"
+  exit 0
+fi
+
+exit 64

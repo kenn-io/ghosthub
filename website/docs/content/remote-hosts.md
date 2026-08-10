@@ -5,9 +5,10 @@ icon: lucide/server
 
 # Remote hosts
 
-Ghosthub can discover tmux plus running and stopped Herdr sessions on remote
-macOS and Linux machines over SSH. Herdr is optional; native Windows hosts
-using psmux are experimental and do not support it.
+Ghosthub can discover tmux, running and stopped Herdr sessions, and active
+Zellij sessions on remote macOS and Linux machines over SSH. Herdr and Zellij
+are optional; native Windows hosts using psmux are experimental and do not
+support them.
 
 ## Before you add a host
 
@@ -15,6 +16,7 @@ A macOS or Linux host needs:
 
 - a working OpenSSH server
 - tmux 3.2 or newer
+- Herdr 0.8 or Zellij 0.44 when you want those session backends
 - a destination that your Mac's OpenSSH configuration can resolve
 
 Ghosthub checks the remote multiplexer version when attaching. Cmd-D and
@@ -36,6 +38,11 @@ its running and stopped sessions under **Herdr Sessions**. It still uses Ghosthu
 trust, authentication, pooling, and reconnect path rather than Herdr's remote
 transport.
 
+If Zellij is installed, Ghosthub adds its active sessions under **Zellij
+Sessions** and filters out exited/resurrectable entries. Attachments still use
+Ghosthub's ordinary OpenSSH transport rather than a backend-specific remote
+mode.
+
 ## exe.dev hosts
 
 Ghosthub can discover running exe.dev VMs as SSH hosts without adding each VM
@@ -48,7 +55,7 @@ manually. Create and manage VMs through [exe.dev](https://exe.dev/docs), then:
    authentication prompt.
 
 Running VMs appear with the rest of the host fleet. Ghosthub uses each VM's
-exe.dev-provided SSH destination for ordinary tmux, optional Herdr, and optional
+exe.dev-provided SSH destination for ordinary tmux, optional Herdr or Zellij, and optional
 kwt discovery.
 
 Leaving **Tags** empty discovers every VM on the account. With tags entered,
@@ -67,7 +74,7 @@ regard to case, and are managed in exe.dev.
 4. Select **Test Connection**.
 
 An unreachable host does not block discovery or use of the rest of the fleet.
-An expanded, reachable host with no projects, tmux sessions, or Herdr sessions
+An expanded, reachable host with no projects, tmux sessions, Herdr sessions, or Zellij sessions
 says so in the sidebar.
 
 ## Host-key trust
@@ -91,14 +98,14 @@ challenge requires one.
 
 If a host shows a caution icon, select it to review trust, authenticate, or
 retry. A successful ordinary host-inventory authentication refreshes inventory;
-it does not open a tmux or Herdr session by itself.
+it does not open a tmux, Herdr, or Zellij session by itself.
 
 ## Automatic reconnect
 
 If an active SSH connection drops, Ghosthub shows **Connection interrupted**
 and retries automatically, with no more than 30 seconds between attempts.
 Choose **Reconnect Now** to try immediately. When the connection returns,
-Ghosthub reattaches to the same exact tmux or Herdr session; the server-side
+Ghosthub reattaches to the same exact tmux, Herdr, or active Zellij session; the server-side
 processes were never moved into Ghosthub.
 
 If SSH needs authentication or host-key review, the presentation changes to

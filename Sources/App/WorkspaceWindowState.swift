@@ -61,11 +61,17 @@ struct WorkspaceHerdrDescriptor: Codable, Hashable, Sendable {
     var sessionName: String
 }
 
+struct WorkspaceZellijDescriptor: Codable, Hashable, Sendable {
+    var hostKey: String
+    var sessionName: String
+}
+
 struct WorkspaceWindowState: Codable, Hashable, Sendable {
     var windowID: UUID
     var navigation: WorkspaceNavigationDescriptor?
     var tmux: WorkspaceTmuxDescriptor?
     var herdr: WorkspaceHerdrDescriptor? = nil
+    var zellij: WorkspaceZellijDescriptor? = nil
 
     static func fresh(windowID: UUID = UUID()) -> Self {
         Self(windowID: windowID, navigation: nil, tmux: nil)
@@ -76,6 +82,7 @@ struct WorkspaceWindowState: Codable, Hashable, Sendable {
         selection: WorkspaceSelection,
         activeTmux: WorkspaceTmuxSessionSelection?,
         activeHerdr: WorkspaceHerdrSessionSelection? = nil,
+        activeZellij: WorkspaceZellijSessionSelection? = nil,
         snapshot: WorkspaceSnapshot
     ) -> Self {
         let host = snapshot.host(id: selection.selectedHostID)
@@ -117,6 +124,8 @@ struct WorkspaceWindowState: Codable, Hashable, Sendable {
         // emitting a combination the resolver rejects outright.
         let hasContradictoryPresentations = activeTmux != nil
             && activeHerdr != nil
+            || activeTmux != nil && activeZellij != nil
+            || activeHerdr != nil && activeZellij != nil
         let tmux = activeTmux.flatMap { active -> WorkspaceTmuxDescriptor? in
             guard !hasContradictoryPresentations else { return nil }
             guard let activeHost = snapshot.host(id: active.hostID),
@@ -179,11 +188,30 @@ struct WorkspaceWindowState: Codable, Hashable, Sendable {
                 sessionName: active.name
             )
         }
+        let zellij = activeZellij.flatMap {
+            active -> WorkspaceZellijDescriptor? in
+            guard !hasContradictoryPresentations,
+                  let activeHost = snapshot.host(id: active.hostID),
+                  let navigation,
+                  activeHost.configKey == navigation.hostKey,
+                  selection.selectedProjectID == nil,
+                  selection.selectedWorktreeID == nil,
+                  selection.selectedDirectoryWorkspaceID == nil,
+                  !active.name.trimmingCharacters(
+                      in: .whitespacesAndNewlines
+                  ).isEmpty
+            else { return nil }
+            return WorkspaceZellijDescriptor(
+                hostKey: activeHost.configKey,
+                sessionName: active.name
+            )
+        }
         return Self(
             windowID: windowID,
             navigation: navigation,
             tmux: tmux,
-            herdr: herdr
+            herdr: herdr,
+            zellij: zellij
         )
     }
 }
@@ -245,6 +273,7 @@ struct WorkspaceWindowStateBuffer {
 enum WorkspaceRestoredPresentation: Equatable, Sendable {
     case tmux(WorkspaceTmuxSessionSelection)
     case herdr(WorkspaceHerdrSessionSelection)
+    case zellij(WorkspaceZellijSessionSelection)
 }
 
 enum WorkspaceRestorationResolution: Equatable, Sendable {
@@ -265,6 +294,7 @@ enum WorkspaceWindowRestorationResolver {
         _ state: WorkspaceWindowState,
         in snapshot: WorkspaceSnapshot,
         herdrFreshHostIDs: Set<UUID> = [],
+        zellijFreshHostIDs: Set<UUID> = [],
         pendingHerdrSessions: Set<WorkspaceHerdrSessionSelection> = []
     ) -> WorkspaceRestorationResolution {
         guard let navigation = state.navigation,
@@ -281,7 +311,12 @@ enum WorkspaceWindowRestorationResolver {
               isValidOptional(navigation.directoryWorkspacePath)
         else { return .invalid }
 
-        guard state.tmux == nil || state.herdr == nil else {
+        let presentationCount = [
+            state.tmux != nil,
+            state.herdr != nil,
+            state.zellij != nil,
+        ].filter { $0 }.count
+        guard presentationCount <= 1 else {
             return .invalid
         }
 
@@ -316,6 +351,15 @@ enum WorkspaceWindowRestorationResolver {
             guard isNonblank(herdr.hostKey),
                   isNonblank(herdr.sessionName),
                   herdr.hostKey == navigation.hostKey,
+                  navigation.projectKey == nil,
+                  navigation.worktreeGeneration == nil,
+                  navigation.directoryWorkspacePath == nil
+            else { return .invalid }
+        }
+        if let zellij = state.zellij {
+            guard isNonblank(zellij.hostKey),
+                  isNonblank(zellij.sessionName),
+                  zellij.hostKey == navigation.hostKey,
                   navigation.projectKey == nil,
                   navigation.worktreeGeneration == nil,
                   navigation.directoryWorkspacePath == nil
@@ -376,6 +420,22 @@ enum WorkspaceWindowRestorationResolver {
             return .ready(
                 selection: selection,
                 presentation: .herdr(herdrSelection)
+            )
+        }
+
+        if let zellij = state.zellij {
+            let zellijSelection = WorkspaceZellijSessionSelection(
+                hostID: host.id,
+                name: zellij.sessionName
+            )
+            guard zellijFreshHostIDs.contains(host.id),
+                  host.zellijSessions.contains(where: {
+                      $0.name == zellij.sessionName
+                  })
+            else { return .pending(selection: selection) }
+            return .ready(
+                selection: selection,
+                presentation: .zellij(zellijSelection)
             )
         }
 

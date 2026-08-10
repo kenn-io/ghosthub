@@ -29,6 +29,7 @@ public struct WorkspaceDisplayState {
     public let availableApplicationShortcuts:
         Set<ApplicationShortcutAction>
     public let activeHerdrSession: WorkspaceHerdrSessionSelection?
+    public let activeZellijSession: WorkspaceZellijSessionSelection?
     public let pendingHerdrSessions: Set<WorkspaceHerdrSessionSelection>
     public let sessionConnectionRecoveryRequest:
         SessionConnectionRecoveryRequest?
@@ -58,6 +59,7 @@ public struct WorkspaceDisplayState {
         availableApplicationShortcuts:
         Set<ApplicationShortcutAction> = [],
         activeHerdrSession: WorkspaceHerdrSessionSelection? = nil,
+        activeZellijSession: WorkspaceZellijSessionSelection? = nil,
         pendingHerdrSessions: Set<WorkspaceHerdrSessionSelection> = [],
         sessionConnectionRecoveryRequest:
         SessionConnectionRecoveryRequest? = nil,
@@ -92,6 +94,7 @@ public struct WorkspaceDisplayState {
         self.availableApplicationShortcuts =
             availableApplicationShortcuts
         self.activeHerdrSession = activeHerdrSession
+        self.activeZellijSession = activeZellijSession
         self.pendingHerdrSessions = pendingHerdrSessions
         self.sessionConnectionRecoveryRequest =
             sessionConnectionRecoveryRequest
@@ -118,6 +121,8 @@ public struct ContentBuilders {
         ((HostSummary, String, Bool, NativeSessionContentActions) -> AnyView?)?
     public let herdrSessionContentBuilder:
         ((HostSummary, String, Bool, NativeSessionContentActions) -> AnyView?)?
+    public let zellijSessionContentBuilder:
+        ((HostSummary, String, Bool, NativeSessionContentActions) -> AnyView?)?
     public let settingsSheetBuilder: ((SettingsStore) -> AnyView)?
     public let logViewerBuilder: (() -> AnyView?)?
     public let sshAuthenticationBuilder: ((UUID) -> AnyView?)?
@@ -127,12 +132,15 @@ public struct ContentBuilders {
         ((HostSummary, String, Bool, NativeSessionContentActions) -> AnyView?)? = nil,
         herdrSessionContentBuilder:
         ((HostSummary, String, Bool, NativeSessionContentActions) -> AnyView?)? = nil,
+        zellijSessionContentBuilder:
+        ((HostSummary, String, Bool, NativeSessionContentActions) -> AnyView?)? = nil,
         settingsSheetBuilder: ((SettingsStore) -> AnyView)? = nil,
         logViewerBuilder: (() -> AnyView?)? = nil,
         sshAuthenticationBuilder: ((UUID) -> AnyView?)? = nil
     ) {
         self.tmuxSessionContentBuilder = tmuxSessionContentBuilder
         self.herdrSessionContentBuilder = herdrSessionContentBuilder
+        self.zellijSessionContentBuilder = zellijSessionContentBuilder
         self.settingsSheetBuilder = settingsSheetBuilder
         self.logViewerBuilder = logViewerBuilder
         self.sshAuthenticationBuilder = sshAuthenticationBuilder
@@ -278,6 +286,22 @@ public struct WorkspaceTmuxSessionCreationRequest: Equatable, Sendable {
     }
 }
 
+public struct ZellijSessionKillRequest: Equatable, Sendable {
+    public let authorityID: UUID
+    public let session: WorkspaceZellijSessionSelection
+    public let confirmedHost: HostSummary
+
+    public init(
+        authorityID: UUID,
+        session: WorkspaceZellijSessionSelection,
+        confirmedHost: HostSummary
+    ) {
+        self.authorityID = authorityID
+        self.session = session
+        self.confirmedHost = confirmedHost
+    }
+}
+
 public enum HerdrSessionDestructiveAction: Equatable, Sendable {
     case stop
     case delete
@@ -328,6 +352,16 @@ public struct InteractionHandlers {
         ((WorkspaceHerdrSessionSelection) async throws -> Void)?
     public let closeTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)?
     public let closeHerdrSession: ((WorkspaceHerdrSessionSelection) -> Void)?
+    public let openZellijSession: ((WorkspaceZellijSessionSelection) -> Void)?
+    public let createZellijSession: ((WorkspaceZellijSessionSelection) -> Void)?
+    public let closeZellijSession: ((WorkspaceZellijSessionSelection) -> Void)?
+    public let prepareZellijSessionKill:
+        ((WorkspaceZellijSessionSelection) async throws
+            -> ZellijSessionKillRequest)?
+    public let killZellijSession:
+        ((ZellijSessionKillRequest) async throws -> Void)?
+    public let cancelZellijSessionKill:
+        ((ZellijSessionKillRequest) -> Void)?
     public let prepareHerdrSessionLifecycle:
         ((WorkspaceHerdrSessionSelection, HerdrSessionDestructiveAction)
             async throws -> HerdrSessionLifecycleRequest)?
@@ -391,6 +425,19 @@ public struct InteractionHandlers {
         ((WorkspaceHerdrSessionSelection) async throws -> Void)? = nil,
         closeTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)? = nil,
         closeHerdrSession: ((WorkspaceHerdrSessionSelection) -> Void)? = nil,
+        openZellijSession:
+        ((WorkspaceZellijSessionSelection) -> Void)? = nil,
+        createZellijSession:
+        ((WorkspaceZellijSessionSelection) -> Void)? = nil,
+        closeZellijSession:
+        ((WorkspaceZellijSessionSelection) -> Void)? = nil,
+        prepareZellijSessionKill:
+        ((WorkspaceZellijSessionSelection) async throws
+            -> ZellijSessionKillRequest)? = nil,
+        killZellijSession:
+        ((ZellijSessionKillRequest) async throws -> Void)? = nil,
+        cancelZellijSessionKill:
+        ((ZellijSessionKillRequest) -> Void)? = nil,
         prepareHerdrSessionLifecycle:
         ((WorkspaceHerdrSessionSelection, HerdrSessionDestructiveAction)
             async throws -> HerdrSessionLifecycleRequest)? = nil,
@@ -449,6 +496,12 @@ public struct InteractionHandlers {
         self.restartHerdrSession = restartHerdrSession
         self.closeTmuxSession = closeTmuxSession
         self.closeHerdrSession = closeHerdrSession
+        self.openZellijSession = openZellijSession
+        self.createZellijSession = createZellijSession
+        self.closeZellijSession = closeZellijSession
+        self.prepareZellijSessionKill = prepareZellijSessionKill
+        self.killZellijSession = killZellijSession
+        self.cancelZellijSessionKill = cancelZellijSessionKill
         self.prepareHerdrSessionLifecycle = prepareHerdrSessionLifecycle
         self.performHerdrSessionLifecycle = performHerdrSessionLifecycle
         self.cancelHerdrSessionLifecycle = cancelHerdrSessionLifecycle

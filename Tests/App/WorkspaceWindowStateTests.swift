@@ -229,6 +229,32 @@ struct WorkspaceWindowStateTests {
         #expect(decoded.herdr?.sessionName == "editor")
     }
 
+    @Test("Zellij descriptor round-trips through scene state")
+    func zellijDescriptorRoundTrips() throws {
+        let state = WorkspaceWindowState(
+            windowID: UUID(),
+            navigation: WorkspaceNavigationDescriptor(
+                hostKey: "local",
+                projectKey: nil,
+                worktreeGeneration: nil
+            ),
+            tmux: nil,
+            zellij: WorkspaceZellijDescriptor(
+                hostKey: "local",
+                sessionName: "editor"
+            )
+        )
+
+        let encoded = try JSONEncoder().encode(state)
+        let decoded = try JSONDecoder().decode(
+            WorkspaceWindowState.self,
+            from: encoded
+        )
+
+        #expect(decoded == state)
+        #expect(decoded.zellij?.sessionName == "editor")
+    }
+
     @Test("invalid Herdr descriptors are rejected")
     func invalidHerdrDescriptorsAreRejected() {
         let fixture = RestorationFixture.local(sessionName: "editor")
@@ -452,6 +478,48 @@ struct WorkspaceWindowStateTests {
                 ))
             )
         )
+    }
+
+    @Test("Zellij restoration requires fresh exact active inventory")
+    func zellijRestorationRequiresFreshExactInventory() {
+        let fixture = RestorationFixture.local(sessionName: "editor")
+        let hostID = fixture.selection.selectedHostID
+        var snapshot = fixture.snapshot
+        snapshot.hosts[0].zellijSessions = [
+            ZellijSessionSummary(name: "editor"),
+        ]
+        snapshot.hosts[0].zellijAvailable = true
+        let selection = WorkspaceSelection(selectedHostID: hostID)
+        let state = WorkspaceWindowState(
+            windowID: UUID(),
+            navigation: WorkspaceNavigationDescriptor(
+                hostKey: "local",
+                projectKey: nil,
+                worktreeGeneration: nil
+            ),
+            tmux: nil,
+            zellij: WorkspaceZellijDescriptor(
+                hostKey: "local",
+                sessionName: "editor"
+            )
+        )
+
+        #expect(WorkspaceWindowRestorationResolver.resolve(
+            state,
+            in: snapshot
+        ) == .pending(selection: selection))
+
+        #expect(WorkspaceWindowRestorationResolver.resolve(
+            state,
+            in: snapshot,
+            zellijFreshHostIDs: [hostID]
+        ) == .ready(
+            selection: selection,
+            presentation: .zellij(WorkspaceZellijSessionSelection(
+                hostID: hostID,
+                name: "editor"
+            ))
+        ))
     }
 
     @Test("same-ID stale update payloads are rewritten")

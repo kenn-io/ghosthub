@@ -46,6 +46,7 @@ enum WorkspaceSidebarRowAction: Hashable {
     case stopHerdrSession(WorkspaceHerdrSessionSelection)
     case restartHerdrSession(WorkspaceHerdrSessionSelection)
     case deleteHerdrSession(WorkspaceHerdrSessionSelection)
+    case killZellijSession(WorkspaceZellijSessionSelection)
 }
 
 enum WorkspaceSidebarRowActionModel {
@@ -77,6 +78,16 @@ enum WorkspaceSidebarRowActionModel {
                     ]
             }
         }
+        if case let .zellijSession(hostID, name) = row.target {
+            let selection = WorkspaceZellijSessionSelection(
+                hostID: hostID,
+                name: name
+            )
+            guard snapshot.host(id: hostID)?.zellijSessions.contains(
+                where: { $0.name == name }
+            ) == true else { return [] }
+            return [.killZellijSession(selection)]
+        }
         guard case let .tmuxSession(hostID, name) = row.target else {
             return []
         }
@@ -106,6 +117,7 @@ private enum WorkspaceSidebarDragItem: Equatable {
     case worktree(UUID)
     case tmuxSession(hostID: UUID, name: String)
     case herdrSession(hostID: UUID, name: String)
+    case zellijSession(hostID: UUID, name: String)
 
     init?(rawValue: String) {
         let parts = rawValue.split(
@@ -136,6 +148,14 @@ private enum WorkspaceSidebarDragItem: Equatable {
                 hostID: hostID,
                 name: String(parts[2])
             )
+        case "zellij":
+            guard parts.count == 3,
+                  let hostID = UUID(uuidString: String(parts[1]))
+            else { return nil }
+            self = .zellijSession(
+                hostID: hostID,
+                name: String(parts[2])
+            )
         default:
             return nil
         }
@@ -149,6 +169,8 @@ private enum WorkspaceSidebarDragItem: Equatable {
             return "tmux:\(hostID.uuidString):\(name)"
         case let .herdrSession(hostID, name):
             return "herdr:\(hostID.uuidString):\(name)"
+        case let .zellijSession(hostID, name):
+            return "zellij:\(hostID.uuidString):\(name)"
         }
     }
 
@@ -166,6 +188,11 @@ private enum WorkspaceSidebarDragItem: Equatable {
                 hostID: hostID,
                 name: name
             )
+        case let .zellijSession(hostID, name):
+            return WorkspaceSidebarModel.zellijSessionOrderID(
+                hostID: hostID,
+                name: name
+            )
         }
     }
 }
@@ -178,6 +205,7 @@ private struct WorkspaceSidebarReorderIndicator: Equatable {
 enum WorkspaceSidebarInventorySection: Hashable {
     case tmuxSessions
     case herdrSessions
+    case zellijSessions
     case projects
 }
 
@@ -199,6 +227,8 @@ enum WorkspaceSidebarSectionActionModel {
             true
         case .herdrSessions:
             host.herdrAvailable
+        case .zellijSessions:
+            host.zellijAvailable
         case .projects:
             hasProjects || host.canRegisterProjects
         }
@@ -209,6 +239,7 @@ enum WorkspaceSidebarSectionActionModel {
         host: HostSummary,
         onNewTmuxSession: @escaping (HostSummary) -> Void,
         onNewHerdrSession: @escaping (HostSummary) -> Void,
+        onNewZellijSession: @escaping (HostSummary) -> Void,
         onAddProject: @escaping (HostSummary) -> Void
     ) -> WorkspaceSidebarSectionAction? {
         switch section {
@@ -230,6 +261,16 @@ enum WorkspaceSidebarSectionActionModel {
                 "New Herdr session on \(host.sidebarTitle)",
                 help: "New Herdr session…",
                 perform: { onNewHerdrSession(host) }
+            )
+        case .zellijSessions:
+            guard host.zellijAvailable else { return nil }
+            return WorkspaceSidebarSectionAction(
+                accessibilityIdentifier:
+                "sidebar-section-action-zellij-\(host.id.uuidString)",
+                accessibilityLabel:
+                "New Zellij session on \(host.sidebarTitle)",
+                help: "New Zellij session…",
+                perform: { onNewZellijSession(host) }
             )
         case .projects:
             guard host.canRegisterProjects else { return nil }
@@ -258,21 +299,25 @@ struct WorkspaceSidebarView: View {
     let onOpen: (WorktreeSummary) -> Void
     let activeTmuxSession: WorkspaceTmuxSessionSelection?
     let activeHerdrSession: WorkspaceHerdrSessionSelection?
+    let activeZellijSession: WorkspaceZellijSessionSelection?
     let activeTmuxSessionIsConnected: Bool
     let workingTmuxSessionIDs: Set<String>
     let onOpenTmuxSession: (WorkspaceTmuxSessionSelection) -> Void
     let onOpenHerdrSession: (WorkspaceHerdrSessionSelection) -> Void
+    let onOpenZellijSession: (WorkspaceZellijSessionSelection) -> Void
     let pendingHerdrSessions: Set<WorkspaceHerdrSessionSelection>
     let onRestartHerdrSession: (WorkspaceHerdrSessionSelection) -> Void
     let onRequestHerdrSessionLifecycle:
         (WorkspaceHerdrSessionSelection, HerdrSessionDestructiveAction) -> Void
     let onNavigateAwayFromSession: () -> Void
     let onRequestKillTmuxSession: (WorkspaceTmuxSessionSelection) -> Void
+    let onRequestKillZellijSession: (WorkspaceZellijSessionSelection) -> Void
     let onRequestRemoveWorktree: (WorktreeSummary) -> Void
     let onNewWorktree: (ProjectSummary) -> Void
     let onImportPullRequest: (ProjectSummary) -> Void
     let onNewTmuxSession: (HostSummary) -> Void
     let onNewHerdrSession: (HostSummary) -> Void
+    let onNewZellijSession: (HostSummary) -> Void
     let onAddProject: (HostSummary) -> Void
     let onRefreshInventory: () -> Void
     let onOpenHostSettings: () -> Void
@@ -299,6 +344,7 @@ struct WorkspaceSidebarView: View {
     @Binding private var worktreeOrderRawValue: String
     @Binding private var tmuxSessionOrderRawValue: String
     @Binding private var herdrSessionOrderRawValue: String
+    @Binding private var zellijSessionOrderRawValue: String
 
     init(
         snapshot: WorkspaceSnapshot,
@@ -307,6 +353,7 @@ struct WorkspaceSidebarView: View {
         tmuxSessionVisibility: TmuxSessionVisibility = TmuxSessionVisibility(),
         activeTmuxSession: WorkspaceTmuxSessionSelection? = nil,
         activeHerdrSession: WorkspaceHerdrSessionSelection? = nil,
+        activeZellijSession: WorkspaceZellijSessionSelection? = nil,
         activeTmuxSessionIsConnected: Bool = false,
         workingTmuxSessionIDs: Set<String> = [],
         onOpenTmuxSession: @escaping (
@@ -314,6 +361,9 @@ struct WorkspaceSidebarView: View {
         ) -> Void = { _ in },
         onOpenHerdrSession: @escaping (
             WorkspaceHerdrSessionSelection
+        ) -> Void = { _ in },
+        onOpenZellijSession: @escaping (
+            WorkspaceZellijSessionSelection
         ) -> Void = { _ in },
         pendingHerdrSessions: Set<WorkspaceHerdrSessionSelection> = [],
         onRestartHerdrSession: @escaping (
@@ -327,6 +377,9 @@ struct WorkspaceSidebarView: View {
         onRequestKillTmuxSession: @escaping (
             WorkspaceTmuxSessionSelection
         ) -> Void = { _ in },
+        onRequestKillZellijSession: @escaping (
+            WorkspaceZellijSessionSelection
+        ) -> Void = { _ in },
         onRequestRemoveWorktree: @escaping (
             WorktreeSummary
         ) -> Void = { _ in },
@@ -334,6 +387,7 @@ struct WorkspaceSidebarView: View {
         onImportPullRequest: @escaping (ProjectSummary) -> Void = { _ in },
         onNewTmuxSession: @escaping (HostSummary) -> Void = { _ in },
         onNewHerdrSession: @escaping (HostSummary) -> Void = { _ in },
+        onNewZellijSession: @escaping (HostSummary) -> Void = { _ in },
         onAddProject: @escaping (HostSummary) -> Void = { _ in },
         onRefreshInventory: @escaping () -> Void = {},
         onOpenHostSettings: @escaping () -> Void = {},
@@ -344,6 +398,7 @@ struct WorkspaceSidebarView: View {
         worktreeOrderRawValue: Binding<String> = .constant(""),
         tmuxSessionOrderRawValue: Binding<String> = .constant(""),
         herdrSessionOrderRawValue: Binding<String> = .constant(""),
+        zellijSessionOrderRawValue: Binding<String> = .constant(""),
         onOpen: @escaping (WorktreeSummary) -> Void = { _ in }
     ) {
         self.snapshot = snapshot
@@ -352,20 +407,24 @@ struct WorkspaceSidebarView: View {
         self.tmuxSessionVisibility = tmuxSessionVisibility
         self.activeTmuxSession = activeTmuxSession
         self.activeHerdrSession = activeHerdrSession
+        self.activeZellijSession = activeZellijSession
         self.activeTmuxSessionIsConnected = activeTmuxSessionIsConnected
         self.workingTmuxSessionIDs = workingTmuxSessionIDs
         self.onOpenTmuxSession = onOpenTmuxSession
         self.onOpenHerdrSession = onOpenHerdrSession
+        self.onOpenZellijSession = onOpenZellijSession
         self.pendingHerdrSessions = pendingHerdrSessions
         self.onRestartHerdrSession = onRestartHerdrSession
         self.onRequestHerdrSessionLifecycle = onRequestHerdrSessionLifecycle
         self.onNavigateAwayFromSession = onNavigateAwayFromSession
         self.onRequestKillTmuxSession = onRequestKillTmuxSession
+        self.onRequestKillZellijSession = onRequestKillZellijSession
         self.onRequestRemoveWorktree = onRequestRemoveWorktree
         self.onNewWorktree = onNewWorktree
         self.onImportPullRequest = onImportPullRequest
         self.onNewTmuxSession = onNewTmuxSession
         self.onNewHerdrSession = onNewHerdrSession
+        self.onNewZellijSession = onNewZellijSession
         self.onAddProject = onAddProject
         self.onRefreshInventory = onRefreshInventory
         self.onOpenHostSettings = onOpenHostSettings
@@ -376,6 +435,7 @@ struct WorkspaceSidebarView: View {
         _worktreeOrderRawValue = worktreeOrderRawValue
         _tmuxSessionOrderRawValue = tmuxSessionOrderRawValue
         _herdrSessionOrderRawValue = herdrSessionOrderRawValue
+        _zellijSessionOrderRawValue = zellijSessionOrderRawValue
         self.onOpen = onOpen
     }
 
@@ -388,7 +448,8 @@ struct WorkspaceSidebarView: View {
             tmuxSessionVisibility: tmuxSessionVisibility,
             worktreeOrderRawValue: worktreeOrderRawValue,
             tmuxSessionOrderRawValue: tmuxSessionOrderRawValue,
-            herdrSessionOrderRawValue: herdrSessionOrderRawValue
+            herdrSessionOrderRawValue: herdrSessionOrderRawValue,
+            zellijSessionOrderRawValue: zellijSessionOrderRawValue
         )
     }
 
@@ -530,6 +591,30 @@ struct WorkspaceSidebarView: View {
                             herdrSessionButton(
                                 row,
                                 orderedRows: section.herdrSessionRows
+                            )
+                        }
+                    }
+                }
+                if WorkspaceSidebarSectionActionModel.isVisible(
+                    .zellijSessions,
+                    host: section.host,
+                    hasProjects: !section.projects.isEmpty
+                ) {
+                    let zellijSessionsKey = WorkspaceSidebarDisclosureState
+                        .zellijSessions(section.host.id)
+                    sidebarGroupLabel(
+                        "Zellij Sessions",
+                        disclosureKey: zellijSessionsKey,
+                        action: sectionAction(
+                            for: .zellijSessions,
+                            host: section.host
+                        )
+                    )
+                    if isExpanded(zellijSessionsKey) {
+                        ForEach(section.zellijSessionRows) { row in
+                            zellijSessionButton(
+                                row,
+                                orderedRows: section.zellijSessionRows
                             )
                         }
                     }
@@ -755,6 +840,39 @@ struct WorkspaceSidebarView: View {
         )
     }
 
+    private func zellijSessionButton(
+        _ row: WorkspaceSidebarRow,
+        orderedRows: [WorkspaceSidebarRow]
+    ) -> some View {
+        guard case let .zellijSession(hostID, name) = row.target else {
+            return AnyView(sidebarButton(row))
+        }
+        let item = WorkspaceSidebarDragItem.zellijSession(
+            hostID: hostID,
+            name: name
+        )
+        let groupItems: [WorkspaceSidebarDragItem] = orderedRows.compactMap {
+            orderedRow in
+            guard case let .zellijSession(orderedHostID, orderedName) =
+                orderedRow.target
+            else { return nil }
+            return WorkspaceSidebarDragItem.zellijSession(
+                hostID: orderedHostID,
+                name: orderedName
+            )
+        }
+        return AnyView(
+            reorderableRow(
+                sidebarButton(row),
+                item: item,
+                groupItems: groupItems,
+                orderRawValue: zellijSessionOrderRawValue
+            ) { updatedRawValue in
+                zellijSessionOrderRawValue = updatedRawValue
+            }
+        )
+    }
+
     private func sidebarButton(
         _ row: WorkspaceSidebarRow,
         reservedTrailingActionWidth: CGFloat = 0
@@ -777,6 +895,9 @@ struct WorkspaceSidebarView: View {
             if case .killTmuxSession = $0 {
                 return false
             }
+            if case .killZellijSession = $0 {
+                return false
+            }
             return true
         }
         let herdrSelection: WorkspaceHerdrSessionSelection? = {
@@ -785,6 +906,12 @@ struct WorkspaceSidebarView: View {
             }
             return WorkspaceHerdrSessionSelection(hostID: hostID, name: name)
         }()
+        let zellijSelection: WorkspaceZellijSessionSelection? = {
+            guard case let .zellijSession(hostID, name) = row.target else {
+                return nil
+            }
+            return WorkspaceZellijSessionSelection(hostID: hostID, name: name)
+        }()
         let herdrOperationIsPending = herdrSelection.map {
             pendingHerdrSessions.contains($0)
         } ?? false
@@ -792,7 +919,8 @@ struct WorkspaceSidebarView: View {
             row,
             selection: selection,
             activeTmuxSession: activeTmuxSession,
-            activeHerdrSession: activeHerdrSession
+            activeHerdrSession: activeHerdrSession,
+            activeZellijSession: activeZellijSession
         )
         let isTmuxSessionWorking = tmuxSession.map {
             workingTmuxSessionIDs.contains($0.id)
@@ -800,11 +928,14 @@ struct WorkspaceSidebarView: View {
         let usesDirectKillAction: Bool
         if case .tmuxSession = row.target {
             usesDirectKillAction = true
+        } else if case .zellijSession = row.target {
+            usesDirectKillAction = true
         } else {
             usesDirectKillAction = false
         }
         let hasSessionActions = runningTmuxSession != nil
             || !herdrActions.isEmpty
+            || zellijSelection != nil
         let isActionHovered = hasSessionActions
             && hoveredSessionActionControlRowID == row.id
         let actionPresentation = WorkspaceSessionActionPresentation(
@@ -830,6 +961,19 @@ struct WorkspaceSidebarView: View {
                     } else {
                         onOpenHerdrSession(herdrSelection)
                     }
+                    return
+                }
+                if case let .zellijSession(hostID, name) = row.target {
+                    let zellijSelection = WorkspaceZellijSessionSelection(
+                        hostID: hostID,
+                        name: name
+                    )
+                    selection.select(
+                        row.target,
+                        in: snapshot,
+                        visibility: visibility
+                    )
+                    onOpenZellijSession(zellijSelection)
                     return
                 }
                 if case let .tmuxSession(hostID, name) = row.target {
@@ -1005,6 +1149,19 @@ struct WorkspaceSidebarView: View {
                         .accessibilityHint(
                             "Includes the option to kill this session."
                         )
+                    } else if let zellijSelection {
+                        Button {
+                            onRequestKillZellijSession(zellijSelection)
+                        } label: {
+                            sessionActionLabel(
+                                actionPresentation,
+                                isActionHovered: isActionHovered,
+                                imageName: "xmark"
+                            )
+                        }
+                        .accessibilityLabel(
+                            "Kill Zellij session \(zellijSelection.name)"
+                        )
                     } else {
                         NativePopupMenuButton(
                             groups: [herdrActions.compactMap(
@@ -1057,6 +1214,11 @@ struct WorkspaceSidebarView: View {
                     onRequestKillTmuxSession(tmuxSession)
                 }
             }
+            if let zellijSelection {
+                Button("Kill Session…", role: .destructive) {
+                    onRequestKillZellijSession(zellijSelection)
+                }
+            }
             ForEach(herdrActions, id: \.self) { action in
                 herdrContextMenuButton(action)
             }
@@ -1065,6 +1227,11 @@ struct WorkspaceSidebarView: View {
             if let tmuxSession = runningTmuxSession {
                 Button("Kill Session") {
                     onRequestKillTmuxSession(tmuxSession)
+                }
+            }
+            if let zellijSelection {
+                Button("Kill Session") {
+                    onRequestKillZellijSession(zellijSelection)
                 }
             }
             ForEach(herdrActions, id: \.self) { action in
@@ -1092,6 +1259,10 @@ struct WorkspaceSidebarView: View {
             }
         case .killTmuxSession:
             EmptyView()
+        case let .killZellijSession(selection):
+            Button("Kill Session…", role: .destructive) {
+                onRequestKillZellijSession(selection)
+            }
         }
     }
 
@@ -1113,6 +1284,10 @@ struct WorkspaceSidebarView: View {
             }
         case .killTmuxSession:
             nil
+        case let .killZellijSession(selection):
+            NativePopupMenuAction("Kill Session…", role: .destructive) {
+                onRequestKillZellijSession(selection)
+            }
         }
     }
 
@@ -1135,6 +1310,10 @@ struct WorkspaceSidebarView: View {
             }
         case .killTmuxSession:
             EmptyView()
+        case let .killZellijSession(selection):
+            Button("Kill Session") {
+                onRequestKillZellijSession(selection)
+            }
         }
     }
 
@@ -1142,7 +1321,8 @@ struct WorkspaceSidebarView: View {
         _ row: WorkspaceSidebarRow,
         selection: WorkspaceSelection,
         activeTmuxSession: WorkspaceTmuxSessionSelection?,
-        activeHerdrSession: WorkspaceHerdrSessionSelection?
+        activeHerdrSession: WorkspaceHerdrSessionSelection?,
+        activeZellijSession: WorkspaceZellijSessionSelection? = nil
     ) -> Bool {
         if case let .herdrSession(hostID, name) = row.target {
             return activeHerdrSession == WorkspaceHerdrSessionSelection(
@@ -1152,6 +1332,12 @@ struct WorkspaceSidebarView: View {
         }
         if case let .tmuxSession(hostID, name) = row.target {
             return activeTmuxSession == WorkspaceTmuxSessionSelection(
+                hostID: hostID,
+                name: name
+            )
+        }
+        if case let .zellijSession(hostID, name) = row.target {
+            return activeZellijSession == WorkspaceZellijSessionSelection(
                 hostID: hostID,
                 name: name
             )
@@ -1166,6 +1352,7 @@ struct WorkspaceSidebarView: View {
         }
         return activeTmuxSession == nil
             && activeHerdrSession == nil
+            && activeZellijSession == nil
             && selection.navigationTarget == row.target
     }
 
@@ -1231,7 +1418,7 @@ struct WorkspaceSidebarView: View {
                 id: directoryWorkspaceID
             ) else { return nil }
             return WorkspaceSidebarModel.tmuxSessionSelection(for: workspace)
-        case .host, .project, .herdrSession:
+        case .host, .project, .herdrSession, .zellijSession:
             return nil
         }
     }
@@ -1679,6 +1866,7 @@ struct WorkspaceSidebarView: View {
             host: host,
             onNewTmuxSession: onNewTmuxSession,
             onNewHerdrSession: onNewHerdrSession,
+            onNewZellijSession: onNewZellijSession,
             onAddProject: onAddProject
         )
     }
@@ -1819,6 +2007,21 @@ struct WorkspaceSidebarView: View {
         })
         if herdrSessionOrder.prune(keeping: herdrSessionIDs) {
             herdrSessionOrderRawValue = herdrSessionOrder.rawValue
+        }
+
+        var zellijSessionOrder = WorkspaceSidebarOrder(
+            rawValue: zellijSessionOrderRawValue
+        )
+        let zellijSessionIDs = Set(snapshot.hosts.flatMap { host in
+            host.zellijSessions.map {
+                WorkspaceSidebarModel.zellijSessionOrderID(
+                    hostID: host.id,
+                    name: $0.name
+                )
+            }
+        })
+        if zellijSessionOrder.prune(keeping: zellijSessionIDs) {
+            zellijSessionOrderRawValue = zellijSessionOrder.rawValue
         }
     }
 

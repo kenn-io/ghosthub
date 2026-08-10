@@ -328,7 +328,7 @@ struct NativeHerdrSessionCoordinatorTests {
         let retryCommand = store.requestedConfigurations.last?.command ?? ""
         #expect(retryCommand.contains(
             "/new/bin/herdr"
-        ))
+        ) == true)
     }
 
     @Test("fresh attachment attempts resolve the Herdr executable again")
@@ -371,7 +371,7 @@ struct NativeHerdrSessionCoordinatorTests {
         let retryCommand = store.requestedConfigurations.last?.command ?? ""
         #expect(retryCommand.contains(
             "/new/bin/herdr"
-        ))
+        ) == true)
     }
 
     @Test("Windows is rejected before surface creation")

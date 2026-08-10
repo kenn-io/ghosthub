@@ -12,6 +12,9 @@ public enum WorkspaceNavigationTarget: Hashable, Sendable {
     /// A running Herdr session discovered independently of tmux and projects.
     /// Selection remains host-scoped; Herdr owns its internal workspace state.
     case herdrSession(hostID: UUID, name: String)
+    /// A running Zellij session discovered independently of tmux and projects.
+    /// Zellij owns its tabs, panes, layout, history, and process lifetime.
+    case zellijSession(hostID: UUID, name: String)
 }
 
 public extension WorkspaceSelection {
@@ -84,7 +87,8 @@ public extension WorkspaceSelection {
             selectedWorktreeID = nil
             selectedDirectoryWorkspaceID = workspace.id
         case let .tmuxSession(hostID, _),
-             let .herdrSession(hostID, _):
+             let .herdrSession(hostID, _),
+             let .zellijSession(hostID, _):
             guard snapshot.host(id: hostID) != nil else {
                 return
             }

@@ -5,6 +5,7 @@ public enum WorkspaceSidebarOrderStorage {
     public static let worktreeKey = "workspaceSidebarWorktreeOrderV1"
     public static let tmuxSessionKey = "workspaceSidebarTmuxSessionOrderV1"
     public static let herdrSessionKey = "workspaceSidebarHerdrSessionOrderV1"
+    public static let zellijSessionKey = "workspaceSidebarZellijSessionOrderV1"
 
     public static func worktreeRawValue(
         in defaults: UserDefaults = .standard
@@ -22,6 +23,12 @@ public enum WorkspaceSidebarOrderStorage {
         in defaults: UserDefaults = .standard
     ) -> String {
         defaults.string(forKey: herdrSessionKey) ?? ""
+    }
+
+    public static func zellijSessionRawValue(
+        in defaults: UserDefaults = .standard
+    ) -> String {
+        defaults.string(forKey: zellijSessionKey) ?? ""
     }
 }
 
@@ -230,6 +237,7 @@ public enum WorkspaceSidebarRowIcon: Equatable, Sendable {
     case directoryWorkspace
     case tmuxSession
     case herdrSession
+    case zellijSession
 
     public var systemImageName: String {
         switch self {
@@ -251,6 +259,8 @@ public enum WorkspaceSidebarRowIcon: Equatable, Sendable {
             return "terminal"
         case .herdrSession:
             return "rectangle.3.group"
+        case .zellijSession:
+            return "rectangle.split.3x1"
         }
     }
 }
@@ -258,6 +268,7 @@ public enum WorkspaceSidebarRowIcon: Equatable, Sendable {
 public enum WorkspaceSidebarGroup: Equatable, Sendable {
     case tmuxSessions
     case herdrSessions
+    case zellijSessions
     case projects
 }
 
@@ -307,6 +318,7 @@ public struct WorkspaceSidebarSection: Equatable, Identifiable, Sendable {
     public var directoryWorkspaceRows: [WorkspaceSidebarRow]
     public var tmuxSessionRows: [WorkspaceSidebarRow]
     public var herdrSessionRows: [WorkspaceSidebarRow]
+    public var zellijSessionRows: [WorkspaceSidebarRow]
 
     public var id: UUID { host.id }
     public var isEmpty: Bool {
@@ -314,6 +326,7 @@ public struct WorkspaceSidebarSection: Equatable, Identifiable, Sendable {
             && directoryWorkspaceRows.isEmpty
             && tmuxSessionRows.isEmpty
             && herdrSessionRows.isEmpty
+            && zellijSessionRows.isEmpty
     }
 
     public var visibleGroups: [WorkspaceSidebarGroup] {
@@ -323,6 +336,9 @@ public struct WorkspaceSidebarSection: Equatable, Identifiable, Sendable {
         }
         if !herdrSessionRows.isEmpty {
             groups.append(.herdrSessions)
+        }
+        if !zellijSessionRows.isEmpty {
+            groups.append(.zellijSessions)
         }
         if !projects.isEmpty || !directoryWorkspaceRows.isEmpty {
             groups.append(.projects)
@@ -447,7 +463,8 @@ public enum WorkspaceSidebarModel {
         tmuxSessionVisibility: TmuxSessionVisibility = TmuxSessionVisibility(),
         worktreeOrderRawValue: String = "",
         tmuxSessionOrderRawValue: String = "",
-        herdrSessionOrderRawValue: String = ""
+        herdrSessionOrderRawValue: String = "",
+        zellijSessionOrderRawValue: String = ""
     ) -> [WorkspaceSidebarSection] {
         let worktreeOrder = WorkspaceSidebarOrder(
             rawValue: worktreeOrderRawValue
@@ -457,6 +474,9 @@ public enum WorkspaceSidebarModel {
         )
         let herdrSessionOrder = WorkspaceSidebarOrder(
             rawValue: herdrSessionOrderRawValue
+        )
+        let zellijSessionOrder = WorkspaceSidebarOrder(
+            rawValue: zellijSessionOrderRawValue
         )
         return snapshot.hosts.map { host in
             // Discovery only lists the host's default tmux server. A
@@ -534,7 +554,20 @@ public enum WorkspaceSidebarModel {
                         )
                     }
                 )
-                .map { herdrSessionRow($0, hostID: host.id) }
+                .map { herdrSessionRow($0, hostID: host.id) },
+                zellijSessionRows: zellijSessionOrder.ordered(
+                    host.zellijSessions.sorted {
+                        $0.name.localizedStandardCompare($1.name)
+                            == .orderedAscending
+                    },
+                    identifiedBy: {
+                        zellijSessionOrderID(
+                            hostID: host.id,
+                            name: $0.name
+                        )
+                    }
+                )
+                .map { zellijSessionRow($0, hostID: host.id) }
             )
         }
     }
@@ -566,6 +599,25 @@ public enum WorkspaceSidebarModel {
         name: String
     ) -> String {
         "herdr:\(hostID.uuidString):\(name)"
+    }
+
+    static func zellijSessionOrderID(
+        hostID: UUID,
+        name: String
+    ) -> String {
+        "zellij:\(hostID.uuidString):\(name)"
+    }
+
+    private static func zellijSessionRow(
+        _ session: ZellijSessionSummary,
+        hostID: UUID
+    ) -> WorkspaceSidebarRow {
+        WorkspaceSidebarRow(
+            target: .zellijSession(hostID: hostID, name: session.name),
+            icon: .zellijSession,
+            title: session.name,
+            subtitle: "Zellij session"
+        )
     }
 
     private static func herdrSessionRow(

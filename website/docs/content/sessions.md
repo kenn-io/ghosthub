@@ -1,27 +1,28 @@
 ---
-description: Attach to tmux and Herdr sessions, reconnect safely, and manage whole-session lifecycle.
+description: Attach to tmux, Herdr, and Zellij sessions, reconnect safely, and manage whole-session lifecycle.
 icon: lucide/square-terminal
 ---
 
 # Sessions
 
-Ghosthub keeps three host inventories independent. Standalone tmux sessions
+Ghosthub keeps four host inventories independent. Standalone tmux sessions
 appear under **Tmux Sessions**, running and stopped Herdr sessions appear under **Herdr
-Sessions**, and tmux-backed kwt worktrees and registered directories appear
-under **Projects**, in that order. Registered directories are flat rows after
-the repository hierarchies. A missing Herdr installation is normal: Ghosthub
-simply omits its group without showing a warning.
+Sessions**, active Zellij sessions appear under **Zellij Sessions**, and
+tmux-backed kwt worktrees and registered directories appear under **Projects**,
+in that order. Registered directories are flat rows after the repository
+hierarchies. Missing Herdr or Zellij installations are normal: Ghosthub simply
+omits those groups without showing a warning.
 
-You do not choose Herdr *instead of* Ghosthub. Herdr owns a session's internal
-workspace, tabs, panes, history, key bindings, and processes;
-Ghosthub discovers that session and presents its ordinary client beside your
-tmux sessions and tmux-backed worktrees. Both multiplexers can be active on the
-same host fleet.
+Ghosthub treats every supported multiplexer as a first-class peer. It discovers
+each backend independently and presents its ordinary client beside the others;
+tmux, Herdr, and Zellij can all be active on the same host fleet. Each continues
+to own its own windows or tabs, panes, layout, history, key bindings, plugins,
+and processes.
 
 ## Create a standalone session
 
 1. Expand the target host.
-2. Select the **+** beside **Tmux Sessions** or **Herdr Sessions**.
+2. Select the **+** beside **Tmux Sessions**, **Herdr Sessions**, or **Zellij Sessions**.
 3. Enter a session name.
 
 A new tmux session remains usable from the `tmux` CLI and other tmux clients.
@@ -31,9 +32,13 @@ appear only when the host's `herdr session list --json` capability is
 available. A name already present in either running or stopped state is
 rejected; restart a stopped session instead.
 
+A new Zellij session uses Zellij's new-session path and remains an ordinary
+Zellij session. Active and resurrectable names are both rejected. Ghosthub
+lists only active sessions and does not expose resurrection as a workflow.
+
 ## Attach and detach
 
-Select a running tmux or Herdr session in the sidebar, or search for it in the Command
+Select a running tmux, Herdr, or Zellij session in the sidebar, or search for it in the Command
 Palette with ++shift+cmd+p++. Ghosthub opens an ordinary local or SSH client
 for the selected backend. Herdr receives the complete terminal and continues
 to own its workspaces, tabs, panes, history, and key bindings.
@@ -41,20 +46,31 @@ to own its workspaces, tabs, panes, history, and key bindings.
 Switching to another host, worktree, or session hides an opened tmux terminal
 without detaching it. Each workspace keeps every tmux session you explicitly
 open connected, and returning to one reuses the same terminal and client.
-Switching away from Herdr detaches its presentation; the Herdr server and its
-processes continue running.
+Switching away from Herdr or Zellij detaches its presentation; the server and
+its processes continue running.
+
+Zellij does not provide an atomic active-only attach command. Ghosthub checks
+that a selected session is active before attaching and does not offer
+resurrection, but Zellij may resurrect its saved layout if the session exits in
+the brief interval before the client command resolves it. Ghosthub does not
+request automatic execution of resurrected commands.
 
 Press ++cmd+w++ to detach only the active presentation. Closing a workspace
 tab or window detaches every presentation it owns, and quitting Ghosthub
 detaches them all. None of these actions ends a tmux session or stops a Herdr
-server. A normal Herdr detach offers **Reconnect** and does not retry
-automatically.
+or Zellij server. A normal Herdr or Zellij detach offers **Reconnect** and does
+not retry automatically.
 
 On a remote host, a dropped SSH transport enters automatic recovery. Ghosthub
 probes the same exact session before each replacement client. Retry stops when
 the session disappears, Herdr becomes unavailable, or the client reports a
 non-transport failure. **Reconnect Now** skips the current delay; host-key or
 authentication problems open the existing connection review flow.
+
+When Ghosthub restores a remote Zellij presentation after relaunch, it validates
+the active session using one frozen SSH route and rechecks that route before
+attaching. If the SSH configuration changed during validation, restoration
+stops instead of attaching to another endpoint.
 
 ## Activity indicators
 
@@ -94,7 +110,7 @@ Ghosthub confirms the host and exact tmux session before it sends
 `kill-session`. Ending a session terminates all of its windows, panes, and
 processes and cannot be undone.
 
-Ghosthub cancels the operation if the host connection changes, or if the
+For tmux, Ghosthub cancels the operation if the host connection changes, or if the
 original session disappears and another session appears under the same name.
 If the command fails, the active attachment remains open.
 
@@ -112,6 +128,18 @@ Herdr lifecycle is whole-session only:
 These actions are also in the Command Palette. Ghosthub suppresses reconnect
 across every open scene while an intentional stop runs, so another window does
 not silently resurrect the session.
+
+An active Zellij row offers **Kill Session…**. Ghosthub confirms the host and
+name, rechecks that exact active session immediately before the command, and
+then asks Zellij to kill it. While the kill is running, Ghosthub detaches that
+session and suppresses same-session reconnects in every open scene so neither
+an existing client nor an automatic reconnect can undo the intentional kill.
+Successful kills also remove the row from every open scene and refresh Zellij
+inventory. If the kill fails, an eligible detached presentation or matching
+pending open or restoration is rechecked before it resumes. Zellij does not
+provide tmux-style stable session identity, so a same-name replacement between
+the final check and command is an accepted race. Ghosthub never offers
+resurrection or deletes exited Zellij sessions.
 
 !!! warning "Killing a session is different from removing a worktree"
 
@@ -150,3 +178,6 @@ whole-session create, stop, restart, and delete, plus the explicit Split Right
 and Split Down requests against a connected Herdr 0.8.0-or-newer session. Herdr
 selects the focused pane and continues to own themes, workspaces, tabs, panes,
 agents, plugins, configuration, updates, and internal process behavior.
+For Zellij, Ghosthub manages only active-session create, attach, and confirmed
+kill. Zellij continues to own tabs, panes, layouts, themes, plugins,
+configuration, updates, resurrection data, and process behavior.

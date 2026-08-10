@@ -602,6 +602,349 @@ struct WorkspaceRestorationTests {
         await model.shutdown()
     }
 
+    @Test("Zellij restoration reuses its validated SSH route")
+    func zellijRestorationUsesValidatedSSHRoute() async throws {
+        let environment = try setupRemoteEnvironment()
+        var snapshot = environment.snapshot
+        snapshot.hosts[0].zellijAvailable = true
+        snapshot.hosts[0].zellijSessions = [
+            ZellijSessionSummary(name: "editor"),
+        ]
+        let frozen = SSHConnectionArgumentsSnapshot(arguments: [
+            "-F", "/tmp/frozen-zellij-config", "dev@build.example.test",
+        ])
+        let changed = SSHConnectionArgumentsSnapshot(arguments: [
+            "-F", "/tmp/changed-zellij-config", "dev@other.example.test",
+        ])
+        let connectionReads = Mutex(0)
+        let validationArguments = Mutex([[String]]())
+        let store = RecordingNativeSessionSurfaceStore()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: UUID(),
+            snapshot: snapshot,
+            nativeZellijSurfaceStore: store,
+            nativeZellijPathProvider: { _ in .success("/usr/bin/zellij") },
+            zellijSessionDiscovery: { _ in .available(["editor"]) },
+            zellijSessionValidationDiscovery: { _, arguments in
+                validationArguments.withLock { $0.append(arguments) }
+                return .available(["editor"])
+            },
+            zellijSSHConnectionSnapshotProvider: { _ in
+                connectionReads.withLock {
+                    $0 += 1
+                    return $0 <= 2 ? frozen : changed
+                }
+            }
+        )
+        let state = WorkspaceWindowState(
+            windowID: UUID(),
+            navigation: WorkspaceNavigationDescriptor(
+                hostKey: environment.host.configKey,
+                projectKey: nil,
+                worktreeGeneration: nil
+            ),
+            tmux: nil,
+            zellij: WorkspaceZellijDescriptor(
+                hostKey: environment.host.configKey,
+                sessionName: "editor"
+            )
+        )
+
+        model.startZellijSessionDiscovery()
+        model.beginRestoration(state)
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedZellijSurface()
+            return store.lastCommand != nil
+        }
+
+        #expect(connectionReads.withLock { $0 } == 2)
+        #expect(validationArguments.withLock { $0 } == [frozen.arguments])
+        #expect(store.lastCommand?.contains("/tmp/frozen-zellij-config") == true)
+        #expect(store.lastCommand?.contains("/tmp/changed-zellij-config") == false)
+        #expect(!model.isWorkspaceRestorationPending)
+        await model.shutdown()
+    }
+
+    @Test("Zellij restoration rejects SSH route drift during validation")
+    func zellijRestorationRejectsSSHRouteDrift() async throws {
+        let environment = try setupRemoteEnvironment()
+        var snapshot = environment.snapshot
+        snapshot.hosts[0].zellijAvailable = true
+        snapshot.hosts[0].zellijSessions = [
+            ZellijSessionSummary(name: "editor"),
+        ]
+        let frozen = SSHConnectionArgumentsSnapshot(arguments: [
+            "-F", "/tmp/frozen-zellij-config", "dev@build.example.test",
+        ])
+        let changed = SSHConnectionArgumentsSnapshot(arguments: [
+            "-F", "/tmp/changed-zellij-config", "dev@other.example.test",
+        ])
+        let connectionReads = Mutex(0)
+        let store = RecordingNativeSessionSurfaceStore()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: UUID(),
+            snapshot: snapshot,
+            nativeZellijSurfaceStore: store,
+            nativeZellijPathProvider: { _ in .success("/usr/bin/zellij") },
+            zellijSessionDiscovery: { _ in .available(["editor"]) },
+            zellijSessionValidationDiscovery: { _, _ in
+                .available(["editor"])
+            },
+            zellijSSHConnectionSnapshotProvider: { _ in
+                connectionReads.withLock {
+                    $0 += 1
+                    return $0 == 1 ? frozen : changed
+                }
+            }
+        )
+        let state = WorkspaceWindowState(
+            windowID: UUID(),
+            navigation: WorkspaceNavigationDescriptor(
+                hostKey: environment.host.configKey,
+                projectKey: nil,
+                worktreeGeneration: nil
+            ),
+            tmux: nil,
+            zellij: WorkspaceZellijDescriptor(
+                hostKey: environment.host.configKey,
+                sessionName: "editor"
+            )
+        )
+
+        model.startZellijSessionDiscovery()
+        model.beginRestoration(state)
+        await waitUntilMainActor {
+            !model.isWorkspaceRestorationPending
+        }
+        model.prepareActiveBorrowedZellijSurface()
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(connectionReads.withLock { $0 } >= 2)
+        #expect(model.activeBorrowedZellijSelection == nil)
+        #expect(store.requestedConfigurations.isEmpty)
+        await model.shutdown()
+    }
+
+    @Test("Zellij restoration cancels when its host endpoint changes")
+    func zellijRestorationRejectsHostEndpointDrift() async throws {
+        let environment = try setupRemoteEnvironment()
+        var snapshot = environment.snapshot
+        snapshot.hosts[0].zellijAvailable = true
+        snapshot.hosts[0].zellijSessions = [
+            ZellijSessionSummary(name: "editor"),
+        ]
+        let validationAttempts = Mutex(0)
+        let firstValidationContinuation = Mutex<
+            CheckedContinuation<Void, Never>?
+        >(nil)
+        let configuredHost = Mutex(SSHHost(
+            configKey: environment.host.configKey,
+            name: environment.host.name,
+            platform: .linux,
+            sshDestination: environment.host.sshDestination ?? ""
+        ))
+        let store = RecordingNativeSessionSurfaceStore()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: UUID(),
+            snapshot: snapshot,
+            nativeZellijSurfaceStore: store,
+            nativeZellijPathProvider: { _ in .success("/usr/bin/zellij") },
+            zellijSessionDiscovery: { _ in .available(["editor"]) },
+            zellijSessionValidationDiscovery: { _, _ in
+                let attempt = validationAttempts.withLock {
+                    $0 += 1
+                    return $0
+                }
+                if attempt == 1 {
+                    await withCheckedContinuation { continuation in
+                        firstValidationContinuation.withLock {
+                            $0 = continuation
+                        }
+                    }
+                }
+                return .available(["editor"])
+            },
+            configuredSSHHostsProvider: {
+                [configuredHost.withLock { $0 }]
+            }
+        )
+        let state = WorkspaceWindowState(
+            windowID: UUID(),
+            navigation: WorkspaceNavigationDescriptor(
+                hostKey: environment.host.configKey,
+                projectKey: nil,
+                worktreeGeneration: nil
+            ),
+            tmux: nil,
+            zellij: WorkspaceZellijDescriptor(
+                hostKey: environment.host.configKey,
+                sessionName: "editor"
+            )
+        )
+
+        model.startZellijSessionDiscovery()
+        model.beginRestoration(state)
+        await waitUntilMainActor {
+            firstValidationContinuation.withLock { $0 != nil }
+        }
+        configuredHost.withLock {
+            $0.sshDestination = "dev@other.example.test"
+        }
+        model.refreshHosts()
+        #expect(model.snapshot.host(id: environment.host.id)?.sshDestination
+            == "dev@other.example.test")
+        let continuation = firstValidationContinuation.withLock {
+            let continuation = $0
+            $0 = nil
+            return continuation
+        }
+        continuation?.resume()
+        await waitUntilMainActor {
+            !model.isWorkspaceRestorationPending
+        }
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(validationAttempts.withLock { $0 } == 1)
+        #expect(model.activeBorrowedZellijSelection == nil)
+        #expect(store.requestedConfigurations.isEmpty)
+        await model.shutdown()
+    }
+
+    @Test("Zellij restoration resumes after a concurrent kill fails")
+    func zellijRestorationResumesAfterFailedKill() async throws {
+        let environment = try setupRemoteEnvironment()
+        var snapshot = environment.snapshot
+        snapshot.hosts[0].zellijAvailable = true
+        snapshot.hosts[0].zellijSessions = [
+            ZellijSessionSummary(name: "editor"),
+        ]
+        let killCoordinator = ZellijSessionKillCoordinator()
+        let discoveryAttempts = Mutex(0)
+        let store = RecordingNativeSessionSurfaceStore()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: UUID(),
+            snapshot: snapshot,
+            nativeZellijSurfaceStore: store,
+            nativeZellijPathProvider: { _ in .success("/usr/bin/zellij") },
+            zellijSessionKillCoordinator: killCoordinator,
+            zellijSessionDiscovery: { _ in
+                discoveryAttempts.withLock { $0 += 1 }
+                return .available(["editor"])
+            },
+            zellijSessionValidationDiscovery: { _, _ in
+                .available(["editor"])
+            }
+        )
+        let state = WorkspaceWindowState(
+            windowID: UUID(),
+            navigation: WorkspaceNavigationDescriptor(
+                hostKey: environment.host.configKey,
+                projectKey: nil,
+                worktreeGeneration: nil
+            ),
+            tmux: nil,
+            zellij: WorkspaceZellijDescriptor(
+                hostKey: environment.host.configKey,
+                sessionName: "editor"
+            )
+        )
+        let key = ZellijSessionKillCoordinator.Key(
+            hostID: environment.host.id,
+            sessionName: "editor"
+        )
+        let operation = try #require(killCoordinator.begin(key: key))
+
+        model.startZellijSessionDiscovery()
+        model.beginRestoration(state)
+        await waitUntilMainActor {
+            discoveryAttempts.withLock { $0 } >= 1
+                && model.isWorkspaceRestorationPending
+        }
+        killCoordinator.finish(operation, outcome: .failed)
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedZellijSurface()
+            return store.lastCommand != nil
+        }
+
+        #expect(model.activeBorrowedZellijSelection?.name == "editor")
+        #expect(!model.isWorkspaceRestorationPending)
+        await model.shutdown()
+    }
+
+    @Test("Zellij restoration cancels when a pending kill outlives its route")
+    func zellijRestorationRejectsRouteDriftDuringPendingKill() async throws {
+        let environment = try setupRemoteEnvironment()
+        var snapshot = environment.snapshot
+        snapshot.hosts[0].zellijAvailable = true
+        snapshot.hosts[0].zellijSessions = [
+            ZellijSessionSummary(name: "editor"),
+        ]
+        let configuredHost = Mutex(SSHHost(
+            configKey: environment.host.configKey,
+            name: environment.host.name,
+            platform: .linux,
+            sshDestination: environment.host.sshDestination ?? ""
+        ))
+        let killCoordinator = ZellijSessionKillCoordinator()
+        let store = RecordingNativeSessionSurfaceStore()
+        let discoveries = Mutex(0)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: UUID(),
+            snapshot: snapshot,
+            nativeZellijSurfaceStore: store,
+            nativeZellijPathProvider: { _ in .success("/usr/bin/zellij") },
+            zellijSessionKillCoordinator: killCoordinator,
+            zellijSessionDiscovery: { _ in
+                discoveries.withLock { $0 += 1 }
+                return .available(["editor"])
+            },
+            zellijSessionValidationDiscovery: { _, _ in
+                .available(["editor"])
+            },
+            configuredSSHHostsProvider: {
+                [configuredHost.withLock { $0 }]
+            }
+        )
+        let state = WorkspaceWindowState(
+            windowID: UUID(),
+            navigation: WorkspaceNavigationDescriptor(
+                hostKey: environment.host.configKey,
+                projectKey: nil,
+                worktreeGeneration: nil
+            ),
+            tmux: nil,
+            zellij: WorkspaceZellijDescriptor(
+                hostKey: environment.host.configKey,
+                sessionName: "editor"
+            )
+        )
+        let operation = try #require(killCoordinator.begin(key: .init(
+            hostID: environment.host.id,
+            sessionName: "editor"
+        )))
+        model.startZellijSessionDiscovery()
+        model.beginRestoration(state)
+        await waitUntilMainActor {
+            discoveries.withLock { $0 } >= 1
+                && model.isWorkspaceRestorationPending
+        }
+        configuredHost.withLock {
+            $0.sshDestination = "dev@other.example.test"
+        }
+        model.refreshHosts()
+        killCoordinator.finish(operation, outcome: .failed)
+        await waitUntilMainActor { !model.isWorkspaceRestorationPending }
+
+        #expect(model.activeBorrowedZellijSelection == nil)
+        #expect(store.requestedConfigurations.isEmpty)
+        await model.shutdown()
+    }
+
     @Test("explicit navigation cancels pending Herdr restoration")
     func navigationCancelsPendingHerdrRestoration() async throws {
         let environment = try setupStandardEnvironment()

@@ -10,6 +10,12 @@ test, and documentation-only changes are omitted.
 - exe.dev accounts can limit discovery to VMs carrying specific exe.dev tags,
   so a fleet of dozens of VMs shows only the ones you work in.
 
+- Zellij joins Ghosthub's all-multiplexer fleet as a first-class peer on the
+  local Mac and remote macOS and Linux hosts. Ghosthub discovers active
+  sessions, creates or attaches through the ordinary Zellij client, reconnects
+  remote attachments after transport loss, and provides a confirmed Kill
+  Session action without exposing resurrection or pane management.
+
 ## [0.7.0] - 2026-08-09
 
 ### Added

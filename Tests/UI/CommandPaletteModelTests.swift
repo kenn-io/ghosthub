@@ -720,6 +720,40 @@ struct CommandPaletteModelTests {
         })
     }
 
+    @Test("active Zellij sessions expose create, open, and kill commands")
+    func zellijSessionCommands() {
+        let host = HostSummary.fixture(
+            name: "Build Box",
+            kind: .remote,
+            platform: .linux,
+            sshDestination: "dev@builder",
+            zellijSessions: [ZellijSessionSummary(name: "api")],
+            zellijAvailable: true
+        )
+        let commands = makeCommandPaletteCommands(
+            snapshot: .fixture(hosts: [host]),
+            selection: WorkspaceSelection(selectedHostID: host.id)
+        )
+        let selection = WorkspaceZellijSessionSelection(
+            hostID: host.id,
+            name: "api"
+        )
+
+        #expect(commands.contains {
+            $0.action == .newZellijSession(host.id)
+        })
+        #expect(commands.contains {
+            $0.action == .openZellijSession(selection)
+        })
+        #expect(commands.contains {
+            $0.action == .killZellijSession(selection)
+        })
+        #expect(CommandPaletteModel.filteredCommands(
+            commands,
+            query: "zellij api build"
+        ).count == 2)
+    }
+
     @Test("Windows hosts do not offer POSIX project registration")
     func windowsHostsHideAddProject() {
         let host = HostSummary.fixture(

@@ -253,14 +253,19 @@ capture_state hero.png
 echo "==> guide: ordinary worktree session"
 palette "add-session-filters"
 sleep 4
-# Select the running default Herdr row so its discoverable lifecycle menu
-# affordance remains visible while the palette names the available actions.
-# AppKit uses a bottom-left coordinate origin for the fixed demo window.
-demo_input click "120,578"
+# The hero capture collapses the local Zellij group to keep its terminal
+# content prominent. Reopen it, attach to a synthetic Zellij session, and
+# leave Tmux and Herdr visible as peer groups while the palette names the
+# available Zellij actions. AppKit uses a bottom-left coordinate origin.
+demo_input click "32,489"
+palette "docs-preview"
 sleep 2
-palette "Herdr" false
+palette "Zellij" false
 capture_state guide-sessions.png
 demo_input escape
+# Restore the compact disclosure state used by the later fixed-size captures.
+demo_input click "32,489"
+sleep 0.5
 
 echo "==> guide: remote host settings"
 palette "Open Hosts Settings" true sheet
@@ -349,43 +354,14 @@ if [[ "${GHOSTHUB_DEMO_TABS_ONLY:-}" != "1" ]]; then
 fi
 
 prepare_command_tab() {
-  local query="$1" create="${2:-true}" select="${3:-palette}"
+  local query="$1" create="${2:-true}"
   if [[ "$create" == "true" ]]; then
     demo_input new-tab
     sleep 2
   fi
   demo_input frame "110,145,1500,820"
   sleep 1
-  if [[ "$select" == "row" ]]; then
-    case "$query" in
-      fix-reconnect-backoff)
-        demo_input click "32,310"
-        sleep 0.5
-        demo_input click "32,268"
-        sleep 0.5
-        demo_input click "80,202"
-        ;;
-      add-session-filters)
-        demo_input click "32,228"
-        sleep 0.5
-        demo_input click "32,185"
-        sleep 0.5
-        demo_input click "80,115"
-        ;;
-      docbank-export) demo_input click "80,613" ;;
-      release-watch) demo_input click "80,569" ;;
-      scratch) demo_input click "80,525" ;;
-      test-matrix) demo_input click "80,481" ;;
-      *)
-        echo "error: no fixed demo tab row for $query" >&2
-        return 1
-        ;;
-    esac
-  elif [[ "$select" == "press" ]]; then
-    demo_input press "$query"
-  else
-    palette "$query"
-  fi
+  palette "$query"
   sleep 3
   demo_input expect-window-title "$query"
   demo_input hide-sidebar
@@ -394,19 +370,14 @@ prepare_command_tab() {
 echo "==> guide: six-tab tmux workspace"
 demo_input new-window
 sleep 2
-if [[ "${GHOSTHUB_DEMO_TABS_ONLY:-}" != "1" ]]; then
-  # The Overview captures leave Projects expanded. Collapse it so the first
-  # tab starts from the same sidebar state as the focused tabs-only workflow.
-  demo_input frame "110,145,1500,820"
-  demo_input click "32,310"
-  sleep 0.5
-fi
-prepare_command_tab "fix-reconnect-backoff" false row
-prepare_command_tab "add-session-filters" true row
-prepare_command_tab "scratch" true row
-prepare_command_tab "docbank-export" true row
-prepare_command_tab "release-watch" true row
-prepare_command_tab "test-matrix" true row
+# Palette commands are scoped to the controlled workspace, so tab selection
+# stays independent of every command-center window already on screen.
+prepare_command_tab "fix-reconnect-backoff" false
+prepare_command_tab "add-session-filters"
+prepare_command_tab "scratch"
+prepare_command_tab "docbank-export"
+prepare_command_tab "release-watch"
+prepare_command_tab "test-matrix"
 capture_state guide-native-tabs.png exact
 
 if [[ "${GHOSTHUB_DEMO_TABS_ONLY:-}" == "1" ]]; then

@@ -91,11 +91,15 @@ enum ConfiguredHostOverlay {
             if invalidatedHostIDs.contains(host.id) {
                 host.tmuxSessions = []
                 host.herdrSessions = []
+                host.zellijSessions = []
                 host.herdrAvailable = false
+                host.zellijAvailable = false
             }
             if host.platform == .windows {
                 host.herdrSessions = []
+                host.zellijSessions = []
                 host.herdrAvailable = false
+                host.zellijAvailable = false
             }
             hosts.append(host)
         }

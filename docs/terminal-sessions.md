@@ -6,8 +6,8 @@ configuration and launcher-terminal environment.
 
 ## Product Boundary
 
-Ghosthub is a native session switcher for tmux and Herdr fleets across the
-local Mac and configured SSH hosts. There are three independent inventory
+Ghosthub is a native session switcher for tmux, Herdr, and Zellij fleets across the
+local Mac and configured SSH hosts. There are four independent inventory
 sources:
 
 - **kwt workspaces:** projects, worktrees, and registered plain directories
@@ -17,9 +17,12 @@ sources:
   list-sessions` discovery on the host.
 - **Herdr sessions:** running and stopped sessions returned by `herdr session list --json`
   on the local Mac and remote POSIX hosts.
+- **Zellij sessions:** active sessions returned by `zellij list-sessions
+  --no-formatting` on the local Mac and remote POSIX hosts. Exited,
+  resurrectable sessions are filtered out.
 
 The two tmux-backed sources open through the same ordinary tmux client in one
-libghostty surface. Herdr opens through its ordinary whole-session client. A
+libghostty surface. Herdr and Zellij open through their ordinary whole-session clients. A
 session created by Middleman is visible when it exists on the host tmux server,
 but Ghosthub does not consult Middleman to identify, create, attach, mutate, or
 destroy it.
@@ -29,8 +32,8 @@ New Tmux Session for a host. This is not a separate managed-session type: the
 result immediately joins the same direct tmux inventory and has the same
 detach-only presentation lifecycle as every other session.
 
-Herdr is optional. Exit 127 during its capability or inventory probe is silent
-and does not affect host usability. Invalid output and real command failures
+Herdr and Zellij are optional. Exit 127 during either capability or inventory
+probe is silent and does not affect host usability. Invalid output and real command failures
 produce only a host-scoped warning; they never change tmux reachability, kwt
 availability, cached project inventory, or the workspace's blocking state.
 
@@ -116,7 +119,7 @@ remote-client mode.
 Herdr owns workspaces, tabs, panes, layout, history, key bindings, terminal
 state, and the processes inside each session. Ghosthub owns discovery,
 whole-session lifecycle requests, and the disposable client presentation. Each
-scene may present either one tmux client or one Herdr client, never both.
+scene may present one tmux, Herdr, or Zellij client, never more than one.
 Navigating away, pressing Cmd-W, closing a window, or quitting closes only the
 client. Ghosthub never reconstructs or otherwise controls Herdr themes,
 workspaces, tabs, panes, agents, plugins, installation, updates, configuration,
@@ -191,6 +194,50 @@ Live validation and automated fixtures must isolate Herdr with
 `XDG_CONFIG_HOME`. `HERDR_CONFIG_PATH` alone is insufficient because it does
 not relocate all session state.
 
+## Native Zellij Attachment
+
+Ghosthub resolves `zellij` in the host account's login environment and opens an
+active session with `zellij attach <exact-name>`. **New Zellij Session** uses
+`zellij --session <exact-name>`, which creates and presents a new session while
+refusing both active and resurrectable name collisions. Local sessions use
+libghostty's normal macOS login-shell path. Remote sessions use an ordinary
+OpenSSH PTY with keepalives and the remote account login environment.
+
+Zellij owns tabs, panes, layout, history, key bindings, terminal state,
+configuration, plugins, and every process inside the session. Ghosthub owns
+active-session discovery and the disposable client presentation. It does not
+offer pane actions, an explicit resurrection workflow, or deletion of
+resurrection data. Zellij does not expose an atomic active-only attachment:
+Ghosthub validates the exact name as active first, but if the session exits
+before `zellij attach` resolves it, Zellij may resurrect its saved layout.
+Ghosthub never passes `--force-run-commands`; this narrow upstream race is
+accepted rather than represented as a false attach-only guarantee. Discovery
+and attachment remove inherited `ZELLIJ`, `ZELLIJ_PANE_ID`, and
+`ZELLIJ_SESSION_NAME` values so launching Ghosthub from inside Zellij cannot
+redirect the new client into the enclosing session.
+
+Navigating away, pressing Cmd-W, closing a window, or quitting closes only the
+client. A clean detach stays detached until the user reconnects. A remote SSH
+transport failure probes the exact active session before launching a
+replacement client and stops recovery if the session disappears, Zellij is no
+longer available, or the failure requires connection review.
+
+**Kill Session** is the only destructive Zellij lifecycle action. Ghosthub
+confirms the host and name, establishes a shared same-session kill fence, then
+repeats active-session discovery against the current endpoint immediately
+before `zellij kill-session <exact-name>`. The fence cancels matching reconnect
+attempts and detaches matching presentations in every scene before the command,
+so neither a reconnect nor an already-launched client can immediately resurrect
+a deliberately killed session. Successful kills invalidate in-flight Zellij
+discovery, remove the row from every scene, and begin a fresh inventory probe.
+A per-session kill revision also rejects attachment validation that began
+before the kill. A failed kill releases the fence and revalidates an eligible
+detached presentation or matching pending open or restoration before resuming
+it, while preserving its navigation and route checks. Zellij does not expose a
+stable session-generation identifier, so a same-name replacement between that
+final check and the kill command cannot receive tmux's replacement-identity
+guarantee. Closing or disconnecting never implies a kill.
+
 ## Relaunch Restoration
 
 Quitting Ghosthub or installing an update only drops disposable clients. When
@@ -231,6 +278,12 @@ the descriptor's exact host reports that exact name as running. A missing or
 stopped session remains pending and never substitutes another name. Because
 Herdr's attach command can restart a server that stops after the final probe,
 Ghosthub accepts only that narrow probe-to-launch race.
+An ordinary Zellij session restores only after a completed fresh Zellij probe
+on the exact host reports the exact name as active. Remote restoration then
+validates that session against one SSH connection snapshot, rechecks the route,
+and reuses the snapshot for attachment; route drift cancels restoration. It
+never creates a missing session intentionally, but the same unavoidable Zellij
+probe-to-attach resurrection race applies.
 Offline or otherwise unavailable targets remain pending and retry when normal
 inventory refreshes publish new state. Navigating the window elsewhere cancels
 the pending target. If a scene was captured without an active native
@@ -376,7 +429,7 @@ attach-only client. Confirmed absence ends a default-socket or protected-socket
 presentation only when that exact session had already been established; an
 unconfirmed interrupted kwt establishment may rerun its one-shot creation path.
 A reachable non-transport client failure is presented as unable to attach
-rather than retried indefinitely. A clean tmux or Herdr detach does not start
+rather than retried indefinitely. A clean tmux, Herdr, or Zellij detach does not start
 recovery. Herdr recovery shares only the supervisor policy: each attempt uses
 its own exact Herdr session probe, stops when Herdr is unavailable or the name
 is absent, and never creates a terminal surface for an unsuccessful probe.
@@ -409,7 +462,7 @@ build 22523 or newer. Older ConPTY builds preserve keyboard input but consume
 psmux mouse-reporting sequences; supporting them would require the separate
 psmux `ssh -T` wrapper and is not part of this experiment.
 
-Tmux and Herdr servers remain alive on the remote host while the network is
+Tmux, Herdr, and Zellij servers remain alive on the remote host while the network is
 unavailable. After connectivity returns, the client reattaches to the same
 exact session and its backend renders authoritative state. Copy-mode and
 programs on configured remote
@@ -425,8 +478,9 @@ unsafe unbracketed text can reach the PTY.
 ## Inventory and Startup
 
 At startup Ghosthub loads kwt project/worktree inventory, tmux session
-inventory, and optional Herdr inventory for every supported resolvable host.
-Herdr is not probed on experimental Windows hosts. The initial content view
+inventory, and optional Herdr and Zellij inventories for every supported
+resolvable host. Herdr and Zellij are not probed on experimental Windows
+hosts. The initial content view
 remains in an
 explicit loading state until kwt returns, so the empty onboarding state never
 flashes before existing workspaces are known. That loaded empty state is

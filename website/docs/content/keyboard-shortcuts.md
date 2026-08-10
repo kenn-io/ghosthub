@@ -57,7 +57,7 @@ include Settings (++cmd+comma++), New Window (++cmd+n++), New Tab (++cmd+t++),
 Close (++cmd+w++), Close Window (++shift+cmd+w++), Quit (++cmd+q++), and the
 usual Edit shortcuts. The Keyboard pane lists them for reference.
 
-Closing a presentation, window, or the app detaches from tmux or Herdr. It does
+Closing a presentation, window, or the app detaches from tmux, Herdr, or Zellij. It does
 not end the session.
 
 ## Edit a shortcut

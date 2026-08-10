@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Faux Zellij inventory for the isolated website screenshot environment.
+set -euo pipefail
+
+scratch="${GHOSTHUB_DEMO_SCRATCH:?GHOSTHUB_DEMO_SCRATCH is not set}"
+if [[ ! -f "$scratch/.ghosthub-demo-scratch" ]]; then
+  echo "faux zellij: demo scratch is not staged" >&2
+  exit 64
+fi
+
+if [[ "${1:-}" == "list-sessions" && "${2:-}" == "--no-formatting" \
+  && "$#" -eq 2 ]]; then
+  found=""
+  for name in release-shell docs-preview; do
+    if [[ ! -f "$scratch/zellij-killed-$name" ]]; then
+      printf '%s [Created 18m 7s ago]\n' "$name"
+      found=1
+    fi
+  done
+  printf 'archived-layout [Created 2d 3h ago] (EXITED - attach to resurrect)\n'
+  [[ -n "$found" ]] && exit 0
+  echo "No active zellij sessions found." >&2
+  exit 1
+fi
+
+if [[ "${1:-}" == "attach" && "${2:-}" == "--" \
+  && -n "${3:-}" && "$#" -eq 3 ]]; then
+  name="$3"
+  if [[ -f "$scratch/zellij-killed-$name" ]]; then
+    echo "faux zellij: session is not active" >&2
+    exit 1
+  fi
+  printf '\033[2J\033[HZellij demo session: %s\n\n' "$name"
+  printf 'Tabs, panes, and layout remain owned by Zellij.\n'
+  while true; do sleep 3600; done
+fi
+
+if [[ "${1:-}" == --session=* && "$#" -eq 1 ]]; then
+  name="${1#--session=}"
+  [[ -n "$name" ]] || exit 64
+  if [[ "$name" == "release-shell" || "$name" == "docs-preview" \
+    || "$name" == "archived-layout" \
+    || -f "$scratch/zellij-killed-$name" ]]; then
+    echo "faux zellij: session name already exists" >&2
+    exit 1
+  fi
+  printf '\033[2J\033[HZellij demo session: %s\n\n' "$name"
+  while true; do sleep 3600; done
+fi
+
+if [[ "${1:-}" == "kill-session" && "${2:-}" == "--" \
+  && -n "${3:-}" && "$#" -eq 3 ]]; then
+  touch "$scratch/zellij-killed-$3"
+  exit 0
+fi
+
+echo "faux zellij: unsupported command" >&2
+exit 64

@@ -308,6 +308,84 @@ def test_demo_herdr_requires_staged_scratch_ownership(tmp_path: Path) -> None:
     assert result.stdout == ""
     assert "demo scratch is not staged" in result.stderr
 
+
+def run_zellij_until_render(
+    fixture: Path,
+    arguments: list[str],
+    *,
+    env: dict[str, str],
+) -> tuple[str, str]:
+    process = subprocess.Popen(
+        [str(fixture), *arguments],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=0.2)
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGTERM)
+        stdout, stderr = process.communicate(timeout=1)
+    return stdout, stderr
+
+
+@pytest.mark.parametrize(
+    ("fixture_name", "scratch_variable", "render_prefix", "kill_name"),
+    [
+        (
+            "bin/zellij",
+            "GHOSTHUB_DEMO_SCRATCH",
+            "Zellij demo session",
+            "-release",
+        ),
+        (
+            "remote/zellij",
+            "GHOSTHUB_DEMO_REMOTE_SCRATCH",
+            "Remote Zellij demo session",
+            "gpu-console",
+        ),
+    ],
+)
+def test_demo_zellij_accepts_hardened_session_arguments(
+    tmp_path: Path,
+    fixture_name: str,
+    scratch_variable: str,
+    render_prefix: str,
+    kill_name: str,
+) -> None:
+    scratch = tmp_path / "zellij"
+    scratch.mkdir(mode=0o700)
+    (scratch / ".ghosthub-demo-scratch").touch()
+    fixture = DEMO / fixture_name
+    env = {**os.environ, scratch_variable: str(scratch)}
+
+    attached, attach_error = run_zellij_until_render(
+        fixture,
+        ["attach", "--", "-release"],
+        env=env,
+    )
+    created, create_error = run_zellij_until_render(
+        fixture,
+        ["--session=-new-release"],
+        env=env,
+    )
+    killed = subprocess.run(
+        [str(fixture), "kill-session", "--", kill_name],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert f"{render_prefix}: -release" in attached, attach_error
+    assert f"{render_prefix}: -new-release" in created, create_error
+    assert killed.returncode == 0, killed.stderr
+    assert (scratch / f"zellij-killed-{kill_name}").is_file()
+
 @pytest.mark.parametrize(
     ("launcher_shell", "launcher_zdotdir"),
     [

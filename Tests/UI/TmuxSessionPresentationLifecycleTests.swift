@@ -85,6 +85,19 @@ struct TmuxSessionPresentationLifecycleTests {
         #expect(!didDetach)
     }
 
+    @Test("command palette navigation deactivates every session backend")
+    func commandPaletteNavigationDeactivatesEverySessionBackend() {
+        var deactivated: [String] = []
+
+        RootView.deactivateSessionsForNavigation(
+            hideTmux: { deactivated.append("tmux") },
+            deactivateHerdr: { deactivated.append("herdr") },
+            deactivateZellij: { deactivated.append("zellij") }
+        )
+
+        #expect(deactivated == ["tmux", "herdr", "zellij"])
+    }
+
     @Test("validated Herdr activation closes the tmux presentation it replaced")
     func herdrActivationClosesReplacedTmuxAfterValidation() async throws {
         let hostID = UUID()
@@ -126,6 +139,25 @@ struct TmuxSessionPresentationLifecycleTests {
             )
         }
         #expect(closedTmuxSessions == [tmux])
+    }
+
+    @Test("Zellij activation delegates peer takeover to the scene model")
+    func zellijActivationDelegatesPeerTakeover() {
+        let session = WorkspaceZellijSessionSelection(
+            hostID: UUID(),
+            name: "api"
+        )
+        var events: [String] = []
+
+        RootView.startZellijSessionActivation(
+            session,
+            open: {
+                #expect($0 == session)
+                events.append("open-zellij")
+            }
+        )
+
+        #expect(events == ["open-zellij"])
     }
 
     @Test(
@@ -239,7 +271,8 @@ struct TmuxSessionPresentationLifecycleTests {
             action: .delete
         )
         let firstContinuation = Mutex<CheckedContinuation<Void, Never>?>(nil)
-        let controller = HerdrLifecyclePreparationController()
+        let controller =
+            SessionPreparationController<HerdrSessionLifecycleRequest>()
         var prepared: [HerdrSessionLifecycleRequest] = []
         var cancelled: [HerdrSessionLifecycleRequest] = []
         var failures: [String] = []
@@ -291,6 +324,95 @@ struct TmuxSessionPresentationLifecycleTests {
         #expect(prepared == [second])
         #expect(cancelled == [first])
         #expect(failures.isEmpty)
+    }
+
+    @Test("newer Zellij kill preparation supersedes and releases older authority")
+    func zellijKillPreparationSupersedesOlderRequest() async {
+        let host = HostSummary.fixture()
+        let first = ZellijSessionKillRequest(
+            authorityID: UUID(),
+            session: .init(hostID: host.id, name: "first"),
+            confirmedHost: host
+        )
+        let second = ZellijSessionKillRequest(
+            authorityID: UUID(),
+            session: .init(hostID: host.id, name: "second"),
+            confirmedHost: host
+        )
+        let firstContinuation = Mutex<CheckedContinuation<Void, Never>?>(nil)
+        let controller =
+            SessionPreparationController<ZellijSessionKillRequest>()
+        var prepared: [ZellijSessionKillRequest] = []
+        var cancelled: [ZellijSessionKillRequest] = []
+        var failures: [String] = []
+
+        controller.start(
+            prepare: {
+                await withCheckedContinuation { continuation in
+                    firstContinuation.withLock { $0 = continuation }
+                }
+                return first
+            },
+            cancelPrepared: { cancelled.append($0) },
+            onPrepared: { prepared.append($0) },
+            onFailure: { failures.append($0.localizedDescription) }
+        )
+        for _ in 0 ..< 1_000 {
+            if firstContinuation.withLock({ $0 != nil }) {
+                break
+            }
+            await Task.yield()
+        }
+
+        controller.start(
+            prepare: { second },
+            cancelPrepared: { cancelled.append($0) },
+            onPrepared: { prepared.append($0) },
+            onFailure: { failures.append($0.localizedDescription) }
+        )
+        for _ in 0 ..< 1_000 {
+            if prepared == [second] {
+                break
+            }
+            await Task.yield()
+        }
+
+        let continuation = firstContinuation.withLock {
+            let continuation = $0
+            $0 = nil
+            return continuation
+        }
+        continuation?.resume()
+        for _ in 0 ..< 1_000 {
+            if cancelled == [first] {
+                break
+            }
+            await Task.yield()
+        }
+
+        #expect(prepared == [second])
+        #expect(cancelled == [first])
+        #expect(failures.isEmpty)
+    }
+
+    @Test("displacing a Zellij kill confirmation releases its authority")
+    func displacedZellijKillConfirmationReleasesAuthority() {
+        let host = HostSummary.fixture()
+        let request = ZellijSessionKillRequest(
+            authorityID: UUID(),
+            session: .init(hostID: host.id, name: "api"),
+            confirmedHost: host
+        )
+        var alert: WorkspaceAlert? = .zellijKillConfirmation(request)
+        var cancelled: [ZellijSessionKillRequest] = []
+
+        RootView.cancelPreparedZellijKill(
+            workspaceAlert: &alert,
+            cancel: { cancelled.append($0) }
+        )
+
+        #expect(alert == nil)
+        #expect(cancelled == [request])
     }
 
     @Test("Root presents only the active Herdr backend")
@@ -376,6 +498,60 @@ struct TmuxSessionPresentationLifecycleTests {
 
         #expect(model.closedSessions == [model.activeSession])
         withExtendedLifetime(hostingView) {}
+    }
+
+    @Test("peer takeover navigation preserves Herdr during validation")
+    func peerTakeoverNavigationPreservesHerdr() {
+        let model = HerdrRoutePresentationModel()
+        let hostingView = hostView(
+            HerdrRoutePresentationHarness(
+                model: model,
+                suppressesDeactivation: true
+            ),
+            size: CGSize(width: 100, height: 100)
+        )
+
+        model.selectHostRoute()
+        hostingView.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        model.navigate(.anotherHost)
+        hostingView.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+
+        #expect(model.closedSessions.isEmpty)
+        withExtendedLifetime(hostingView) {}
+    }
+
+    @Test("peer takeover navigation preserves tmux during validation")
+    func peerTakeoverNavigationPreservesTmux() {
+        let model = TmuxRoutePresentationModel()
+        let hostingView = hostView(
+            TmuxRoutePresentationHarness(model: model),
+            size: CGSize(width: 100, height: 100)
+        )
+
+        model.navigateToPeerHost()
+        hostingView.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+
+        #expect(model.hideCount == 0)
+        withExtendedLifetime(hostingView) {}
+    }
+
+    @Test("pinned console preserves peer takeover navigation suppression")
+    func pinnedConsolePreservesPeerTakeoverNavigationSuppression() {
+        let targetHostID = UUID()
+        let pending = WorkspaceSelection(selectedHostID: targetHostID)
+        let selection = WorkspaceSelection(
+            selectedHostID: targetHostID,
+            consoleBindingMode: .pinHost,
+            pinnedConsoleHostID: UUID()
+        )
+
+        #expect(RootView.isPeerTakeoverNavigation(
+            selection,
+            pending: pending
+        ))
     }
 
     @Test("Root refuses contradictory native presentations")
@@ -1357,15 +1533,60 @@ private final class HerdrRoutePresentationModel: ObservableObject {
 
 private struct HerdrRoutePresentationHarness: View {
     @ObservedObject var model: HerdrRoutePresentationModel
+    var suppressesDeactivation = false
 
     var body: some View {
         Color.clear.modifier(
             HerdrSessionPresentationLifecycleModifier(
                 selection: model.selection,
                 activeSession: model.activeSession,
+                suppressesDeactivation: suppressesDeactivation,
                 deactivate: { session in
                     model.recordClosedSession(session)
                 }
+            )
+        )
+    }
+}
+
+@MainActor
+private final class TmuxRoutePresentationModel: ObservableObject {
+    @Published var selection: WorkspaceSelection
+    let baseline: WorkspaceSelection
+    let activeSession: WorkspaceTmuxSessionSelection
+    private(set) var hideCount = 0
+    private let peerHostID = UUID()
+
+    init() {
+        let hostID = UUID()
+        baseline = WorkspaceSelection(selectedHostID: hostID)
+        selection = baseline
+        activeSession = WorkspaceTmuxSessionSelection(
+            hostID: hostID,
+            name: "editor"
+        )
+    }
+
+    func navigateToPeerHost() {
+        selection = WorkspaceSelection(selectedHostID: peerHostID)
+    }
+
+    func recordHide() {
+        hideCount += 1
+    }
+}
+
+private struct TmuxRoutePresentationHarness: View {
+    @ObservedObject var model: TmuxRoutePresentationModel
+
+    var body: some View {
+        Color.clear.modifier(
+            TmuxSessionPresentationLifecycleModifier(
+                selection: model.selection,
+                selectionBaseline: model.baseline,
+                activeSession: model.activeSession,
+                suppressesHide: true,
+                hide: model.recordHide
             )
         )
     }

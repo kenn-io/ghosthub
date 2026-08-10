@@ -159,7 +159,9 @@ extension WorkspaceSceneModel {
             tmuxSessionOrderRawValue: WorkspaceSidebarOrderStorage
                 .tmuxSessionRawValue(),
             herdrSessionOrderRawValue: WorkspaceSidebarOrderStorage
-                .herdrSessionRawValue()
+                .herdrSessionRawValue(),
+            zellijSessionOrderRawValue: WorkspaceSidebarOrderStorage
+                .zellijSessionRawValue()
         )
     }
 
@@ -238,6 +240,12 @@ extension WorkspaceSceneModel {
                 hostID: hostID,
                 name: name
             ))
+            return true
+        case let .zellijSession(hostID, name):
+            var updated = selection
+            updated.select(target, in: snapshot, visibility: worktreeVisibility)
+            selectFromUser(updated)
+            openBorrowedZellijSession(.init(hostID: hostID, name: name))
             return true
         case .host, .project:
             return false
