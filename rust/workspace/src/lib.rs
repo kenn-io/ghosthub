@@ -4388,6 +4388,23 @@ fn reserve_constructive_inventory(inner: &Inner) -> u64 {
     generation
 }
 
+fn reserve_current_constructive_inventory(
+    inner: &Inner,
+    navigation_generation: u64,
+    cancellation: &CancellationToken,
+) -> Option<u64> {
+    let _navigation = inner
+        .navigation
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if cancellation.is_cancelled()
+        || inner.navigation_generation.load(Ordering::Acquire) != navigation_generation
+    {
+        return None;
+    }
+    Some(reserve_constructive_inventory(inner))
+}
+
 fn settle_constructive_inventory(inner: &Inner, generation: u64) {
     let _publication = inner
         .refresh_publication
@@ -4396,14 +4413,19 @@ fn settle_constructive_inventory(inner: &Inner, generation: u64) {
     if inner.refresh_generation.load(Ordering::Acquire) != generation {
         return;
     }
-    if let Some(published) = inner
-        .host
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .as_mut()
-    {
+    let _snapshot_write = begin_snapshot_write(inner);
+    let ready = {
+        let mut host = inner
+            .host
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(published) = host.as_mut() else {
+            return;
+        };
         published.generation = generation;
-    }
+        ready_content(&published.value.snapshot)
+    };
+    set_inventory_state(inner, ready);
 }
 
 fn publish_refresh(inner: &Inner, generation: u64, publish: impl FnOnce()) -> bool {
@@ -4518,7 +4540,11 @@ fn run_create(
         .session_operations
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let inventory_publication = reserve_constructive_inventory(inner);
+    let Some(inventory_publication) =
+        reserve_current_constructive_inventory(inner, navigation_generation, cancellation)
+    else {
+        return;
+    };
     let created = create_fresh(inner, request, navigation_generation, cancellation);
     let (worker, snapshot, session, initial_geometry, term) = match created {
         Ok(created) => created,
@@ -4583,7 +4609,11 @@ fn run_herdr_create(
         .session_operations
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let inventory_publication = reserve_constructive_inventory(inner);
+    let Some(inventory_publication) =
+        reserve_current_constructive_inventory(inner, navigation_generation, cancellation)
+    else {
+        return;
+    };
     let created = create_herdr_fresh(inner, request, navigation_generation, cancellation);
     let (worker, snapshot, session, initial_geometry) = match created {
         Ok(created) => created,
@@ -8065,6 +8095,67 @@ mod tests {
         let published = host.as_ref().expect("published host");
         assert_eq!(published.generation, merged);
         assert_eq!(published.value.snapshot.sessions()[0].name(), "created");
+    }
+
+    #[test]
+    fn failed_herdr_restart_during_refresh_restores_cached_ready_host() {
+        let (workspace, _runtime) = herdr_workspace_fixture();
+        let navigation_generation = workspace.begin_navigation();
+        let operation_cancellation = CancellationToken::new();
+        let refresh_cancellation = CancellationToken::new();
+        let refresh_generation = begin_refresh(&workspace.inner, &refresh_cancellation);
+        assert_eq!(
+            workspace.snapshot().hosts()[0].connection(),
+            HostConnectionState::Connecting
+        );
+
+        let operation_generation = reserve_current_constructive_inventory(
+            &workspace.inner,
+            navigation_generation,
+            &operation_cancellation,
+        )
+        .expect("current restart reserves inventory publication");
+        assert!(operation_generation > refresh_generation);
+        assert!(refresh_cancellation.is_cancelled());
+
+        settle_constructive_inventory(&workspace.inner, operation_generation);
+
+        let snapshot = workspace.snapshot();
+        let host = &snapshot.hosts()[0];
+        assert_eq!(host.connection(), HostConnectionState::Ready);
+        assert_eq!(host.sessions()[0].name(), "work");
+        assert_eq!(host.herdr_sessions().len(), 2);
+    }
+
+    #[test]
+    fn stale_or_cancelled_herdr_restart_cannot_cancel_a_newer_refresh() {
+        let (workspace, _runtime) = herdr_workspace_fixture();
+        let queued_navigation = workspace.begin_navigation();
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        let refresh_cancellation = CancellationToken::new();
+        let refresh_generation = begin_refresh(&workspace.inner, &refresh_cancellation);
+
+        assert_eq!(
+            reserve_current_constructive_inventory(&workspace.inner, queued_navigation, &cancelled,),
+            None
+        );
+        let active = CancellationToken::new();
+        workspace.begin_navigation();
+        assert_eq!(
+            reserve_current_constructive_inventory(&workspace.inner, queued_navigation, &active,),
+            None
+        );
+
+        assert!(!refresh_cancellation.is_cancelled());
+        assert_eq!(
+            workspace.inner.refresh_generation.load(Ordering::Acquire),
+            refresh_generation
+        );
+        assert_eq!(
+            workspace.snapshot().hosts()[0].connection(),
+            HostConnectionState::Connecting
+        );
     }
 
     #[test]
