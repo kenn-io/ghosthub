@@ -17,6 +17,8 @@ test-support = []
 ghosthub-model.workspace = true
 ghosthub-session.workspace = true
 getrandom.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
@@ -33,8 +35,6 @@ windows-sys = { version = "=0.61.2", features = [
 
 [dev-dependencies]
 ghosthub-contracts.workspace = true
-serde.workspace = true
-serde_json.workspace = true
 
 [lints]
 workspace = true

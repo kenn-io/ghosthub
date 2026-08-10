@@ -8,12 +8,14 @@ use std::sync::{Arc, Mutex};
 
 use contracts::{Manifest, PlatformTag};
 use host::{
-    AdmissionAttacher, AttachTerm, CancellationToken, CommandOutput, CommandRunner, HostErrorKind,
-    WslConfig, WslExecutable, WslHost,
+    AdmissionAttacher, AttachTerm, CancellationToken, CommandOutput, CommandRunner, HerdrInventory,
+    HostErrorKind, WslConfig, WslExecutable, WslHost,
 };
 use serde::Deserialize;
 use session::ExecutablePlatform;
-use session::{AdmissionPlan, SessionName};
+use session::{
+    AdmissionPlan, HerdrLifecycleAction, HerdrSessionRecord, HerdrSessionState, SessionName,
+};
 
 #[derive(Clone, Copy, Debug)]
 struct AdmissionStatusFailure {
@@ -39,6 +41,7 @@ struct RecordingRunner {
     namespaces_are_isolated: bool,
     exact_targets_are_strict: bool,
     admission_directory: Mutex<AdmissionDirectoryState>,
+    herdr_outputs: Mutex<VecDeque<CommandOutput>>,
 }
 
 #[derive(Debug, Default)]
@@ -75,6 +78,7 @@ impl RecordingRunner {
             namespaces_are_isolated: true,
             exact_targets_are_strict: true,
             admission_directory: Mutex::new(AdmissionDirectoryState::default()),
+            herdr_outputs: Mutex::new(VecDeque::new()),
         }
     }
 
@@ -95,6 +99,7 @@ impl RecordingRunner {
             namespaces_are_isolated: true,
             exact_targets_are_strict: true,
             admission_directory: Mutex::new(AdmissionDirectoryState::default()),
+            herdr_outputs: Mutex::new(VecDeque::new()),
         }
     }
 
@@ -119,6 +124,7 @@ impl RecordingRunner {
             namespaces_are_isolated: true,
             exact_targets_are_strict: true,
             admission_directory: Mutex::new(AdmissionDirectoryState::default()),
+            herdr_outputs: Mutex::new(VecDeque::new()),
         }
     }
 
@@ -147,6 +153,7 @@ impl RecordingRunner {
             namespaces_are_isolated: true,
             exact_targets_are_strict: true,
             admission_directory: Mutex::new(AdmissionDirectoryState::default()),
+            herdr_outputs: Mutex::new(VecDeque::new()),
         }
     }
 
@@ -167,6 +174,7 @@ impl RecordingRunner {
             namespaces_are_isolated: false,
             exact_targets_are_strict: true,
             admission_directory: Mutex::new(AdmissionDirectoryState::default()),
+            herdr_outputs: Mutex::new(VecDeque::new()),
         }
     }
 
@@ -210,13 +218,17 @@ impl RecordingRunner {
             .lock()
             .expect("calls lock")
             .iter()
-            .filter(|(_, args)| !is_admission_call(args))
+            .filter(|(_, args)| !is_admission_call(args) && !is_herdr_call(args))
             .cloned()
             .collect()
     }
 
     fn all_calls(&self) -> Vec<(OsString, Vec<OsString>)> {
         self.calls.lock().expect("calls lock").clone()
+    }
+
+    fn set_herdr_outputs(&self, outputs: Vec<CommandOutput>) {
+        *self.herdr_outputs.lock().expect("Herdr outputs lock") = outputs.into();
     }
 
     fn all_timeouts(&self) -> Vec<std::time::Duration> {
@@ -318,6 +330,14 @@ impl CommandRunner for RecordingRunner {
             .expect("calls lock")
             .push((program.to_owned(), args.to_vec()));
         self.timeouts.lock().expect("timeouts lock").push(timeout);
+        if is_herdr_call(args) {
+            return Ok(self
+                .herdr_outputs
+                .lock()
+                .expect("Herdr outputs lock")
+                .pop_front()
+                .unwrap_or_else(|| output(127, "", "herdr: not found")));
+        }
         if self
             .admission_failure
             .is_some_and(|failed| admission_command(args).is_some_and(|command| command == failed))
@@ -444,6 +464,19 @@ fn is_admission_call(args: &[OsString]) -> bool {
             argument.starts_with("ghv-") || argument.starts_with("/tmp/ghosthub-tmux-probe.")
         })
     }) || args.last().is_some_and(|argument| argument == "-V")
+}
+
+fn is_herdr_call(args: &[OsString]) -> bool {
+    args.iter().any(|argument| {
+        argument
+            .to_str()
+            .is_some_and(|argument| argument.contains("GHOSTHUB_HERDR_PATH"))
+    }) || args
+        .windows(3)
+        .any(|arguments| arguments == ["session", "list", "--json"])
+        || args
+            .windows(2)
+            .any(|arguments| arguments == ["session", "stop"] || arguments == ["session", "delete"])
 }
 
 #[allow(
@@ -878,6 +911,450 @@ fn discovers_identity_in_one_tmux_crossing() {
     assert_eq!(session.identity().created_at(), 1_700_000_000);
     assert_eq!(session.attached_clients(), 1);
     assert_eq!(host.runner().calls().len(), 3);
+}
+
+#[test]
+fn herdr_inventory_is_additive_and_scrubs_control_environment() {
+    let runner = RecordingRunner::new(vec![
+        instance_output(),
+        output(0, "4242\t$3\t1700000000\t1\t4\twork\n", ""),
+        instance_output(),
+    ]);
+    runner.set_herdr_outputs(vec![
+        output(0, "GHOSTHUB_HERDR_PATH\n/opt/herdr/bin/herdr\n", ""),
+        output(
+            0,
+            r#"{"sessions":[{"name":"default","default":true,"running":true,"session_dir":"/tmp/herdr/default","socket_path":"/tmp/herdr/default/herdr.sock"},{"name":"review","default":false,"running":false,"session_dir":"/tmp/herdr/review","socket_path":"/tmp/herdr/review/herdr.sock"}]}"#,
+            "",
+        ),
+    ]);
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        runner,
+    );
+
+    let snapshot = discover(&host).expect("tmux discovery remains authoritative");
+
+    let HerdrInventory::Available {
+        executable,
+        sessions,
+    } = snapshot.herdr()
+    else {
+        panic!("Herdr is available");
+    };
+    assert_eq!(executable, "/opt/herdr/bin/herdr");
+    assert_eq!(sessions.len(), 2);
+    assert_eq!(sessions[0].state(), HerdrSessionState::Running);
+    assert_eq!(sessions[1].state(), HerdrSessionState::Stopped);
+    let resolve_call = host
+        .runner()
+        .all_calls()
+        .into_iter()
+        .find(|(_, args)| {
+            args.last()
+                .is_some_and(|argument| argument.to_string_lossy().contains("command -v herdr"))
+        })
+        .expect("Herdr executable resolution call");
+    assert!(
+        resolve_call
+            .1
+            .windows(2)
+            .any(|arguments| arguments == ["/bin/sh", "-lc"]),
+        "WSL capability resolution must load the POSIX login profile"
+    );
+    let list_call = host
+        .runner()
+        .all_calls()
+        .into_iter()
+        .find(|(_, args)| {
+            args.windows(3)
+                .any(|arguments| arguments == ["session", "list", "--json"])
+        })
+        .expect("Herdr list call");
+    assert!(
+        list_call
+            .1
+            .iter()
+            .any(|argument| argument == "/opt/herdr/bin/herdr")
+    );
+    for variable in [
+        "HERDR_ENV",
+        "HERDR_SESSION",
+        "HERDR_SOCKET_PATH",
+        "HERDR_CLIENT_SOCKET_PATH",
+        "HERDR_PANE_ID",
+        "HERDR_TAB_ID",
+        "HERDR_WORKSPACE_ID",
+        "HERDR_BIN_PATH",
+        "HERDR_ACTIVE_WORKSPACE_ID",
+        "HERDR_ACTIVE_TAB_ID",
+        "HERDR_ACTIVE_PANE_ID",
+        "HERDR_ACTIVE_PANE_CWD",
+    ] {
+        assert!(list_call.1.windows(2).any(|pair| pair == ["-u", variable]));
+    }
+}
+
+#[test]
+fn malformed_herdr_inventory_does_not_hide_tmux_sessions() {
+    let runner = RecordingRunner::new(vec![
+        instance_output(),
+        output(0, "4242\t$3\t1700000000\t1\t4\twork\n", ""),
+        instance_output(),
+    ]);
+    runner.set_herdr_outputs(vec![
+        output(0, "GHOSTHUB_HERDR_PATH\n/opt/herdr/bin/herdr\n", ""),
+        output(0, "not-json", ""),
+    ]);
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        runner,
+    );
+
+    let snapshot = discover(&host).expect("Herdr failure is host-capability scoped");
+
+    assert_eq!(snapshot.sessions()[0].name(), "work");
+    assert!(
+        matches!(snapshot.herdr(), HerdrInventory::Failed(error) if error.kind() == HostErrorKind::MalformedOutput)
+    );
+}
+
+#[test]
+fn herdr_stop_revalidates_state_and_paths_before_direct_mutation() {
+    let runner = RecordingRunner::new(vec![
+        instance_output(),
+        instance_output(),
+        instance_output(),
+        instance_output(),
+    ]);
+    runner.set_herdr_outputs(vec![
+        output(0, "GHOSTHUB_HERDR_PATH\n/opt/herdr/bin/herdr\n", ""),
+        output(
+            0,
+            r#"{"sessions":[{"name":"review","default":false,"running":true,"session_dir":"/tmp/herdr/review","socket_path":"/tmp/herdr/review/herdr.sock"}]}"#,
+            "",
+        ),
+        output(0, "GHOSTHUB_HERDR_PATH\n/opt/herdr/bin/herdr\n", ""),
+        output(
+            0,
+            r#"{"sessions":[{"name":"review","default":false,"running":true,"session_dir":"/tmp/herdr/review","socket_path":"/tmp/herdr/review/herdr.sock"}]}"#,
+            "",
+        ),
+        output(
+            0,
+            r#"{"session":{"name":"review","default":false,"running":false,"session_dir":"/tmp/herdr/review","socket_path":"/tmp/herdr/review/herdr.sock"},"stopped":true}"#,
+            "",
+        ),
+    ]);
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        runner,
+    );
+    let identity = host::HostSnapshot::test_fixture(
+        "Ubuntu",
+        "65c18272-9676-4d59-9f67-ff4556cd1601",
+        987_654,
+        Vec::new(),
+    );
+    let endpoint = identity.endpoint().clone();
+    let runtime = identity.runtime().clone();
+    let confirmed = HerdrSessionRecord::new(
+        "review",
+        false,
+        HerdrSessionState::Running,
+        "/tmp/herdr/review",
+        "/tmp/herdr/review/herdr.sock",
+    );
+    let validation_completed = AtomicBool::new(false);
+
+    let stopped = host
+        .mutate_herdr_session(
+            (&endpoint, &runtime),
+            "/opt/herdr/bin/herdr",
+            &confirmed,
+            HerdrLifecycleAction::Stop,
+            &CancellationToken::new(),
+            || validation_completed.store(true, Ordering::Release),
+        )
+        .expect("confirmed stop");
+
+    assert!(validation_completed.load(Ordering::Acquire));
+    assert_eq!(stopped.state(), HerdrSessionState::Stopped);
+    let action = host
+        .runner()
+        .all_calls()
+        .into_iter()
+        .find(|(_, args)| args.windows(2).any(|pair| pair == ["session", "stop"]))
+        .expect("Herdr stop call");
+    assert!(action.1.windows(2).any(|pair| pair == ["-u", "HERDR_ENV"]));
+    assert!(action.1.ends_with(&[
+        OsString::from("session"),
+        OsString::from("stop"),
+        OsString::from("review"),
+        OsString::from("--json"),
+    ]));
+}
+
+#[test]
+fn herdr_lifecycle_rejects_an_inconsistent_response_record() {
+    let runner = RecordingRunner::new(vec![
+        instance_output(),
+        instance_output(),
+        instance_output(),
+    ]);
+    let inventory = output(
+        0,
+        r#"{"sessions":[{"name":"review","default":false,"running":true,"session_dir":"/tmp/herdr/review","socket_path":"/tmp/herdr/review/herdr.sock"}]}"#,
+        "",
+    );
+    runner.set_herdr_outputs(vec![
+        output(0, "GHOSTHUB_HERDR_PATH\n/opt/herdr/bin/herdr\n", ""),
+        inventory.clone(),
+        output(0, "GHOSTHUB_HERDR_PATH\n/opt/herdr/bin/herdr\n", ""),
+        inventory,
+        output(
+            0,
+            r#"{"session":{"name":"other","default":false,"running":false,"session_dir":"/tmp/herdr/other","socket_path":"/tmp/herdr/other/herdr.sock"},"stopped":true}"#,
+            "",
+        ),
+    ]);
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        runner,
+    );
+    let identity = host::HostSnapshot::test_fixture(
+        "Ubuntu",
+        "65c18272-9676-4d59-9f67-ff4556cd1601",
+        987_654,
+        Vec::new(),
+    );
+    let confirmed = HerdrSessionRecord::new(
+        "review",
+        false,
+        HerdrSessionState::Running,
+        "/tmp/herdr/review",
+        "/tmp/herdr/review/herdr.sock",
+    );
+
+    let error = host
+        .mutate_herdr_session(
+            (identity.endpoint(), identity.runtime()),
+            "/opt/herdr/bin/herdr",
+            &confirmed,
+            HerdrLifecycleAction::Stop,
+            &CancellationToken::new(),
+            || {},
+        )
+        .expect_err("a mismatched response must not be published");
+
+    assert_eq!(error.kind(), HostErrorKind::MalformedOutput);
+    assert!(error.to_string().contains("inconsistent session record"));
+}
+
+#[test]
+fn herdr_lifecycle_rejects_an_executable_changed_after_confirmation() {
+    let runner = RecordingRunner::new(vec![instance_output()]);
+    runner.set_herdr_outputs(vec![
+        output(0, "GHOSTHUB_HERDR_PATH\n/opt/herdr-v2/bin/herdr\n", ""),
+        output(
+            0,
+            r#"{"sessions":[{"name":"review","default":false,"running":true,"session_dir":"/tmp/herdr/review","socket_path":"/tmp/herdr/review/herdr.sock"}]}"#,
+            "",
+        ),
+    ]);
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        runner,
+    );
+    let identity = host::HostSnapshot::test_fixture(
+        "Ubuntu",
+        "65c18272-9676-4d59-9f67-ff4556cd1601",
+        987_654,
+        Vec::new(),
+    );
+    let confirmed = HerdrSessionRecord::new(
+        "review",
+        false,
+        HerdrSessionState::Running,
+        "/tmp/herdr/review",
+        "/tmp/herdr/review/herdr.sock",
+    );
+    let validation_completed = AtomicBool::new(false);
+
+    let error = host
+        .mutate_herdr_session(
+            (identity.endpoint(), identity.runtime()),
+            "/opt/herdr/bin/herdr",
+            &confirmed,
+            HerdrLifecycleAction::Stop,
+            &CancellationToken::new(),
+            || validation_completed.store(true, Ordering::Release),
+        )
+        .expect_err("changed executable invalidates confirmation");
+
+    assert_eq!(error.kind(), HostErrorKind::Transport);
+    assert!(error.to_string().contains("executable changed"));
+    assert!(!validation_completed.load(Ordering::Acquire));
+    assert!(
+        !host
+            .runner()
+            .all_calls()
+            .iter()
+            .any(|(_, args)| args.windows(2).any(|pair| pair == ["session", "stop"]))
+    );
+}
+
+#[test]
+fn herdr_lifecycle_rechecks_runtime_after_discovery_before_mutation() {
+    let runner = RecordingRunner::new(vec![
+        instance_output(),
+        instance_output_with("91d83b4d-2b1a-47b7-bd2d-5d5bb698bdf7", 200),
+    ]);
+    runner.set_herdr_outputs(vec![
+        output(0, "GHOSTHUB_HERDR_PATH\n/opt/herdr/bin/herdr\n", ""),
+        output(
+            0,
+            r#"{"sessions":[{"name":"review","default":false,"running":true,"session_dir":"/tmp/herdr/review","socket_path":"/tmp/herdr/review/herdr.sock"}]}"#,
+            "",
+        ),
+    ]);
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        runner,
+    );
+    let identity = host::HostSnapshot::test_fixture(
+        "Ubuntu",
+        "65c18272-9676-4d59-9f67-ff4556cd1601",
+        987_654,
+        Vec::new(),
+    );
+    let confirmed = HerdrSessionRecord::new(
+        "review",
+        false,
+        HerdrSessionState::Running,
+        "/tmp/herdr/review",
+        "/tmp/herdr/review/herdr.sock",
+    );
+
+    let error = host
+        .mutate_herdr_session(
+            (identity.endpoint(), identity.runtime()),
+            "/opt/herdr/bin/herdr",
+            &confirmed,
+            HerdrLifecycleAction::Stop,
+            &CancellationToken::new(),
+            || {},
+        )
+        .expect_err("a restarted distro must block mutation");
+
+    assert_eq!(error.kind(), HostErrorKind::Transport);
+    assert!(
+        !host
+            .runner()
+            .all_calls()
+            .iter()
+            .any(|(_, args)| { args.windows(2).any(|pair| pair == ["session", "stop"]) })
+    );
+}
+
+#[test]
+fn herdr_delete_rejects_a_session_that_became_the_default() {
+    let runner = RecordingRunner::new(vec![instance_output()]);
+    runner.set_herdr_outputs(vec![
+        output(0, "GHOSTHUB_HERDR_PATH\n/opt/herdr/bin/herdr\n", ""),
+        output(
+            0,
+            r#"{"sessions":[{"name":"review","default":true,"running":false,"session_dir":"/tmp/herdr/review","socket_path":"/tmp/herdr/review/herdr.sock"}]}"#,
+            "",
+        ),
+    ]);
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        runner,
+    );
+    let identity = host::HostSnapshot::test_fixture(
+        "Ubuntu",
+        "65c18272-9676-4d59-9f67-ff4556cd1601",
+        987_654,
+        Vec::new(),
+    );
+    let confirmed = HerdrSessionRecord::new(
+        "review",
+        false,
+        HerdrSessionState::Stopped,
+        "/tmp/herdr/review",
+        "/tmp/herdr/review/herdr.sock",
+    );
+
+    let error = host
+        .mutate_herdr_session(
+            (identity.endpoint(), identity.runtime()),
+            "/opt/herdr/bin/herdr",
+            &confirmed,
+            HerdrLifecycleAction::Delete,
+            &CancellationToken::new(),
+            || {},
+        )
+        .expect_err("the current default session must never be deleted");
+
+    assert_eq!(error.kind(), HostErrorKind::UnsupportedEnvironment);
+    assert!(
+        !host
+            .runner()
+            .all_calls()
+            .iter()
+            .any(|(_, args)| { args.windows(2).any(|pair| pair == ["session", "delete"]) })
+    );
+}
+
+#[test]
+fn herdr_stop_rejects_a_changed_default_role() {
+    let runner = RecordingRunner::new(vec![instance_output()]);
+    runner.set_herdr_outputs(vec![
+        output(0, "GHOSTHUB_HERDR_PATH\n/opt/herdr/bin/herdr\n", ""),
+        output(
+            0,
+            r#"{"sessions":[{"name":"review","default":true,"running":true,"session_dir":"/tmp/herdr/review","socket_path":"/tmp/herdr/review/herdr.sock"}]}"#,
+            "",
+        ),
+    ]);
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        runner,
+    );
+    let identity = host::HostSnapshot::test_fixture(
+        "Ubuntu",
+        "65c18272-9676-4d59-9f67-ff4556cd1601",
+        987_654,
+        Vec::new(),
+    );
+    let confirmed = HerdrSessionRecord::new(
+        "review",
+        false,
+        HerdrSessionState::Running,
+        "/tmp/herdr/review",
+        "/tmp/herdr/review/herdr.sock",
+    );
+
+    let error = host
+        .mutate_herdr_session(
+            (identity.endpoint(), identity.runtime()),
+            "/opt/herdr/bin/herdr",
+            &confirmed,
+            HerdrLifecycleAction::Stop,
+            &CancellationToken::new(),
+            || {},
+        )
+        .expect_err("a changed default role invalidates confirmation");
+
+    assert_eq!(error.kind(), HostErrorKind::Transport);
+    assert!(
+        !host
+            .runner()
+            .all_calls()
+            .iter()
+            .any(|(_, args)| { args.windows(2).any(|pair| pair == ["session", "stop"]) })
+    );
 }
 
 #[test]
