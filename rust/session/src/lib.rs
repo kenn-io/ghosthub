@@ -103,6 +103,57 @@ pub struct DiscoveredSession {
     attached_clients: u32,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HerdrSessionName(String);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HerdrSessionNameError {
+    Empty,
+    TooLong,
+    ForbiddenCharacter,
+}
+
+impl HerdrSessionName {
+    /// Normalize and validate a user-supplied Herdr session name.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the name contains 1-64 ASCII letters, digits,
+    /// periods, underscores, or hyphens and is not `.` or `..`.
+    pub fn parse(value: &str) -> Result<Self, HerdrSessionNameError> {
+        let value = value.trim();
+        if value.is_empty() {
+            return Err(HerdrSessionNameError::Empty);
+        }
+        if value.len() > 64 {
+            return Err(HerdrSessionNameError::TooLong);
+        }
+        if matches!(value, "." | "..")
+            || !value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        {
+            return Err(HerdrSessionNameError::ForbiddenCharacter);
+        }
+        Ok(Self(value.to_owned()))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for HerdrSessionNameError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => formatter.write_str("Name the Herdr session."),
+            Self::TooLong | Self::ForbiddenCharacter => formatter
+                .write_str("Use 1-64 ASCII letters, numbers, periods, underscores, or hyphens."),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HerdrSessionState {
     Running,
@@ -194,6 +245,62 @@ pub struct AttachPlan {
     args: Vec<OsString>,
     target_name: String,
     identity: SessionIdentity,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HerdrAttachPlan {
+    program: OsString,
+    args: Vec<OsString>,
+}
+
+/// One Herdr launch-or-attach action. This constructive authority is consumed
+/// by the terminal launcher and is intentionally neither cloneable nor
+/// serializable.
+#[derive(Debug, Eq, PartialEq)]
+pub struct HerdrLaunchOnce {
+    program: OsString,
+    args: Vec<OsString>,
+    target_name: HerdrSessionName,
+}
+
+impl HerdrAttachPlan {
+    #[must_use]
+    pub fn attach_only(program: impl Into<OsString>, args: Vec<OsString>) -> Self {
+        Self {
+            program: program.into(),
+            args,
+        }
+    }
+
+    #[must_use]
+    pub fn program(&self) -> &OsStr {
+        &self.program
+    }
+
+    #[must_use]
+    pub fn args(&self) -> &[OsString] {
+        &self.args
+    }
+}
+
+impl HerdrLaunchOnce {
+    #[must_use]
+    pub fn launch_or_attach(
+        program: impl Into<OsString>,
+        args: Vec<OsString>,
+        target_name: HerdrSessionName,
+    ) -> Self {
+        Self {
+            program: program.into(),
+            args,
+            target_name,
+        }
+    }
+
+    #[must_use]
+    pub fn into_parts(self) -> (OsString, Vec<OsString>, HerdrSessionName) {
+        (self.program, self.args, self.target_name)
+    }
 }
 
 /// One atomic local create-or-attach launch. The authority is intentionally
@@ -535,10 +642,40 @@ fn parse_revision(output: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{CreateOnce, SessionName, SessionNameError};
+    use super::{
+        CreateOnce, HerdrLaunchOnce, HerdrSessionName, HerdrSessionNameError, SessionName,
+        SessionNameError,
+    };
     use static_assertions::assert_not_impl_any;
 
     assert_not_impl_any!(CreateOnce: Clone, serde::Serialize);
+    assert_not_impl_any!(HerdrLaunchOnce: Clone, serde::Serialize);
+
+    #[test]
+    fn herdr_session_names_match_the_shipped_creation_contract() {
+        assert_eq!(
+            HerdrSessionName::parse("  review.fix_1  ")
+                .expect("valid name")
+                .as_str(),
+            "review.fix_1"
+        );
+        assert_eq!(
+            HerdrSessionName::parse(" "),
+            Err(HerdrSessionNameError::Empty)
+        );
+        assert_eq!(
+            HerdrSessionName::parse("."),
+            Err(HerdrSessionNameError::ForbiddenCharacter)
+        );
+        assert_eq!(
+            HerdrSessionName::parse("has space"),
+            Err(HerdrSessionNameError::ForbiddenCharacter)
+        );
+        assert_eq!(
+            HerdrSessionName::parse(&"x".repeat(65)),
+            Err(HerdrSessionNameError::TooLong)
+        );
+    }
 
     #[test]
     fn session_names_match_the_shipped_creation_contract() {

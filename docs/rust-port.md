@@ -238,13 +238,22 @@ Other executable, permission, transport, and malformed-output failures remain a
 Herdr-scoped diagnostic and do not change tmux readiness or cached tmux rows.
 
 The inventory preserves both running and stopped sessions and publishes them in
-a separate compact Herdr group under the WSL host. The Herdr executable and
-inventory are captured inside the same before/after WSL runtime check as tmux,
-so a distro restart cannot combine evidence from different runtime instances.
-The first incremental slice exposes this optional inventory. Ordinary-client
-attachment, retained presentation switching, and explicit lifecycle actions
-must reuse the shipped exact-name and environment-scrubbing rules; they may not
-reinterpret Herdr as a tmux-compatible server or use Herdr's remote mode.
+a separate compact Herdr group under the WSL host. Tmux and Herdr each own the
+creation action beside their group header; the host row owns refresh, not
+session creation. A refresh marks the host as connecting without discarding
+either cached group, so navigation remains stable while replacement inventory
+is in flight.
+
+The Herdr executable and inventory are captured inside the same before/after
+WSL runtime check as tmux, so a distro restart cannot combine evidence from
+different runtime instances. Opening a running row uses
+`herdr session attach <exact-name>`. Creating a named session consumes one
+non-cloneable launch authority for `herdr --session <exact-name>` and never
+replays it after failure. Both paths launch an ordinary ConPTY client through
+direct argv after removing all inherited Herdr routing variables. Retained
+presentation switching and explicit Stop, Restart, and Delete actions remain
+later work and must reuse the shipped exact-name rules; Rust does not reinterpret
+Herdr as a tmux-compatible server or use Herdr's remote mode.
 
 ### Terminal ownership
 

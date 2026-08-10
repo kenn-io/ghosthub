@@ -8,9 +8,9 @@ use std::time::{Duration, Instant};
 
 use model::DiagnosticKind;
 use session::{
-    AdmissionPlan, AttachPlan, CreateOnce, DiscoveredSession, ExecutablePlatform,
-    HerdrSessionRecord, IDENTITY_MISMATCH_MARKER, ProbeObservation, SessionIdentity, SessionName,
-    VerifiedTmuxBinary, resolve_tmux_binary,
+    AdmissionPlan, AttachPlan, CreateOnce, DiscoveredSession, ExecutablePlatform, HerdrAttachPlan,
+    HerdrLaunchOnce, HerdrSessionName, HerdrSessionRecord, IDENTITY_MISMATCH_MARKER,
+    ProbeObservation, SessionIdentity, SessionName, VerifiedTmuxBinary, resolve_tmux_binary,
 };
 
 use crate::herdr::{self, ExecutableProbe};
@@ -591,6 +591,43 @@ impl<R: CommandRunner> WslHost<R> {
             session.name(),
             session.identity().clone(),
         )
+    }
+
+    /// Build an attach-only plan for one exact running Herdr session.
+    #[must_use]
+    pub fn herdr_attach_plan(
+        &self,
+        endpoint: &WslEndpoint,
+        executable: &str,
+        session: &HerdrSessionRecord,
+        term: AttachTerm,
+    ) -> HerdrAttachPlan {
+        let mut args = pinned_prefix(endpoint);
+        append_herdr_environment(&mut args);
+        args.push(OsString::from(term.environment()));
+        args.extend(
+            [executable, "session", "attach", session.name()]
+                .into_iter()
+                .map(OsString::from),
+        );
+        HerdrAttachPlan::attach_only(self.wsl_executable.as_os_str(), args)
+    }
+
+    /// Build one Herdr launch-or-attach client. The returned authority is
+    /// consumed by the terminal launcher and cannot be retried.
+    #[must_use]
+    pub fn herdr_launch_once(
+        &self,
+        endpoint: &WslEndpoint,
+        executable: &str,
+        name: HerdrSessionName,
+    ) -> HerdrLaunchOnce {
+        let mut args = pinned_prefix(endpoint);
+        append_herdr_environment(&mut args);
+        args.push(OsString::from("TERM=xterm-256color"));
+        args.extend([executable, "--session"].into_iter().map(OsString::from));
+        args.push(OsString::from(name.as_str()));
+        HerdrLaunchOnce::launch_or_attach(self.wsl_executable.as_os_str(), args, name)
     }
 
     /// Build one atomic local create-or-attach client for an already verified
@@ -2762,5 +2799,49 @@ mod tests {
             .collect::<Vec<_>>()
         );
         assert!(marker.starts_with("__ghc_") && marker.ends_with("__"));
+    }
+
+    #[test]
+    fn herdr_launch_is_one_scrubbed_argv_only_client_command() {
+        let host = WslHost::new(
+            WslConfig::with_distro("Ubuntu Work").expect("valid config"),
+            crate::StdCommandRunner,
+            WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
+                .expect("absolute WSL path"),
+        );
+        let endpoint = WslEndpoint {
+            distro: "Ubuntu Work".to_owned(),
+        };
+        let plan = host.herdr_launch_once(
+            &endpoint,
+            "/home/test/.local/bin/herdr",
+            HerdrSessionName::parse("review.fix_1").expect("valid name"),
+        );
+        let (program, args, target) = plan.into_parts();
+
+        assert_eq!(program, r"C:\Windows\System32\wsl.exe");
+        assert_eq!(target.as_str(), "review.fix_1");
+        assert_eq!(
+            args.first().and_then(|value| value.to_str()),
+            Some("--distribution")
+        );
+        assert!(args.windows(2).any(|pair| pair == ["-u", "HERDR_ENV"]));
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-u", "HERDR_ACTIVE_PANE_CWD"])
+        );
+        assert_eq!(
+            args.iter()
+                .rev()
+                .take(3)
+                .rev()
+                .map(OsString::as_os_str)
+                .collect::<Vec<_>>(),
+            [
+                OsStr::new("/home/test/.local/bin/herdr"),
+                OsStr::new("--session"),
+                OsStr::new("review.fix_1"),
+            ]
+        );
     }
 }

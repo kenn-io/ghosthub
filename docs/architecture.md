@@ -172,7 +172,13 @@ they perform ordinary inventory reads instead of repeating tmux admission. The
 same refresh resolves optional Herdr through the WSL account environment,
 scrubs inherited Herdr routing variables, and publishes running and stopped
 sessions separately from tmux. Missing Herdr is silent; a broken Herdr probe is
-scoped to that capability and never makes the WSL tmux host unavailable.
+scoped to that capability and never makes the WSL tmux host unavailable. Tmux
+and Herdr creation controls live beside their respective inventory headings,
+while refresh remains host-scoped. Refresh keeps the last usable rows visible
+until replacement inventory publishes. A running Herdr row opens through its
+ordinary attach-only client; named creation consumes one non-retryable
+`herdr --session` launch authority with the same inherited-environment scrub as
+discovery.
 The ready host also exposes explicit bare-session creation. Rust consumes one
 non-cloneable CreateOnce as an ordinary ConPTY client running atomic
 `new-session -A`; it then captures the fresh WSL runtime and tmux live identity

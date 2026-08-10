@@ -13,7 +13,9 @@ use host::{
 };
 pub use input::{KeyEvent, KeyInput, Modifiers, MouseAction, MouseButton, MouseInput, NamedKey};
 use model::DiagnosticKind;
-pub use session::{HerdrSessionState, SessionName, SessionNameError};
+pub use session::{
+    HerdrSessionName, HerdrSessionNameError, HerdrSessionState, SessionName, SessionNameError,
+};
 use surface::{GridSize, PixelSize, Rgb, SurfaceStore};
 use terminal::{
     ClipboardPolicy, ClipboardReadRequest as TerminalClipboardRead, ClipboardTarget, DefaultColors,
@@ -105,6 +107,13 @@ pub struct SessionSelection {
     host_id: String,
     endpoint: String,
     session: String,
+    kind: SessionKind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SessionKind {
+    Tmux,
+    Herdr,
 }
 
 impl SessionSelection {
@@ -118,6 +127,21 @@ impl SessionSelection {
             host_id: host_id.into(),
             endpoint: endpoint.into(),
             session: session.into(),
+            kind: SessionKind::Tmux,
+        }
+    }
+
+    #[must_use]
+    pub fn herdr(
+        host_id: impl Into<String>,
+        endpoint: impl Into<String>,
+        session: impl Into<String>,
+    ) -> Self {
+        Self {
+            host_id: host_id.into(),
+            endpoint: endpoint.into(),
+            session: session.into(),
+            kind: SessionKind::Herdr,
         }
     }
 
@@ -134,6 +158,11 @@ impl SessionSelection {
     #[must_use]
     pub fn session(&self) -> &str {
         &self.session
+    }
+
+    #[must_use]
+    pub const fn kind(&self) -> SessionKind {
+        self.kind
     }
 }
 
@@ -304,11 +333,13 @@ pub enum WorkspaceContent {
         host_id: String,
         endpoint: String,
         session: String,
+        kind: SessionKind,
     },
     Terminal {
         host_id: String,
         endpoint: String,
         session: String,
+        kind: SessionKind,
         presentation_id: u64,
         surface: Arc<SurfaceStore>,
     },
@@ -635,9 +666,36 @@ struct AttachRequest {
     host: RuntimeHost,
     endpoint: host::WslEndpoint,
     runtime: host::WslRuntimeIdentity,
-    identity: session::SessionIdentity,
+    target: AttachTarget,
     name: String,
     inventory_generation: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum AttachTarget {
+    Tmux(session::SessionIdentity),
+    Herdr {
+        executable: String,
+        is_default: bool,
+        session_directory: String,
+        socket_path: String,
+    },
+}
+
+impl AttachTarget {
+    fn tmux(&self) -> Option<&session::SessionIdentity> {
+        match self {
+            Self::Tmux(identity) => Some(identity),
+            Self::Herdr { .. } => None,
+        }
+    }
+
+    const fn kind(&self) -> SessionKind {
+        match self {
+            Self::Tmux(_) => SessionKind::Tmux,
+            Self::Herdr { .. } => SessionKind::Herdr,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -647,6 +705,16 @@ struct CreateRequest {
     endpoint: host::WslEndpoint,
     runtime: host::WslRuntimeIdentity,
     name: SessionName,
+}
+
+#[derive(Clone)]
+struct HerdrCreateRequest {
+    host_id: String,
+    host: RuntimeHost,
+    endpoint: host::WslEndpoint,
+    runtime: host::WslRuntimeIdentity,
+    executable: String,
+    name: HerdrSessionName,
 }
 
 struct PendingCreation {
@@ -661,7 +729,7 @@ struct PresentationKey {
     endpoint: String,
     socket_directory: Option<String>,
     runtime: host::WslRuntimeIdentity,
-    identity: session::SessionIdentity,
+    target: AttachTarget,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -678,7 +746,18 @@ impl AttachRequest {
             endpoint: self.endpoint.distro().to_owned(),
             socket_directory: self.host.socket_directory().map(str::to_owned),
             runtime: self.runtime.clone(),
-            identity: self.identity.clone(),
+            target: self.target.clone(),
+        }
+    }
+
+    fn selection(&self) -> SessionSelection {
+        match self.target.kind() {
+            SessionKind::Tmux => {
+                SessionSelection::new(&self.host_id, self.endpoint.distro(), &self.name)
+            }
+            SessionKind::Herdr => {
+                SessionSelection::herdr(&self.host_id, self.endpoint.distro(), &self.name)
+            }
         }
     }
 }
@@ -1067,12 +1146,31 @@ fn refreshed_session_name<'a>(
         && key.endpoint == snapshot.endpoint().distro()
         && key.socket_directory.as_deref() == socket_directory
         && key.runtime == *snapshot.runtime())
-    .then(|| {
-        snapshot
+    .then(|| match &key.target {
+        AttachTarget::Tmux(identity) => snapshot
             .sessions()
             .iter()
-            .find(|session| session.identity() == &key.identity)
-            .map(session::DiscoveredSession::name)
+            .find(|session| session.identity() == identity)
+            .map(session::DiscoveredSession::name),
+        AttachTarget::Herdr {
+            executable,
+            is_default,
+            session_directory,
+            socket_path,
+        } => match snapshot.herdr() {
+            HerdrInventory::Available {
+                executable: current_executable,
+                sessions,
+            } if current_executable == executable => sessions
+                .iter()
+                .find(|session| {
+                    session.is_default() == *is_default
+                        && session.session_directory() == session_directory
+                        && session.socket_path() == socket_path
+                })
+                .map(session::HerdrSessionRecord::name),
+            _ => None,
+        },
     })
     .flatten()
 }
@@ -1576,10 +1674,11 @@ impl Workspace {
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone(),
-            WorkspaceContent::Terminal { host_id, endpoint, session, .. }
+            WorkspaceContent::Terminal { host_id, endpoint, session, kind, .. }
                 if host_id == selection.host_id()
                     && endpoint == selection.endpoint()
                     && session == selection.session()
+                    && kind == selection.kind()
         );
         let has_active_attachment = self
             .inner
@@ -1694,6 +1793,7 @@ impl Workspace {
                 host_id: request.host_id.clone(),
                 endpoint: request.endpoint.distro().to_owned(),
                 session: request.name.as_str().to_owned(),
+                kind: SessionKind::Tmux,
             },
         );
 
@@ -1714,6 +1814,76 @@ impl Workspace {
             );
             return Err(WorkspaceError::new(format!(
                 "start tmux creation task: {error}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Launch one new named Herdr session and attach its ordinary client.
+    ///
+    /// The launch authority is consumed once. Failure never repeats the
+    /// constructive action automatically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the name is invalid, Herdr is unavailable, the
+    /// endpoint changed, or the task cannot be started.
+    pub fn create_herdr_session(
+        &self,
+        host_id: &str,
+        endpoint: &str,
+        name: &str,
+    ) -> Result<(), WorkspaceError> {
+        let name = HerdrSessionName::parse(name)
+            .map_err(|error| WorkspaceError::new(error.to_string()))?;
+        let navigation = self
+            .inner
+            .navigation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let request = capture_herdr_create_request(&self.inner, host_id, endpoint, name)?;
+        let navigation_generation = self.begin_navigation();
+        let in_flight_fallback = self.supersede_inflight_attachment()?;
+        let visible_previous = self.retain_active_presentation()?;
+        let previous = in_flight_fallback.or(visible_previous);
+        let cancellation = CancellationToken::new();
+        *self
+            .inner
+            .pending_creation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(PendingCreation {
+            navigation_generation,
+            previous: previous.clone(),
+            cancellation: cancellation.clone(),
+        });
+        clear_terminal_notice(&self.inner);
+        set_inner_state(
+            &self.inner,
+            WorkspaceContent::Attaching {
+                host_id: request.host_id.clone(),
+                endpoint: request.endpoint.distro().to_owned(),
+                session: request.name.as_str().to_owned(),
+                kind: SessionKind::Herdr,
+            },
+        );
+
+        let inner = Arc::clone(&self.inner);
+        let spawn_request = request.clone();
+        if let Err(error) = thread::Builder::new()
+            .name("ghosthub-herdr-create".to_owned())
+            .spawn(move || {
+                run_herdr_create(&inner, &spawn_request, navigation_generation, &cancellation);
+            })
+        {
+            drop(navigation);
+            restore_inventory_after_creation_failure(
+                &self.inner,
+                None,
+                navigation_generation,
+                format!("start Herdr creation task: {error}"),
+            );
+            return Err(WorkspaceError::new(format!(
+                "start Herdr creation task: {error}"
             )));
         }
         Ok(())
@@ -1792,11 +1962,7 @@ impl Workspace {
         let Some(active_attachment) = attachment.active() else {
             return Ok(None);
         };
-        let selection = SessionSelection::new(
-            &active_attachment.request.host_id,
-            active_attachment.request.endpoint.distro(),
-            &active_attachment.request.name,
-        );
+        let selection = active_attachment.request.selection();
         let presentation_id = {
             let state = self
                 .inner
@@ -1890,6 +2056,7 @@ impl Workspace {
                 host_id: request.host_id.clone(),
                 endpoint: request.endpoint.distro().to_owned(),
                 session: request.name.clone(),
+                kind: request.target.kind(),
             };
         }
         self.inner.revision.fetch_add(1, Ordering::Release);
@@ -2167,7 +2334,7 @@ impl Workspace {
         let key_matches = |request: &AttachRequest| {
             request.endpoint == *endpoint
                 && request.runtime == *runtime
-                && request.identity == *identity
+                && request.target.tmux() == Some(identity)
         };
         let active_matches = self
             .inner
@@ -2187,7 +2354,7 @@ impl Workspace {
             .remove_matching(|key| {
                 key.endpoint == endpoint.distro()
                     && key.runtime == *runtime
-                    && key.identity == *identity
+                    && key.target.tmux() == Some(identity)
             });
         if changed {
             self.inner.revision.fetch_add(1, Ordering::Release);
@@ -2823,13 +2990,7 @@ fn activate_retained_presentation(
     }
     let selection = attachment
         .active()
-        .map(|active| {
-            SessionSelection::new(
-                &active.request.host_id,
-                active.request.endpoint.distro(),
-                &active.request.name,
-            )
-        })
+        .map(|active| active.request.selection())
         .expect("retained attachment was just reserved");
     let RetainedPresentation {
         key: _,
@@ -2851,6 +3012,7 @@ fn activate_retained_presentation(
             host_id: selection.host_id().to_owned(),
             endpoint: selection.endpoint().to_owned(),
             session: selection.session().to_owned(),
+            kind: selection.kind(),
             presentation_id,
             surface,
         },
@@ -2927,19 +3089,58 @@ fn capture_attach_request(
                 "host endpoint changed; refresh the session selection",
             ));
         }
-        let session = context
-            .snapshot
-            .sessions()
-            .iter()
-            .find(|session| session.name() == selection.session())
-            .ok_or_else(|| WorkspaceError::new("session is not in the current inventory"))?;
+        let (target, name) = match selection.kind() {
+            SessionKind::Tmux => {
+                let session = context
+                    .snapshot
+                    .sessions()
+                    .iter()
+                    .find(|session| session.name() == selection.session())
+                    .ok_or_else(|| {
+                        WorkspaceError::new("session is not in the current inventory")
+                    })?;
+                (
+                    AttachTarget::Tmux(session.identity().clone()),
+                    session.name().to_owned(),
+                )
+            }
+            SessionKind::Herdr => {
+                let HerdrInventory::Available {
+                    executable,
+                    sessions,
+                } = context.snapshot.herdr()
+                else {
+                    return Err(WorkspaceError::new("Herdr is not available on this host"));
+                };
+                let session = sessions
+                    .iter()
+                    .find(|session| session.name() == selection.session())
+                    .ok_or_else(|| {
+                        WorkspaceError::new("Herdr session is not in the current inventory")
+                    })?;
+                if session.state() != HerdrSessionState::Running {
+                    return Err(WorkspaceError::new(
+                        "Herdr session is stopped; restart it before opening",
+                    ));
+                }
+                (
+                    AttachTarget::Herdr {
+                        executable: executable.clone(),
+                        is_default: session.is_default(),
+                        session_directory: session.session_directory().to_owned(),
+                        socket_path: session.socket_path().to_owned(),
+                    },
+                    session.name().to_owned(),
+                )
+            }
+        };
         Ok(AttachRequest {
             host_id: selection.host_id().to_owned(),
             host: context.host.clone(),
             endpoint: context.snapshot.endpoint().clone(),
             runtime: context.snapshot.runtime().clone(),
-            identity: session.identity().clone(),
-            name: session.name().to_owned(),
+            target,
+            name,
             inventory_generation,
         })
     })
@@ -2949,6 +3150,11 @@ fn capture_kill_request(
     inner: &Inner,
     selection: &SessionSelection,
 ) -> Result<KillCaptureRequest, WorkspaceError> {
+    if selection.kind() != SessionKind::Tmux {
+        return Err(WorkspaceError::new(
+            "Kill Session is available only for tmux sessions",
+        ));
+    }
     if inner
         .selected_host
         .read()
@@ -3076,6 +3282,60 @@ fn capture_create_request(
     })
 }
 
+fn capture_herdr_create_request(
+    inner: &Inner,
+    host_id: &str,
+    endpoint: &str,
+    name: HerdrSessionName,
+) -> Result<HerdrCreateRequest, WorkspaceError> {
+    if inner
+        .selected_host
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_deref()
+        != Some(host_id)
+    {
+        return Err(WorkspaceError::new("host is not selected"));
+    }
+    let host = inner
+        .host
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let context = host
+        .as_ref()
+        .ok_or_else(|| WorkspaceError::new("WSL inventory is not ready"))?;
+    context.map(|context, _inventory_generation| {
+        if context.snapshot.endpoint().distro() != endpoint {
+            return Err(WorkspaceError::new(
+                "the WSL endpoint changed; choose the host again before creating a session",
+            ));
+        }
+        let HerdrInventory::Available {
+            executable,
+            sessions,
+        } = context.snapshot.herdr()
+        else {
+            return Err(WorkspaceError::new("Herdr is not available on this host"));
+        };
+        if sessions
+            .iter()
+            .any(|session| session.name() == name.as_str())
+        {
+            return Err(WorkspaceError::new(
+                "a Herdr session with this name already exists; restart it instead",
+            ));
+        }
+        Ok(HerdrCreateRequest {
+            host_id: host_id.to_owned(),
+            host: context.host.clone(),
+            endpoint: context.snapshot.endpoint().clone(),
+            runtime: context.snapshot.runtime().clone(),
+            executable: executable.clone(),
+            name,
+        })
+    })
+}
+
 fn choose_navigation_target(
     retained: Option<PresentationKey>,
     current: Result<AttachRequest, WorkspaceError>,
@@ -3096,7 +3356,19 @@ fn choose_navigation_target(
 fn begin_refresh(inner: &Inner, cancellation: &CancellationToken) -> u64 {
     let generation = reserve_refresh(inner, cancellation);
     publish_refresh(inner, generation, || {
-        set_inventory_state(inner, WorkspaceContent::Loading);
+        if inner.host_scoped_inventory {
+            let mut hosts = inner
+                .hosts
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(host) = hosts.iter_mut().find(|host| host.id == "wsl") {
+                host.connection = HostConnectionState::Connecting;
+                host.diagnostic = None;
+            }
+            inner.revision.fetch_add(1, Ordering::Release);
+        } else {
+            set_inventory_state(inner, WorkspaceContent::Loading);
+        }
     });
     generation
 }
@@ -3243,7 +3515,7 @@ fn run_create(
         host: request.host.clone(),
         endpoint: snapshot.endpoint().clone(),
         runtime: snapshot.runtime().clone(),
-        identity: session.identity().clone(),
+        target: AttachTarget::Tmux(session.identity().clone()),
         name: session.name().to_owned(),
         inventory_generation,
     };
@@ -3255,6 +3527,172 @@ fn run_create(
         term,
         navigation_generation,
     );
+}
+
+fn run_herdr_create(
+    inner: &Inner,
+    request: &HerdrCreateRequest,
+    navigation_generation: u64,
+    cancellation: &CancellationToken,
+) {
+    let created = create_herdr_fresh(inner, request, navigation_generation, cancellation);
+    let (worker, snapshot, session, initial_geometry) = match created {
+        Ok(created) => created,
+        Err(error) => {
+            restore_inventory_after_creation_failure(
+                inner,
+                None,
+                navigation_generation,
+                error.to_string(),
+            );
+            return;
+        }
+    };
+    if inner.navigation_generation.load(Ordering::Acquire) != navigation_generation {
+        drop(worker);
+        return;
+    }
+    let inventory_generation = match merge_herdr_created_inventory(inner, request, snapshot.clone())
+    {
+        Ok(generation) => generation,
+        Err(error) => {
+            drop(worker);
+            restore_inventory_after_creation_failure(
+                inner,
+                None,
+                navigation_generation,
+                error.to_string(),
+            );
+            return;
+        }
+    };
+    let attached = AttachRequest {
+        host_id: request.host_id.clone(),
+        host: request.host.clone(),
+        endpoint: snapshot.endpoint().clone(),
+        runtime: snapshot.runtime().clone(),
+        target: AttachTarget::Herdr {
+            executable: request.executable.clone(),
+            is_default: session.is_default(),
+            session_directory: session.session_directory().to_owned(),
+            socket_path: session.socket_path().to_owned(),
+        },
+        name: session.name().to_owned(),
+        inventory_generation,
+    };
+    publish_created_presentation(
+        inner,
+        attached,
+        worker,
+        initial_geometry,
+        AttachTerm::Xterm256Color,
+        navigation_generation,
+    );
+}
+
+fn create_herdr_fresh(
+    inner: &Inner,
+    request: &HerdrCreateRequest,
+    navigation_generation: u64,
+    cancellation: &CancellationToken,
+) -> Result<
+    (
+        TerminalWorker,
+        HostSnapshot,
+        session::HerdrSessionRecord,
+        TerminalGeometry,
+    ),
+    WorkspaceError,
+> {
+    let before = request
+        .host
+        .discover_with_cancel(&ConptyAdmissionAttacher::new(), cancellation)
+        .map_err(|error| WorkspaceError::new(error.to_string()))?;
+    if before.endpoint() != &request.endpoint || before.runtime() != &request.runtime {
+        return Err(WorkspaceError::new(
+            "WSL changed; refresh before creating the Herdr session",
+        ));
+    }
+    let HerdrInventory::Available {
+        executable,
+        sessions,
+    } = before.herdr()
+    else {
+        return Err(WorkspaceError::new("Herdr is not available on this host"));
+    };
+    if executable != &request.executable {
+        return Err(WorkspaceError::new(
+            "the Herdr executable changed; refresh before creating the session",
+        ));
+    }
+    if sessions
+        .iter()
+        .any(|session| session.name() == request.name.as_str())
+    {
+        return Err(WorkspaceError::new(
+            "a Herdr session with this name already exists; restart it instead",
+        ));
+    }
+    if inner.navigation_generation.load(Ordering::Acquire) != navigation_generation {
+        return Err(WorkspaceError::new("Herdr creation was superseded"));
+    }
+    let authority = request.host.herdr_launch_once(
+        before.endpoint(),
+        &request.executable,
+        request.name.clone(),
+    );
+    let geometry = *inner
+        .terminal_geometry
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let worker = TerminalWorker::launch_herdr_with_metadata(
+        authority,
+        geometry.grid,
+        geometry.sequence,
+        geometry.pixels,
+        ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
+        default_colors(&inner.appearance),
+    )
+    .map_err(|error| WorkspaceError::new(error.to_string()))?;
+
+    for attempt in 0..CREATE_DISCOVERY_ATTEMPTS {
+        if inner.navigation_generation.load(Ordering::Acquire) != navigation_generation {
+            drop(worker);
+            return Err(WorkspaceError::new("Herdr creation was superseded"));
+        }
+        let snapshot = request
+            .host
+            .discover_with_cancel(&ConptyAdmissionAttacher::new(), cancellation)
+            .map_err(|error| WorkspaceError::new(error.to_string()))?;
+        if snapshot.endpoint() != &request.endpoint || snapshot.runtime() != &request.runtime {
+            drop(worker);
+            return Err(WorkspaceError::new(
+                "WSL changed while creating the Herdr session",
+            ));
+        }
+        if let HerdrInventory::Available {
+            executable,
+            sessions,
+        } = snapshot.herdr()
+            && executable == &request.executable
+            && let Some(session) = sessions
+                .iter()
+                .find(|session| {
+                    session.name() == request.name.as_str()
+                        && session.state() == HerdrSessionState::Running
+                })
+                .cloned()
+        {
+            return Ok((worker, snapshot, session, geometry));
+        }
+        if attempt + 1 < CREATE_DISCOVERY_ATTEMPTS {
+            thread::sleep(CREATE_DISCOVERY_DELAY);
+        }
+    }
+    drop(worker);
+    Err(WorkspaceError::new(
+        "Herdr started, but the new session did not appear in inventory; refresh before trying again",
+    ))
 }
 
 fn publish_created_presentation(
@@ -3337,6 +3775,7 @@ fn publish_created_presentation(
             host_id: attached.host_id,
             endpoint: attached.endpoint.distro().to_owned(),
             session: attached.name,
+            kind: attached.target.kind(),
             presentation_id: next_presentation_id(inner),
             surface,
         },
@@ -3536,6 +3975,7 @@ fn run_attach(inner: &Inner, request: &AttachRequest, term: AttachTerm, generati
                     host_id: request.host_id.clone(),
                     endpoint,
                     session,
+                    kind: request.target.kind(),
                     presentation_id,
                     surface,
                 },
@@ -3704,14 +4144,47 @@ fn merge_created_inventory(
     request: &CreateRequest,
     snapshot: HostSnapshot,
 ) -> Result<u64, WorkspaceError> {
+    merge_constructive_inventory(
+        inner,
+        &request.host,
+        &request.endpoint,
+        &request.runtime,
+        snapshot,
+        "tmux",
+    )
+}
+
+fn merge_herdr_created_inventory(
+    inner: &Inner,
+    request: &HerdrCreateRequest,
+    snapshot: HostSnapshot,
+) -> Result<u64, WorkspaceError> {
+    merge_constructive_inventory(
+        inner,
+        &request.host,
+        &request.endpoint,
+        &request.runtime,
+        snapshot,
+        "Herdr",
+    )
+}
+
+fn merge_constructive_inventory(
+    inner: &Inner,
+    runtime_host: &RuntimeHost,
+    endpoint: &host::WslEndpoint,
+    runtime: &host::WslRuntimeIdentity,
+    snapshot: HostSnapshot,
+    session_type: &str,
+) -> Result<u64, WorkspaceError> {
     let _publication = inner
         .refresh_publication
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if snapshot.endpoint() != &request.endpoint || snapshot.runtime() != &request.runtime {
-        return Err(WorkspaceError::new(
-            "WSL changed while publishing the created tmux session",
-        ));
+    if snapshot.endpoint() != endpoint || snapshot.runtime() != runtime {
+        return Err(WorkspaceError::new(format!(
+            "WSL changed while publishing the created {session_type} session"
+        )));
     }
     let published_generation = inner
         .host
@@ -3719,14 +4192,14 @@ fn merge_created_inventory(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .as_ref()
         .and_then(|published| {
-            (published.value.snapshot.endpoint() == &request.endpoint
-                && published.value.snapshot.runtime() == &request.runtime)
+            (published.value.snapshot.endpoint() == endpoint
+                && published.value.snapshot.runtime() == runtime)
                 .then_some(published.generation)
         })
         .ok_or_else(|| {
-            WorkspaceError::new(
-                "the WSL endpoint changed while creating the tmux session; refresh before trying again",
-            )
+            WorkspaceError::new(format!(
+                "the WSL endpoint changed while creating the {session_type} session; refresh before trying again"
+            ))
         })?;
     let current_generation = inner.refresh_generation.load(Ordering::Acquire);
     let inventory_generation = match published_generation.cmp(&current_generation) {
@@ -3744,20 +4217,20 @@ fn merge_created_inventory(
         }
         std::cmp::Ordering::Greater => {
             return Err(WorkspaceError::new(
-                "tmux inventory generation moved backwards during creation",
+                "session inventory generation moved backwards during creation",
             ));
         }
     };
 
     let inventory_state = ready_content(&snapshot);
     set_herdr_inventory(inner, snapshot.herdr());
-    reconcile_retained_session_names(inner, &snapshot, request.host.socket_directory());
+    reconcile_retained_session_names(inner, &snapshot, runtime_host.socket_directory());
     *inner
         .host
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Published::new(
         HostContext {
-            host: request.host.clone(),
+            host: runtime_host.clone(),
             snapshot,
         },
         inventory_generation,
@@ -3836,6 +4309,7 @@ fn reconcile_presentation_session_names(
                 host_id,
                 endpoint,
                 session,
+                ..
             }
             | WorkspaceContent::Terminal {
                 host_id,
@@ -3923,28 +4397,43 @@ fn attach_fresh(
     term: AttachTerm,
 ) -> Result<(TerminalWorker, HostSnapshot, String, TerminalGeometry), AttachFreshError> {
     let fresh = discover_fresh_runtime(request)?;
-    let session = fresh
-        .sessions()
-        .iter()
-        .find(|session| session.name() == request.name)
-        .cloned();
-    let Some(session) = session else {
-        return Err(AttachFreshError::SessionChanged {
-            error: WorkspaceError::new(
-                "session no longer exists; refresh and choose another session",
-            ),
-            snapshot: fresh,
-        });
-    };
-    if session.identity() != &request.identity {
-        return Err(AttachFreshError::SessionChanged {
-            error: WorkspaceError::new(
-                "session identity changed since discovery; refusing stale attachment",
-            ),
-            snapshot: fresh,
-        });
+    match &request.target {
+        AttachTarget::Tmux(identity) => {
+            let session = fresh
+                .sessions()
+                .iter()
+                .find(|session| session.name() == request.name)
+                .cloned();
+            let Some(session) = session else {
+                return Err(AttachFreshError::SessionChanged {
+                    error: WorkspaceError::new(
+                        "session no longer exists; refresh and choose another session",
+                    ),
+                    snapshot: fresh,
+                });
+            };
+            if identity != session.identity() {
+                return Err(AttachFreshError::SessionChanged {
+                    error: WorkspaceError::new(
+                        "session identity changed since discovery; refusing stale attachment",
+                    ),
+                    snapshot: fresh,
+                });
+            }
+            launch_fresh_tmux(inner, request, term, &fresh, &session)
+        }
+        AttachTarget::Herdr { .. } => {
+            let Some(session) = fresh_herdr_session(&fresh, &request.target) else {
+                return Err(AttachFreshError::SessionChanged {
+                    error: WorkspaceError::new(
+                        "Herdr session changed since discovery; refresh and choose it again",
+                    ),
+                    snapshot: fresh,
+                });
+            };
+            launch_fresh_herdr(inner, request, term, &fresh, &session)
+        }
     }
-    launch_fresh_session(inner, request, term, &fresh, &session)
 }
 
 fn attach_fresh_retained(
@@ -3968,19 +4457,34 @@ fn attach_fresh_retained(
             snapshot: fresh,
         });
     };
-    let session = fresh
-        .sessions()
-        .iter()
-        .find(|session| session.identity() == &retry.key.identity)
-        .cloned()
-        .expect("resolved retained request has a matching session");
-    let (worker, snapshot, _, geometry) = launch_fresh_session(
-        inner,
-        &resolved_request,
-        AttachTerm::Xterm,
-        &fresh,
-        &session,
-    )?;
+    let (worker, snapshot, _, geometry) = match &retry.key.target {
+        AttachTarget::Tmux(identity) => {
+            let session = fresh
+                .sessions()
+                .iter()
+                .find(|session| session.identity() == identity)
+                .cloned()
+                .expect("resolved retained request has a matching tmux session");
+            launch_fresh_tmux(
+                inner,
+                &resolved_request,
+                AttachTerm::Xterm,
+                &fresh,
+                &session,
+            )?
+        }
+        AttachTarget::Herdr { .. } => {
+            let session = fresh_herdr_session(&fresh, &retry.key.target)
+                .expect("resolved retained request has a matching Herdr session");
+            launch_fresh_herdr(
+                inner,
+                &resolved_request,
+                AttachTerm::Xterm,
+                &fresh,
+                &session,
+            )?
+        }
+    };
     Ok((worker, snapshot, resolved_request, geometry))
 }
 
@@ -4010,7 +4514,7 @@ fn resolve_retained_retry_request(
     Some(request)
 }
 
-fn launch_fresh_session(
+fn launch_fresh_tmux(
     inner: &Inner,
     request: &AttachRequest,
     term: AttachTerm,
@@ -4039,6 +4543,68 @@ fn launch_fresh_session(
         plan.target_name().to_owned(),
         geometry,
     ))
+}
+
+fn fresh_herdr_session(
+    snapshot: &HostSnapshot,
+    target: &AttachTarget,
+) -> Option<session::HerdrSessionRecord> {
+    let AttachTarget::Herdr {
+        executable,
+        is_default,
+        session_directory,
+        socket_path,
+    } = target
+    else {
+        return None;
+    };
+    let HerdrInventory::Available {
+        executable: current_executable,
+        sessions,
+    } = snapshot.herdr()
+    else {
+        return None;
+    };
+    (current_executable == executable)
+        .then(|| {
+            sessions.iter().find(|session| {
+                session.is_default() == *is_default
+                    && session.session_directory() == session_directory
+                    && session.socket_path() == socket_path
+                    && session.state() == HerdrSessionState::Running
+            })
+        })
+        .flatten()
+        .cloned()
+}
+
+fn launch_fresh_herdr(
+    inner: &Inner,
+    request: &AttachRequest,
+    term: AttachTerm,
+    fresh: &HostSnapshot,
+    session: &session::HerdrSessionRecord,
+) -> Result<(TerminalWorker, HostSnapshot, String, TerminalGeometry), AttachFreshError> {
+    let AttachTarget::Herdr { executable, .. } = &request.target else {
+        unreachable!("Herdr launch requires a Herdr target");
+    };
+    let plan = request
+        .host
+        .herdr_attach_plan(fresh.endpoint(), executable, session, term);
+    let geometry = *inner
+        .terminal_geometry
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let worker = TerminalWorker::attach_herdr_with_metadata(
+        &plan,
+        geometry.grid,
+        geometry.sequence,
+        geometry.pixels,
+        ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
+        default_colors(&inner.appearance),
+    )
+    .map_err(|error| AttachFreshError::Host(WorkspaceError::new(error.to_string())))?;
+    Ok((worker, fresh.clone(), session.name().to_owned(), geometry))
 }
 
 fn set_terminal_notice(inner: &Inner, term: AttachTerm) {
@@ -4246,6 +4812,7 @@ fn publish_terminfo_retry_boundary(inner: &Inner, host_id: &str, endpoint: &str,
             host_id: host_id.to_owned(),
             endpoint: endpoint.to_owned(),
             session: session.to_owned(),
+            kind: SessionKind::Tmux,
         },
     );
 }
@@ -4433,7 +5000,7 @@ mod tests {
             endpoint: "Ubuntu".to_owned(),
             socket_directory: None,
             runtime: snapshot.runtime().clone(),
-            identity,
+            target: AttachTarget::Tmux(identity),
         }
     }
 
@@ -4449,6 +5016,14 @@ mod tests {
             presentation,
             navigation_generation,
         }
+    }
+
+    fn captured_request(workspace: &Workspace, name: &str) -> AttachRequest {
+        capture_attach_request(
+            &workspace.inner,
+            &SessionSelection::new("wsl", "Ubuntu", name),
+        )
+        .expect("fixture session is present")
     }
 
     #[cfg(windows)]
@@ -4467,7 +5042,7 @@ mod tests {
             ),
             endpoint: snapshot.endpoint().clone(),
             runtime: snapshot.runtime().clone(),
-            identity,
+            target: AttachTarget::Tmux(identity),
             name: name.to_owned(),
             inventory_generation: 1,
         }
@@ -4542,6 +5117,7 @@ mod tests {
                 host_id: "wsl".to_owned(),
                 endpoint: "Ubuntu".to_owned(),
                 session: "work".to_owned(),
+                kind: SessionKind::Tmux,
             },
         );
 
@@ -4576,6 +5152,7 @@ mod tests {
                 host_id: "wsl".to_owned(),
                 endpoint: "Ubuntu".to_owned(),
                 session: "stale".to_owned(),
+                kind: SessionKind::Tmux,
             },
         );
 
@@ -4711,6 +5288,7 @@ mod tests {
                 host_id: "wsl".to_owned(),
                 endpoint: "Ubuntu".to_owned(),
                 session: "visible".to_owned(),
+                kind: SessionKind::Tmux,
                 presentation_id: 9,
                 surface: Arc::new(SurfaceStore::new(surface::SurfaceFrame::blank(
                     1,
@@ -4812,14 +5390,14 @@ mod tests {
             host,
             endpoint: snapshot.endpoint().clone(),
             runtime: snapshot.runtime().clone(),
-            identity: identity.clone(),
+            target: AttachTarget::Tmux(identity.clone()),
             name: "replacement".to_owned(),
             inventory_generation: 1,
         };
         let key = request.presentation_key();
         let fallback = FallbackAuthority {
             presentation: PresentationKey {
-                identity: session::SessionIdentity::new(100, "$2", 201),
+                target: AttachTarget::Tmux(session::SessionIdentity::new(100, "$2", 201)),
                 ..key.clone()
             },
             target: key.clone(),
@@ -4958,10 +5536,7 @@ mod tests {
                 .expect("current session remains selectable");
 
         assert_eq!(selected, current.presentation_key());
-        assert_eq!(
-            request.map(|request| request.identity),
-            Some(current.identity)
-        );
+        assert_eq!(request.map(|request| request.target), Some(current.target));
     }
 
     #[cfg(windows)]
@@ -5047,6 +5622,7 @@ mod tests {
                 host_id: "wsl".to_owned(),
                 endpoint: "Ubuntu".to_owned(),
                 session: "original".to_owned(),
+                kind: SessionKind::Tmux,
             },
         );
 
@@ -5140,7 +5716,7 @@ mod tests {
             host,
             endpoint: snapshot.endpoint().clone(),
             runtime: snapshot.runtime().clone(),
-            identity: session::SessionIdentity::new(100, "$1", 200),
+            target: AttachTarget::Tmux(session::SessionIdentity::new(100, "$1", 200)),
             name: "replacement".to_owned(),
             inventory_generation: 1,
         };
@@ -5165,6 +5741,7 @@ mod tests {
                 host_id: "wsl".to_owned(),
                 endpoint: "Ubuntu".to_owned(),
                 session: "replacement".to_owned(),
+                kind: SessionKind::Tmux,
             },
         );
 
@@ -5220,6 +5797,7 @@ mod tests {
                 host_id: "wsl".to_owned(),
                 endpoint: "Ubuntu".to_owned(),
                 session: "original".to_owned(),
+                kind: SessionKind::Tmux,
             },
         );
 
@@ -5242,6 +5820,7 @@ mod tests {
                 host_id: "wsl".to_owned(),
                 endpoint: "Ubuntu".to_owned(),
                 session: "work".to_owned(),
+                kind: SessionKind::Tmux,
                 presentation_id: 7,
                 surface: Arc::new(SurfaceStore::new(surface::SurfaceFrame::blank(1, size))),
             },
@@ -5270,7 +5849,7 @@ mod tests {
         );
         assert!(matches!(
             workspace.snapshot().content(),
-            WorkspaceContent::Attaching { host_id, endpoint, session }
+            WorkspaceContent::Attaching { host_id, endpoint, session, .. }
                 if host_id == "wsl" && endpoint == "Ubuntu" && session == "work"
         ));
         assert_eq!(next_presentation_id(&workspace.inner), 8);
@@ -5367,6 +5946,7 @@ mod tests {
                 host_id: "wsl".to_owned(),
                 endpoint: "Ubuntu".to_owned(),
                 session: "work".to_owned(),
+                kind: SessionKind::Tmux,
                 presentation_id: 1,
                 surface: Arc::new(SurfaceStore::new(surface::SurfaceFrame::blank(
                     1,
@@ -6050,6 +6630,7 @@ mod tests {
                 host_id: "wsl".to_owned(),
                 endpoint: "Ubuntu".to_owned(),
                 session: "work".to_owned(),
+                kind: SessionKind::Tmux,
                 presentation_id: 1,
                 surface: Arc::new(SurfaceStore::new(surface::SurfaceFrame::blank(1, size))),
             },
@@ -6093,6 +6674,7 @@ mod tests {
                 host_id: "wsl".to_owned(),
                 endpoint: "Ubuntu".to_owned(),
                 session: "work".to_owned(),
+                kind: SessionKind::Tmux,
                 presentation_id: 1,
                 surface: Arc::new(SurfaceStore::new(surface::SurfaceFrame::blank(1, size))),
             },
@@ -6158,16 +6740,8 @@ mod tests {
             0,
         ));
         set_inventory_state(&workspace.inner, ready_content(&snapshot));
-        let opening = capture_attach_request(
-            &workspace.inner,
-            &SessionSelection::new("wsl", "Ubuntu", "opening"),
-        )
-        .expect("opening request");
-        let selected = capture_attach_request(
-            &workspace.inner,
-            &SessionSelection::new("wsl", "Ubuntu", "selected"),
-        )
-        .expect("selected request");
+        let opening = captured_request(&workspace, "opening");
+        let selected = captured_request(&workspace, "selected");
         let opening_navigation = workspace.begin_navigation();
         let mut fallback = fallback_fixture(
             "boot-id",
@@ -6189,9 +6763,9 @@ mod tests {
                 host_id: "wsl".to_owned(),
                 endpoint: "Ubuntu".to_owned(),
                 session: "opening".to_owned(),
+                kind: SessionKind::Tmux,
             },
         );
-
         let carried_fallback = workspace
             .supersede_inflight_attachment()
             .expect("supersede opening attachment");
@@ -6208,7 +6782,6 @@ mod tests {
             .expect("attachment")
             .reserve_with_fallback(selected, AttachTerm::Xterm256Color, carried_fallback)
             .expect("reserve selected attachment");
-
         let attachment = workspace.inner.attachment.lock().expect("attachment");
         let active = attachment.active().expect("selected attachment active");
         assert_eq!(
@@ -6245,6 +6818,7 @@ mod tests {
                 host_id: "wsl".to_owned(),
                 endpoint: "Ubuntu".to_owned(),
                 session: "creating".to_owned(),
+                kind: SessionKind::Tmux,
             },
         );
 
@@ -6301,6 +6875,7 @@ mod tests {
                 host_id: "wsl".to_owned(),
                 endpoint: "Ubuntu".to_owned(),
                 session: "creating".to_owned(),
+                kind: SessionKind::Tmux,
             },
         );
 
@@ -6382,6 +6957,7 @@ mod tests {
                 host_id: "wsl".to_owned(),
                 endpoint: "Ubuntu".to_owned(),
                 session: "work".to_owned(),
+                kind: SessionKind::Tmux,
                 presentation_id: 1,
                 surface: Arc::new(SurfaceStore::new(surface::SurfaceFrame::blank(1, size))),
             },
@@ -6424,6 +7000,7 @@ mod tests {
                 host_id: "wsl".to_owned(),
                 endpoint: "Ubuntu".to_owned(),
                 session: "active".to_owned(),
+                kind: SessionKind::Tmux,
                 presentation_id: 1,
                 surface: Arc::new(SurfaceStore::new(surface::SurfaceFrame::blank(1, size))),
             },
@@ -6448,8 +7025,8 @@ mod tests {
                 .active()
                 .expect("active attachment")
                 .request
-                .identity,
-            active_identity
+                .target,
+            AttachTarget::Tmux(active_identity)
         );
     }
 
@@ -6467,6 +7044,7 @@ mod tests {
                 host_id: "wsl".to_owned(),
                 endpoint: "Ubuntu".to_owned(),
                 session: "work".to_owned(),
+                kind: SessionKind::Tmux,
                 presentation_id: 1,
                 surface: Arc::new(SurfaceStore::new(surface::SurfaceFrame::blank(1, size))),
             },
@@ -6538,12 +7116,7 @@ mod tests {
             DiagnosticKind::Timeout
         );
 
-        set_inner_state(
-            &workspace.inner,
-            WorkspaceContent::Error {
-                message: "attachment failed".to_owned(),
-            },
-        );
+        set_inner_state(&workspace.inner, WorkspaceContent::Shell);
         workspace.refresh().expect("start retry");
         assert!(matches!(
             workspace.snapshot().content(),
@@ -6667,6 +7240,37 @@ mod tests {
             host.herdr_diagnostic().expect("scoped diagnostic").kind(),
             DiagnosticKind::MalformedOutput
         );
+    }
+
+    #[test]
+    fn host_refresh_keeps_cached_tmux_and_herdr_rows_visible() {
+        let spec = WslHostSpec::available(
+            WslConfig::with_distro("Ubuntu").expect("valid config"),
+            WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
+                .expect("absolute WSL path"),
+        );
+        let workspace = Workspace::application(TerminalAppearance::default(), Some(spec));
+        {
+            let mut hosts = workspace.inner.hosts.write().expect("hosts");
+            let host = &mut hosts[0];
+            host.connection = HostConnectionState::Ready;
+            host.sessions = vec![SessionItem::new("tmux-work", 0)];
+            host.herdr_available = true;
+            host.herdr_sessions = vec![HerdrSessionItem::new(
+                "herdr-work",
+                false,
+                HerdrSessionState::Running,
+            )];
+        }
+
+        begin_refresh(&workspace.inner, &CancellationToken::new());
+
+        let snapshot = workspace.snapshot();
+        assert!(matches!(snapshot.content(), WorkspaceContent::Shell));
+        let host = &snapshot.hosts()[0];
+        assert_eq!(host.connection(), HostConnectionState::Connecting);
+        assert_eq!(host.sessions()[0].name(), "tmux-work");
+        assert_eq!(host.herdr_sessions()[0].name(), "herdr-work");
     }
 
     #[test]
