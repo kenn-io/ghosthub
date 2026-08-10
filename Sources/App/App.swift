@@ -60,6 +60,19 @@ enum ApplicationShortcutMenuModel {
         guard terminalHasEffectiveKeyboardFocus == true else { return nil }
         return binding
     }
+
+    static func keyboardBinding(
+        _ binding: ApplicationKeyBinding?,
+        sceneIsFocused: Bool,
+        hasAttachedSheet: Bool,
+        actionIsAvailable: Bool
+    ) -> ApplicationKeyBinding? {
+        guard sceneIsFocused,
+              !hasAttachedSheet,
+              actionIsAvailable
+        else { return nil }
+        return binding
+    }
 }
 
 @main
@@ -319,7 +332,11 @@ struct GhosthubApp: App {
             Button("New Worktree…") {
                 invoke(.newWorktree)
             }
-            .keyboardShortcut(shortcut(.newWorktree))
+            .keyboardShortcut(shortcut(
+                .newWorktree,
+                actionIsAvailable:
+                focusedSceneModel?.canCreateWorktreeInSelectedProject == true
+            ))
             .disabled(
                 focusedSceneModel?.canCreateWorktreeInSelectedProject
                     != true
@@ -328,7 +345,12 @@ struct GhosthubApp: App {
             Button("Import Pull Request…") {
                 invoke(.importPullRequest)
             }
-            .keyboardShortcut(shortcut(.importPullRequest))
+            .keyboardShortcut(shortcut(
+                .importPullRequest,
+                actionIsAvailable:
+                focusedSceneModel?.canImportPullRequestInSelectedProject
+                    == true
+            ))
             .disabled(
                 focusedSceneModel?.canImportPullRequestInSelectedProject
                     != true
@@ -390,7 +412,11 @@ struct GhosthubApp: App {
             Button("Previous Sibling") {
                 invoke(.previousSibling)
             }
-            .keyboardShortcut(shortcut(.previousSibling))
+            .keyboardShortcut(shortcut(
+                .previousSibling,
+                actionIsAvailable: availableSiblingShortcuts?
+                    .contains(.previousSibling) == true
+            ))
             .disabled(
                 availableSiblingShortcuts?.contains(.previousSibling) != true
             )
@@ -398,7 +424,11 @@ struct GhosthubApp: App {
             Button("Next Sibling") {
                 invoke(.nextSibling)
             }
-            .keyboardShortcut(shortcut(.nextSibling))
+            .keyboardShortcut(shortcut(
+                .nextSibling,
+                actionIsAvailable: availableSiblingShortcuts?
+                    .contains(.nextSibling) == true
+            ))
             .disabled(
                 availableSiblingShortcuts?.contains(.nextSibling) != true
             )
@@ -413,7 +443,11 @@ struct GhosthubApp: App {
                     Button(definition.title) {
                         invoke(definition.action)
                     }
-                    .keyboardShortcut(shortcut(definition.action))
+                    .keyboardShortcut(shortcut(
+                        definition.action,
+                        actionIsAvailable: availableSiblingShortcuts?
+                            .contains(definition.action) == true
+                    ))
                     .disabled(
                         availableSiblingShortcuts?.contains(
                             definition.action
@@ -459,19 +493,38 @@ struct GhosthubApp: App {
     }
 
     private func shortcut(
-        _ action: ApplicationShortcutAction
+        _ action: ApplicationShortcutAction,
+        actionIsAvailable: Bool = true
     ) -> KeyboardShortcut? {
-        settingsStore.shortcutPreferences.resolved[action]?.swiftUI
+        ApplicationShortcutMenuModel.keyboardBinding(
+            settingsStore.shortcutPreferences.resolved[action],
+            sceneIsFocused: focusedSceneModel?.isFocusedWindow == true,
+            hasAttachedSheet: focusedSceneHasAttachedSheet,
+            actionIsAvailable: actionIsAvailable
+        )?.swiftUI
     }
 
     private func splitShortcut(
         _ action: ApplicationShortcutAction
     ) -> KeyboardShortcut? {
-        ApplicationShortcutMenuModel.splitBinding(
+        let splitBinding = ApplicationShortcutMenuModel.splitBinding(
             settingsStore.shortcutPreferences.resolved[action],
             terminalHasEffectiveKeyboardFocus:
             terminalHasEffectiveKeyboardFocus
+        )
+        return ApplicationShortcutMenuModel.keyboardBinding(
+            splitBinding,
+            sceneIsFocused: focusedSceneModel?.isFocusedWindow == true,
+            hasAttachedSheet: focusedSceneHasAttachedSheet,
+            actionIsAvailable: focusedSceneModel?.canSplitActivePane == true
         )?.swiftUI
+    }
+
+    private var focusedSceneHasAttachedSheet: Bool {
+        guard let focusedSceneModel else { return false }
+        return focusedSceneModel.isSettingsPresented
+            || focusedSceneModel.isCommandPalettePresented
+            || focusedSceneModel.isLogViewerPresented
     }
 
     private func invoke(_ action: ApplicationShortcutAction) {

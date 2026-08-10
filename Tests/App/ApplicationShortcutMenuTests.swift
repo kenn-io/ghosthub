@@ -95,4 +95,34 @@ struct ApplicationShortcutMenuTests {
             terminalHasEffectiveKeyboardFocus: true
         ) == binding)
     }
+
+    @Test("menu bindings require an available sheet-free focused scene")
+    func bindingRequiresKeyboardAvailability() throws {
+        let binding = try ApplicationKeyBinding(parsing: "ctrl+k")
+
+        #expect(ApplicationShortcutMenuModel.keyboardBinding(
+            binding,
+            sceneIsFocused: true,
+            hasAttachedSheet: false,
+            actionIsAvailable: true
+        ) == binding)
+        #expect(ApplicationShortcutMenuModel.keyboardBinding(
+            binding,
+            sceneIsFocused: false,
+            hasAttachedSheet: false,
+            actionIsAvailable: true
+        ) == nil)
+        #expect(ApplicationShortcutMenuModel.keyboardBinding(
+            binding,
+            sceneIsFocused: true,
+            hasAttachedSheet: true,
+            actionIsAvailable: true
+        ) == nil)
+        #expect(ApplicationShortcutMenuModel.keyboardBinding(
+            binding,
+            sceneIsFocused: true,
+            hasAttachedSheet: false,
+            actionIsAvailable: false
+        ) == nil)
+    }
 }
