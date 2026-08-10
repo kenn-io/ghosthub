@@ -3021,7 +3021,14 @@ final class WorkspaceSceneModel: ObservableObject {
         attemptPendingRestoration()
     }
 
-    private func applyRuntimeInventoryOverlayIfNeeded() {
+    private func applyRuntimeInventoryOverlayIfNeeded(hostID: UUID? = nil) {
+        if let hostID {
+            applyHostInventoryOverlayIfNeeded(
+                hostID: hostID,
+                includeKwtInventory: false
+            )
+            return
+        }
         let overlaid = HostInventoryOverlay.applyRuntimeSessions(
             tmuxSessionsByHost: tmuxSessionsByHost,
             herdrSessionsByHost: herdrSessionsByHost,
@@ -3036,6 +3043,56 @@ final class WorkspaceSceneModel: ObservableObject {
             isApplyingInventoryOverlay = false
         }
         attemptPendingRestoration()
+    }
+
+    private func applyHostInventoryOverlayIfNeeded(
+        hostID: UUID,
+        includeKwtInventory: Bool
+    ) {
+        let overlaid = HostInventoryOverlay.apply(
+            kwtInventoriesByHost: includeKwtInventory
+                ? hostScopedValue(kwtInventoriesByHost, hostID: hostID)
+                : [:],
+            kwtAvailabilityByHost: hostScopedValue(
+                kwtAvailabilityByHost,
+                hostID: hostID
+            ),
+            tmuxSessionsByHost: hostScopedValue(
+                tmuxSessionsByHost,
+                hostID: hostID
+            ),
+            herdrSessionsByHost: hostScopedValue(
+                herdrSessionsByHost,
+                hostID: hostID
+            ),
+            herdrAvailabilityByHost: hostScopedValue(
+                herdrAvailabilityByHost,
+                hostID: hostID
+            ),
+            tmuxReachabilityByHost: hostScopedValue(
+                tmuxReachabilityByHost,
+                hostID: hostID
+            ),
+            tmuxLastSeenByHost: hostScopedValue(
+                tmuxLastSeenByHost,
+                hostID: hostID
+            ),
+            to: snapshot
+        )
+        if overlaid != snapshot {
+            isApplyingInventoryOverlay = true
+            snapshot = overlaid
+            isApplyingInventoryOverlay = false
+        }
+        attemptPendingRestoration()
+    }
+
+    private func hostScopedValue<Value>(
+        _ values: [UUID: Value],
+        hostID: UUID
+    ) -> [UUID: Value] {
+        guard let value = values[hostID] else { return [:] }
+        return [hostID: value]
     }
 
     private func scheduleKwtInventory() {
@@ -3079,8 +3136,6 @@ final class WorkspaceSceneModel: ObservableObject {
         let kwtInventoryLoader = kwtInventoryLoader
         let kwtRemoteProvisioner = kwtRemoteProvisioner
         kwtInventoryTask = Task { [weak self] in
-            var receivedResult = false
-            var authoritativeHostIDs: [UUID] = []
             await withTaskGroup(
                 of: (UUID, Result<KwtHostInventory, Error>).self
             ) { group in
@@ -3121,7 +3176,6 @@ final class WorkspaceSceneModel: ObservableObject {
                             excludingWorktrees: tombstones,
                             publish: false
                         )
-                        authoritativeHostIDs.append(hostID)
                     case let .failure(error):
                         if error is KwtRemoteInstallError {
                             // Provisioning failures disable worktree actions
@@ -3147,19 +3201,20 @@ final class WorkspaceSceneModel: ObservableObject {
                                 error.localizedDescription
                         }
                     }
-                    receivedResult = true
+                    self.applyHostInventoryOverlayIfNeeded(
+                        hostID: hostID,
+                        includeKwtInventory: true
+                    )
+                    if case .success = result {
+                        self.reconcileRetainedTmuxPresentations(
+                            afterAuthoritativeInventoryFor: hostID
+                        )
+                    }
+                    self.updateWorkspaceInventoryState()
                 }
             }
             guard let self, !Task.isCancelled,
                   generation == kwtInventoryGeneration else { return }
-            if receivedResult {
-                applyInventoryOverlayIfNeeded()
-                for hostID in authoritativeHostIDs {
-                    reconcileRetainedTmuxPresentations(
-                        afterAuthoritativeInventoryFor: hostID
-                    )
-                }
-            }
             isKwtInventoryLoading = false
             inventoryRefreshProgress.kwtCompleted = true
             updateWorkspaceInventoryState()
@@ -3727,7 +3782,6 @@ final class WorkspaceSceneModel: ObservableObject {
         updateWorkspaceInventoryState()
         let broker = tmuxSessionProbeBroker
         tmuxDiscoveryTask = Task { [weak self] in
-            var receivedResult = false
             await withTaskGroup(
                 of: (UUID, Result<[DiscoveredTmuxSession], TmuxBinaryError>).self
             ) { group in
@@ -3742,20 +3796,11 @@ final class WorkspaceSceneModel: ObservableObject {
                         group.cancelAll()
                         return
                     }
-                    self.applyTmuxDiscoveryResult(
-                        result,
-                        hostID: hostID,
-                        publish: false
-                    )
-                    receivedResult = true
+                    self.applyTmuxDiscoveryResult(result, hostID: hostID)
                 }
             }
             guard let self, !Task.isCancelled,
                   generation == tmuxDiscoveryGeneration else { return }
-            if receivedResult {
-                applyRuntimeInventoryOverlayIfNeeded()
-                applyDeferredTmuxPresentationsIfReady()
-            }
             isTmuxDiscoveryLoading = false
             inventoryRefreshProgress.tmuxCompleted = true
             updateWorkspaceInventoryState()
@@ -3799,7 +3844,6 @@ final class WorkspaceSceneModel: ObservableObject {
         let lifecycleCoordinator = herdrLifecycleCoordinator
         herdrDiscoveryTask = Task { [weak self] in
             var needsFreshDiscovery = false
-            var receivedResult = false
             await withTaskGroup(
                 of: (UUID, HerdrDiscoveryResult).self
             ) { group in
@@ -3834,17 +3878,12 @@ final class WorkspaceSceneModel: ObservableObject {
                     }
                     self.applyHerdrDiscoveryResult(
                         result,
-                        hostID: hostID,
-                        publish: false
+                        hostID: hostID
                     )
-                    receivedResult = true
                 }
             }
             guard let self, !Task.isCancelled, !isShutDown,
                   generation == herdrDiscoveryGeneration else { return }
-            if receivedResult {
-                applyRuntimeInventoryOverlayIfNeeded()
-            }
             isHerdrDiscoveryLoading = false
             inventoryRefreshProgress.herdrCompleted = true
             updateWorkspaceInventoryState()
@@ -3880,7 +3919,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 "\(hostName): \(error.localizedDescription)"
         }
         if publish {
-            applyRuntimeInventoryOverlayIfNeeded()
+            applyRuntimeInventoryOverlayIfNeeded(hostID: hostID)
             updateWorkspaceInventoryState()
         }
     }
@@ -3909,7 +3948,7 @@ final class WorkspaceSceneModel: ObservableObject {
                     "\(hostName): \(error.localizedDescription)"
             }
             if publish {
-                applyRuntimeInventoryOverlayIfNeeded()
+                applyRuntimeInventoryOverlayIfNeeded(hostID: hostID)
                 updateWorkspaceInventoryState()
             }
             return
@@ -3937,7 +3976,7 @@ final class WorkspaceSceneModel: ObservableObject {
             presentation.establishmentConfirmationTask = nil
         }
         if publish {
-            applyRuntimeInventoryOverlayIfNeeded()
+            applyRuntimeInventoryOverlayIfNeeded(hostID: hostID)
             updateWorkspaceInventoryState()
             applyDeferredTmuxPresentationsIfReady()
         }

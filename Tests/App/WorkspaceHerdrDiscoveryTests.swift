@@ -111,6 +111,44 @@ private final class HerdrLifecycleRaceDiscovery: @unchecked Sendable {
 @Suite("Workspace Herdr discovery", .serialized)
 struct WorkspaceHerdrDiscoveryTests {
     @MainActor
+    @Test("local Herdr inventory publishes while a remote probe is blocked")
+    func localHerdrInventoryPublishesBeforeRemoteCompletes() async throws {
+        let environment = try setupRemoteTmuxEnvironment()
+        let remoteDiscovery = HerdrBlockingDiscovery()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.localHostID,
+            snapshot: environment.snapshot,
+            herdrSessionDiscovery: { host in
+                guard host.isRemote else {
+                    return .available([
+                        HerdrSessionSummary(
+                            name: "local-fast",
+                            isDefault: false,
+                            state: .running
+                        ),
+                    ])
+                }
+                return remoteDiscovery.discover()
+            }
+        )
+
+        model.startHerdrSessionDiscovery()
+        await waitUntilMainActor { remoteDiscovery.didStart }
+        await waitUntilMainActor {
+            model.snapshot.host(id: environment.localHostID)?
+                .herdrSessions.map(\.name) == ["local-fast"]
+        }
+        let localSessions = model.snapshot.host(
+            id: environment.localHostID
+        )?.herdrSessions.map(\.name)
+
+        remoteDiscovery.release()
+        #expect(localSessions == ["local-fast"])
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("scene shutdown prevents Herdr discovery from restarting")
     func shutdownPreventsHerdrDiscoveryRespawn() async throws {
         let database = try WorkspaceDatabase.inMemory()
