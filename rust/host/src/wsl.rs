@@ -324,6 +324,31 @@ impl HostSnapshot {
     pub fn herdr(&self) -> &HerdrInventory {
         self.herdr.as_ref()
     }
+
+    /// Apply one authoritative Herdr lifecycle response to this snapshot.
+    ///
+    /// Returns `None` when the snapshot does not contain the session inventory
+    /// that authorized the operation.
+    #[must_use]
+    pub fn with_herdr_lifecycle(
+        mut self,
+        action: HerdrLifecycleAction,
+        record: HerdrSessionRecord,
+    ) -> Option<Self> {
+        let HerdrInventory::Available { sessions, .. } = self.herdr.as_mut() else {
+            return None;
+        };
+        let index = sessions
+            .iter()
+            .position(|session| session.name() == record.name())?;
+        match action {
+            HerdrLifecycleAction::Stop => sessions[index] = record,
+            HerdrLifecycleAction::Delete => {
+                sessions.remove(index);
+            }
+        }
+        Some(self)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2799,6 +2824,55 @@ mod tests {
     use std::io;
 
     use super::*;
+
+    #[test]
+    fn authoritative_herdr_lifecycle_updates_only_the_target_session() {
+        let running = HerdrSessionRecord::new(
+            "work",
+            false,
+            HerdrSessionState::Running,
+            "/tmp/work",
+            "/tmp/work.sock",
+        );
+        let other = HerdrSessionRecord::new(
+            "other",
+            false,
+            HerdrSessionState::Running,
+            "/tmp/other",
+            "/tmp/other.sock",
+        );
+        let snapshot = HostSnapshot::test_fixture_with_herdr(
+            "Ubuntu",
+            "boot",
+            1,
+            Vec::new(),
+            HerdrInventory::Available {
+                executable: "/usr/bin/herdr".to_owned(),
+                sessions: vec![running, other.clone()],
+            },
+        );
+        let stopped = HerdrSessionRecord::new(
+            "work",
+            false,
+            HerdrSessionState::Stopped,
+            "/tmp/work",
+            "/tmp/work.sock",
+        );
+
+        let stopped_snapshot = snapshot
+            .with_herdr_lifecycle(HerdrLifecycleAction::Stop, stopped.clone())
+            .expect("stop response applies");
+        assert_eq!(
+            stopped_snapshot.herdr().sessions(),
+            &[stopped, other.clone()]
+        );
+
+        let deleted_snapshot = stopped_snapshot
+            .with_herdr_lifecycle(HerdrLifecycleAction::Delete, other)
+            .expect("delete response applies");
+        assert_eq!(deleted_snapshot.herdr().sessions().len(), 1);
+        assert_eq!(deleted_snapshot.herdr().sessions()[0].name(), "work");
+    }
 
     #[test]
     fn missing_system_wsl_is_not_an_error() {

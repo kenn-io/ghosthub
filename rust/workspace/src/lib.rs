@@ -1,7 +1,7 @@
 //! Application workflow and capability boundary for GPUI.
 
 use std::fmt;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::Duration;
@@ -1455,6 +1455,7 @@ struct Inner {
     selected_host: RwLock<Option<String>>,
     inventory_state: Mutex<WorkspaceContent>,
     revision: AtomicU64,
+    snapshot_writers: AtomicUsize,
     presentation_generation: AtomicU64,
     navigation_generation: AtomicU64,
     navigation: Mutex<()>,
@@ -1487,11 +1488,35 @@ pub struct Workspace {
     inner: Arc<Inner>,
 }
 
-fn read_revision_consistent<T>(revision: &AtomicU64, mut read: impl FnMut(u64) -> T) -> T {
+struct SnapshotWrite<'a> {
+    writers: &'a AtomicUsize,
+}
+
+impl Drop for SnapshotWrite<'_> {
+    fn drop(&mut self) {
+        self.writers.fetch_sub(1, Ordering::Release);
+    }
+}
+
+fn begin_snapshot_write(inner: &Inner) -> SnapshotWrite<'_> {
+    inner.snapshot_writers.fetch_add(1, Ordering::AcqRel);
+    SnapshotWrite {
+        writers: &inner.snapshot_writers,
+    }
+}
+
+fn read_revision_consistent<T>(
+    revision: &AtomicU64,
+    writers: &AtomicUsize,
+    mut read: impl FnMut(u64) -> T,
+) -> T {
     loop {
+        while writers.load(Ordering::Acquire) != 0 {
+            std::thread::yield_now();
+        }
         let before = revision.load(Ordering::Acquire);
         let value = read(before);
-        if revision.load(Ordering::Acquire) == before {
+        if writers.load(Ordering::Acquire) == 0 && revision.load(Ordering::Acquire) == before {
             return value;
         }
     }
@@ -1532,6 +1557,7 @@ impl Workspace {
                 selected_host: RwLock::new(snapshot.selected_host),
                 inventory_state: Mutex::new(snapshot.content),
                 revision: AtomicU64::new(snapshot.revision),
+                snapshot_writers: AtomicUsize::new(0),
                 presentation_generation: AtomicU64::new(presentation_generation),
                 navigation_generation: AtomicU64::new(0),
                 navigation: Mutex::new(()),
@@ -1597,6 +1623,7 @@ impl Workspace {
                 selected_host: RwLock::new(selected_host),
                 inventory_state: Mutex::new(WorkspaceContent::Shell),
                 revision: AtomicU64::new(0),
+                snapshot_writers: AtomicUsize::new(0),
                 presentation_generation: AtomicU64::new(0),
                 navigation_generation: AtomicU64::new(0),
                 navigation: Mutex::new(()),
@@ -1646,6 +1673,7 @@ impl Workspace {
                 selected_host: RwLock::new(Some("wsl".to_owned())),
                 inventory_state: Mutex::new(WorkspaceContent::Loading),
                 revision: AtomicU64::new(0),
+                snapshot_writers: AtomicUsize::new(0),
                 presentation_generation: AtomicU64::new(0),
                 navigation_generation: AtomicU64::new(0),
                 navigation: Mutex::new(()),
@@ -1753,60 +1781,64 @@ impl Workspace {
 
     #[must_use]
     pub fn snapshot(&self) -> WorkspaceSnapshot {
-        read_revision_consistent(&self.inner.revision, |revision| {
-            let mut hosts = self
-                .inner
-                .hosts
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone();
-            let current_runtime = self
-                .inner
-                .host
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .as_ref()
-                .map(|published| {
-                    (
-                        published.value.snapshot.endpoint().clone(),
-                        published.value.snapshot.runtime().clone(),
-                    )
-                });
-            project_herdr_lifecycle(
-                &mut hosts,
-                current_runtime.as_ref(),
-                &self.inner.herdr_lifecycle,
-            );
-            WorkspaceSnapshot {
-                revision,
-                appearance: self.inner.appearance.clone(),
-                content: self
+        read_revision_consistent(
+            &self.inner.revision,
+            &self.inner.snapshot_writers,
+            |revision| {
+                let mut hosts = self
                     .inner
-                    .state
+                    .hosts
                     .read()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .clone(),
-                hosts,
-                selected_host: self
+                    .clone();
+                let current_runtime = self
                     .inner
-                    .selected_host
-                    .read()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .clone(),
-                notice: self
-                    .inner
-                    .terminal_notice
-                    .read()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .clone(),
-                retained_selections: self
-                    .inner
-                    .retained_presentations
+                    .host
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .selections(),
-            }
-        })
+                    .as_ref()
+                    .map(|published| {
+                        (
+                            published.value.snapshot.endpoint().clone(),
+                            published.value.snapshot.runtime().clone(),
+                        )
+                    });
+                project_herdr_lifecycle(
+                    &mut hosts,
+                    current_runtime.as_ref(),
+                    &self.inner.herdr_lifecycle,
+                );
+                WorkspaceSnapshot {
+                    revision,
+                    appearance: self.inner.appearance.clone(),
+                    content: self
+                        .inner
+                        .state
+                        .read()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .clone(),
+                    hosts,
+                    selected_host: self
+                        .inner
+                        .selected_host
+                        .read()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .clone(),
+                    notice: self
+                        .inner
+                        .terminal_notice
+                        .read()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .clone(),
+                    retained_selections: self
+                        .inner
+                        .retained_presentations
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .selections(),
+                }
+            },
+        )
     }
 
     /// Begin an attach-only presentation for one discovered session.
@@ -1855,6 +1887,7 @@ impl Workspace {
     /// Returns an error if the requested session is absent from the latest
     /// inventory or the replacement attachment cannot be started.
     pub fn switch_session(&self, selection: &SessionSelection) -> Result<(), WorkspaceError> {
+        let _snapshot_write = begin_snapshot_write(&self.inner);
         let _navigation = self
             .inner
             .navigation
@@ -1956,6 +1989,7 @@ impl Workspace {
         endpoint: &str,
         name: &str,
     ) -> Result<(), WorkspaceError> {
+        let _snapshot_write = begin_snapshot_write(&self.inner);
         let name =
             SessionName::parse(name).map_err(|error| WorkspaceError::new(error.to_string()))?;
         let navigation = self
@@ -2065,6 +2099,7 @@ impl Workspace {
         request: &HerdrCreateRequest,
         navigation: std::sync::MutexGuard<'_, ()>,
     ) -> Result<(), WorkspaceError> {
+        let _snapshot_write = begin_snapshot_write(&self.inner);
         let navigation_generation = self.begin_navigation();
         let in_flight_fallback = self.supersede_inflight_attachment()?;
         let visible_previous = self.retain_active_presentation()?;
@@ -2178,6 +2213,7 @@ impl Workspace {
     }
 
     fn retain_active_presentation(&self) -> Result<Option<PresentationKey>, WorkspaceError> {
+        let _snapshot_write = begin_snapshot_write(&self.inner);
         let mut attachment = self
             .inner
             .attachment
@@ -2252,6 +2288,7 @@ impl Workspace {
         fallback: Option<FallbackAuthority>,
         navigation_generation: u64,
     ) -> Result<(), WorkspaceError> {
+        let _snapshot_write = begin_snapshot_write(&self.inner);
         let generation;
         {
             let mut attachment = self
@@ -2545,6 +2582,7 @@ impl Workspace {
         selection: &SessionSelection,
         action: HerdrLifecycleAction,
     ) -> Result<(), WorkspaceError> {
+        let _snapshot_write = begin_snapshot_write(&self.inner);
         let (generation, removed) = invalidate_pending_herdr_lifecycle(&self.inner);
         if removed {
             self.inner.revision.fetch_add(1, Ordering::Release);
@@ -2597,6 +2635,7 @@ impl Workspace {
     }
 
     pub fn cancel_herdr_lifecycle(&self) {
+        let _snapshot_write = begin_snapshot_write(&self.inner);
         let (_generation, removed) = invalidate_pending_herdr_lifecycle(&self.inner);
         if removed {
             self.inner.revision.fetch_add(1, Ordering::Release);
@@ -2610,6 +2649,7 @@ impl Workspace {
     /// Returns an error when no confirmation is pending or the lifecycle task
     /// cannot be started.
     pub fn confirm_herdr_lifecycle(&self) -> Result<(), WorkspaceError> {
+        let _snapshot_write = begin_snapshot_write(&self.inner);
         let mut lifecycle = self
             .inner
             .herdr_lifecycle
@@ -2687,6 +2727,7 @@ impl Workspace {
         runtime: &host::WslRuntimeIdentity,
         identity: &session::SessionIdentity,
     ) {
+        let _snapshot_write = begin_snapshot_write(&self.inner);
         let _navigation = self
             .inner
             .navigation
@@ -2728,6 +2769,7 @@ impl Workspace {
         runtime: &host::WslRuntimeIdentity,
         record: &session::HerdrSessionRecord,
     ) {
+        let _snapshot_write = begin_snapshot_write(&self.inner);
         let _navigation = self
             .inner
             .navigation
@@ -2854,6 +2896,7 @@ impl Workspace {
     }
 
     fn detach_locked(&self) {
+        let _snapshot_write = begin_snapshot_write(&self.inner);
         self.begin_navigation();
         if let Some(pending) = self
             .inner
@@ -2881,6 +2924,7 @@ impl Workspace {
 
     #[must_use]
     pub fn drain_events(&self) -> (Vec<WorkspaceEvent>, bool) {
+        let _snapshot_write = begin_snapshot_write(&self.inner);
         let _drain = self
             .inner
             .event_drain
@@ -3355,6 +3399,7 @@ fn activate_retained_presentation(
     key: &PresentationKey,
     fallback: Option<FallbackAuthority>,
 ) -> Result<bool, WorkspaceError> {
+    let _snapshot_write = begin_snapshot_write(inner);
     let mut attachment = inner
         .attachment
         .lock()
@@ -3915,6 +3960,41 @@ fn reserve_refresh(inner: &Inner, cancellation: &CancellationToken) -> u64 {
     generation
 }
 
+fn reserve_constructive_inventory(inner: &Inner) -> u64 {
+    let _publication = inner
+        .refresh_publication
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let generation = inner.refresh_generation.fetch_add(1, Ordering::AcqRel) + 1;
+    if let Some(previous) = inner
+        .discovery_cancel
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+    {
+        previous.cancel();
+    }
+    generation
+}
+
+fn settle_constructive_inventory(inner: &Inner, generation: u64) {
+    let _publication = inner
+        .refresh_publication
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if inner.refresh_generation.load(Ordering::Acquire) != generation {
+        return;
+    }
+    if let Some(published) = inner
+        .host
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_mut()
+    {
+        published.generation = generation;
+    }
+}
+
 fn publish_refresh(inner: &Inner, generation: u64, publish: impl FnOnce()) -> bool {
     let _publication = inner
         .refresh_publication
@@ -3923,6 +4003,7 @@ fn publish_refresh(inner: &Inner, generation: u64, publish: impl FnOnce()) -> bo
     if inner.refresh_generation.load(Ordering::Acquire) != generation {
         return false;
     }
+    let _snapshot_write = begin_snapshot_write(inner);
     publish();
     true
 }
@@ -4008,10 +4089,12 @@ fn run_create(
         .session_operations
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let inventory_publication = reserve_constructive_inventory(inner);
     let created = create_fresh(inner, request, navigation_generation, cancellation);
     let (worker, snapshot, session, initial_geometry, term) = match created {
         Ok(created) => created,
         Err(error) => {
+            settle_constructive_inventory(inner, inventory_publication);
             restore_inventory_after_creation_failure(
                 inner,
                 None,
@@ -4022,23 +4105,26 @@ fn run_create(
         }
     };
     if inner.navigation_generation.load(Ordering::Acquire) != navigation_generation {
+        settle_constructive_inventory(inner, inventory_publication);
         drop(worker);
         return;
     }
 
-    let inventory_generation = match merge_created_inventory(inner, request, snapshot.clone()) {
-        Ok(generation) => generation,
-        Err(error) => {
-            drop(worker);
-            restore_inventory_after_creation_failure(
-                inner,
-                None,
-                navigation_generation,
-                error.to_string(),
-            );
-            return;
-        }
-    };
+    let inventory_generation =
+        match merge_created_inventory(inner, request, snapshot.clone(), inventory_publication) {
+            Ok(generation) => generation,
+            Err(error) => {
+                settle_constructive_inventory(inner, inventory_publication);
+                drop(worker);
+                restore_inventory_after_creation_failure(
+                    inner,
+                    None,
+                    navigation_generation,
+                    error.to_string(),
+                );
+                return;
+            }
+        };
     let attached = AttachRequest {
         host_id: request.host_id.clone(),
         host: request.host.clone(),
@@ -4068,10 +4154,12 @@ fn run_herdr_create(
         .session_operations
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let inventory_publication = reserve_constructive_inventory(inner);
     let created = create_herdr_fresh(inner, request, navigation_generation, cancellation);
     let (worker, snapshot, session, initial_geometry) = match created {
         Ok(created) => created,
         Err(error) => {
+            settle_constructive_inventory(inner, inventory_publication);
             restore_inventory_after_creation_failure(
                 inner,
                 None,
@@ -4082,13 +4170,19 @@ fn run_herdr_create(
         }
     };
     if inner.navigation_generation.load(Ordering::Acquire) != navigation_generation {
+        settle_constructive_inventory(inner, inventory_publication);
         drop(worker);
         return;
     }
-    let inventory_generation = match merge_herdr_created_inventory(inner, request, snapshot.clone())
-    {
+    let inventory_generation = match merge_herdr_created_inventory(
+        inner,
+        request,
+        snapshot.clone(),
+        inventory_publication,
+    ) {
         Ok(generation) => generation,
         Err(error) => {
+            settle_constructive_inventory(inner, inventory_publication);
             drop(worker);
             restore_inventory_after_creation_failure(
                 inner,
@@ -4132,33 +4226,39 @@ fn run_herdr_lifecycle(workspace: &Workspace, pending: &PendingHerdrLifecycle) {
     if pending.action == HerdrLifecycleAction::Stop {
         workspace.finish_herdr_presentation(&pending.endpoint, &pending.runtime, &pending.record);
     }
-    let result = pending
-        .host
-        .mutate_herdr_session(
-            &pending.endpoint,
-            &pending.runtime,
-            &pending.record,
-            pending.action,
-            &CancellationToken::new(),
-        )
-        .map_err(|error| WorkspaceError::new(error.to_string()))
-        .and_then(|_record| {
-            pending
-                .host
-                .discover(&ConptyAdmissionAttacher::new())
-                .map_err(|error| WorkspaceError::new(error.to_string()))
-        })
-        .and_then(|snapshot| merge_herdr_lifecycle_inventory(&workspace.inner, pending, snapshot));
-    if let Err(error) = result {
-        workspace.push_operation_error(error.to_string());
+    match pending.host.mutate_herdr_session(
+        &pending.endpoint,
+        &pending.runtime,
+        &pending.record,
+        pending.action,
+        &CancellationToken::new(),
+    ) {
+        Ok(record) => {
+            if let Err(error) = publish_herdr_lifecycle_response(&workspace.inner, pending, record)
+            {
+                workspace.push_operation_error(format!(
+                    "Herdr {} succeeded, but Ghosthub could not publish the result: {error}",
+                    pending.action.command()
+                ));
+            } else {
+                finish_herdr_lifecycle_state(&workspace.inner, pending.generation);
+                reconcile_herdr_lifecycle_inventory(&workspace.inner, pending);
+                return;
+            }
+        }
+        Err(error) => workspace.push_operation_error(error.to_string()),
     }
-    workspace
-        .inner
+    finish_herdr_lifecycle_state(&workspace.inner, pending.generation);
+}
+
+fn finish_herdr_lifecycle_state(inner: &Inner, generation: u64) {
+    let _snapshot_write = begin_snapshot_write(inner);
+    inner
         .herdr_lifecycle
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .finish(pending.generation);
-    workspace.inner.revision.fetch_add(1, Ordering::Release);
+        .finish(generation);
+    inner.revision.fetch_add(1, Ordering::Release);
 }
 
 fn create_herdr_fresh(
@@ -4317,6 +4417,7 @@ fn publish_created_presentation(
     term: AttachTerm,
     navigation_generation: u64,
 ) {
+    let _snapshot_write = begin_snapshot_write(inner);
     let navigation = inner
         .navigation
         .lock()
@@ -4506,6 +4607,7 @@ fn restore_inventory_after_creation_failure(
     navigation_generation: u64,
     message: String,
 ) {
+    let _snapshot_write = begin_snapshot_write(inner);
     let _navigation = inner
         .navigation
         .lock()
@@ -4555,6 +4657,7 @@ fn run_attach(inner: &Inner, request: &AttachRequest, term: AttachTerm, generati
     }
     match attach_fresh(inner, request, term) {
         Ok((worker, snapshot, attached_session, initial_geometry)) => {
+            let _snapshot_write = begin_snapshot_write(inner);
             let mut attachment = inner
                 .attachment
                 .lock()
@@ -4608,6 +4711,7 @@ fn run_attach(inner: &Inner, request: &AttachRequest, term: AttachTerm, generati
             );
         }
         Err(error) => {
+            let _snapshot_write = begin_snapshot_write(inner);
             let mut attachment = inner
                 .attachment
                 .lock()
@@ -4655,6 +4759,7 @@ fn run_retained_retry(inner: &Inner, retry: &RetainedRetry) {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     match attach_fresh_retained(inner, retry) {
         Ok((worker, snapshot, resolved_request, initial_geometry)) => {
+            let _snapshot_write = begin_snapshot_write(inner);
             let latest_geometry = *inner
                 .terminal_geometry
                 .lock()
@@ -4681,9 +4786,11 @@ fn run_retained_retry(inner: &Inner, retry: &RetainedRetry) {
             }
         }
         Err(AttachFreshError::Host(error)) => {
+            let _snapshot_write = begin_snapshot_write(inner);
             fail_retained_retry(inner, &retry.key, Some(error.to_string()));
         }
         Err(AttachFreshError::SessionChanged { error, snapshot }) => {
+            let _snapshot_write = begin_snapshot_write(inner);
             remove_failed_retained_retry(inner, &retry.key);
             publish_retained_stale_failure(inner, &retry.request, snapshot, &error);
         }
@@ -4773,6 +4880,7 @@ fn merge_created_inventory(
     inner: &Inner,
     request: &CreateRequest,
     snapshot: HostSnapshot,
+    publication_generation: u64,
 ) -> Result<u64, WorkspaceError> {
     merge_constructive_inventory(
         inner,
@@ -4780,6 +4888,7 @@ fn merge_created_inventory(
         &request.endpoint,
         &request.runtime,
         snapshot,
+        publication_generation,
         "the created tmux session",
     )
 }
@@ -4788,6 +4897,7 @@ fn merge_herdr_created_inventory(
     inner: &Inner,
     request: &HerdrCreateRequest,
     snapshot: HostSnapshot,
+    publication_generation: u64,
 ) -> Result<u64, WorkspaceError> {
     merge_constructive_inventory(
         inner,
@@ -4795,6 +4905,7 @@ fn merge_herdr_created_inventory(
         &request.endpoint,
         &request.runtime,
         snapshot,
+        publication_generation,
         "the created Herdr session",
     )
 }
@@ -4803,6 +4914,7 @@ fn merge_herdr_lifecycle_inventory(
     inner: &Inner,
     pending: &PendingHerdrLifecycle,
     snapshot: HostSnapshot,
+    publication_generation: u64,
 ) -> Result<u64, WorkspaceError> {
     merge_constructive_inventory(
         inner,
@@ -4810,8 +4922,69 @@ fn merge_herdr_lifecycle_inventory(
         &pending.endpoint,
         &pending.runtime,
         snapshot,
+        publication_generation,
         "the Herdr lifecycle result",
     )
+}
+
+fn publish_herdr_lifecycle_response(
+    inner: &Inner,
+    pending: &PendingHerdrLifecycle,
+    record: session::HerdrSessionRecord,
+) -> Result<u64, WorkspaceError> {
+    let publication_generation = reserve_constructive_inventory(inner);
+    let snapshot = inner
+        .host
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .filter(|published| {
+            published.value.snapshot.endpoint() == &pending.endpoint
+                && published.value.snapshot.runtime() == &pending.runtime
+        })
+        .map(|published| published.value.snapshot.clone())
+        .ok_or_else(|| {
+            WorkspaceError::new(
+                "the WSL endpoint changed while publishing the Herdr lifecycle response",
+            )
+        })?
+        .with_herdr_lifecycle(pending.action, record)
+        .ok_or_else(|| {
+            WorkspaceError::new(
+                "the Herdr lifecycle response no longer matches published inventory",
+            )
+        })?;
+    merge_herdr_lifecycle_inventory(inner, pending, snapshot, publication_generation)
+}
+
+fn reconcile_herdr_lifecycle_inventory(inner: &Inner, pending: &PendingHerdrLifecycle) {
+    let publication_generation = inner.refresh_generation.load(Ordering::Acquire);
+    let Ok(snapshot) = pending.host.discover(&ConptyAdmissionAttacher::new()) else {
+        return;
+    };
+    if !herdr_lifecycle_is_reflected(&snapshot, pending) {
+        return;
+    }
+    let _reconciled =
+        merge_herdr_lifecycle_inventory(inner, pending, snapshot, publication_generation);
+}
+
+fn herdr_lifecycle_is_reflected(snapshot: &HostSnapshot, pending: &PendingHerdrLifecycle) -> bool {
+    let HerdrInventory::Available { sessions, .. } = snapshot.herdr() else {
+        return false;
+    };
+    let current = sessions
+        .iter()
+        .find(|session| session.name() == pending.record.name());
+    match pending.action {
+        HerdrLifecycleAction::Stop => current.is_some_and(|record| {
+            record.state() == HerdrSessionState::Stopped
+                && record.is_default() == pending.record.is_default()
+                && record.session_directory() == pending.record.session_directory()
+                && record.socket_path() == pending.record.socket_path()
+        }),
+        HerdrLifecycleAction::Delete => current.is_none(),
+    }
 }
 
 fn merge_constructive_inventory(
@@ -4820,12 +4993,19 @@ fn merge_constructive_inventory(
     endpoint: &host::WslEndpoint,
     runtime: &host::WslRuntimeIdentity,
     snapshot: HostSnapshot,
+    publication_generation: u64,
     operation: &str,
 ) -> Result<u64, WorkspaceError> {
     let _publication = inner
         .refresh_publication
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if inner.refresh_generation.load(Ordering::Acquire) != publication_generation {
+        return Err(WorkspaceError::new(format!(
+            "newer inventory superseded {operation}; refresh before trying again"
+        )));
+    }
+    let _snapshot_write = begin_snapshot_write(inner);
     if snapshot.endpoint() != endpoint || snapshot.runtime() != runtime {
         return Err(WorkspaceError::new(format!(
             "WSL changed while publishing {operation}"
@@ -4846,21 +5026,12 @@ fn merge_constructive_inventory(
                 "the WSL endpoint changed while publishing {operation}; refresh before trying again"
             ))
         })?;
-    let current_generation = inner.refresh_generation.load(Ordering::Acquire);
-    if published_generation > current_generation {
+    if published_generation > publication_generation {
         return Err(WorkspaceError::new(
             "session inventory generation moved backwards during publication",
         ));
     }
-    if let Some(cancellation) = inner
-        .discovery_cancel
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .take()
-    {
-        cancellation.cancel();
-    }
-    let inventory_generation = inner.refresh_generation.fetch_add(1, Ordering::AcqRel) + 1;
+    let inventory_generation = publication_generation;
 
     let inventory_state = ready_content(&snapshot);
     set_herdr_inventory(inner, snapshot.herdr());
@@ -4908,6 +5079,7 @@ fn reconcile_presentation_session_names(
     snapshot: &HostSnapshot,
     socket_directory: Option<&str>,
 ) {
+    let _snapshot_write = begin_snapshot_write(inner);
     let mut attachment = inner
         .attachment
         .lock()
@@ -5586,9 +5758,10 @@ mod tests {
     #[test]
     fn revision_consistent_read_retries_a_projection_crossing_an_update() {
         let revision = AtomicU64::new(1);
+        let writers = AtomicUsize::new(0);
         let mut reads = 0;
 
-        let observed = read_revision_consistent(&revision, |captured| {
+        let observed = read_revision_consistent(&revision, &writers, |captured| {
             reads += 1;
             if reads == 1 {
                 revision.fetch_add(1, Ordering::Release);
@@ -5597,6 +5770,30 @@ mod tests {
         });
 
         assert_eq!(observed, (2, 2));
+    }
+
+    #[test]
+    fn revision_consistent_read_waits_for_a_multi_field_publication() {
+        let revision = Arc::new(AtomicU64::new(1));
+        let writers = Arc::new(AtomicUsize::new(1));
+        let value = Arc::new(AtomicUsize::new(1));
+        let (read_tx, read_rx) = mpsc::channel();
+        let reader_revision = Arc::clone(&revision);
+        let reader_writers = Arc::clone(&writers);
+        let reader_value = Arc::clone(&value);
+        let reader = thread::spawn(move || {
+            read_revision_consistent(&reader_revision, &reader_writers, |captured| {
+                read_tx.send(()).expect("announce snapshot read");
+                (captured, reader_value.load(Ordering::Acquire))
+            })
+        });
+
+        assert!(read_rx.recv_timeout(Duration::from_millis(20)).is_err());
+        value.store(2, Ordering::Release);
+        revision.fetch_add(1, Ordering::Release);
+        writers.fetch_sub(1, Ordering::Release);
+
+        assert_eq!(reader.join().expect("snapshot reader"), (2, 2));
     }
 
     #[test]
@@ -6939,7 +7136,7 @@ mod tests {
     }
 
     #[test]
-    fn post_create_inventory_merges_into_a_completed_refresh_generation() {
+    fn post_create_inventory_cannot_overwrite_a_newer_refresh() {
         let workspace = Workspace::preview(WorkspaceSnapshot::ready(
             Appearance::default(),
             "Ubuntu",
@@ -6978,6 +7175,7 @@ mod tests {
             name: SessionName::parse("created").expect("valid name"),
         };
 
+        let operation_generation = reserve_constructive_inventory(&workspace.inner);
         let refresh_generation = begin_refresh(&workspace.inner, &CancellationToken::new());
         let refreshed = HostSnapshot::test_fixture(
             "Ubuntu",
@@ -7013,14 +7211,14 @@ mod tests {
             )],
         );
 
-        let merged = merge_created_inventory(&workspace.inner, &request, created)
-            .expect("merge post-create inventory");
+        let merged =
+            merge_created_inventory(&workspace.inner, &request, created, operation_generation);
 
-        assert!(merged > refresh_generation);
+        assert!(merged.is_err());
         let host = workspace.inner.host.lock().expect("host context");
         let published = host.as_ref().expect("published host");
-        assert_eq!(published.generation, merged);
-        assert_eq!(published.value.snapshot.sessions()[0].name(), "created");
+        assert_eq!(published.generation, refresh_generation);
+        assert_eq!(published.value.snapshot.sessions()[0].name(), "refreshed");
     }
 
     #[test]
@@ -7064,6 +7262,7 @@ mod tests {
         };
         let cancellation = CancellationToken::new();
         let refresh_generation = begin_refresh(&workspace.inner, &cancellation);
+        let operation_generation = reserve_constructive_inventory(&workspace.inner);
         let created = HostSnapshot::test_fixture(
             "Ubuntu",
             "boot-id",
@@ -7075,9 +7274,11 @@ mod tests {
             )],
         );
 
-        let merged = merge_created_inventory(&workspace.inner, &request, created)
-            .expect("merge post-create inventory");
+        let merged =
+            merge_created_inventory(&workspace.inner, &request, created, operation_generation)
+                .expect("merge post-create inventory");
 
+        assert_eq!(merged, operation_generation);
         assert!(merged > refresh_generation);
         assert!(cancellation.is_cancelled());
         assert!(!publish_refresh(
@@ -8173,6 +8374,60 @@ mod tests {
                 .action(),
             HerdrLifecycleAction::Delete
         );
+    }
+
+    #[test]
+    fn lifecycle_response_is_published_without_full_host_discovery() {
+        let (workspace, _runtime) = herdr_workspace_fixture();
+        let running = SessionSelection::herdr("wsl", "Ubuntu", "default");
+        workspace
+            .request_herdr_lifecycle(&running, HerdrLifecycleAction::Stop)
+            .expect("running session may be stopped");
+        let pending = workspace
+            .inner
+            .herdr_lifecycle
+            .lock()
+            .expect("lifecycle state")
+            .pending
+            .clone()
+            .expect("pending stop");
+        let stopped = session::HerdrSessionRecord::new(
+            "default",
+            true,
+            HerdrSessionState::Stopped,
+            "/tmp/herdr/default",
+            "/tmp/herdr/default/herdr.sock",
+        );
+        let before = workspace
+            .inner
+            .host
+            .lock()
+            .expect("host context")
+            .as_ref()
+            .expect("published host")
+            .value
+            .snapshot
+            .clone();
+        assert!(!herdr_lifecycle_is_reflected(&before, &pending));
+
+        publish_herdr_lifecycle_response(&workspace.inner, &pending, stopped)
+            .expect("authoritative response publishes");
+
+        let snapshot = workspace.snapshot();
+        let host = &snapshot.hosts()[0];
+        assert_eq!(host.sessions()[0].name(), "work");
+        assert_eq!(host.herdr_sessions()[0].state(), HerdrSessionState::Stopped);
+        let published = workspace
+            .inner
+            .host
+            .lock()
+            .expect("host context")
+            .as_ref()
+            .expect("published host")
+            .value
+            .snapshot
+            .clone();
+        assert!(herdr_lifecycle_is_reflected(&published, &pending));
     }
 
     #[test]

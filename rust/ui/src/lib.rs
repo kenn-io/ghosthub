@@ -2615,6 +2615,9 @@ impl RootView {
                     .child(format!("· {}", selection.endpoint())),
             );
         }
+        if active {
+            row = row.child(Self::tree_detach_action(cx));
+        }
         row = row.children(actions.into_iter().map(|action| {
             Self::herdr_row_action(host_index, index, selection.clone(), action, cx)
         }));
