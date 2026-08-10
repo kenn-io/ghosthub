@@ -77,4 +77,22 @@ struct ApplicationShortcutMenuTests {
         #expect(shortcut.key == KeyEquivalent("="))
         #expect(shortcut.modifiers == [.command, .shift])
     }
+
+    @Test("split key equivalents require effective terminal focus")
+    func splitKeyEquivalentRequiresTerminalFocus() throws {
+        let binding = try ApplicationKeyBinding(parsing: "cmd+d")
+
+        #expect(ApplicationShortcutMenuModel.splitBinding(
+            binding,
+            terminalHasEffectiveKeyboardFocus: nil
+        ) == nil)
+        #expect(ApplicationShortcutMenuModel.splitBinding(
+            binding,
+            terminalHasEffectiveKeyboardFocus: false
+        ) == nil)
+        #expect(ApplicationShortcutMenuModel.splitBinding(
+            binding,
+            terminalHasEffectiveKeyboardFocus: true
+        ) == binding)
+    }
 }

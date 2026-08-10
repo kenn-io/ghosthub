@@ -52,6 +52,14 @@ enum ApplicationShortcutMenuModel {
         else { return .menu }
         return .keyEvent
     }
+
+    static func splitBinding(
+        _ binding: ApplicationKeyBinding?,
+        terminalHasEffectiveKeyboardFocus: Bool?
+    ) -> ApplicationKeyBinding? {
+        guard terminalHasEffectiveKeyboardFocus == true else { return nil }
+        return binding
+    }
 }
 
 @main
@@ -66,6 +74,8 @@ struct GhosthubApp: App {
     @FocusedValue(\.sceneModel) private var focusedSceneModel
     @FocusedValue(\.availableSiblingShortcuts)
     private var availableSiblingShortcuts
+    @FocusedValue(\.terminalHasEffectiveKeyboardFocus)
+    private var terminalHasEffectiveKeyboardFocus
     @Environment(\.openWindow) private var openWindow
     @State private var didRequestLaunchActivation = false
     #if canImport(AppKit)
@@ -338,13 +348,13 @@ struct GhosthubApp: App {
             Button("Split Right") {
                 invoke(.splitRight)
             }
-            .keyboardShortcut(shortcut(.splitRight))
+            .keyboardShortcut(splitShortcut(.splitRight))
             .disabled(focusedSceneModel?.canSplitActivePane != true)
 
             Button("Split Down") {
                 invoke(.splitDown)
             }
-            .keyboardShortcut(shortcut(.splitDown))
+            .keyboardShortcut(splitShortcut(.splitDown))
             .disabled(focusedSceneModel?.canSplitActivePane != true)
 
             Divider()
@@ -449,6 +459,16 @@ struct GhosthubApp: App {
         _ action: ApplicationShortcutAction
     ) -> KeyboardShortcut? {
         settingsStore.shortcutPreferences.resolved[action]?.swiftUI
+    }
+
+    private func splitShortcut(
+        _ action: ApplicationShortcutAction
+    ) -> KeyboardShortcut? {
+        ApplicationShortcutMenuModel.splitBinding(
+            settingsStore.shortcutPreferences.resolved[action],
+            terminalHasEffectiveKeyboardFocus:
+            terminalHasEffectiveKeyboardFocus
+        )?.swiftUI
     }
 
     private func invoke(_ action: ApplicationShortcutAction) {
