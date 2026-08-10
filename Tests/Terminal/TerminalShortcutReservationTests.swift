@@ -7,39 +7,49 @@ import Testing
 struct TerminalShortcutReservationTests {
     @Test("current application commands reach menus from a focused terminal")
     func currentApplicationCommandsAreReserved() {
-        for chars in ["q", ",", "b", "n", "t"] {
+        for (chars, keyCode): (String, UInt16) in [
+            ("q", 12), (",", 43), ("b", 11), ("n", 45), ("t", 17),
+        ] {
             #expect(TerminalSurfaceView.isReservedApplicationShortcut(
                 flags: .command,
                 chars: chars,
-                keyCode: 0,
+                keyCode: keyCode,
                 hasPaneCloseHandler: false
             ))
         }
-        for chars in ["n", "p", "w"] {
+        for (chars, keyCode): (String, UInt16) in [
+            ("n", 45), ("p", 35), ("w", 13),
+        ] {
             #expect(TerminalSurfaceView.isReservedApplicationShortcut(
                 flags: [.command, .shift],
                 chars: chars,
-                keyCode: 0,
+                keyCode: keyCode,
                 hasPaneCloseHandler: false
             ))
         }
-        for chars in ["[", "]"] {
+        for (chars, keyCode): (String, UInt16) in [("{", 33), ("}", 30)] {
             #expect(TerminalSurfaceView.isReservedApplicationShortcut(
                 flags: [.command, .shift],
                 chars: chars,
-                keyCode: 0,
+                keyCode: keyCode,
                 hasPaneCloseHandler: false
             ))
         }
+        #expect(TerminalSurfaceView.isReservedApplicationShortcut(
+            flags: [.command, .shift],
+            chars: "<",
+            keyCode: 43,
+            hasPaneCloseHandler: false
+        ))
     }
 
     @Test("unregistered Command chords are left to the terminal")
     func unregisteredCommandsAreNotReserved() {
-        for chars in ["a", "t"] {
+        for (chars, keyCode): (String, UInt16) in [("a", 0), ("t", 17)] {
             #expect(!TerminalSurfaceView.isReservedApplicationShortcut(
                 flags: [.command, .shift],
                 chars: chars,
-                keyCode: 0,
+                keyCode: keyCode,
                 hasPaneCloseHandler: false
             ))
         }
@@ -55,11 +65,13 @@ struct TerminalShortcutReservationTests {
             keyCode: 45,
             hasPaneCloseHandler: false
         ))
-        for chars in ["a", "c", "v", "x"] {
+        for (chars, keyCode): (String, UInt16) in [
+            ("a", 0), ("c", 8), ("v", 9), ("x", 7),
+        ] {
             #expect(!TerminalSurfaceView.isReservedApplicationShortcut(
                 flags: .command,
                 chars: chars,
-                keyCode: 0,
+                keyCode: keyCode,
                 hasPaneCloseHandler: false
             ))
         }

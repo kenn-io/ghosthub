@@ -67,7 +67,23 @@ public extension ApplicationKeyBinding {
         case 103: key = .function(11)
         case 111: key = .function(12)
         default:
-            guard let character = charactersIgnoringModifiers?
+            let charactersWithoutModifiers = charactersIgnoringModifiers
+                .flatMap { characters in
+                    NSEvent.keyEvent(
+                        with: .keyDown,
+                        location: .zero,
+                        modifierFlags: appKitModifierFlags,
+                        timestamp: 0,
+                        windowNumber: 0,
+                        context: nil,
+                        characters: characters,
+                        charactersIgnoringModifiers: characters,
+                        isARepeat: false,
+                        keyCode: keyCode
+                    )?.characters(byApplyingModifiers: [])
+                }
+            guard let character = (charactersWithoutModifiers
+                ?? charactersIgnoringModifiers)?
                 .lowercased().first else { return nil }
             key = .character(character)
         }

@@ -1,8 +1,32 @@
+import AppKit
 import Testing
 @testable import GhosthubTerminalSupport
 
 @Suite("Application shortcuts")
 struct ApplicationShortcutTests {
+    @Test("AppKit translation removes Shift from punctuation keys")
+    func translatesShiftedPunctuation() throws {
+        let nextTab = ApplicationKeyBinding(
+            appKitModifierFlags: [.command, .shift],
+            charactersIgnoringModifiers: "}",
+            keyCode: 30
+        )
+        let reloadConfiguration = ApplicationKeyBinding(
+            appKitModifierFlags: [.command, .shift],
+            charactersIgnoringModifiers: "<",
+            keyCode: 43
+        )
+
+        #expect(
+            nextTab
+                == (try ApplicationKeyBinding(parsing: "cmd+shift+]"))
+        )
+        #expect(
+            reloadConfiguration
+                == (try ApplicationKeyBinding(parsing: "cmd+shift+,"))
+        )
+    }
+
     @Test("catalog exposes the complete stable action set and defaults")
     func catalogDefaults() {
         #expect(ApplicationShortcutCatalog.definitions.map(\.action) == ApplicationShortcutAction
