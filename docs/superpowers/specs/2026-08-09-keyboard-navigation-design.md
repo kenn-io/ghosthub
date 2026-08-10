@@ -50,7 +50,8 @@ The current sidebar target determines the sibling group:
 
 | Current target | Sibling group |
 | --- | --- |
-| Worktree or directory workspace | Workspaces in the same project |
+| Worktree | Worktrees in the same repository project |
+| Directory workspace | Directory workspaces in the same host's Projects group |
 | Standalone tmux session | Standalone tmux sessions on the same host |
 | Herdr session | Herdr sessions on the same host |
 
@@ -58,7 +59,9 @@ Navigation uses the persisted sidebar order, excludes items hidden by
 configuration, and wraps at either end. Collapsing a disclosure group or
 hiding the sidebar does not alter the group because those presentation choices
 must not change keyboard behavior. Running and stopped Herdr sessions are both
-eligible because both are selectable sibling rows.
+shown in the sidebar, but only running Herdr sessions are eligible for keyboard
+cycling. Selecting a stopped row starts a restart operation, and a navigation
+shortcut must not trigger constructive lifecycle work.
 
 If the current target is not session-like, the target is stale, or fewer than
 two eligible siblings exist, Ghosthub does not consume the shortcut. The event
@@ -289,8 +292,9 @@ Unit and integration coverage verifies observable contracts:
   line endings.
 - Invalid manual configuration keeps the last valid set during a live reload
   and uses the complete compiled-default set after a fresh process launch.
-- Sibling resolution covers worktrees, directory workspaces, standalone tmux
-  sessions, and running and stopped Herdr sessions.
+- Sibling resolution covers worktrees within one repository project, directory
+  workspaces within one host's Projects group, standalone tmux sessions, and
+  running Herdr sessions while excluding stopped Herdr sessions.
 - Sidebar order, hidden items, wrapping, stale targets, and zero or one sibling
   behave as specified.
 - Numbered selection uses the same local groups.
