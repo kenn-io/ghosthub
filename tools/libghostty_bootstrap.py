@@ -9,6 +9,8 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,6 +18,8 @@ from pathlib import Path
 GHOSTHUB_BOOTSTRAP_VERSION = 22
 GHOSTHUB_GHOSTTY_BUNDLE_ID = "com.ghosthub"
 GHOSTHUB_TERM_PROGRAM = "ghosthub"
+SOURCE_FETCH_ATTEMPTS = 3
+SOURCE_FETCH_RETRY_DELAY_SECONDS = 5.0
 
 
 class BootstrapError(RuntimeError):
@@ -194,11 +198,63 @@ def initialize_source_checkout(
     )
 
 
+def describe_command_failure(error: subprocess.CalledProcessError) -> str:
+    lines = [f"`{shlex.join(error.cmd)}` exited with status {error.returncode}."]
+    for label, stream in (("stdout", error.stdout), ("stderr", error.stderr)):
+        text = (stream or "").strip()
+        if text:
+            lines.append(f"{label}: {text}")
+    return "\n".join(lines)
+
+
+def fetch_source_revision(
+    git_path: str,
+    source_root: Path,
+    metadata: VendorMetadata,
+    *,
+    attempts: int = SOURCE_FETCH_ATTEMPTS,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    """Fetch the pinned revision, retrying so a transient network fault is not fatal."""
+    for attempt in range(1, attempts + 1):
+        try:
+            subprocess.run(
+                [
+                    git_path,
+                    "-C",
+                    str(source_root),
+                    "fetch",
+                    "--depth",
+                    "1",
+                    "origin",
+                    metadata.commit,
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            return
+        except subprocess.CalledProcessError as error:
+            if attempt == attempts:
+                raise BootstrapError(
+                    f"Failed to fetch pinned Ghostty revision {metadata.commit} "
+                    f"({metadata.tag}) from {metadata.source} after {attempts} attempts. "
+                    "Verify network access and confirm the pinned revision still exists.\n"
+                    f"{describe_command_failure(error)}"
+                ) from error
+            print(
+                f"Fetching Ghostty {metadata.commit} failed on attempt {attempt} of "
+                f"{attempts}; retrying.\n{describe_command_failure(error)}"
+            )
+            sleep(SOURCE_FETCH_RETRY_DELAY_SECONDS * attempt)
+
+
 def ensure_source_checkout(
     paths: BootstrapPaths,
     metadata: VendorMetadata,
     *,
     git: str = "git",
+    sleep: Callable[[float], None] = time.sleep,
 ) -> None:
     git_path = resolve_tool(git)
     source_root = paths.source_checkout_root
@@ -209,7 +265,8 @@ def ensure_source_checkout(
             initialize_source_checkout(git_path, metadata.source, source_root)
         except subprocess.CalledProcessError as error:
             raise BootstrapError(
-                f"Failed to initialize local Ghostty checkout at {source_root}."
+                f"Failed to initialize local Ghostty checkout at {source_root}.\n"
+                f"{describe_command_failure(error)}"
             ) from error
     else:
         try:
@@ -222,7 +279,8 @@ def ensure_source_checkout(
                 initialize_source_checkout(git_path, metadata.source, source_root)
             except subprocess.CalledProcessError as error:
                 raise BootstrapError(
-                    f"Failed to reinitialize local Ghostty checkout at {source_root}."
+                    f"Failed to reinitialize local Ghostty checkout at {source_root}.\n"
+                    f"{describe_command_failure(error)}"
                 ) from error
         else:
             if origin_url != metadata.source:
@@ -234,19 +292,23 @@ def ensure_source_checkout(
                         f"Failed to reinitialize local Ghostty checkout at {source_root}."
                     ) from error
 
+    fetch_source_revision(git_path, source_root, metadata, sleep=sleep)
+
     try:
-        subprocess.run(
-            [git_path, "-C", str(source_root), "fetch", "--depth", "1", "origin", metadata.commit],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
         subprocess.run(
             [git_path, "-C", str(source_root), "checkout", "--force", metadata.commit],
             check=True,
             capture_output=True,
             text=True,
         )
+    except subprocess.CalledProcessError as error:
+        raise BootstrapError(
+            f"Failed to check out pinned Ghostty revision {metadata.commit} in {source_root}. "
+            "Delete that directory and rerun `python3 tools/bootstrap_libghostty.py`.\n"
+            f"{describe_command_failure(error)}"
+        ) from error
+
+    try:
         subprocess.run(
             [git_path, "-C", str(source_root), "clean", "-fdx"],
             check=True,
@@ -255,8 +317,9 @@ def ensure_source_checkout(
         )
     except subprocess.CalledProcessError as error:
         raise BootstrapError(
-            "Failed to fetch or checkout the pinned Ghostty source revision. "
-            "Verify network access and rerun `python3 tools/bootstrap_libghostty.py`."
+            f"Failed to clean the Ghostty checkout at {source_root}. "
+            "Delete that directory and rerun `python3 tools/bootstrap_libghostty.py`.\n"
+            f"{describe_command_failure(error)}"
         ) from error
 
     ensure_source_checkout_layout(paths)
