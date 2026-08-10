@@ -51,4 +51,21 @@ struct ShortcutRecorderTests {
         #expect(state.validationMessage == "Reserved for Next Tab.")
         #expect(state.isRecording)
     }
+
+    @Test("bindings outside the config grammar remain unsaved")
+    func rejectsUnpersistableBinding() {
+        var state = ShortcutRecorderState(
+            action: .nextSibling,
+            overrides: [:],
+            isRecording: true
+        )
+        state.record(ApplicationKeyBinding(
+            modifiers: [.command],
+            key: .character(" ")
+        ))
+
+        #expect(state.overrides[.nextSibling] == nil)
+        #expect(state.validationMessage == "This key cannot be saved.")
+        #expect(state.isRecording)
+    }
 }

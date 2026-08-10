@@ -86,13 +86,19 @@ extension WorkspaceSceneModel {
             guard canSplitActivePane,
                   invocation == .menu || hasFocusedTerminalSurface
             else { return false }
-            splitActivePane(.right, requiresKeyboardFocus: true)
+            splitActivePane(
+                .right,
+                requiresKeyboardFocus: invocation == .keyEvent
+            )
             return true
         case .splitDown:
             guard canSplitActivePane,
                   invocation == .menu || hasFocusedTerminalSurface
             else { return false }
-            splitActivePane(.down, requiresKeyboardFocus: true)
+            splitActivePane(
+                .down,
+                requiresKeyboardFocus: invocation == .keyEvent
+            )
             return true
         case .reloadConfiguration:
             reloadTerminalConfig()
@@ -110,6 +116,12 @@ extension WorkspaceSceneModel {
     }
 
     private var activeNavigationTarget: WorkspaceNavigationTarget {
+        if let pending = pendingHerdrShortcutSelection {
+            return .herdrSession(
+                hostID: pending.hostID,
+                name: pending.name
+            )
+        }
         if let active = activeBorrowedHerdrSelection {
             return .herdrSession(hostID: active.hostID, name: active.name)
         }
@@ -142,6 +154,28 @@ extension WorkspaceSceneModel {
             herdrSessionOrderRawValue: WorkspaceSidebarOrderStorage
                 .herdrSessionRawValue()
         )
+    }
+
+    func canPerformSiblingShortcut(
+        _ action: ApplicationShortcutAction
+    ) -> Bool {
+        availableSiblingShortcuts.contains(action)
+    }
+
+    var availableSiblingShortcuts: Set<ApplicationShortcutAction> {
+        let targets = KeyboardNavigationModel.siblingTargets(
+            for: activeNavigationTarget,
+            in: keyboardNavigationContext
+        )
+        guard targets.count >= 2 else { return [] }
+        return Set(ApplicationShortcutAction.allCases.filter { action in
+            switch action {
+            case .nextSibling, .previousSibling:
+                true
+            default:
+                action.siblingIndex.map { $0 <= targets.count } == true
+            }
+        })
     }
 
     private func navigateSibling(step: Int) -> Bool {
@@ -184,16 +218,39 @@ extension WorkspaceSceneModel {
             var updated = selection
             updated.select(target, in: snapshot, visibility: worktreeVisibility)
             selectFromUser(updated)
-            Task { @MainActor [weak self] in
-                try? await self?.openBorrowedHerdrSession(.init(
-                    hostID: hostID,
-                    name: name
-                ))
-            }
+            startHerdrShortcutNavigation(.init(
+                hostID: hostID,
+                name: name
+            ))
             return true
         case .host, .project:
             return false
         }
+    }
+
+    private func startHerdrShortcutNavigation(
+        _ selection: WorkspaceHerdrSessionSelection
+    ) {
+        herdrShortcutNavigationTask?.cancel()
+        let navigationID = UUID()
+        herdrShortcutNavigationID = navigationID
+        pendingHerdrShortcutSelection = selection
+        herdrShortcutNavigationTask = Task { @MainActor [weak self] in
+            try? await self?.openBorrowedHerdrSession(selection)
+            guard self?.herdrShortcutNavigationID == navigationID else {
+                return
+            }
+            self?.pendingHerdrShortcutSelection = nil
+            self?.herdrShortcutNavigationTask = nil
+            self?.herdrShortcutNavigationID = nil
+        }
+    }
+
+    func cancelPendingHerdrShortcutNavigation() {
+        herdrShortcutNavigationTask?.cancel()
+        herdrShortcutNavigationTask = nil
+        herdrShortcutNavigationID = nil
+        pendingHerdrShortcutSelection = nil
     }
 
     private func postShortcutRequest(

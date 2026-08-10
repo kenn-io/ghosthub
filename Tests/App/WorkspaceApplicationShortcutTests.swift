@@ -9,6 +9,36 @@ import Testing
 @Suite("Workspace application shortcuts", .serialized)
 @MainActor
 struct WorkspaceApplicationShortcutTests {
+    @Test("sibling availability requires a resolvable peer")
+    func siblingAvailability() async throws {
+        let host = HostSummary.fixture()
+        let project = ProjectSummary.fixture(hostID: host.id)
+        let only = WorktreeSummary.fixture(
+            hostID: host.id, projectID: project.id, name: "only"
+        )
+        let model = try makeModel(
+            database: .inMemory(), localHostID: host.id,
+            snapshot: WorkspaceSnapshot(
+                hosts: [host], projects: [project], worktrees: [only]
+            )
+        )
+        model.selection = .init(
+            selectedHostID: host.id,
+            selectedProjectID: project.id,
+            selectedWorktreeID: only.id
+        )
+
+        #expect(!model.canPerformSiblingShortcut(.nextSibling))
+
+        model.snapshot.worktrees.append(WorktreeSummary.fixture(
+            hostID: host.id, projectID: project.id, name: "peer"
+        ))
+        #expect(model.canPerformSiblingShortcut(.nextSibling))
+        #expect(model.canPerformSiblingShortcut(.selectSibling2))
+        #expect(!model.canPerformSiblingShortcut(.selectSibling3))
+        await model.shutdown()
+    }
+
     @Test("focused sibling navigation selects within the current project")
     func focusedSiblingNavigation() async throws {
         let host = HostSummary.fixture()

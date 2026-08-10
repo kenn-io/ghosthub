@@ -410,12 +410,22 @@ public enum ApplicationShortcutCatalog {
         fixed("New Tab", "cmd+t"),
         fixed("Close", "cmd+w"),
         fixed("Close Window", "cmd+shift+w"),
+        fixed("Close All", "cmd+opt+w"),
         fixed("Settings", "cmd+,"),
+        fixed("Hide Ghosthub", "cmd+h"),
+        fixed("Hide Others", "cmd+opt+h"),
         fixed("Quit Ghosthub", "cmd+q"),
+        fixed("Undo", "cmd+z"),
+        fixed("Redo", "cmd+shift+z"),
         fixed("Cut", "cmd+x"),
         fixed("Copy", "cmd+c"),
         fixed("Paste", "cmd+v"),
         fixed("Select All", "cmd+a"),
+        fixed("Minimize", "cmd+m"),
+        fixed("Minimize All", "cmd+opt+m"),
+        fixed("Enter Full Screen", "ctrl+cmd+f"),
+        fixed("Next Window", "cmd+`"),
+        fixed("Previous Window", "cmd+shift+`"),
     ]
 
     public static let compiledDefaults: ResolvedApplicationShortcuts = try! resolve(overrides: [:])
@@ -473,6 +483,13 @@ public enum ApplicationShortcutCatalog {
         action: ApplicationShortcutAction,
         overrides: [ApplicationShortcutAction: ApplicationShortcutOverride]
     ) -> String? {
+        var persistenceProbe = binding
+        persistenceProbe.modifiers.insert(.command)
+        guard let reparsed = try? ApplicationKeyBinding(
+            parsing: persistenceProbe.configValue
+        ), reparsed == persistenceProbe else {
+            return "This key cannot be saved."
+        }
         guard !binding.modifiers.intersection(.nonShift).isEmpty else {
             return "Add Command, Control, or Option to avoid intercepting terminal input."
         }

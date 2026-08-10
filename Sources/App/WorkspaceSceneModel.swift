@@ -459,6 +459,9 @@ final class WorkspaceSceneModel: ObservableObject {
     @Published private(set) var activeBorrowedHerdrSelection:
         WorkspaceHerdrSessionSelection?
     private var activeBorrowedHerdrHandle: BorrowedHerdrSessionHandle?
+    var pendingHerdrShortcutSelection: WorkspaceHerdrSessionSelection?
+    var herdrShortcutNavigationTask: Task<Void, Never>?
+    var herdrShortcutNavigationID: UUID?
     var activeBorrowedHerdrConnectionState: ConnectionState? {
         guard let activeBorrowedHerdrHandle else { return nil }
         return borrowedHerdrConnectionStates[activeBorrowedHerdrHandle.id]
@@ -1529,6 +1532,7 @@ final class WorkspaceSceneModel: ObservableObject {
         kwtInventoryTask?.cancel()
         tmuxDiscoveryTask?.cancel()
         herdrDiscoveryTask?.cancel()
+        herdrShortcutNavigationTask?.cancel()
         createdSessionDiscoveryTasks.values.forEach { $0.cancel() }
         herdrLaunchConfirmationTasks.values.forEach { $0.cancel() }
         deferredTmuxPresentationTasks.values.forEach { $0.cancel() }
@@ -1581,6 +1585,7 @@ final class WorkspaceSceneModel: ObservableObject {
 
     func selectFromUser(_ newSelection: WorkspaceSelection) {
         cancelPendingRestoration()
+        cancelPendingHerdrShortcutNavigation()
         userNavigationRevision &+= 1
         if let worktreeID = newSelection.selectedWorktreeID {
             explicitlyDismissedWorktreePresentationIDs.remove(worktreeID)
@@ -1869,6 +1874,7 @@ final class WorkspaceSceneModel: ObservableObject {
         sceneActivityGeneration &+= 1
         userNavigationRevision &+= 1
         cancelPendingRestoration()
+        cancelPendingHerdrShortcutNavigation()
         for presentation in retainedTmuxPresentations.values {
             cancelTmuxReconnect(presentation)
         }

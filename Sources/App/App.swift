@@ -47,6 +47,8 @@ struct GhosthubApp: App {
     private let updateRelaunchRestorer = UpdateRelaunchRestorer()
     #endif
     @FocusedValue(\.sceneModel) private var focusedSceneModel
+    @FocusedValue(\.availableSiblingShortcuts)
+    private var availableSiblingShortcuts
     @Environment(\.openWindow) private var openWindow
     @State private var didRequestLaunchActivation = false
     #if canImport(AppKit)
@@ -359,11 +361,17 @@ struct GhosthubApp: App {
                 invoke(.previousSibling)
             }
             .keyboardShortcut(shortcut(.previousSibling))
+            .disabled(
+                availableSiblingShortcuts?.contains(.previousSibling) != true
+            )
 
             Button("Next Sibling") {
                 invoke(.nextSibling)
             }
             .keyboardShortcut(shortcut(.nextSibling))
+            .disabled(
+                availableSiblingShortcuts?.contains(.nextSibling) != true
+            )
 
             Menu("Select Sibling") {
                 ForEach(
@@ -376,6 +384,11 @@ struct GhosthubApp: App {
                         invoke(definition.action)
                     }
                     .keyboardShortcut(shortcut(definition.action))
+                    .disabled(
+                        availableSiblingShortcuts?.contains(
+                            definition.action
+                        ) != true
+                    )
                 }
             }
 

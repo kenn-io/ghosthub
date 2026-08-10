@@ -120,6 +120,34 @@ struct ApplicationShortcutTests {
         }
     }
 
+    @Test(
+        "standard macOS menu shortcuts remain reserved",
+        arguments: [
+            ("cmd+z", "Undo"),
+            ("cmd+shift+z", "Redo"),
+            ("cmd+h", "Hide Ghosthub"),
+            ("cmd+opt+h", "Hide Others"),
+            ("cmd+m", "Minimize"),
+            ("cmd+opt+m", "Minimize All"),
+            ("ctrl+cmd+f", "Enter Full Screen"),
+            ("cmd+`", "Next Window"),
+            ("cmd+shift+`", "Previous Window"),
+            ("cmd+opt+w", "Close All"),
+        ]
+    )
+    func standardMenuShortcutCollision(
+        source: String,
+        owner: String
+    ) throws {
+        let binding = try ApplicationKeyBinding(parsing: source)
+
+        #expect(ApplicationShortcutCatalog.validationMessage(
+            for: binding,
+            action: .nextSibling,
+            overrides: [:]
+        ) == "Reserved for \(owner).")
+    }
+
     @Test("resolution rejects duplicate effective bindings atomically")
     func duplicateBinding() throws {
         let binding = try ApplicationKeyBinding(parsing: "ctrl+tab")
