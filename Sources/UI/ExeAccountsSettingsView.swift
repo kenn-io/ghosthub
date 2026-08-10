@@ -308,6 +308,20 @@ struct ExeAccountsSettingsView: View {
             .font(.system(size: 11))
             .foregroundStyle(.secondary)
 
+            accountField(
+                "Tags",
+                placeholder: "All VMs",
+                text: binding.tagFilter
+            )
+
+            Text(
+                "Leave Tags empty to discover every VM. Otherwise Ghosthub"
+                    + " discovers only VMs carrying at least one of these"
+                    + " exe.dev tags, such as dev, prod."
+            )
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
+
             accountStatus(account)
         }
         .padding(12)
@@ -375,11 +389,13 @@ struct ExeAccountsSettingsView: View {
                     Text("Discovering VMs…")
                 }
                 .font(.system(size: 12))
-            case let .loaded(totalVMs, runningVMs):
-                Text(
-                    "\(runningVMs) running of \(totalVMs) VM"
-                        + (totalVMs == 1 ? "" : "s")
-                )
+            case let .loaded(totalVMs, runningVMs, identity):
+                Text(Self.loadedSummary(
+                    totalVMs: totalVMs,
+                    runningVMs: runningVMs,
+                    discovered: identity,
+                    draft: ExeAccountIdentity(account)
+                ))
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
             case let .failed(message):
@@ -390,6 +406,36 @@ struct ExeAccountsSettingsView: View {
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
         }
+    }
+
+    /// Counts describe the identity discovery ran with, so an edited draft
+    /// must not relabel them. It reports the pending edit instead.
+    static func loadedSummary(
+        totalVMs: Int,
+        runningVMs: Int,
+        discovered: ExeAccountIdentity,
+        draft: ExeAccountIdentity
+    ) -> String {
+        guard discovered == draft else {
+            let subject = if discovered.sshDestination != draft.sshDestination,
+                             ExeTagFilter.key(discovered.tagFilter)
+                             != ExeTagFilter.key(draft.tagFilter) {
+                "Destination and tags"
+            } else if discovered.sshDestination != draft.sshDestination {
+                "Destination"
+            } else {
+                "Tags"
+            }
+            return "\(subject) changed. Select Connect and Discover VMs to"
+                + " apply."
+        }
+        let tags = ExeTagFilter.tags(in: discovered.tagFilter)
+        let noun = "VM" + (totalVMs == 1 ? "" : "s")
+        guard !tags.isEmpty else {
+            return "\(runningVMs) running of \(totalVMs) \(noun)"
+        }
+        return "\(runningVMs) running of \(totalVMs) \(noun) tagged "
+            + tags.joined(separator: " or ")
     }
 
     private func errorText(_ message: String) -> some View {

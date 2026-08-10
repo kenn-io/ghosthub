@@ -77,7 +77,68 @@ struct ExeAccountsSettingsTests {
             name: "Personal",
             sshDestination: "other.exe.dev"
         )]))
+        #expect(!operation.matches(operation, accounts: [ExeAccount(
+            configKey: "personal",
+            name: "Personal",
+            sshDestination: "exe.dev",
+            tagFilter: "dev"
+        )]))
         #expect(!operation.matches(nil, accounts: [account]))
+    }
+
+    @Test("discovery counts name the tags they were scoped to")
+    func discoveryCountsNameScopedTags() {
+        #expect(ExeAccountsSettingsView.loadedSummary(
+            totalVMs: 4,
+            runningVMs: 3,
+            discovered: ExeAccountIdentity(sshDestination: "exe.dev"),
+            draft: ExeAccountIdentity(sshDestination: "exe.dev")
+        ) == "3 running of 4 VMs")
+        #expect(ExeAccountsSettingsView.loadedSummary(
+            totalVMs: 1,
+            runningVMs: 1,
+            discovered: ExeAccountIdentity(
+                sshDestination: "exe.dev",
+                tagFilter: "dev, prod"
+            ),
+            draft: ExeAccountIdentity(
+                sshDestination: " exe.dev ",
+                tagFilter: "PROD,dev"
+            )
+        ) == "1 running of 1 VM tagged dev or prod")
+    }
+
+    @Test(
+        "counts are never labeled with an identity discovery did not use",
+        arguments: [
+            ("exe.dev", "dev", "exe.dev", "prod", "Tags"),
+            ("exe.dev", "dev", "exe.dev", "", "Tags"),
+            ("exe.dev", "", "exe.dev", "dev", "Tags"),
+            ("exe.dev", "dev", "exe.dev", "dev, prod", "Tags"),
+            ("exe.dev", "", "other.exe.dev", "", "Destination"),
+            ("exe.dev", "dev", "other.exe.dev", "dev", "Destination"),
+            ("exe.dev", "dev", "other.exe.dev", "prod", "Destination and tags"),
+        ]
+    )
+    func editedAccountsDoNotRelabelStaleCounts(
+        discoveredDestination: String,
+        discoveredTags: String,
+        draftDestination: String,
+        draftTags: String,
+        subject: String
+    ) {
+        #expect(ExeAccountsSettingsView.loadedSummary(
+            totalVMs: 1,
+            runningVMs: 1,
+            discovered: ExeAccountIdentity(
+                sshDestination: discoveredDestination,
+                tagFilter: discoveredTags
+            ),
+            draft: ExeAccountIdentity(
+                sshDestination: draftDestination,
+                tagFilter: draftTags
+            )
+        ) == "\(subject) changed. Select Connect and Discover VMs to apply.")
     }
 
     @MainActor

@@ -4,26 +4,109 @@ public struct ExeAccount: Codable, Equatable, Sendable, Identifiable {
     public var configKey: String
     public var name: String
     public var sshDestination: String
+    /// Comma- or space-separated exe.dev tags. Empty discovers every VM.
+    public var tagFilter: String
     public var isEnabled: Bool
 
     public var id: String { configKey }
+
+    private enum CodingKeys: String, CodingKey {
+        case configKey, name, sshDestination, tagFilter, isEnabled
+    }
 
     public init(
         configKey: String,
         name: String,
         sshDestination: String,
+        tagFilter: String = "",
         isEnabled: Bool = true
     ) {
         self.configKey = configKey
         self.name = name
         self.sshDestination = sshDestination
+        self.tagFilter = tagFilter
         self.isEnabled = isEnabled
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        configKey = try container.decode(String.self, forKey: .configKey)
+        name = try container.decode(String.self, forKey: .name)
+        sshDestination = try container.decode(
+            String.self,
+            forKey: .sshDestination
+        )
+        tagFilter = try container.decodeIfPresent(
+            String.self,
+            forKey: .tagFilter
+        ) ?? ""
+        isEnabled = try container.decode(Bool.self, forKey: .isEnabled)
+    }
+
+    /// Whether this account discovers `vm`, given its tag filter.
+    public func discovers(_ vm: ExeVMRecord) -> Bool {
+        ExeTagFilter.matches(vm.tags, filter: tagFilter)
+    }
+}
+
+public enum ExeTagFilter {
+    /// Splits user-entered filter text into distinct tags.
+    public static func tags(in text: String) -> [String] {
+        var seen = Set<String>()
+        return text.split { $0 == "," || $0.isWhitespace }
+            .map(String.init)
+            .filter { seen.insert($0.lowercased()).inserted }
+    }
+
+    public static func normalized(_ text: String) -> String {
+        tags(in: text).joined(separator: ", ")
+    }
+
+    /// Canonical form for asking whether two filters select the same VMs.
+    /// Order, case, and duplicates do not change the answer.
+    public static func key(_ text: String) -> String {
+        tags(in: text).map { $0.lowercased() }.sorted().joined(separator: ",")
+    }
+
+    public static func matches(_ tags: [String], filter: String) -> Bool {
+        let wanted = Set(self.tags(in: filter).map { $0.lowercased() })
+        guard !wanted.isEmpty else { return true }
+        return tags.contains { wanted.contains($0.lowercased()) }
+    }
+}
+
+/// Everything about an account that changes which VMs it discovers.
+public struct ExeAccountIdentity: Equatable, Sendable {
+    public var sshDestination: String
+    public var tagFilter: String
+
+    public init(sshDestination: String, tagFilter: String = "") {
+        self.sshDestination = sshDestination.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        self.tagFilter = ExeTagFilter.normalized(tagFilter)
+    }
+
+    public init(_ account: ExeAccount) {
+        self.init(
+            sshDestination: account.sshDestination,
+            tagFilter: account.tagFilter
+        )
+    }
+
+    /// Identities that discover the same VMs are equal, so reordering or
+    /// recasing tags neither reports a change nor discards cached inventory.
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.sshDestination == rhs.sshDestination
+            && ExeTagFilter.key(lhs.tagFilter) == ExeTagFilter.key(rhs.tagFilter)
     }
 }
 
 public enum ExeAccountStatus: Equatable, Sendable {
     case loading
-    case loaded(totalVMs: Int, runningVMs: Int)
+    /// `identity` is what discovery actually ran with, which a settings draft
+    /// may have moved on from since.
+    case loaded(totalVMs: Int, runningVMs: Int, identity: ExeAccountIdentity)
     case failed(String)
 }
 
@@ -34,11 +117,12 @@ public struct ExeVMRecord: Decodable, Equatable, Sendable {
     public var region: String?
     public var regionDisplayName: String?
     public var httpsURL: String?
+    public var tags: [String]
 
     private enum CodingKeys: String, CodingKey {
         case vmName = "vm_name"
         case sshDestination = "ssh_dest"
-        case status, region
+        case status, region, tags
         case regionDisplayName = "region_display"
         case httpsURL = "https_url"
     }
@@ -49,7 +133,8 @@ public struct ExeVMRecord: Decodable, Equatable, Sendable {
         status: String,
         region: String? = nil,
         regionDisplayName: String? = nil,
-        httpsURL: String? = nil
+        httpsURL: String? = nil,
+        tags: [String] = []
     ) {
         self.vmName = vmName
         self.sshDestination = sshDestination
@@ -57,6 +142,28 @@ public struct ExeVMRecord: Decodable, Equatable, Sendable {
         self.region = region
         self.regionDisplayName = regionDisplayName
         self.httpsURL = httpsURL
+        self.tags = tags
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        vmName = try container.decode(String.self, forKey: .vmName)
+        sshDestination = try container.decode(
+            String.self,
+            forKey: .sshDestination
+        )
+        status = try container.decode(String.self, forKey: .status)
+        region = try container.decodeIfPresent(String.self, forKey: .region)
+        regionDisplayName = try container.decodeIfPresent(
+            String.self,
+            forKey: .regionDisplayName
+        )
+        httpsURL = try container.decodeIfPresent(
+            String.self,
+            forKey: .httpsURL
+        )
+        tags = try container.decodeIfPresent([String].self, forKey: .tags)
+            ?? []
     }
 
     public var isRunning: Bool {
@@ -96,6 +203,7 @@ public enum ExeAccountSanitizer {
                 configKey: configKey,
                 name: name,
                 sshDestination: destination,
+                tagFilter: ExeTagFilter.normalized(account.tagFilter),
                 isEnabled: account.isEnabled
             )
         }
@@ -179,6 +287,7 @@ public enum ExeAccountSanitizer {
                 configKey: configKey,
                 name: name,
                 sshDestination: destination,
+                tagFilter: ExeTagFilter.normalized(draft.tagFilter),
                 isEnabled: draft.isEnabled
             ))
         }
