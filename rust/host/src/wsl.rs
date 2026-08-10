@@ -171,6 +171,7 @@ impl WslRuntimeIdentity {
 pub struct HostSnapshot {
     endpoint: WslEndpoint,
     runtime: WslRuntimeIdentity,
+    creation_term: AttachTerm,
     sessions: Vec<DiscoveredSession>,
     herdr: Box<HerdrInventory>,
 }
@@ -285,6 +286,7 @@ impl HostSnapshot {
                 kernel_boot_id: kernel_boot_id.into(),
                 init_start_ticks,
             },
+            creation_term: AttachTerm::Xterm256Color,
             sessions,
             herdr: Box::new(HerdrInventory::Unavailable),
         }
@@ -305,6 +307,14 @@ impl HostSnapshot {
         snapshot
     }
 
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn test_fixture_with_creation_term(mut self, term: AttachTerm) -> Self {
+        self.creation_term = term;
+        self
+    }
+
     #[must_use]
     pub const fn endpoint(&self) -> &WslEndpoint {
         &self.endpoint
@@ -313,6 +323,11 @@ impl HostSnapshot {
     #[must_use]
     pub const fn runtime(&self) -> &WslRuntimeIdentity {
         &self.runtime
+    }
+
+    #[must_use]
+    pub const fn creation_term(&self) -> AttachTerm {
+        self.creation_term
     }
 
     #[must_use]
@@ -545,7 +560,7 @@ impl<R: CommandRunner> WslHost<R> {
         let endpoint = self.resolve_endpoint(cancellation)?;
         let mut runtime = self.resolve_runtime(&endpoint, cancellation)?;
         for _attempt in 0..DISCOVERY_ATTEMPTS {
-            self.verify_tmux(&endpoint, &runtime, attacher, cancellation)?;
+            let creation_term = self.verify_tmux(&endpoint, &runtime, attacher, cancellation)?;
             let sessions = self.discover_sessions(&endpoint, cancellation)?;
             let herdr = self.discover_herdr(&endpoint, cancellation);
             let observed_runtime = self.resolve_runtime(&endpoint, cancellation)?;
@@ -553,6 +568,7 @@ impl<R: CommandRunner> WslHost<R> {
                 return Ok(HostSnapshot {
                     endpoint,
                     runtime,
+                    creation_term,
                     sessions,
                     herdr: Box::new(herdr),
                 });
@@ -648,10 +664,11 @@ impl<R: CommandRunner> WslHost<R> {
         executable: &str,
         name: HerdrLaunchTarget,
         is_default: bool,
+        term: AttachTerm,
     ) -> HerdrLaunchOnce {
         let mut args = pinned_prefix(endpoint);
         append_herdr_environment(&mut args);
-        args.push(OsString::from("TERM=xterm-256color"));
+        args.push(OsString::from(term.environment()));
         args.push(OsString::from(executable));
         if !is_default {
             args.push(OsString::from("--session"));
@@ -675,6 +692,7 @@ impl<R: CommandRunner> WslHost<R> {
         &self,
         endpoint: &WslEndpoint,
         expected_runtime: &WslRuntimeIdentity,
+        expected_executable: &str,
         confirmed: &HerdrSessionRecord,
         action: HerdrLifecycleAction,
         cancellation: &CancellationToken,
@@ -699,6 +717,12 @@ impl<R: CommandRunner> WslHost<R> {
             }
             HerdrInventory::Failed(error) => return Err(error),
         };
+        if executable != expected_executable {
+            return Err(HostError::new(
+                DiagnosticKind::Transport,
+                "the Herdr executable changed after lifecycle confirmation",
+            ));
+        }
         let current = sessions
             .iter()
             .find(|session| session.name() == confirmed.name())
@@ -830,6 +854,7 @@ impl<R: CommandRunner> WslHost<R> {
         &self,
         endpoint: &WslEndpoint,
         runtime: &WslRuntimeIdentity,
+        creation_term: AttachTerm,
         herdr: &HerdrInventory,
         cancellation: &CancellationToken,
     ) -> Result<HostSnapshot, HostError> {
@@ -844,6 +869,7 @@ impl<R: CommandRunner> WslHost<R> {
         Ok(HostSnapshot {
             endpoint: endpoint.clone(),
             runtime: observed_runtime,
+            creation_term,
             sessions,
             herdr: Box::new(herdr.clone()),
         })
@@ -1165,17 +1191,18 @@ impl<R: CommandRunner> WslHost<R> {
         runtime: &WslRuntimeIdentity,
         attacher: &A,
         cancellation: &CancellationToken,
-    ) -> Result<(), HostError> {
-        if self
+    ) -> Result<AttachTerm, HostError> {
+        if let Some(term) = self
             .verified_tmux
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
-            .is_some_and(|verified| {
+            .filter(|verified| {
                 admission_matches(&verified.endpoint, &verified.runtime, endpoint, runtime)
             })
+            .map(|verified| verified.creation_term)
         {
-            return Ok(());
+            return Ok(term);
         }
 
         let sequence = ADMISSION_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -1731,7 +1758,7 @@ impl<R: CommandRunner> WslHost<R> {
             creation_term,
             _binary: verified,
         });
-        Ok(())
+        Ok(creation_term)
     }
 
     fn create_admission_tmpdir(
@@ -2849,6 +2876,7 @@ mod tests {
                 kernel_boot_id: "boot".to_owned(),
                 init_start_ticks: 1,
             },
+            creation_term: AttachTerm::Xterm256Color,
             sessions: Vec::new(),
             herdr: Box::new(HerdrInventory::Available {
                 executable: "/usr/bin/herdr".to_owned(),
@@ -3028,6 +3056,7 @@ mod tests {
                 session::HerdrSessionName::parse("review.fix_1").expect("valid name"),
             ),
             false,
+            AttachTerm::Xterm256Color,
         );
         let (program, args, target) = plan.into_parts();
 
@@ -3042,6 +3071,7 @@ mod tests {
             args.windows(2)
                 .any(|pair| pair == ["-u", "HERDR_ACTIVE_PANE_CWD"])
         );
+        assert!(args.iter().any(|arg| arg == "TERM=xterm-256color"));
         assert_eq!(
             args.iter()
                 .rev()
@@ -3055,5 +3085,18 @@ mod tests {
                 OsStr::new("review.fix_1"),
             ]
         );
+
+        let baseline = host.herdr_launch_once(
+            &endpoint,
+            "/home/test/.local/bin/herdr",
+            HerdrLaunchTarget::created(
+                session::HerdrSessionName::parse("baseline").expect("valid name"),
+            ),
+            false,
+            AttachTerm::Xterm,
+        );
+        let (_, baseline_args, _) = baseline.into_parts();
+        assert!(baseline_args.iter().any(|arg| arg == "TERM=xterm"));
+        assert!(!baseline_args.iter().any(|arg| arg == "TERM=xterm-256color"));
     }
 }

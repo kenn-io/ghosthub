@@ -280,6 +280,13 @@ impl HostItem {
     }
 
     #[must_use]
+    pub fn with_herdr_sessions(mut self, sessions: Vec<HerdrSessionItem>) -> Self {
+        self.herdr_available = true;
+        self.herdr_sessions = sessions;
+        self
+    }
+
+    #[must_use]
     pub fn id(&self) -> &str {
         &self.id
     }
@@ -695,6 +702,7 @@ struct PendingHerdrLifecycle {
     host: RuntimeHost,
     endpoint: host::WslEndpoint,
     runtime: host::WslRuntimeIdentity,
+    executable: String,
     record: session::HerdrSessionRecord,
 }
 
@@ -864,6 +872,7 @@ struct HerdrCreateRequest {
     endpoint: host::WslEndpoint,
     runtime: host::WslRuntimeIdentity,
     executable: String,
+    term: AttachTerm,
     name: HerdrLaunchTarget,
     precondition: HerdrLaunchPrecondition,
 }
@@ -942,7 +951,7 @@ enum AttachFreshError {
     Host(WorkspaceError),
     SessionChanged {
         error: WorkspaceError,
-        snapshot: HostSnapshot,
+        snapshot: Box<HostSnapshot>,
     },
 }
 
@@ -2682,6 +2691,10 @@ impl Workspace {
                 "Herdr lifecycle confirmation is no longer current",
             ));
         }
+        if let Err(error) = require_host_session_actions(&self.inner, &pending.selection) {
+            lifecycle.pending = Some(pending);
+            return Err(error);
+        }
         if !lifecycle.start(&pending) {
             return Err(WorkspaceError::new(
                 "a lifecycle action is already running for this Herdr session",
@@ -3692,6 +3705,7 @@ fn capture_herdr_lifecycle(
             "Herdr lifecycle actions require a Herdr session",
         ));
     }
+    require_host_session_actions(inner, selection)?;
     let host = inner
         .host
         .lock()
@@ -3705,7 +3719,11 @@ fn capture_herdr_lifecycle(
                 "host endpoint changed; refresh the Herdr session selection",
             ));
         }
-        let HerdrInventory::Available { sessions, .. } = context.snapshot.herdr() else {
+        let HerdrInventory::Available {
+            executable,
+            sessions,
+        } = context.snapshot.herdr()
+        else {
             return Err(WorkspaceError::new("Herdr is not available on this host"));
         };
         let record = sessions
@@ -3734,6 +3752,7 @@ fn capture_herdr_lifecycle(
             host: context.host.clone(),
             endpoint: context.snapshot.endpoint().clone(),
             runtime: context.snapshot.runtime().clone(),
+            executable: executable.clone(),
             record,
         })
     })
@@ -3855,6 +3874,7 @@ fn capture_herdr_create_request(
             endpoint: context.snapshot.endpoint().clone(),
             runtime: context.snapshot.runtime().clone(),
             executable: executable.clone(),
+            term: context.snapshot.creation_term(),
             name: HerdrLaunchTarget::created(name),
             precondition: HerdrLaunchPrecondition::Absent,
         })
@@ -3870,6 +3890,7 @@ fn capture_herdr_restart_request(
             "the selected session is not a Herdr session",
         ));
     }
+    require_host_session_actions(inner, selection)?;
     let host = inner
         .host
         .lock()
@@ -3905,10 +3926,34 @@ fn capture_herdr_restart_request(
             endpoint: context.snapshot.endpoint().clone(),
             runtime: context.snapshot.runtime().clone(),
             executable: executable.clone(),
+            term: context.snapshot.creation_term(),
             name,
             precondition: HerdrLaunchPrecondition::Stopped(record),
         })
     })
+}
+
+fn require_host_session_actions(
+    inner: &Inner,
+    selection: &SessionSelection,
+) -> Result<(), WorkspaceError> {
+    let hosts = inner
+        .hosts
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let host = hosts
+        .iter()
+        .find(|host| host.id == selection.host_id() && host.endpoint == selection.endpoint())
+        .ok_or_else(|| WorkspaceError::new("the selected host is not available"))?;
+    if matches!(
+        host.connection,
+        HostConnectionState::Disconnected | HostConnectionState::Unavailable
+    ) {
+        return Err(WorkspaceError::new(
+            "connect the WSL host before changing a Herdr session",
+        ));
+    }
+    Ok(())
 }
 
 fn choose_navigation_target(
@@ -4229,7 +4274,7 @@ fn run_herdr_create(
         attached,
         worker,
         initial_geometry,
-        AttachTerm::Xterm256Color,
+        request.term,
         navigation_generation,
     );
 }
@@ -4246,6 +4291,7 @@ fn run_herdr_lifecycle(workspace: &Workspace, pending: &PendingHerdrLifecycle) {
     match pending.host.mutate_herdr_session(
         &pending.endpoint,
         &pending.runtime,
+        &pending.executable,
         &pending.record,
         pending.action,
         &CancellationToken::new(),
@@ -4364,6 +4410,7 @@ fn create_herdr_fresh(
                 &request.executable,
                 request.name.clone(),
                 request.precondition.is_default(),
+                request.term,
             );
             let geometry = *inner
                 .terminal_geometry
@@ -4609,6 +4656,7 @@ fn create_fresh(
             .discover_after_create(
                 before.endpoint(),
                 &request.runtime,
+                before.creation_term(),
                 before.herdr(),
                 cancellation,
             )
@@ -4775,7 +4823,7 @@ fn run_attach(inner: &Inner, request: &AttachRequest, term: AttachTerm, generati
                     publish_attachment_failure(inner, current_request.inventory_generation, error);
                 }
                 AttachFreshError::SessionChanged { error, snapshot } => {
-                    publish_stale_attachment_failure(inner, &current_request, snapshot, &error);
+                    publish_stale_attachment_failure(inner, &current_request, *snapshot, &error);
                 }
             }
             restore_attach_fallback(inner, fallback);
@@ -4839,7 +4887,7 @@ fn run_retained_retry(inner: &Inner, retry: &RetainedRetry) {
         Err(AttachFreshError::SessionChanged { error, snapshot }) => {
             let _snapshot_write = begin_snapshot_write(inner);
             remove_failed_retained_retry(inner, &retry.key);
-            publish_retained_stale_failure(inner, &retry.request, snapshot, &error);
+            publish_retained_stale_failure(inner, &retry.request, *snapshot, &error);
         }
     }
 }
@@ -5303,7 +5351,7 @@ fn attach_fresh(
                     error: WorkspaceError::new(
                         "session no longer exists; refresh and choose another session",
                     ),
-                    snapshot: fresh,
+                    snapshot: Box::new(fresh),
                 });
             };
             if identity != session.identity() {
@@ -5311,7 +5359,7 @@ fn attach_fresh(
                     error: WorkspaceError::new(
                         "session identity changed since discovery; refusing stale attachment",
                     ),
-                    snapshot: fresh,
+                    snapshot: Box::new(fresh),
                 });
             }
             launch_fresh_tmux(inner, request, term, &fresh, &session)
@@ -5322,7 +5370,7 @@ fn attach_fresh(
                     error: WorkspaceError::new(
                         "Herdr session changed since discovery; refresh and choose it again",
                     ),
-                    snapshot: fresh,
+                    snapshot: Box::new(fresh),
                 });
             };
             launch_fresh_herdr(inner, request, term, &fresh, &session)
@@ -5348,7 +5396,7 @@ fn attach_fresh_retained(
             error: WorkspaceError::new(
                 "session identity changed since discovery; refusing stale attachment",
             ),
-            snapshot: fresh,
+            snapshot: Box::new(fresh),
         });
     };
     let (worker, snapshot, _, geometry) = match &retry.key.target {
@@ -5392,7 +5440,7 @@ fn discover_fresh_runtime(request: &AttachRequest) -> Result<HostSnapshot, Attac
             error: WorkspaceError::new(
                 "WSL runtime changed since session discovery; refresh and try again",
             ),
-            snapshot: fresh,
+            snapshot: Box::new(fresh),
         });
     }
     Ok(fresh)
@@ -5492,7 +5540,7 @@ fn launch_fresh_herdr(
             error: WorkspaceError::new(
                 "Herdr session lifecycle is changing; wait for inventory to refresh",
             ),
-            snapshot: fresh.clone(),
+            snapshot: Box::new(fresh.clone()),
         },
         || {
             let plan = request
@@ -8334,6 +8382,13 @@ mod tests {
     fn herdr_workspace_with_sessions(
         herdr_sessions: Vec<session::HerdrSessionRecord>,
     ) -> (Workspace, Arc<ManualRefreshRuntime>) {
+        herdr_workspace_with_sessions_and_term(herdr_sessions, AttachTerm::Xterm256Color)
+    }
+
+    fn herdr_workspace_with_sessions_and_term(
+        herdr_sessions: Vec<session::HerdrSessionRecord>,
+        term: AttachTerm,
+    ) -> (Workspace, Arc<ManualRefreshRuntime>) {
         let runtime = Arc::new(ManualRefreshRuntime::default());
         let snapshot = HostSnapshot::test_fixture_with_herdr(
             "Ubuntu",
@@ -8348,7 +8403,8 @@ mod tests {
                 executable: "/opt/herdr/bin/herdr".to_owned(),
                 sessions: herdr_sessions,
             },
-        );
+        )
+        .test_fixture_with_creation_term(term);
         let discovery = Arc::new(FixedDiscovery::new(snapshot));
         let spec = WslHostSpec::available(
             WslConfig::with_distro("Ubuntu").expect("valid config"),
@@ -8399,6 +8455,69 @@ mod tests {
         assert!(host.herdr_sessions()[0].is_default());
         assert_eq!(host.herdr_sessions()[1].state(), HerdrSessionState::Stopped);
         assert!(host.herdr_diagnostic().is_none());
+    }
+
+    #[test]
+    fn herdr_constructive_requests_use_the_admitted_terminal_capability() {
+        let (workspace, _runtime) = herdr_workspace_with_sessions_and_term(
+            vec![session::HerdrSessionRecord::new(
+                "review",
+                false,
+                HerdrSessionState::Stopped,
+                "/tmp/herdr/review",
+                "/tmp/herdr/review/herdr.sock",
+            )],
+            AttachTerm::Xterm,
+        );
+
+        let created = capture_herdr_create_request(
+            &workspace.inner,
+            "wsl",
+            "Ubuntu",
+            HerdrSessionName::parse("created").expect("valid name"),
+        )
+        .expect("capture creation");
+        let restarted = capture_herdr_restart_request(
+            &workspace.inner,
+            &SessionSelection::herdr("wsl", "Ubuntu", "review"),
+        )
+        .expect("capture restart");
+
+        assert_eq!(created.term, AttachTerm::Xterm);
+        assert_eq!(restarted.term, AttachTerm::Xterm);
+    }
+
+    #[test]
+    fn unavailable_hosts_reject_herdr_mutations_and_preserve_confirmation() {
+        let (workspace, _runtime) = herdr_workspace_fixture();
+        let running = SessionSelection::herdr("wsl", "Ubuntu", "default");
+        workspace
+            .request_herdr_lifecycle(&running, HerdrLifecycleAction::Stop)
+            .expect("prepare stop while ready");
+        workspace
+            .inner
+            .hosts
+            .write()
+            .expect("hosts")
+            .iter_mut()
+            .find(|host| host.id == "wsl")
+            .expect("WSL host")
+            .connection = HostConnectionState::Unavailable;
+
+        let error = workspace
+            .confirm_herdr_lifecycle()
+            .expect_err("unavailable host must block confirmed mutation");
+        assert!(error.to_string().contains("connect the WSL host"));
+        assert!(workspace.herdr_lifecycle_confirmation().is_some());
+
+        let stopped = SessionSelection::herdr("wsl", "Ubuntu", "review");
+        assert!(workspace.restart_herdr_session(&stopped).is_err());
+        workspace.cancel_herdr_lifecycle();
+        assert!(
+            workspace
+                .request_herdr_lifecycle(&stopped, HerdrLifecycleAction::Delete)
+                .is_err()
+        );
     }
 
     #[test]

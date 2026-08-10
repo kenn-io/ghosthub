@@ -2555,10 +2555,19 @@ impl RootView {
             .and_then(workspace::HerdrSessionItem::lifecycle_action);
         let selection = session.selection.clone();
         let active = session.active;
-        let actions = session
-            .inventory
-            .as_ref()
-            .map_or_else(Vec::new, herdr_row_actions);
+        let actions = if session.access.can_mutate() {
+            session
+                .inventory
+                .as_ref()
+                .map_or_else(Vec::new, herdr_row_actions)
+        } else {
+            Vec::new()
+        };
+        let row_is_actionable = if running {
+            session.access.can_open()
+        } else {
+            session.access.can_mutate()
+        };
         let mut row = div()
             .id((
                 gpui::ElementId::named_usize("herdr-session-host", host_index),
@@ -2572,7 +2581,7 @@ impl RootView {
             .pl(px(14.0))
             .pr_2()
             .bg(rgb(if active { 0x18_3f_68 } else { 0x0f_1116 }))
-            .when(lifecycle_action.is_none(), |element| {
+            .when(lifecycle_action.is_none() && row_is_actionable, |element| {
                 element
                     .cursor_pointer()
                     .hover(|style| style.bg(rgb(0x1c_2028)))
@@ -2623,14 +2632,16 @@ impl RootView {
         }));
         row = if lifecycle_action.is_some() {
             row
-        } else if running {
+        } else if running && session.access.can_open() {
             row.on_click(cx.listener(move |this, _, window, cx| {
                 this.select_session(&selection, window, cx);
             }))
-        } else {
+        } else if session.access.can_mutate() {
             row.on_click(cx.listener(move |this, _, window, cx| {
                 this.restart_herdr_session(&selection, window, cx);
             }))
+        } else {
+            row
         };
         row.into_any_element()
     }
@@ -3056,7 +3067,25 @@ struct TreeHerdrSession {
     selection: SessionSelection,
     inventory: Option<workspace::HerdrSessionItem>,
     active: bool,
+    access: HerdrRowAccess,
     show_endpoint: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HerdrRowAccess {
+    Cached,
+    OpenOnly,
+    Mutable,
+}
+
+impl HerdrRowAccess {
+    const fn can_open(self) -> bool {
+        !matches!(self, Self::Cached)
+    }
+
+    const fn can_mutate(self) -> bool {
+        matches!(self, Self::Mutable)
+    }
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -3273,6 +3302,7 @@ fn tree_herdr_sessions(
             selection: SessionSelection::herdr(host.id(), host.endpoint(), inventory.name()),
             inventory: Some(inventory.clone()),
             active: false,
+            access: HerdrRowAccess::Cached,
             show_endpoint: false,
         })
         .collect::<Vec<_>>();
@@ -3291,12 +3321,25 @@ fn tree_herdr_sessions(
                 selection: selection.clone(),
                 inventory: None,
                 active: false,
+                access: HerdrRowAccess::Cached,
                 show_endpoint: selection.endpoint() != host.endpoint(),
             });
         }
     }
+    let host_accepts_actions = !matches!(
+        host.connection(),
+        HostConnectionState::Disconnected | HostConnectionState::Unavailable
+    );
     for session in &mut sessions {
         session.active = active.as_ref() == Some(&session.selection);
+        let retained = retained.contains(&session.selection);
+        session.access = if session.inventory.is_some() && host_accepts_actions {
+            HerdrRowAccess::Mutable
+        } else if session.active || retained {
+            HerdrRowAccess::OpenOnly
+        } else {
+            HerdrRowAccess::Cached
+        };
     }
     sessions
 }
@@ -4332,9 +4375,36 @@ mod tests {
         assert_eq!(rows[0].selection.session(), "retained");
         assert!(rows[0].show_endpoint);
         assert!(rows[0].inventory.is_none());
+        assert!(rows[0].access.can_open());
+        assert!(!rows[0].access.can_mutate());
         assert_eq!(rows[1].selection.session(), "active");
         assert!(rows[1].active);
         assert!(rows[1].inventory.is_none());
+        assert!(rows[1].access.can_open());
+        assert!(!rows[1].access.can_mutate());
+    }
+
+    #[test]
+    fn unavailable_cached_herdr_sessions_are_visible_but_not_actionable() {
+        let host = HostItem::wsl(
+            "Ubuntu",
+            None,
+            HostConnectionState::Unavailable,
+            Vec::new(),
+            None,
+        )
+        .with_herdr_sessions(vec![HerdrSessionItem::new(
+            "cached",
+            false,
+            HerdrSessionState::Stopped,
+        )]);
+
+        let rows = tree_herdr_sessions(&host, &WorkspaceContent::Shell, &[]);
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].selection.session(), "cached");
+        assert!(!rows[0].access.can_open());
+        assert!(!rows[0].access.can_mutate());
     }
 
     #[test]

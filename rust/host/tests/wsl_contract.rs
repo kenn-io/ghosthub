@@ -1063,6 +1063,7 @@ fn herdr_stop_revalidates_state_and_paths_before_direct_mutation() {
         .mutate_herdr_session(
             &endpoint,
             &runtime,
+            "/opt/herdr/bin/herdr",
             &confirmed,
             HerdrLifecycleAction::Stop,
             &CancellationToken::new(),
@@ -1083,6 +1084,57 @@ fn herdr_stop_revalidates_state_and_paths_before_direct_mutation() {
         OsString::from("review"),
         OsString::from("--json"),
     ]));
+}
+
+#[test]
+fn herdr_lifecycle_rejects_an_executable_changed_after_confirmation() {
+    let runner = RecordingRunner::new(vec![instance_output()]);
+    runner.set_herdr_outputs(vec![
+        output(0, "GHOSTHUB_HERDR_PATH\n/opt/herdr-v2/bin/herdr\n", ""),
+        output(
+            0,
+            r#"{"sessions":[{"name":"review","default":false,"running":true,"session_dir":"/tmp/herdr/review","socket_path":"/tmp/herdr/review/herdr.sock"}]}"#,
+            "",
+        ),
+    ]);
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        runner,
+    );
+    let identity = host::HostSnapshot::test_fixture(
+        "Ubuntu",
+        "65c18272-9676-4d59-9f67-ff4556cd1601",
+        987_654,
+        Vec::new(),
+    );
+    let confirmed = HerdrSessionRecord::new(
+        "review",
+        false,
+        HerdrSessionState::Running,
+        "/tmp/herdr/review",
+        "/tmp/herdr/review/herdr.sock",
+    );
+
+    let error = host
+        .mutate_herdr_session(
+            identity.endpoint(),
+            identity.runtime(),
+            "/opt/herdr/bin/herdr",
+            &confirmed,
+            HerdrLifecycleAction::Stop,
+            &CancellationToken::new(),
+        )
+        .expect_err("changed executable invalidates confirmation");
+
+    assert_eq!(error.kind(), HostErrorKind::Transport);
+    assert!(error.to_string().contains("executable changed"));
+    assert!(
+        !host
+            .runner()
+            .all_calls()
+            .iter()
+            .any(|(_, args)| args.windows(2).any(|pair| pair == ["session", "stop"]))
+    );
 }
 
 #[test]
@@ -1121,6 +1173,7 @@ fn herdr_lifecycle_rechecks_runtime_after_discovery_before_mutation() {
         .mutate_herdr_session(
             identity.endpoint(),
             identity.runtime(),
+            "/opt/herdr/bin/herdr",
             &confirmed,
             HerdrLifecycleAction::Stop,
             &CancellationToken::new(),
@@ -1170,6 +1223,7 @@ fn herdr_delete_rejects_a_session_that_became_the_default() {
         .mutate_herdr_session(
             identity.endpoint(),
             identity.runtime(),
+            "/opt/herdr/bin/herdr",
             &confirmed,
             HerdrLifecycleAction::Delete,
             &CancellationToken::new(),
@@ -1219,6 +1273,7 @@ fn herdr_stop_rejects_a_changed_default_role() {
         .mutate_herdr_session(
             identity.endpoint(),
             identity.runtime(),
+            "/opt/herdr/bin/herdr",
             &confirmed,
             HerdrLifecycleAction::Stop,
             &CancellationToken::new(),
