@@ -8,11 +8,13 @@ use std::time::{Duration, Instant};
 
 use model::DiagnosticKind;
 use session::{
-    AdmissionPlan, AttachPlan, CreateOnce, DiscoveredSession, ExecutablePlatform,
-    IDENTITY_MISMATCH_MARKER, ProbeObservation, SessionIdentity, SessionName, VerifiedTmuxBinary,
-    resolve_tmux_binary,
+    AdmissionPlan, AttachPlan, CreateOnce, DiscoveredSession, ExecutablePlatform, HerdrAttachPlan,
+    HerdrLaunchOnce, HerdrLaunchTarget, HerdrLifecycleAction, HerdrSessionRecord,
+    HerdrSessionState, IDENTITY_MISMATCH_MARKER, ProbeObservation, SessionIdentity, SessionName,
+    VerifiedTmuxBinary, resolve_tmux_binary,
 };
 
+use crate::herdr::{self, ExecutableProbe};
 use crate::{CancellationToken, CommandOutput, CommandRunner};
 
 const DEFAULT_TMUX: &str = "/usr/bin/tmux";
@@ -169,7 +171,50 @@ impl WslRuntimeIdentity {
 pub struct HostSnapshot {
     endpoint: WslEndpoint,
     runtime: WslRuntimeIdentity,
+    creation_term: AttachTerm,
     sessions: Vec<DiscoveredSession>,
+    herdr: Box<HerdrInventory>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HerdrInventory {
+    Unavailable,
+    Available {
+        executable: String,
+        sessions: Vec<HerdrSessionRecord>,
+    },
+    Failed(HostError),
+}
+
+impl HerdrInventory {
+    #[must_use]
+    pub const fn is_available(&self) -> bool {
+        matches!(self, Self::Available { .. })
+    }
+
+    #[must_use]
+    pub fn executable(&self) -> Option<&str> {
+        match self {
+            Self::Available { executable, .. } => Some(executable),
+            Self::Unavailable | Self::Failed(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn sessions(&self) -> &[HerdrSessionRecord] {
+        match self {
+            Self::Available { sessions, .. } => sessions,
+            Self::Unavailable | Self::Failed(_) => &[],
+        }
+    }
+
+    #[must_use]
+    pub const fn diagnostic(&self) -> Option<&HostError> {
+        match self {
+            Self::Failed(error) => Some(error),
+            Self::Unavailable | Self::Available { .. } => None,
+        }
+    }
 }
 
 /// Fresh, non-persistable authority to kill one exact live tmux session.
@@ -241,8 +286,33 @@ impl HostSnapshot {
                 kernel_boot_id: kernel_boot_id.into(),
                 init_start_ticks,
             },
+            creation_term: AttachTerm::Xterm256Color,
             sessions,
+            herdr: Box::new(HerdrInventory::Unavailable),
         }
+    }
+
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn test_fixture_with_herdr(
+        distro: impl Into<String>,
+        kernel_boot_id: impl Into<String>,
+        init_start_ticks: u64,
+        sessions: Vec<DiscoveredSession>,
+        herdr: HerdrInventory,
+    ) -> Self {
+        let mut snapshot = Self::test_fixture(distro, kernel_boot_id, init_start_ticks, sessions);
+        snapshot.herdr = Box::new(herdr);
+        snapshot
+    }
+
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn test_fixture_with_creation_term(mut self, term: AttachTerm) -> Self {
+        self.creation_term = term;
+        self
     }
 
     #[must_use]
@@ -256,8 +326,56 @@ impl HostSnapshot {
     }
 
     #[must_use]
+    pub const fn creation_term(&self) -> AttachTerm {
+        self.creation_term
+    }
+
+    #[must_use]
     pub fn sessions(&self) -> &[DiscoveredSession] {
         &self.sessions
+    }
+
+    #[must_use]
+    pub fn herdr(&self) -> &HerdrInventory {
+        self.herdr.as_ref()
+    }
+
+    /// Apply one authoritative Herdr lifecycle response to this snapshot.
+    ///
+    /// Returns `None` when the snapshot does not contain the session inventory
+    /// that authorized the operation.
+    #[must_use]
+    pub fn with_herdr_lifecycle(
+        mut self,
+        action: HerdrLifecycleAction,
+        expected_executable: &str,
+        confirmed: &HerdrSessionRecord,
+        record: HerdrSessionRecord,
+    ) -> Option<Self> {
+        let HerdrInventory::Available {
+            executable,
+            sessions,
+        } = self.herdr.as_mut()
+        else {
+            return None;
+        };
+        if executable != expected_executable {
+            return None;
+        }
+        let index = sessions.iter().position(|session| {
+            session.name() == confirmed.name()
+                && session.state() == confirmed.state()
+                && session.is_default() == confirmed.is_default()
+                && session.session_directory() == confirmed.session_directory()
+                && session.socket_path() == confirmed.socket_path()
+        })?;
+        match action {
+            HerdrLifecycleAction::Stop => sessions[index] = record,
+            HerdrLifecycleAction::Delete => {
+                sessions.remove(index);
+            }
+        }
+        Some(self)
     }
 }
 
@@ -455,14 +573,17 @@ impl<R: CommandRunner> WslHost<R> {
         let endpoint = self.resolve_endpoint(cancellation)?;
         let mut runtime = self.resolve_runtime(&endpoint, cancellation)?;
         for _attempt in 0..DISCOVERY_ATTEMPTS {
-            self.verify_tmux(&endpoint, &runtime, attacher, cancellation)?;
+            let creation_term = self.verify_tmux(&endpoint, &runtime, attacher, cancellation)?;
             let sessions = self.discover_sessions(&endpoint, cancellation)?;
+            let herdr = self.discover_herdr(&endpoint, cancellation);
             let observed_runtime = self.resolve_runtime(&endpoint, cancellation)?;
             if runtime == observed_runtime {
                 return Ok(HostSnapshot {
                     endpoint,
                     runtime,
+                    creation_term,
                     sessions,
+                    herdr: Box::new(herdr),
                 });
             }
             runtime = observed_runtime;
@@ -525,6 +646,168 @@ impl<R: CommandRunner> WslHost<R> {
             session.name(),
             session.identity().clone(),
         )
+    }
+
+    /// Build an attach-only plan for one exact running Herdr session.
+    #[must_use]
+    pub fn herdr_attach_plan(
+        &self,
+        endpoint: &WslEndpoint,
+        executable: &str,
+        session: &HerdrSessionRecord,
+        term: AttachTerm,
+    ) -> HerdrAttachPlan {
+        let mut args = pinned_prefix(endpoint);
+        append_herdr_environment(&mut args);
+        args.push(OsString::from(term.environment()));
+        args.extend(
+            [executable, "session", "attach", session.name()]
+                .into_iter()
+                .map(OsString::from),
+        );
+        HerdrAttachPlan::attach_only(self.wsl_executable.as_os_str(), args)
+    }
+
+    /// Build one Herdr launch-or-attach client. The returned authority is
+    /// consumed by the terminal launcher and cannot be retried.
+    #[must_use]
+    pub fn herdr_launch_once(
+        &self,
+        endpoint: &WslEndpoint,
+        executable: &str,
+        name: HerdrLaunchTarget,
+        is_default: bool,
+        term: AttachTerm,
+    ) -> HerdrLaunchOnce {
+        let mut args = pinned_prefix(endpoint);
+        append_herdr_environment(&mut args);
+        args.push(OsString::from(term.environment()));
+        args.push(OsString::from(executable));
+        if !is_default {
+            args.push(OsString::from("--session"));
+            args.push(OsString::from(name.as_str()));
+        }
+        HerdrLaunchOnce::launch_or_attach(self.wsl_executable.as_os_str(), args, name)
+    }
+
+    /// Revalidate and execute one confirmed destructive Herdr lifecycle action.
+    ///
+    /// The current runtime, executable, default role, state, and configuration
+    /// paths are captured immediately before mutation. Herdr does not expose a
+    /// stable generation identity, so replacement that preserves all of those
+    /// fields remains an accepted backend limitation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified error when the endpoint changed, the current
+    /// record no longer matches the confirmation, or Herdr rejects the action.
+    pub fn mutate_herdr_session(
+        &self,
+        expected_host: (&WslEndpoint, &WslRuntimeIdentity),
+        expected_executable: &str,
+        confirmed: &HerdrSessionRecord,
+        action: HerdrLifecycleAction,
+        cancellation: &CancellationToken,
+        before_mutation: impl FnOnce(),
+    ) -> Result<HerdrSessionRecord, HostError> {
+        let (endpoint, expected_runtime) = expected_host;
+        self.validate_current_herdr_lifecycle_target(
+            endpoint,
+            expected_runtime,
+            expected_executable,
+            confirmed,
+            action,
+            cancellation,
+        )?;
+
+        before_mutation();
+
+        self.validate_current_herdr_lifecycle_target(
+            endpoint,
+            expected_runtime,
+            expected_executable,
+            confirmed,
+            action,
+            cancellation,
+        )?;
+        self.require_runtime(endpoint, expected_runtime, cancellation)?;
+
+        let mut args = pinned_prefix(endpoint);
+        append_herdr_environment(&mut args);
+        args.extend(
+            [
+                expected_executable,
+                "session",
+                action.command(),
+                confirmed.name(),
+                "--json",
+            ]
+            .into_iter()
+            .map(OsString::from),
+        );
+        let output = self.run(&args, cancellation)?;
+        if output.status != 0 {
+            return Err(HostError::new(
+                if output.status == 127 {
+                    DiagnosticKind::ExecutableNotFound
+                } else {
+                    DiagnosticKind::Transport
+                },
+                herdr::lifecycle_error(&output.stdout, &output.stderr),
+            ));
+        }
+        let record = herdr::parse_lifecycle(action, &output.stdout)
+            .map_err(|detail| HostError::new(DiagnosticKind::MalformedOutput, detail))?;
+        validate_herdr_lifecycle_response(confirmed, &record, action)?;
+        let observed_runtime = self.resolve_runtime(endpoint, cancellation)?;
+        if &observed_runtime != expected_runtime {
+            return Err(HostError::new(
+                DiagnosticKind::Transport,
+                "WSL changed during the Herdr lifecycle action",
+            ));
+        }
+        Ok(record)
+    }
+
+    fn validate_current_herdr_lifecycle_target(
+        &self,
+        endpoint: &WslEndpoint,
+        expected_runtime: &WslRuntimeIdentity,
+        expected_executable: &str,
+        confirmed: &HerdrSessionRecord,
+        action: HerdrLifecycleAction,
+        cancellation: &CancellationToken,
+    ) -> Result<(), HostError> {
+        self.require_runtime(endpoint, expected_runtime, cancellation)?;
+        let (executable, sessions) = match self.discover_herdr(endpoint, cancellation) {
+            HerdrInventory::Available {
+                executable,
+                sessions,
+            } => (executable, sessions),
+            HerdrInventory::Unavailable => {
+                return Err(HostError::new(
+                    DiagnosticKind::ExecutableNotFound,
+                    "Herdr is unavailable on this host",
+                ));
+            }
+            HerdrInventory::Failed(error) => return Err(error),
+        };
+        if executable != expected_executable {
+            return Err(HostError::new(
+                DiagnosticKind::Transport,
+                "the Herdr executable changed after lifecycle confirmation",
+            ));
+        }
+        let current = sessions
+            .iter()
+            .find(|session| session.name() == confirmed.name())
+            .ok_or_else(|| {
+                HostError::new(
+                    DiagnosticKind::Transport,
+                    format!("Herdr session {} no longer exists", confirmed.name()),
+                )
+            })?;
+        validate_herdr_lifecycle_target(confirmed, current, action)
     }
 
     /// Build one atomic local create-or-attach client for an already verified
@@ -609,6 +892,8 @@ impl<R: CommandRunner> WslHost<R> {
         &self,
         endpoint: &WslEndpoint,
         runtime: &WslRuntimeIdentity,
+        creation_term: AttachTerm,
+        herdr: &HerdrInventory,
         cancellation: &CancellationToken,
     ) -> Result<HostSnapshot, HostError> {
         let sessions = self.discover_sessions(endpoint, cancellation)?;
@@ -622,7 +907,9 @@ impl<R: CommandRunner> WslHost<R> {
         Ok(HostSnapshot {
             endpoint: endpoint.clone(),
             runtime: observed_runtime,
+            creation_term,
             sessions,
+            herdr: Box::new(herdr.clone()),
         })
     }
 
@@ -839,6 +1126,81 @@ impl<R: CommandRunner> WslHost<R> {
         parse_inventory(&output.stdout)
     }
 
+    fn discover_herdr(
+        &self,
+        endpoint: &WslEndpoint,
+        cancellation: &CancellationToken,
+    ) -> HerdrInventory {
+        match self.resolve_herdr_executable(endpoint, cancellation) {
+            Ok(ExecutableProbe::Available(executable)) => {
+                self.list_herdr_sessions(endpoint, cancellation, executable)
+            }
+            Ok(ExecutableProbe::Unavailable) => HerdrInventory::Unavailable,
+            Err(error) => HerdrInventory::Failed(error),
+        }
+    }
+
+    fn resolve_herdr_executable(
+        &self,
+        endpoint: &WslEndpoint,
+        cancellation: &CancellationToken,
+    ) -> Result<ExecutableProbe, HostError> {
+        let mut args = pinned_prefix(endpoint);
+        args.extend(
+            ["/bin/sh", "-lc", herdr::RESOLVE_SCRIPT]
+                .into_iter()
+                .map(OsString::from),
+        );
+        let output = self.run(&args, cancellation)?;
+        if output.status != 0 && output.status != 127 {
+            return Err(classify_command_failure(
+                output.status,
+                &output.stderr,
+                "resolve Herdr executable",
+            ));
+        }
+        herdr::parse_executable(output.status, &output.stdout)
+            .map_err(|detail| HostError::new(DiagnosticKind::MalformedOutput, detail))
+    }
+
+    fn list_herdr_sessions(
+        &self,
+        endpoint: &WslEndpoint,
+        cancellation: &CancellationToken,
+        executable: String,
+    ) -> HerdrInventory {
+        let mut args = pinned_prefix(endpoint);
+        append_herdr_environment(&mut args);
+        args.extend(
+            [executable.as_str(), "session", "list", "--json"]
+                .into_iter()
+                .map(OsString::from),
+        );
+        let output = match self.run(&args, cancellation) {
+            Ok(output) => output,
+            Err(error) => return HerdrInventory::Failed(error),
+        };
+        if output.status == 127 {
+            return HerdrInventory::Unavailable;
+        }
+        if output.status != 0 {
+            return HerdrInventory::Failed(classify_command_failure(
+                output.status,
+                &output.stderr,
+                "list Herdr sessions",
+            ));
+        }
+        match herdr::parse_inventory(&output.stdout) {
+            Ok(sessions) => HerdrInventory::Available {
+                executable,
+                sessions,
+            },
+            Err(detail) => {
+                HerdrInventory::Failed(HostError::new(DiagnosticKind::MalformedOutput, detail))
+            }
+        }
+    }
+
     fn run_tmux_command(
         &self,
         endpoint: &WslEndpoint,
@@ -867,17 +1229,18 @@ impl<R: CommandRunner> WslHost<R> {
         runtime: &WslRuntimeIdentity,
         attacher: &A,
         cancellation: &CancellationToken,
-    ) -> Result<(), HostError> {
-        if self
+    ) -> Result<AttachTerm, HostError> {
+        if let Some(term) = self
             .verified_tmux
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
-            .is_some_and(|verified| {
+            .filter(|verified| {
                 admission_matches(&verified.endpoint, &verified.runtime, endpoint, runtime)
             })
+            .map(|verified| verified.creation_term)
         {
-            return Ok(());
+            return Ok(term);
         }
 
         let sequence = ADMISSION_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -1433,7 +1796,7 @@ impl<R: CommandRunner> WslHost<R> {
             creation_term,
             _binary: verified,
         });
-        Ok(())
+        Ok(creation_term)
     }
 
     fn create_admission_tmpdir(
@@ -1930,6 +2293,71 @@ impl<R: CommandRunner> WslHost<R> {
     }
 }
 
+fn validate_herdr_lifecycle_target(
+    confirmed: &HerdrSessionRecord,
+    current: &HerdrSessionRecord,
+    action: HerdrLifecycleAction,
+) -> Result<(), HostError> {
+    if action == HerdrLifecycleAction::Delete && current.is_default() {
+        return Err(HostError::new(
+            DiagnosticKind::UnsupportedEnvironment,
+            "Herdr's current default session cannot be deleted",
+        ));
+    }
+    if current.is_default() != confirmed.is_default() {
+        return Err(HostError::new(
+            DiagnosticKind::Transport,
+            format!(
+                "Herdr session {} changed its default role",
+                confirmed.name()
+            ),
+        ));
+    }
+    if current.state() != action.expected_state() {
+        let expected = match action.expected_state() {
+            HerdrSessionState::Running => "running",
+            HerdrSessionState::Stopped => "stopped",
+        };
+        return Err(HostError::new(
+            DiagnosticKind::Transport,
+            format!("Herdr session {} is no longer {expected}", confirmed.name()),
+        ));
+    }
+    if current.session_directory() != confirmed.session_directory()
+        || current.socket_path() != confirmed.socket_path()
+    {
+        return Err(HostError::new(
+            DiagnosticKind::Transport,
+            format!(
+                "Herdr session {} moved to a different configuration",
+                confirmed.name()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_herdr_lifecycle_response(
+    confirmed: &HerdrSessionRecord,
+    response: &HerdrSessionRecord,
+    action: HerdrLifecycleAction,
+) -> Result<(), HostError> {
+    let same_identity = response.name() == confirmed.name()
+        && response.is_default() == confirmed.is_default()
+        && response.session_directory() == confirmed.session_directory()
+        && response.socket_path() == confirmed.socket_path();
+    if !same_identity || response.state() != HerdrSessionState::Stopped {
+        return Err(HostError::new(
+            DiagnosticKind::MalformedOutput,
+            format!(
+                "Herdr returned an inconsistent session record after {}",
+                action.command()
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn admission_matches(
     verified_endpoint: &WslEndpoint,
     verified_runtime: &WslRuntimeIdentity,
@@ -2126,6 +2554,14 @@ fn append_tmux_environment(
         args.push(OsString::from(format!("TMUX_TMPDIR={path}")));
     }
     args.extend(environment.iter().map(OsString::from));
+}
+
+fn append_herdr_environment(args: &mut Vec<OsString>) {
+    args.push(OsString::from("/usr/bin/env"));
+    for variable in herdr::CONTROL_VARIABLES {
+        args.push(OsString::from("-u"));
+        args.push(OsString::from(variable));
+    }
 }
 
 fn settle_uncertain_cleanup(
@@ -2476,6 +2912,141 @@ mod tests {
     use super::*;
 
     #[test]
+    fn authoritative_herdr_lifecycle_updates_only_the_target_session() {
+        let running = HerdrSessionRecord::new(
+            "work",
+            false,
+            HerdrSessionState::Running,
+            "/tmp/work",
+            "/tmp/work.sock",
+        );
+        let other = HerdrSessionRecord::new(
+            "other",
+            false,
+            HerdrSessionState::Running,
+            "/tmp/other",
+            "/tmp/other.sock",
+        );
+        let snapshot = HostSnapshot {
+            endpoint: WslEndpoint {
+                distro: "Ubuntu".to_owned(),
+            },
+            runtime: WslRuntimeIdentity {
+                kernel_boot_id: "boot".to_owned(),
+                init_start_ticks: 1,
+            },
+            creation_term: AttachTerm::Xterm256Color,
+            sessions: Vec::new(),
+            herdr: Box::new(HerdrInventory::Available {
+                executable: "/usr/bin/herdr".to_owned(),
+                sessions: vec![running.clone(), other.clone()],
+            }),
+        };
+        let stopped = HerdrSessionRecord::new(
+            "work",
+            false,
+            HerdrSessionState::Stopped,
+            "/tmp/work",
+            "/tmp/work.sock",
+        );
+
+        let stopped_snapshot = snapshot
+            .with_herdr_lifecycle(
+                HerdrLifecycleAction::Stop,
+                "/usr/bin/herdr",
+                &running,
+                stopped.clone(),
+            )
+            .expect("stop response applies");
+        assert_eq!(
+            stopped_snapshot.herdr().sessions(),
+            &[stopped, other.clone()]
+        );
+
+        let deleted_snapshot = stopped_snapshot
+            .with_herdr_lifecycle(
+                HerdrLifecycleAction::Delete,
+                "/usr/bin/herdr",
+                &other,
+                other.clone(),
+            )
+            .expect("delete response applies");
+        assert_eq!(deleted_snapshot.herdr().sessions().len(), 1);
+        assert_eq!(deleted_snapshot.herdr().sessions()[0].name(), "work");
+    }
+
+    #[test]
+    fn lifecycle_publication_rejects_changed_inventory_identity() {
+        let confirmed = HerdrSessionRecord::new(
+            "work",
+            false,
+            HerdrSessionState::Running,
+            "/tmp/work",
+            "/tmp/work.sock",
+        );
+        let stopped = HerdrSessionRecord::new(
+            "work",
+            false,
+            HerdrSessionState::Stopped,
+            "/tmp/work",
+            "/tmp/work.sock",
+        );
+        let snapshot = |executable: &str, session: HerdrSessionRecord| HostSnapshot {
+            endpoint: WslEndpoint {
+                distro: "Ubuntu".to_owned(),
+            },
+            runtime: WslRuntimeIdentity {
+                kernel_boot_id: "boot".to_owned(),
+                init_start_ticks: 1,
+            },
+            creation_term: AttachTerm::Xterm256Color,
+            sessions: Vec::new(),
+            herdr: Box::new(HerdrInventory::Available {
+                executable: executable.to_owned(),
+                sessions: vec![session],
+            }),
+        };
+        let replacement = HerdrSessionRecord::new(
+            "work",
+            false,
+            HerdrSessionState::Running,
+            "/tmp/replacement",
+            "/tmp/replacement.sock",
+        );
+
+        assert!(
+            snapshot("/opt/herdr-v2", confirmed.clone())
+                .with_herdr_lifecycle(
+                    HerdrLifecycleAction::Stop,
+                    "/usr/bin/herdr",
+                    &confirmed,
+                    stopped.clone(),
+                )
+                .is_none()
+        );
+        assert!(
+            snapshot("/usr/bin/herdr", replacement)
+                .with_herdr_lifecycle(
+                    HerdrLifecycleAction::Stop,
+                    "/usr/bin/herdr",
+                    &confirmed,
+                    stopped.clone(),
+                )
+                .is_none()
+        );
+        assert!(
+            snapshot("/usr/bin/herdr", stopped.clone())
+                .with_herdr_lifecycle(
+                    HerdrLifecycleAction::Stop,
+                    "/usr/bin/herdr",
+                    &confirmed,
+                    stopped,
+                )
+                .is_none()
+        );
+    }
+
+    #[test]
     fn missing_system_wsl_is_not_an_error() {
         let result = classify_wsl_presence(
             WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("absolute path"),
@@ -2605,5 +3176,67 @@ mod tests {
             .collect::<Vec<_>>()
         );
         assert!(marker.starts_with("__ghc_") && marker.ends_with("__"));
+    }
+
+    #[test]
+    fn herdr_launch_is_one_scrubbed_argv_only_client_command() {
+        let host = WslHost::new(
+            WslConfig::with_distro("Ubuntu Work").expect("valid config"),
+            crate::StdCommandRunner,
+            WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
+                .expect("absolute WSL path"),
+        );
+        let endpoint = WslEndpoint {
+            distro: "Ubuntu Work".to_owned(),
+        };
+        let plan = host.herdr_launch_once(
+            &endpoint,
+            "/home/test/.local/bin/herdr",
+            HerdrLaunchTarget::created(
+                session::HerdrSessionName::parse("review.fix_1").expect("valid name"),
+            ),
+            false,
+            AttachTerm::Xterm256Color,
+        );
+        let (program, args, target) = plan.into_parts();
+
+        assert_eq!(program, r"C:\Windows\System32\wsl.exe");
+        assert_eq!(target.as_str(), "review.fix_1");
+        assert_eq!(
+            args.first().and_then(|value| value.to_str()),
+            Some("--distribution")
+        );
+        assert!(args.windows(2).any(|pair| pair == ["-u", "HERDR_ENV"]));
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-u", "HERDR_ACTIVE_PANE_CWD"])
+        );
+        assert!(args.iter().any(|arg| arg == "TERM=xterm-256color"));
+        assert_eq!(
+            args.iter()
+                .rev()
+                .take(3)
+                .rev()
+                .map(OsString::as_os_str)
+                .collect::<Vec<_>>(),
+            [
+                OsStr::new("/home/test/.local/bin/herdr"),
+                OsStr::new("--session"),
+                OsStr::new("review.fix_1"),
+            ]
+        );
+
+        let baseline = host.herdr_launch_once(
+            &endpoint,
+            "/home/test/.local/bin/herdr",
+            HerdrLaunchTarget::created(
+                session::HerdrSessionName::parse("baseline").expect("valid name"),
+            ),
+            false,
+            AttachTerm::Xterm,
+        );
+        let (_, baseline_args, _) = baseline.into_parts();
+        assert!(baseline_args.iter().any(|arg| arg == "TERM=xterm"));
+        assert!(!baseline_args.iter().any(|arg| arg == "TERM=xterm-256color"));
     }
 }

@@ -159,8 +159,9 @@ consumed through kwt's machine-readable CLI surfaces.
 ### Windows and Linux Rust applications
 
 The first Rust product slice is a native Windows GPUI application attaching to
-tmux inside WSL2. Linux remains a compile-and-contract target until a native
-Linux product slice is authorized. Neither replaces the macOS SwiftUI
+tmux and discovering optional Herdr sessions inside WSL2. Linux remains a
+compile-and-contract target until a native Linux product slice is authorized.
+Neither replaces the macOS SwiftUI
 application or embeds a Rust runtime into it. Cross-platform parity is enforced
 through the repository-root contracts corpus rather than a shared process, FFI
 domain model, or live database.
@@ -176,7 +177,32 @@ for cold start; later attempts have 30 seconds, in addition to per-command
 timeouts. Returning focus to a window refreshes a ready WSL inventory, matching
 the Swift app's activation-driven discovery without retrying disconnected or
 failed hosts in a loop. Later refreshes reuse the admitted host capability so
-they perform ordinary inventory reads instead of repeating tmux admission.
+they perform ordinary inventory reads instead of repeating tmux admission. The
+same refresh resolves optional Herdr through WSL's POSIX login profile,
+scrubs inherited Herdr routing variables, and publishes running and stopped
+sessions separately from tmux. Missing Herdr is silent; a broken Herdr probe is
+scoped to that capability and never makes the WSL tmux host unavailable. Tmux
+and Herdr creation controls live beside their respective inventory headings,
+while refresh remains host-scoped. Refresh keeps the last usable rows visible
+until replacement inventory publishes. A running Herdr row opens through its
+ordinary attach-only client; named creation consumes one non-retryable
+`herdr --session` launch authority with the same inherited-environment scrub as
+discovery. Stopped Herdr rows expose Restart, named stopped rows additionally
+expose confirmed Delete, and running rows expose confirmed Stop. Those
+destructive actions freshly revalidate the WSL runtime, executable, state, and
+configuration paths, including whether Herdr currently identifies the record
+as its default session, then recheck the runtime at the mutation boundary.
+User-authored creation names use the restricted creation grammar; Restart
+preserves authoritative names from inventory unchanged. A
+per-session in-flight guard disables duplicate actions and remains active
+through fresh inventory publication or a classified operation failure. A
+workspace operation fence serializes complete attachment, retained-client
+retry, creation or restart, and lifecycle operations through worker and
+inventory publication. Constructive and lifecycle snapshots each advance the
+inventory generation, preventing older full snapshots from overwriting their
+result. Stopping a session first closes its matching client presentations.
+Tmux continues to expose separate detach and confirmed Kill Session controls
+rather than sharing Herdr lifecycle semantics.
 The ready host also exposes explicit bare-session creation. Rust consumes one
 non-cloneable CreateOnce as an ordinary ConPTY client running atomic
 `new-session -A`; it then captures the fresh WSL runtime and tmux live identity

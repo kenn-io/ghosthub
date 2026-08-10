@@ -12,13 +12,15 @@ use std::time::{Duration, Instant};
 pub use model::DiagnosticKind as HostErrorKind;
 
 mod command_process;
+mod herdr;
 #[cfg(windows)]
 mod windows_system;
 mod wsl;
 
 pub use wsl::{
-    AdmissionAttacher, AttachTerm, HostError, HostSnapshot, LiveSessionTarget, SystemWslPresence,
-    WslConfig, WslEndpoint, WslExecutable, WslHost, WslPresence, WslRuntimeIdentity,
+    AdmissionAttacher, AttachTerm, HerdrInventory, HostError, HostSnapshot, LiveSessionTarget,
+    SystemWslPresence, WslConfig, WslEndpoint, WslExecutable, WslHost, WslPresence,
+    WslRuntimeIdentity,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]

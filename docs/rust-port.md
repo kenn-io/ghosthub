@@ -1,17 +1,18 @@
 # Windows and Linux Rust Port
 
 This document is the maintained design for native Ghosthub applications on
-Windows and Linux. The first product slice is Windows-only and uses tmux in
-WSL2; Linux remains a compile-and-contract target until a native Linux product
-slice is authorized. The shipped macOS application remains SwiftUI/AppKit with
-libghostty. The shared product and terminal invariants remain authoritative in
+Windows and Linux. The first product slice is Windows-only, uses tmux in WSL2,
+and discovers optional Herdr sessions there; Linux remains a
+compile-and-contract target until a native Linux product slice is authorized.
+The shipped macOS application remains SwiftUI/AppKit with libghostty. The
+shared product and terminal invariants remain authoritative in
 [architecture.md](architecture.md) and
 [terminal-sessions.md](terminal-sessions.md).
 
-The port exists to deliver the same native terminal for local and remote tmux
-fleets on Windows and Linux. It is not a rewrite of the macOS application, a
-shared runtime embedded into Swift, or a reason to change macOS away from
-SwiftUI.
+The port exists to deliver the same native terminal for local and remote
+multiplexer fleets on Windows and Linux. It is not a rewrite of the macOS
+application, a shared runtime embedded into Swift, or a reason to change macOS
+away from SwiftUI.
 
 ## 1. Product and Dependency Boundary
 
@@ -224,6 +225,54 @@ Host publishes classified diagnostics rather than flattening command failures:
 Failures remain retryable where another attempt can change the result. The
 empty state names the resolved distro, binary, and default or configured socket
 environment so zero sessions cannot silently conceal where Ghosthub looked.
+
+### Optional Herdr capability in WSL
+
+Herdr is discovered as an optional capability of the resolved WSL endpoint,
+not as a second host and not as an application startup requirement. After tmux
+admission, Host resolves an exact absolute `herdr` executable through WSL's
+POSIX login profile (`/bin/sh -lc` with a fixed Ghosthub-owned probe), removes
+every inherited Herdr routing variable named
+in [Terminal Sessions](terminal-sessions.md), and invokes
+`herdr session list --json` through direct argv. Exit 127 is silent absence.
+Other executable, permission, transport, and malformed-output failures remain a
+Herdr-scoped diagnostic and do not change tmux readiness or cached tmux rows.
+
+The inventory preserves both running and stopped sessions and publishes them in
+a separate compact Herdr group under the WSL host. Tmux and Herdr each own the
+creation action beside their group header; the host row owns refresh, not
+session creation. A refresh marks the host as connecting without discarding
+either cached group, so navigation remains stable while replacement inventory
+is in flight.
+
+The Herdr executable and inventory are captured inside the same before/after
+WSL runtime check as tmux, so a distro restart cannot combine evidence from
+different runtime instances. Opening a running row uses
+`herdr session attach <exact-name>`. Creating a named session consumes one
+non-cloneable launch authority for `herdr --session <exact-name>` and never
+replays it after failure. Both paths launch an ordinary ConPTY client through
+direct argv after removing all inherited Herdr routing variables. Retained
+presentation switching uses the same presentation slot as tmux. Selecting a
+stopped row restarts it through the one-shot launch path: the default session
+uses plain `herdr`, while a named session uses `herdr --session <exact-name>`.
+Creation accepts Ghosthub's restricted user-authored name type; Restart carries
+the authoritative discovered name unchanged, so an existing session is not
+made unmanageable by newer creation rules. The captured default-session role
+is part of restart and lifecycle validation alongside state and paths.
+Stop and Delete require confirmation, then Host freshly revalidates the WSL
+runtime, executable, expected running or stopped state, session directory, and
+socket, followed by a final runtime check immediately before invoking the
+direct lifecycle command. A per-session in-flight guard disables duplicate
+actions. A workspace operation fence serializes attach, retained-client retry,
+create or restart, and lifecycle mutation from fresh discovery through worker
+publication or failure, so Stop and Delete cannot be followed by an older
+launch completing. Stop first closes every matching client presentation;
+Delete is offered only for stopped non-default sessions. The guard remains
+until fresh inventory publishes or a classified operation failure is reported.
+Every constructive or lifecycle publication advances the inventory generation
+and cancels an older refresh, so an earlier full snapshot cannot overwrite the
+result. Rust does not reinterpret Herdr as a tmux-compatible server or use
+Herdr's remote mode.
 
 ### Terminal ownership
 
