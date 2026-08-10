@@ -7,6 +7,7 @@ import sys
 import tempfile
 import time
 import unittest
+from collections.abc import Callable
 from unittest import mock
 from pathlib import Path
 
@@ -1707,6 +1708,203 @@ pub fn init() void {
             [git_path, "-C", str(paths.source_checkout_root), "remote", "add", "origin", metadata.source],
             commands,
         )
+
+    def _stub_source_checkout_run(
+        self,
+        git_path: str,
+        source_root: Path,
+        commands: list[list[str]],
+        *,
+        fetch_failures: int = 0,
+        fail_checkout: bool = False,
+        fail_clean: bool = False,
+    ) -> Callable[..., bootstrap.subprocess.CompletedProcess[str]]:
+        remaining_fetch_failures = [fetch_failures]
+
+        def fake_run(
+            command: list[str],
+            cwd: str | None = None,
+            check: bool = True,
+            capture_output: bool = False,
+            text: bool = False,
+        ) -> bootstrap.subprocess.CompletedProcess[str]:
+            del cwd, check, capture_output, text
+            commands.append(command)
+            if command[:2] == [git_path, "init"]:
+                (Path(command[2]) / ".git").mkdir(parents=True, exist_ok=True)
+            if command[3:4] == ["fetch"] and remaining_fetch_failures[0] > 0:
+                remaining_fetch_failures[0] -= 1
+                raise bootstrap.subprocess.CalledProcessError(
+                    128,
+                    command,
+                    output="",
+                    stderr="fatal: unable to access 'https://github.com/': Could not resolve host",
+                )
+            if command[3:4] == ["checkout"]:
+                if fail_checkout:
+                    raise bootstrap.subprocess.CalledProcessError(
+                        1,
+                        command,
+                        output="",
+                        stderr="error: pathspec did not match any file(s) known to git",
+                    )
+                include_root = source_root / "include"
+                include_root.mkdir(parents=True, exist_ok=True)
+                (source_root / "build.zig").write_text("// build\n")
+                (include_root / "ghostty.h").write_text("// header\n")
+                (include_root / "module.modulemap").write_text("module GhosttyKit {}\n")
+            if command[3:4] == ["clean"] and fail_clean:
+                raise bootstrap.subprocess.CalledProcessError(
+                    1,
+                    command,
+                    output="",
+                    stderr="warning: failed to remove src/generated: Permission denied",
+                )
+            return bootstrap.subprocess.CompletedProcess(command, 0, "", "")
+
+        return fake_run
+
+    def test_ensure_source_checkout_retries_a_transient_fetch_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir)
+            metadata = self._create_repo_layout(repo_root)
+            paths = self._paths(repo_root)
+            git_path = "/usr/bin/git"
+            commands: list[list[str]] = []
+            delays: list[float] = []
+
+            with (
+                mock.patch.object(bootstrap, "resolve_tool", return_value=git_path),
+                mock.patch.object(
+                    bootstrap.subprocess,
+                    "run",
+                    side_effect=self._stub_source_checkout_run(
+                        git_path,
+                        paths.source_checkout_root,
+                        commands,
+                        fetch_failures=1,
+                    ),
+                ),
+                mock.patch("builtins.print"),
+            ):
+                bootstrap.ensure_source_checkout(
+                    paths,
+                    metadata,
+                    git="git",
+                    sleep=delays.append,
+                )
+
+        fetch_command = [
+            git_path,
+            "-C",
+            str(paths.source_checkout_root),
+            "fetch",
+            "--depth",
+            "1",
+            "origin",
+            metadata.commit,
+        ]
+        self.assertEqual([command for command in commands if command == fetch_command], [fetch_command] * 2)
+        self.assertEqual(len(delays), 1)
+        self.assertIn(
+            [git_path, "-C", str(paths.source_checkout_root), "checkout", "--force", metadata.commit],
+            commands,
+        )
+
+    def test_ensure_source_checkout_reports_the_pinned_revision_and_git_stderr_when_fetch_never_succeeds(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir)
+            metadata = self._create_repo_layout(repo_root)
+            paths = self._paths(repo_root)
+            git_path = "/usr/bin/git"
+            commands: list[list[str]] = []
+
+            with (
+                mock.patch.object(bootstrap, "resolve_tool", return_value=git_path),
+                mock.patch.object(
+                    bootstrap.subprocess,
+                    "run",
+                    side_effect=self._stub_source_checkout_run(
+                        git_path,
+                        paths.source_checkout_root,
+                        commands,
+                        fetch_failures=bootstrap.SOURCE_FETCH_ATTEMPTS,
+                    ),
+                ),
+                mock.patch("builtins.print"),
+                self.assertRaises(bootstrap.BootstrapError) as raised,
+            ):
+                bootstrap.ensure_source_checkout(paths, metadata, git="git", sleep=lambda _: None)
+
+        message = str(raised.exception)
+        self.assertIn(metadata.commit, message)
+        self.assertIn(metadata.source, message)
+        self.assertIn("Could not resolve host", message)
+        self.assertEqual(
+            len([command for command in commands if command[3:4] == ["fetch"]]),
+            bootstrap.SOURCE_FETCH_ATTEMPTS,
+        )
+        self.assertEqual([command for command in commands if command[3:4] == ["checkout"]], [])
+
+    def test_ensure_source_checkout_distinguishes_a_checkout_failure_from_a_fetch_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir)
+            metadata = self._create_repo_layout(repo_root)
+            paths = self._paths(repo_root)
+            git_path = "/usr/bin/git"
+            commands: list[list[str]] = []
+
+            with (
+                mock.patch.object(bootstrap, "resolve_tool", return_value=git_path),
+                mock.patch.object(
+                    bootstrap.subprocess,
+                    "run",
+                    side_effect=self._stub_source_checkout_run(
+                        git_path,
+                        paths.source_checkout_root,
+                        commands,
+                        fail_checkout=True,
+                    ),
+                ),
+                self.assertRaises(bootstrap.BootstrapError) as raised,
+            ):
+                bootstrap.ensure_source_checkout(paths, metadata, git="git", sleep=lambda _: None)
+
+        message = str(raised.exception)
+        self.assertIn("check out", message)
+        self.assertIn("pathspec did not match", message)
+        self.assertEqual(len([command for command in commands if command[3:4] == ["fetch"]]), 1)
+
+    def test_ensure_source_checkout_distinguishes_a_clean_failure_from_a_checkout_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir)
+            metadata = self._create_repo_layout(repo_root)
+            paths = self._paths(repo_root)
+            git_path = "/usr/bin/git"
+            commands: list[list[str]] = []
+
+            with (
+                mock.patch.object(bootstrap, "resolve_tool", return_value=git_path),
+                mock.patch.object(
+                    bootstrap.subprocess,
+                    "run",
+                    side_effect=self._stub_source_checkout_run(
+                        git_path,
+                        paths.source_checkout_root,
+                        commands,
+                        fail_clean=True,
+                    ),
+                ),
+                self.assertRaises(bootstrap.BootstrapError) as raised,
+            ):
+                bootstrap.ensure_source_checkout(paths, metadata, git="git", sleep=lambda _: None)
+
+        message = str(raised.exception)
+        self.assertIn("clean", message)
+        self.assertNotIn("check out", message)
+        self.assertIn("Permission denied", message)
 
     def test_artifact_state_reports_stale_manifest_when_isolation_settings_change(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
