@@ -11,7 +11,9 @@ use crossbeam_channel::{
 };
 use input::{EncodedInput, KeyInput, MouseAction, MouseInput, encode_input, encode_mouse};
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
-use session::{AdmissionPlan, AttachPlan, CreateOnce, SessionIdentity};
+use session::{
+    AdmissionPlan, AttachPlan, CreateOnce, HerdrAttachPlan, HerdrLaunchOnce, SessionIdentity,
+};
 use surface::{GridSize, PixelSize, SurfaceStore};
 
 use crate::windows_job::RelayJob;
@@ -270,6 +272,60 @@ impl TerminalWorker {
         Self::launch(
             plan.program(),
             plan.args(),
+            None,
+            size,
+            resize_sequence,
+            pixel_size,
+            clipboard_policy,
+            default_colors,
+        )
+    }
+
+    /// Spawn an attach-only Herdr client with UI-derived initial dimensions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the PTY, child process, or relay containment
+    /// cannot be established.
+    pub fn attach_herdr_with_metadata(
+        plan: &HerdrAttachPlan,
+        size: GridSize,
+        resize_sequence: u64,
+        pixel_size: PixelSize,
+        clipboard_policy: ClipboardPolicy,
+        default_colors: DefaultColors,
+    ) -> Result<Self, WorkerError> {
+        Self::launch(
+            plan.program(),
+            plan.args(),
+            None,
+            size,
+            resize_sequence,
+            pixel_size,
+            clipboard_policy,
+            default_colors,
+        )
+    }
+
+    /// Consume one Herdr launch-or-attach authority and spawn its ordinary
+    /// client inside a native pseudoterminal.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the PTY, child process, or relay containment
+    /// cannot be established. The consumed authority is never returned.
+    pub fn launch_herdr_with_metadata(
+        plan: HerdrLaunchOnce,
+        size: GridSize,
+        resize_sequence: u64,
+        pixel_size: PixelSize,
+        clipboard_policy: ClipboardPolicy,
+        default_colors: DefaultColors,
+    ) -> Result<Self, WorkerError> {
+        let (program, args, _target_name) = plan.into_parts();
+        Self::launch(
+            &program,
+            &args,
             None,
             size,
             resize_sequence,
