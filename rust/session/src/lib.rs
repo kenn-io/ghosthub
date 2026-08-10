@@ -160,6 +160,30 @@ pub enum HerdrSessionState {
     Stopped,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HerdrLifecycleAction {
+    Stop,
+    Delete,
+}
+
+impl HerdrLifecycleAction {
+    #[must_use]
+    pub const fn command(self) -> &'static str {
+        match self {
+            Self::Stop => "stop",
+            Self::Delete => "delete",
+        }
+    }
+
+    #[must_use]
+    pub const fn expected_state(self) -> HerdrSessionState {
+        match self {
+            Self::Stop => HerdrSessionState::Running,
+            Self::Delete => HerdrSessionState::Stopped,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HerdrSessionRecord {
     name: String,

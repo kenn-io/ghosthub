@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use session::{HerdrSessionRecord, HerdrSessionState};
+use session::{HerdrLifecycleAction, HerdrSessionRecord, HerdrSessionState};
 
 pub(crate) const PATH_MARKER: &str = "GHOSTHUB_HERDR_PATH";
 
@@ -65,25 +65,67 @@ pub(crate) fn parse_inventory(bytes: &[u8]) -> Result<Vec<HerdrSessionRecord>, S
     Ok(envelope
         .sessions
         .into_iter()
-        .map(|session| {
-            HerdrSessionRecord::new(
-                session.name,
-                session.is_default,
-                if session.running {
-                    HerdrSessionState::Running
-                } else {
-                    HerdrSessionState::Stopped
-                },
-                session.directory,
-                session.socket,
-            )
-        })
+        .map(Session::into_record)
         .collect())
+}
+
+pub(crate) fn parse_lifecycle(
+    action: HerdrLifecycleAction,
+    bytes: &[u8],
+) -> Result<HerdrSessionRecord, String> {
+    let envelope: LifecycleEnvelope = serde_json::from_slice(bytes)
+        .map_err(|_| "Herdr returned malformed lifecycle JSON".to_owned())?;
+    if let Some(error) = envelope.error {
+        return Err(error.message);
+    }
+    let completed = match action {
+        HerdrLifecycleAction::Stop => envelope.stopped,
+        HerdrLifecycleAction::Delete => envelope.deleted,
+    };
+    if completed != Some(true) {
+        return Err(format!(
+            "Herdr did not confirm that session {} completed",
+            action.command()
+        ));
+    }
+    envelope
+        .session
+        .map(Session::into_record)
+        .ok_or_else(|| "Herdr lifecycle response omitted the session record".to_owned())
+}
+
+pub(crate) fn lifecycle_error(bytes: &[u8], stderr: &[u8]) -> String {
+    serde_json::from_slice::<LifecycleEnvelope>(bytes)
+        .ok()
+        .and_then(|envelope| envelope.error)
+        .map(|error| error.message)
+        .filter(|message| !message.trim().is_empty())
+        .unwrap_or_else(|| {
+            let message = String::from_utf8_lossy(stderr).trim().to_owned();
+            if message.is_empty() {
+                "Herdr lifecycle command failed".to_owned()
+            } else {
+                message
+            }
+        })
 }
 
 #[derive(Deserialize)]
 struct SessionEnvelope {
     sessions: Vec<Session>,
+}
+
+#[derive(Deserialize)]
+struct LifecycleEnvelope {
+    session: Option<Session>,
+    stopped: Option<bool>,
+    deleted: Option<bool>,
+    error: Option<LifecycleCommandError>,
+}
+
+#[derive(Deserialize)]
+struct LifecycleCommandError {
+    message: String,
 }
 
 #[derive(Deserialize)]
@@ -96,6 +138,22 @@ struct Session {
     directory: String,
     #[serde(rename = "socket_path")]
     socket: String,
+}
+
+impl Session {
+    fn into_record(self) -> HerdrSessionRecord {
+        HerdrSessionRecord::new(
+            self.name,
+            self.is_default,
+            if self.running {
+                HerdrSessionState::Running
+            } else {
+                HerdrSessionState::Stopped
+            },
+            self.directory,
+            self.socket,
+        )
+    }
 }
 
 #[cfg(test)]
@@ -134,5 +192,18 @@ mod tests {
         assert_eq!(sessions[1].state(), HerdrSessionState::Stopped);
         assert_eq!(sessions[1].session_directory(), "/tmp/review");
         assert_eq!(sessions[1].socket_path(), "/tmp/review/herdr.sock");
+    }
+
+    #[test]
+    fn lifecycle_requires_the_action_confirmation_and_record() {
+        let stopped = parse_lifecycle(
+            HerdrLifecycleAction::Stop,
+            br#"{"session":{"name":"review","default":false,"running":false,"session_dir":"/tmp/review","socket_path":"/tmp/review/herdr.sock"},"stopped":true}"#,
+        )
+        .expect("confirmed stop");
+
+        assert_eq!(stopped.name(), "review");
+        assert_eq!(stopped.state(), HerdrSessionState::Stopped);
+        assert!(parse_lifecycle(HerdrLifecycleAction::Delete, br#"{"deleted":false}"#).is_err());
     }
 }

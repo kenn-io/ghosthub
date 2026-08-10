@@ -9,8 +9,9 @@ use std::time::{Duration, Instant};
 use model::DiagnosticKind;
 use session::{
     AdmissionPlan, AttachPlan, CreateOnce, DiscoveredSession, ExecutablePlatform, HerdrAttachPlan,
-    HerdrLaunchOnce, HerdrSessionName, HerdrSessionRecord, IDENTITY_MISMATCH_MARKER,
-    ProbeObservation, SessionIdentity, SessionName, VerifiedTmuxBinary, resolve_tmux_binary,
+    HerdrLaunchOnce, HerdrLifecycleAction, HerdrSessionName, HerdrSessionRecord, HerdrSessionState,
+    IDENTITY_MISMATCH_MARKER, ProbeObservation, SessionIdentity, SessionName, VerifiedTmuxBinary,
+    resolve_tmux_binary,
 };
 
 use crate::herdr::{self, ExecutableProbe};
@@ -621,13 +622,129 @@ impl<R: CommandRunner> WslHost<R> {
         endpoint: &WslEndpoint,
         executable: &str,
         name: HerdrSessionName,
+        is_default: bool,
     ) -> HerdrLaunchOnce {
         let mut args = pinned_prefix(endpoint);
         append_herdr_environment(&mut args);
         args.push(OsString::from("TERM=xterm-256color"));
-        args.extend([executable, "--session"].into_iter().map(OsString::from));
-        args.push(OsString::from(name.as_str()));
+        args.push(OsString::from(executable));
+        if !is_default {
+            args.push(OsString::from("--session"));
+            args.push(OsString::from(name.as_str()));
+        }
         HerdrLaunchOnce::launch_or_attach(self.wsl_executable.as_os_str(), args, name)
+    }
+
+    /// Revalidate and execute one confirmed destructive Herdr lifecycle action.
+    ///
+    /// The current runtime, executable, state, and configuration paths are
+    /// captured immediately before mutation. Herdr does not expose a stable
+    /// generation identity, so same-name/same-path replacement remains an
+    /// accepted backend limitation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified error when the endpoint changed, the current
+    /// record no longer matches the confirmation, or Herdr rejects the action.
+    pub fn mutate_herdr_session(
+        &self,
+        endpoint: &WslEndpoint,
+        expected_runtime: &WslRuntimeIdentity,
+        confirmed: &HerdrSessionRecord,
+        action: HerdrLifecycleAction,
+        cancellation: &CancellationToken,
+    ) -> Result<HerdrSessionRecord, HostError> {
+        let runtime = self.resolve_runtime(endpoint, cancellation)?;
+        if &runtime != expected_runtime {
+            return Err(HostError::new(
+                DiagnosticKind::Transport,
+                "WSL changed before the Herdr lifecycle action",
+            ));
+        }
+        if action == HerdrLifecycleAction::Delete && confirmed.is_default() {
+            return Err(HostError::new(
+                DiagnosticKind::UnsupportedEnvironment,
+                "Herdr's default session cannot be deleted",
+            ));
+        }
+        let (executable, sessions) = match self.discover_herdr(endpoint, cancellation) {
+            HerdrInventory::Available {
+                executable,
+                sessions,
+            } => (executable, sessions),
+            HerdrInventory::Unavailable => {
+                return Err(HostError::new(
+                    DiagnosticKind::ExecutableNotFound,
+                    "Herdr is unavailable on this host",
+                ));
+            }
+            HerdrInventory::Failed(error) => return Err(error),
+        };
+        let current = sessions
+            .iter()
+            .find(|session| session.name() == confirmed.name())
+            .ok_or_else(|| {
+                HostError::new(
+                    DiagnosticKind::Transport,
+                    format!("Herdr session {} no longer exists", confirmed.name()),
+                )
+            })?;
+        if current.state() != action.expected_state() {
+            let expected = match action.expected_state() {
+                HerdrSessionState::Running => "running",
+                HerdrSessionState::Stopped => "stopped",
+            };
+            return Err(HostError::new(
+                DiagnosticKind::Transport,
+                format!("Herdr session {} is no longer {expected}", confirmed.name()),
+            ));
+        }
+        if current.session_directory() != confirmed.session_directory()
+            || current.socket_path() != confirmed.socket_path()
+        {
+            return Err(HostError::new(
+                DiagnosticKind::Transport,
+                format!(
+                    "Herdr session {} moved to a different configuration",
+                    confirmed.name()
+                ),
+            ));
+        }
+
+        let mut args = pinned_prefix(endpoint);
+        append_herdr_environment(&mut args);
+        args.extend(
+            [
+                executable.as_str(),
+                "session",
+                action.command(),
+                confirmed.name(),
+                "--json",
+            ]
+            .into_iter()
+            .map(OsString::from),
+        );
+        let output = self.run(&args, cancellation)?;
+        if output.status != 0 {
+            return Err(HostError::new(
+                if output.status == 127 {
+                    DiagnosticKind::ExecutableNotFound
+                } else {
+                    DiagnosticKind::Transport
+                },
+                herdr::lifecycle_error(&output.stdout, &output.stderr),
+            ));
+        }
+        let record = herdr::parse_lifecycle(action, &output.stdout)
+            .map_err(|detail| HostError::new(DiagnosticKind::MalformedOutput, detail))?;
+        let observed_runtime = self.resolve_runtime(endpoint, cancellation)?;
+        if &observed_runtime != expected_runtime {
+            return Err(HostError::new(
+                DiagnosticKind::Transport,
+                "WSL changed during the Herdr lifecycle action",
+            ));
+        }
+        Ok(record)
     }
 
     /// Build one atomic local create-or-attach client for an already verified
@@ -2810,6 +2927,7 @@ mod tests {
             &endpoint,
             "/home/test/.local/bin/herdr",
             HerdrSessionName::parse("review.fix_1").expect("valid name"),
+            false,
         );
         let (program, args, target) = plan.into_parts();
 

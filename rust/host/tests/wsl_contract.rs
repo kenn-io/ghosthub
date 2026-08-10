@@ -13,7 +13,9 @@ use host::{
 };
 use serde::Deserialize;
 use session::ExecutablePlatform;
-use session::{AdmissionPlan, HerdrSessionState, SessionName};
+use session::{
+    AdmissionPlan, HerdrLifecycleAction, HerdrSessionRecord, HerdrSessionState, SessionName,
+};
 
 #[derive(Clone, Copy, Debug)]
 struct AdmissionStatusFailure {
@@ -472,6 +474,9 @@ fn is_herdr_call(args: &[OsString]) -> bool {
     }) || args
         .windows(3)
         .any(|arguments| arguments == ["session", "list", "--json"])
+        || args
+            .windows(2)
+            .any(|arguments| arguments == ["session", "stop"] || arguments == ["session", "delete"])
 }
 
 #[allow(
@@ -1012,6 +1017,68 @@ fn malformed_herdr_inventory_does_not_hide_tmux_sessions() {
     assert!(
         matches!(snapshot.herdr(), HerdrInventory::Failed(error) if error.kind() == HostErrorKind::MalformedOutput)
     );
+}
+
+#[test]
+fn herdr_stop_revalidates_state_and_paths_before_direct_mutation() {
+    let runner = RecordingRunner::new(vec![instance_output(), instance_output()]);
+    runner.set_herdr_outputs(vec![
+        output(0, "GHOSTHUB_HERDR_PATH\n/opt/herdr/bin/herdr\n", ""),
+        output(
+            0,
+            r#"{"sessions":[{"name":"review","default":false,"running":true,"session_dir":"/tmp/herdr/review","socket_path":"/tmp/herdr/review/herdr.sock"}]}"#,
+            "",
+        ),
+        output(
+            0,
+            r#"{"session":{"name":"review","default":false,"running":false,"session_dir":"/tmp/herdr/review","socket_path":"/tmp/herdr/review/herdr.sock"},"stopped":true}"#,
+            "",
+        ),
+    ]);
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        runner,
+    );
+    let identity = host::HostSnapshot::test_fixture(
+        "Ubuntu",
+        "65c18272-9676-4d59-9f67-ff4556cd1601",
+        987_654,
+        Vec::new(),
+    );
+    let endpoint = identity.endpoint().clone();
+    let runtime = identity.runtime().clone();
+    let confirmed = HerdrSessionRecord::new(
+        "review",
+        false,
+        HerdrSessionState::Running,
+        "/tmp/herdr/review",
+        "/tmp/herdr/review/herdr.sock",
+    );
+
+    let stopped = host
+        .mutate_herdr_session(
+            &endpoint,
+            &runtime,
+            &confirmed,
+            HerdrLifecycleAction::Stop,
+            &CancellationToken::new(),
+        )
+        .expect("confirmed stop");
+
+    assert_eq!(stopped.state(), HerdrSessionState::Stopped);
+    let action = host
+        .runner()
+        .all_calls()
+        .into_iter()
+        .find(|(_, args)| args.windows(2).any(|pair| pair == ["session", "stop"]))
+        .expect("Herdr stop call");
+    assert!(action.1.windows(2).any(|pair| pair == ["-u", "HERDR_ENV"]));
+    assert!(action.1.ends_with(&[
+        OsString::from("session"),
+        OsString::from("stop"),
+        OsString::from("review"),
+        OsString::from("--json"),
+    ]));
 }
 
 #[test]

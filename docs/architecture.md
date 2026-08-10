@@ -178,7 +178,12 @@ while refresh remains host-scoped. Refresh keeps the last usable rows visible
 until replacement inventory publishes. A running Herdr row opens through its
 ordinary attach-only client; named creation consumes one non-retryable
 `herdr --session` launch authority with the same inherited-environment scrub as
-discovery.
+discovery. Stopped Herdr rows expose Restart, named stopped rows additionally
+expose confirmed Delete, and running rows expose confirmed Stop. Those
+destructive actions freshly revalidate the WSL runtime, executable, state, and
+configuration paths before mutation; stopping a session first closes its
+matching client presentations. Tmux continues to expose separate detach and
+confirmed Kill Session controls rather than sharing Herdr lifecycle semantics.
 The ready host also exposes explicit bare-session creation. Rust consumes one
 non-cloneable CreateOnce as an ordinary ConPTY client running atomic
 `new-session -A`; it then captures the fresh WSL runtime and tmux live identity

@@ -881,6 +881,54 @@ impl RootView {
         cx.notify();
     }
 
+    fn restart_herdr_session(
+        &mut self,
+        selection: &SessionSelection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match self.workspace.restart_herdr_session(selection) {
+            Ok(()) => {
+                self.diagnostic = None;
+                self.observed_presentation_id = None;
+                self.clear_terminal_input();
+                self.paint_cache.clear();
+                self.resize_for_window(window);
+            }
+            Err(error) => self.diagnostic = Some(error.to_string()),
+        }
+        window.focus(&self.focus);
+        cx.notify();
+    }
+
+    fn request_herdr_lifecycle(
+        &mut self,
+        selection: &SessionSelection,
+        action: workspace::HerdrLifecycleAction,
+        cx: &mut Context<Self>,
+    ) {
+        match self.workspace.request_herdr_lifecycle(selection, action) {
+            Ok(()) => self.diagnostic = None,
+            Err(error) => self.diagnostic = Some(error.to_string()),
+        }
+        cx.notify();
+    }
+
+    fn cancel_herdr_lifecycle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.workspace.cancel_herdr_lifecycle();
+        window.focus(&self.focus);
+        cx.notify();
+    }
+
+    fn confirm_herdr_lifecycle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.workspace.confirm_herdr_lifecycle() {
+            Ok(()) => self.diagnostic = None,
+            Err(error) => self.diagnostic = Some(error.to_string()),
+        }
+        window.focus(&self.focus);
+        cx.notify();
+    }
+
     fn sync_terminal_scope(&mut self) -> bool {
         let snapshot = self.workspace.snapshot();
         let presentation_id = terminal_presentation_id(snapshot.content());
@@ -1928,6 +1976,114 @@ impl RootView {
         Some(self.session_kill_overlay(&confirmation, cx))
     }
 
+    fn herdr_lifecycle_overlay(
+        &self,
+        confirmation: &workspace::HerdrLifecycleConfirmation,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let (verb, title, description) = herdr_lifecycle_copy(confirmation);
+        div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(rgba(0x00_00_00_80))
+            .child(
+                div()
+                    .id("herdr-lifecycle-dialog")
+                    .track_focus(&self.kill_focus)
+                    .w(px(460.0))
+                    .flex()
+                    .flex_col()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(rgb(0x36_3c48))
+                    .bg(rgb(0x18_1b22))
+                    .shadow_lg()
+                    .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                        if event.keystroke.key.eq_ignore_ascii_case("escape") && !event.is_held {
+                            this.cancel_herdr_lifecycle(window, cx);
+                            cx.stop_propagation();
+                        }
+                    }))
+                    .child(
+                        div()
+                            .px_4()
+                            .py_3()
+                            .border_b_1()
+                            .border_color(rgb(0x2a_2f39))
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(rgb(0xe0_e4eb))
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .px_4()
+                            .py_4()
+                            .text_sm()
+                            .text_color(rgb(0xb6_bcc7))
+                            .child(description),
+                    )
+                    .child(
+                        div()
+                            .px_4()
+                            .py_3()
+                            .border_t_1()
+                            .border_color(rgb(0x2a_2f39))
+                            .flex()
+                            .items_center()
+                            .justify_end()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .id("cancel-herdr-lifecycle")
+                                    .px_3()
+                                    .py_1()
+                                    .rounded_sm()
+                                    .cursor_pointer()
+                                    .text_sm()
+                                    .text_color(rgb(0xb6_bcc7))
+                                    .hover(|style| style.bg(rgb(0x29_2e38)))
+                                    .child("Cancel")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.cancel_herdr_lifecycle(window, cx);
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .id("confirm-herdr-lifecycle")
+                                    .px_3()
+                                    .py_1()
+                                    .rounded_sm()
+                                    .cursor_pointer()
+                                    .bg(rgb(0xa9_3038))
+                                    .hover(|style| style.bg(rgb(0xc1_3b43)))
+                                    .text_sm()
+                                    .text_color(rgb(0xff_f6f6))
+                                    .child(verb)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.confirm_herdr_lifecycle(window, cx);
+                                    })),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn pending_herdr_lifecycle_overlay(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let confirmation = self.workspace.herdr_lifecycle_confirmation()?;
+        if !self.kill_focus.is_focused(window) {
+            window.focus(&self.kill_focus);
+        }
+        Some(self.herdr_lifecycle_overlay(&confirmation, cx))
+    }
+
     fn synchronize_render_state(&mut self, snapshot: &workspace::WorkspaceSnapshot) {
         self.observed_revision = snapshot.revision();
         if !matches!(snapshot.content(), WorkspaceContent::Terminal { .. }) {
@@ -2101,13 +2257,11 @@ impl RootView {
         }
 
         let sessions = tree_sessions(host, content, retained);
-        if host.connection() == HostConnectionState::Ready || !sessions.is_empty() {
+        let groups = session_group_visibility(host);
+        if groups.tmux {
             host_tree = host_tree.child(Self::session_tree(host_index, host, &sessions, cx));
         }
-        if host.herdr_available()
-            || !host.herdr_sessions().is_empty()
-            || host.herdr_diagnostic().is_some()
-        {
+        if groups.herdr {
             host_tree = host_tree.child(Self::herdr_tree(host_index, host, content, cx));
         }
         host_tree.into_any_element()
@@ -2397,6 +2551,7 @@ impl RootView {
         let running = session.state() == HerdrSessionState::Running;
         let selection = SessionSelection::herdr(host.id(), host.endpoint(), session.name());
         let active = active_session_selection(content).as_ref() == Some(&selection);
+        let actions = herdr_row_actions(session);
         let mut row = div()
             .id((
                 gpui::ElementId::named_usize("herdr-session-host", host_index),
@@ -2410,9 +2565,8 @@ impl RootView {
             .pl(px(14.0))
             .pr_2()
             .bg(rgb(if active { 0x18_3f_68 } else { 0x0f_1116 }))
-            .when(running, |row| {
-                row.cursor_pointer().hover(|style| style.bg(rgb(0x1c_2028)))
-            })
+            .cursor_pointer()
+            .hover(|style| style.bg(rgb(0x1c_2028)))
             .child(
                 div()
                     .w(px(18.0))
@@ -2430,19 +2584,65 @@ impl RootView {
                     .text_color(rgb(if running { 0xc4_c9_d2 } else { 0x7f_8794 }))
                     .child(session.name().to_owned()),
             )
-            .child(
-                div()
-                    .flex_none()
-                    .text_xs()
-                    .text_color(rgb(0x73_7a87))
-                    .child(if running { "running" } else { "stopped" }),
-            );
-        if running {
-            row = row.on_click(cx.listener(move |this, _, window, cx| {
-                this.select_session(&selection, window, cx);
+            .children(actions.into_iter().map(|action| {
+                Self::herdr_row_action(host_index, index, selection.clone(), action, cx)
             }));
-        }
+        row = if running {
+            row.on_click(cx.listener(move |this, _, window, cx| {
+                this.select_session(&selection, window, cx);
+            }))
+        } else {
+            row.on_click(cx.listener(move |this, _, window, cx| {
+                this.restart_herdr_session(&selection, window, cx);
+            }))
+        };
         row.into_any_element()
+    }
+
+    fn herdr_row_action(
+        host_index: usize,
+        index: usize,
+        selection: SessionSelection,
+        action: HerdrRowAction,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let (label, color) = match action {
+            HerdrRowAction::Stop => ("Stop", 0xc7_7378),
+            HerdrRowAction::Restart => ("Restart", 0x79_aee3),
+            HerdrRowAction::Delete => ("Delete", 0xc7_7378),
+        };
+        div()
+            .id((
+                gpui::ElementId::named_usize("herdr-action-host", host_index),
+                format!("{index}-{label}"),
+            ))
+            .flex_none()
+            .px_1()
+            .py_1()
+            .rounded_sm()
+            .text_xs()
+            .text_color(rgb(color))
+            .hover(|style| style.bg(rgb(0x25_2a34)))
+            .child(label)
+            .on_click(cx.listener(move |this, _, window, cx| {
+                match action {
+                    HerdrRowAction::Stop => this.request_herdr_lifecycle(
+                        &selection,
+                        workspace::HerdrLifecycleAction::Stop,
+                        cx,
+                    ),
+                    HerdrRowAction::Restart => {
+                        this.restart_herdr_session(&selection, window, cx);
+                    }
+                    HerdrRowAction::Delete => this.request_herdr_lifecycle(
+                        &selection,
+                        workspace::HerdrLifecycleAction::Delete,
+                        cx,
+                    ),
+                }
+                cx.stop_propagation();
+            }))
+            .into_any_element()
     }
 
     fn host_status_row(
@@ -2821,6 +3021,62 @@ struct HostTreeStatus {
     action: &'static str,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SessionGroupVisibility {
+    tmux: bool,
+    herdr: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HerdrRowAction {
+    Stop,
+    Restart,
+    Delete,
+}
+
+fn herdr_lifecycle_copy(
+    confirmation: &workspace::HerdrLifecycleConfirmation,
+) -> (&'static str, String, &'static str) {
+    let selection = confirmation.selection();
+    match confirmation.action() {
+        workspace::HerdrLifecycleAction::Stop => (
+            "Stop Session",
+            format!(
+                "Stop “{}” on {}?",
+                selection.session(),
+                selection.endpoint()
+            ),
+            "This terminates every process in the session while preserving its saved workspace layout.",
+        ),
+        workspace::HerdrLifecycleAction::Delete => (
+            "Delete Session",
+            format!(
+                "Delete “{}” on {}?",
+                selection.session(),
+                selection.endpoint()
+            ),
+            "This permanently removes the stopped session and its saved workspace layout.",
+        ),
+    }
+}
+
+fn herdr_row_actions(session: &workspace::HerdrSessionItem) -> Vec<HerdrRowAction> {
+    match session.state() {
+        HerdrSessionState::Running => vec![HerdrRowAction::Stop],
+        HerdrSessionState::Stopped if session.is_default() => vec![HerdrRowAction::Restart],
+        HerdrSessionState::Stopped => vec![HerdrRowAction::Restart, HerdrRowAction::Delete],
+    }
+}
+
+fn session_group_visibility(host: &HostItem) -> SessionGroupVisibility {
+    SessionGroupVisibility {
+        tmux: true,
+        herdr: host.herdr_available()
+            || !host.herdr_sessions().is_empty()
+            || host.herdr_diagnostic().is_some(),
+    }
+}
+
 fn host_tree_status(host: &HostItem) -> Option<HostTreeStatus> {
     match host.connection() {
         HostConnectionState::Connecting | HostConnectionState::Ready => None,
@@ -3069,6 +3325,7 @@ impl Render for RootView {
         let content = self.content_element(&snapshot, cx);
         let creation_overlay = self.new_session_overlay(&snapshot, window, cx);
         let kill_overlay = self.pending_session_kill_overlay(window, cx);
+        let herdr_lifecycle_overlay = self.pending_herdr_lifecycle_overlay(window, cx);
         let mut root = div()
             .flex()
             .flex_col()
@@ -3081,7 +3338,8 @@ impl Render for RootView {
             .child(self.title_bar(title, cx))
             .child(div().flex_1().min_h_0().w_full().child(content))
             .children(creation_overlay)
-            .children(kill_overlay);
+            .children(kill_overlay)
+            .children(herdr_lifecycle_overlay);
 
         if let Some(notice) = snapshot.notice() {
             root = root.child(
@@ -3714,24 +3972,26 @@ mod tests {
     use std::collections::VecDeque;
 
     use super::{
-        APP_NAVIGATION_WIDTH, APP_TITLEBAR_HEIGHT, INPUT_BUFFER_FULL_DIAGNOSTIC,
+        APP_NAVIGATION_WIDTH, APP_TITLEBAR_HEIGHT, HerdrRowAction, INPUT_BUFFER_FULL_DIAGNOSTIC,
         INPUT_BUFFERED_DIAGNOSTIC, InputRefusal, LayoutKey, NewSessionDraft, NewSessionKind,
         PendingUiInput, QueuedUiInput, TerminalKeyIdentity, TerminalKeyboard, TerminalPointer,
         TerminalResize, UI_INPUT_BYTE_CAPACITY, UI_INPUT_CAPACITY, WheelBatch,
         active_session_selection, application_navigation_width, canonical_terminal_key_with,
         clear_terminal_input_state, clears_after_input_delivery, clears_when_input_queue_is_empty,
-        coalesce_last_resize, coalesce_last_wheel, host_tree_status, input_queue_has_capacity,
-        is_toggle_sidebar_shortcut, kill_confirmation_description, kill_confirmation_title,
-        named_key, new_session_validation, normalize_cell_width, queued_input_matches_presentation,
-        retained_key_event_with, terminal_cell_at_with_offset, terminal_key_input,
-        terminal_key_input_with_canonical, terminal_line_height, terminal_wheel_steps,
-        transitioned_presentation, tree_sessions, workspace_window_title,
+        coalesce_last_resize, coalesce_last_wheel, herdr_row_actions, host_tree_status,
+        input_queue_has_capacity, is_toggle_sidebar_shortcut, kill_confirmation_description,
+        kill_confirmation_title, named_key, new_session_validation, normalize_cell_width,
+        queued_input_matches_presentation, retained_key_event_with, session_group_visibility,
+        terminal_cell_at_with_offset, terminal_key_input, terminal_key_input_with_canonical,
+        terminal_line_height, terminal_wheel_steps, transitioned_presentation, tree_sessions,
+        workspace_window_title,
     };
     use std::sync::Arc;
     use surface::{GridSize, SurfaceFrame, SurfaceStore};
     use workspace::{
-        HostConnectionState, HostItem, KeyEvent, KeyInput, Modifiers, MouseAction, MouseButton,
-        MouseInput, NamedKey, SessionItem, SessionSelection, WorkspaceContent, WorkspaceSnapshot,
+        HerdrSessionItem, HerdrSessionState, HostConnectionState, HostItem, KeyEvent, KeyInput,
+        Modifiers, MouseAction, MouseButton, MouseInput, NamedKey, SessionItem, SessionSelection,
+        WorkspaceContent, WorkspaceSnapshot,
     };
 
     #[test]
@@ -3944,6 +4204,21 @@ mod tests {
         );
 
         assert_eq!(host_tree_status(&host), None);
+        assert!(session_group_visibility(&host).tmux);
+    }
+
+    #[test]
+    fn herdr_rows_expose_state_appropriate_lifecycle_actions() {
+        let running = HerdrSessionItem::new("running", false, HerdrSessionState::Running);
+        let default = HerdrSessionItem::new("default", true, HerdrSessionState::Stopped);
+        let stopped = HerdrSessionItem::new("review", false, HerdrSessionState::Stopped);
+
+        assert_eq!(herdr_row_actions(&running), vec![HerdrRowAction::Stop]);
+        assert_eq!(herdr_row_actions(&default), vec![HerdrRowAction::Restart]);
+        assert_eq!(
+            herdr_row_actions(&stopped),
+            vec![HerdrRowAction::Restart, HerdrRowAction::Delete]
+        );
     }
 
     #[test]

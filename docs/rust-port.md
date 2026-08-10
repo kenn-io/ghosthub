@@ -252,9 +252,15 @@ different runtime instances. Opening a running row uses
 non-cloneable launch authority for `herdr --session <exact-name>` and never
 replays it after failure. Both paths launch an ordinary ConPTY client through
 direct argv after removing all inherited Herdr routing variables. Retained
-presentation switching and explicit Stop, Restart, and Delete actions remain
-later work and must reuse the shipped exact-name rules; Rust does not reinterpret
-Herdr as a tmux-compatible server or use Herdr's remote mode.
+presentation switching uses the same presentation slot as tmux. Selecting a
+stopped row restarts it through the one-shot launch path: the default session
+uses plain `herdr`, while a named session uses `herdr --session <exact-name>`.
+Stop and Delete require confirmation, then Host freshly revalidates the WSL
+runtime, executable, expected running or stopped state, session directory, and
+socket before invoking the direct lifecycle command. Stop first closes every
+matching client presentation; Delete is offered only for stopped non-default
+sessions. Rust does not reinterpret Herdr as a tmux-compatible server or use
+Herdr's remote mode.
 
 ### Terminal ownership
 
