@@ -1234,11 +1234,7 @@ impl<T> RetainedPresentations<T> {
         };
         let mut restart = self.restarting.remove(index);
         if restart.attachment.request.name == original_name {
-            restart.selection = SessionSelection::new(
-                &restart.key.host_id,
-                restart.key.endpoint.clone(),
-                &resolved_request.name,
-            );
+            restart.selection = resolved_request.selection();
             resolved_request
                 .name
                 .clone_into(&mut restart.attachment.request.name);
@@ -1480,6 +1476,7 @@ struct Inner {
     kill_generation: AtomicU64,
     herdr_lifecycle: Mutex<HerdrLifecycleState>,
     herdr_lifecycle_generation: AtomicU64,
+    session_operations: Mutex<()>,
     operation_events: Mutex<std::collections::VecDeque<WorkspaceEvent>>,
     terminal_geometry: Mutex<TerminalGeometry>,
     allow_remote_clipboard_write: bool,
@@ -1546,6 +1543,7 @@ impl Workspace {
                 kill_generation: AtomicU64::new(0),
                 herdr_lifecycle: Mutex::new(HerdrLifecycleState::default()),
                 herdr_lifecycle_generation: AtomicU64::new(0),
+                session_operations: Mutex::new(()),
                 operation_events: Mutex::new(std::collections::VecDeque::new()),
                 terminal_geometry: Mutex::new(default_terminal_geometry()),
                 allow_remote_clipboard_write: true,
@@ -1610,6 +1608,7 @@ impl Workspace {
                 kill_generation: AtomicU64::new(0),
                 herdr_lifecycle: Mutex::new(HerdrLifecycleState::default()),
                 herdr_lifecycle_generation: AtomicU64::new(0),
+                session_operations: Mutex::new(()),
                 operation_events: Mutex::new(std::collections::VecDeque::new()),
                 terminal_geometry: Mutex::new(default_terminal_geometry()),
                 allow_remote_clipboard_write,
@@ -1658,6 +1657,7 @@ impl Workspace {
                 kill_generation: AtomicU64::new(0),
                 herdr_lifecycle: Mutex::new(HerdrLifecycleState::default()),
                 herdr_lifecycle_generation: AtomicU64::new(0),
+                session_operations: Mutex::new(()),
                 operation_events: Mutex::new(std::collections::VecDeque::new()),
                 terminal_geometry: Mutex::new(default_terminal_geometry()),
                 allow_remote_clipboard_write,
@@ -3123,6 +3123,7 @@ impl Workspace {
                     &request.host_id,
                     request.endpoint.distro(),
                     &request.name,
+                    request.target.kind(),
                 );
             } else {
                 clear_pending_paste(&self.inner);
@@ -3999,6 +4000,10 @@ fn run_create(
     navigation_generation: u64,
     cancellation: &CancellationToken,
 ) {
+    let _operation = inner
+        .session_operations
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let created = create_fresh(inner, request, navigation_generation, cancellation);
     let (worker, snapshot, session, initial_geometry, term) = match created {
         Ok(created) => created,
@@ -4055,6 +4060,10 @@ fn run_herdr_create(
     navigation_generation: u64,
     cancellation: &CancellationToken,
 ) {
+    let _operation = inner
+        .session_operations
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let created = create_herdr_fresh(inner, request, navigation_generation, cancellation);
     let (worker, snapshot, session, initial_geometry) = match created {
         Ok(created) => created,
@@ -4111,6 +4120,11 @@ fn run_herdr_create(
 }
 
 fn run_herdr_lifecycle(workspace: &Workspace, pending: &PendingHerdrLifecycle) {
+    let _operation = workspace
+        .inner
+        .session_operations
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if pending.action == HerdrLifecycleAction::Stop {
         workspace.finish_herdr_presentation(&pending.endpoint, &pending.runtime, &pending.record);
     }
@@ -4521,6 +4535,18 @@ fn restore_inventory_after_creation_failure(
 }
 
 fn run_attach(inner: &Inner, request: &AttachRequest, term: AttachTerm, generation: u64) {
+    let _operation = inner
+        .session_operations
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !inner
+        .attachment
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .is_current(generation)
+    {
+        return;
+    }
     match attach_fresh(inner, request, term) {
         Ok((worker, snapshot, attached_session, initial_geometry)) => {
             let mut attachment = inner
@@ -4617,6 +4643,10 @@ fn current_inventory_session_name(inner: &Inner, key: &PresentationKey) -> Optio
 }
 
 fn run_retained_retry(inner: &Inner, retry: &RetainedRetry) {
+    let _operation = inner
+        .session_operations
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     match attach_fresh_retained(inner, retry) {
         Ok((worker, snapshot, resolved_request, initial_geometry)) => {
             let latest_geometry = *inner
@@ -4811,25 +4841,20 @@ fn merge_constructive_inventory(
             ))
         })?;
     let current_generation = inner.refresh_generation.load(Ordering::Acquire);
-    let inventory_generation = match published_generation.cmp(&current_generation) {
-        std::cmp::Ordering::Equal => current_generation,
-        std::cmp::Ordering::Less => {
-            if let Some(cancellation) = inner
-                .discovery_cancel
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take()
-            {
-                cancellation.cancel();
-            }
-            inner.refresh_generation.fetch_add(1, Ordering::AcqRel) + 1
-        }
-        std::cmp::Ordering::Greater => {
-            return Err(WorkspaceError::new(
-                "session inventory generation moved backwards during creation",
-            ));
-        }
-    };
+    if published_generation > current_generation {
+        return Err(WorkspaceError::new(
+            "session inventory generation moved backwards during publication",
+        ));
+    }
+    if let Some(cancellation) = inner
+        .discovery_cancel
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+    {
+        cancellation.cancel();
+    }
+    let inventory_generation = inner.refresh_generation.fetch_add(1, Ordering::AcqRel) + 1;
 
     let inventory_state = ready_content(&snapshot);
     set_herdr_inventory(inner, snapshot.herdr());
@@ -5455,7 +5480,13 @@ fn clear_pending_paste(inner: &Inner) {
         .take();
 }
 
-fn publish_terminfo_retry_boundary(inner: &Inner, host_id: &str, endpoint: &str, session: &str) {
+fn publish_terminfo_retry_boundary(
+    inner: &Inner,
+    host_id: &str,
+    endpoint: &str,
+    session: &str,
+    kind: SessionKind,
+) {
     clear_pending_paste(inner);
     set_inner_state(
         inner,
@@ -5463,7 +5494,7 @@ fn publish_terminfo_retry_boundary(inner: &Inner, host_id: &str, endpoint: &str,
             host_id: host_id.to_owned(),
             endpoint: endpoint.to_owned(),
             session: session.to_owned(),
-            kind: SessionKind::Tmux,
+            kind,
         },
     );
 }
@@ -5544,7 +5575,44 @@ fn default_terminal_geometry() -> TerminalGeometry {
 mod tests {
     use super::*;
     use std::collections::VecDeque;
-    use std::sync::{Barrier, atomic::AtomicUsize};
+    use std::sync::{Barrier, atomic::AtomicUsize, mpsc};
+
+    #[test]
+    fn session_operation_fence_spans_launch_until_publication() {
+        let workspace = Workspace::preview(WorkspaceSnapshot::ready(
+            Appearance::default(),
+            "Ubuntu",
+            Vec::new(),
+        ));
+        let launch = workspace
+            .inner
+            .session_operations
+            .lock()
+            .expect("launch operation");
+        let (waiting_tx, waiting_rx) = mpsc::channel();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let lifecycle_workspace = workspace.clone();
+        let lifecycle = thread::spawn(move || {
+            waiting_tx.send(()).expect("announce lifecycle wait");
+            let _lifecycle = lifecycle_workspace
+                .inner
+                .session_operations
+                .lock()
+                .expect("lifecycle operation");
+            entered_tx.send(()).expect("announce lifecycle entry");
+        });
+
+        waiting_rx.recv().expect("lifecycle reached fence");
+        assert!(
+            entered_rx.try_recv().is_err(),
+            "lifecycle mutation must wait while client publication is in flight"
+        );
+        drop(launch);
+        entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("lifecycle enters after publication");
+        lifecycle.join().expect("lifecycle thread");
+    }
 
     #[test]
     fn lifecycle_registration_waits_for_the_herdr_launch_fence() {
@@ -5743,6 +5811,29 @@ mod tests {
             endpoint: snapshot.endpoint().clone(),
             runtime: snapshot.runtime().clone(),
             target: AttachTarget::Tmux(identity),
+            name: name.to_owned(),
+            inventory_generation: 1,
+        }
+    }
+
+    #[cfg(windows)]
+    fn herdr_attach_request_fixture(snapshot: &HostSnapshot, name: &str) -> AttachRequest {
+        AttachRequest {
+            host_id: "wsl".to_owned(),
+            host: WslHost::new(
+                WslConfig::with_distro("Ubuntu").expect("valid WSL config"),
+                Arc::new(StdCommandRunner) as SharedCommandRunner,
+                WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
+                    .expect("absolute WSL path"),
+            ),
+            endpoint: snapshot.endpoint().clone(),
+            runtime: snapshot.runtime().clone(),
+            target: AttachTarget::Herdr {
+                executable: "/opt/herdr/bin/herdr".to_owned(),
+                is_default: false,
+                session_directory: "/tmp/herdr/review".to_owned(),
+                socket_path: "/tmp/herdr/review/herdr.sock".to_owned(),
+            },
             name: name.to_owned(),
             inventory_generation: 1,
         }
@@ -6205,6 +6296,36 @@ mod tests {
         assert_eq!(retained.entries[0].attachment.request.name, "renamed");
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn retained_terminfo_retry_preserves_herdr_selection_kind() {
+        let snapshot = HostSnapshot::test_fixture("Ubuntu", "boot-id", 42, Vec::new());
+        let request = herdr_attach_request_fixture(&snapshot, "original");
+        let key = request.presentation_key();
+        let mut resolved_request = request.clone();
+        resolved_request.name = "renamed".to_owned();
+        let mut retained = RetainedPresentations::new();
+        retained.restarting.push(RetainedRestart {
+            key: key.clone(),
+            selection: SessionSelection::herdr("wsl", "Ubuntu", "original"),
+            attachment: ActiveAttachment {
+                request,
+                term: AttachTerm::Xterm,
+                generation: 1,
+                fallback: None,
+            },
+            presentation_id: 7,
+        });
+
+        assert!(retained.finish_restart(&key, (), "original", &resolved_request));
+        assert_eq!(retained.entries[0].selection.kind(), SessionKind::Herdr);
+        assert_eq!(retained.entries[0].selection.session(), "renamed");
+        assert_eq!(
+            retained.entries[0].attachment.request.selection().kind(),
+            SessionKind::Herdr
+        );
+    }
+
     #[test]
     fn presentation_identity_survives_rename_but_not_a_wsl_runtime_restart() {
         let identity = session::SessionIdentity::new(100, "$1", 200);
@@ -6511,7 +6632,7 @@ mod tests {
     }
 
     #[test]
-    fn terminfo_retry_unpublishes_terminal_and_clears_pending_paste() {
+    fn terminfo_retry_unpublishes_terminal_and_preserves_session_kind() {
         let size = GridSize::new(80, 24).expect("valid grid");
         let workspace = Workspace::preview(WorkspaceSnapshot {
             revision: 1,
@@ -6537,7 +6658,13 @@ mod tests {
             ),
         });
 
-        publish_terminfo_retry_boundary(&workspace.inner, "wsl", "Ubuntu", "work");
+        publish_terminfo_retry_boundary(
+            &workspace.inner,
+            "wsl",
+            "Ubuntu",
+            "work",
+            SessionKind::Herdr,
+        );
 
         assert!(
             workspace
@@ -6549,8 +6676,11 @@ mod tests {
         );
         assert!(matches!(
             workspace.snapshot().content(),
-            WorkspaceContent::Attaching { host_id, endpoint, session, .. }
-                if host_id == "wsl" && endpoint == "Ubuntu" && session == "work"
+            WorkspaceContent::Attaching { host_id, endpoint, session, kind, .. }
+                if host_id == "wsl"
+                    && endpoint == "Ubuntu"
+                    && session == "work"
+                    && *kind == SessionKind::Herdr
         ));
         assert_eq!(next_presentation_id(&workspace.inner), 8);
     }
@@ -6817,10 +6947,10 @@ mod tests {
         let merged = merge_created_inventory(&workspace.inner, &request, created)
             .expect("merge post-create inventory");
 
-        assert_eq!(merged, refresh_generation);
+        assert!(merged > refresh_generation);
         let host = workspace.inner.host.lock().expect("host context");
         let published = host.as_ref().expect("published host");
-        assert_eq!(published.generation, refresh_generation);
+        assert_eq!(published.generation, merged);
         assert_eq!(published.value.snapshot.sessions()[0].name(), "created");
     }
 

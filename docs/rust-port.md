@@ -259,11 +259,16 @@ Stop and Delete require confirmation, then Host freshly revalidates the WSL
 runtime, executable, expected running or stopped state, session directory, and
 socket, followed by a final runtime check immediately before invoking the
 direct lifecycle command. A per-session in-flight guard disables duplicate
-actions and serializes client launch against Stop or Delete. Stop first closes
-every matching client presentation; Delete is offered only for stopped
-non-default sessions. The guard remains until fresh inventory publishes or a
-classified operation failure is reported. Rust does not reinterpret Herdr as a
-tmux-compatible server or use Herdr's remote mode.
+actions. A workspace operation fence serializes attach, retained-client retry,
+create or restart, and lifecycle mutation from fresh discovery through worker
+publication or failure, so Stop and Delete cannot be followed by an older
+launch completing. Stop first closes every matching client presentation;
+Delete is offered only for stopped non-default sessions. The guard remains
+until fresh inventory publishes or a classified operation failure is reported.
+Every constructive or lifecycle publication advances the inventory generation
+and cancels an older refresh, so an earlier full snapshot cannot overwrite the
+result. Rust does not reinterpret Herdr as a tmux-compatible server or use
+Herdr's remote mode.
 
 ### Terminal ownership
 

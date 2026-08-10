@@ -182,12 +182,15 @@ discovery. Stopped Herdr rows expose Restart, named stopped rows additionally
 expose confirmed Delete, and running rows expose confirmed Stop. Those
 destructive actions freshly revalidate the WSL runtime, executable, state, and
 configuration paths, then recheck the runtime at the mutation boundary. A
-per-session in-flight guard serializes ordinary-client launch against Stop and
-Delete, disables duplicate actions, and remains active through fresh inventory
-publication or a classified operation failure; stopping a session first closes
-its matching client presentations. Tmux continues to expose separate detach
-and confirmed Kill Session controls rather than sharing Herdr lifecycle
-semantics.
+per-session in-flight guard disables duplicate actions and remains active
+through fresh inventory publication or a classified operation failure. A
+workspace operation fence serializes complete attachment, retained-client
+retry, creation or restart, and lifecycle operations through worker and
+inventory publication. Constructive and lifecycle snapshots each advance the
+inventory generation, preventing older full snapshots from overwriting their
+result. Stopping a session first closes its matching client presentations.
+Tmux continues to expose separate detach and confirmed Kill Session controls
+rather than sharing Herdr lifecycle semantics.
 The ready host also exposes explicit bare-session creation. Rust consumes one
 non-cloneable CreateOnce as an ordinary ConPTY client running atomic
 `new-session -A`; it then captures the fresh WSL runtime and tmux live identity
