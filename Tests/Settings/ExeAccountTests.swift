@@ -74,6 +74,66 @@ struct ExeAccountTests {
         ]) == ["exe.dev"])
     }
 
+    @Test("tag filters normalize to a canonical, deduplicated list")
+    func normalizesTagFilters() {
+        #expect(ExeTagFilter.tags(in: "  dev,,prod dev  ,DEV ")
+            == ["dev", "prod"])
+        #expect(ExeTagFilter.normalized(" prod ,dev") == "prod, dev")
+        #expect(ExeTagFilter.normalized("   ").isEmpty)
+
+        let stored = ExeAccountSanitizer.storedAccounts([
+            ExeAccount(
+                configKey: "personal",
+                name: "Personal",
+                sshDestination: "exe.dev",
+                tagFilter: " dev,  prod dev "
+            ),
+        ])
+
+        #expect(stored.first?.tagFilter == "dev, prod")
+        #expect(ExeAccountSanitizer.accountsForPersistence(
+            [ExeAccount(
+                configKey: "personal",
+                name: "Personal",
+                sshDestination: "exe.dev",
+                tagFilter: "dev,,prod"
+            )],
+            previous: []
+        ).first?.tagFilter == "dev, prod")
+    }
+
+    @Test(
+        "accounts discover VMs carrying any filtered tag",
+        arguments: [
+            ("", ["prod"], true),
+            ("", [], true),
+            ("dev", ["dev"], true),
+            ("dev", ["DEV"], true),
+            ("dev, prod", ["prod", "lax"], true),
+            ("dev", ["prod"], false),
+            ("dev", [], false),
+        ]
+    )
+    func discoversTaggedVMs(
+        tagFilter: String,
+        vmTags: [String],
+        discovers: Bool
+    ) {
+        let account = ExeAccount(
+            configKey: "personal",
+            name: "Personal",
+            sshDestination: "exe.dev",
+            tagFilter: tagFilter
+        )
+
+        #expect(account.discovers(ExeVMRecord(
+            vmName: "kelp-prod",
+            sshDestination: "kelp-prod.exe.xyz",
+            status: "running",
+            tags: vmTags
+        )) == discovers)
+    }
+
     @Test("persistence reconciles invalid accounts independently")
     func reconcilesPersistenceByAccount() {
         let personal = ExeAccount(

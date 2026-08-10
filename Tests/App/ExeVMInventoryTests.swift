@@ -21,7 +21,7 @@ struct ExeVMInventoryTests {
                 """
                 local login-shell output
                 \(startMarker)
-                {"vms":[{"vm_name":"build","ssh_dest":"vm+build@exe.dev","ssh_host":"build.exe.xyz","status":"running","region":"lon","region_display":"London, UK","https_url":"https://build.exe.xyz"}]}
+                {"vms":[{"vm_name":"build","ssh_dest":"vm+build@exe.dev","ssh_host":"build.exe.xyz","status":"running","region":"lon","region_display":"London, UK","https_url":"https://build.exe.xyz","tags":["dev"]}]}
                 \(endMarker)
                 trailing output
                 """,
@@ -43,6 +43,7 @@ struct ExeVMInventoryTests {
         #expect(vm.vmName == "build")
         #expect(vm.sshDestination == "vm+build@exe.dev")
         #expect(vm.regionDisplayName == "London, UK")
+        #expect(vm.tags == ["dev"])
         #expect(vm.isRunning)
     }
 
@@ -100,7 +101,10 @@ struct ExeVMInventoryTests {
             for await statuses in store.$statuses.values {
                 if statuses["personal"] == .loaded(
                     totalVMs: 1,
-                    runningVMs: 1
+                    runningVMs: 1,
+                    identity: ExeAccountIdentity(
+                        sshDestination: "old.exe.dev"
+                    )
                 ) {
                     return
                 }
@@ -154,7 +158,10 @@ struct ExeVMInventoryTests {
             for await statuses in store.$statuses.values {
                 if statuses["personal"] == .loaded(
                     totalVMs: 1,
-                    runningVMs: 1
+                    runningVMs: 1,
+                    identity: ExeAccountIdentity(
+                        sshDestination: "old.exe.dev"
+                    )
                 ) {
                     return
                 }
@@ -204,14 +211,20 @@ struct ExeVMInventoryTests {
         #expect(store.hosts.count == 1)
         #expect(store.statuses["personal"] == .loaded(
             totalVMs: 1,
-            runningVMs: 1
+            runningVMs: 1,
+            identity: ExeAccountIdentity(
+                sshDestination: "new.exe.dev"
+            )
         ))
 
         store.invalidateRefresh(newRefreshID, currentAccounts: [])
         #expect(store.hosts.count == 1)
         #expect(store.statuses["personal"] == .loaded(
             totalVMs: 1,
-            runningVMs: 1
+            runningVMs: 1,
+            identity: ExeAccountIdentity(
+                sshDestination: "new.exe.dev"
+            )
         ))
     }
 
@@ -275,7 +288,10 @@ struct ExeVMInventoryTests {
         #expect(restored.metadata.accountName == "Personal")
         #expect(store.statuses["personal"] == .loaded(
             totalVMs: 1,
-            runningVMs: 1
+            runningVMs: 1,
+            identity: ExeAccountIdentity(
+                sshDestination: "old.exe.dev"
+            )
         ))
 
         let movedAgain = ExeAccount(
@@ -358,7 +374,10 @@ struct ExeVMInventoryTests {
             == "vm+build@exe.dev")
         #expect(store.statuses[account.configKey] == .loaded(
             totalVMs: 1,
-            runningVMs: 1
+            runningVMs: 1,
+            identity: ExeAccountIdentity(
+                sshDestination: "exe.dev"
+            )
         ))
     }
 
@@ -394,7 +413,10 @@ struct ExeVMInventoryTests {
             guard cancellations.load() == 0,
                   statuses["personal"] == .loaded(
                       totalVMs: 1,
-                      runningVMs: 1
+                      runningVMs: 1,
+                      identity: ExeAccountIdentity(
+                          sshDestination: "personal.exe.dev"
+                      )
                   ),
                   let refreshID
             else { return }
@@ -438,7 +460,10 @@ struct ExeVMInventoryTests {
             )
             #expect(store.statuses["personal"] == .loaded(
                 totalVMs: 1,
-                runningVMs: 1
+                runningVMs: 1,
+                identity: ExeAccountIdentity(
+                    sshDestination: "personal.exe.dev"
+                )
             ))
             #expect(store.statuses["work"] == nil)
         }
@@ -570,11 +595,17 @@ struct ExeVMInventoryTests {
         #expect(store.hosts.count == 2)
         #expect(store.statuses["personal"] == .loaded(
             totalVMs: 1,
-            runningVMs: 1
+            runningVMs: 1,
+            identity: ExeAccountIdentity(
+                sshDestination: "personal.exe.dev"
+            )
         ))
         #expect(store.statuses["work"] == .loaded(
             totalVMs: 1,
-            runningVMs: 1
+            runningVMs: 1,
+            identity: ExeAccountIdentity(
+                sshDestination: "work.exe.dev"
+            )
         ))
 
         store.invalidateRefresh(
@@ -608,7 +639,10 @@ struct ExeVMInventoryTests {
         #expect(store.hosts.count == 2)
         #expect(store.statuses["personal"] == .loaded(
             totalVMs: 1,
-            runningVMs: 1
+            runningVMs: 1,
+            identity: ExeAccountIdentity(
+                sshDestination: "personal.exe.dev"
+            )
         ))
 
         store.invalidateRefresh(
@@ -625,7 +659,10 @@ struct ExeVMInventoryTests {
         #expect(store.hosts.count == 2)
         #expect(store.statuses["personal"] == .loaded(
             totalVMs: 1,
-            runningVMs: 1
+            runningVMs: 1,
+            identity: ExeAccountIdentity(
+                sshDestination: "personal.exe.dev"
+            )
         ))
 
         store.invalidateRefresh(
@@ -643,7 +680,10 @@ struct ExeVMInventoryTests {
         #expect(store.hosts.count == 2)
         #expect(store.statuses["work"] == .loaded(
             totalVMs: 1,
-            runningVMs: 1
+            runningVMs: 1,
+            identity: ExeAccountIdentity(
+                sshDestination: "work.exe.dev"
+            )
         ))
 
         store.invalidateRefresh(
@@ -660,7 +700,10 @@ struct ExeVMInventoryTests {
         #expect(store.hosts.count == 2)
         #expect(store.statuses["work"] == .loaded(
             totalVMs: 1,
-            runningVMs: 1
+            runningVMs: 1,
+            identity: ExeAccountIdentity(
+                sshDestination: "work.exe.dev"
+            )
         ))
 
         store.invalidateRefresh(refreshID, currentAccounts: [])
@@ -743,11 +786,169 @@ struct ExeVMInventoryTests {
         })?.metadata.accountName == "Work")
         #expect(store.statuses["personal"] == .loaded(
             totalVMs: 1,
-            runningVMs: 1
+            runningVMs: 1,
+            identity: ExeAccountIdentity(
+                sshDestination: "personal.exe.dev"
+            )
         ))
         #expect(store.statuses["work"] == .loaded(
             totalVMs: 1,
-            runningVMs: 1
+            runningVMs: 1,
+            identity: ExeAccountIdentity(
+                sshDestination: "work.exe.dev"
+            )
         ))
+    }
+
+    @MainActor
+    @Test("tag filters scope discovered VMs and reported counts")
+    func tagFilterScopesDiscoveredVMs() {
+        let store = ExeVMInventoryStore(client: ExeVMClient { _, _, _ in
+            (255, "", "Unexpected query")
+        })
+        let account = ExeAccount(
+            configKey: "personal",
+            name: "Personal",
+            sshDestination: "exe.dev",
+            tagFilter: "Dev"
+        )
+
+        store.refresh(
+            accounts: [account],
+            persistedAccounts: [account],
+            prefetchedVMs: [account.configKey: [
+                ExeVMRecord(
+                    vmName: "kelp-dev",
+                    sshDestination: "kelp-dev.exe.xyz",
+                    status: "running",
+                    tags: ["dev"]
+                ),
+                ExeVMRecord(
+                    vmName: "kelp-dev-stopped",
+                    sshDestination: "kelp-dev-stopped.exe.xyz",
+                    status: "stopped",
+                    tags: ["dev"]
+                ),
+                ExeVMRecord(
+                    vmName: "kelp-prod",
+                    sshDestination: "kelp-prod.exe.xyz",
+                    status: "running",
+                    tags: ["prod"]
+                ),
+                ExeVMRecord(
+                    vmName: "scratchme",
+                    sshDestination: "scratchme.exe.xyz",
+                    status: "running"
+                ),
+            ]]
+        )
+
+        #expect(store.hosts.map(\.sshHost.name) == ["kelp-dev"])
+        #expect(store.statuses["personal"] == .loaded(
+            totalVMs: 2,
+            runningVMs: 1,
+            identity: ExeAccountIdentity(
+                sshDestination: "exe.dev", tagFilter: "Dev"
+            )
+        ))
+    }
+
+    @MainActor
+    @Test("reordering tags keeps cached hosts and the discovered filter")
+    func reorderingTagsKeepsCachedHosts() {
+        let store = ExeVMInventoryStore(client: ExeVMClient { _, _, _ in
+            (255, "", "Unexpected query")
+        })
+        let account = ExeAccount(
+            configKey: "personal",
+            name: "Personal",
+            sshDestination: "exe.dev",
+            tagFilter: "dev, prod"
+        )
+        let reordered = ExeAccount(
+            configKey: "personal",
+            name: "Personal",
+            sshDestination: "exe.dev",
+            tagFilter: "PROD,dev"
+        )
+        store.refresh(
+            accounts: [account],
+            persistedAccounts: [account],
+            prefetchedVMs: [account.configKey: [ExeVMRecord(
+                vmName: "kelp-dev",
+                sshDestination: "kelp-dev.exe.xyz",
+                status: "running",
+                tags: ["dev"]
+            )]]
+        )
+        let refreshID = store.refresh(
+            accounts: [reordered],
+            persistedAccounts: [account]
+        )
+        store.invalidateRefresh(refreshID, currentAccounts: [reordered])
+
+        // Cache survives: an equivalent filter is not a new identity. The
+        // status is left alone here because that second refresh is in flight.
+        #expect(store.hosts.map(\.sshHost.name) == ["kelp-dev"])
+        store.cancelRefresh(refreshID, retaining: [reordered])
+        #expect(store.hosts.map(\.sshHost.name) == ["kelp-dev"])
+    }
+
+    @MainActor
+    @Test("changing only the tag filter invalidates cached hosts")
+    func changingTagFilterInvalidatesCachedHosts() async {
+        let client = ExeVMClient { _, startMarker, endMarker in
+            (
+                0,
+                """
+                \(startMarker)
+                {"vms":[{"vm_name":"kelp-dev","ssh_dest":"kelp-dev.exe.xyz","status":"running","tags":["dev"]},{"vm_name":"kelp-prod","ssh_dest":"kelp-prod.exe.xyz","status":"running","tags":["prod"]}]}
+                \(endMarker)
+                """,
+                ""
+            )
+        }
+        let store = ExeVMInventoryStore(client: client)
+        let devAccount = ExeAccount(
+            configKey: "personal",
+            name: "Personal",
+            sshDestination: "exe.dev",
+            tagFilter: "dev"
+        )
+        let prodAccount = ExeAccount(
+            configKey: "personal",
+            name: "Personal",
+            sshDestination: "exe.dev",
+            tagFilter: "prod"
+        )
+        var loaded = Task { @MainActor in
+            for await hosts in store.$hosts.values
+                where hosts.first?.sshHost.name == "kelp-dev" {
+                return
+            }
+        }
+        store.refresh(accounts: [devAccount])
+        await loaded.value
+
+        loaded = Task { @MainActor in
+            for await hosts in store.$hosts.values
+                where hosts.first?.sshHost.name == "kelp-prod" {
+                return
+            }
+        }
+        let prodRefreshID = store.refresh(
+            accounts: [prodAccount],
+            persistedAccounts: [devAccount]
+        )
+        await loaded.value
+
+        store.invalidateRefresh(
+            prodRefreshID,
+            currentAccounts: [devAccount]
+        )
+        #expect(store.hosts.map(\.sshHost.name) == ["kelp-dev"])
+
+        store.cancelRefresh(prodRefreshID, retaining: [devAccount])
+        #expect(store.hosts.map(\.sshHost.name) == ["kelp-dev"])
     }
 }

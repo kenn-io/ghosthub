@@ -320,7 +320,10 @@ An enabled exe.dev account is a host-inventory provider, not a terminal
 backend. Ghosthub invokes the account's configured OpenSSH destination with
 `ls --json`, then treats each running VM as an ordinary Linux SSH host using
 the response's exact `ssh_dest`; it never synthesizes a VM hostname or SSH
-username. Enabled accounts must use unique OpenSSH destinations; multiple
+username. An account may carry a tag filter, in which case only VMs whose
+`tags` include at least one filtered tag are discovered at all; the filter is
+part of the account's discovery identity, so changing it invalidates that
+account's cached VM list exactly as changing its destination does. Enabled accounts must use unique OpenSSH destinations; multiple
 accounts therefore use distinct Host aliases. The account display name is
 provider presentation metadata and never contributes to stable host identity.
 The dynamic VM list is not copied into manual host settings. A

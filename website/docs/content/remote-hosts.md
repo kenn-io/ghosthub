@@ -43,12 +43,18 @@ manually. Create and manage VMs through [exe.dev](https://exe.dev/docs), then:
 
 1. Open **Settings → Integrations**.
 2. Add an exe.dev account. The default SSH destination is `exe.dev`.
-3. Select **Connect and Discover VMs** and complete any OpenSSH trust or
+3. Optionally enter **Tags** to narrow discovery, such as `dev` or `dev, prod`.
+4. Select **Connect and Discover VMs** and complete any OpenSSH trust or
    authentication prompt.
 
 Running VMs appear with the rest of the host fleet. Ghosthub uses each VM's
 exe.dev-provided SSH destination for ordinary tmux, optional Herdr, and optional
 kwt discovery.
+
+Leaving **Tags** empty discovers every VM on the account. With tags entered,
+Ghosthub discovers only VMs carrying at least one of them, and the account's
+status line reports the counts it was scoped to. Tags are matched without
+regard to case, and are managed in exe.dev.
 
 ![Ghosthub Integrations settings showing a connected exe.dev account and discovered VM status](assets/guide-exe-dev.png)
 

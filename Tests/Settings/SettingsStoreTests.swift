@@ -205,6 +205,32 @@ final class SettingsStoreTests {
     }
 
     @Test
+    func exeAccountsStoredBeforeTagFiltersStillLoad() {
+        let legacy = Data("""
+        [{"configKey":"personal","name":"Personal","sshDestination":"exe.dev","isEnabled":true}]
+        """.utf8)
+        defaults.set(legacy, forKey: "ghosthub.settings.hosts.exeAccounts")
+
+        #expect(makeSUT().exeAccounts == [ExeAccount(
+            configKey: "personal",
+            name: "Personal",
+            sshDestination: "exe.dev"
+        )])
+    }
+
+    @Test
+    func exeAccountTagFiltersSurviveAReload() {
+        makeSUT().setExeAccounts([ExeAccount(
+            configKey: "personal",
+            name: "Personal",
+            sshDestination: "exe.dev",
+            tagFilter: "dev, prod"
+        )])
+
+        #expect(makeSUT().exeAccounts.first?.tagFilter == "dev, prod")
+    }
+
+    @Test
     func testLoadingHiddenTmuxSessionPatternsFromAppConfig() throws {
         try writeAppConfig(toml: """
         [tmux]

@@ -163,17 +163,17 @@ struct ExeConfiguredHost: Equatable, Sendable {
 }
 
 private struct ExeAccountHostCache {
-    var sshDestination: String
+    var identity: ExeAccountIdentity
     var hosts: [ExeConfiguredHost]
 }
 
 private struct ExeVMInventoryRefreshState {
     var id: UUID
-    var accountDestinations: [String: String]
+    var accountIdentities: [String: ExeAccountIdentity]
     var accountNames: [String: String]
-    var persistedAccountDestinations: [String: String]
+    var persistedAccountIdentities: [String: ExeAccountIdentity]
     var persistedAccountNames: [String: String]
-    var visibleAccountDestinations: [String: String]
+    var visibleAccountIdentities: [String: ExeAccountIdentity]
     var visibleAccountNames: [String: String]
     var previousHostsByAccount: [String: ExeAccountHostCache]
     var previousStatuses: [String: ExeAccountStatus]
@@ -225,13 +225,13 @@ final class ExeVMInventoryStore: ObservableObject {
     ) -> UUID {
         let enabled = ExeAccountSanitizer.discoverableAccounts(accounts)
             .filter(\.isEnabled)
-        var enabledDestinations: [String: String] = [:]
+        var enabledIdentities: [String: ExeAccountIdentity] = [:]
         var enabledNames: [String: String] = [:]
         for account in enabled {
-            enabledDestinations[account.configKey] = account.sshDestination
+            enabledIdentities[account.configKey] = ExeAccountIdentity(account)
             enabledNames[account.configKey] = account.name
         }
-        let persistedDestinations = Self.enabledDestinations(
+        let persistedIdentities = Self.enabledIdentities(
             in: ExeAccountSanitizer.discoverableAccounts(persistedAccounts)
         )
         let persistedNames = Self.enabledAccountNames(
@@ -251,8 +251,8 @@ final class ExeVMInventoryStore: ObservableObject {
         let previousStatuses = statusesByAccount
         let refreshID = UUID()
         hostsByAccount = hostsByAccount.filter {
-            enabledDestinations[$0.key] == $0.value.sshDestination
-                || persistedDestinations[$0.key] == $0.value.sshDestination
+            enabledIdentities[$0.key] == $0.value.identity
+                || persistedIdentities[$0.key] == $0.value.identity
         }
         for (configKey, name) in enabledNames {
             guard var cache = hostsByAccount[configKey] else { continue }
@@ -261,26 +261,26 @@ final class ExeVMInventoryStore: ObservableObject {
             }
             hostsByAccount[configKey] = cache
         }
-        let retainedKeys = Set(enabledDestinations.keys)
-            .union(persistedDestinations.keys)
+        let retainedKeys = Set(enabledIdentities.keys)
+            .union(persistedIdentities.keys)
         statusesByAccount = statusesByAccount.filter { configKey, _ in
             retainedKeys.contains(configKey)
         }
-        var visibleDestinations = persistedDestinations
+        var visibleIdentities = persistedIdentities
         var visibleNames = persistedNames
-        for (configKey, destination) in enabledDestinations {
-            visibleDestinations[configKey] = destination
+        for (configKey, identity) in enabledIdentities {
+            visibleIdentities[configKey] = identity
         }
         for (configKey, name) in enabledNames {
             visibleNames[configKey] = name
         }
         refreshState = ExeVMInventoryRefreshState(
             id: refreshID,
-            accountDestinations: enabledDestinations,
+            accountIdentities: enabledIdentities,
             accountNames: enabledNames,
-            persistedAccountDestinations: persistedDestinations,
+            persistedAccountIdentities: persistedIdentities,
             persistedAccountNames: persistedNames,
-            visibleAccountDestinations: visibleDestinations,
+            visibleAccountIdentities: visibleIdentities,
             visibleAccountNames: visibleNames,
             previousHostsByAccount: previousHostsByAccount,
             previousStatuses: previousStatuses
@@ -333,8 +333,8 @@ final class ExeVMInventoryStore: ObservableObject {
                           self.refreshState?.id == refreshID
                     else { return }
                     guard let state = self.refreshState,
-                          state.accountDestinations[account.configKey]
-                          == account.sshDestination
+                          state.accountIdentities[account.configKey]
+                          == ExeAccountIdentity(account)
                     else { continue }
                     let accountName = state.accountNames[account.configKey]
                         ?? account.name
@@ -392,50 +392,51 @@ final class ExeVMInventoryStore: ObservableObject {
         guard let state = refreshState,
               state.id == refreshID
         else { return }
-        let previousAccounts = state.accountDestinations.map {
+        let previousAccounts = state.accountIdentities.map { configKey, identity in
             ExeAccount(
-                configKey: $0.key,
-                name: state.accountNames[$0.key] ?? $0.key,
-                sshDestination: $0.value
+                configKey: configKey,
+                name: state.accountNames[configKey] ?? configKey,
+                sshDestination: identity.sshDestination,
+                tagFilter: identity.tagFilter
             )
         }
         let resolvedAccounts = ExeAccountSanitizer.accountsForPersistence(
             currentAccounts,
             previous: previousAccounts
         )
-        let currentDestinations = Self.enabledDestinations(
+        let currentIdentities = Self.enabledIdentities(
             in: resolvedAccounts
         )
-        let retainedDestinations = state.accountDestinations.filter {
-            currentDestinations[$0.key] == $0.value
+        let retainedIdentities = state.accountIdentities.filter {
+            currentIdentities[$0.key] == $0.value
         }
         var retainedNames = state.accountNames.filter {
-            retainedDestinations[$0.key] != nil
+            retainedIdentities[$0.key] != nil
         }
         for (configKey, name) in Self.enabledAccountNames(
             in: resolvedAccounts
-        ) where retainedDestinations[configKey] != nil {
+        ) where retainedIdentities[configKey] != nil {
             retainedNames[configKey] = name
         }
-        var visibleDestinations = state.persistedAccountDestinations
-        for (configKey, destination) in retainedDestinations {
-            visibleDestinations[configKey] = destination
+        var visibleIdentities = state.persistedAccountIdentities
+        for (configKey, identity) in retainedIdentities {
+            visibleIdentities[configKey] = identity
         }
         var visibleNames = state.persistedAccountNames.filter {
-            visibleDestinations[$0.key] != nil
+            visibleIdentities[$0.key] != nil
         }
         for (configKey, name) in retainedNames {
             visibleNames[configKey] = name
         }
-        refreshState?.visibleAccountDestinations = visibleDestinations
+        refreshState?.visibleAccountIdentities = visibleIdentities
         refreshState?.visibleAccountNames = visibleNames
         publishInventory()
     }
 
-    private static func enabledDestinations(
+    private static func enabledIdentities(
         in accounts: [ExeAccount]
-    ) -> [String: String] {
-        var destinations: [String: String] = [:]
+    ) -> [String: ExeAccountIdentity] {
+        var identities: [String: ExeAccountIdentity] = [:]
         for account in accounts where account.isEnabled {
             let configKey = account.configKey.trimmingCharacters(
                 in: .whitespacesAndNewlines
@@ -445,11 +446,14 @@ final class ExeVMInventoryStore: ObservableObject {
             )
             guard !configKey.isEmpty,
                   !destination.isEmpty,
-                  destinations[configKey] == nil
+                  identities[configKey] == nil
             else { continue }
-            destinations[configKey] = destination
+            identities[configKey] = ExeAccountIdentity(
+                sshDestination: destination,
+                tagFilter: account.tagFilter
+            )
         }
-        return destinations
+        return identities
     }
 
     private static func enabledAccountNames(
@@ -484,16 +488,16 @@ final class ExeVMInventoryStore: ObservableObject {
 
         for account in retainedAccounts {
             let configKey = account.configKey
-            let destination = account.sshDestination
-            let currentMatches = state.accountDestinations[configKey]
-                == destination
+            let identity = ExeAccountIdentity(account)
+            let currentMatches = state.accountIdentities[configKey]
+                == identity
             let cache: ExeAccountHostCache? = if currentMatches,
                                                  let current = hostsByAccount[configKey],
-                                                 current.sshDestination == destination {
+                                                 current.identity == identity {
                 current
             } else if let previous = state
                 .previousHostsByAccount[configKey],
-                previous.sshDestination == destination {
+                previous.identity == identity {
                 previous
             } else {
                 nil
@@ -526,17 +530,17 @@ final class ExeVMInventoryStore: ObservableObject {
         repeat {
             needsInventoryPublish = false
             if let state = refreshState {
-                hosts = state.visibleAccountDestinations.keys.sorted().flatMap {
+                hosts = state.visibleAccountIdentities.keys.sorted().flatMap {
                     configKey -> [ExeConfiguredHost] in
-                    guard let destination = state
-                        .visibleAccountDestinations[configKey]
+                    guard let identity = state
+                        .visibleAccountIdentities[configKey]
                     else { return [] }
                     let cache: ExeAccountHostCache? = if hostsByAccount[
                         configKey
-                    ]?.sshDestination == destination {
+                    ]?.identity == identity {
                         hostsByAccount[configKey]
                     } else if state.previousHostsByAccount[configKey]?
-                        .sshDestination == destination {
+                        .identity == identity {
                         state.previousHostsByAccount[configKey]
                     } else {
                         nil
@@ -550,9 +554,9 @@ final class ExeVMInventoryStore: ObservableObject {
                     return visibleHosts
                 }
                 var visibleStatuses: [String: ExeAccountStatus] = [:]
-                for (configKey, destination) in state
-                    .visibleAccountDestinations {
-                    if state.accountDestinations[configKey] == destination,
+                for (configKey, identity) in state
+                    .visibleAccountIdentities {
+                    if state.accountIdentities[configKey] == identity,
                        let status = statusesByAccount[configKey] {
                         visibleStatuses[configKey] = status
                     } else if let status = state.previousStatuses[configKey] {
@@ -575,9 +579,10 @@ final class ExeVMInventoryStore: ObservableObject {
         for account: ExeAccount,
         accountName: String
     ) {
-        let running = vms.filter(\.isRunning)
+        let matching = vms.filter(account.discovers)
+        let running = matching.filter(\.isRunning)
         hostsByAccount[account.configKey] = ExeAccountHostCache(
-            sshDestination: account.sshDestination,
+            identity: ExeAccountIdentity(account),
             hosts: running.map {
                 Self.configuredHost(
                     $0,
@@ -587,8 +592,9 @@ final class ExeVMInventoryStore: ObservableObject {
             }
         )
         statusesByAccount[account.configKey] = .loaded(
-            totalVMs: vms.count,
-            runningVMs: running.count
+            totalVMs: matching.count,
+            runningVMs: running.count,
+            identity: ExeAccountIdentity(account)
         )
     }
 

@@ -5,6 +5,11 @@ test, and documentation-only changes are omitted.
 
 ## [Unreleased]
 
+### Added
+
+- exe.dev accounts can limit discovery to VMs carrying specific exe.dev tags,
+  so a fleet of dozens of VMs shows only the ones you work in.
+
 ## [0.7.0] - 2026-08-09
 
 ### Added
