@@ -23,11 +23,7 @@ public struct ShortcutPreferences: Equatable, Sendable {
         [ApplicationShortcutAction: ApplicationShortcutOverride]
     public var resolved: ResolvedApplicationShortcuts
 
-    public init(
-        overrides: [
-            ApplicationShortcutAction: ApplicationShortcutOverride,
-        ]
-    ) throws {
+    public init(overrides: [ApplicationShortcutAction: ApplicationShortcutOverride]) throws {
         self.overrides = overrides
         resolved = try ApplicationShortcutCatalog.resolve(
             overrides: overrides
