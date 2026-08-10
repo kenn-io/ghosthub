@@ -248,7 +248,9 @@ public struct SettingsView: View {
             content.toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") {
-                        if persist().didPersistTmuxSessionPatterns {
+                        let result = persist()
+                        if result.didPersistTmuxSessionPatterns,
+                           result.didPersistShortcuts {
                             dismiss()
                         }
                     }

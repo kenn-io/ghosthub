@@ -1,19 +1,23 @@
 import Foundation
+import GhosthubTerminalSupport
 import GhosthubWorkspace
 
 public struct SettingsPersistResult: Equatable, Sendable {
     public var shouldRefreshHosts: Bool
     public var shouldReloadTerminalConfig: Bool
     public var didPersistTmuxSessionPatterns: Bool
+    public var didPersistShortcuts: Bool
 
     public init(
         shouldRefreshHosts: Bool,
         shouldReloadTerminalConfig: Bool,
-        didPersistTmuxSessionPatterns: Bool
+        didPersistTmuxSessionPatterns: Bool,
+        didPersistShortcuts: Bool
     ) {
         self.shouldRefreshHosts = shouldRefreshHosts
         self.shouldReloadTerminalConfig = shouldReloadTerminalConfig
         self.didPersistTmuxSessionPatterns = didPersistTmuxSessionPatterns
+        self.didPersistShortcuts = didPersistShortcuts
     }
 }
 
@@ -38,6 +42,8 @@ public struct SettingsViewDraft: Equatable {
     public var sshHosts: [SSHHostDraft]
     public var selectedSSHHostDraftID: UUID?
     public var exeAccounts: [ExeAccount]
+    public var shortcutOverrides:
+        [ApplicationShortcutAction: ApplicationShortcutOverride]
 
     @MainActor
     public init(store: SettingsStore) {
@@ -73,6 +79,7 @@ public struct SettingsViewDraft: Equatable {
         self.sshHosts = sshHosts
         selectedSSHHostDraftID = sshHosts.first?.id
         exeAccounts = store.exeAccounts
+        shortcutOverrides = store.shortcutPreferences.overrides
     }
 
     @MainActor
@@ -100,6 +107,9 @@ public struct SettingsViewDraft: Equatable {
             )
         let shouldRefreshHosts = hosts != store.sshHosts
             || exeAccountsToPersist != store.exeAccounts
+        let didPersistShortcuts = store.setShortcutOverrides(
+            shortcutOverrides
+        )
 
         store.selectedDomain = selectedDomain
         store.setInterfaceAppearance(interfaceAppearance)
@@ -133,7 +143,8 @@ public struct SettingsViewDraft: Equatable {
         return SettingsPersistResult(
             shouldRefreshHosts: shouldRefreshHosts,
             shouldReloadTerminalConfig: shouldReloadTerminalConfig,
-            didPersistTmuxSessionPatterns: didPersistTmuxSessionPatterns
+            didPersistTmuxSessionPatterns: didPersistTmuxSessionPatterns,
+            didPersistShortcuts: didPersistShortcuts
         )
     }
 

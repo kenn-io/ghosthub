@@ -356,6 +356,15 @@ public enum ApplicationShortcutResolutionError:
             "\(action.definition.title) must include Command, Control, or Option."
         }
     }
+
+    public var affectedAction: ApplicationShortcutAction {
+        switch self {
+        case let .reserved(action, _, _),
+             let .duplicate(action, _, _),
+             let .unsafe(action, _):
+            action
+        }
+    }
 }
 
 public struct FixedApplicationShortcut: Equatable, Sendable {
