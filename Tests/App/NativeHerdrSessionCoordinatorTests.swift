@@ -325,7 +325,8 @@ struct NativeHerdrSessionCoordinatorTests {
         _ = coordinator.surface(handle: retried)
 
         #expect(resolutionCount.withLock { $0 } == 2)
-        #expect((store.requestedConfigurations.last?.command ?? "").contains(
+        let retryCommand = store.requestedConfigurations.last?.command ?? ""
+        #expect(retryCommand.contains(
             "/new/bin/herdr"
         ))
     }
@@ -367,7 +368,8 @@ struct NativeHerdrSessionCoordinatorTests {
         _ = coordinator.surface(handle: retry)
 
         #expect(resolutionCount.withLock { $0 } == 2)
-        #expect((store.requestedConfigurations.last?.command ?? "").contains(
+        let retryCommand = store.requestedConfigurations.last?.command ?? ""
+        #expect(retryCommand.contains(
             "/new/bin/herdr"
         ))
     }

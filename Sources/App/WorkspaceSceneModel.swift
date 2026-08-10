@@ -3021,6 +3021,23 @@ final class WorkspaceSceneModel: ObservableObject {
         attemptPendingRestoration()
     }
 
+    private func applyRuntimeInventoryOverlayIfNeeded() {
+        let overlaid = HostInventoryOverlay.applyRuntimeSessions(
+            tmuxSessionsByHost: tmuxSessionsByHost,
+            herdrSessionsByHost: herdrSessionsByHost,
+            herdrAvailabilityByHost: herdrAvailabilityByHost,
+            tmuxReachabilityByHost: tmuxReachabilityByHost,
+            tmuxLastSeenByHost: tmuxLastSeenByHost,
+            to: snapshot
+        )
+        if overlaid != snapshot {
+            isApplyingInventoryOverlay = true
+            snapshot = overlaid
+            isApplyingInventoryOverlay = false
+        }
+        attemptPendingRestoration()
+    }
+
     private func scheduleKwtInventory() {
         guard kwtInventoryEnabled,
               !ownsWorktreeMutation else { return }
@@ -3062,6 +3079,8 @@ final class WorkspaceSceneModel: ObservableObject {
         let kwtInventoryLoader = kwtInventoryLoader
         let kwtRemoteProvisioner = kwtRemoteProvisioner
         kwtInventoryTask = Task { [weak self] in
+            var receivedResult = false
+            var authoritativeHostIDs: [UUID] = []
             await withTaskGroup(
                 of: (UUID, Result<KwtHostInventory, Error>).self
             ) { group in
@@ -3099,8 +3118,10 @@ final class WorkspaceSceneModel: ObservableObject {
                         self.applyAuthoritativeKwtInventory(
                             inventory,
                             hostID: hostID,
-                            excludingWorktrees: tombstones
+                            excludingWorktrees: tombstones,
+                            publish: false
                         )
+                        authoritativeHostIDs.append(hostID)
                     case let .failure(error):
                         if error is KwtRemoteInstallError {
                             // Provisioning failures disable worktree actions
@@ -3126,14 +3147,19 @@ final class WorkspaceSceneModel: ObservableObject {
                                 error.localizedDescription
                         }
                     }
-                    if case .failure = result {
-                        self.applyInventoryOverlayIfNeeded()
-                        self.updateWorkspaceInventoryState()
-                    }
+                    receivedResult = true
                 }
             }
             guard let self, !Task.isCancelled,
                   generation == kwtInventoryGeneration else { return }
+            if receivedResult {
+                applyInventoryOverlayIfNeeded()
+                for hostID in authoritativeHostIDs {
+                    reconcileRetainedTmuxPresentations(
+                        afterAuthoritativeInventoryFor: hostID
+                    )
+                }
+            }
             isKwtInventoryLoading = false
             inventoryRefreshProgress.kwtCompleted = true
             updateWorkspaceInventoryState()
@@ -3617,7 +3643,8 @@ final class WorkspaceSceneModel: ObservableObject {
     private func applyAuthoritativeKwtInventory(
         _ inventory: KwtHostInventory,
         hostID: UUID,
-        excludingWorktrees: [String: Set<KwtWorktreeIdentity>] = [:]
+        excludingWorktrees: [String: Set<KwtWorktreeIdentity>] = [:],
+        publish: Bool = true
     ) {
         let previous = kwtInventoriesByHost[hostID]
         kwtInventoriesByHost[hostID] =
@@ -3627,11 +3654,13 @@ final class WorkspaceSceneModel: ObservableObject {
             )
         kwtAvailabilityByHost[hostID] = true
         kwtInventoryFailuresByHost.removeValue(forKey: hostID)
-        applyInventoryOverlayIfNeeded()
-        reconcileRetainedTmuxPresentations(
-            afterAuthoritativeInventoryFor: hostID
-        )
-        updateWorkspaceInventoryState()
+        if publish {
+            applyInventoryOverlayIfNeeded()
+            reconcileRetainedTmuxPresentations(
+                afterAuthoritativeInventoryFor: hostID
+            )
+            updateWorkspaceInventoryState()
+        }
     }
 
     private func isRemoteKwtUnavailable(
@@ -3698,6 +3727,7 @@ final class WorkspaceSceneModel: ObservableObject {
         updateWorkspaceInventoryState()
         let broker = tmuxSessionProbeBroker
         tmuxDiscoveryTask = Task { [weak self] in
+            var receivedResult = false
             await withTaskGroup(
                 of: (UUID, Result<[DiscoveredTmuxSession], TmuxBinaryError>).self
             ) { group in
@@ -3712,11 +3742,20 @@ final class WorkspaceSceneModel: ObservableObject {
                         group.cancelAll()
                         return
                     }
-                    self.applyTmuxDiscoveryResult(result, hostID: hostID)
+                    self.applyTmuxDiscoveryResult(
+                        result,
+                        hostID: hostID,
+                        publish: false
+                    )
+                    receivedResult = true
                 }
             }
             guard let self, !Task.isCancelled,
                   generation == tmuxDiscoveryGeneration else { return }
+            if receivedResult {
+                applyRuntimeInventoryOverlayIfNeeded()
+                applyDeferredTmuxPresentationsIfReady()
+            }
             isTmuxDiscoveryLoading = false
             inventoryRefreshProgress.tmuxCompleted = true
             updateWorkspaceInventoryState()
@@ -3760,6 +3799,7 @@ final class WorkspaceSceneModel: ObservableObject {
         let lifecycleCoordinator = herdrLifecycleCoordinator
         herdrDiscoveryTask = Task { [weak self] in
             var needsFreshDiscovery = false
+            var receivedResult = false
             await withTaskGroup(
                 of: (UUID, HerdrDiscoveryResult).self
             ) { group in
@@ -3792,11 +3832,19 @@ final class WorkspaceSceneModel: ObservableObject {
                         self.herdrFreshHostIDs.remove(hostID)
                         continue
                     }
-                    self.applyHerdrDiscoveryResult(result, hostID: hostID)
+                    self.applyHerdrDiscoveryResult(
+                        result,
+                        hostID: hostID,
+                        publish: false
+                    )
+                    receivedResult = true
                 }
             }
             guard let self, !Task.isCancelled, !isShutDown,
                   generation == herdrDiscoveryGeneration else { return }
+            if receivedResult {
+                applyRuntimeInventoryOverlayIfNeeded()
+            }
             isHerdrDiscoveryLoading = false
             inventoryRefreshProgress.herdrCompleted = true
             updateWorkspaceInventoryState()
@@ -3811,7 +3859,8 @@ final class WorkspaceSceneModel: ObservableObject {
 
     private func applyHerdrDiscoveryResult(
         _ result: HerdrDiscoveryResult,
-        hostID: UUID
+        hostID: UUID,
+        publish: Bool = true
     ) {
         herdrFreshHostIDs.insert(hostID)
         switch result {
@@ -3830,8 +3879,10 @@ final class WorkspaceSceneModel: ObservableObject {
             herdrDiscoveryFailuresByHost[hostID] =
                 "\(hostName): \(error.localizedDescription)"
         }
-        applyInventoryOverlayIfNeeded()
-        updateWorkspaceInventoryState()
+        if publish {
+            applyRuntimeInventoryOverlayIfNeeded()
+            updateWorkspaceInventoryState()
+        }
     }
 
     private static func supportsHerdr(_ host: CommandHost) -> Bool {
@@ -3845,7 +3896,8 @@ final class WorkspaceSceneModel: ObservableObject {
 
     private func applyTmuxDiscoveryResult(
         _ result: Result<[DiscoveredTmuxSession], TmuxBinaryError>,
-        hostID: UUID
+        hostID: UUID,
+        publish: Bool = true
     ) {
         guard case let .success(discovered) = result else {
             if case let .failure(error) = result {
@@ -3856,8 +3908,10 @@ final class WorkspaceSceneModel: ObservableObject {
                 tmuxDiscoveryFailuresByHost[hostID] =
                     "\(hostName): \(error.localizedDescription)"
             }
-            applyInventoryOverlayIfNeeded()
-            updateWorkspaceInventoryState()
+            if publish {
+                applyRuntimeInventoryOverlayIfNeeded()
+                updateWorkspaceInventoryState()
+            }
             return
         }
         tmuxDiscoveryFailuresByHost.removeValue(forKey: hostID)
@@ -3882,9 +3936,11 @@ final class WorkspaceSceneModel: ObservableObject {
             presentation.establishmentConfirmationTask?.cancel()
             presentation.establishmentConfirmationTask = nil
         }
-        applyInventoryOverlayIfNeeded()
-        updateWorkspaceInventoryState()
-        applyDeferredTmuxPresentationsIfReady()
+        if publish {
+            applyRuntimeInventoryOverlayIfNeeded()
+            updateWorkspaceInventoryState()
+            applyDeferredTmuxPresentationsIfReady()
+        }
     }
 
     private func reconcileEndedTmuxSession(

@@ -171,4 +171,29 @@ final class ActivityMonitoringControllerTests: XCTestCase {
         )
     }
 
+    func testUnchangedActivityRefreshDoesNotPublish() throws {
+        let env = try setupStandardEnvironment()
+        let model = try makeModel(
+            database: env.database,
+            localHostID: env.host.id,
+            snapshot: env.snapshot
+        )
+        let now = Date(
+            timeIntervalSinceReferenceDate: 800_000_000
+        )
+
+        model.activityController.refreshActivityState(now: now)
+        var updateCount = 0
+        let updates = model.activityController.objectWillChange.sink {
+            updateCount += 1
+        }
+
+        model.activityController.refreshActivityState(
+            now: now.addingTimeInterval(1)
+        )
+
+        XCTAssertEqual(updateCount, 0)
+        withExtendedLifetime(updates) {}
+    }
+
 }

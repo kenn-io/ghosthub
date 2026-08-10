@@ -24,6 +24,30 @@ struct WorkspaceTmuxDiscoveryTests {
             .joined(separator: "\n")
     }
 
+    @Test("application activation does not refresh tmux inventory")
+    @MainActor
+    func applicationActivationDoesNotRefreshTmuxInventory() async throws {
+        let environment = try setupStandardEnvironment()
+        let discoveries = Counter()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            tmuxSessionDiscovery: { _ in
+                _ = discoveries.increment()
+                return .success([])
+            }
+        )
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor { discoveries.count == 1 }
+
+        model.handleApplicationDidBecomeActiveForResourceMonitoring()
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(discoveries.count == 1)
+        await model.shutdown()
+    }
+
     @Test("workspace refresh includes exe.dev inventory")
     @MainActor
     func workspaceRefreshIncludesExeInventory() async throws {

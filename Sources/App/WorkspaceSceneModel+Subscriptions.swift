@@ -40,7 +40,6 @@ extension WorkspaceSceneModel {
         isAppActive = true
         activityController
             .handleApplicationDidBecomeActiveForResourceMonitoring()
-        refreshTmuxSessionDiscovery()
     }
 
     func handleApplicationDidResignActiveForResourceMonitoring() {

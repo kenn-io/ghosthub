@@ -7,6 +7,74 @@ import GhosthubWorkspace
 
 @Suite("kwt inventory")
 struct KwtInventoryClientTests {
+    @Test("snapshot reconciliation normalizes paths linearly")
+    func snapshotReconciliationNormalizesPathsLinearly() {
+        let hostID = UUID()
+        let count = 200
+        let projects = (0 ..< count).map { index in
+            ProjectSummary(
+                id: UUID(),
+                hostID: hostID,
+                scopedKey: "repo-\(index)",
+                name: "repo-\(index)",
+                rootPath: "/code/repo-\(index)"
+            )
+        }
+        let worktrees = projects.enumerated().map { index, project in
+            WorktreeSummary(
+                id: UUID(),
+                hostID: hostID,
+                projectID: project.id,
+                scopedKey: "/code/repo-\(index)",
+                name: "main",
+                path: "/code/repo-\(index)",
+                branch: "main",
+                isPrimary: true,
+                tmuxSessionName: "repo-\(index)"
+            )
+        }
+        let inventory = KwtHostInventory(projects: projects.enumerated().map {
+            index, _ in
+            KwtProjectInventory(
+                project: KwtProjectRecord(
+                    repository: "repo-\(index)",
+                    name: "repo-\(index)",
+                    path: "/code/repo-\(index)",
+                    lastTouched: nil
+                ),
+                worktrees: [KwtWorktreeRecord(
+                    path: "/code/repo-\(index)",
+                    branch: "main",
+                    commitHash: "abc",
+                    isMain: true,
+                    createdAt: nil,
+                    generation: nil,
+                    repository: "repo-\(index)",
+                    sessionName: "repo-\(index)"
+                )],
+                warning: nil
+            )
+        })
+        let snapshot = WorkspaceSnapshot(
+            hosts: [.fixture(id: hostID)],
+            projects: projects,
+            worktrees: worktrees
+        )
+        var normalizationCount = 0
+
+        _ = KwtSnapshotMerger.merge(
+            inventory,
+            hostID: hostID,
+            into: snapshot,
+            normalizePath: { path in
+                normalizationCount += 1
+                return path
+            }
+        )
+
+        #expect(normalizationCount <= count * 4)
+    }
+
     @Test("remote status 255 does not assume an SSH transport failure")
     func describesAmbiguousRemoteFailure() {
         let error = KwtInventoryError.commandFailed(
@@ -1232,6 +1300,21 @@ struct KwtInventoryClientTests {
     @Test("successful host inventory overlays a later stored snapshot")
     func successfulInventorySurvivesStoredRefresh() {
         let hostID = UUID()
+        let project = ProjectSummary(
+            id: UUID(),
+            hostID: hostID,
+            scopedKey: "repo",
+            name: "repo",
+            rootPath: "/code/repo"
+        )
+        let worktree = WorktreeSummary(
+            id: UUID(),
+            hostID: hostID,
+            projectID: project.id,
+            name: "main",
+            path: "/code/repo",
+            branch: "main"
+        )
         let storedSession = TmuxSessionSummary(
             name: "stale-stored-session",
             managed: false,
@@ -1250,17 +1333,18 @@ struct KwtInventoryClientTests {
                 platform: .linux,
                 tmuxSessions: [storedSession]
             )],
-            projects: [],
-            worktrees: []
+            projects: [project],
+            worktrees: [worktree]
         )
 
-        let overlaid = HostInventoryOverlay.apply(
-            kwtInventoriesByHost: [:],
+        let overlaid = HostInventoryOverlay.applyRuntimeSessions(
             tmuxSessionsByHost: [hostID: [discoveredSession]],
             to: storedSnapshot
         )
 
         #expect(overlaid.hosts[0].tmuxSessions == [discoveredSession])
+        #expect(overlaid.projects == [project])
+        #expect(overlaid.worktrees == [worktree])
     }
 
     @Test("Herdr inventory overlays only Herdr sessions")
@@ -1287,8 +1371,7 @@ struct KwtInventoryClientTests {
         )
         let herdr = HerdrSessionSummary(name: "api", isDefault: true, state: .running)
 
-        let overlaid = HostInventoryOverlay.apply(
-            kwtInventoriesByHost: [:],
+        let overlaid = HostInventoryOverlay.applyRuntimeSessions(
             tmuxSessionsByHost: [:],
             herdrSessionsByHost: [hostID: [herdr]],
             herdrAvailabilityByHost: [hostID: true],

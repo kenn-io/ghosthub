@@ -79,13 +79,13 @@ struct ResourceMonitoringPolicyTests {
         )
     }
 
-    @Test("active loop plan samples immediately")
-    func activeLoopPlanSamplesImmediately() {
+    @Test("active loop plan leaves activation responsive")
+    func activeLoopPlanDefersSampling() {
         let plan = ResourceMonitoringPolicy.loopPlan(
             isAppActive: true
         )
         #expect(plan.refreshIntervalSeconds == 5)
-        #expect(plan.sampleImmediately)
+        #expect(!plan.sampleImmediately)
     }
 
     @Test("inactive loop plan backs off without immediate sampling")

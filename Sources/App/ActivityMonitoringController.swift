@@ -37,7 +37,7 @@ final class ActivityMonitoringController: ObservableObject {
     @Published private(set) var activatedWorktreeIDs: Set<UUID> = []
     @Published private(set) var activeAgentWorktreeIDs: Set<UUID> = []
     @Published private(set) var activeProcessWorktreeIDs: Set<UUID> = []
-    @Published private(set) var activityReferenceDate = Date()
+    private(set) var activityReferenceDate = Date()
 
     // MARK: - Private stored state
 
@@ -543,7 +543,6 @@ final class ActivityMonitoringController: ObservableObject {
             .mapValues(\.activityHint)
         let defaultIdleThresholdSeconds =
             defaultIdleThresholdSecondsProvider()
-        activityReferenceDate = now
         let evaluation = WorkspaceActivityTracker.evaluate(
             now: now,
             input: ActivityEvaluationInput(
@@ -570,8 +569,10 @@ final class ActivityMonitoringController: ObservableObject {
                 activeProcessLeafIDs: activeProcessLeafIDs
             )
         )
-        paneAgentActivities =
-            evaluation.paneAgentActivities
+        activityReferenceDate = now
+        if paneAgentActivities != evaluation.paneAgentActivities {
+            paneAgentActivities = evaluation.paneAgentActivities
+        }
         notifiedIdleWorktreeIDs =
             evaluation.nextNotifiedWorktreeIDs
 
