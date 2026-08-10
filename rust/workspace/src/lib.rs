@@ -974,8 +974,15 @@ struct PresentationKey {
 }
 
 struct SuppressedHerdrPresentation {
-    key: PresentationKey,
+    active_selection: Option<SessionSelection>,
+    retained: Option<ClosedRetainedHerdrPresentation>,
     navigation_generation: u64,
+}
+
+struct ClosedRetainedHerdrPresentation {
+    key: PresentationKey,
+    attachment: ActiveAttachment<AttachRequest>,
+    presentation_id: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1242,6 +1249,22 @@ impl<T> RetainedPresentations<T> {
         self.restarting.retain(|entry| !matches(&entry.key));
         changed |= self.restarting.len() != restart_before;
         changed
+    }
+
+    fn take_matching(
+        &mut self,
+        mut matches: impl FnMut(&PresentationKey) -> bool,
+    ) -> Vec<RetainedPresentation<T>> {
+        let mut removed = Vec::new();
+        let mut index = 0;
+        while index < self.entries.len() {
+            if matches(&self.entries[index].key) {
+                removed.push(self.entries.remove(index));
+            } else {
+                index += 1;
+            }
+        }
+        removed
     }
 
     fn contains(&self, key: &PresentationKey) -> bool {
@@ -1977,6 +2000,10 @@ impl Workspace {
             .navigation
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.switch_session_locked(selection)
+    }
+
+    fn switch_session_locked(&self, selection: &SessionSelection) -> Result<(), WorkspaceError> {
         let same_visible_selection = matches!(
             self.inner
                 .state
@@ -2931,45 +2958,88 @@ impl Workspace {
         }
     }
 
-    fn suppress_active_herdr_presentation(
+    fn close_herdr_presentations(
         &self,
         pending: &PendingHerdrLifecycle,
     ) -> Option<SuppressedHerdrPresentation> {
+        let _snapshot_write = begin_snapshot_write(&self.inner);
         let _navigation = self
             .inner
             .navigation
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let active_matches = self
+        let navigation_generation = self.inner.navigation_generation.load(Ordering::Acquire);
+        let mut attachment = self
             .inner
             .attachment
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .active()
-            .is_some_and(|active| {
-                active.request.endpoint == pending.endpoint
-                    && active.request.runtime == pending.runtime
-                    && active.request.name == pending.record.name()
-                    && active.request.target.herdr_matches(&pending.record)
-            });
-        if !active_matches {
-            return None;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let active_selection = attachment.active().and_then(|active| {
+            let matches = active.request.endpoint == pending.endpoint
+                && active.request.runtime == pending.runtime
+                && active.request.target.herdr_matches(&pending.record);
+            matches.then(|| active.request.selection())
+        });
+        if active_selection.is_some() {
+            attachment.invalidate();
+            self.inner
+                .worker
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .invalidate();
+            clear_pending_paste(&self.inner);
+            clear_terminal_notice(&self.inner);
+            self.restore_inventory_state();
         }
-        let navigation_generation = self.inner.navigation_generation.load(Ordering::Acquire);
-        self.retain_active_presentation()
-            .ok()
-            .flatten()
-            .map(|key| SuppressedHerdrPresentation {
-                key,
-                navigation_generation,
-            })
+        drop(attachment);
+
+        let removed = self
+            .inner
+            .retained_presentations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take_matching(|key| {
+                key.endpoint == pending.endpoint.distro()
+                    && key.runtime == pending.runtime
+                    && key.target.herdr_matches(&pending.record)
+            });
+        let changed = active_selection.is_some() || !removed.is_empty();
+        let retained = active_selection.is_none().then(|| {
+            removed
+                .into_iter()
+                .next()
+                .map(|presentation| ClosedRetainedHerdrPresentation {
+                    key: presentation.key,
+                    attachment: presentation.attachment,
+                    presentation_id: presentation.presentation_id,
+                })
+        });
+        if changed {
+            self.inner.revision.fetch_add(1, Ordering::Release);
+        }
+        (active_selection.is_some() || retained.is_some()).then_some(SuppressedHerdrPresentation {
+            active_selection,
+            retained: retained.flatten(),
+            navigation_generation,
+        })
     }
 
     fn restore_suppressed_herdr_presentation(
         &self,
-        suppressed: Option<&SuppressedHerdrPresentation>,
+        suppressed: Option<SuppressedHerdrPresentation>,
     ) {
         let Some(suppressed) = suppressed else {
+            return;
+        };
+        let _snapshot_write = begin_snapshot_write(&self.inner);
+        if let Some(retained) = suppressed.retained
+            && let Err(error) = restore_closed_retained_herdr_presentation(&self.inner, retained)
+        {
+            self.push_operation_error(format!(
+                "could not restore a retained Herdr presentation after a failed lifecycle action: {error}"
+            ));
+        }
+        let Some(selection) = suppressed.active_selection else {
             return;
         };
         let _navigation = self
@@ -2982,7 +3052,11 @@ impl Workspace {
         {
             return;
         }
-        let _restored = self.activate_retained_presentation(&suppressed.key, None);
+        if let Err(error) = self.switch_session_locked(&selection) {
+            self.push_operation_error(format!(
+                "could not restore the Herdr presentation after a failed lifecycle action: {error}"
+            ));
+        }
     }
 
     /// Update the desired grid and resize an active VT/PTTY pair together.
@@ -4490,7 +4564,7 @@ fn run_herdr_lifecycle(workspace: &Workspace, pending: &PendingHerdrLifecycle) {
         || {
             reserve_constructive_inventory(&workspace.inner);
             if pending.action == HerdrLifecycleAction::Stop {
-                suppressed = workspace.suppress_active_herdr_presentation(pending);
+                suppressed = workspace.close_herdr_presentations(pending);
             }
         },
     ) {
@@ -4521,12 +4595,7 @@ fn run_herdr_lifecycle(workspace: &Workspace, pending: &PendingHerdrLifecycle) {
             }
         }
         Err(error) => {
-            reconcile_herdr_lifecycle_failure(
-                workspace,
-                pending,
-                error.to_string(),
-                suppressed.as_ref(),
-            );
+            reconcile_herdr_lifecycle_failure(workspace, pending, error.to_string(), suppressed);
         }
     }
 }
@@ -4535,7 +4604,7 @@ fn reconcile_herdr_lifecycle_failure(
     workspace: &Workspace,
     pending: &PendingHerdrLifecycle,
     operation_error: String,
-    suppressed: Option<&SuppressedHerdrPresentation>,
+    suppressed: Option<SuppressedHerdrPresentation>,
 ) {
     match reconcile_herdr_lifecycle_inventory(
         &workspace.inner,
@@ -5271,7 +5340,7 @@ fn publish_herdr_lifecycle_response(
                 "the WSL endpoint changed while publishing the Herdr lifecycle response",
             )
         })?
-        .with_herdr_lifecycle(pending.action, record)
+        .with_herdr_lifecycle(pending.action, &pending.record, record)
         .ok_or_else(|| {
             WorkspaceError::new(
                 "the Herdr lifecycle response no longer matches published inventory",
@@ -5605,6 +5674,46 @@ fn restore_presentation_inventory(inner: &Inner) {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
     set_inner_state(inner, state);
+}
+
+fn restore_closed_retained_herdr_presentation(
+    inner: &Inner,
+    mut closed: ClosedRetainedHerdrPresentation,
+) -> Result<(), WorkspaceError> {
+    let term = closed.attachment.term;
+    let (worker, _snapshot, attached_name, initial_geometry) =
+        attach_fresh(inner, &closed.attachment.request, term).map_err(|error| match error {
+            AttachFreshError::Host(error) | AttachFreshError::SessionChanged { error, .. } => error,
+        })?;
+    let latest_geometry = *inner
+        .terminal_geometry
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if latest_geometry != initial_geometry {
+        worker
+            .resize_with_metadata(
+                latest_geometry.grid,
+                latest_geometry.sequence,
+                latest_geometry.pixels,
+            )
+            .map_err(|error| WorkspaceError::from_worker(&error))?;
+    }
+    attached_name.clone_into(&mut closed.attachment.request.name);
+    let selection = closed.attachment.request.selection();
+    worker.set_clipboard_writes_enabled(false);
+    inner
+        .retained_presentations
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(RetainedPresentation {
+            key: closed.key,
+            selection,
+            attachment: closed.attachment,
+            worker,
+            presentation_id: closed.presentation_id,
+        });
+    inner.revision.fetch_add(1, Ordering::Release);
+    Ok(())
 }
 
 fn attach_fresh(
@@ -9088,6 +9197,41 @@ mod tests {
             workspace.snapshot().hosts()[0].herdr_sessions()[0].lifecycle_action(),
             Some(HerdrLifecycleAction::Stop),
         );
+    }
+
+    #[test]
+    fn stop_preparation_removes_every_matching_retained_client() {
+        let (workspace, _runtime) = herdr_workspace_fixture();
+        let selection = SessionSelection::herdr("wsl", "Ubuntu", "default");
+        let request = capture_attach_request(&workspace.inner, &selection)
+            .expect("running Herdr session is attachable");
+        let key = request.presentation_key();
+        let attachment = |generation| ActiveAttachment {
+            request: request.clone(),
+            term: AttachTerm::Xterm256Color,
+            generation,
+            fallback: None,
+        };
+        let mut retained = RetainedPresentations::new();
+        retained.insert(RetainedPresentation {
+            key: key.clone(),
+            selection: selection.clone(),
+            attachment: attachment(1),
+            worker: 1_u8,
+            presentation_id: 1,
+        });
+        retained.entries.push(RetainedPresentation {
+            key: key.clone(),
+            selection,
+            attachment: attachment(2),
+            worker: 2_u8,
+            presentation_id: 2,
+        });
+
+        let removed = retained.take_matching(|candidate| candidate == &key);
+
+        assert_eq!(removed.len(), 2);
+        assert!(!retained.contains(&key));
     }
 
     #[test]

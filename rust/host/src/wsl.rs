@@ -348,6 +348,7 @@ impl HostSnapshot {
     pub fn with_herdr_lifecycle(
         mut self,
         action: HerdrLifecycleAction,
+        confirmed: &HerdrSessionRecord,
         record: HerdrSessionRecord,
     ) -> Option<Self> {
         let HerdrInventory::Available { sessions, .. } = self.herdr.as_mut() else {
@@ -355,7 +356,7 @@ impl HostSnapshot {
         };
         let index = sessions
             .iter()
-            .position(|session| session.name() == record.name())?;
+            .position(|session| session.name() == confirmed.name())?;
         match action {
             HerdrLifecycleAction::Stop => sessions[index] = record,
             HerdrLifecycleAction::Delete => {
@@ -698,13 +699,74 @@ impl<R: CommandRunner> WslHost<R> {
         before_mutation: impl FnOnce(),
     ) -> Result<HerdrSessionRecord, HostError> {
         let (endpoint, expected_runtime) = expected_host;
-        let runtime = self.resolve_runtime(endpoint, cancellation)?;
-        if &runtime != expected_runtime {
+        self.validate_current_herdr_lifecycle_target(
+            endpoint,
+            expected_runtime,
+            expected_executable,
+            confirmed,
+            action,
+            cancellation,
+        )?;
+
+        before_mutation();
+
+        self.validate_current_herdr_lifecycle_target(
+            endpoint,
+            expected_runtime,
+            expected_executable,
+            confirmed,
+            action,
+            cancellation,
+        )?;
+        self.require_runtime(endpoint, expected_runtime, cancellation)?;
+
+        let mut args = pinned_prefix(endpoint);
+        append_herdr_environment(&mut args);
+        args.extend(
+            [
+                expected_executable,
+                "session",
+                action.command(),
+                confirmed.name(),
+                "--json",
+            ]
+            .into_iter()
+            .map(OsString::from),
+        );
+        let output = self.run(&args, cancellation)?;
+        if output.status != 0 {
             return Err(HostError::new(
-                DiagnosticKind::Transport,
-                "WSL changed before the Herdr lifecycle action",
+                if output.status == 127 {
+                    DiagnosticKind::ExecutableNotFound
+                } else {
+                    DiagnosticKind::Transport
+                },
+                herdr::lifecycle_error(&output.stdout, &output.stderr),
             ));
         }
+        let record = herdr::parse_lifecycle(action, &output.stdout)
+            .map_err(|detail| HostError::new(DiagnosticKind::MalformedOutput, detail))?;
+        validate_herdr_lifecycle_response(confirmed, &record, action)?;
+        let observed_runtime = self.resolve_runtime(endpoint, cancellation)?;
+        if &observed_runtime != expected_runtime {
+            return Err(HostError::new(
+                DiagnosticKind::Transport,
+                "WSL changed during the Herdr lifecycle action",
+            ));
+        }
+        Ok(record)
+    }
+
+    fn validate_current_herdr_lifecycle_target(
+        &self,
+        endpoint: &WslEndpoint,
+        expected_runtime: &WslRuntimeIdentity,
+        expected_executable: &str,
+        confirmed: &HerdrSessionRecord,
+        action: HerdrLifecycleAction,
+        cancellation: &CancellationToken,
+    ) -> Result<(), HostError> {
+        self.require_runtime(endpoint, expected_runtime, cancellation)?;
         let (executable, sessions) = match self.discover_herdr(endpoint, cancellation) {
             HerdrInventory::Available {
                 executable,
@@ -733,45 +795,7 @@ impl<R: CommandRunner> WslHost<R> {
                     format!("Herdr session {} no longer exists", confirmed.name()),
                 )
             })?;
-        validate_herdr_lifecycle_target(confirmed, current, action)?;
-
-        self.require_runtime(endpoint, expected_runtime, cancellation)?;
-        before_mutation();
-
-        let mut args = pinned_prefix(endpoint);
-        append_herdr_environment(&mut args);
-        args.extend(
-            [
-                executable.as_str(),
-                "session",
-                action.command(),
-                confirmed.name(),
-                "--json",
-            ]
-            .into_iter()
-            .map(OsString::from),
-        );
-        let output = self.run(&args, cancellation)?;
-        if output.status != 0 {
-            return Err(HostError::new(
-                if output.status == 127 {
-                    DiagnosticKind::ExecutableNotFound
-                } else {
-                    DiagnosticKind::Transport
-                },
-                herdr::lifecycle_error(&output.stdout, &output.stderr),
-            ));
-        }
-        let record = herdr::parse_lifecycle(action, &output.stdout)
-            .map_err(|detail| HostError::new(DiagnosticKind::MalformedOutput, detail))?;
-        let observed_runtime = self.resolve_runtime(endpoint, cancellation)?;
-        if &observed_runtime != expected_runtime {
-            return Err(HostError::new(
-                DiagnosticKind::Transport,
-                "WSL changed during the Herdr lifecycle action",
-            ));
-        }
-        Ok(record)
+        validate_herdr_lifecycle_target(confirmed, current, action)
     }
 
     /// Build one atomic local create-or-attach client for an already verified
@@ -2301,6 +2325,27 @@ fn validate_herdr_lifecycle_target(
     Ok(())
 }
 
+fn validate_herdr_lifecycle_response(
+    confirmed: &HerdrSessionRecord,
+    response: &HerdrSessionRecord,
+    action: HerdrLifecycleAction,
+) -> Result<(), HostError> {
+    let same_identity = response.name() == confirmed.name()
+        && response.is_default() == confirmed.is_default()
+        && response.session_directory() == confirmed.session_directory()
+        && response.socket_path() == confirmed.socket_path();
+    if !same_identity || response.state() != HerdrSessionState::Stopped {
+        return Err(HostError::new(
+            DiagnosticKind::MalformedOutput,
+            format!(
+                "Herdr returned an inconsistent session record after {}",
+                action.command()
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn admission_matches(
     verified_endpoint: &WslEndpoint,
     verified_runtime: &WslRuntimeIdentity,
@@ -2894,7 +2939,7 @@ mod tests {
         );
 
         let stopped_snapshot = snapshot
-            .with_herdr_lifecycle(HerdrLifecycleAction::Stop, stopped.clone())
+            .with_herdr_lifecycle(HerdrLifecycleAction::Stop, &stopped, stopped.clone())
             .expect("stop response applies");
         assert_eq!(
             stopped_snapshot.herdr().sessions(),
@@ -2902,7 +2947,7 @@ mod tests {
         );
 
         let deleted_snapshot = stopped_snapshot
-            .with_herdr_lifecycle(HerdrLifecycleAction::Delete, other)
+            .with_herdr_lifecycle(HerdrLifecycleAction::Delete, &other, other.clone())
             .expect("delete response applies");
         assert_eq!(deleted_snapshot.herdr().sessions().len(), 1);
         assert_eq!(deleted_snapshot.herdr().sessions()[0].name(), "work");

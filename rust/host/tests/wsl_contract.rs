@@ -1025,8 +1025,15 @@ fn herdr_stop_revalidates_state_and_paths_before_direct_mutation() {
         instance_output(),
         instance_output(),
         instance_output(),
+        instance_output(),
     ]);
     runner.set_herdr_outputs(vec![
+        output(0, "GHOSTHUB_HERDR_PATH\n/opt/herdr/bin/herdr\n", ""),
+        output(
+            0,
+            r#"{"sessions":[{"name":"review","default":false,"running":true,"session_dir":"/tmp/herdr/review","socket_path":"/tmp/herdr/review/herdr.sock"}]}"#,
+            "",
+        ),
         output(0, "GHOSTHUB_HERDR_PATH\n/opt/herdr/bin/herdr\n", ""),
         output(
             0,
@@ -1086,6 +1093,62 @@ fn herdr_stop_revalidates_state_and_paths_before_direct_mutation() {
         OsString::from("review"),
         OsString::from("--json"),
     ]));
+}
+
+#[test]
+fn herdr_lifecycle_rejects_an_inconsistent_response_record() {
+    let runner = RecordingRunner::new(vec![
+        instance_output(),
+        instance_output(),
+        instance_output(),
+    ]);
+    let inventory = output(
+        0,
+        r#"{"sessions":[{"name":"review","default":false,"running":true,"session_dir":"/tmp/herdr/review","socket_path":"/tmp/herdr/review/herdr.sock"}]}"#,
+        "",
+    );
+    runner.set_herdr_outputs(vec![
+        output(0, "GHOSTHUB_HERDR_PATH\n/opt/herdr/bin/herdr\n", ""),
+        inventory.clone(),
+        output(0, "GHOSTHUB_HERDR_PATH\n/opt/herdr/bin/herdr\n", ""),
+        inventory,
+        output(
+            0,
+            r#"{"session":{"name":"other","default":false,"running":false,"session_dir":"/tmp/herdr/other","socket_path":"/tmp/herdr/other/herdr.sock"},"stopped":true}"#,
+            "",
+        ),
+    ]);
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        runner,
+    );
+    let identity = host::HostSnapshot::test_fixture(
+        "Ubuntu",
+        "65c18272-9676-4d59-9f67-ff4556cd1601",
+        987_654,
+        Vec::new(),
+    );
+    let confirmed = HerdrSessionRecord::new(
+        "review",
+        false,
+        HerdrSessionState::Running,
+        "/tmp/herdr/review",
+        "/tmp/herdr/review/herdr.sock",
+    );
+
+    let error = host
+        .mutate_herdr_session(
+            (identity.endpoint(), identity.runtime()),
+            "/opt/herdr/bin/herdr",
+            &confirmed,
+            HerdrLifecycleAction::Stop,
+            &CancellationToken::new(),
+            || {},
+        )
+        .expect_err("a mismatched response must not be published");
+
+    assert_eq!(error.kind(), HostErrorKind::MalformedOutput);
+    assert!(error.to_string().contains("inconsistent session record"));
 }
 
 #[test]
