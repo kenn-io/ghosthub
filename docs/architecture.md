@@ -167,9 +167,12 @@ frame. Missing WSL omits that host. A slow, failed, or unsupported WSL runtime
 changes only the host entry to an unavailable state with Retry and never
 replaces the application shell. The first refresh has a 45-second total budget
 for cold start; later attempts have 30 seconds, in addition to per-command
-timeouts. Returning focus to a window refreshes a ready WSL inventory, matching
-the Swift app's activation-driven discovery without retrying disconnected or
-failed hosts in a loop. Later refreshes reuse the admitted host capability so
+timeouts. An application-owned background cadence refreshes ready WSL inventory
+every ten seconds while the window is active. Window activation changes only an
+in-memory polling flag; it performs no inventory, process sampling, filesystem,
+database, or reconciliation work. The cadence starts no new inventory refresh
+while the window is inactive. Disconnected and failed hosts are not retried in a loop. Later
+refreshes reuse the admitted host capability so
 they perform ordinary inventory reads instead of repeating tmux admission. The
 same refresh resolves optional Herdr through WSL's POSIX login profile,
 scrubs inherited Herdr routing variables, and publishes running and stopped
@@ -201,7 +204,7 @@ non-cloneable CreateOnce as an ordinary ConPTY client running atomic
 `new-session -A`; it then captures the fresh WSL runtime and tmux live identity
 and retains only attach authority. Creation failure never authorizes a rerun or
 server cleanup. The creation interaction pins its selected endpoint and may use
-the existing admitted host while an activation-driven inventory refresh is in
+the existing admitted host while a background inventory refresh is in
 flight; it never follows a changed default distro implicitly.
 
 Rust keeps backend and authority boundaries structural: the UI package has
@@ -211,6 +214,15 @@ dependency. The terminal backend remains private behind a capability-shaped
 seam. A small leaf surface package carries Rust-owned paint buffers and
 scroll-aware damage between the terminal worker and GPUI without granting UI
 any PTY capability.
+
+Rust UI responsiveness is a hard invariant. Window activation, input, paint,
+and snapshot reads never run host commands, filesystem probes, database work,
+resource sampling, or project/worktree reconciliation. Cancellable background
+read lanes build owned host-scoped results before a short generation-checked
+publication; publication guards never cross external I/O, process waits, or an
+await point. Runtime-only session refresh cannot replay project/worktree
+reconciliation, and each host publishes independently so a slow host cannot
+delay completed inventory from another host.
 
 Ghosthub still has one UI application process and no Ghosthub-owned daemon.
 For the Windows MVP, tmux inside WSL2 is the long-lived session owner. Closing
