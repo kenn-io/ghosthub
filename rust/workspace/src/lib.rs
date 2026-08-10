@@ -2,7 +2,7 @@
 
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock, TryLockError};
 use std::thread;
 use std::time::Duration;
 
@@ -4542,7 +4542,14 @@ fn schedule_inventory_refresh(inner: &Arc<Inner>) -> std::io::Result<()> {
                 inner: Arc::clone(&inner),
             };
             if inner.inventory_polling_enabled.load(Ordering::Acquire) {
-                let _refresh_started = workspace.refresh_if_ready();
+                let operation = match inner.session_operations.try_lock() {
+                    Ok(operation) => Some(operation),
+                    Err(TryLockError::Poisoned(error)) => Some(error.into_inner()),
+                    Err(TryLockError::WouldBlock) => None,
+                };
+                if let Some(_operation) = operation {
+                    let _refresh_started = workspace.refresh_if_ready();
+                }
             }
             if let Err(error) = schedule_inventory_refresh(&inner) {
                 inner
@@ -10139,6 +10146,77 @@ mod tests {
 
         assert!(runtime.work.lock().expect("work queue").is_empty());
         assert_eq!(runtime.deadline_delays(), vec![INVENTORY_REFRESH_INTERVAL]);
+    }
+
+    #[test]
+    fn inventory_cadence_yields_to_create_and_lifecycle_operations() {
+        let runtime = Arc::new(ManualRefreshRuntime::default());
+        let discovery = Arc::new(FixedDiscovery::new(HostSnapshot::test_fixture(
+            "Ubuntu",
+            "boot",
+            42,
+            Vec::new(),
+        )));
+        let spec = WslHostSpec::available(
+            WslConfig::with_distro("Ubuntu").expect("valid config"),
+            WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
+                .expect("absolute WSL path"),
+        );
+        let workspace = Workspace::application_with_services(
+            TerminalAppearance::default(),
+            Some(spec),
+            discovery,
+            runtime.clone(),
+        );
+        workspace.connect_enabled_hosts().expect("connect host");
+        runtime.run_next_work();
+        runtime.run_next_deadline();
+        workspace.set_inventory_polling_enabled(true);
+        workspace
+            .start_inventory_cadence()
+            .expect("start inventory cadence");
+        let generation = workspace.inner.refresh_generation.load(Ordering::Acquire);
+
+        {
+            let _create_operation = workspace
+                .inner
+                .session_operations
+                .lock()
+                .expect("hold tmux creation lane");
+            runtime.run_next_deadline();
+            assert!(runtime.work.lock().expect("work queue").is_empty());
+            assert_eq!(
+                workspace.inner.refresh_generation.load(Ordering::Acquire),
+                generation,
+                "cadence cannot supersede tmux creation publication"
+            );
+        }
+
+        {
+            let _lifecycle_operation = workspace
+                .inner
+                .session_operations
+                .lock()
+                .expect("hold Herdr lifecycle lane");
+            runtime.run_next_deadline();
+            assert!(runtime.work.lock().expect("work queue").is_empty());
+            assert_eq!(
+                workspace.inner.refresh_generation.load(Ordering::Acquire),
+                generation,
+                "cadence cannot supersede Herdr lifecycle publication"
+            );
+        }
+
+        runtime.run_next_deadline();
+        assert_eq!(
+            workspace.snapshot().hosts()[0].connection(),
+            HostConnectionState::Connecting,
+            "cadence resumes after the operation lane is released"
+        );
+        assert_eq!(
+            workspace.inner.refresh_generation.load(Ordering::Acquire),
+            generation + 1
+        );
     }
 
     #[test]
