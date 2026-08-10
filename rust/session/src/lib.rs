@@ -193,6 +193,42 @@ pub struct HerdrSessionRecord {
     socket_path: String,
 }
 
+/// Exact name carried by a one-shot Herdr launch authority.
+///
+/// User-authored names can enter only through [`HerdrSessionName`], while
+/// names read from Herdr inventory are preserved without applying creation
+/// restrictions.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HerdrLaunchTarget(HerdrLaunchTargetSource);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum HerdrLaunchTargetSource {
+    Created(HerdrSessionName),
+    Discovered(String),
+}
+
+impl HerdrLaunchTarget {
+    #[must_use]
+    pub const fn created(name: HerdrSessionName) -> Self {
+        Self(HerdrLaunchTargetSource::Created(name))
+    }
+
+    #[must_use]
+    pub fn discovered(record: &HerdrSessionRecord) -> Self {
+        Self(HerdrLaunchTargetSource::Discovered(
+            record.name().to_owned(),
+        ))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match &self.0 {
+            HerdrLaunchTargetSource::Created(name) => name.as_str(),
+            HerdrLaunchTargetSource::Discovered(name) => name,
+        }
+    }
+}
+
 impl HerdrSessionRecord {
     #[must_use]
     pub fn new(
@@ -284,7 +320,7 @@ pub struct HerdrAttachPlan {
 pub struct HerdrLaunchOnce {
     program: OsString,
     args: Vec<OsString>,
-    target_name: HerdrSessionName,
+    target_name: HerdrLaunchTarget,
 }
 
 impl HerdrAttachPlan {
@@ -312,7 +348,7 @@ impl HerdrLaunchOnce {
     pub fn launch_or_attach(
         program: impl Into<OsString>,
         args: Vec<OsString>,
-        target_name: HerdrSessionName,
+        target_name: HerdrLaunchTarget,
     ) -> Self {
         Self {
             program: program.into(),
@@ -322,7 +358,7 @@ impl HerdrLaunchOnce {
     }
 
     #[must_use]
-    pub fn into_parts(self) -> (OsString, Vec<OsString>, HerdrSessionName) {
+    pub fn into_parts(self) -> (OsString, Vec<OsString>, HerdrLaunchTarget) {
         (self.program, self.args, self.target_name)
     }
 }
@@ -667,8 +703,8 @@ fn parse_revision(output: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CreateOnce, HerdrLaunchOnce, HerdrSessionName, HerdrSessionNameError, SessionName,
-        SessionNameError,
+        CreateOnce, HerdrLaunchOnce, HerdrLaunchTarget, HerdrSessionName, HerdrSessionNameError,
+        HerdrSessionRecord, HerdrSessionState, SessionName, SessionNameError,
     };
     use static_assertions::assert_not_impl_any;
 
@@ -698,6 +734,23 @@ mod tests {
         assert_eq!(
             HerdrSessionName::parse(&"x".repeat(65)),
             Err(HerdrSessionNameError::TooLong)
+        );
+    }
+
+    #[test]
+    fn discovered_herdr_names_bypass_creation_only_restrictions() {
+        let record = HerdrSessionRecord::new(
+            "review session",
+            false,
+            HerdrSessionState::Stopped,
+            "/tmp/herdr/review session",
+            "/tmp/herdr/review session/herdr.sock",
+        );
+
+        assert!(HerdrSessionName::parse(record.name()).is_err());
+        assert_eq!(
+            HerdrLaunchTarget::discovered(&record).as_str(),
+            record.name()
         );
     }
 

@@ -13,6 +13,7 @@ use host::{
 };
 pub use input::{KeyEvent, KeyInput, Modifiers, MouseAction, MouseButton, MouseInput, NamedKey};
 use model::DiagnosticKind;
+use session::HerdrLaunchTarget;
 pub use session::{
     HerdrLifecycleAction, HerdrSessionName, HerdrSessionNameError, HerdrSessionState, SessionName,
     SessionNameError,
@@ -849,7 +850,7 @@ struct HerdrCreateRequest {
     endpoint: host::WslEndpoint,
     runtime: host::WslRuntimeIdentity,
     executable: String,
-    name: HerdrSessionName,
+    name: HerdrLaunchTarget,
     precondition: HerdrLaunchPrecondition,
 }
 
@@ -1196,12 +1197,8 @@ impl<T> RetainedPresentations<T> {
                 refreshed_session_name(&presentation.key, snapshot, socket_directory)
                 && name != presentation.attachment.request.name
             {
-                presentation.selection = SessionSelection::new(
-                    &presentation.key.host_id,
-                    presentation.key.endpoint.clone(),
-                    name,
-                );
                 presentation.attachment.request.name = name.to_owned();
+                presentation.selection = presentation.attachment.request.selection();
                 changed = true;
             }
         }
@@ -1210,12 +1207,8 @@ impl<T> RetainedPresentations<T> {
                 refreshed_session_name(&presentation.key, snapshot, socket_directory)
                 && name != presentation.attachment.request.name
             {
-                presentation.selection = SessionSelection::new(
-                    &presentation.key.host_id,
-                    presentation.key.endpoint.clone(),
-                    name,
-                );
                 presentation.attachment.request.name = name.to_owned();
+                presentation.selection = presentation.attachment.request.selection();
                 changed = true;
             }
         }
@@ -3800,7 +3793,7 @@ fn capture_herdr_create_request(
             endpoint: context.snapshot.endpoint().clone(),
             runtime: context.snapshot.runtime().clone(),
             executable: executable.clone(),
-            name,
+            name: HerdrLaunchTarget::created(name),
             precondition: HerdrLaunchPrecondition::Absent,
         })
     })
@@ -3843,8 +3836,7 @@ fn capture_herdr_restart_request(
         if record.state() != HerdrSessionState::Stopped {
             return Err(WorkspaceError::new("Herdr session is already running"));
         }
-        let name = HerdrSessionName::parse(record.name())
-            .map_err(|error| WorkspaceError::new(error.to_string()))?;
+        let name = HerdrLaunchTarget::discovered(&record);
         Ok(HerdrCreateRequest {
             host_id: selection.host_id().to_owned(),
             host: context.host.clone(),
@@ -4255,6 +4247,7 @@ fn create_herdr_fresh(
                 .iter()
                 .find(|session| {
                     session.name() == request.name.as_str()
+                        && session.is_default() == request.precondition.is_default()
                         && session.state() == HerdrSessionState::Running
                 })
                 .cloned()
@@ -4284,6 +4277,7 @@ fn validate_herdr_launch_precondition(
         }
         (HerdrLaunchPrecondition::Stopped(expected), Some(current))
             if current.state() == HerdrSessionState::Stopped
+                && current.is_default() == expected.is_default()
                 && current.session_directory() == expected.session_directory()
                 && current.socket_path() == expected.socket_path() => {}
         (HerdrLaunchPrecondition::Stopped(_), Some(current))
@@ -6469,6 +6463,53 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn inventory_rename_preserves_a_retained_herdr_selection() {
+        let original_snapshot = HostSnapshot::test_fixture("Ubuntu", "boot-id", 42, Vec::new());
+        let request = herdr_attach_request_fixture(&original_snapshot, "original");
+        let key = request.presentation_key();
+        let mut retained = RetainedPresentations::new();
+        retained.insert(RetainedPresentation {
+            key: key.clone(),
+            selection: request.selection(),
+            attachment: ActiveAttachment {
+                request,
+                term: AttachTerm::Xterm256Color,
+                generation: 1,
+                fallback: None,
+            },
+            worker: (),
+            presentation_id: 7,
+        });
+        let renamed_snapshot = HostSnapshot::test_fixture_with_herdr(
+            "Ubuntu",
+            "boot-id",
+            42,
+            Vec::new(),
+            HerdrInventory::Available {
+                executable: "/opt/herdr/bin/herdr".to_owned(),
+                sessions: vec![session::HerdrSessionRecord::new(
+                    "renamed",
+                    false,
+                    HerdrSessionState::Running,
+                    "/tmp/herdr/review",
+                    "/tmp/herdr/review/herdr.sock",
+                )],
+            },
+        );
+
+        assert!(retained.reconcile_session_names(&renamed_snapshot, None));
+
+        assert!(retained.contains(&key));
+        assert_eq!(retained.entries[0].selection.kind(), SessionKind::Herdr);
+        assert_eq!(retained.entries[0].selection.session(), "renamed");
+        assert_eq!(
+            retained.key_for_selection(&SessionSelection::herdr("wsl", "Ubuntu", "renamed")),
+            Some(key)
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn retained_rename_advances_the_workspace_revision_once() {
         let identity = session::SessionIdentity::new(100, "$1", 200);
         let original_snapshot = HostSnapshot::test_fixture(
@@ -7971,7 +8012,9 @@ mod tests {
         );
     }
 
-    fn herdr_workspace_fixture() -> (Workspace, Arc<ManualRefreshRuntime>) {
+    fn herdr_workspace_with_sessions(
+        herdr_sessions: Vec<session::HerdrSessionRecord>,
+    ) -> (Workspace, Arc<ManualRefreshRuntime>) {
         let runtime = Arc::new(ManualRefreshRuntime::default());
         let snapshot = HostSnapshot::test_fixture_with_herdr(
             "Ubuntu",
@@ -7984,22 +8027,7 @@ mod tests {
             )],
             HerdrInventory::Available {
                 executable: "/opt/herdr/bin/herdr".to_owned(),
-                sessions: vec![
-                    session::HerdrSessionRecord::new(
-                        "default",
-                        true,
-                        HerdrSessionState::Running,
-                        "/tmp/herdr/default",
-                        "/tmp/herdr/default/herdr.sock",
-                    ),
-                    session::HerdrSessionRecord::new(
-                        "review",
-                        false,
-                        HerdrSessionState::Stopped,
-                        "/tmp/herdr/review",
-                        "/tmp/herdr/review/herdr.sock",
-                    ),
-                ],
+                sessions: herdr_sessions,
             },
         );
         let discovery = Arc::new(FixedDiscovery::new(snapshot));
@@ -8018,6 +8046,25 @@ mod tests {
         workspace.connect_enabled_hosts().expect("start refresh");
         runtime.run_next_work();
         (workspace, runtime)
+    }
+
+    fn herdr_workspace_fixture() -> (Workspace, Arc<ManualRefreshRuntime>) {
+        herdr_workspace_with_sessions(vec![
+            session::HerdrSessionRecord::new(
+                "default",
+                true,
+                HerdrSessionState::Running,
+                "/tmp/herdr/default",
+                "/tmp/herdr/default/herdr.sock",
+            ),
+            session::HerdrSessionRecord::new(
+                "review",
+                false,
+                HerdrSessionState::Stopped,
+                "/tmp/herdr/review",
+                "/tmp/herdr/review/herdr.sock",
+            ),
+        ])
     }
 
     #[test]
@@ -8097,6 +8144,57 @@ mod tests {
                 .expect("delete confirmation")
                 .action(),
             HerdrLifecycleAction::Delete
+        );
+    }
+
+    #[test]
+    fn restart_preserves_an_authoritative_name_outside_the_creation_subset() {
+        let name = "review session";
+        let (workspace, _runtime) =
+            herdr_workspace_with_sessions(vec![session::HerdrSessionRecord::new(
+                name,
+                false,
+                HerdrSessionState::Stopped,
+                "/tmp/herdr/review session",
+                "/tmp/herdr/review session/herdr.sock",
+            )]);
+
+        let request = capture_herdr_restart_request(
+            &workspace.inner,
+            &SessionSelection::herdr("wsl", "Ubuntu", name),
+        )
+        .expect("discovered session names remain restartable");
+
+        assert_eq!(request.name.as_str(), name);
+        assert!(matches!(
+            request.precondition,
+            HerdrLaunchPrecondition::Stopped(record) if record.name() == name
+        ));
+    }
+
+    #[test]
+    fn restart_rejects_a_session_whose_default_role_changed() {
+        let expected = session::HerdrSessionRecord::new(
+            "review",
+            false,
+            HerdrSessionState::Stopped,
+            "/tmp/herdr/review",
+            "/tmp/herdr/review/herdr.sock",
+        );
+        let current = session::HerdrSessionRecord::new(
+            "review",
+            true,
+            HerdrSessionState::Stopped,
+            "/tmp/herdr/review",
+            "/tmp/herdr/review/herdr.sock",
+        );
+
+        assert!(
+            validate_herdr_launch_precondition(
+                &HerdrLaunchPrecondition::Stopped(expected),
+                Some(&current),
+            )
+            .is_err()
         );
     }
 

@@ -1138,6 +1138,104 @@ fn herdr_lifecycle_rechecks_runtime_after_discovery_before_mutation() {
 }
 
 #[test]
+fn herdr_delete_rejects_a_session_that_became_the_default() {
+    let runner = RecordingRunner::new(vec![instance_output()]);
+    runner.set_herdr_outputs(vec![
+        output(0, "GHOSTHUB_HERDR_PATH\n/opt/herdr/bin/herdr\n", ""),
+        output(
+            0,
+            r#"{"sessions":[{"name":"review","default":true,"running":false,"session_dir":"/tmp/herdr/review","socket_path":"/tmp/herdr/review/herdr.sock"}]}"#,
+            "",
+        ),
+    ]);
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        runner,
+    );
+    let identity = host::HostSnapshot::test_fixture(
+        "Ubuntu",
+        "65c18272-9676-4d59-9f67-ff4556cd1601",
+        987_654,
+        Vec::new(),
+    );
+    let confirmed = HerdrSessionRecord::new(
+        "review",
+        false,
+        HerdrSessionState::Stopped,
+        "/tmp/herdr/review",
+        "/tmp/herdr/review/herdr.sock",
+    );
+
+    let error = host
+        .mutate_herdr_session(
+            identity.endpoint(),
+            identity.runtime(),
+            &confirmed,
+            HerdrLifecycleAction::Delete,
+            &CancellationToken::new(),
+        )
+        .expect_err("the current default session must never be deleted");
+
+    assert_eq!(error.kind(), HostErrorKind::UnsupportedEnvironment);
+    assert!(
+        !host
+            .runner()
+            .all_calls()
+            .iter()
+            .any(|(_, args)| { args.windows(2).any(|pair| pair == ["session", "delete"]) })
+    );
+}
+
+#[test]
+fn herdr_stop_rejects_a_changed_default_role() {
+    let runner = RecordingRunner::new(vec![instance_output()]);
+    runner.set_herdr_outputs(vec![
+        output(0, "GHOSTHUB_HERDR_PATH\n/opt/herdr/bin/herdr\n", ""),
+        output(
+            0,
+            r#"{"sessions":[{"name":"review","default":true,"running":true,"session_dir":"/tmp/herdr/review","socket_path":"/tmp/herdr/review/herdr.sock"}]}"#,
+            "",
+        ),
+    ]);
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        runner,
+    );
+    let identity = host::HostSnapshot::test_fixture(
+        "Ubuntu",
+        "65c18272-9676-4d59-9f67-ff4556cd1601",
+        987_654,
+        Vec::new(),
+    );
+    let confirmed = HerdrSessionRecord::new(
+        "review",
+        false,
+        HerdrSessionState::Running,
+        "/tmp/herdr/review",
+        "/tmp/herdr/review/herdr.sock",
+    );
+
+    let error = host
+        .mutate_herdr_session(
+            identity.endpoint(),
+            identity.runtime(),
+            &confirmed,
+            HerdrLifecycleAction::Stop,
+            &CancellationToken::new(),
+        )
+        .expect_err("a changed default role invalidates confirmation");
+
+    assert_eq!(error.kind(), HostErrorKind::Transport);
+    assert!(
+        !host
+            .runner()
+            .all_calls()
+            .iter()
+            .any(|(_, args)| { args.windows(2).any(|pair| pair == ["session", "stop"]) })
+    );
+}
+
+#[test]
 #[allow(
     clippy::too_many_lines,
     reason = "the admission transcript assertions stay together for safety auditing"

@@ -181,7 +181,10 @@ ordinary attach-only client; named creation consumes one non-retryable
 discovery. Stopped Herdr rows expose Restart, named stopped rows additionally
 expose confirmed Delete, and running rows expose confirmed Stop. Those
 destructive actions freshly revalidate the WSL runtime, executable, state, and
-configuration paths, then recheck the runtime at the mutation boundary. A
+configuration paths, including whether Herdr currently identifies the record
+as its default session, then recheck the runtime at the mutation boundary.
+User-authored creation names use the restricted creation grammar; Restart
+preserves authoritative names from inventory unchanged. A
 per-session in-flight guard disables duplicate actions and remains active
 through fresh inventory publication or a classified operation failure. A
 workspace operation fence serializes complete attachment, retained-client

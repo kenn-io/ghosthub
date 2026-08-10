@@ -9,9 +9,9 @@ use std::time::{Duration, Instant};
 use model::DiagnosticKind;
 use session::{
     AdmissionPlan, AttachPlan, CreateOnce, DiscoveredSession, ExecutablePlatform, HerdrAttachPlan,
-    HerdrLaunchOnce, HerdrLifecycleAction, HerdrSessionName, HerdrSessionRecord, HerdrSessionState,
-    IDENTITY_MISMATCH_MARKER, ProbeObservation, SessionIdentity, SessionName, VerifiedTmuxBinary,
-    resolve_tmux_binary,
+    HerdrLaunchOnce, HerdrLaunchTarget, HerdrLifecycleAction, HerdrSessionRecord,
+    HerdrSessionState, IDENTITY_MISMATCH_MARKER, ProbeObservation, SessionIdentity, SessionName,
+    VerifiedTmuxBinary, resolve_tmux_binary,
 };
 
 use crate::herdr::{self, ExecutableProbe};
@@ -621,7 +621,7 @@ impl<R: CommandRunner> WslHost<R> {
         &self,
         endpoint: &WslEndpoint,
         executable: &str,
-        name: HerdrSessionName,
+        name: HerdrLaunchTarget,
         is_default: bool,
     ) -> HerdrLaunchOnce {
         let mut args = pinned_prefix(endpoint);
@@ -637,10 +637,10 @@ impl<R: CommandRunner> WslHost<R> {
 
     /// Revalidate and execute one confirmed destructive Herdr lifecycle action.
     ///
-    /// The current runtime, executable, state, and configuration paths are
-    /// captured immediately before mutation. Herdr does not expose a stable
-    /// generation identity, so same-name/same-path replacement remains an
-    /// accepted backend limitation.
+    /// The current runtime, executable, default role, state, and configuration
+    /// paths are captured immediately before mutation. Herdr does not expose a
+    /// stable generation identity, so replacement that preserves all of those
+    /// fields remains an accepted backend limitation.
     ///
     /// # Errors
     ///
@@ -659,12 +659,6 @@ impl<R: CommandRunner> WslHost<R> {
             return Err(HostError::new(
                 DiagnosticKind::Transport,
                 "WSL changed before the Herdr lifecycle action",
-            ));
-        }
-        if action == HerdrLifecycleAction::Delete && confirmed.is_default() {
-            return Err(HostError::new(
-                DiagnosticKind::UnsupportedEnvironment,
-                "Herdr's default session cannot be deleted",
             ));
         }
         let (executable, sessions) = match self.discover_herdr(endpoint, cancellation) {
@@ -689,27 +683,7 @@ impl<R: CommandRunner> WslHost<R> {
                     format!("Herdr session {} no longer exists", confirmed.name()),
                 )
             })?;
-        if current.state() != action.expected_state() {
-            let expected = match action.expected_state() {
-                HerdrSessionState::Running => "running",
-                HerdrSessionState::Stopped => "stopped",
-            };
-            return Err(HostError::new(
-                DiagnosticKind::Transport,
-                format!("Herdr session {} is no longer {expected}", confirmed.name()),
-            ));
-        }
-        if current.session_directory() != confirmed.session_directory()
-            || current.socket_path() != confirmed.socket_path()
-        {
-            return Err(HostError::new(
-                DiagnosticKind::Transport,
-                format!(
-                    "Herdr session {} moved to a different configuration",
-                    confirmed.name()
-                ),
-            ));
-        }
+        validate_herdr_lifecycle_target(confirmed, current, action)?;
 
         self.require_runtime(endpoint, expected_runtime, cancellation)?;
 
@@ -2229,6 +2203,50 @@ impl<R: CommandRunner> WslHost<R> {
     }
 }
 
+fn validate_herdr_lifecycle_target(
+    confirmed: &HerdrSessionRecord,
+    current: &HerdrSessionRecord,
+    action: HerdrLifecycleAction,
+) -> Result<(), HostError> {
+    if action == HerdrLifecycleAction::Delete && current.is_default() {
+        return Err(HostError::new(
+            DiagnosticKind::UnsupportedEnvironment,
+            "Herdr's current default session cannot be deleted",
+        ));
+    }
+    if current.is_default() != confirmed.is_default() {
+        return Err(HostError::new(
+            DiagnosticKind::Transport,
+            format!(
+                "Herdr session {} changed its default role",
+                confirmed.name()
+            ),
+        ));
+    }
+    if current.state() != action.expected_state() {
+        let expected = match action.expected_state() {
+            HerdrSessionState::Running => "running",
+            HerdrSessionState::Stopped => "stopped",
+        };
+        return Err(HostError::new(
+            DiagnosticKind::Transport,
+            format!("Herdr session {} is no longer {expected}", confirmed.name()),
+        ));
+    }
+    if current.session_directory() != confirmed.session_directory()
+        || current.socket_path() != confirmed.socket_path()
+    {
+        return Err(HostError::new(
+            DiagnosticKind::Transport,
+            format!(
+                "Herdr session {} moved to a different configuration",
+                confirmed.name()
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn admission_matches(
     verified_endpoint: &WslEndpoint,
     verified_runtime: &WslRuntimeIdentity,
@@ -2928,7 +2946,9 @@ mod tests {
         let plan = host.herdr_launch_once(
             &endpoint,
             "/home/test/.local/bin/herdr",
-            HerdrSessionName::parse("review.fix_1").expect("valid name"),
+            HerdrLaunchTarget::created(
+                session::HerdrSessionName::parse("review.fix_1").expect("valid name"),
+            ),
             false,
         );
         let (program, args, target) = plan.into_parts();

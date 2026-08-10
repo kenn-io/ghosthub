@@ -255,6 +255,10 @@ direct argv after removing all inherited Herdr routing variables. Retained
 presentation switching uses the same presentation slot as tmux. Selecting a
 stopped row restarts it through the one-shot launch path: the default session
 uses plain `herdr`, while a named session uses `herdr --session <exact-name>`.
+Creation accepts Ghosthub's restricted user-authored name type; Restart carries
+the authoritative discovered name unchanged, so an existing session is not
+made unmanageable by newer creation rules. The captured default-session role
+is part of restart and lifecycle validation alongside state and paths.
 Stop and Delete require confirmation, then Host freshly revalidates the WSL
 runtime, executable, expected running or stopped state, session directory, and
 socket, followed by a final runtime check immediately before invoking the
