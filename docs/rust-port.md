@@ -609,7 +609,10 @@ binary, never a helper resolved from these directories or PATH.
 
 The Windows Rust build cross-compiles that exact revision for the WSL
 architecture with `tools/build_rust_kwt.ps1`. Cargo embeds the staged Linux
-binary plus its SHA-256 and revision; release builds fail if it is absent.
+binary plus its SHA-256 and revision. Cargo tracks the configured staging path
+even before it exists and accepts the helper only when its ELF machine matches
+the selected Linux architecture and its bytes contain the pinned revision;
+release builds fail if the helper is absent or invalid.
 The host activates it at the POSIX managed-helper path with an atomic rename
 and verifies both digest and reported revision before use. Developer builds
 may omit the bundle, in which case KWT inventory alone is unavailable.

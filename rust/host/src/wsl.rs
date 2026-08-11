@@ -1396,9 +1396,15 @@ impl<R: CommandRunner> WslHost<R> {
             }
             let mut args = pinned_prefix(endpoint);
             args.extend(
-                ["/usr/bin/cat", "--", receipt.path.as_str()]
-                    .into_iter()
-                    .map(OsString::from),
+                [
+                    "/usr/bin/env",
+                    "LC_ALL=C",
+                    "/usr/bin/cat",
+                    "--",
+                    receipt.path.as_str(),
+                ]
+                .into_iter()
+                .map(OsString::from),
             );
             let output = self
                 .runner

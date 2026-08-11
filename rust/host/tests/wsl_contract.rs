@@ -1543,6 +1543,44 @@ fn admission_uses_xterm_256color_for_creation_when_the_client_proves_it() {
 }
 
 #[test]
+fn creation_receipt_polling_uses_a_stable_c_locale() {
+    let runner = RecordingRunner::new(vec![
+        instance_output(),
+        output(0, "4242\t$3\t1700000000\t0\t4\twork\n", ""),
+        instance_output(),
+        output(1, "", "/usr/bin/cat: receipt: No such file or directory\n"),
+        output(0, "4242|$4|1700000001|!", ""),
+    ]);
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        runner,
+    );
+    let snapshot = discover(&host).expect("admit tmux");
+    let (_creation, receipt, _term) = host
+        .create_once(
+            snapshot.endpoint(),
+            snapshot.runtime(),
+            SessionName::parse("created").expect("valid session name"),
+        )
+        .expect("creation authority");
+
+    let identity = host
+        .wait_for_creation_identity(
+            snapshot.endpoint(),
+            &receipt,
+            &CancellationToken::new(),
+            std::time::Duration::from_secs(1),
+        )
+        .expect("receipt appears after the first poll");
+
+    assert_eq!(identity.session_id(), "$4");
+    assert!(host.runner().all_calls().iter().any(|(_, args)| {
+        args.windows(3)
+            .any(|arguments| arguments == ["/usr/bin/env", "LC_ALL=C", "/usr/bin/cat"])
+    }));
+}
+
+#[test]
 fn cleanup_retries_failed_termination_before_removing_the_socket_root() {
     let host = test_host(
         WslConfig::with_distro("Ubuntu").expect("valid config"),

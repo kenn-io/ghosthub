@@ -4,6 +4,36 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
+fn validate_linux_helper(bytes: &[u8], architecture: &str, revision: &str) -> Result<(), String> {
+    if bytes.len() < 20 || bytes[..4] != *b"\x7fELF" || bytes[4] != 2 || bytes[5] != 1 {
+        return Err("staged KWT helper is not a 64-bit little-endian ELF".to_owned());
+    }
+    let expected_machine = match architecture {
+        "amd64" => 62_u16,
+        "arm64" => 183_u16,
+        _ => {
+            return Err(format!(
+                "unsupported KWT helper architecture: {architecture}"
+            ));
+        }
+    };
+    let actual_machine = u16::from_le_bytes([bytes[18], bytes[19]]);
+    if actual_machine != expected_machine {
+        return Err(format!(
+            "staged KWT helper does not match linux-{architecture}"
+        ));
+    }
+    if !bytes
+        .windows(revision.len())
+        .any(|window| window == revision.as_bytes())
+    {
+        return Err(format!(
+            "staged KWT helper does not contain pinned revision {revision}"
+        ));
+    }
+    Ok(())
+}
+
 fn main() {
     println!("cargo:rerun-if-env-changed=GHOSTHUB_KWT_BUNDLE");
     println!("cargo:rerun-if-env-changed=GHOSTHUB_REQUIRE_KWT_BUNDLE");
@@ -44,6 +74,9 @@ fn main() {
                 .join("kwt")
         })
     });
+    if let Some(path) = &candidate {
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
 
     let out = PathBuf::from(env::var_os("OUT_DIR").expect("build output directory"));
     let bundled = out.join("kwt");
@@ -56,9 +89,13 @@ fn main() {
                 (false, String::new())
             },
             |path| {
-                println!("cargo:rerun-if-changed={}", path.display());
                 let bytes = fs::read(path).expect("read staged KWT helper");
-                assert!(!bytes.is_empty(), "staged KWT helper is empty");
+                validate_linux_helper(
+                    &bytes,
+                    architecture.expect("candidate architecture was filtered"),
+                    &revision,
+                )
+                .unwrap_or_else(|error| panic!("reject staged KWT helper: {error}"));
                 fs::write(&bundled, &bytes).expect("stage KWT helper in Cargo output");
                 let digest = hex::encode(Sha256::digest(&bytes));
                 (true, digest)

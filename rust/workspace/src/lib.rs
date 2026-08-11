@@ -5148,16 +5148,19 @@ fn reserve_kwt_refresh(inner: &Arc<Inner>, supersede: bool) -> Option<KwtRefresh
                 published.value.snapshot.runtime().clone(),
             )
         })?;
-    if !supersede
-        && inner
+    if !supersede {
+        let eligible = inner
             .hosts
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
             .find(|item| item.id == "wsl" && item.endpoint == endpoint.distro())
-            .is_some_and(HostItem::kwt_refreshing)
-    {
-        return None;
+            .is_some_and(|item| {
+                item.connection == HostConnectionState::Ready && !item.kwt_refreshing()
+            });
+        if !eligible {
+            return None;
+        }
     }
     let cancellation = CancellationToken::new();
     let generation = {
@@ -11617,6 +11620,49 @@ mod tests {
             runtime.deadline_delays(),
             vec![INVENTORY_REFRESH_INTERVAL, KWT_REFRESH_INTERVAL]
         );
+    }
+
+    #[test]
+    fn background_kwt_refresh_requires_the_matching_host_to_be_ready() {
+        let bundle =
+            host::KwtBundle::new("a".repeat(40), "b".repeat(64), [1_u8]).expect("valid bundle");
+        let config = WslConfig::with_distro("Ubuntu")
+            .expect("valid config")
+            .with_kwt_bundle(bundle);
+        let executable = WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
+            .expect("absolute WSL path");
+        let workspace = Workspace::application(
+            TerminalAppearance::default(),
+            Some(WslHostSpec::available(config.clone(), executable.clone())),
+        );
+        let snapshot = HostSnapshot::test_fixture("Ubuntu", "boot", 42, Vec::new());
+        *workspace.inner.host.lock().expect("published host") = Some(Published::new(
+            HostContext {
+                host: WslHost::new(
+                    config,
+                    Arc::new(StdCommandRunner) as SharedCommandRunner,
+                    executable,
+                ),
+                snapshot,
+            },
+            1,
+        ));
+
+        for state in [
+            HostConnectionState::Disconnected,
+            HostConnectionState::Unavailable,
+        ] {
+            workspace.inner.hosts.write().expect("hosts")[0].connection = state;
+            assert!(
+                reserve_kwt_refresh(&workspace.inner, false).is_none(),
+                "background KWT work must not use retained host authority while {state:?}"
+            );
+        }
+
+        workspace.inner.hosts.write().expect("hosts")[0].connection = HostConnectionState::Ready;
+        let refresh = reserve_kwt_refresh(&workspace.inner, false)
+            .expect("ready matching host permits background KWT refresh");
+        refresh.cancellation.cancel();
     }
 
     #[test]
