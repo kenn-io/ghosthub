@@ -210,6 +210,18 @@ final class WorktreeMutationCoordinator {
         [Scope: Set<ProtectedEndpoint>] = [:]
     private let eventSubject = PassthroughSubject<Event, Never>()
 
+    private struct ProtectedSelectionKey: Hashable {
+        let hostID: UUID
+        let name: String
+        let socketName: String?
+
+        init(_ selection: WorkspaceTmuxSessionSelection) {
+            hostID = selection.hostID
+            name = selection.name
+            socketName = selection.socketName
+        }
+    }
+
     var events: AnyPublisher<Event, Never> {
         eventSubject.eraseToAnyPublisher()
     }
@@ -234,11 +246,20 @@ final class WorktreeMutationCoordinator {
             let resolvedIdentities = Set(replacements.compactMap { endpoint in
                 endpoint.selection == nil ? nil : endpoint.worktreeIdentity
             })
-            guard !resolvedIdentities.isEmpty,
-                  let retired = retiredProtectedEndpointsByScope[scope]
+            let resolvedSelections = Set(replacements.compactMap {
+                $0.selection.map(ProtectedSelectionKey.init)
+            })
+            guard let retired = retiredProtectedEndpointsByScope[scope]
             else { continue }
-            let remaining = retired.filter {
-                !resolvedIdentities.contains($0.worktreeIdentity)
+            let remaining = retired.filter { endpoint in
+                guard let selection = endpoint.selection else {
+                    return !resolvedIdentities.contains(
+                        endpoint.worktreeIdentity
+                    )
+                }
+                return !resolvedSelections.contains(
+                    ProtectedSelectionKey(selection)
+                )
             }
             if remaining.isEmpty {
                 retiredProtectedEndpointsByScope.removeValue(forKey: scope)
@@ -293,14 +314,13 @@ final class WorktreeMutationCoordinator {
             guard project.warning == nil,
                   let retired = retiredProtectedEndpointsByScope[scope]
             else { continue }
-            let currentIdentities = Set(project.worktrees.map {
-                KwtWorktreeIdentity(
-                    path: $0.path,
-                    generation: $0.generation ?? ""
-                )
-            })
-            let remaining = retired.filter {
-                currentIdentities.contains($0.worktreeIdentity)
+            let remaining = retired.filter { endpoint in
+                project.worktrees.contains { worktree in
+                    endpoint.worktreeIdentity.matches(
+                        path: worktree.path,
+                        generation: worktree.generation
+                    )
+                }
             }
             if remaining.isEmpty {
                 retiredProtectedEndpointsByScope.removeValue(forKey: scope)
@@ -6667,7 +6687,7 @@ final class WorkspaceSceneModel: ObservableObject {
         on host: CommandHost
     ) -> Bool {
         guard snapshot.host(id: project.hostID)
-            .flatMap(CommandHostResolver.resolve) != nil
+            .flatMap(CommandHostResolver.resolve) == host
         else { return false }
         worktreeMutationCoordinator.quarantineProjectRemoval(
             hostID: project.hostID,
@@ -6884,17 +6904,25 @@ final class WorkspaceSceneModel: ObservableObject {
     private func preferredProtectedEndpoints(
         _ endpoints: [WorktreeMutationCoordinator.ProtectedEndpoint]
     ) -> Set<WorktreeMutationCoordinator.ProtectedEndpoint> {
-        var preferred: [
+        var resolved: [
+            TmuxPresentationKey:
+                WorktreeMutationCoordinator.ProtectedEndpoint
+        ] = [:]
+        var unresolved: [
             KwtWorktreeIdentity:
                 WorktreeMutationCoordinator.ProtectedEndpoint
         ] = [:]
         for endpoint in endpoints {
-            if preferred[endpoint.worktreeIdentity] == nil
-                || endpoint.selection != nil {
-                preferred[endpoint.worktreeIdentity] = endpoint
+            if let selection = endpoint.selection {
+                resolved[TmuxPresentationKey(selection)] = endpoint
+            } else if unresolved[endpoint.worktreeIdentity] == nil {
+                unresolved[endpoint.worktreeIdentity] = endpoint
             }
         }
-        return Set(preferred.values)
+        let resolvedIdentities = Set(resolved.values.map(\.worktreeIdentity))
+        return Set(resolved.values).union(unresolved.values.filter {
+            !resolvedIdentities.contains($0.worktreeIdentity)
+        })
     }
 
     private func fetchEnrichedSnapshot(

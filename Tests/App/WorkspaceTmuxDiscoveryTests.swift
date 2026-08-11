@@ -6206,6 +6206,51 @@ struct WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("Generationless inventory preserves a matching retired endpoint")
+    func generationlessInventoryPreservesRetiredEndpoint() throws {
+        let environment = try setupStandardEnvironment()
+        let project = try #require(environment.snapshot.projects.first)
+        var worktree = try #require(environment.snapshot.worktrees.first)
+        let canonicalGeneration =
+            "0123456789abcdef0123456789abcdef01234567"
+        worktree.generation = nil
+        let identity = KwtWorktreeIdentity(
+            path: worktree.path,
+            generation: canonicalGeneration
+        )
+        let endpoint = WorktreeMutationCoordinator.ProtectedEndpoint(
+            worktreeName: worktree.name,
+            worktreeIdentity: identity,
+            selection: WorkspaceTmuxSessionSelection(
+                hostID: project.hostID,
+                name: "kwt-ghosthub-pr-94",
+                worktreeID: worktree.id,
+                workspacePath: worktree.path,
+                worktreeGeneration: canonicalGeneration,
+                socketName: "kwt-pr-94"
+            )
+        )
+        let scope = WorktreeMutationCoordinator.Scope(
+            hostID: project.hostID,
+            projectIdentity: project.scopedKey
+        )
+        let participant = UUID()
+        let coordinator = WorktreeMutationCoordinator()
+        coordinator.replaceProtectedEndpoints(
+            [scope: [endpoint]],
+            for: participant
+        )
+        coordinator.retireProtectedEndpoints(for: participant)
+
+        coordinator.reconcileRetiredProtectedEndpoints(
+            after: Self.inventory(project: project, worktrees: [worktree]),
+            hostID: project.hostID
+        )
+
+        #expect(coordinator.protectedEndpoints(in: scope) == [endpoint])
+    }
+
+    @MainActor
     @Test("Complete inventory prunes a vanished unresolved retired endpoint")
     func completeInventoryPrunesVanishedRetiredEndpoint() async throws {
         let environment = try setupStandardEnvironment()
@@ -6461,6 +6506,95 @@ struct WorkspaceTmuxDiscoveryTests {
         #expect(removalCalls.count == 0)
         await otherScene.shutdown()
         await removalScene.shutdown()
+    }
+
+    @MainActor
+    @Test("Remove Project probes retired endpoints after socket drift")
+    func removeProjectProbesRetiredEndpointAfterSocketDrift() async throws {
+        let environment = try setupStandardEnvironment()
+        var snapshot = environment.snapshot
+        snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-current"
+        snapshot.worktrees[0].tmuxSocketName = "kwt-current"
+        let project = try #require(snapshot.projects.first)
+        let host = try #require(snapshot.hosts.first)
+        let worktree = try #require(snapshot.worktrees.first)
+        let currentSelection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: worktree)
+        )
+        var retiredSelection = currentSelection
+        retiredSelection.name = "kwt-ghosthub-retired"
+        retiredSelection.socketName = "kwt-retired"
+        let liveRetiredSelection = retiredSelection
+        let inventory = Self.inventory(
+            project: project,
+            worktrees: snapshot.worktrees
+        )
+        let scope = WorktreeMutationCoordinator.Scope(
+            hostID: project.hostID,
+            projectIdentity: project.scopedKey
+        )
+        let identity = KwtWorktreeIdentity(
+            path: worktree.path,
+            generation: worktree.generation ?? ""
+        )
+        let coordinator = WorktreeMutationCoordinator()
+        let removalCalls = Counter()
+        let probedSelections = LockedValue<
+            Set<WorkspaceTmuxSessionSelection>
+        >([])
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            kwtInventoryLoader: { _ in inventory },
+            worktreeMutationCoordinator: coordinator,
+            kwtProjectRemoval: { path, _, _ in
+                _ = removalCalls.increment()
+                return KwtProjectRecord(
+                    repository: project.scopedKey,
+                    name: project.name,
+                    path: path,
+                    lastTouched: nil
+                )
+            },
+            tmuxSessionIdentityReader: { selection, host in
+                probedSelections.withLock { $0.insert(selection) }
+                if selection == liveRetiredSelection {
+                    return TmuxSessionIdentity(
+                        serverPID: "31415",
+                        sessionID: "$42",
+                        createdAt: "1721552400"
+                    )
+                }
+                throw TmuxSessionKillError.sessionNotRunning(
+                    host: host.displayName,
+                    session: selection.name
+                )
+            }
+        )
+        let retiredParticipant = UUID()
+        coordinator.replaceProtectedEndpoints([
+            scope: [WorktreeMutationCoordinator.ProtectedEndpoint(
+                worktreeName: worktree.name,
+                worktreeIdentity: identity,
+                selection: liveRetiredSelection
+            )],
+        ], for: retiredParticipant)
+        coordinator.retireProtectedEndpoints(for: retiredParticipant)
+
+        let result = await model.unregisterProject(
+            project,
+            confirmedHost: host
+        )
+
+        #expect(result == .failure(.message(
+            "Session “kwt-ghosthub-retired” is still running on its "
+                + "protected tmux server. Kill it before removing project "
+                + "“Ghosthub”."
+        )))
+        #expect(probedSelections.load().contains(liveRetiredSelection))
+        #expect(removalCalls.count == 0)
+        await model.shutdown()
     }
 
     @MainActor
@@ -8500,11 +8634,17 @@ struct WorkspaceTmuxDiscoveryTests {
         #expect(await removalTask.value == .failure(.message(
             "The project or host connection changed. Try removing it again."
         )))
-        model.startKwtInventory()
-        await waitUntilMainActor { coordinator.scopes.isEmpty }
-        #expect(model.snapshot.projects.contains {
-            $0.scopedKey == project.scopedKey
-        })
+        #expect(coordinator.scopes.isEmpty)
+        let registryHost = WorktreeMutationCoordinator.ProjectRegistryHost(
+            target: .ssh(SSHHostInfo(
+                user: "wesm",
+                hostname: "office-linux",
+                port: 22,
+                platform: .posix
+            ))
+        )
+        #expect(coordinator.acquireProjectRegistry(host: registryHost))
+        coordinator.releaseProjectRegistry(host: registryHost)
         await model.shutdown()
     }
 
