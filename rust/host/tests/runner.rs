@@ -1,5 +1,5 @@
 use std::ffi::OsString;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -73,6 +73,31 @@ fn descendant_inheriting_output_pipe_cannot_stall_collection() {
     assert!(started.elapsed() < Duration::from_secs(2));
 }
 
+#[test]
+fn finite_binary_input_reaches_the_child_without_shell_encoding() {
+    let payload = b"kwt\0bundle\r\nbytes";
+    let output = StdCommandRunner
+        .run_with_input(
+            std::env::current_exe()
+                .expect("current test executable")
+                .as_os_str(),
+            &exact_helper_args("stdin_echo_helper"),
+            payload,
+            &CancellationToken::new(),
+            Duration::from_secs(5),
+        )
+        .expect("input command completes");
+
+    assert_eq!(output.status, 0);
+    assert!(
+        output
+            .stdout
+            .windows(payload.len())
+            .any(|bytes| bytes == payload),
+        "the subprocess must receive the binary payload unchanged"
+    );
+}
+
 fn helper_args() -> Vec<OsString> {
     exact_helper_args("blocking_runner_helper")
 }
@@ -112,4 +137,12 @@ fn descendant_pipe_holder_helper() {
 #[ignore = "subprocess helper selected explicitly by the runner tests"]
 fn pipe_holder_helper() {
     thread::sleep(Duration::from_secs(30));
+}
+
+#[test]
+#[ignore = "subprocess helper selected explicitly by the runner tests"]
+fn stdin_echo_helper() {
+    let mut input = Vec::new();
+    io::stdin().read_to_end(&mut input).expect("read stdin");
+    io::stdout().write_all(&input).expect("write stdout");
 }

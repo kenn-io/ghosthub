@@ -11,25 +11,31 @@ use std::time::Duration;
 use gpui::{
     App, Application, Bounds, ClipboardItem, Context, FocusHandle, Focusable, FontWeight,
     IntoElement, KeyBinding, KeyDownEvent, KeyUpEvent, MouseButton as GpuiMouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Render, ScrollWheelEvent, TitlebarOptions,
-    Window, WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowDecorations,
-    WindowOptions, actions, div, font, prelude::*, px, rgb, rgba, size,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathPromptOptions, Render, ScrollWheelEvent,
+    TitlebarOptions, Window, WindowBackgroundAppearance, WindowBounds, WindowControlArea,
+    WindowDecorations, WindowOptions, actions, div, font, prelude::*, px, rgb, rgba, size,
 };
 use model::PortStatus;
 use surface::{CellStyle, Damage, GridSize, Rgb, SurfaceFrame, SurfaceStore};
 use workspace::{
     HerdrSessionState, HostConnectionState, HostItem, KeyEvent as InputKeyEvent, KeyInput,
-    Modifiers as InputModifiers, MouseAction, MouseButton, MouseInput, NamedKey, SessionName,
-    SessionSelection, Workspace, WorkspaceContent, WorkspaceEvent,
+    KwtProjectAction, Modifiers as InputModifiers, MouseAction, MouseButton, MouseInput, NamedKey,
+    SessionName, SessionSelection, Workspace, WorkspaceContent, WorkspaceEvent,
 };
 
 pub const WINDOW_TITLE: &str = "Ghosthub";
-const APP_NAVIGATION_WIDTH: f32 = 260.0;
+const APP_NAVIGATION_WIDTH: f32 = 224.0;
 const APP_TITLEBAR_HEIGHT: f32 = 32.0;
 const APP_CHROME_BACKGROUND: u32 = 0x0f_1116;
-const NAVIGATION_HEADER_HEIGHT: f32 = 36.0;
-const HOST_ROW_HEIGHT: f32 = 30.0;
-const SESSION_ROW_HEIGHT: f32 = 30.0;
+const NAVIGATION_HEADER_HEIGHT: f32 = 32.0;
+const HOST_ROW_HEIGHT: f32 = 28.0;
+const SESSION_GROUP_ROW_HEIGHT: f32 = 24.0;
+const SESSION_ROW_HEIGHT: f32 = 27.0;
+const SESSION_GROUP_BACKGROUND: u32 = 0x12_151b;
+const SESSION_GROUP_TEXT: u32 = 0x86_8e9b;
+const SESSION_GROUP_INSET: f32 = 12.0;
+const SESSION_ROW_INSET: f32 = 18.0;
+const NESTED_SESSION_ROW_INSET: f32 = 28.0;
 const CELL_LINE_GAP: f32 = 4.0;
 const UI_INPUT_CAPACITY: usize = 512;
 const MOUSE_RELEASE_RESERVE: usize = 3;
@@ -52,7 +58,7 @@ pub fn host_status_text(host: &HostItem) -> String {
         HostConnectionState::Disconnected => format!("{} is ready to connect", host.endpoint()),
         HostConnectionState::Connecting => {
             format!(
-                "Connecting to {} and discovering tmux sessions…",
+                "Connecting to {} and discovering sessions…",
                 host.endpoint()
             )
         }
@@ -283,6 +289,7 @@ pub struct RootView {
     workspace: Workspace,
     focus: FocusHandle,
     create_focus: FocusHandle,
+    project_focus: FocusHandle,
     kill_focus: FocusHandle,
     diagnostic: Option<String>,
     paste_confirmation: bool,
@@ -300,6 +307,9 @@ pub struct RootView {
     pointer: TerminalPointer,
     sidebar_visible: bool,
     new_session: Option<NewSessionDraft>,
+    project_dialog: Option<ProjectDialog>,
+    session_action_menu: Option<SessionActionMenu>,
+    restore_focus: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -314,6 +324,49 @@ struct NewSessionDraft {
 enum NewSessionKind {
     Tmux,
     Herdr,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct SessionActionMenu {
+    selection: SessionSelection,
+    actions: Vec<SessionRowAction>,
+    anchor_x: f32,
+    anchor_y: f32,
+}
+
+const SESSION_ACTION_MENU_WIDTH: f32 = 112.0;
+const SESSION_ACTION_MENU_ITEM_HEIGHT: f32 = 26.0;
+const SESSION_ACTION_MENU_VERTICAL_CHROME: f32 = 8.0;
+const SESSION_ACTION_MENU_MARGIN: f32 = 4.0;
+const SESSION_ACTION_MENU_OFFSET: f32 = 3.0;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ProjectDialog {
+    Add {
+        host_id: String,
+        endpoint: String,
+        path: String,
+        submitting: bool,
+        error: Option<String>,
+    },
+    Remove {
+        host_id: String,
+        endpoint: String,
+        name: String,
+        repository: String,
+        path: String,
+        submitting: bool,
+        error: Option<String>,
+    },
+}
+
+impl ProjectDialog {
+    const fn action(&self) -> KwtProjectAction {
+        match self {
+            Self::Add { .. } => KwtProjectAction::Add,
+            Self::Remove { .. } => KwtProjectAction::Remove,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -622,6 +675,7 @@ impl RootView {
             workspace,
             focus: cx.focus_handle(),
             create_focus: cx.focus_handle(),
+            project_focus: cx.focus_handle(),
             kill_focus: cx.focus_handle(),
             diagnostic: None,
             paste_confirmation: false,
@@ -639,6 +693,9 @@ impl RootView {
             pointer: TerminalPointer::default(),
             sidebar_visible: true,
             new_session: None,
+            project_dialog: None,
+            session_action_menu: None,
+            restore_focus: false,
         };
         view.resize_for_window(window);
         view
@@ -732,6 +789,210 @@ impl RootView {
         self.new_session = None;
         window.focus(&self.focus);
         cx.notify();
+    }
+
+    fn open_add_project(
+        &mut self,
+        host_id: &str,
+        endpoint: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.project_dialog = Some(ProjectDialog::Add {
+            host_id: host_id.to_owned(),
+            endpoint: endpoint.to_owned(),
+            path: String::new(),
+            submitting: false,
+            error: None,
+        });
+        self.diagnostic = None;
+        window.focus(&self.project_focus);
+        cx.notify();
+    }
+
+    fn browse_for_project(&mut self, cx: &mut Context<Self>) {
+        if !matches!(
+            self.project_dialog.as_ref(),
+            Some(ProjectDialog::Add {
+                submitting: false,
+                ..
+            })
+        ) {
+            return;
+        }
+        let selection = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Choose project folder".into()),
+        });
+        cx.spawn(async move |view, cx| {
+            let result = selection.await;
+            let _ignored = view.update(cx, |view, cx| {
+                let Some(ProjectDialog::Add {
+                    path,
+                    submitting: false,
+                    error,
+                    ..
+                }) = &mut view.project_dialog
+                else {
+                    return;
+                };
+                match result {
+                    Ok(Ok(Some(paths))) => {
+                        if let Some(selected) = paths.into_iter().next() {
+                            *path = selected.to_string_lossy().into_owned();
+                            *error = None;
+                        }
+                    }
+                    Ok(Ok(None)) | Err(_) => {}
+                    Ok(Err(prompt_error)) => {
+                        *error = Some(format!("Could not open the folder browser: {prompt_error}"));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn open_remove_project(
+        &mut self,
+        host_id: &str,
+        endpoint: &str,
+        project: &workspace::ProjectItem,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.project_dialog = Some(ProjectDialog::Remove {
+            host_id: host_id.to_owned(),
+            endpoint: endpoint.to_owned(),
+            name: project.name().to_owned(),
+            repository: project.repository().to_owned(),
+            path: project.path().to_owned(),
+            submitting: false,
+            error: None,
+        });
+        self.diagnostic = None;
+        window.focus(&self.project_focus);
+        cx.notify();
+    }
+
+    fn cancel_project_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self
+            .project_dialog
+            .as_ref()
+            .is_some_and(|dialog| match dialog {
+                ProjectDialog::Add { submitting, .. }
+                | ProjectDialog::Remove { submitting, .. } => *submitting,
+            })
+        {
+            return;
+        }
+        self.project_dialog = None;
+        window.focus(&self.focus);
+        cx.notify();
+    }
+
+    fn submit_project_dialog(&mut self, cx: &mut Context<Self>) {
+        let result = match self.project_dialog.as_ref() {
+            Some(ProjectDialog::Add {
+                host_id,
+                endpoint,
+                path,
+                submitting: false,
+                ..
+            }) => self.workspace.add_kwt_project(host_id, endpoint, path),
+            Some(ProjectDialog::Remove {
+                host_id,
+                endpoint,
+                repository,
+                path,
+                submitting: false,
+                ..
+            }) => self
+                .workspace
+                .remove_kwt_project(host_id, endpoint, repository, path),
+            _ => return,
+        };
+        match result {
+            Ok(()) => {
+                if let Some(dialog) = &mut self.project_dialog {
+                    match dialog {
+                        ProjectDialog::Add {
+                            submitting, error, ..
+                        }
+                        | ProjectDialog::Remove {
+                            submitting, error, ..
+                        } => {
+                            *submitting = true;
+                            *error = None;
+                        }
+                    }
+                }
+            }
+            Err(error) => {
+                if let Some(dialog) = &mut self.project_dialog {
+                    match dialog {
+                        ProjectDialog::Add { error: inline, .. }
+                        | ProjectDialog::Remove { error: inline, .. } => {
+                            *inline = Some(error.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    fn on_project_dialog_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let key = event.keystroke.key.to_ascii_lowercase();
+        if key == "escape" && !event.is_held {
+            self.cancel_project_dialog(window, cx);
+            cx.stop_propagation();
+            return;
+        }
+        if key == "enter" && !event.is_held {
+            self.submit_project_dialog(cx);
+            cx.stop_propagation();
+            return;
+        }
+        let Some(ProjectDialog::Add {
+            path,
+            submitting: false,
+            error,
+            ..
+        }) = &mut self.project_dialog
+        else {
+            cx.stop_propagation();
+            return;
+        };
+        *error = None;
+        if is_paste_shortcut(&event.keystroke) {
+            if !event.is_held
+                && let Some(text) = cx.read_from_clipboard().and_then(|item| item.text())
+            {
+                path.extend(text.chars().filter(|character| !character.is_control()));
+                cx.notify();
+            }
+        } else if key == "backspace" {
+            path.pop();
+            cx.notify();
+        } else if !event.keystroke.modifiers.control
+            && !event.keystroke.modifiers.alt
+            && !event.keystroke.modifiers.platform
+            && !event.keystroke.modifiers.function
+            && let Some(text) = &event.keystroke.key_char
+        {
+            path.extend(text.chars().filter(|character| !character.is_control()));
+            cx.notify();
+        }
+        cx.stop_propagation();
     }
 
     fn submit_new_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -985,6 +1246,36 @@ impl RootView {
                     }
                 }
                 WorkspaceEvent::ConfirmPaste => self.paste_confirmation = true,
+                WorkspaceEvent::KwtProjectMutationFinished { action, .. } => {
+                    if self
+                        .project_dialog
+                        .as_ref()
+                        .is_some_and(|dialog| dialog.action() == action)
+                    {
+                        self.project_dialog = None;
+                        self.restore_focus = true;
+                    }
+                    self.diagnostic = None;
+                }
+                WorkspaceEvent::KwtProjectMutationFailed { action, message } => {
+                    if let Some(dialog) = &mut self.project_dialog
+                        && dialog.action() == action
+                    {
+                        match dialog {
+                            ProjectDialog::Add {
+                                submitting, error, ..
+                            }
+                            | ProjectDialog::Remove {
+                                submitting, error, ..
+                            } => {
+                                *submitting = false;
+                                *error = Some(message);
+                            }
+                        }
+                    } else {
+                        self.diagnostic = Some(message);
+                    }
+                }
                 WorkspaceEvent::Error(error) => self.diagnostic = Some(error),
             }
         }
@@ -1642,7 +1933,7 @@ impl RootView {
         }
         match snapshot.content() {
             WorkspaceContent::Shell => centered("No terminal hosts are available."),
-            WorkspaceContent::Loading => centered("Starting WSL and discovering tmux sessions…"),
+            WorkspaceContent::Loading => centered("Starting WSL and discovering sessions…"),
             WorkspaceContent::Error { message } => div()
                 .size_full()
                 .flex()
@@ -1704,7 +1995,7 @@ impl RootView {
             WorkspaceContent::Attaching {
                 endpoint, session, ..
             } => centered(format!("Attaching to {endpoint} · {session}…")),
-            WorkspaceContent::Loading => centered("Starting WSL and discovering tmux sessions…"),
+            WorkspaceContent::Loading => centered("Starting WSL and discovering sessions…"),
             WorkspaceContent::Error { message } => centered(message.clone()),
             WorkspaceContent::Shell | WorkspaceContent::Ready { .. } => selected.map_or_else(
                 || centered("No terminal hosts are available."),
@@ -1858,6 +2149,232 @@ impl RootView {
                                 .child(message)
                         }))
                         .child(Self::new_session_actions(can_create, cx)),
+                )
+                .into_any_element(),
+        )
+    }
+
+    #[allow(clippy::too_many_lines)] // Declarative GPUI dialog hierarchy.
+    fn project_overlay(&self, window: &Window, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let dialog = self.project_dialog.as_ref()?;
+        let focused = self.project_focus.is_focused(window);
+        let (title, body, action_label, submitting, can_submit, error) =
+            match dialog {
+                ProjectDialog::Add {
+                    path,
+                    submitting,
+                    error,
+                    ..
+                } => {
+                    let valid = workspace::is_absolute_project_path_input(path);
+                    let text = if path.is_empty() && !focused {
+                        "Choose a folder or enter a WSL path".to_owned()
+                    } else if path.is_empty() {
+                        "▏".to_owned()
+                    } else {
+                        format!("{path}▏")
+                    };
+                    let input = div()
+                        .id("kwt-project-path-input")
+                        .px_3()
+                        .h(px(38.0))
+                        .flex_1()
+                        .flex()
+                        .items_center()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(rgb(if focused { 0x4a_8f_cf } else { 0x3a_404c }))
+                        .bg(rgb(0x0f_1218))
+                        .cursor_text()
+                        .text_sm()
+                        .text_color(rgb(if path.is_empty() && !focused {
+                            0x72_7986
+                        } else {
+                            0xe1_e5ec
+                        }))
+                        .child(text)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            window.focus(&this.project_focus);
+                            cx.notify();
+                        }))
+                        .into_any_element();
+                    let body = div()
+                        .m_4()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(input)
+                        .child(
+                            div()
+                                .id("browse-kwt-project")
+                                .h(px(38.0))
+                                .px_3()
+                                .flex()
+                                .items_center()
+                                .rounded_md()
+                                .border_1()
+                                .border_color(rgb(0x3a_404c))
+                                .text_sm()
+                                .text_color(rgb(if *submitting { 0x72_7986 } else { 0xc7_ccd5 }))
+                                .child("Browse…")
+                                .when(!*submitting, |element| {
+                                    element
+                                        .cursor_pointer()
+                                        .hover(|style| style.bg(rgb(0x29_2e38)))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.browse_for_project(cx);
+                                        }))
+                                }),
+                        )
+                        .into_any_element();
+                    (
+                        "Add Project",
+                        body,
+                        if *submitting {
+                            "Adding…"
+                        } else {
+                            "Add Project"
+                        },
+                        *submitting,
+                        valid && !*submitting,
+                        error.as_deref(),
+                    )
+                }
+                ProjectDialog::Remove {
+                    endpoint,
+                    name,
+                    path,
+                    submitting,
+                    error,
+                    ..
+                } => {
+                    let body =
+                        div()
+                            .px_4()
+                            .py_4()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .text_sm()
+                            .text_color(rgb(0xb6_bcc7))
+                            .child(format!("Remove “{name}” from {endpoint}?"))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(0x8f_96_a3))
+                                    .child(path.clone()),
+                            )
+                            .child(div().text_xs().text_color(rgb(0x8f_96_a3)).child(
+                                "The repository, worktrees, and tmux sessions are not deleted.",
+                            ))
+                            .into_any_element();
+                    (
+                        "Remove Project",
+                        body,
+                        if *submitting { "Removing…" } else { "Remove" },
+                        *submitting,
+                        !*submitting,
+                        error.as_deref(),
+                    )
+                }
+            };
+
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(rgba(0x00_00_00_80))
+                .child(
+                    div()
+                        .id("kwt-project-dialog")
+                        .track_focus(&self.project_focus)
+                        .w(px(460.0))
+                        .flex()
+                        .flex_col()
+                        .rounded_lg()
+                        .border_1()
+                        .border_color(rgb(0x36_3c48))
+                        .bg(rgb(0x18_1b22))
+                        .shadow_lg()
+                        .on_key_down(cx.listener(|this, event, window, cx| {
+                            this.on_project_dialog_key_down(event, window, cx);
+                        }))
+                        .child(
+                            div()
+                                .px_4()
+                                .py_3()
+                                .border_b_1()
+                                .border_color(rgb(0x2a_2f39))
+                                .text_sm()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(rgb(0xe0_e4eb))
+                                .child(title),
+                        )
+                        .child(body)
+                        .children(error.map(|message| {
+                            div()
+                                .px_4()
+                                .pb_3()
+                                .text_xs()
+                                .text_color(rgb(0xd0_7070))
+                                .child(message.to_owned())
+                        }))
+                        .child(
+                            div()
+                                .px_4()
+                                .py_3()
+                                .border_t_1()
+                                .border_color(rgb(0x2a_2f39))
+                                .flex()
+                                .items_center()
+                                .justify_end()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .id("cancel-kwt-project")
+                                        .px_3()
+                                        .py_1()
+                                        .rounded_sm()
+                                        .text_sm()
+                                        .text_color(rgb(if submitting {
+                                            0x72_7986
+                                        } else {
+                                            0xb6_bcc7
+                                        }))
+                                        .child("Cancel")
+                                        .when(!submitting, |element| {
+                                            element
+                                                .cursor_pointer()
+                                                .hover(|style| style.bg(rgb(0x29_2e38)))
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.cancel_project_dialog(window, cx);
+                                                }))
+                                        }),
+                                )
+                                .child(
+                                    div()
+                                        .id("submit-kwt-project")
+                                        .px_3()
+                                        .py_1()
+                                        .rounded_sm()
+                                        .bg(rgb(if can_submit { 0x1d_5f9a } else { 0x2b_3039 }))
+                                        .text_sm()
+                                        .text_color(rgb(if can_submit {
+                                            0xf1_f5fa
+                                        } else {
+                                            0x72_7986
+                                        }))
+                                        .child(action_label)
+                                        .when(can_submit, |element| {
+                                            element.cursor_pointer().on_click(cx.listener(
+                                                |this, _, _, cx| this.submit_project_dialog(cx),
+                                            ))
+                                        }),
+                                ),
+                        ),
                 )
                 .into_any_element(),
         )
@@ -2080,6 +2597,112 @@ impl RootView {
         Some(self.herdr_lifecycle_overlay(&confirmation, cx))
     }
 
+    fn session_action_menu_overlay(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let menu = self.session_action_menu.clone()?;
+        let bounds = window.bounds();
+        let (left, top) = session_action_menu_position(
+            menu.anchor_x,
+            menu.anchor_y,
+            f32::from(bounds.size.width),
+            f32::from(bounds.size.height),
+            menu.actions.len(),
+        );
+        let mut items = div()
+            .id("session-action-menu")
+            .absolute()
+            .left(px(left))
+            .top(px(top))
+            .w(px(SESSION_ACTION_MENU_WIDTH))
+            .py_1()
+            .rounded_md()
+            .border_1()
+            .border_color(rgb(0x36_3c48))
+            .bg(rgb(0x1b_1f27))
+            .shadow_lg()
+            .on_mouse_down(GpuiMouseButton::Left, |_, _, cx| cx.stop_propagation());
+        for action in menu.actions {
+            items = items.child(Self::session_action_menu_item(
+                menu.selection.clone(),
+                action,
+                cx,
+            ));
+        }
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .on_mouse_down(
+                    GpuiMouseButton::Left,
+                    cx.listener(|this, _, _, cx| {
+                        this.session_action_menu = None;
+                        cx.notify();
+                    }),
+                )
+                .child(items)
+                .into_any_element(),
+        )
+    }
+
+    fn session_action_menu_item(
+        selection: SessionSelection,
+        action: SessionRowAction,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let (id, label, color) = match action {
+            SessionRowAction::Detach => ("session-action-detach", "Detach", 0x87_b9e8),
+            SessionRowAction::KillTmux => ("tmux-action-kill", "Kill", 0xd6_747a),
+            SessionRowAction::Herdr(HerdrRowAction::Stop) => {
+                ("herdr-action-stop", "Stop", 0xd6_747a)
+            }
+            SessionRowAction::Herdr(HerdrRowAction::Restart) => {
+                ("herdr-action-restart", "Restart", 0x87_b9e8)
+            }
+            SessionRowAction::Herdr(HerdrRowAction::Delete) => {
+                ("herdr-action-delete", "Delete", 0xd6_747a)
+            }
+        };
+        div()
+            .id(id)
+            .mx_1()
+            .h(px(26.0))
+            .px_2()
+            .flex()
+            .items_center()
+            .rounded_sm()
+            .cursor_pointer()
+            .text_sm()
+            .text_color(rgb(color))
+            .hover(|style| style.bg(rgb(0x2a_2f39)))
+            .child(label)
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.session_action_menu = None;
+                match action {
+                    SessionRowAction::Detach => this.detach_session(window, cx),
+                    SessionRowAction::KillTmux => this.request_session_kill(&selection, cx),
+                    SessionRowAction::Herdr(HerdrRowAction::Stop) => this.request_herdr_lifecycle(
+                        &selection,
+                        workspace::HerdrLifecycleAction::Stop,
+                        cx,
+                    ),
+                    SessionRowAction::Herdr(HerdrRowAction::Restart) => {
+                        this.restart_herdr_session(&selection, window, cx);
+                    }
+                    SessionRowAction::Herdr(HerdrRowAction::Delete) => this
+                        .request_herdr_lifecycle(
+                            &selection,
+                            workspace::HerdrLifecycleAction::Delete,
+                            cx,
+                        ),
+                }
+                cx.stop_propagation();
+            }))
+            .into_any_element()
+    }
+
     fn synchronize_render_state(&mut self, snapshot: &workspace::WorkspaceSnapshot) {
         self.observed_revision = snapshot.revision();
         if !matches!(snapshot.content(), WorkspaceContent::Terminal { .. }) {
@@ -2261,6 +2884,14 @@ impl RootView {
         if groups.herdr {
             host_tree = host_tree.child(Self::herdr_tree(host_index, host, &herdr_sessions, cx));
         }
+        if host.kwt_available()
+            || !host.projects().is_empty()
+            || !host.directory_workspaces().is_empty()
+            || host.kwt_diagnostic().is_some()
+        {
+            host_tree =
+                host_tree.child(Self::project_tree(host_index, host, content, retained, cx));
+        }
         host_tree.into_any_element()
     }
 
@@ -2283,7 +2914,9 @@ impl RootView {
             .items_center()
             .gap_1()
             .px_2()
-            .bg(rgb(if is_selected { 0x16_1920 } else { 0x0f_1116 }))
+            .border_b_1()
+            .border_color(rgb(0x20_242c))
+            .bg(rgb(if is_selected { 0x18_1b22 } else { 0x14_171d }))
             .child(
                 div()
                     .w(px(12.0))
@@ -2353,59 +2986,54 @@ impl RootView {
         sessions: &[TreeSession],
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let mut tree = div()
-            .ml(px(18.0))
-            .border_l_1()
-            .border_color(rgb(0x25_2932))
-            .flex()
-            .flex_col()
-            .child({
-                let mut header = div()
-                    .h(px(24.0))
-                    .flex()
-                    .items_center()
-                    .pl(px(17.0))
-                    .pr_1()
-                    .text_xs()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(rgb(0x73_7a87))
-                    .child(div().flex_1().child("TMUX SESSIONS"));
-                if host.connection() == HostConnectionState::Ready {
-                    let host_id = host.id().to_owned();
-                    let endpoint = host.endpoint().to_owned();
-                    header = header.child(
-                        div()
-                            .id(("create-tmux-session", host_index))
-                            .size(px(22.0))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded_sm()
-                            .cursor_pointer()
-                            .text_sm()
-                            .text_color(rgb(0x8f_96_a3))
-                            .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xd2_d7_df)))
-                            .child("+")
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_new_session(
-                                    &host_id,
-                                    &endpoint,
-                                    NewSessionKind::Tmux,
-                                    window,
-                                    cx,
-                                );
-                            })),
-                    );
-                }
-                header
-            });
+        let mut tree = div().w_full().flex().flex_col().child({
+            let mut header = div()
+                .h(px(SESSION_GROUP_ROW_HEIGHT))
+                .flex()
+                .items_center()
+                .pl(px(SESSION_GROUP_INSET))
+                .pr_1()
+                .bg(rgb(SESSION_GROUP_BACKGROUND))
+                .text_xs()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(rgb(SESSION_GROUP_TEXT))
+                .child(div().flex_1().child("TMUX SESSIONS"));
+            if host.connection() == HostConnectionState::Ready {
+                let host_id = host.id().to_owned();
+                let endpoint = host.endpoint().to_owned();
+                header = header.child(
+                    div()
+                        .id(("create-tmux-session", host_index))
+                        .size(px(22.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .text_sm()
+                        .text_color(rgb(0x8f_96_a3))
+                        .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xd2_d7_df)))
+                        .child("+")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_new_session(
+                                &host_id,
+                                &endpoint,
+                                NewSessionKind::Tmux,
+                                window,
+                                cx,
+                            );
+                        })),
+                );
+            }
+            header
+        });
         if sessions.is_empty() {
             tree = tree.child(
                 div()
                     .h(px(SESSION_ROW_HEIGHT))
                     .flex()
                     .items_center()
-                    .pl(px(31.0))
+                    .pl(px(SESSION_ROW_INSET))
                     .text_xs()
                     .text_color(rgb(0x73_7a87))
                     .child("No sessions"),
@@ -2422,6 +3050,279 @@ impl RootView {
         tree.into_any_element()
     }
 
+    #[allow(clippy::too_many_lines)] // Declarative GPUI tree hierarchy.
+    fn project_tree(
+        host_index: usize,
+        host: &HostItem,
+        content: &WorkspaceContent,
+        retained: &[SessionSelection],
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let active = active_session_selection(content);
+        let can_add = host.can_add_kwt_project();
+        let can_remove = host.can_remove_kwt_project();
+        let mut tree = div().w_full().flex().flex_col().child({
+            let mut header = div()
+                .h(px(SESSION_GROUP_ROW_HEIGHT))
+                .flex()
+                .items_center()
+                .pl(px(SESSION_GROUP_INSET))
+                .pr_1()
+                .bg(rgb(SESSION_GROUP_BACKGROUND))
+                .text_xs()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(rgb(SESSION_GROUP_TEXT))
+                .child(div().flex_1().child("PROJECTS"));
+            if host.kwt_refreshing() {
+                header = header.child(
+                    div()
+                        .px_1()
+                        .text_xs()
+                        .text_color(rgb(0x6f_7682))
+                        .child(if host.kwt_mutating() { "…" } else { "↻" }),
+                );
+            }
+            if can_add {
+                let host_id = host.id().to_owned();
+                let endpoint = host.endpoint().to_owned();
+                header = header.child(
+                    div()
+                        .id(("add-kwt-project", host_index))
+                        .size(px(22.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .text_sm()
+                        .text_color(rgb(0x8f_96_a3))
+                        .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xd2_d7_df)))
+                        .child("+")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_add_project(&host_id, &endpoint, window, cx);
+                        })),
+                );
+            }
+            header
+        });
+        for (project_index, project) in host.projects().iter().enumerate() {
+            let project_for_remove = project.clone();
+            let host_id = host.id().to_owned();
+            let endpoint = host.endpoint().to_owned();
+            let mut row = div()
+                .h(px(SESSION_ROW_HEIGHT))
+                .flex()
+                .items_center()
+                .gap_1()
+                .pl(px(SESSION_ROW_INSET))
+                .pr_2()
+                .text_sm()
+                .text_color(rgb(0xb9_bfca))
+                .child(
+                    div()
+                        .w(px(18.0))
+                        .flex_none()
+                        .text_xs()
+                        .text_color(rgb(0x7f_8794))
+                        .child("▾"),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .truncate()
+                        .child(project.name().to_owned()),
+                );
+            if can_remove {
+                row = row.child(
+                    div()
+                        .id(("remove-kwt-project", project_index))
+                        .size(px(22.0))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .text_sm()
+                        .text_color(rgb(0x7f_8794))
+                        .hover(|style| style.bg(rgb(0x35_2329)).text_color(rgb(0xd0_7070)))
+                        .child("×")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_remove_project(
+                                &host_id,
+                                &endpoint,
+                                &project_for_remove,
+                                window,
+                                cx,
+                            );
+                        })),
+                );
+            }
+            tree = tree.child(row);
+            for (worktree_index, worktree) in project.worktrees().iter().enumerate() {
+                let selection =
+                    SessionSelection::new(host.id(), host.endpoint(), worktree.session_name());
+                let is_active = active.as_ref() == Some(&selection);
+                let is_retained = retained.contains(&selection);
+                let can_open = is_active
+                    || is_retained
+                    || (worktree.session_available()
+                        && !matches!(
+                            host.connection(),
+                            HostConnectionState::Disconnected | HostConnectionState::Unavailable
+                        ));
+                let can_kill = worktree.session_available()
+                    && !matches!(
+                        host.connection(),
+                        HostConnectionState::Disconnected | HostConnectionState::Unavailable
+                    );
+                tree = tree.child(Self::worktree_row(
+                    host_index,
+                    project_index,
+                    worktree_index,
+                    worktree.branch().to_owned(),
+                    selection,
+                    is_active,
+                    can_open,
+                    can_kill,
+                    cx,
+                ));
+            }
+        }
+        tree.children(Self::directory_workspace_rows(
+            host_index,
+            host,
+            active.as_ref(),
+            retained,
+            cx,
+        ))
+        .into_any_element()
+    }
+
+    fn directory_workspace_rows(
+        host_index: usize,
+        host: &HostItem,
+        active: Option<&SessionSelection>,
+        retained: &[SessionSelection],
+        cx: &mut Context<Self>,
+    ) -> Vec<gpui::AnyElement> {
+        let mut rows = Vec::new();
+        if !host.directory_workspaces().is_empty() {
+            rows.push(
+                div()
+                    .h(px(SESSION_GROUP_ROW_HEIGHT))
+                    .flex()
+                    .items_center()
+                    .pl(px(SESSION_ROW_INSET))
+                    .text_xs()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(rgb(0x73_7a87))
+                    .child("DIRECTORY WORKSPACES")
+                    .into_any_element(),
+            );
+        }
+        for (index, workspace) in host.directory_workspaces().iter().enumerate() {
+            let selection =
+                SessionSelection::new(host.id(), host.endpoint(), workspace.session_name());
+            let is_active = active == Some(&selection);
+            let is_retained = retained.contains(&selection);
+            let can_open = is_active
+                || is_retained
+                || (workspace.session_available()
+                    && !matches!(
+                        host.connection(),
+                        HostConnectionState::Disconnected | HostConnectionState::Unavailable
+                    ));
+            let can_kill = workspace.session_available()
+                && !matches!(
+                    host.connection(),
+                    HostConnectionState::Disconnected | HostConnectionState::Unavailable
+                );
+            rows.push(Self::worktree_row(
+                host_index,
+                usize::MAX,
+                index,
+                workspace.name().to_owned(),
+                selection,
+                is_active,
+                can_open,
+                can_kill,
+                cx,
+            ));
+        }
+        rows
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn worktree_row(
+        host_index: usize,
+        project_index: usize,
+        worktree_index: usize,
+        label: String,
+        selection: SessionSelection,
+        is_active: bool,
+        can_open: bool,
+        can_kill: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let row_group = format!("worktree-actions-{host_index}-{project_index}-{worktree_index}");
+        let mut row = div()
+            .id((
+                gpui::ElementId::named_usize("worktree-host", host_index),
+                format!("{project_index}-{worktree_index}"),
+            ))
+            .group(row_group.clone())
+            .mr_1()
+            .h(px(SESSION_ROW_HEIGHT))
+            .flex()
+            .items_center()
+            .gap_1()
+            .pl(px(NESTED_SESSION_ROW_INSET))
+            .pr_2()
+            .bg(rgb(if is_active { 0x13_3d6a } else { 0x0f_1116 }))
+            .when(can_open, |element| {
+                element
+                    .cursor_pointer()
+                    .hover(|style| style.bg(rgb(if is_active { 0x17_477a } else { 0x1b_1f27 })))
+            })
+            .when(!can_open, |element| element.opacity(0.55))
+            .child(
+                div()
+                    .w(px(18.0))
+                    .flex_none()
+                    .text_xs()
+                    .text_color(rgb(if is_active { 0x9d_c7ed } else { 0x7f_8794 }))
+                    .child("◇"),
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .truncate()
+                    .text_sm()
+                    .text_color(rgb(if is_active { 0xe5_ed_f7 } else { 0xc4_c9_d2 }))
+                    .child(label),
+            );
+        let actions = tmux_row_actions(is_active, can_kill);
+        if !actions.is_empty() {
+            row = row.child(Self::session_action_menu_button(
+                host_index,
+                format!("worktree-{project_index}-{worktree_index}"),
+                selection.clone(),
+                actions,
+                row_group,
+                cx,
+            ));
+        }
+        row.when(can_open, |element| {
+            element.on_click(cx.listener(move |this, _, window, cx| {
+                this.select_session(&selection, window, cx);
+            }))
+        })
+        .into_any_element()
+    }
+
     fn herdr_tree(
         host_index: usize,
         host: &HostItem,
@@ -2430,53 +3331,48 @@ impl RootView {
     ) -> gpui::AnyElement {
         let host_id = host.id().to_owned();
         let endpoint = host.endpoint().to_owned();
-        let mut tree = div()
-            .ml(px(18.0))
-            .border_l_1()
-            .border_color(rgb(0x25_2932))
-            .flex()
-            .flex_col()
-            .child({
-                let mut header = div()
-                    .h(px(24.0))
-                    .flex()
-                    .items_center()
-                    .pl(px(17.0))
-                    .pr_1()
-                    .text_xs()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(rgb(0x73_7a87))
-                    .child(div().flex_1().child("HERDR SESSIONS"));
-                if host.connection() == HostConnectionState::Ready
-                    && host.herdr_available()
-                    && host.herdr_diagnostic().is_none()
-                {
-                    header = header.child(
-                        div()
-                            .id(("create-herdr-session", host_index))
-                            .size(px(22.0))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded_sm()
-                            .cursor_pointer()
-                            .text_sm()
-                            .text_color(rgb(0x8f_96_a3))
-                            .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xd2_d7_df)))
-                            .child("+")
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_new_session(
-                                    &host_id,
-                                    &endpoint,
-                                    NewSessionKind::Herdr,
-                                    window,
-                                    cx,
-                                );
-                            })),
-                    );
-                }
-                header
-            });
+        let mut tree = div().w_full().flex().flex_col().child({
+            let mut header = div()
+                .h(px(SESSION_GROUP_ROW_HEIGHT))
+                .flex()
+                .items_center()
+                .pl(px(SESSION_GROUP_INSET))
+                .pr_1()
+                .bg(rgb(SESSION_GROUP_BACKGROUND))
+                .text_xs()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(rgb(SESSION_GROUP_TEXT))
+                .child(div().flex_1().child("HERDR SESSIONS"));
+            if host.connection() == HostConnectionState::Ready
+                && host.herdr_available()
+                && host.herdr_diagnostic().is_none()
+            {
+                header = header.child(
+                    div()
+                        .id(("create-herdr-session", host_index))
+                        .size(px(22.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .text_sm()
+                        .text_color(rgb(0x8f_96_a3))
+                        .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xd2_d7_df)))
+                        .child("+")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_new_session(
+                                &host_id,
+                                &endpoint,
+                                NewSessionKind::Herdr,
+                                window,
+                                cx,
+                            );
+                        })),
+                );
+            }
+            header
+        });
         if let Some(diagnostic) = host.herdr_diagnostic() {
             tree = tree.child(Self::herdr_diagnostic_row(
                 host_index,
@@ -2489,7 +3385,7 @@ impl RootView {
                     .h(px(SESSION_ROW_HEIGHT))
                     .flex()
                     .items_center()
-                    .pl(px(31.0))
+                    .pl(px(SESSION_ROW_INSET))
                     .text_xs()
                     .text_color(rgb(0x73_7a87))
                     .child("No sessions"),
@@ -2538,6 +3434,7 @@ impl RootView {
             .into_any_element()
     }
 
+    #[allow(clippy::too_many_lines)] // Declarative row composition keeps controls in visual order.
     fn herdr_session_row(
         host_index: usize,
         index: usize,
@@ -2565,17 +3462,19 @@ impl RootView {
         } else {
             session.access.can_mutate()
         };
+        let row_group = format!("herdr-session-actions-{host_index}-{index}");
         let mut row = div()
             .id((
                 gpui::ElementId::named_usize("herdr-session-host", host_index),
                 index.to_string(),
             ))
+            .group(row_group.clone())
             .mr_1()
             .h(px(SESSION_ROW_HEIGHT))
             .flex()
             .items_center()
             .gap_1()
-            .pl(px(14.0))
+            .pl(px(SESSION_ROW_INSET))
             .pr_2()
             .bg(rgb(if active { 0x18_3f_68 } else { 0x0f_1116 }))
             .when(!operation_pending && row_is_actionable, |element| {
@@ -2618,12 +3517,17 @@ impl RootView {
                     .child(format!("· {}", selection.endpoint())),
             );
         }
-        if active {
-            row = row.child(Self::tree_detach_action(cx));
+        let menu_actions = herdr_session_menu_actions(active, actions);
+        if !menu_actions.is_empty() {
+            row = row.child(Self::session_action_menu_button(
+                host_index,
+                format!("herdr-{index}"),
+                selection.clone(),
+                menu_actions,
+                row_group,
+                cx,
+            ));
         }
-        row = row.children(actions.into_iter().map(|action| {
-            Self::herdr_row_action(host_index, index, selection.clone(), action, cx)
-        }));
         row = if operation_pending {
             row
         } else if running && session.access.can_open() {
@@ -2640,48 +3544,44 @@ impl RootView {
         row.into_any_element()
     }
 
-    fn herdr_row_action(
+    fn session_action_menu_button(
         host_index: usize,
-        index: usize,
+        row_id: String,
         selection: SessionSelection,
-        action: HerdrRowAction,
+        actions: Vec<SessionRowAction>,
+        row_group: String,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let (label, color) = match action {
-            HerdrRowAction::Stop => ("Stop", 0xc7_7378),
-            HerdrRowAction::Restart => ("Restart", 0x79_aee3),
-            HerdrRowAction::Delete => ("Delete", 0xc7_7378),
-        };
         div()
             .id((
-                gpui::ElementId::named_usize("herdr-action-host", host_index),
-                format!("{index}-{label}"),
+                gpui::ElementId::named_usize("session-menu-host", host_index),
+                row_id,
             ))
             .flex_none()
-            .px_1()
-            .py_1()
+            .size(px(22.0))
+            .flex()
+            .items_center()
+            .justify_center()
             .rounded_sm()
+            .opacity(0.0)
+            .group_hover(row_group, |style| style.opacity(1.0))
+            .cursor_pointer()
             .text_xs()
-            .text_color(rgb(color))
-            .hover(|style| style.bg(rgb(0x25_2a34)))
-            .child(label)
-            .on_click(cx.listener(move |this, _, window, cx| {
-                match action {
-                    HerdrRowAction::Stop => this.request_herdr_lifecycle(
-                        &selection,
-                        workspace::HerdrLifecycleAction::Stop,
-                        cx,
-                    ),
-                    HerdrRowAction::Restart => {
-                        this.restart_herdr_session(&selection, window, cx);
-                    }
-                    HerdrRowAction::Delete => this.request_herdr_lifecycle(
-                        &selection,
-                        workspace::HerdrLifecycleAction::Delete,
-                        cx,
-                    ),
-                }
+            .text_color(rgb(0x9b_a2ae))
+            .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xe1_e5ec)))
+            .child("…")
+            .on_click(cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
+                let position = event.position();
+                let x: f32 = position.x.into();
+                let y: f32 = position.y.into();
+                this.session_action_menu = Some(SessionActionMenu {
+                    selection: selection.clone(),
+                    actions: actions.clone(),
+                    anchor_x: x,
+                    anchor_y: y,
+                });
                 cx.stop_propagation();
+                cx.notify();
             }))
             .into_any_element()
     }
@@ -2724,17 +3624,19 @@ impl RootView {
         let is_active = session.state.is_active();
         let can_open = session.state.can_open();
         let name = selection.session().to_owned();
+        let row_group = format!("tmux-session-actions-{host_index}-{index}");
         let mut row = div()
             .id((
                 gpui::ElementId::named_usize("tree-session-host", host_index),
                 index.to_string(),
             ))
+            .group(row_group.clone())
             .mr_1()
             .h(px(SESSION_ROW_HEIGHT))
             .flex()
             .items_center()
             .gap_1()
-            .pl(px(14.0))
+            .pl(px(SESSION_ROW_INSET))
             .pr_2()
             .bg(rgb(if is_active { 0x13_3d6a } else { 0x0f_1116 }))
             .when(can_open, |element| {
@@ -2769,21 +3671,14 @@ impl RootView {
                     .child(format!("· {}", selection.endpoint())),
             );
         }
-        if is_active {
-            row = row.child(Self::tree_detach_action(cx));
-        } else if can_open {
-            row = row.child(Self::tree_open_action(
+        let actions = tmux_row_actions(is_active, session.state.can_kill());
+        if !actions.is_empty() {
+            row = row.child(Self::session_action_menu_button(
                 host_index,
-                index,
+                format!("tmux-{index}"),
                 selection.clone(),
-                cx,
-            ));
-        }
-        if session.state.can_kill() {
-            row = row.child(Self::tree_kill_action(
-                host_index,
-                index,
-                selection.clone(),
+                actions,
+                row_group,
                 cx,
             ));
         }
@@ -2793,82 +3688,6 @@ impl RootView {
             }))
         })
         .into_any_element()
-    }
-
-    fn tree_detach_action(cx: &mut Context<Self>) -> gpui::AnyElement {
-        div()
-            .id("detach-session")
-            .flex_none()
-            .px_1()
-            .py_1()
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded_sm()
-            .cursor_pointer()
-            .text_xs()
-            .text_color(rgb(0xa9_c9_ea))
-            .hover(|style| style.bg(rgb(0x25_527f)).text_color(rgb(0xff_ff_ff)))
-            .child("Detach")
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.detach_session(window, cx);
-                cx.stop_propagation();
-            }))
-            .into_any_element()
-    }
-
-    fn tree_open_action(
-        host_index: usize,
-        index: usize,
-        selection: SessionSelection,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        div()
-            .id((
-                gpui::ElementId::named_usize("open-tree-session-host", host_index),
-                index.to_string(),
-            ))
-            .flex_none()
-            .px_1()
-            .py_1()
-            .rounded_sm()
-            .cursor_pointer()
-            .text_xs()
-            .text_color(rgb(0x79_aee3))
-            .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xb6_d8_f8)))
-            .child("Open")
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.select_session(&selection, window, cx);
-                cx.stop_propagation();
-            }))
-            .into_any_element()
-    }
-
-    fn tree_kill_action(
-        host_index: usize,
-        index: usize,
-        selection: SessionSelection,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        div()
-            .id((
-                gpui::ElementId::named_usize("kill-tree-session-host", host_index),
-                index.to_string(),
-            ))
-            .flex_none()
-            .px_1()
-            .py_1()
-            .rounded_sm()
-            .cursor_pointer()
-            .text_xs()
-            .text_color(rgb(0xc7_7378))
-            .hover(|style| style.bg(rgb(0x3a_2025)).text_color(rgb(0xff_a3_a8)))
-            .child("Kill")
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.request_session_kill(&selection, cx);
-                cx.stop_propagation();
-            }))
-            .into_any_element()
     }
 
     fn host_landing_element(host: &HostItem, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -3101,6 +3920,13 @@ enum HerdrRowAction {
     Delete,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SessionRowAction {
+    Detach,
+    KillTmux,
+    Herdr(HerdrRowAction),
+}
+
 fn herdr_lifecycle_copy(
     confirmation: &workspace::HerdrLifecycleConfirmation,
 ) -> (&'static str, String, &'static str) {
@@ -3136,6 +3962,29 @@ fn herdr_row_actions(session: &workspace::HerdrSessionItem) -> Vec<HerdrRowActio
         HerdrSessionState::Stopped if session.is_default() => vec![HerdrRowAction::Restart],
         HerdrSessionState::Stopped => vec![HerdrRowAction::Restart, HerdrRowAction::Delete],
     }
+}
+
+fn tmux_row_actions(active: bool, can_kill: bool) -> Vec<SessionRowAction> {
+    let mut actions = Vec::with_capacity(2);
+    if active {
+        actions.push(SessionRowAction::Detach);
+    }
+    if can_kill {
+        actions.push(SessionRowAction::KillTmux);
+    }
+    actions
+}
+
+fn herdr_session_menu_actions(
+    active: bool,
+    lifecycle: Vec<HerdrRowAction>,
+) -> Vec<SessionRowAction> {
+    let mut actions = Vec::with_capacity(lifecycle.len() + usize::from(active));
+    if active {
+        actions.push(SessionRowAction::Detach);
+    }
+    actions.extend(lifecycle.into_iter().map(SessionRowAction::Herdr));
+    actions
 }
 
 fn herdr_operation_label(session: &workspace::HerdrSessionItem) -> Option<&'static str> {
@@ -3241,6 +4090,7 @@ fn tree_sessions(
     let mut selections = host
         .sessions()
         .iter()
+        .filter(|session| !host.kwt_owns_default_tmux_session(session.name()))
         .map(|session| {
             (
                 SessionSelection::new(host.id(), host.endpoint(), session.name()),
@@ -3251,9 +4101,15 @@ fn tree_sessions(
     for selection in retained
         .iter()
         .filter(|selection| {
-            selection.host_id() == host.id() && selection.kind() == workspace::SessionKind::Tmux
+            selection.host_id() == host.id()
+                && selection.kind() == workspace::SessionKind::Tmux
+                && !(selection.endpoint() == host.endpoint()
+                    && host.kwt_owns_default_tmux_session(selection.session()))
         })
-        .chain(active_for_host)
+        .chain(active_for_host.into_iter().filter(|selection| {
+            !(selection.endpoint() == host.endpoint()
+                && host.kwt_owns_default_tmux_session(selection.session()))
+        }))
     {
         if !selections
             .iter()
@@ -3455,15 +4311,22 @@ impl Focusable for RootView {
 }
 
 impl Render for RootView {
+    #[allow(clippy::too_many_lines)] // Root composition keeps overlay ordering explicit.
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _scope_changed = self.sync_terminal_scope();
         let _handled = self.handle_events(cx);
         let snapshot = self.workspace.snapshot();
+        if self.restore_focus {
+            window.focus(&self.focus);
+            self.restore_focus = false;
+        }
         let title = workspace_window_title(snapshot.content());
         window.set_window_title(&title);
         self.synchronize_render_state(&snapshot);
         let content = self.content_element(&snapshot, cx);
         let creation_overlay = self.new_session_overlay(&snapshot, window, cx);
+        let project_overlay = self.project_overlay(window, cx);
+        let session_action_menu = self.session_action_menu_overlay(window, cx);
         let kill_overlay = self.pending_session_kill_overlay(window, cx);
         let herdr_lifecycle_overlay = self.pending_herdr_lifecycle_overlay(window, cx);
         let mut root = div()
@@ -3478,6 +4341,8 @@ impl Render for RootView {
             .child(self.title_bar(title, cx))
             .child(div().flex_1().min_h_0().w_full().child(content))
             .children(creation_overlay)
+            .children(project_overlay)
+            .children(session_action_menu)
             .children(kill_overlay)
             .children(herdr_lifecycle_overlay);
 
@@ -3557,6 +4422,31 @@ impl Render for RootView {
         }
         root
     }
+}
+
+fn session_action_menu_position(
+    anchor_x: f32,
+    anchor_y: f32,
+    viewport_width: f32,
+    viewport_height: f32,
+    action_count: usize,
+) -> (f32, f32) {
+    let action_count = u16::try_from(action_count).unwrap_or(u16::MAX);
+    let menu_height = f32::from(action_count) * SESSION_ACTION_MENU_ITEM_HEIGHT
+        + SESSION_ACTION_MENU_VERTICAL_CHROME;
+    let max_left = (viewport_width - SESSION_ACTION_MENU_WIDTH - SESSION_ACTION_MENU_MARGIN)
+        .max(SESSION_ACTION_MENU_MARGIN);
+    let left = (anchor_x - SESSION_ACTION_MENU_WIDTH).clamp(SESSION_ACTION_MENU_MARGIN, max_left);
+    let max_top = (viewport_height - menu_height - SESSION_ACTION_MENU_MARGIN)
+        .max(SESSION_ACTION_MENU_MARGIN);
+    let below = anchor_y + SESSION_ACTION_MENU_OFFSET;
+    let preferred_top = if below + menu_height > viewport_height - SESSION_ACTION_MENU_MARGIN {
+        anchor_y - menu_height - SESSION_ACTION_MENU_OFFSET
+    } else {
+        below
+    };
+    let top = preferred_top.clamp(SESSION_ACTION_MENU_MARGIN, max_top);
+    (left, top)
 }
 
 fn centered(text: impl Into<String>) -> gpui::AnyElement {
@@ -4114,25 +5004,27 @@ mod tests {
     use super::{
         APP_NAVIGATION_WIDTH, APP_TITLEBAR_HEIGHT, HerdrRowAccess, HerdrRowAction,
         INPUT_BUFFER_FULL_DIAGNOSTIC, INPUT_BUFFERED_DIAGNOSTIC, InputRefusal, LayoutKey,
-        NewSessionDraft, NewSessionKind, PendingUiInput, QueuedUiInput, TerminalKeyIdentity,
-        TerminalKeyboard, TerminalPointer, TerminalResize, UI_INPUT_BYTE_CAPACITY,
-        UI_INPUT_CAPACITY, WheelBatch, active_session_selection, application_navigation_width,
-        canonical_terminal_key_with, clear_terminal_input_state, clears_after_input_delivery,
-        clears_when_input_queue_is_empty, coalesce_last_resize, coalesce_last_wheel,
-        herdr_row_actions, host_tree_status, input_queue_has_capacity, is_toggle_sidebar_shortcut,
-        kill_confirmation_description, kill_confirmation_title, named_key, new_session_validation,
-        normalize_cell_width, queued_input_matches_presentation, retained_key_event_with,
+        NewSessionDraft, NewSessionKind, PendingUiInput, QueuedUiInput, SessionRowAction,
+        TerminalKeyIdentity, TerminalKeyboard, TerminalPointer, TerminalResize,
+        UI_INPUT_BYTE_CAPACITY, UI_INPUT_CAPACITY, WheelBatch, active_session_selection,
+        application_navigation_width, canonical_terminal_key_with, clear_terminal_input_state,
+        clears_after_input_delivery, clears_when_input_queue_is_empty, coalesce_last_resize,
+        coalesce_last_wheel, herdr_row_actions, herdr_session_menu_actions, host_tree_status,
+        input_queue_has_capacity, is_toggle_sidebar_shortcut, kill_confirmation_description,
+        kill_confirmation_title, named_key, new_session_validation, normalize_cell_width,
+        queued_input_matches_presentation, retained_key_event_with, session_action_menu_position,
         session_group_visibility, terminal_cell_at_with_offset, terminal_key_input,
         terminal_key_input_with_canonical, terminal_line_height, terminal_wheel_steps,
-        transitioned_presentation, tree_herdr_sessions, tree_sessions, workspace_window_title,
+        tmux_row_actions, transitioned_presentation, tree_herdr_sessions, tree_sessions,
+        workspace_window_title,
     };
     use model::DiagnosticKind;
     use std::sync::Arc;
     use surface::{GridSize, SurfaceFrame, SurfaceStore};
     use workspace::{
         HerdrSessionItem, HerdrSessionState, HostConnectionState, HostDiagnostic, HostItem,
-        KeyEvent, KeyInput, Modifiers, MouseAction, MouseButton, MouseInput, NamedKey, SessionItem,
-        SessionSelection, WorkspaceContent, WorkspaceSnapshot,
+        KeyEvent, KeyInput, Modifiers, MouseAction, MouseButton, MouseInput, NamedKey, ProjectItem,
+        SessionItem, SessionSelection, WorkspaceContent, WorkspaceSnapshot, WorktreeItem,
     };
 
     #[test]
@@ -4335,6 +5227,59 @@ mod tests {
     }
 
     #[test]
+    fn project_owned_tmux_sessions_are_not_duplicated_in_the_unbound_group() {
+        let host = HostItem::wsl(
+            "Ubuntu",
+            None,
+            HostConnectionState::Ready,
+            vec![
+                SessionItem::new("project-main", 0),
+                SessionItem::new("scratch", 0),
+                SessionItem::new("custom-socket", 0),
+            ],
+            None,
+        )
+        .with_kwt_inventory(
+            vec![ProjectItem::new(
+                "project-id",
+                "project",
+                "/repos/project",
+                vec![
+                    WorktreeItem::new(
+                        "/repos/project",
+                        "main",
+                        true,
+                        None,
+                        "project-main",
+                        None,
+                        true,
+                    ),
+                    WorktreeItem::new(
+                        "/repos/project-topic",
+                        "topic",
+                        false,
+                        None,
+                        "custom-socket",
+                        Some("project-socket".to_owned()),
+                        false,
+                    ),
+                ],
+            )],
+            Vec::new(),
+        );
+
+        let rows = tree_sessions(&host, &WorkspaceContent::Shell, &[]);
+
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().any(|row| row.selection.session() == "scratch"));
+        assert!(
+            rows.iter()
+                .any(|row| row.selection.session() == "custom-socket"),
+            "a custom-socket worktree cannot claim a default-socket tmux row"
+        );
+    }
+
+    #[test]
     fn background_refresh_does_not_insert_a_transient_navigation_status_row() {
         let host = HostItem::wsl(
             "Ubuntu",
@@ -4444,6 +5389,38 @@ mod tests {
             herdr_row_actions(&stopped),
             vec![HerdrRowAction::Restart, HerdrRowAction::Delete]
         );
+    }
+
+    #[test]
+    fn active_session_menus_include_detach_without_losing_backend_lifecycle() {
+        assert_eq!(
+            tmux_row_actions(true, true),
+            vec![SessionRowAction::Detach, SessionRowAction::KillTmux]
+        );
+        assert_eq!(
+            herdr_session_menu_actions(true, vec![HerdrRowAction::Stop]),
+            vec![
+                SessionRowAction::Detach,
+                SessionRowAction::Herdr(HerdrRowAction::Stop)
+            ]
+        );
+        assert_eq!(
+            tmux_row_actions(false, true),
+            vec![SessionRowAction::KillTmux]
+        );
+    }
+
+    #[test]
+    fn session_action_menus_open_upward_and_stay_inside_the_viewport() {
+        let (left, top) = session_action_menu_position(325.0, 695.0, 1_100.0, 720.0, 4);
+
+        assert!((left - 213.0).abs() <= f32::EPSILON);
+        assert!((top - 580.0).abs() <= f32::EPSILON);
+        assert!(top + 112.0 <= 716.0);
+
+        let (left, top) = session_action_menu_position(2.0, 2.0, 100.0, 80.0, 4);
+        assert!((left - 4.0).abs() <= f32::EPSILON);
+        assert!((top - 4.0).abs() <= f32::EPSILON);
     }
 
     #[test]

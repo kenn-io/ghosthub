@@ -25,6 +25,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--variants-dir", required=True, type=Path)
     parser.add_argument("--revision", required=True)
+    parser.add_argument("--target", choices=TARGETS)
     return parser.parse_args()
 
 
@@ -71,11 +72,18 @@ def validate_variant(path: Path, target: str, revision: str) -> None:
         )
 
 
-def validate_variants(variants_dir: Path, revision: str) -> None:
+def validate_variants(
+    variants_dir: Path, revision: str, target: str | None = None
+) -> None:
     failures: list[str] = []
-    for target in TARGETS:
+    targets = [target] if target is not None else TARGETS
+    for current_target in targets:
         try:
-            validate_variant(variants_dir / target / "kwt", target, revision)
+            validate_variant(
+                variants_dir / current_target / "kwt",
+                current_target,
+                revision,
+            )
         except ValueError as error:
             failures.append(str(error))
     if failures:
@@ -85,7 +93,9 @@ def validate_variants(variants_dir: Path, revision: str) -> None:
 def main() -> int:
     arguments = parse_args()
     try:
-        validate_variants(arguments.variants_dir, arguments.revision)
+        validate_variants(
+            arguments.variants_dir, arguments.revision, arguments.target
+        )
     except ValueError as error:
         print(error, file=sys.stderr)
         return 1

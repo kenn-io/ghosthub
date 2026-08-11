@@ -272,10 +272,15 @@ their explicitly documented repair/open behavior.
 Rust local WSL creation follows the same one-shot rule as shipped local
 creation. After validating the normalized name, Ghosthub performs a fresh
 admitted-host read and consumes one CreateOnce by launching the ordinary
-ConPTY client with `tmux new-session -A -s <name>`. It captures the resulting
-runtime, server PID, session ID, and creation time before publishing the
-presentation; every later activation is attach-only. If creation and identity
-capture race another creator, `-A` attaches to the exact same-named session.
+ConPTY client with `tmux new-session -A -E -s <name>`. The same tmux command
+queue writes server PID, session ID, and creation time to a nonce-scoped
+private WSL receipt; identity framing never enters ConPTY or the terminal
+screen. The receipt writer invokes `/bin/sh -c` explicitly, so tmux's
+configurable `default-shell` cannot change its atomic POSIX semantics. Host
+reads and removes that opaque receipt, rechecks the runtime, and
+only then publishes the presentation. Every later activation is attach-only.
+If creation and identity capture race another creator, `-A` attaches to the
+exact same-named session.
 If any step after launch fails, Ghosthub detaches the client and reports the
 failure but neither reruns creation nor destroys the possibly created session.
 
@@ -622,7 +627,14 @@ unregistering, Ghosthub probes every protected-socket worktree and requires its
 tmux session to be absent; a live or unverifiable protected session blocks
 removal because it cannot be recovered through default-server discovery after
 the project disappears. Ordinary live tmux sessions remain discoverable under
-the host.
+the host. The Rust Windows app exposes the same registration flow for its WSL
+host.
+Removing a registered project is separately confirmed and delegated to KWT
+with the exact registered path, expected credential-free repository identity,
+and opaque registration fingerprint. This unregisters metadata only:
+repositories, worktrees, and tmux sessions remain untouched. Reads and
+mutations stay off the UI thread, and the last usable project tree remains
+visible while either is in flight.
 
 On experimental Windows hosts, an explicit Install Bundled kwt action probes
 the process architecture, uploads the matching pinned AMD64 or ARM64 helper,
@@ -633,6 +645,8 @@ workspace operations use only that exact per-user helper and never resolve
 Project registry mutations are not yet supported on Windows, so its Add Project
 and Remove Project actions are hidden. Inventory never installs or updates the
 unsigned Windows helper automatically.
+This restriction does not apply to the Rust app's WSL host, which executes the
+pinned Linux helper.
 
 Direct tmux discovery marks a default-server worktree session as running when
 its exact kwt session name is present and the host remains reachable. Cached

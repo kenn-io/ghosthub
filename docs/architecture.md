@@ -171,8 +171,12 @@ timeouts. An application-owned background cadence refreshes ready WSL inventory
 every ten seconds while the window is active. Window activation changes only an
 in-memory polling flag; it performs no inventory, process sampling, filesystem,
 database, or reconciliation work. The cadence starts no new inventory refresh
-while the window is inactive. Disconnected and failed hosts are not retried in a loop. Later
-refreshes reuse the admitted host capability so
+while the window is inactive or another host refresh or session operation is
+in flight. Starting a refresh for an already-ready host publishes no transient
+Connecting state or revision: cached rows and their constructive actions remain
+stable until replacement inventory arrives. The ten-second session cadence does
+not start KWT inventory. Disconnected and failed hosts are not retried in a
+loop. Later refreshes reuse the admitted host capability so
 they perform ordinary inventory reads instead of repeating tmux admission. The
 same refresh resolves optional Herdr through WSL's POSIX login profile,
 scrubs inherited Herdr routing variables, and publishes running and stopped
@@ -201,11 +205,13 @@ Tmux continues to expose separate detach and confirmed Kill Session controls
 rather than sharing Herdr lifecycle semantics.
 The ready host also exposes explicit bare-session creation. Rust consumes one
 non-cloneable CreateOnce as an ordinary ConPTY client running atomic
-`new-session -A`; it then captures the fresh WSL runtime and tmux live identity
-and retains only attach authority. Creation failure never authorizes a rerun or
-server cleanup. The creation interaction pins its selected endpoint and may use
-the existing admitted host while a background inventory refresh is in
-flight; it never follows a changed default distro implicitly.
+`new-session -A`; the same tmux command queue records live identity in a
+nonce-scoped private WSL receipt rather than the ConPTY stream. Host consumes
+and removes that opaque receipt, rechecks the WSL runtime, and retains only
+attach authority. Creation failure never authorizes a rerun or server cleanup.
+The creation interaction pins its selected endpoint and may use the existing
+admitted host while a background inventory refresh is in flight; it never
+follows a changed default distro implicitly.
 
 Rust keeps backend and authority boundaries structural: the UI package has
 direct dependencies only on workspace, model, and surface, while persistence
@@ -223,6 +229,18 @@ publication; publication guards never cross external I/O, process waits, or an
 await point. Runtime-only session refresh cannot replay project/worktree
 reconciliation, and each host publishes independently so a slow host cannot
 delay completed inventory from another host.
+
+On Windows, pinned KWT project/worktree inventory runs independently from the
+ten-second tmux/Herdr cadence: once after WSL admission and then every 60
+seconds while the window is active. Its three machine-readable CLI reads and
+managed-helper verification run entirely on the background host lane. A late
+or failed KWT generation keeps the last usable project tree, and a session-only
+refresh updates only worktree session availability. The sidebar treats a
+KWT-owned default-socket tmux session as a project row instead of duplicating
+it in the unbound tmux group; custom-socket worktrees cannot claim a
+same-named default-socket session. When WSL config selects an explicit
+`TMUX_TMPDIR`, KWT commands receive that same value as tmux discovery and
+attachment; cached rows never correlate sessions across those server roots.
 
 Ghosthub still has one UI application process and no Ghosthub-owned daemon.
 For the Windows MVP, tmux inside WSL2 is the long-lived session owner. Closing
@@ -433,8 +451,13 @@ immediate feedback; kwt's daemon serializes the mutation with registration,
 worktree, and protected-attachment operations, verifies durable protected
 endpoint authority, and performs the final registry compare-and-swap. The
 operation only unregisters discovery metadata and never deletes repositories,
-worktrees, or tmux sessions. Windows hosts do not expose project registry
-mutations until that command boundary supports native Windows paths.
+worktrees, or tmux sessions. The Rust Windows app maps a native Windows folder
+or matching WSL UNC folder into the selected distro, then applies these POSIX
+operations through the pinned Linux helper. It publishes a successful
+machine-readable registration or removal before attempting broader worktree
+reconciliation, so an unrelated inventory failure cannot erase the confirmed
+result. Native Windows hosts do not expose project registry mutations until
+that command boundary supports native Windows paths.
 On macOS and Linux, the account login shell initializes the command
 environment, while Ghosthub's own inventory and discovery commands execute
 under the host's POSIX `/bin/sh`; non-POSIX account shells such as fish are not
@@ -493,6 +516,11 @@ ordinary tmux discovery or attachment. The helper never replaces or resolves
 a host's system kwt. Versioned directories retain older pinned helpers, so an
 older Ghosthub build can select and restore its own revision; reinstalling one
 revision also retains `kwt.previous`.
+
+In the Rust port's WSL host, a managed-helper path cache is never execution
+authority. The host revalidates the pinned digest and revision before every
+helper operation and atomically repairs a missing or replaced helper before it
+runs the requested command.
 
 Native Windows installation uses a separate PowerShell boundary. The explicit
 **Install Bundled kwt** action probes the remote process architecture, uploads
