@@ -41,6 +41,64 @@ struct ShortcutMonitorTests {
         #expect(unavailable.processForTesting(event) === event)
     }
 
+    @Test("toggle sidebar stays owned by the menu key equivalent")
+    func toggleSidebarPassesThroughToMenu() throws {
+        var actions: [ApplicationShortcutAction] = []
+        let monitor = ShortcutMonitor(
+            shortcuts: { ApplicationShortcutCatalog.compiledDefaults },
+            perform: { action in
+                actions.append(action)
+                return true
+            }
+        )
+        let keyDown = try #require(keyEvent(
+            modifiers: [.command], characters: "b", keyCode: 11
+        ))
+        let keyRepeat = try #require(keyEvent(
+            modifiers: [.command], characters: "b", keyCode: 11,
+            isRepeat: true
+        ))
+        let keyUp = try #require(keyEvent(
+            type: .keyUp,
+            modifiers: [.command], characters: "b", keyCode: 11
+        ))
+
+        #expect(monitor.processForTesting(keyDown) === keyDown)
+        #expect(monitor.processForTesting(keyRepeat) == nil)
+        #expect(monitor.processForTesting(keyUp) == nil)
+        #expect(monitor.processForTesting(keyDown) === keyDown)
+        #expect(monitor.processForTesting(keyUp) == nil)
+        #expect(actions.isEmpty)
+    }
+
+    @Test("menu shortcut ownership is shared across scene monitors")
+    func menuOwnershipIsSharedAcrossMonitors() throws {
+        let first = ShortcutMonitor(
+            shortcuts: { ApplicationShortcutCatalog.compiledDefaults },
+            perform: { _ in true }
+        )
+        let second = ShortcutMonitor(
+            shortcuts: { ApplicationShortcutCatalog.compiledDefaults },
+            perform: { _ in true }
+        )
+        let keyDown = try #require(keyEvent(
+            modifiers: [.command], characters: "b", keyCode: 11
+        ))
+        let keyRepeat = try #require(keyEvent(
+            modifiers: [.command], characters: "b", keyCode: 11,
+            isRepeat: true
+        ))
+        let keyUp = try #require(keyEvent(
+            type: .keyUp,
+            modifiers: [.command], characters: "b", keyCode: 11
+        ))
+
+        #expect(first.processForTesting(keyDown) === keyDown)
+        #expect(second.processForTesting(keyDown) === keyDown)
+        #expect(first.processForTesting(keyUp) == nil)
+        #expect(second.processForTesting(keyRepeat) === keyRepeat)
+    }
+
     @Test("the registry provider is read for every event")
     func readsLiveRegistry() throws {
         var resolved = ApplicationShortcutCatalog.compiledDefaults

@@ -821,6 +821,51 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         XCTAssertEqual(harness.commands, [])
     }
 
+    func testMenuOwnedSidebarReleaseStopsBeforeTerminalDispatch() throws {
+        let appHandle = try requireAppHandle()
+        let view = TerminalSurfaceView(
+            app: appHandle,
+            configuration: TerminalSurfaceConfiguration()
+        )
+        let shortcuts = try ApplicationShortcutCatalog.resolve(overrides: [
+            .toggleSidebar: .binding(
+                try ApplicationKeyBinding(parsing: "ctrl+b")
+            ),
+        ])
+        view.applicationShortcutsProvider = { shortcuts }
+        let first = ShortcutMonitor(
+            shortcuts: { shortcuts },
+            perform: { _ in true }
+        )
+        let second = ShortcutMonitor(
+            shortcuts: { shortcuts },
+            perform: { _ in true }
+        )
+        let keyDown = makeKeyEvent(
+            characters: "\u{2}",
+            charactersIgnoringModifiers: "b",
+            modifiers: [.control],
+            keyCode: 11
+        )
+        let keyUp = makeKeyUpEvent(
+            characters: "b",
+            charactersIgnoringModifiers: "b",
+            modifiers: [.control],
+            keyCode: 11
+        )
+
+        let menuEvent = first.processForTesting(keyDown)
+            .flatMap { second.processForTesting($0) }
+        XCTAssertNotNil(menuEvent)
+
+        let terminalEvent = first.processForTesting(keyUp)
+            .flatMap { second.processForTesting($0) }
+        XCTAssertNil(
+            terminalEvent,
+            "The menu-owned release must stop before the terminal or libghostty can observe it."
+        )
+    }
+
     func testTmuxSplitShortcutsReachAttachedClientHandler() throws {
         let appHandle = try requireAppHandle()
         let view = TerminalSurfaceView(
