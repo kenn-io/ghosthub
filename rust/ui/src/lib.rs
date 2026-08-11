@@ -2635,6 +2635,7 @@ impl RootView {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let (id, label, color) = match action {
+            SessionRowAction::Detach => ("session-action-detach", "Detach", 0x87_b9e8),
             SessionRowAction::KillTmux => ("tmux-action-kill", "Kill", 0xd6_747a),
             SessionRowAction::Herdr(HerdrRowAction::Stop) => {
                 ("herdr-action-stop", "Stop", 0xd6_747a)
@@ -2662,6 +2663,7 @@ impl RootView {
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.session_action_menu = None;
                 match action {
+                    SessionRowAction::Detach => this.detach_session(window, cx),
                     SessionRowAction::KillTmux => this.request_session_kill(&selection, cx),
                     SessionRowAction::Herdr(HerdrRowAction::Stop) => this.request_herdr_lifecycle(
                         &selection,
@@ -3284,15 +3286,13 @@ impl RootView {
                     .text_color(rgb(if is_active { 0xe5_ed_f7 } else { 0xc4_c9_d2 }))
                     .child(label),
             );
-        if is_active {
-            row = row.child(Self::tree_detach_action(cx));
-        }
-        if can_kill {
+        let actions = tmux_row_actions(is_active, can_kill);
+        if !actions.is_empty() {
             row = row.child(Self::session_action_menu_button(
                 host_index,
                 format!("worktree-{project_index}-{worktree_index}"),
                 selection.clone(),
-                vec![SessionRowAction::KillTmux],
+                actions,
                 row_group,
                 cx,
             ));
@@ -3499,15 +3499,13 @@ impl RootView {
                     .child(format!("· {}", selection.endpoint())),
             );
         }
-        if active {
-            row = row.child(Self::tree_detach_action(cx));
-        }
-        if !actions.is_empty() {
+        let menu_actions = herdr_session_menu_actions(active, actions);
+        if !menu_actions.is_empty() {
             row = row.child(Self::session_action_menu_button(
                 host_index,
                 format!("herdr-{index}"),
                 selection.clone(),
-                actions.into_iter().map(SessionRowAction::Herdr).collect(),
+                menu_actions,
                 row_group,
                 cx,
             ));
@@ -3655,15 +3653,13 @@ impl RootView {
                     .child(format!("· {}", selection.endpoint())),
             );
         }
-        if is_active {
-            row = row.child(Self::tree_detach_action(cx));
-        }
-        if session.state.can_kill() {
+        let actions = tmux_row_actions(is_active, session.state.can_kill());
+        if !actions.is_empty() {
             row = row.child(Self::session_action_menu_button(
                 host_index,
                 format!("tmux-{index}"),
                 selection.clone(),
-                vec![SessionRowAction::KillTmux],
+                actions,
                 row_group,
                 cx,
             ));
@@ -3674,28 +3670,6 @@ impl RootView {
             }))
         })
         .into_any_element()
-    }
-
-    fn tree_detach_action(cx: &mut Context<Self>) -> gpui::AnyElement {
-        div()
-            .id("detach-session")
-            .flex_none()
-            .px_1()
-            .py_1()
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded_sm()
-            .cursor_pointer()
-            .text_xs()
-            .text_color(rgb(0xa9_c9_ea))
-            .hover(|style| style.bg(rgb(0x25_527f)).text_color(rgb(0xff_ff_ff)))
-            .child("Detach")
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.detach_session(window, cx);
-                cx.stop_propagation();
-            }))
-            .into_any_element()
     }
 
     fn host_landing_element(host: &HostItem, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -3930,6 +3904,7 @@ enum HerdrRowAction {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SessionRowAction {
+    Detach,
     KillTmux,
     Herdr(HerdrRowAction),
 }
@@ -3969,6 +3944,29 @@ fn herdr_row_actions(session: &workspace::HerdrSessionItem) -> Vec<HerdrRowActio
         HerdrSessionState::Stopped if session.is_default() => vec![HerdrRowAction::Restart],
         HerdrSessionState::Stopped => vec![HerdrRowAction::Restart, HerdrRowAction::Delete],
     }
+}
+
+fn tmux_row_actions(active: bool, can_kill: bool) -> Vec<SessionRowAction> {
+    let mut actions = Vec::with_capacity(2);
+    if active {
+        actions.push(SessionRowAction::Detach);
+    }
+    if can_kill {
+        actions.push(SessionRowAction::KillTmux);
+    }
+    actions
+}
+
+fn herdr_session_menu_actions(
+    active: bool,
+    lifecycle: Vec<HerdrRowAction>,
+) -> Vec<SessionRowAction> {
+    let mut actions = Vec::with_capacity(lifecycle.len() + usize::from(active));
+    if active {
+        actions.push(SessionRowAction::Detach);
+    }
+    actions.extend(lifecycle.into_iter().map(SessionRowAction::Herdr));
+    actions
 }
 
 fn herdr_operation_label(session: &workspace::HerdrSessionItem) -> Option<&'static str> {
@@ -4963,17 +4961,18 @@ mod tests {
     use super::{
         APP_NAVIGATION_WIDTH, APP_TITLEBAR_HEIGHT, HerdrRowAccess, HerdrRowAction,
         INPUT_BUFFER_FULL_DIAGNOSTIC, INPUT_BUFFERED_DIAGNOSTIC, InputRefusal, LayoutKey,
-        NewSessionDraft, NewSessionKind, PendingUiInput, QueuedUiInput, TerminalKeyIdentity,
-        TerminalKeyboard, TerminalPointer, TerminalResize, UI_INPUT_BYTE_CAPACITY,
-        UI_INPUT_CAPACITY, WheelBatch, active_session_selection, application_navigation_width,
-        canonical_terminal_key_with, clear_terminal_input_state, clears_after_input_delivery,
-        clears_when_input_queue_is_empty, coalesce_last_resize, coalesce_last_wheel,
-        herdr_row_actions, host_tree_status, input_queue_has_capacity, is_toggle_sidebar_shortcut,
-        kill_confirmation_description, kill_confirmation_title, named_key, new_session_validation,
-        normalize_cell_width, queued_input_matches_presentation, retained_key_event_with,
-        session_group_visibility, terminal_cell_at_with_offset, terminal_key_input,
-        terminal_key_input_with_canonical, terminal_line_height, terminal_wheel_steps,
-        transitioned_presentation, tree_herdr_sessions, tree_sessions, workspace_window_title,
+        NewSessionDraft, NewSessionKind, PendingUiInput, QueuedUiInput, SessionRowAction,
+        TerminalKeyIdentity, TerminalKeyboard, TerminalPointer, TerminalResize,
+        UI_INPUT_BYTE_CAPACITY, UI_INPUT_CAPACITY, WheelBatch, active_session_selection,
+        application_navigation_width, canonical_terminal_key_with, clear_terminal_input_state,
+        clears_after_input_delivery, clears_when_input_queue_is_empty, coalesce_last_resize,
+        coalesce_last_wheel, herdr_row_actions, herdr_session_menu_actions, host_tree_status,
+        input_queue_has_capacity, is_toggle_sidebar_shortcut, kill_confirmation_description,
+        kill_confirmation_title, named_key, new_session_validation, normalize_cell_width,
+        queued_input_matches_presentation, retained_key_event_with, session_group_visibility,
+        terminal_cell_at_with_offset, terminal_key_input, terminal_key_input_with_canonical,
+        terminal_line_height, terminal_wheel_steps, tmux_row_actions, transitioned_presentation,
+        tree_herdr_sessions, tree_sessions, workspace_window_title,
     };
     use model::DiagnosticKind;
     use std::sync::Arc;
@@ -5345,6 +5344,25 @@ mod tests {
         assert_eq!(
             herdr_row_actions(&stopped),
             vec![HerdrRowAction::Restart, HerdrRowAction::Delete]
+        );
+    }
+
+    #[test]
+    fn active_session_menus_include_detach_without_losing_backend_lifecycle() {
+        assert_eq!(
+            tmux_row_actions(true, true),
+            vec![SessionRowAction::Detach, SessionRowAction::KillTmux]
+        );
+        assert_eq!(
+            herdr_session_menu_actions(true, vec![HerdrRowAction::Stop]),
+            vec![
+                SessionRowAction::Detach,
+                SessionRowAction::Herdr(HerdrRowAction::Stop)
+            ]
+        );
+        assert_eq!(
+            tmux_row_actions(false, true),
+            vec![SessionRowAction::KillTmux]
         );
     }
 

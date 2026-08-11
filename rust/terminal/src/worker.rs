@@ -802,6 +802,7 @@ struct CreationIdentityCapture {
     pending: Vec<u8>,
     state: CreationIdentityCaptureState,
     observed: usize,
+    post_capture_remaining: usize,
     result: Option<Sender<Result<SessionIdentity, String>>>,
 }
 
@@ -818,12 +819,17 @@ impl CreationIdentityCapture {
             pending: Vec::new(),
             state: CreationIdentityCaptureState::Searching,
             observed: 0,
+            post_capture_remaining: 0,
             result: Some(result),
         }
     }
 
     fn push(&mut self, bytes: &[u8]) -> Vec<u8> {
-        if self.result.is_none() {
+        if self.result.is_none()
+            && self.post_capture_remaining == 0
+            && self.state == CreationIdentityCaptureState::Searching
+            && self.pending.is_empty()
+        {
             return bytes.to_vec();
         }
         // Tmux sends terminal queries before its identity message and waits for
@@ -831,43 +837,53 @@ impl CreationIdentityCapture {
         // while retaining a possible split marker so internal framing is never
         // painted into the terminal.
         self.observed = self.observed.saturating_add(bytes.len());
+        if self.result.is_none() {
+            self.post_capture_remaining = self.post_capture_remaining.saturating_sub(bytes.len());
+        }
         self.pending.extend_from_slice(bytes);
         let mut visible = Vec::new();
 
-        if self.state == CreationIdentityCaptureState::Searching {
-            if let Some(start) = find_bytes(&self.pending, &self.marker) {
-                visible.extend(self.pending.drain(..start));
-                self.pending.drain(..self.marker.len());
-                self.state = CreationIdentityCaptureState::Payload;
-            } else {
+        loop {
+            if self.state == CreationIdentityCaptureState::Searching {
+                if let Some(start) = find_bytes(&self.pending, &self.marker) {
+                    visible.extend(self.pending.drain(..start));
+                    self.pending.drain(..self.marker.len());
+                    self.state = CreationIdentityCaptureState::Payload;
+                    continue;
+                }
                 let retained = marker_prefix_suffix_len(&self.pending, &self.marker);
                 let safe = self.pending.len().saturating_sub(retained);
                 visible.extend(self.pending.drain(..safe));
-                if self.observed > CREATION_IDENTITY_BUFFER_LIMIT {
+                if self.result.is_some() && self.observed > CREATION_IDENTITY_BUFFER_LIMIT {
                     visible.append(&mut self.pending);
                     self.finish(Err(
                         "tmux did not report creation identity before emitting terminal output"
                             .to_owned(),
                     ));
+                    self.post_capture_remaining = 0;
+                } else if self.result.is_none() && self.post_capture_remaining == 0 {
+                    visible.append(&mut self.pending);
                 }
-                return visible;
+                break;
             }
-        }
 
-        let Some(end) = self.pending.iter().position(|byte| *byte == b'!') else {
-            if self.observed > CREATION_IDENTITY_BUFFER_LIMIT {
-                self.finish(Err(
-                    "tmux creation identity report was incomplete".to_owned()
-                ));
+            let Some(end) = self.pending.iter().position(|byte| *byte == b'!') else {
+                if self.observed > CREATION_IDENTITY_BUFFER_LIMIT {
+                    self.finish(Err(
+                        "tmux creation identity report was incomplete".to_owned()
+                    ));
+                    self.post_capture_remaining = 0;
+                }
+                break;
+            };
+            let identity = parse_creation_identity(&self.pending[..end]);
+            self.pending.drain(..=end);
+            self.state = CreationIdentityCaptureState::Searching;
+            self.observed = 0;
+            if let Some(sender) = self.result.take() {
+                let _ignored = sender.try_send(identity);
+                self.post_capture_remaining = CREATION_IDENTITY_BUFFER_LIMIT;
             }
-            return visible;
-        };
-        let identity = parse_creation_identity(&self.pending[..end]);
-        let suffix = self.pending.split_off(end + 1);
-        self.pending.clear();
-        visible.extend(suffix);
-        if let Some(sender) = self.result.take() {
-            let _ignored = sender.try_send(identity);
         }
         visible
     }
@@ -1735,6 +1751,23 @@ mod tests {
             receiver.recv().expect("creation identity report"),
             Ok(SessionIdentity::new(321, "$7", 123_456))
         );
+    }
+
+    #[test]
+    fn creation_identity_capture_filters_tmux_redraw_copies() {
+        let marker = "__ghc_marker__";
+        let (sender, receiver) = bounded(1);
+        let mut capture = CreationIdentityCapture::new(marker.to_owned(), sender);
+
+        let visible = capture
+            .push(b"before__ghc_marker__321|$7|123456|!middle__ghc_marker__321|$7|123456|!after");
+
+        assert_eq!(visible, b"beforemiddleafter");
+        assert_eq!(
+            receiver.recv().expect("creation identity report"),
+            Ok(SessionIdentity::new(321, "$7", 123_456))
+        );
+        assert_eq!(capture.push(b"ordinary output"), b"ordinary output");
     }
 
     #[test]

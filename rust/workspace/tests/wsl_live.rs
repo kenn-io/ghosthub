@@ -238,6 +238,10 @@ fn creates_attaches_and_detaches_one_atomic_local_session() {
         },
         || workspace_diagnostic(&workspace),
     );
+    assert!(
+        !terminal_contains(&workspace, "__ghc_"),
+        "the internal creation identity report must not reach the rendered surface"
+    );
     let created_identity = server.run_tmux([
         "display-message",
         "-p",
