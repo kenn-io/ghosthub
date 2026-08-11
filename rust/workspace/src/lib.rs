@@ -5454,44 +5454,47 @@ fn publish_kwt_mutation_failure(
 }
 
 fn finish_kwt_project_mutation(
-    inner: &Inner,
+    inner: &Arc<Inner>,
     target: Option<(&host::WslEndpoint, &host::WslRuntimeIdentity)>,
 ) {
-    let _snapshot_write = begin_snapshot_write(inner);
-    if let Some((endpoint, runtime)) = target {
-        let current_matches = inner
-            .host
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .is_some_and(|published| {
-                published.value.snapshot.endpoint() == endpoint
-                    && published.value.snapshot.runtime() == runtime
-            });
-        if current_matches
-            && let Some(host) = inner
+    {
+        let _snapshot_write = begin_snapshot_write(inner);
+        if let Some((endpoint, runtime)) = target {
+            let current_matches = inner
+                .host
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+                .is_some_and(|published| {
+                    published.value.snapshot.endpoint() == endpoint
+                        && published.value.snapshot.runtime() == runtime
+                });
+            if current_matches
+                && let Some(host) = inner
+                    .hosts
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .iter_mut()
+                    .find(|host| host.id == "wsl" && host.endpoint == endpoint.distro())
+            {
+                host.kwt_state = KwtState::Ready;
+            }
+        } else {
+            for host in inner
                 .hosts
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .iter_mut()
-                .find(|host| host.id == "wsl" && host.endpoint == endpoint.distro())
-        {
-            host.kwt_state = KwtState::Ready;
-        }
-    } else {
-        for host in inner
-            .hosts
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .iter_mut()
-        {
-            if host.kwt_mutating() {
-                host.kwt_state = KwtState::Ready;
+            {
+                if host.kwt_mutating() {
+                    host.kwt_state = KwtState::Ready;
+                }
             }
         }
+        inner.kwt_mutation_in_flight.store(false, Ordering::Release);
+        inner.revision.fetch_add(1, Ordering::Release);
     }
-    inner.kwt_mutation_in_flight.store(false, Ordering::Release);
-    inner.revision.fetch_add(1, Ordering::Release);
+    start_initial_kwt_refresh(inner);
 }
 
 fn push_operation_event(inner: &Inner, event: WorkspaceEvent) {
@@ -7970,10 +7973,14 @@ mod tests {
         );
     }
 
+    type SpawnFailureHook = Box<dyn FnOnce() + Send>;
+
     #[derive(Default)]
     struct ManualRefreshRuntime {
         work: Mutex<VecDeque<RefreshTask>>,
         deadlines: Mutex<VecDeque<(Duration, CancellationToken, RefreshTask)>>,
+        fail_next_work: AtomicBool,
+        before_spawn_failure: Mutex<Option<SpawnFailureHook>>,
     }
 
     impl ManualRefreshRuntime {
@@ -8003,10 +8010,29 @@ mod tests {
                 .map(|(delay, _, _)| *delay)
                 .collect()
         }
+
+        fn fail_next_work(&self, before_failure: impl FnOnce() + Send + 'static) {
+            *self
+                .before_spawn_failure
+                .lock()
+                .expect("spawn failure hook") = Some(Box::new(before_failure));
+            self.fail_next_work.store(true, Ordering::Release);
+        }
     }
 
     impl RefreshRuntime for ManualRefreshRuntime {
         fn spawn(&self, _name: &str, task: RefreshTask) -> std::io::Result<()> {
+            if self.fail_next_work.swap(false, Ordering::AcqRel) {
+                if let Some(before_failure) = self
+                    .before_spawn_failure
+                    .lock()
+                    .expect("spawn failure hook")
+                    .take()
+                {
+                    before_failure();
+                }
+                return Err(std::io::Error::other("scripted work spawn failure"));
+            }
             self.work.lock().expect("work queue").push_back(task);
             Ok(())
         }
@@ -11663,6 +11689,77 @@ mod tests {
         let refresh = reserve_kwt_refresh(&workspace.inner, false)
             .expect("ready matching host permits background KWT refresh");
         refresh.cancellation.cancel();
+    }
+
+    #[test]
+    fn failed_mutation_spawn_starts_deferred_kwt_refresh_for_replaced_runtime() {
+        let runtime = Arc::new(ManualRefreshRuntime::default());
+        let bundle =
+            host::KwtBundle::new("a".repeat(40), "b".repeat(64), [1_u8]).expect("valid bundle");
+        let config = WslConfig::with_distro("Ubuntu")
+            .expect("valid config")
+            .with_kwt_bundle(bundle.clone());
+        let executable = WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
+            .expect("absolute WSL path");
+        let workspace = Workspace::application_with_services(
+            TerminalAppearance::default(),
+            Some(WslHostSpec::available(config.clone(), executable.clone())),
+            Arc::new(SystemWslDiscovery::new()),
+            runtime.clone(),
+        );
+        let old_snapshot = HostSnapshot::test_fixture("Ubuntu", "boot-old", 42, Vec::new());
+        *workspace.inner.host.lock().expect("published host") = Some(Published::new(
+            HostContext {
+                host: WslHost::new(
+                    config,
+                    Arc::new(StdCommandRunner) as SharedCommandRunner,
+                    executable.clone(),
+                ),
+                snapshot: old_snapshot.clone(),
+            },
+            1,
+        ));
+        set_inventory_state(&workspace.inner, ready_content(&old_snapshot));
+        workspace.inner.hosts.write().expect("hosts")[0].kwt_state = KwtState::Ready;
+
+        let replacement_inner = Arc::clone(&workspace.inner);
+        runtime.fail_next_work(move || {
+            let replacement = HostSnapshot::test_fixture("Debian", "boot-new", 84, Vec::new());
+            let replacement_config = WslConfig::with_distro("Debian")
+                .expect("valid replacement config")
+                .with_kwt_bundle(bundle);
+            *replacement_inner.host.lock().expect("published host") = Some(Published::new(
+                HostContext {
+                    host: WslHost::new(
+                        replacement_config,
+                        Arc::new(StdCommandRunner) as SharedCommandRunner,
+                        executable,
+                    ),
+                    snapshot: replacement.clone(),
+                },
+                2,
+            ));
+            set_inventory_state(&replacement_inner, ready_content(&replacement));
+        });
+
+        let error = workspace
+            .add_kwt_project("wsl", "Ubuntu", "/repos/project")
+            .expect_err("scripted mutation spawn fails");
+        assert!(error.to_string().contains("scripted work spawn failure"));
+        assert!(
+            !workspace
+                .inner
+                .kwt_mutation_in_flight
+                .load(Ordering::Acquire)
+        );
+        let snapshot = workspace.snapshot();
+        assert_eq!(snapshot.hosts()[0].endpoint(), "Debian");
+        assert!(snapshot.hosts()[0].kwt_refreshing());
+        assert_eq!(
+            runtime.work.lock().expect("work queue").len(),
+            1,
+            "settlement schedules the initial KWT refresh for the replacement runtime"
+        );
     }
 
     #[test]
