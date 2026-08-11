@@ -3,6 +3,8 @@
 use model::PortStatus;
 use workspace::{Workspace, WslHostSpec};
 
+const KWT_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/kwt"));
+
 #[cfg(target_os = "linux")]
 const PLATFORM_NAME: &str = "Linux";
 #[cfg(target_os = "windows")]
@@ -47,12 +49,28 @@ fn runtime_settings(
     settings: &config::ApplicationConfig,
 ) -> Result<(host::WslConfig, config::TerminalAppearance), host::HostError> {
     let wsl = settings.wsl();
-    let wsl = host::WslConfig::configured(
+    let mut wsl = host::WslConfig::configured(
         wsl.distro().map(str::to_owned),
         wsl.tmux_binary(),
         wsl.socket_directory().map(str::to_owned),
     )?;
+    if let Some(bundle) = bundled_kwt() {
+        wsl = wsl.with_kwt_bundle(bundle);
+    }
     Ok((wsl, settings.terminal().clone()))
+}
+
+fn bundled_kwt() -> Option<host::KwtBundle> {
+    if env!("GHOSTHUB_KWT_AVAILABLE") != "true" {
+        return None;
+    }
+    host::KwtBundle::new(
+        env!("GHOSTHUB_KWT_REVISION"),
+        env!("GHOSTHUB_KWT_SHA256"),
+        KWT_BYTES,
+    )
+    .map(Some)
+    .expect("build script emitted valid KWT bundle metadata")
 }
 
 #[cfg(test)]
@@ -109,15 +127,16 @@ mod tests {
 
         let (wsl, terminal) = runtime_settings(&parsed).expect("project runtime settings");
 
-        assert_eq!(
-            wsl,
-            WslConfig::configured(
-                Some("Ubuntu Dev".to_owned()),
-                "/opt/tmux",
-                Some("/run/user/1000/tmux".to_owned()),
-            )
-            .expect("valid WSL settings")
-        );
+        let mut expected = WslConfig::configured(
+            Some("Ubuntu Dev".to_owned()),
+            "/opt/tmux",
+            Some("/run/user/1000/tmux".to_owned()),
+        )
+        .expect("valid WSL settings");
+        if let Some(bundle) = super::bundled_kwt() {
+            expected = expected.with_kwt_bundle(bundle);
+        }
+        assert_eq!(wsl, expected);
         assert_eq!(terminal.font_family(), "Iosevka Term");
         assert_eq!(terminal.font_size(), 17);
         assert_eq!(terminal.background(), 0x01_02_03);

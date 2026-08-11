@@ -1,5 +1,6 @@
 [package]
 name = "ghosthub-app"
+build = "build.rs"
 version = "0.0.0"
 edition.workspace = true
 license.workspace = true
@@ -20,6 +21,10 @@ ghosthub-host.workspace = true
 ghosthub-model.workspace = true
 ghosthub-ui.workspace = true
 ghosthub-workspace.workspace = true
+
+[build-dependencies]
+hex.workspace = true
+sha2.workspace = true
 
 [lints]
 workspace = true
