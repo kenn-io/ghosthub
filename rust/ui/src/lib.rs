@@ -308,7 +308,7 @@ pub struct RootView {
     sidebar_visible: bool,
     new_session: Option<NewSessionDraft>,
     project_dialog: Option<ProjectDialog>,
-    herdr_action_menu: Option<HerdrActionMenu>,
+    session_action_menu: Option<SessionActionMenu>,
     restore_focus: bool,
 }
 
@@ -327,9 +327,9 @@ enum NewSessionKind {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct HerdrActionMenu {
+struct SessionActionMenu {
     selection: SessionSelection,
-    actions: Vec<HerdrRowAction>,
+    actions: Vec<SessionRowAction>,
     left: f32,
     top: f32,
 }
@@ -688,7 +688,7 @@ impl RootView {
             sidebar_visible: true,
             new_session: None,
             project_dialog: None,
-            herdr_action_menu: None,
+            session_action_menu: None,
             restore_focus: false,
         };
         view.resize_for_window(window);
@@ -2591,10 +2591,10 @@ impl RootView {
         Some(self.herdr_lifecycle_overlay(&confirmation, cx))
     }
 
-    fn herdr_action_menu_overlay(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
-        let menu = self.herdr_action_menu.clone()?;
+    fn session_action_menu_overlay(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let menu = self.session_action_menu.clone()?;
         let mut items = div()
-            .id("herdr-action-menu")
+            .id("session-action-menu")
             .absolute()
             .left(px(menu.left))
             .top(px(menu.top))
@@ -2607,7 +2607,7 @@ impl RootView {
             .shadow_lg()
             .on_mouse_down(GpuiMouseButton::Left, |_, _, cx| cx.stop_propagation());
         for action in menu.actions {
-            items = items.child(Self::herdr_action_menu_item(
+            items = items.child(Self::session_action_menu_item(
                 menu.selection.clone(),
                 action,
                 cx,
@@ -2620,7 +2620,7 @@ impl RootView {
                 .on_mouse_down(
                     GpuiMouseButton::Left,
                     cx.listener(|this, _, _, cx| {
-                        this.herdr_action_menu = None;
+                        this.session_action_menu = None;
                         cx.notify();
                     }),
                 )
@@ -2629,15 +2629,22 @@ impl RootView {
         )
     }
 
-    fn herdr_action_menu_item(
+    fn session_action_menu_item(
         selection: SessionSelection,
-        action: HerdrRowAction,
+        action: SessionRowAction,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let (id, label, color) = match action {
-            HerdrRowAction::Stop => ("herdr-action-stop", "Stop", 0xd6_747a),
-            HerdrRowAction::Restart => ("herdr-action-restart", "Restart", 0x87_b9e8),
-            HerdrRowAction::Delete => ("herdr-action-delete", "Delete", 0xd6_747a),
+            SessionRowAction::KillTmux => ("tmux-action-kill", "Kill", 0xd6_747a),
+            SessionRowAction::Herdr(HerdrRowAction::Stop) => {
+                ("herdr-action-stop", "Stop", 0xd6_747a)
+            }
+            SessionRowAction::Herdr(HerdrRowAction::Restart) => {
+                ("herdr-action-restart", "Restart", 0x87_b9e8)
+            }
+            SessionRowAction::Herdr(HerdrRowAction::Delete) => {
+                ("herdr-action-delete", "Delete", 0xd6_747a)
+            }
         };
         div()
             .id(id)
@@ -2653,21 +2660,23 @@ impl RootView {
             .hover(|style| style.bg(rgb(0x2a_2f39)))
             .child(label)
             .on_click(cx.listener(move |this, _, window, cx| {
-                this.herdr_action_menu = None;
+                this.session_action_menu = None;
                 match action {
-                    HerdrRowAction::Stop => this.request_herdr_lifecycle(
+                    SessionRowAction::KillTmux => this.request_session_kill(&selection, cx),
+                    SessionRowAction::Herdr(HerdrRowAction::Stop) => this.request_herdr_lifecycle(
                         &selection,
                         workspace::HerdrLifecycleAction::Stop,
                         cx,
                     ),
-                    HerdrRowAction::Restart => {
+                    SessionRowAction::Herdr(HerdrRowAction::Restart) => {
                         this.restart_herdr_session(&selection, window, cx);
                     }
-                    HerdrRowAction::Delete => this.request_herdr_lifecycle(
-                        &selection,
-                        workspace::HerdrLifecycleAction::Delete,
-                        cx,
-                    ),
+                    SessionRowAction::Herdr(HerdrRowAction::Delete) => this
+                        .request_herdr_lifecycle(
+                            &selection,
+                            workspace::HerdrLifecycleAction::Delete,
+                            cx,
+                        ),
                 }
                 cx.stop_propagation();
             }))
@@ -3237,11 +3246,13 @@ impl RootView {
         can_kill: bool,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        let row_group = format!("worktree-actions-{host_index}-{project_index}-{worktree_index}");
         let mut row = div()
             .id((
                 gpui::ElementId::named_usize("worktree-host", host_index),
                 format!("{project_index}-{worktree_index}"),
             ))
+            .group(row_group.clone())
             .mr_1()
             .h(px(SESSION_ROW_HEIGHT))
             .flex()
@@ -3275,21 +3286,14 @@ impl RootView {
             );
         if is_active {
             row = row.child(Self::tree_detach_action(cx));
-        } else if can_open {
-            row = row.child(Self::worktree_open_action(
-                host_index,
-                project_index,
-                worktree_index,
-                selection.clone(),
-                cx,
-            ));
         }
         if can_kill {
-            row = row.child(Self::worktree_kill_action(
+            row = row.child(Self::session_action_menu_button(
                 host_index,
-                project_index,
-                worktree_index,
+                format!("worktree-{project_index}-{worktree_index}"),
                 selection.clone(),
+                vec![SessionRowAction::KillTmux],
+                row_group,
                 cx,
             ));
         }
@@ -3299,62 +3303,6 @@ impl RootView {
             }))
         })
         .into_any_element()
-    }
-
-    fn worktree_open_action(
-        host_index: usize,
-        project_index: usize,
-        worktree_index: usize,
-        selection: SessionSelection,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        div()
-            .id((
-                gpui::ElementId::named_usize("open-worktree-host", host_index),
-                format!("{project_index}-{worktree_index}"),
-            ))
-            .flex_none()
-            .px_1()
-            .py_1()
-            .rounded_sm()
-            .cursor_pointer()
-            .text_xs()
-            .text_color(rgb(0x79_aee3))
-            .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xb6_d8_f8)))
-            .child("Open")
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.select_session(&selection, window, cx);
-                cx.stop_propagation();
-            }))
-            .into_any_element()
-    }
-
-    fn worktree_kill_action(
-        host_index: usize,
-        project_index: usize,
-        worktree_index: usize,
-        selection: SessionSelection,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        div()
-            .id((
-                gpui::ElementId::named_usize("kill-worktree-host", host_index),
-                format!("{project_index}-{worktree_index}"),
-            ))
-            .flex_none()
-            .px_1()
-            .py_1()
-            .rounded_sm()
-            .cursor_pointer()
-            .text_xs()
-            .text_color(rgb(0xc7_7378))
-            .hover(|style| style.bg(rgb(0x3a_2025)).text_color(rgb(0xff_a3_a8)))
-            .child("Kill")
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.request_session_kill(&selection, cx);
-                cx.stop_propagation();
-            }))
-            .into_any_element()
     }
 
     fn herdr_tree(
@@ -3555,11 +3503,11 @@ impl RootView {
             row = row.child(Self::tree_detach_action(cx));
         }
         if !actions.is_empty() {
-            row = row.child(Self::herdr_action_menu_button(
+            row = row.child(Self::session_action_menu_button(
                 host_index,
-                index,
+                format!("herdr-{index}"),
                 selection.clone(),
-                actions,
+                actions.into_iter().map(SessionRowAction::Herdr).collect(),
                 row_group,
                 cx,
             ));
@@ -3580,18 +3528,18 @@ impl RootView {
         row.into_any_element()
     }
 
-    fn herdr_action_menu_button(
+    fn session_action_menu_button(
         host_index: usize,
-        index: usize,
+        row_id: String,
         selection: SessionSelection,
-        actions: Vec<HerdrRowAction>,
+        actions: Vec<SessionRowAction>,
         row_group: String,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         div()
             .id((
-                gpui::ElementId::named_usize("herdr-menu-host", host_index),
-                index.to_string(),
+                gpui::ElementId::named_usize("session-menu-host", host_index),
+                row_id,
             ))
             .flex_none()
             .size(px(22.0))
@@ -3610,7 +3558,7 @@ impl RootView {
                 let position = event.position();
                 let x: f32 = position.x.into();
                 let y: f32 = position.y.into();
-                this.herdr_action_menu = Some(HerdrActionMenu {
+                this.session_action_menu = Some(SessionActionMenu {
                     selection: selection.clone(),
                     actions: actions.clone(),
                     left: (x - 112.0).max(4.0),
@@ -3660,11 +3608,13 @@ impl RootView {
         let is_active = session.state.is_active();
         let can_open = session.state.can_open();
         let name = selection.session().to_owned();
+        let row_group = format!("tmux-session-actions-{host_index}-{index}");
         let mut row = div()
             .id((
                 gpui::ElementId::named_usize("tree-session-host", host_index),
                 index.to_string(),
             ))
+            .group(row_group.clone())
             .mr_1()
             .h(px(SESSION_ROW_HEIGHT))
             .flex()
@@ -3707,19 +3657,14 @@ impl RootView {
         }
         if is_active {
             row = row.child(Self::tree_detach_action(cx));
-        } else if can_open {
-            row = row.child(Self::tree_open_action(
-                host_index,
-                index,
-                selection.clone(),
-                cx,
-            ));
         }
         if session.state.can_kill() {
-            row = row.child(Self::tree_kill_action(
+            row = row.child(Self::session_action_menu_button(
                 host_index,
-                index,
+                format!("tmux-{index}"),
                 selection.clone(),
+                vec![SessionRowAction::KillTmux],
+                row_group,
                 cx,
             ));
         }
@@ -3748,60 +3693,6 @@ impl RootView {
             .child("Detach")
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.detach_session(window, cx);
-                cx.stop_propagation();
-            }))
-            .into_any_element()
-    }
-
-    fn tree_open_action(
-        host_index: usize,
-        index: usize,
-        selection: SessionSelection,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        div()
-            .id((
-                gpui::ElementId::named_usize("open-tree-session-host", host_index),
-                index.to_string(),
-            ))
-            .flex_none()
-            .px_1()
-            .py_1()
-            .rounded_sm()
-            .cursor_pointer()
-            .text_xs()
-            .text_color(rgb(0x79_aee3))
-            .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xb6_d8_f8)))
-            .child("Open")
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.select_session(&selection, window, cx);
-                cx.stop_propagation();
-            }))
-            .into_any_element()
-    }
-
-    fn tree_kill_action(
-        host_index: usize,
-        index: usize,
-        selection: SessionSelection,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        div()
-            .id((
-                gpui::ElementId::named_usize("kill-tree-session-host", host_index),
-                index.to_string(),
-            ))
-            .flex_none()
-            .px_1()
-            .py_1()
-            .rounded_sm()
-            .cursor_pointer()
-            .text_xs()
-            .text_color(rgb(0xc7_7378))
-            .hover(|style| style.bg(rgb(0x3a_2025)).text_color(rgb(0xff_a3_a8)))
-            .child("Kill")
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.request_session_kill(&selection, cx);
                 cx.stop_propagation();
             }))
             .into_any_element()
@@ -4035,6 +3926,12 @@ enum HerdrRowAction {
     Stop,
     Restart,
     Delete,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SessionRowAction {
+    KillTmux,
+    Herdr(HerdrRowAction),
 }
 
 fn herdr_lifecycle_copy(
@@ -4413,7 +4310,7 @@ impl Render for RootView {
         let content = self.content_element(&snapshot, cx);
         let creation_overlay = self.new_session_overlay(&snapshot, window, cx);
         let project_overlay = self.project_overlay(window, cx);
-        let herdr_action_menu = self.herdr_action_menu_overlay(cx);
+        let session_action_menu = self.session_action_menu_overlay(cx);
         let kill_overlay = self.pending_session_kill_overlay(window, cx);
         let herdr_lifecycle_overlay = self.pending_herdr_lifecycle_overlay(window, cx);
         let mut root = div()
@@ -4429,7 +4326,7 @@ impl Render for RootView {
             .child(div().flex_1().min_h_0().w_full().child(content))
             .children(creation_overlay)
             .children(project_overlay)
-            .children(herdr_action_menu)
+            .children(session_action_menu)
             .children(kill_overlay)
             .children(herdr_lifecycle_overlay);
 
