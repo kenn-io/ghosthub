@@ -16,7 +16,7 @@ use session::{
 };
 
 use crate::herdr::{self, ExecutableProbe};
-use crate::kwt::{parse_branches, parse_project_mutation, project_command_error};
+use crate::kwt::{parse_branches, parse_command_failure, parse_project_mutation};
 use crate::zellij;
 use crate::{
     CancellationToken, CommandOutput, CommandRunner, KwtBranchCandidate, KwtBundle, KwtInventory,
@@ -1079,11 +1079,7 @@ impl<R: CommandRunner> WslHost<R> {
         if output.status == 0 {
             Ok(output)
         } else {
-            Err(classify_command_failure(
-                output.status,
-                &output.stderr,
-                "read KWT inventory",
-            ))
+            Err(classify_kwt_command_failure(&output, "read KWT inventory"))
         }
     }
 
@@ -1221,14 +1217,17 @@ impl<R: CommandRunner> WslHost<R> {
                 } else {
                     DiagnosticKind::Transport
                 },
-                project_command_error(&output.stdout).unwrap_or_else(|| {
-                    let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-                    if detail.is_empty() {
-                        "KWT could not create the worktree".to_owned()
-                    } else {
-                        detail
-                    }
-                }),
+                parse_command_failure(&output.stdout).map_or_else(
+                    || {
+                        let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+                        if detail.is_empty() {
+                            "KWT could not create the worktree".to_owned()
+                        } else {
+                            detail
+                        }
+                    },
+                    |failure| friendly_kwt_failure(&failure),
+                ),
             ))
         }
     }
@@ -3756,14 +3755,47 @@ fn require_kwt_project_command(output: &CommandOutput, subject: &str) -> Result<
     if output.status == 0 {
         return Ok(());
     }
-    if let Some(message) = project_command_error(&output.stdout) {
-        return Err(HostError::new(DiagnosticKind::Transport, message));
+    if parse_command_failure(&output.stdout).is_some() {
+        return Err(classify_kwt_command_failure(output, subject));
     }
     Err(classify_command_failure(
         output.status,
         &output.stderr,
         subject,
     ))
+}
+
+fn classify_kwt_command_failure(output: &CommandOutput, subject: &str) -> HostError {
+    let Some(failure) = parse_command_failure(&output.stdout) else {
+        return classify_command_failure(output.status, &output.stderr, subject);
+    };
+    HostError::new(
+        if failure.code() == "inventory_timeout" {
+            DiagnosticKind::Timeout
+        } else {
+            DiagnosticKind::Transport
+        },
+        friendly_kwt_failure(&failure),
+    )
+}
+
+fn friendly_kwt_failure(failure: &crate::kwt::KwtCommandFailure) -> String {
+    match failure.code() {
+        "daemon_start_failed" => {
+            "KWT's background service did not start. Ghosthub will retry automatically.".to_owned()
+        }
+        "daemon_draining" => {
+            "KWT is finishing an update. Ghosthub will retry automatically.".to_owned()
+        }
+        _ => {
+            let retry = if failure.retryable() {
+                " Try again."
+            } else {
+                ""
+            };
+            format!("{}{retry}", failure.message())
+        }
+    }
 }
 
 fn classify_runner_error(error: &std::io::Error) -> HostError {
@@ -4506,6 +4538,26 @@ mod tests {
             assert_eq!(error.kind(), DiagnosticKind::MalformedOutput);
             assert!(error.to_string().contains("this host uses Ubuntu"));
         }
+    }
+
+    #[test]
+    fn kwt_daemon_start_failures_are_actionable_and_hide_internal_cli_context() {
+        let output = CommandOutput {
+            status: 1,
+            stdout: br#"{"error":{"code":"daemon_start_failed","message":"kwt daemon did not become ready","retryable":true}}"#.to_vec(),
+            stderr: b"kwt projects: daemon_start_failed: kwt daemon did not become ready\n"
+                .to_vec(),
+        };
+
+        let error = classify_kwt_command_failure(&output, "read KWT inventory");
+
+        assert_eq!(error.kind(), DiagnosticKind::Transport);
+        assert_eq!(
+            error.to_string(),
+            "KWT's background service did not start. Ghosthub will retry automatically."
+        );
+        assert!(!error.to_string().contains("daemon_start_failed"));
+        assert!(!error.to_string().contains("kwt projects"));
     }
 
     #[test]

@@ -118,6 +118,27 @@ struct KwtCommandError {
     retryable: bool,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct KwtCommandFailure {
+    code: String,
+    message: String,
+    retryable: bool,
+}
+
+impl KwtCommandFailure {
+    pub(crate) fn code(&self) -> &str {
+        &self.code
+    }
+
+    pub(crate) fn message(&self) -> &str {
+        &self.message
+    }
+
+    pub(crate) const fn retryable(&self) -> bool {
+        self.retryable
+    }
+}
+
 impl KwtProject {
     #[must_use]
     pub fn repository(&self) -> &str {
@@ -156,17 +177,13 @@ pub(crate) fn parse_project_mutation(
     Ok(response.project)
 }
 
-pub(crate) fn project_command_error(output: &[u8]) -> Option<String> {
+pub(crate) fn parse_command_failure(output: &[u8]) -> Option<KwtCommandFailure> {
     let response: KwtCommandErrorEnvelope = serde_json::from_slice(output).ok()?;
-    let retry = if response.error.retryable {
-        " Try again."
-    } else {
-        ""
-    };
-    Some(format!(
-        "{} ({}).{retry}",
-        response.error.message, response.error.code
-    ))
+    Some(KwtCommandFailure {
+        code: response.error.code,
+        message: response.error.message,
+        retryable: response.error.retryable,
+    })
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -404,7 +421,7 @@ impl KwtInventory {
 
 #[cfg(test)]
 mod tests {
-    use super::{KwtBundle, KwtInventory, parse_project_mutation, project_command_error};
+    use super::{KwtBundle, KwtInventory, parse_command_failure, parse_project_mutation};
 
     #[test]
     fn bundle_rejects_ambiguous_metadata_and_hides_payload_in_debug() {
@@ -472,12 +489,12 @@ mod tests {
 
     #[test]
     fn project_command_errors_preserve_retry_guidance() {
-        assert_eq!(
-            project_command_error(
-                br#"{"error":{"code":"registration_changed","message":"the project changed","retryable":true}}"#,
-            )
-            .as_deref(),
-            Some("the project changed (registration_changed). Try again.")
-        );
+        let failure = parse_command_failure(
+            br#"{"error":{"code":"registration_changed","message":"the project changed","retryable":true}}"#,
+        )
+        .expect("structured KWT failure");
+        assert_eq!(failure.code(), "registration_changed");
+        assert_eq!(failure.message(), "the project changed");
+        assert!(failure.retryable());
     }
 }

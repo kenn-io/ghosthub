@@ -1523,6 +1523,11 @@ impl RootView {
                         self.paint_cache.clear();
                     }
                 }
+                WorkspaceEvent::KwtWorktreeCreationPending { message, .. } => {
+                    self.project_dialog = None;
+                    self.restore_focus = true;
+                    self.diagnostic = Some(message);
+                }
                 WorkspaceEvent::KwtWorktreeOperationFailed {
                     project_path,
                     message,

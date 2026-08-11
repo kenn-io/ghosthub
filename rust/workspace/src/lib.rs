@@ -824,6 +824,10 @@ pub enum WorkspaceEvent {
     KwtWorktreeCreated {
         target: KwtWorktreeTarget,
     },
+    KwtWorktreeCreationPending {
+        project_path: String,
+        message: String,
+    },
     KwtWorktreeOperationFailed {
         project_path: String,
         message: String,
@@ -6087,7 +6091,7 @@ fn reserve_kwt_worktree_operation(
 }
 
 fn run_kwt_worktree_operation(inner: &Arc<Inner>, task: &KwtWorktreeTask) {
-    match &task.operation {
+    let refresh_after_completion = match &task.operation {
         KwtWorktreeOperation::Branches => {
             match task.host.list_kwt_branches(
                 &task.endpoint,
@@ -6120,14 +6124,18 @@ fn run_kwt_worktree_operation(inner: &Arc<Inner>, task: &KwtWorktreeTask) {
                 ),
             }
             publish_kwt_mutation_failure(inner, task.generation, &task.endpoint, &task.runtime);
+            false
         }
         KwtWorktreeOperation::Create {
             branch,
             source,
             creates_branch,
         } => run_kwt_worktree_create(inner, task, branch, source.as_deref(), *creates_branch),
-    }
+    };
     finish_kwt_project_mutation(inner, Some((&task.endpoint, &task.runtime)));
+    if refresh_after_completion {
+        start_kwt_refresh(inner, false);
+    }
 }
 
 fn run_kwt_worktree_create(
@@ -6136,75 +6144,20 @@ fn run_kwt_worktree_create(
     branch: &str,
     source: Option<&str>,
     creates_branch: bool,
-) {
-    let result = task
-        .host
-        .create_kwt_worktree(
-            &task.endpoint,
-            &task.runtime,
-            &host::KwtWorktreeCreate::new(
-                &task.project_path,
-                branch,
-                source.map(str::to_owned),
-                creates_branch,
-            ),
-            &task.cancellation,
-        )
-        .map_err(|error| WorkspaceError::new(error.to_string()))
-        .and_then(|()| {
-            task.host
-                .discover_kwt(&task.endpoint, &task.runtime, &task.cancellation)
-                .map_err(|error| WorkspaceError::new(error.to_string()))?
-                .ok_or_else(|| {
-                    WorkspaceError::new(
-                        "the pinned KWT helper became unavailable after creating the worktree",
-                    )
-                })
-        });
+) -> bool {
+    let result = task.host.create_kwt_worktree(
+        &task.endpoint,
+        &task.runtime,
+        &host::KwtWorktreeCreate::new(
+            &task.project_path,
+            branch,
+            source.map(str::to_owned),
+            creates_branch,
+        ),
+        &task.cancellation,
+    );
     match result {
-        Ok(inventory) => {
-            let target = inventory.projects().iter().find_map(|project| {
-                (project.project().repository() == task.repository
-                    && project.project().path() == task.project_path
-                    && project.project().registration_fingerprint()
-                        == task.registration_fingerprint)
-                    .then(|| {
-                        project
-                            .worktrees()
-                            .iter()
-                            .find(|worktree| worktree.branch() == branch)
-                            .map(|worktree| KwtWorktreeTarget {
-                                host_id: "wsl".to_owned(),
-                                endpoint: task.endpoint.distro().to_owned(),
-                                repository: task.repository.clone(),
-                                project_path: task.project_path.clone(),
-                                registration_fingerprint: task.registration_fingerprint.clone(),
-                                worktree_path: worktree.path().to_owned(),
-                                generation: worktree.generation().map(str::to_owned),
-                                session_name: worktree.session_name().to_owned(),
-                            })
-                    })
-                    .flatten()
-            });
-            publish_kwt_inventory(
-                inner,
-                task.generation,
-                &task.endpoint,
-                &task.runtime,
-                &inventory,
-            );
-            if let Some(target) = target {
-                push_operation_event(inner, WorkspaceEvent::KwtWorktreeCreated { target });
-            } else {
-                push_operation_event(
-                    inner,
-                    WorkspaceEvent::KwtWorktreeOperationFailed {
-                        project_path: task.project_path.clone(),
-                        message: "KWT created the worktree, but refreshed inventory did not contain its exact identity".to_owned(),
-                    },
-                );
-            }
-        }
+        Ok(()) => reconcile_created_kwt_worktree(inner, task, branch),
         Err(error) => {
             publish_kwt_mutation_failure(inner, task.generation, &task.endpoint, &task.runtime);
             push_operation_event(
@@ -6214,8 +6167,99 @@ fn run_kwt_worktree_create(
                     message: error.to_string(),
                 },
             );
+            false
         }
     }
+}
+
+fn reconcile_created_kwt_worktree(
+    inner: &Arc<Inner>,
+    task: &KwtWorktreeTask,
+    branch: &str,
+) -> bool {
+    match task
+        .host
+        .discover_kwt(&task.endpoint, &task.runtime, &task.cancellation)
+    {
+        Ok(Some(inventory)) => {
+            let target = created_kwt_worktree_target(task, branch, &inventory);
+            publish_kwt_inventory(
+                inner,
+                task.generation,
+                &task.endpoint,
+                &task.runtime,
+                &inventory,
+            );
+            if let Some(target) = target {
+                push_operation_event(inner, WorkspaceEvent::KwtWorktreeCreated { target });
+                false
+            } else {
+                push_operation_event(
+                    inner,
+                    WorkspaceEvent::KwtWorktreeCreationPending {
+                        project_path: task.project_path.clone(),
+                        message: "Worktree created. Waiting for KWT to refresh it.".to_owned(),
+                    },
+                );
+                true
+            }
+        }
+        Ok(None) => {
+            publish_kwt_mutation_failure(inner, task.generation, &task.endpoint, &task.runtime);
+            push_operation_event(
+                inner,
+                WorkspaceEvent::KwtWorktreeCreationPending {
+                    project_path: task.project_path.clone(),
+                    message: "Worktree created. Waiting for KWT to become available.".to_owned(),
+                },
+            );
+            true
+        }
+        Err(error) => {
+            publish_kwt_error(
+                inner,
+                task.generation,
+                &task.endpoint,
+                &task.runtime,
+                HostDiagnostic::new(error.kind(), error.to_string()),
+            );
+            push_operation_event(
+                inner,
+                WorkspaceEvent::KwtWorktreeCreationPending {
+                    project_path: task.project_path.clone(),
+                    message: "Worktree created. KWT inventory is temporarily unavailable; Ghosthub will retry."
+                        .to_owned(),
+                },
+            );
+            true
+        }
+    }
+}
+
+fn created_kwt_worktree_target(
+    task: &KwtWorktreeTask,
+    branch: &str,
+    inventory: &KwtInventory,
+) -> Option<KwtWorktreeTarget> {
+    let project = inventory.projects().iter().find(|project| {
+        project.project().repository() == task.repository
+            && project.project().path() == task.project_path
+            && project.project().registration_fingerprint() == task.registration_fingerprint
+    })?;
+    let worktree = project
+        .worktrees()
+        .iter()
+        .find(|worktree| worktree.branch() == branch)?;
+    Some(KwtWorktreeTarget {
+        host_id: "wsl".to_owned(),
+        endpoint: task.endpoint.distro().to_owned(),
+        repository: task.repository.clone(),
+        project_path: task.project_path.clone(),
+        registration_fingerprint: task.registration_fingerprint.clone(),
+        worktree_path: worktree.path().to_owned(),
+        generation: worktree.generation().map(str::to_owned),
+        session_name: worktree.session_name().to_owned(),
+    })
 }
 
 fn reserve_kwt_refresh(inner: &Arc<Inner>, supersede: bool) -> Option<KwtRefresh> {
