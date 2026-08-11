@@ -61,6 +61,10 @@ struct KeyboardNavigationModelTests {
                     .init(name: "running-a", isDefault: false, state: .running),
                     .init(name: "stopped", isDefault: false, state: .stopped),
                     .init(name: "running-z", isDefault: false, state: .running),
+                ],
+                zellijSessions: [
+                    .init(name: "zellij-a"),
+                    .init(name: "zellij-z"),
                 ]
             )], projects: [], worktrees: [],
             directoryWorkspaces: [directoryOne, directoryTwo]
@@ -91,6 +95,12 @@ struct KeyboardNavigationModelTests {
         #expect(KeyboardNavigationModel.siblingTargets(
             for: .herdrSession(hostID: hostID, name: "stopped"), in: context
         ).isEmpty)
+        #expect(KeyboardNavigationModel.siblingTargets(
+            for: .zellijSession(hostID: hostID, name: "zellij-a"), in: context
+        ) == [
+            .zellijSession(hostID: hostID, name: "zellij-a"),
+            .zellijSession(hostID: hostID, name: "zellij-z"),
+        ])
     }
 
     @Test("single, missing, and non-session targets pass through")

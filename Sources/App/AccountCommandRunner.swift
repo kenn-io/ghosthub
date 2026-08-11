@@ -3,6 +3,7 @@ import Foundation
 import GhosthubHerdr
 import GhosthubTmux
 import GhosthubTransport
+import GhosthubZellij
 
 struct AccountCommandOutput: Equatable, Sendable {
     var status: Int32
@@ -424,6 +425,7 @@ struct AccountCommandRunner: Sendable {
             $0.key != "TMUX"
                 && $0.key != "TMUX_PANE"
                 && !HerdrEnvironment.controlVariables.contains($0.key)
+                && !ZellijEnvironment.controlVariables.contains($0.key)
         }
     }
 

@@ -133,6 +133,8 @@ public extension HostSummary {
         tmuxSessions: [TmuxSessionSummary] = [],
         herdrSessions: [HerdrSessionSummary] = [],
         herdrAvailable: Bool = false,
+        zellijSessions: [ZellijSessionSummary] = [],
+        zellijAvailable: Bool = false,
         decodedConnectionState: HostConnectionState? = nil,
         transientOverride: HostConnectionState? = nil,
         operationAvailability:
@@ -155,6 +157,8 @@ public extension HostSummary {
             tmuxSessions: tmuxSessions,
             herdrSessions: herdrSessions,
             herdrAvailable: herdrAvailable,
+            zellijSessions: zellijSessions,
+            zellijAvailable: zellijAvailable,
             decodedConnectionState:
             decodedConnectionState,
             transientOverride: transientOverride,

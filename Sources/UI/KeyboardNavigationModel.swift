@@ -8,6 +8,7 @@ public struct KeyboardNavigationContext: Sendable {
     public var worktreeOrderRawValue: String
     public var tmuxSessionOrderRawValue: String
     public var herdrSessionOrderRawValue: String
+    public var zellijSessionOrderRawValue: String
 
     public init(
         snapshot: WorkspaceSnapshot,
@@ -15,7 +16,8 @@ public struct KeyboardNavigationContext: Sendable {
         tmuxSessionVisibility: TmuxSessionVisibility = .init(),
         worktreeOrderRawValue: String = "",
         tmuxSessionOrderRawValue: String = "",
-        herdrSessionOrderRawValue: String = ""
+        herdrSessionOrderRawValue: String = "",
+        zellijSessionOrderRawValue: String = ""
     ) {
         self.snapshot = snapshot
         self.visibility = visibility
@@ -23,6 +25,7 @@ public struct KeyboardNavigationContext: Sendable {
         self.worktreeOrderRawValue = worktreeOrderRawValue
         self.tmuxSessionOrderRawValue = tmuxSessionOrderRawValue
         self.herdrSessionOrderRawValue = herdrSessionOrderRawValue
+        self.zellijSessionOrderRawValue = zellijSessionOrderRawValue
     }
 }
 
@@ -37,7 +40,8 @@ public enum KeyboardNavigationModel {
             tmuxSessionVisibility: context.tmuxSessionVisibility,
             worktreeOrderRawValue: context.worktreeOrderRawValue,
             tmuxSessionOrderRawValue: context.tmuxSessionOrderRawValue,
-            herdrSessionOrderRawValue: context.herdrSessionOrderRawValue
+            herdrSessionOrderRawValue: context.herdrSessionOrderRawValue,
+            zellijSessionOrderRawValue: context.zellijSessionOrderRawValue
         )
 
         switch currentTarget {
@@ -70,6 +74,13 @@ public enum KeyboardNavigationModel {
                 if running.contains(where: { $0.target == currentTarget }) {
                     return running.map(\.target)
                 }
+            }
+        case .zellijSession:
+            for section in sections where
+                section.zellijSessionRows.contains(where: {
+                    $0.target == currentTarget
+                }) {
+                return section.zellijSessionRows.map(\.target)
             }
         case .host, .project:
             break

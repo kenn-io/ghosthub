@@ -28,16 +28,22 @@ public struct RootView: View {
     @State private var sidePanelAutoCollapsed = false
     @State private var sidePanelUserOverride = false
     @State private var tmuxSelectionBaseline: WorkspaceSelection?
+    @State private var peerTakeoverNavigationSelection: WorkspaceSelection?
     @StateObject private var herdrPresentationIntent =
         HerdrPresentationIntentController()
     @StateObject private var herdrLifecyclePreparation =
-        HerdrLifecyclePreparationController()
+        SessionPreparationController<HerdrSessionLifecycleRequest>()
+    @StateObject private var zellijKillPreparation =
+        SessionPreparationController<ZellijSessionKillRequest>()
     @State private var newWorktreeProject: ProjectSummary?
     @State private var newWorktreeMode: NewWorktreeMode = .branch
     @State private var newTmuxSessionHost: HostSummary?
     @State private var newHerdrSessionHost: HostSummary?
+    @State private var newZellijSessionHost: HostSummary?
     @State private var herdrCreationTask: Task<Void, Never>?
     @State private var herdrCreationRevision: UInt64 = 0
+    @State private var zellijCreationTask: Task<Void, Never>?
+    @State private var zellijCreationRevision: UInt64 = 0
     @State private var addProjectHost: HostSummary?
     @State private var workspaceAlert: WorkspaceAlert?
     @State private var pendingWorktreeRemoval: WorktreeRemovalRequest?
@@ -55,6 +61,8 @@ public struct RootView: View {
     private var tmuxSessionOrderRawValue = ""
     @AppStorage(WorkspaceSidebarOrderStorage.herdrSessionKey)
     private var herdrSessionOrderRawValue = ""
+    @AppStorage(WorkspaceSidebarOrderStorage.zellijSessionKey)
+    private var zellijSessionOrderRawValue = ""
 
     public init(
         display: WorkspaceDisplayState,
@@ -107,6 +115,9 @@ public struct RootView: View {
         )
     }
 
+    private var activeZellijSession: WorkspaceZellijSessionSelection? {
+        display.activeZellijSession
+    }
     public var body: some View {
         contentWithNotifications
             .onAppear {
@@ -231,6 +242,22 @@ public struct RootView: View {
                     onCancel: { cancelHerdrCreation() }
                 )
             }
+            .sheet(
+                item: $newZellijSessionHost,
+                onDismiss: {
+                    cancelZellijCreation(dismissSheet: false)
+                }
+            ) { host in
+                NewZellijSessionSheet(
+                    host: host,
+                    hosts: snapshot.hosts,
+                    isCreating: zellijCreationTask != nil,
+                    onCreate: { selectedHost, name in
+                        createZellijSession(on: selectedHost, name: name)
+                    },
+                    onCancel: { cancelZellijCreation() }
+                )
+            }
             .sheet(item: $addProjectHost) { host in
                 AddProjectSheet(
                     host: host,
@@ -254,7 +281,9 @@ public struct RootView: View {
             .onDisappear {
                 cancelHerdrPresentationIntents()
                 cancelHerdrCreation()
+                cancelZellijCreation()
                 cancelHerdrLifecyclePreparation()
+                cancelZellijKillPreparation()
             }
     }
 
@@ -289,6 +318,11 @@ public struct RootView: View {
                     selection: selection,
                     selectionBaseline: tmuxSelectionBaseline,
                     activeSession: activeTmuxSession,
+                    suppressesHide:
+                    Self.isPeerTakeoverNavigation(
+                        selection,
+                        pending: peerTakeoverNavigationSelection
+                    ),
                     hide: hideTmuxSession
                 )
             )
@@ -296,9 +330,35 @@ public struct RootView: View {
                 HerdrSessionPresentationLifecycleModifier(
                     selection: selection,
                     activeSession: activeHerdrSession,
+                    suppressesDeactivation:
+                    Self.isPeerTakeoverNavigation(
+                        selection,
+                        pending: peerTakeoverNavigationSelection
+                    ),
                     deactivate: deactivateHerdrSession(_:)
                 )
             )
+            .modifier(
+                ZellijSessionPresentationLifecycleModifier(
+                    selection: selection,
+                    activeSession: activeZellijSession,
+                    suppressesDeactivation:
+                    Self.isPeerTakeoverNavigation(
+                        selection,
+                        pending: peerTakeoverNavigationSelection
+                    ),
+                    deactivate: { _ in deactivateZellijSession() }
+                )
+            )
+            .onChange(of: selection) { _, newSelection in
+                guard !Self.isPeerTakeoverNavigation(
+                    newSelection,
+                    pending: peerTakeoverNavigationSelection
+                ) else {
+                    return
+                }
+                peerTakeoverNavigationSelection = nil
+            }
             .onAppear {
                 sidebarWidthChanged(sidebarWidth)
                 normalizeSelectionForWorktreeVisibilityChanges()
@@ -339,7 +399,16 @@ public struct RootView: View {
                 NotificationCenter.default.publisher(
                     for: .ghosthubCommandPalette
                 )
-            ) { _ in handleCommandPalette() }
+            ) { notification in
+                let matchesTarget =
+                    notification.object as AnyObject? === sidebarToggleTarget
+                let isFocusedBroadcast =
+                    notification.object == nil && controlActiveState == .key
+                guard matchesTarget || isFocusedBroadcast else {
+                    return
+                }
+                handleCommandPalette()
+            }
             .onReceive(
                 NotificationCenter.default.publisher(
                     for: .ghosthubToggleSidebar,
@@ -574,6 +643,7 @@ public struct RootView: View {
             tmuxSessionVisibility: tmuxSessionVisibility,
             activeTmuxSession: activeTmuxSession,
             activeHerdrSession: activeHerdrSession,
+            activeZellijSession: activeZellijSession,
             activeTmuxSessionIsConnected:
             display.activeTmuxSessionIsConnected,
             workingTmuxSessionIDs:
@@ -584,14 +654,20 @@ public struct RootView: View {
             onOpenHerdrSession: { session in
                 activateHerdrSession(session)
             },
+            onOpenZellijSession: { session in
+                activateZellijSession(session)
+            },
             pendingHerdrSessions: display.pendingHerdrSessions,
             onRestartHerdrSession: restartHerdrSession,
             onRequestHerdrSessionLifecycle: requestHerdrSessionLifecycle,
             onNavigateAwayFromSession: {
                 hideTmuxSession()
                 deactivateHerdrSession()
+                handlers.cancelPendingZellijPresentation?()
+                deactivateZellijSession()
             },
             onRequestKillTmuxSession: requestSessionKill,
+            onRequestKillZellijSession: requestZellijSessionKill,
             onRequestRemoveWorktree: requestWorktreeRemoval,
             onNewWorktree: openNewWorktree,
             onImportPullRequest: openImportPullRequest,
@@ -600,6 +676,9 @@ public struct RootView: View {
             },
             onNewHerdrSession: { host in
                 newHerdrSessionHost = host
+            },
+            onNewZellijSession: { host in
+                newZellijSessionHost = host
             },
             onAddProject: { host in
                 addProjectHost = host
@@ -624,6 +703,7 @@ public struct RootView: View {
             worktreeOrderRawValue: $worktreeOrderRawValue,
             tmuxSessionOrderRawValue: $tmuxSessionOrderRawValue,
             herdrSessionOrderRawValue: $herdrSessionOrderRawValue,
+            zellijSessionOrderRawValue: $zellijSessionOrderRawValue,
             onOpen: { worktree in
                 selectWorkspace(.worktree(worktree.id))
             }
@@ -788,6 +868,7 @@ public struct RootView: View {
 
     private func activateTmuxSession(_ session: WorkspaceTmuxSessionSelection) {
         deactivateHerdrSession()
+        deactivateZellijSession()
         if activeTmuxSession == session {
             tmuxSelectionBaseline = selection
             handlers.openTmuxSession?(session)
@@ -800,6 +881,10 @@ public struct RootView: View {
     private func activateHerdrSession(
         _ session: WorkspaceHerdrSessionSelection
     ) {
+        peerTakeoverNavigationSelection = WorkspaceSelection(
+            selectedHostID: session.hostID
+        )
+        // The scene model closes the current peer only after validation.
         Self.transitionHerdrSession(
             to: session,
             from: activeHerdrSession,
@@ -807,6 +892,19 @@ public struct RootView: View {
         ) {
             startHerdrSessionActivation(session)
         }
+    }
+
+    private func activateZellijSession(
+        _ session: WorkspaceZellijSessionSelection
+    ) {
+        peerTakeoverNavigationSelection = WorkspaceSelection(
+            selectedHostID: session.hostID
+        )
+        // The scene model closes the current peer only after validation.
+        Self.startZellijSessionActivation(
+            session,
+            open: { handlers.openZellijSession?($0) }
+        )
     }
 
     private func startHerdrSessionActivation(
@@ -910,6 +1008,55 @@ public struct RootView: View {
         herdrCreationTask = nil
         if dismissSheet {
             newHerdrSessionHost = nil
+        }
+    }
+
+    private func createZellijSession(
+        on host: HostSummary,
+        name: String
+    ) {
+        guard zellijCreationTask == nil else { return }
+        let session = WorkspaceZellijSessionSelection(
+            hostID: host.id,
+            name: name
+        )
+        zellijCreationRevision &+= 1
+        let creationRevision = zellijCreationRevision
+        zellijCreationTask = Task { @MainActor in
+            do {
+                guard let create = handlers.createZellijSession else {
+                    throw ZellijLifecycleUnavailableError()
+                }
+                try await create(session)
+                guard zellijCreationRevision == creationRevision else {
+                    return
+                }
+                zellijCreationTask = nil
+                newZellijSessionHost = nil
+                selectWorkspace(.zellijSession(
+                    hostID: host.id,
+                    name: name
+                ))
+            } catch {
+                guard zellijCreationRevision == creationRevision else {
+                    return
+                }
+                zellijCreationTask = nil
+                guard !(error is CancellationError) else { return }
+                presentNonWorktreeWorkspaceAlert(.zellijCreationFailure(
+                    session: name,
+                    message: error.localizedDescription
+                ))
+            }
+        }
+    }
+
+    private func cancelZellijCreation(dismissSheet: Bool = true) {
+        zellijCreationRevision &+= 1
+        zellijCreationTask?.cancel()
+        zellijCreationTask = nil
+        if dismissSheet {
+            newZellijSessionHost = nil
         }
     }
 
@@ -1021,6 +1168,48 @@ public struct RootView: View {
         }
     }
 
+    private func requestZellijSessionKill(
+        _ session: WorkspaceZellijSessionSelection
+    ) {
+        cancelZellijKillPreparation()
+        guard let prepare = handlers.prepareZellijSessionKill else {
+            presentNonWorktreeWorkspaceAlert(.zellijKillFailure(
+                session: session.name,
+                message: "Zellij session termination is unavailable."
+            ))
+            return
+        }
+        zellijKillPreparation.start(
+            prepare: {
+                try await prepare(session)
+            },
+            cancelPrepared: { request in
+                handlers.cancelZellijSessionKill?(request)
+            },
+            onPrepared: { request in
+                presentNonWorktreeWorkspaceAlert(
+                    .zellijKillConfirmation(request)
+                )
+            },
+            onFailure: { error in
+                presentNonWorktreeWorkspaceAlert(.zellijKillFailure(
+                    session: session.name,
+                    message: error.localizedDescription
+                ))
+            }
+        )
+    }
+
+    private func cancelZellijKillPreparation() {
+        zellijKillPreparation.cancel()
+        Self.cancelPreparedZellijKill(
+            workspaceAlert: &workspaceAlert,
+            cancel: { request in
+                handlers.cancelZellijSessionKill?(request)
+            }
+        )
+    }
+
     private func requestThemeApplication(
         _ tmuxSession: WorkspaceTmuxSessionSelection
     ) {
@@ -1042,12 +1231,29 @@ public struct RootView: View {
     }
 
     private func presentNonWorktreeWorkspaceAlert(_ alert: WorkspaceAlert) {
+        Self.cancelPreparedZellijKill(
+            workspaceAlert: &workspaceAlert,
+            cancel: { request in
+                handlers.cancelZellijSessionKill?(request)
+            }
+        )
         Self.presentNonWorktreeWorkspaceAlert(
             alert,
             workspaceAlert: &workspaceAlert,
             pendingWorktreeRemoval: &pendingWorktreeRemoval,
             pendingWorktrees: &pendingWorktreeRemovals
         )
+    }
+
+    @MainActor
+    static func cancelPreparedZellijKill(
+        workspaceAlert: inout WorkspaceAlert?,
+        cancel: (ZellijSessionKillRequest) -> Void
+    ) {
+        guard case let .zellijKillConfirmation(request) = workspaceAlert
+        else { return }
+        cancel(request)
+        workspaceAlert = nil
     }
 
     private func workspaceAlertView(
@@ -1087,6 +1293,45 @@ public struct RootView: View {
         case let .sessionKillFailure(session, message):
             return Alert(
                 title: Text("Could Not Kill “\(session)”"),
+                message: Text(message),
+                dismissButton: .default(Text("OK"))
+            )
+        case let .zellijKillConfirmation(request):
+            return Alert(
+                title: Text("Kill “\(request.session.name)”?”"),
+                message: Text(
+                    "This permanently terminates every tab, pane, and process in this Zellij session on \(request.confirmedHost.sidebarTitle)."
+                ),
+                primaryButton: .destructive(Text("Kill Session")) {
+                    Task {
+                        do {
+                            guard let kill = handlers.killZellijSession else {
+                                throw SessionKillUnavailableError()
+                            }
+                            try await kill(request)
+                        } catch {
+                            presentNonWorktreeWorkspaceAlert(
+                                .zellijKillFailure(
+                                    session: request.session.name,
+                                    message: error.localizedDescription
+                                )
+                            )
+                        }
+                    }
+                },
+                secondaryButton: .cancel {
+                    handlers.cancelZellijSessionKill?(request)
+                }
+            )
+        case let .zellijKillFailure(session, message):
+            return Alert(
+                title: Text("Could Not Kill “\(session)”"),
+                message: Text(message),
+                dismissButton: .default(Text("OK"))
+            )
+        case let .zellijCreationFailure(session, message):
+            return Alert(
+                title: Text("Could Not Create “\(session)”"),
                 message: Text(message),
                 dismissButton: .default(Text("OK"))
             )
@@ -1394,6 +1639,11 @@ public struct RootView: View {
         deactivateHerdrSession(previous)
     }
 
+    private func deactivateZellijSession() {
+        guard let previous = activeZellijSession else { return }
+        handlers.closeZellijSession?(previous)
+    }
+
     private func deactivateHerdrSession(
         _ expected: WorkspaceHerdrSessionSelection
     ) {
@@ -1446,15 +1696,16 @@ public struct RootView: View {
     @ViewBuilder
     private var terminalWorkspaceContent: some View {
         if activeTmuxSession == nil,
-           let activeHerdrSession,
-           let host = snapshot.host(id: activeHerdrSession.hostID),
-           let view = content.herdrSessionContentBuilder?(
+           activeHerdrSession == nil,
+           let activeZellijSession,
+           let host = snapshot.host(id: activeZellijSession.hostID),
+           let view = content.zellijSessionContentBuilder?(
                host,
-               activeHerdrSession.name,
+               activeZellijSession.name,
                isSidebarTransitioning,
                NativeSessionContentActions(
                    reconnectNow: {
-                       handlers.reconnectActiveHerdrSessionNow?()
+                       handlers.reconnectActiveZellijSessionNow?()
                    },
                    reviewConnection: {
                        reviewSSHHostKey(
@@ -1473,7 +1724,37 @@ public struct RootView: View {
                )
            ) {
             view
+        } else if activeTmuxSession == nil,
+                  activeZellijSession == nil,
+                  let activeHerdrSession,
+                  let host = snapshot.host(id: activeHerdrSession.hostID),
+                  let view = content.herdrSessionContentBuilder?(
+                      host,
+                      activeHerdrSession.name,
+                      isSidebarTransitioning,
+                      NativeSessionContentActions(
+                          reconnectNow: {
+                              handlers.reconnectActiveHerdrSessionNow?()
+                          },
+                          reviewConnection: {
+                              reviewSSHHostKey(
+                                  host.id,
+                                  inventoryWarning: sessionRecoveryWarning(
+                                      for: host.id
+                                  ),
+                                  sessionRecoveryRequestID:
+                                  sessionRecoveryRequestRouter.recoveryRequestID(
+                                      for: host.id,
+                                      activeRequest:
+                                      display.sessionConnectionRecoveryRequest
+                                  )
+                              )
+                          }
+                      )
+                  ) {
+            view
         } else if activeHerdrSession == nil,
+                  activeZellijSession == nil,
                   let presentedSession = selectedWorktreeTmuxSession
                   ?? activeTmuxSession,
                   let host = snapshot.host(id: presentedSession.hostID),
@@ -1544,18 +1825,22 @@ public struct RootView: View {
                 }
             }
         } else if snapshot.projects.isEmpty,
-                  snapshot.hosts.allSatisfy(\.tmuxSessions.isEmpty) {
+                  snapshot.hosts.allSatisfy({
+                      $0.tmuxSessions.isEmpty
+                          && $0.herdrSessions.isEmpty
+                          && $0.zellijSessions.isEmpty
+                  }) {
             VStack(spacing: 14) {
                 Text("Welcome to Ghosthub")
                     .font(.system(size: 24, weight: .semibold))
                 Text(
-                    "Your kwt workspaces and tmux sessions will appear in the sidebar."
+                    "Your kwt workspaces and multiplexer sessions will appear in the sidebar."
                 )
                 .font(.system(size: 14))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 Text(
-                    "Register projects with kwt, or add an SSH host in Settings. Ghosthub attaches without taking over tmux windows, panes, or history."
+                    "Register projects with kwt, or add an SSH host in Settings. Ghosthub attaches without taking over multiplexer tabs, panes, layouts, or history."
                 )
                 .font(.system(size: 13))
                 .foregroundStyle(.tertiary)
@@ -1568,7 +1853,7 @@ public struct RootView: View {
                 "No Active Session",
                 systemImage: "terminal",
                 description: Text(
-                    "Select a tmux session or kwt workspace from the sidebar."
+                    "Select a multiplexer session or kwt workspace from the sidebar."
                 )
             )
         }
@@ -1611,6 +1896,7 @@ public struct RootView: View {
             availableApplicationShortcuts:
             display.availableApplicationShortcuts,
             herdrSessionOrderRawValue: herdrSessionOrderRawValue,
+            zellijSessionOrderRawValue: zellijSessionOrderRawValue,
             pendingHerdrSessions: display.pendingHerdrSessions,
             shortcuts: settingsStore.shortcutPreferences.resolved
         )
@@ -1658,6 +1944,9 @@ public struct RootView: View {
             guard let host = snapshot.host(id: hostID),
                   host.herdrAvailable else { return }
             newHerdrSessionHost = host
+        case let .newZellijSession(hostID):
+            guard let host = snapshot.host(id: hostID) else { return }
+            newZellijSessionHost = host
         case let .addProject(hostID):
             guard let host = snapshot.host(id: hostID) else { return }
             addProjectHost = host
@@ -1681,6 +1970,12 @@ public struct RootView: View {
                 name: herdrSession.name
             ))
             activateHerdrSession(herdrSession)
+        case let .openZellijSession(zellijSession):
+            selectWorkspace(.zellijSession(
+                hostID: zellijSession.hostID,
+                name: zellijSession.name
+            ))
+            activateZellijSession(zellijSession)
         case let .restartHerdrSession(herdrSession):
             restartHerdrSession(herdrSession)
         case let .stopHerdrSession(herdrSession):
@@ -1689,6 +1984,8 @@ public struct RootView: View {
             requestHerdrSessionLifecycle(herdrSession, action: .delete)
         case let .killTmuxSession(tmuxSession):
             requestSessionKill(tmuxSession)
+        case let .killZellijSession(zellijSession):
+            requestZellijSessionKill(zellijSession)
         case let .applyThemeToCurrentTmuxSession(tmuxSession):
             requestThemeApplication(tmuxSession)
         case let .newWorktree(projectID):
@@ -1704,8 +2001,11 @@ public struct RootView: View {
         case let .setInterfaceAppearance(appearance):
             settingsStore.setInterfaceAppearance(appearance)
         case let .select(target):
-            hideTmuxSession()
-            deactivateHerdrSession()
+            Self.deactivateSessionsForNavigation(
+                hideTmux: hideTmuxSession,
+                deactivateHerdr: deactivateHerdrSession,
+                deactivateZellij: deactivateZellijSession
+            )
             selectWorkspace(target)
         case .showLogViewer:
             isLogViewerPresented = true
@@ -1835,6 +2135,9 @@ public struct RootView: View {
         if herdrCreationTask != nil {
             cancelHerdrCreation()
         }
+        if zellijCreationTask != nil {
+            cancelZellijCreation()
+        }
         cancelHerdrPresentationIntents()
         if let selectWorkspace = handlers.selectWorkspace {
             selectWorkspace(updatedSelection)
@@ -1927,6 +2230,10 @@ public struct RootView: View {
             deactivateHerdrSession()
             return
         }
+        if activeZellijSession != nil {
+            deactivateZellijSession()
+            return
+        }
         if Self.closeBorrowedSessionIfActive(
             activeTmuxSession,
             deactivate: deactivateTmuxSession
@@ -1949,6 +2256,16 @@ public struct RootView: View {
         return true
     }
 
+    static func deactivateSessionsForNavigation(
+        hideTmux: () -> Void,
+        deactivateHerdr: () -> Void,
+        deactivateZellij: () -> Void
+    ) {
+        hideTmux()
+        deactivateHerdr()
+        deactivateZellij()
+    }
+
     static func openHerdrSession(
         _ session: WorkspaceHerdrSessionSelection,
         replacing tmuxSession: WorkspaceTmuxSessionSelection?,
@@ -1962,6 +2279,20 @@ public struct RootView: View {
             closeTmux(tmuxSession)
         }
         return true
+    }
+
+    static func startZellijSessionActivation(
+        _ session: WorkspaceZellijSessionSelection,
+        open: (WorkspaceZellijSessionSelection) -> Void
+    ) {
+        open(session)
+    }
+
+    static func isPeerTakeoverNavigation(
+        _ selection: WorkspaceSelection,
+        pending: WorkspaceSelection?
+    ) -> Bool {
+        pending?.navigationTarget == selection.navigationTarget
     }
 
     static func transitionHerdrSession(
@@ -1986,12 +2317,14 @@ struct TmuxSessionPresentationLifecycleModifier: ViewModifier {
     let selection: WorkspaceSelection
     let selectionBaseline: WorkspaceSelection?
     let activeSession: WorkspaceTmuxSessionSelection?
+    var suppressesHide = false
     let hide: () -> Void
 
     func body(content: Content) -> some View {
         content
             .onChange(of: selection) { _, newSelection in
-                if activeSession != nil,
+                if !suppressesHide,
+                   activeSession != nil,
                    let selectionBaseline,
                    newSelection != selectionBaseline {
                     hide()
@@ -2040,14 +2373,14 @@ final class HerdrPresentationIntentController: ObservableObject {
 }
 
 @MainActor
-final class HerdrLifecyclePreparationController: ObservableObject {
+final class SessionPreparationController<Request>: ObservableObject {
     private var revision: UInt64 = 0
     private var task: Task<Void, Never>?
 
     func start(
-        prepare: @escaping () async throws -> HerdrSessionLifecycleRequest,
-        cancelPrepared: @escaping (HerdrSessionLifecycleRequest) -> Void,
-        onPrepared: @escaping (HerdrSessionLifecycleRequest) -> Void,
+        prepare: @escaping () async throws -> Request,
+        cancelPrepared: @escaping (Request) -> Void,
+        onPrepared: @escaping (Request) -> Void,
         onFailure: @escaping (any Error) -> Void
     ) {
         cancel()
@@ -2090,12 +2423,36 @@ final class HerdrLifecyclePreparationController: ObservableObject {
 struct HerdrSessionPresentationLifecycleModifier: ViewModifier {
     let selection: WorkspaceSelection
     let activeSession: WorkspaceHerdrSessionSelection?
+    var suppressesDeactivation = false
     let deactivate: (WorkspaceHerdrSessionSelection) -> Void
 
     func body(content: Content) -> some View {
         content
             .onChange(of: selection) { _, newSelection in
-                guard let activeSession,
+                guard !suppressesDeactivation,
+                      let activeSession,
+                      newSelection.selectedHostID != activeSession.hostID
+                      || newSelection.selectedProjectID != nil
+                      || newSelection.selectedWorktreeID != nil
+                      || newSelection.selectedDirectoryWorkspaceID != nil
+                else { return }
+                deactivate(activeSession)
+            }
+    }
+}
+
+/// Closes an active Zellij client when navigation leaves its host-level route.
+struct ZellijSessionPresentationLifecycleModifier: ViewModifier {
+    let selection: WorkspaceSelection
+    let activeSession: WorkspaceZellijSessionSelection?
+    var suppressesDeactivation = false
+    let deactivate: (WorkspaceZellijSessionSelection) -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: selection) { _, newSelection in
+                guard !suppressesDeactivation,
+                      let activeSession,
                       newSelection.selectedHostID != activeSession.hostID
                       || newSelection.selectedProjectID != nil
                       || newSelection.selectedWorktreeID != nil
@@ -2109,6 +2466,9 @@ struct HerdrSessionPresentationLifecycleModifier: ViewModifier {
 enum WorkspaceAlert: Identifiable {
     case sessionKillConfirmation(TmuxSessionKillRequest)
     case sessionKillFailure(session: String, message: String)
+    case zellijKillConfirmation(ZellijSessionKillRequest)
+    case zellijKillFailure(session: String, message: String)
+    case zellijCreationFailure(session: String, message: String)
     case herdrLifecycleConfirmation(HerdrSessionLifecycleRequest)
     case herdrLifecycleFailure(
         session: String,
@@ -2125,6 +2485,12 @@ enum WorkspaceAlert: Identifiable {
             return "session:confirm:\(request.session.id)"
         case let .sessionKillFailure(session, message):
             return "session:failure:\(session):\(message)"
+        case let .zellijKillConfirmation(request):
+            return "zellij:confirm:\(request.session.id)"
+        case let .zellijKillFailure(session, message):
+            return "zellij:failure:\(session):\(message)"
+        case let .zellijCreationFailure(session, message):
+            return "zellij:create:failure:\(session):\(message)"
         case let .herdrLifecycleConfirmation(request):
             return "herdr:confirm:\(request.session.id):\(request.action)"
         case let .herdrLifecycleFailure(session, action, message):
@@ -2154,6 +2520,12 @@ private struct SessionThemeUnavailableError: LocalizedError {
 private struct HerdrLifecycleUnavailableError: LocalizedError {
     var errorDescription: String? {
         "Herdr session lifecycle actions are unavailable."
+    }
+}
+
+private struct ZellijLifecycleUnavailableError: LocalizedError {
+    var errorDescription: String? {
+        "Zellij session creation is unavailable."
     }
 }
 

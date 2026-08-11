@@ -14,14 +14,14 @@ import { RELEASES_URL } from '../config';
 
 const title = 'Ghosthub overview';
 const description =
-  'A visual overview of Ghosthub across tmux and Herdr sessions, SSH hosts, '
-  + 'Git worktrees, native tabs and windows, and terminal configuration.';
+  'A visual overview of Ghosthub as the native terminal for all your multiplexers, '
+  + 'across SSH hosts, Git worktrees, native tabs, and windows.';
 
 const imageWidths = [640, 960, 1280, 1600];
 const imageSizes = '(max-width: 900px) calc(100vw - 3rem), 900px';
 const imageAlt = {
   sessions:
-    'Ghosthub workspace showing Tmux Sessions, Herdr Sessions, Projects, and a remote host in the sidebar',
+    'Ghosthub workspace showing Tmux, Herdr, and Zellij sessions for local and remote hosts',
   hosts: 'Ghosthub Hosts settings with a configured remote GPU host',
   worktree:
     'Ghosthub new worktree sheet listing available local and remote branches',
@@ -41,16 +41,20 @@ const imageAlt = {
       <p class="eyebrow">Five-minute overview</p>
       <h1>Meet Ghosthub</h1>
       <p class="lead">
-        Ghosthub is a native macOS terminal for local and remote multiplexer
-        fleets. It brings tmux sessions, Herdr sessions, and optional
-        tmux-backed worktrees into one sidebar without replacing the tools that
-        own them.
+        Ghosthub is the native macOS terminal for all your multiplexers. Today,
+        it brings tmux, Herdr, and Zellij sessions, plus optional tmux-backed
+        worktrees, into one local and remote fleet without replacing the tools
+        that own them.
       </p>
       <p>
-        Use tmux and Herdr together on the same hosts. Ghosthub handles
-        discovery, presentation, SSH keepalives, and reconnect while each
-        multiplexer keeps its own panes, layout, history, key bindings, and
-        processes.
+        Ghosthub handles discovery, presentation, SSH keepalives, and reconnect
+        while every multiplexer keeps its own panes, layout, history, key
+        bindings, and processes.
+      </p>
+      <p>
+        That backend-open model is ready for the multiplexers still to come,
+        including the <a href="https://www.superlogical.com/">terminal multiplexer
+        Superlogical is building</a>, once they publish an integration surface.
       </p>
       <p class="docs-callout">
         Ready for setup and operating details? Visit the <a href="/docs/">Docs</a>.
@@ -64,7 +68,7 @@ const imageAlt = {
       <div class="requirements" aria-label="Requirements">
         <span>Apple Silicon</span>
         <span>macOS 26+</span>
-        <span>tmux 3.2+ and/or Herdr 0.8+</span>
+        <span>tmux 3.2+, Herdr 0.8+, and/or Zellij 0.44+</span>
       </div>
       <InstallCommand />
     </div>
@@ -86,10 +90,10 @@ const imageAlt = {
         <div>
           <h2>Your session fleet in one place</h2>
           <p>
-            Tmux and Herdr sessions appear side by side for every supported
-            host. Open either with its ordinary client, create new sessions
-            where the backend is available, and keep tmux-backed project work
-            visible in the same hierarchy.
+            Every supported multiplexer appears as a first-class peer for each
+            host. Open tmux, Herdr, or Zellij with its ordinary client, create
+            sessions wherever that backend is available, and keep tmux-backed
+            project work visible in the same hierarchy.
           </p>
           <p>
             Ghosthub detaches when you close a presentation. Explicit lifecycle
@@ -144,7 +148,7 @@ const imageAlt = {
           <p>
             Register a repository to create tmux-backed worktrees from branches
             or GitHub pull requests. Git is optional for standalone tmux and
-            Herdr sessions.
+            Herdr or Zellij sessions.
           </p>
           <p><a href="/docs/projects-worktrees/">Explore projects and worktrees</a>.</p>
         </div>
@@ -192,7 +196,7 @@ const imageAlt = {
         <div>
           <h2>Build your command center</h2>
           <p>
-            Use independent macOS windows and tabs for different tmux or Herdr
+            Use independent macOS windows and tabs for different tmux, Herdr, or Zellij
             sessions, then hide each sidebar when the terminal should fill the
             frame.
           </p>
@@ -264,9 +268,9 @@ const imageAlt = {
       <p class="eyebrow">That’s it</p>
       <h2>Bring the tools you already use</h2>
       <p>
-        Ghosthub works with tmux and Herdr rather than asking you to replace
-        them. Your sessions remain ordinary backend sessions, available from
-        their own clients even when Ghosthub is closed.
+        Ghosthub is a home for all multiplexers rather than a replacement for
+        one. Your tmux, Herdr, and Zellij sessions remain ordinary backend
+        sessions, available from their own clients even when Ghosthub is closed.
       </p>
       <a data-download href={RELEASES_URL}>Download Ghosthub <span aria-hidden="true">&rarr;</span></a>
     </div>

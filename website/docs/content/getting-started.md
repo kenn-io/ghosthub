@@ -1,5 +1,5 @@
 ---
-description: Install Ghosthub and attach to a local tmux or Herdr session.
+description: Install Ghosthub and attach to a local tmux, Herdr, or Zellij session.
 icon: lucide/rocket
 ---
 
@@ -13,18 +13,21 @@ Ghosthub currently requires:
 - macOS 26 (Tahoe) or newer
 - tmux 3.2 or newer for tmux sessions
 - Herdr 0.8.0 or newer for Herdr sessions
+- Zellij 0.44 or newer for Zellij sessions
 
 The Cmd-D and Cmd-Shift-D pane shortcuts require tmux 3.4 or newer or Herdr
 0.8.0 or newer on the attached session. With older versions, use your normal
 multiplexer split keys.
 
-Use either multiplexer or both. When the Herdr CLI is available on the local
+Use any supported multiplexer independently or together. When the Herdr CLI is available on the local
 Mac or a remote POSIX host, Ghosthub discovers its running and stopped sessions.
-Experimental Windows hosts do not support Herdr.
+When Zellij is available, Ghosthub discovers its active sessions and excludes
+exited/resurrectable entries. Experimental Windows hosts support neither Herdr
+nor Zellij.
 
-Ghosthub and Herdr are complementary, not competing choices. Keep using tmux
-and tmux-backed worktrees wherever they fit, run Herdr wherever it fits, and
-open both kinds of session from the same Ghosthub host sidebar.
+Ghosthub is a home for all supported multiplexers, not a competing session
+format. Keep using tmux and tmux-backed worktrees wherever they fit, and run
+Herdr or Zellij wherever each fits from the same Ghosthub host sidebar.
 
 Native Windows hosts are experimental and have additional requirements. See
 [Remote Hosts](remote-hosts.md#experimental-windows-hosts).
@@ -55,14 +58,21 @@ Verify it with:
 tmux -V
 ```
 
+Install Zellij locally when you want Zellij sessions:
+
+```sh
+brew install zellij
+```
+
 ## Open an existing session
 
 1. Launch Ghosthub.
 2. Expand your Mac under **Hosts** in the sidebar.
-3. Select an existing entry under **Tmux Sessions** or **Herdr Sessions**.
+3. Select an existing entry under **Tmux Sessions**, **Herdr Sessions**, or
+   **Zellij Sessions**.
 
 Ghosthub attaches the ordinary whole-session client for that backend. Existing
-tmux windows and panes or Herdr workspaces, tabs, and panes stay under their
+tmux windows and panes, Herdr workspaces, or Zellij tabs and panes stay under their
 backend's control. Closing the presentation detaches without stopping the
 server.
 
@@ -70,7 +80,7 @@ server.
 
 1. Expand your Mac in the sidebar.
 2. Select the **+** beside **Tmux Sessions** or, when available, **Herdr
-   Sessions**.
+   Sessions** or **Zellij Sessions**.
 3. Enter a session name and create it.
 
 The session is not tied to a Git repository. Close the Ghosthub window or tab
@@ -89,4 +99,4 @@ restart their saved shape later.
 !!! note "Worktrees are optional"
 
     You do not need kwt, a Git repository, or a worktree to use Ghosthub as a
-    local and remote tmux or Herdr session switcher.
+    local and remote tmux, Herdr, or Zellij session switcher.

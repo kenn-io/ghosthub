@@ -115,6 +115,9 @@ struct AccountCommandRunnerTests {
             "HERDR_ACTIVE_TAB_ID": "tab-1",
             "HERDR_ACTIVE_PANE_ID": "pane-1",
             "HERDR_ACTIVE_PANE_CWD": "/tmp/review",
+            "ZELLIJ": "0",
+            "ZELLIJ_PANE_ID": "7",
+            "ZELLIJ_SESSION_NAME": "review",
         ])
 
         #expect(sanitized == ["PATH": "/usr/bin"])

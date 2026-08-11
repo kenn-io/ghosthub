@@ -7,10 +7,10 @@
 <h1 align="center">Ghosthub</h1>
 
 <p align="center">
-  <strong>A multiplexer-native power terminal for your fleet.</strong>
+  <strong>All your multiplexers. One native terminal.</strong>
   <br>
-  Create or attach to tmux and Herdr sessions across your Mac and SSH hosts, or
-  manage tmux-backed worktrees from Git branches and GitHub pull requests.
+  Ghosthub is multiplexer-native across your Mac and SSH hosts. Today it supports
+  tmux, Herdr, and Zellij, plus optional tmux-backed worktrees.
 </p>
 
 <p align="center">
@@ -39,15 +39,21 @@
   <img
     src="https://raw.githubusercontent.com/kenn-io/ghosthub/refs/heads/website-assets/hero.png?asset=hero"
     width="960"
-    alt="Ghosthub showing local and remote tmux sessions, Herdr sessions, and tmux-backed worktrees in its sidebar"
+    alt="Ghosthub showing local and remote tmux, Herdr, and Zellij sessions alongside tmux-backed worktrees"
   >
 </p>
 
-Ghosthub creates and attaches to ordinary tmux and Herdr sessions across your
-Mac and SSH hosts. Both can run side by side without Git setup. Each
+Ghosthub creates and attaches to ordinary tmux, Herdr, and Zellij sessions across your
+Mac and SSH hosts. All three can run side by side without Git setup. Each
 multiplexer continues to own its panes, layout, history, key bindings, and
 processes while Ghosthub provides native presentation, keepalives, and
 reconnect.
+
+The integration model is deliberately open-ended. Ghosthub is built to bring
+all multiplexers into one fleet without forcing them into a tmux-shaped
+abstraction—including the [terminal multiplexer Superlogical is
+building](https://www.superlogical.com/) when a public integration surface is
+available.
 
 Ghosthub also manages tmux sessions bound to Git worktrees. Register a
 repository, then continue a local or remote branch, create a branch, or import
@@ -64,17 +70,17 @@ we will do our best to fix them.
 
 ## Highlights
 
-- **Tmux and Herdr, together.** Create or attach to sessions on local and remote
-  hosts, including sessions created outside Ghosthub. No Git project or
-  worktree is required.
+- **All multiplexers, one fleet.** Create or attach to tmux, Herdr, and Zellij
+  sessions on local and remote hosts, including sessions created outside
+  Ghosthub. No Git project or worktree is required.
 - **Managed worktree sessions.** Register an existing checkout, continue a
   local or remote branch, create a branch, import a GitHub pull request, and
   remove a linked worktree through the bundled [kwt](https://kwt.sh)
   helper. No system kwt installation is required.
 - **Resilient SSH.** Keepalives and automatic reconnect preserve remote
   presentations through ordinary network interruptions.
-- **Deliberate session lifecycle.** Closing a presentation detaches. Tmux Kill
-  is confirmed, while Herdr exposes separate Stop, Restart, and Delete actions
+- **Deliberate session lifecycle.** Closing a presentation detaches. Tmux and
+  Zellij Kill are confirmed, while Herdr exposes separate Stop, Restart, and Delete actions
   that preserve each backend's ownership boundaries.
 - **Experimental native Windows hosts.** Connect to OpenSSH hosts running
   PowerShell and [psmux](https://github.com/marlocarlo/psmux), with managed
@@ -96,8 +102,9 @@ Ghosthub requires:
 - macOS 26 (Tahoe) or newer
 - tmux 3.2 or newer for tmux sessions
 - Herdr 0.8.0 or newer for Herdr sessions
+- Zellij 0.44 or newer for Zellij sessions
 
-Use either multiplexer or both. Cmd-D and Cmd-Shift-D pane splitting requires
+Use any supported multiplexer independently or together. Cmd-D and Cmd-Shift-D pane splitting requires
 tmux 3.4 or newer or Herdr 0.8.0 or newer on the attached session. With older
 versions, use the multiplexer's normal pane-splitting keys.
 
@@ -121,7 +128,13 @@ Install tmux locally if needed:
 brew install tmux
 ```
 
-Remote macOS and Linux hosts need tmux. Every remote host needs
+Install Zellij locally if needed:
+
+```sh
+brew install zellij
+```
+
+Remote macOS and Linux hosts need the multiplexer you plan to use. Every remote host needs
 non-interactive SSH authentication backed by a key or SSH agent; password-only
 hosts cannot populate the sidebar.
 

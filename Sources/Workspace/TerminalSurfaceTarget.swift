@@ -7,6 +7,7 @@ public enum TerminalSurfaceTarget: String, CaseIterable, Identifiable, Equatable
     case logViewer
     case tmuxSession
     case herdrSession
+    case zellijSession
 
     public var id: String {
         rawValue

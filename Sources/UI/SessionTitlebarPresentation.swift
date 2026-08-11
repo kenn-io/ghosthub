@@ -23,10 +23,24 @@ public struct SessionTitlebarPresentation: Equatable, Sendable {
     public static func resolve(
         activeTmuxSession: WorkspaceTmuxSessionSelection?,
         activeHerdrSession: WorkspaceHerdrSessionSelection?,
+        activeZellijSession: WorkspaceZellijSessionSelection? = nil,
         in snapshot: WorkspaceSnapshot
     ) -> SessionTitlebarPresentation? {
-        guard activeTmuxSession == nil || activeHerdrSession == nil else {
+        let activeCount = [
+            activeTmuxSession != nil,
+            activeHerdrSession != nil,
+            activeZellijSession != nil,
+        ].filter { $0 }.count
+        guard activeCount <= 1 else {
             return nil
+        }
+        if let activeZellijSession,
+           let host = snapshot.host(id: activeZellijSession.hostID) {
+            return SessionTitlebarPresentation(
+                sessionName: activeZellijSession.name,
+                hostname: hostname(for: host),
+                icon: .zellijSession
+            )
         }
         if let activeHerdrSession {
             return resolve(

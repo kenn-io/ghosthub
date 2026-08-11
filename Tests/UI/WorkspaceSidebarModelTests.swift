@@ -228,6 +228,47 @@ struct WorkspaceSidebarModelTests {
         #expect(!herdr.isEmpty)
     }
 
+    @Test("Zellij sessions have an independent group and ordering")
+    func zellijSessionRowsAndOrdering() {
+        let hostID = UUID()
+        let sessions = ["alpha", "beta", "gamma"]
+        let host = HostSummary.fixture(
+            id: hostID,
+            zellijSessions: sessions.reversed().map(
+                ZellijSessionSummary.init(name:)
+            ),
+            zellijAvailable: true
+        )
+        let ids = sessions.map {
+            WorkspaceSidebarModel.zellijSessionOrderID(
+                hostID: hostID,
+                name: $0
+            )
+        }
+        var order = WorkspaceSidebarOrder()
+        let didMove = order.move(ids[0], to: ids[2], within: ids)
+        #expect(didMove)
+
+        let section = WorkspaceSidebarModel.sections(
+            in: WorkspaceSnapshot(
+                hosts: [host],
+                projects: [],
+                worktrees: []
+            ),
+            zellijSessionOrderRawValue: order.rawValue
+        )[0]
+
+        #expect(section.zellijSessionRows.map(\.title)
+            == ["beta", "gamma", "alpha"])
+        #expect(section.zellijSessionRows[0].target == .zellijSession(
+            hostID: hostID,
+            name: "beta"
+        ))
+        #expect(section.zellijSessionRows[0].icon == .zellijSession)
+        #expect(section.zellijSessionRows[0].subtitle == "Zellij session")
+        #expect(section.visibleGroups == [.zellijSessions])
+    }
+
     @Test("sidebar hierarchy advances one compact indent per level")
     func hierarchyIndentAdvancesByLevel() {
         let host = WorkspaceSidebarHierarchy.indent(level: 0)

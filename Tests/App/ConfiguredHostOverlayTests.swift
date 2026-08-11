@@ -89,7 +89,9 @@ struct ConfiguredHostOverlayTests {
                     state: .running
                 ),
             ],
-            herdrAvailable: true
+            herdrAvailable: true,
+            zellijSessions: [.init(name: "old-zellij")],
+            zellijAvailable: true
         )
         let project = ProjectSummary.fixture(hostID: host.id)
         let worktree = WorktreeSummary.fixture(
@@ -121,7 +123,9 @@ struct ConfiguredHostOverlayTests {
         #expect(result.hosts[0].id == host.id)
         #expect(result.hosts[0].tmuxSessions.isEmpty)
         #expect(result.hosts[0].herdrSessions.isEmpty)
+        #expect(result.hosts[0].zellijSessions.isEmpty)
         #expect(!result.hosts[0].herdrAvailable)
+        #expect(!result.hosts[0].zellijAvailable)
         #expect(result.projects.isEmpty)
         #expect(result.worktrees.isEmpty)
         #expect(result.sessions.isEmpty)
@@ -185,7 +189,9 @@ struct ConfiguredHostOverlayTests {
                     state: .running
                 ),
             ],
-            herdrAvailable: true
+            herdrAvailable: true,
+            zellijSessions: [.init(name: "old-zellij")],
+            zellijAvailable: true
         )
         let project = ProjectSummary.fixture(hostID: host.id)
         let worktree = WorktreeSummary.fixture(
@@ -218,7 +224,9 @@ struct ConfiguredHostOverlayTests {
         #expect(result.hosts[0].platform == to)
         #expect(result.hosts[0].tmuxSessions.isEmpty)
         #expect(result.hosts[0].herdrSessions.isEmpty)
+        #expect(result.hosts[0].zellijSessions.isEmpty)
         #expect(!result.hosts[0].herdrAvailable)
+        #expect(!result.hosts[0].zellijAvailable)
         #expect(result.projects.isEmpty)
         #expect(result.worktrees.isEmpty)
         #expect(result.sessions.isEmpty)
@@ -242,7 +250,9 @@ struct ConfiguredHostOverlayTests {
                     state: .running
                 ),
             ],
-            herdrAvailable: true
+            herdrAvailable: true,
+            zellijSessions: [.init(name: "stale-zellij")],
+            zellijAvailable: true
         )
 
         let result = ConfiguredHostOverlay.apply([
@@ -256,7 +266,9 @@ struct ConfiguredHostOverlayTests {
 
         #expect(result.hosts[0].tmuxSessions == host.tmuxSessions)
         #expect(result.hosts[0].herdrSessions.isEmpty)
+        #expect(result.hosts[0].zellijSessions.isEmpty)
         #expect(!result.hosts[0].herdrAvailable)
+        #expect(!result.hosts[0].zellijAvailable)
     }
 
     @Test("duplicate destinations receive distinct host identities")

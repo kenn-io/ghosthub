@@ -6,7 +6,7 @@ description: Security boundaries and trust assumptions for Ghosthub
 # Threat Model
 
 This document defines the security claims Ghosthub makes and the assumptions
-used to classify security findings. Ghosthub is a native terminal and tmux/Herdr
+used to classify security findings. Ghosthub is a native terminal and tmux/Herdr/Zellij
 control plane for one user across machines that user administers. It is not a
 sandbox or a hardened client for attaching to hostile terminal servers.
 
@@ -19,7 +19,7 @@ Ghosthub aims to protect:
 - terminal input and session metadata while they cross the network
 - the session lifecycle boundary: ordinary presentation only attaches or
   detaches; creation and termination require separate, explicit user actions,
-  with confirmation before tmux Kill and Herdr Stop/Delete
+  with confirmation before tmux or Zellij Kill and Herdr Stop/Delete
 - app-owned settings and persistence from unintended cross-host or
   cross-worktree mutation
 - application-update integrity, rooted in the reviewed Sparkle Ed25519 key,
@@ -27,7 +27,7 @@ Ghosthub aims to protect:
 
 The main security goals are to use the system SSH trust and encryption model,
 avoid sending local data to a remote pane except through an intentional
-terminal interaction, and keep tmux and Herdr presentation non-destructive
+terminal interaction, and keep tmux, Herdr, and Zellij presentation non-destructive
 outside explicit whole-session lifecycle requests.
 
 Herdr does not expose a stable session-generation identifier. Ghosthub
@@ -36,6 +36,11 @@ but does not claim that this prevents a same-name/same-socket replacement race.
 Stop can terminate every process in a session; Delete can permanently remove
 saved shape. Both actions require confirmation, and Delete is never offered for
 the default session.
+
+Zellij likewise does not expose a stable session-generation identifier.
+Ghosthub revalidates the selected host and active name before a confirmed
+kill, but does not claim protection from replacement in the remaining
+check-to-command race.
 
 ## Trust Boundaries
 
@@ -51,8 +56,9 @@ trusting a launcher-controlled local `PATH`.
 ### Configured SSH hosts
 
 Every remote host added to Ghosthub is a **trusted peer** administered by the
-user. This trust includes the host operating system, its SSH service, the tmux
-server and socket, and processes running in panes Ghosthub attaches to. SSH
+user. This trust includes the host operating system, its SSH service, the
+multiplexer servers and sockets, and processes running in panes Ghosthub
+attaches to. SSH
 host authentication and transport confidentiality are delegated to the user's
 OpenSSH configuration and host-key policy.
 

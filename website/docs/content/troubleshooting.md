@@ -1,5 +1,5 @@
 ---
-description: Diagnose common Ghosthub installation, SSH, tmux, Herdr, and worktree problems.
+description: Diagnose common Ghosthub installation, SSH, multiplexer, and worktree problems.
 icon: lucide/life-buoy
 ---
 
@@ -29,7 +29,7 @@ tmux -V
 tmux list-sessions
 ```
 
-An expanded host with no discovered tmux or Herdr sessions or projects reports
+An expanded host with no discovered tmux, Herdr, or Zellij sessions or projects reports
 that it is empty. Project inventory is separate from SSH reachability, so a
 reachable host can also show a separate kwt diagnostic.
 

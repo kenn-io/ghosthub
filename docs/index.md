@@ -5,18 +5,18 @@ description: Internal engineering guide for Ghosthub
 
 # Ghosthub
 
-Ghosthub is a native macOS terminal for local and remote tmux and Herdr
-fleets. It gives equal status to ordinary tmux sessions, running Herdr
-sessions, and tmux sessions bound to managed git worktrees, all presented
-through libghostty terminal surfaces.
+Ghosthub is a native macOS terminal for all local and remote multiplexer
+fleets. Today it gives equal status to ordinary tmux sessions, Herdr sessions,
+and Zellij sessions, plus tmux sessions bound to managed git worktrees. All are
+presented through libghostty terminal surfaces.
 
 Ghosthub is alpha software. These are internal engineering docs for Kenn
 engineers and approved contributors building, operating, and releasing it.
 
 ## What Ghosthub Is
 
-- A native terminal and control plane for local and remote tmux and Herdr
-  sessions.
+- A native terminal and control plane for all supported local and remote
+  multiplexers: today, tmux, Herdr, and Zellij.
 - A native Swift app built around embedded libghostty terminal surfaces.
 - A manager for optional worktree-bound sessions and their lifecycle through
   kwt, including branch and GitHub pull-request imports.
@@ -35,7 +35,7 @@ Ghosthub.app
   ├─ SwiftUI/AppKit workspace shell
   ├─ libghostty terminal surfaces
   ├─ local app persistence
-  ├─ native tmux and Herdr clients with SSH reconnect
+  ├─ native tmux, Herdr, and Zellij clients with SSH reconnect
   ├─ bundled kwt for local worktree state
   └─ managed architecture-matched kwt and host tmux over SSH
 ```

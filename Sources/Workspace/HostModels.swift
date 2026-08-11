@@ -409,6 +409,8 @@ public struct HostSummary: Identifiable, Equatable, Sendable {
     public var tmuxSessions: [TmuxSessionSummary]
     public var herdrSessions: [HerdrSessionSummary]
     public var herdrAvailable: Bool
+    public var zellijSessions: [ZellijSessionSummary]
+    public var zellijAvailable: Bool
     public var decodedConnectionState: HostConnectionState?
     public var transientOverride: HostConnectionState?
     public var operationAvailability:
@@ -433,6 +435,8 @@ public struct HostSummary: Identifiable, Equatable, Sendable {
         tmuxSessions: [TmuxSessionSummary] = [],
         herdrSessions: [HerdrSessionSummary] = [],
         herdrAvailable: Bool = false,
+        zellijSessions: [ZellijSessionSummary] = [],
+        zellijAvailable: Bool = false,
         decodedConnectionState: HostConnectionState? = nil,
         transientOverride: HostConnectionState? = nil,
         operationAvailability:
@@ -456,6 +460,8 @@ public struct HostSummary: Identifiable, Equatable, Sendable {
         self.tmuxSessions = tmuxSessions
         self.herdrSessions = herdrSessions
         self.herdrAvailable = herdrAvailable
+        self.zellijSessions = zellijSessions
+        self.zellijAvailable = zellijAvailable
         self.decodedConnectionState = decodedConnectionState
         self.transientOverride = transientOverride
         self.operationAvailability = operationAvailability

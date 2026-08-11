@@ -10,10 +10,12 @@ struct WorkspaceSidebarViewTests {
     func sectionActionsTargetExactHost() throws {
         let host = HostSummary.fixture(
             id: UUID(),
-            herdrAvailable: true
+            herdrAvailable: true,
+            zellijAvailable: true
         )
         var tmuxHosts: [UUID] = []
         var herdrHosts: [UUID] = []
+        var zellijHosts: [UUID] = []
         var projectHosts: [UUID] = []
         let action = { section in
             WorkspaceSidebarSectionActionModel.action(
@@ -21,15 +23,18 @@ struct WorkspaceSidebarViewTests {
                 host: host,
                 onNewTmuxSession: { tmuxHosts.append($0.id) },
                 onNewHerdrSession: { herdrHosts.append($0.id) },
+                onNewZellijSession: { zellijHosts.append($0.id) },
                 onAddProject: { projectHosts.append($0.id) }
             )
         }
 
         try #require(action(.tmuxSessions)).perform()
         try #require(action(.herdrSessions)).perform()
+        try #require(action(.zellijSessions)).perform()
         try #require(action(.projects)).perform()
         #expect(tmuxHosts == [host.id])
         #expect(herdrHosts == [host.id])
+        #expect(zellijHosts == [host.id])
         #expect(projectHosts == [host.id])
     }
 
@@ -63,6 +68,7 @@ struct WorkspaceSidebarViewTests {
             host: unavailableHost,
             onNewTmuxSession: { _ in },
             onNewHerdrSession: { _ in },
+            onNewZellijSession: { _ in },
             onAddProject: { _ in }
         ) == nil)
     }
@@ -86,6 +92,7 @@ struct WorkspaceSidebarViewTests {
             host: host,
             onNewTmuxSession: { _ in },
             onNewHerdrSession: { _ in },
+            onNewZellijSession: { _ in },
             onAddProject: { _ in }
         ) == nil)
     }

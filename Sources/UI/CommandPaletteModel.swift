@@ -9,13 +9,16 @@ public enum WorkspaceCommandAction: Equatable, Sendable {
     case reloadTerminalConfig
     case newTmuxSession(UUID)
     case newHerdrSession(UUID)
+    case newZellijSession(UUID)
     case addProject(UUID)
     case openTmuxSession(WorkspaceTmuxSessionSelection)
     case openHerdrSession(WorkspaceHerdrSessionSelection)
+    case openZellijSession(WorkspaceZellijSessionSelection)
     case restartHerdrSession(WorkspaceHerdrSessionSelection)
     case stopHerdrSession(WorkspaceHerdrSessionSelection)
     case deleteHerdrSession(WorkspaceHerdrSessionSelection)
     case killTmuxSession(WorkspaceTmuxSessionSelection)
+    case killZellijSession(WorkspaceZellijSessionSelection)
     case applyThemeToCurrentTmuxSession(
         WorkspaceTmuxSessionSelection
     )
@@ -112,6 +115,7 @@ public enum CommandPaletteModel {
             .splitDown,
         ],
         herdrSessionOrderRawValue: String = "",
+        zellijSessionOrderRawValue: String = "",
         pendingHerdrSessions: Set<WorkspaceHerdrSessionSelection> = [],
         shortcuts: ResolvedApplicationShortcuts =
             ApplicationShortcutCatalog.compiledDefaults
@@ -228,6 +232,15 @@ public enum CommandPaletteModel {
             tmuxSessionOrderRawValue: tmuxSessionOrderRawValue,
             herdrSessionOrderRawValue: herdrSessionOrderRawValue,
             pendingHerdrSessions: pendingHerdrSessions
+        ))
+        commands.append(contentsOf: zellijSessionCommands(
+            in: snapshot,
+            visibility: worktreeVisibility,
+            tmuxSessionVisibility: tmuxSessionVisibility,
+            worktreeOrderRawValue: worktreeOrderRawValue,
+            tmuxSessionOrderRawValue: tmuxSessionOrderRawValue,
+            herdrSessionOrderRawValue: herdrSessionOrderRawValue,
+            zellijSessionOrderRawValue: zellijSessionOrderRawValue
         ))
         commands.append(contentsOf: newWorktreeCommands(
             in: snapshot,
@@ -421,6 +434,18 @@ public enum CommandPaletteModel {
                     shortcut: host.id == selection.selectedHostID
                         ? shortcuts[.newHerdrSession] : nil,
                     action: .newHerdrSession(host.id)
+                ))
+            }
+            if host.zellijAvailable {
+                commands.append(WorkspaceCommandItem(
+                    id: "new-zellij-session-\(host.id.uuidString)",
+                    title: "New Zellij session on \(host.name)",
+                    subtitle: "Create and attach on \(host.commandPaletteSubtitle)",
+                    keywords: [
+                        "new", "create", "zellij", "session",
+                        host.name, host.sshDestination ?? "",
+                    ],
+                    action: .newZellijSession(host.id)
                 ))
             }
             if host.canRegisterProjects {
@@ -676,6 +701,56 @@ public enum CommandPaletteModel {
                 case nil:
                     return []
                 }
+            }
+        }
+    }
+
+    private static func zellijSessionCommands(
+        in snapshot: WorkspaceSnapshot,
+        visibility: WorktreeVisibility,
+        tmuxSessionVisibility: TmuxSessionVisibility,
+        worktreeOrderRawValue: String,
+        tmuxSessionOrderRawValue: String,
+        herdrSessionOrderRawValue: String,
+        zellijSessionOrderRawValue: String
+    ) -> [WorkspaceCommandItem] {
+        WorkspaceSidebarModel.sections(
+            in: snapshot,
+            visibility: visibility,
+            tmuxSessionVisibility: tmuxSessionVisibility,
+            worktreeOrderRawValue: worktreeOrderRawValue,
+            tmuxSessionOrderRawValue: tmuxSessionOrderRawValue,
+            herdrSessionOrderRawValue: herdrSessionOrderRawValue,
+            zellijSessionOrderRawValue: zellijSessionOrderRawValue
+        ).flatMap { section in
+            section.zellijSessionRows.flatMap { row -> [WorkspaceCommandItem] in
+                guard case let .zellijSession(hostID, name) = row.target else {
+                    return []
+                }
+                let session = WorkspaceZellijSessionSelection(
+                    hostID: hostID,
+                    name: name
+                )
+                let keywords = [
+                    "zellij", "session", name,
+                    section.host.name, section.row.title,
+                ]
+                return [
+                    WorkspaceCommandItem(
+                        id: "open-zellij-session-\(session.id)",
+                        title: "Open Zellij session: \(name)",
+                        subtitle: "Attach on \(section.host.name).",
+                        keywords: ["open", "attach"] + keywords,
+                        action: .openZellijSession(session)
+                    ),
+                    WorkspaceCommandItem(
+                        id: "kill-zellij-session-\(session.id)",
+                        title: "Kill Zellij session: \(name)",
+                        subtitle: "Terminate every pane and process on \(section.host.name).",
+                        keywords: ["kill", "terminate", "stop"] + keywords,
+                        action: .killZellijSession(session)
+                    ),
+                ]
             }
         }
     }

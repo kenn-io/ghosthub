@@ -67,6 +67,7 @@ struct WorkspaceSidebarDisclosureState: Equatable {
         key.hasPrefix("host:")
             || key.hasPrefix("sessions:")
             || key.hasPrefix("herdr-sessions:")
+            || key.hasPrefix("zellij-sessions:")
     }
 
     static func host(_ hostID: UUID) -> String {
@@ -79,6 +80,10 @@ struct WorkspaceSidebarDisclosureState: Equatable {
 
     static func herdrSessions(_ hostID: UUID) -> String {
         "herdr-sessions:\(hostID.uuidString)"
+    }
+
+    static func zellijSessions(_ hostID: UUID) -> String {
+        "zellij-sessions:\(hostID.uuidString)"
     }
 
     static func projects(_ hostID: UUID) -> String {

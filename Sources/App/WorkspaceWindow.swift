@@ -668,6 +668,8 @@ struct WorkspaceWindow: View {
                 sceneModel.availablePaletteApplicationShortcuts,
                 activeHerdrSession:
                 sceneModel.activeBorrowedHerdrSelection,
+                activeZellijSession:
+                sceneModel.activeBorrowedZellijSelection,
                 pendingHerdrSessions:
                 sceneModel.pendingHerdrSessionSelections,
                 sessionConnectionRecoveryRequest:
@@ -691,6 +693,17 @@ struct WorkspaceWindow: View {
                     [sceneModel]
                     host, sessionName, defersTerminalResize, actions in
                     sceneModel.borrowedHerdrSessionView(
+                        host: host,
+                        sessionName: sessionName,
+                        defersTerminalResize: defersTerminalResize,
+                        onReconnectNow: actions.reconnectNow,
+                        onReviewConnection: actions.reviewConnection
+                    )
+                },
+                zellijSessionContentBuilder: {
+                    [sceneModel]
+                    host, sessionName, defersTerminalResize, actions in
+                    sceneModel.borrowedZellijSessionView(
                         host: host,
                         sessionName: sessionName,
                         defersTerminalResize: defersTerminalResize,
@@ -864,6 +877,27 @@ struct WorkspaceWindow: View {
                 closeHerdrSession: { [sceneModel] selection in
                     sceneModel.closeBorrowedHerdrSession(selection)
                 },
+                openZellijSession: { [sceneModel] selection in
+                    sceneModel.openBorrowedZellijSession(selection)
+                },
+                createZellijSession: { [sceneModel] selection in
+                    try await sceneModel.createZellijSession(selection)
+                },
+                closeZellijSession: { [sceneModel] selection in
+                    sceneModel.closeBorrowedZellijSession(selection)
+                },
+                cancelPendingZellijPresentation: { [sceneModel] in
+                    sceneModel.cancelPendingZellijPresentation()
+                },
+                prepareZellijSessionKill: { [sceneModel] selection in
+                    try await sceneModel.prepareZellijSessionKill(selection)
+                },
+                killZellijSession: { [sceneModel] request in
+                    try await sceneModel.killZellijSession(request)
+                },
+                cancelZellijSessionKill: { [sceneModel] request in
+                    sceneModel.cancelPreparedZellijSessionKill(request)
+                },
                 prepareHerdrSessionLifecycle: {
                     [sceneModel] selection, action in
                     try await sceneModel.prepareHerdrSessionLifecycle(
@@ -900,6 +934,9 @@ struct WorkspaceWindow: View {
                 },
                 reconnectActiveHerdrSessionNow: { [sceneModel] in
                     sceneModel.reconnectActiveHerdrSessionNow()
+                },
+                reconnectActiveZellijSessionNow: { [sceneModel] in
+                    sceneModel.reconnectActiveZellijSessionNow()
                 },
                 resumeSessionReconnectAfterSSHRecovery: {
                     [sceneModel] request in
@@ -1024,6 +1061,8 @@ struct WorkspaceWindow: View {
                     sceneModel.activeBorrowedTmuxSelection,
                     activeHerdrSession:
                     sceneModel.activeBorrowedHerdrSelection,
+                    activeZellijSession:
+                    sceneModel.activeBorrowedZellijSelection,
                     in: sceneModel.snapshot
                 ),
                 onToggleSidebar: {
@@ -1035,7 +1074,7 @@ struct WorkspaceWindow: View {
                 onQuickLaunch: {
                     NotificationCenter.default.post(
                         name: .ghosthubCommandPalette,
-                        object: nil
+                        object: sceneModel
                     )
                 },
                 onSettings: {

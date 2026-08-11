@@ -123,6 +123,9 @@ extension WorkspaceSceneModel {
     }
 
     private var activeNavigationTarget: WorkspaceNavigationTarget {
+        if let pending = pendingZellijPresentationSelection {
+            return .zellijSession(hostID: pending.hostID, name: pending.name)
+        }
         if let pending = pendingHerdrShortcutSelection {
             return .herdrSession(
                 hostID: pending.hostID,
@@ -131,6 +134,9 @@ extension WorkspaceSceneModel {
         }
         if let active = activeBorrowedHerdrSelection {
             return .herdrSession(hostID: active.hostID, name: active.name)
+        }
+        if let active = activeBorrowedZellijSelection {
+            return .zellijSession(hostID: active.hostID, name: active.name)
         }
         if let active = activeBorrowedTmuxSelection {
             if let worktreeID = active.worktreeID {
@@ -159,7 +165,9 @@ extension WorkspaceSceneModel {
             tmuxSessionOrderRawValue: WorkspaceSidebarOrderStorage
                 .tmuxSessionRawValue(),
             herdrSessionOrderRawValue: WorkspaceSidebarOrderStorage
-                .herdrSessionRawValue()
+                .herdrSessionRawValue(),
+            zellijSessionOrderRawValue: WorkspaceSidebarOrderStorage
+                .zellijSessionRawValue()
         )
     }
 
@@ -238,6 +246,12 @@ extension WorkspaceSceneModel {
                 hostID: hostID,
                 name: name
             ))
+            return true
+        case let .zellijSession(hostID, name):
+            var updated = selection
+            updated.select(target, in: snapshot, visibility: worktreeVisibility)
+            selectFromUser(updated)
+            openBorrowedZellijSession(.init(hostID: hostID, name: name))
             return true
         case .host, .project:
             return false

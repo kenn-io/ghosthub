@@ -85,6 +85,13 @@ var targets: [Target] = [
         path: "Sources/Herdr"
     ),
     .target(
+        name: "GhosthubZellij",
+        dependencies: [
+            "GhosthubTransport",
+        ],
+        path: "Sources/Zellij"
+    ),
+    .target(
         name: "GhosthubWorkspace",
         path: "Sources/Workspace"
     ),
@@ -179,6 +186,7 @@ targets.append(
             "GhosthubPersistence",
             "GhosthubTransport",
             "GhosthubTmux",
+            "GhosthubZellij",
             .product(name: "Sparkle", package: "Sparkle"),
         ],
 
@@ -257,6 +265,7 @@ targets.append(
             "GhosthubTransport",
             "GhosthubUI",
             "GhosthubWorkspace",
+            "GhosthubZellij",
             "GhosthubTestSupport",
         ],
         path: "Tests/App"
@@ -316,6 +325,16 @@ targets.append(
             "GhosthubTmux",
         ],
         path: "Tests/Tmux"
+    )
+)
+targets.append(
+    .testTarget(
+        name: "GhosthubZellijTests",
+        dependencies: [
+            "GhosthubTransport",
+            "GhosthubZellij",
+        ],
+        path: "Tests/Zellij"
     )
 )
 if hasBootstrappedLibghostty {

@@ -72,6 +72,53 @@ struct WorkspaceApplicationShortcutTests {
         await model.shutdown()
     }
 
+    @Test("Zellij presentation enables sibling navigation")
+    func zellijSiblingNavigation() async throws {
+        let host = HostSummary(
+            id: UUID(),
+            configKey: "local",
+            name: "This Mac",
+            kind: .selfHost,
+            platform: .macOS,
+            zellijSessions: [
+                ZellijSessionSummary(name: "first"),
+                ZellijSessionSummary(name: "second"),
+            ],
+            zellijAvailable: true
+        )
+        let store = RecordingNativeSessionSurfaceStore()
+        let model = try makeModel(
+            database: .inMemory(),
+            localHostID: host.id,
+            snapshot: WorkspaceSnapshot(
+                hosts: [host], projects: [], worktrees: []
+            ),
+            nativeZellijSurfaceStore: store,
+            nativeZellijPathProvider: { _ in .success("/usr/bin/zellij") },
+            zellijSessionValidationDiscovery: { _, _ in
+                .available(["first", "second"])
+            }
+        )
+        let first = WorkspaceZellijSessionSelection(
+            hostID: host.id,
+            name: "first"
+        )
+
+        model.openBorrowedZellijSession(first)
+        await waitUntilMainActor {
+            model.activeBorrowedZellijSelection == first
+        }
+        model.isFocusedWindow = true
+
+        #expect(model.canPerformSiblingShortcut(.nextSibling))
+        #expect(model.performApplicationShortcut(.nextSibling))
+        await waitUntilMainActor {
+            model.activeBorrowedZellijSelection?.name == "second"
+        }
+        #expect(model.activeBorrowedZellijSelection?.name == "second")
+        await model.shutdown()
+    }
+
     @Test("menu sibling navigation uses its captured scene")
     func menuSiblingNavigation() async throws {
         let host = HostSummary.fixture()

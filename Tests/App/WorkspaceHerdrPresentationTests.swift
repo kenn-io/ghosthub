@@ -297,6 +297,52 @@ struct WorkspaceHerdrPresentationTests {
         await model.shutdown()
     }
 
+    @Test("automatic selection normalization preserves Herdr activation")
+    func automaticSelectionPreservesHerdrActivation() async throws {
+        var environment = try environment()
+        let project = ProjectSummary.fixture(hostID: environment.hostID)
+        environment.snapshot.projects.append(project)
+        let store = RecordingNativeSessionSurfaceStore()
+        let probeStarted = Mutex(false)
+        let releaseProbe = DispatchSemaphore(value: 0)
+        let model = try makeHerdrModel(
+            environment,
+            store: store,
+            discovery: { _ in
+                probeStarted.withLock { $0 = true }
+                releaseProbe.wait()
+                return .available([
+                    HerdrSessionSummary(
+                        name: "api",
+                        isDefault: true,
+                        state: .running
+                    ),
+                ])
+            }
+        )
+        model.selection = WorkspaceSelection(
+            selectedHostID: environment.hostID,
+            selectedProjectID: project.id
+        )
+        let selection = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID,
+            name: "api"
+        )
+
+        let activation = Task {
+            try await model.openBorrowedHerdrSession(selection)
+        }
+        await waitUntilMainActor { probeStarted.withLock { $0 } }
+        model.synchronizeSelection(WorkspaceSelection(
+            selectedHostID: environment.hostID
+        ))
+        releaseProbe.signal()
+        try await activation.value
+
+        #expect(model.activeBorrowedHerdrSelection == selection)
+        await model.shutdown()
+    }
+
     @Test(
         "scene shutdown fences delayed Herdr intents",
         arguments: [

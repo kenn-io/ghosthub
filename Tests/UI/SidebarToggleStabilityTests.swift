@@ -133,6 +133,32 @@ struct SidebarToggleStabilityTests {
         #expect(second.columnVisibility == .all)
     }
 
+    @Test("command palette opens only in its targeted window")
+    func commandPaletteOpensOnlyInTargetedWindow() {
+        let firstTarget = SidebarToggleTarget()
+        let secondTarget = SidebarToggleTarget()
+        let first = StabilityTestEnvironment(
+            sidebarToggleTarget: firstTarget
+        )
+        let second = StabilityTestEnvironment(
+            sidebarToggleTarget: secondTarget
+        )
+        defer {
+            first.close()
+            second.close()
+        }
+
+        NotificationCenter.default.post(
+            name: .ghosthubCommandPalette,
+            object: firstTarget
+        )
+        first.settle()
+        second.settle()
+
+        #expect(first.isCommandPalettePresented)
+        #expect(!second.isCommandPalettePresented)
+    }
+
     @Test("right side panel toggle preserves main column view identity")
     func rightSidePanelTogglePreservesMainColumn() {
         let env = SidePanelStabilityTestEnvironment()
@@ -205,6 +231,10 @@ private final class StabilityTestEnvironment {
 
     var columnVisibility: NavigationSplitViewVisibility {
         model.columnVisibility
+    }
+
+    var isCommandPalettePresented: Bool {
+        model.isCommandPalettePresented
     }
 
     var terminalResizeDeferrals: [Bool] {
@@ -338,6 +368,7 @@ private final class StabilityTestModel: ObservableObject {
     @Published var selection: WorkspaceSelection
     @Published var activeSession: WorkspaceTmuxSessionSelection?
     @Published var columnVisibility: NavigationSplitViewVisibility = .all
+    @Published var isCommandPalettePresented = false
     private(set) var terminalResizeDeferrals: [Bool] = []
 
     init(
@@ -385,7 +416,8 @@ private struct StabilityTestHarness: View {
             sidebarToggleTarget: sidebarToggleTarget,
             settingsStore: settingsStore,
             selection: $model.selection,
-            columnVisibility: $model.columnVisibility
+            columnVisibility: $model.columnVisibility,
+            isCommandPalettePresented: $model.isCommandPalettePresented
         )
         .defaultAppStorage(defaults)
         .environment(\.controlActiveState, .key)

@@ -248,6 +248,22 @@ static BOOL DemoPalettePostcondition(NSString *kind,
   return NO;
 }
 
+static void DemoWaitForPalettePostcondition(
+    NSString *kind, NSWindow *paletteSheet, NSUInteger attemptsRemaining,
+    void (^completion)(BOOL)) {
+  BOOL matched = DemoPalettePostcondition(kind, paletteSheet);
+  if (matched || attemptsRemaining == 0) {
+    completion(matched);
+    return;
+  }
+  dispatch_after(
+      dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC),
+      dispatch_get_main_queue(), ^{
+        DemoWaitForPalettePostcondition(
+            kind, paletteSheet, attemptsRemaining - 1, completion);
+      });
+}
+
 static NSWindow *DemoRootWindow(void) {
   NSWindow *window = DemoControlledWindow;
   if (window == nil || !window.isVisible) {
@@ -550,12 +566,8 @@ static void DemoCapture(NSString *path, BOOL matrix, BOOL exactWindow) {
                                     message:@"command palette lost its window"];
                           return;
                         }
-                        dispatch_after(
-                            dispatch_time(
-                                DISPATCH_TIME_NOW, 750 * NSEC_PER_MSEC),
-                            dispatch_get_main_queue(), ^{
-                              BOOL matched = DemoPalettePostcondition(
-                                  expectKind, paletteSheet);
+                        DemoWaitForPalettePostcondition(
+                            expectKind, paletteSheet, 50, ^(BOOL matched) {
                               [self acknowledge:requestID
                                         success:matched
                                         message:matched

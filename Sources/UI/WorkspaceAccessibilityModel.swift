@@ -71,6 +71,8 @@ enum WorkspaceAccessibilityModel {
             hint = row.herdrSessionState == .stopped
                 ? "Restart and attach to this Herdr session."
                 : "Attach to this Herdr session."
+        case .zellijSession:
+            hint = "Attach to this Zellij session."
         }
         return WorkspaceAccessibilityDescriptor(
             label: row.title,

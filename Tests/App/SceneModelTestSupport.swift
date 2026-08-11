@@ -10,6 +10,7 @@ import GhosthubPersistence
 import GhosthubSettings
 import GhosthubTmux
 import GhosthubWorkspace
+import GhosthubZellij
 @testable import GhosthubTerminal
 import GhosthubTerminalSupport
 @testable import GhosthubApp
@@ -304,10 +305,13 @@ func makeModel(
     notificationService: any NotificationService = NotificationServiceStub(),
     nativeTmuxSurfaceStore: (any NativeSessionSurfaceStoring)? = nil,
     nativeHerdrSurfaceStore: (any NativeSessionSurfaceStoring)? = nil,
+    nativeZellijSurfaceStore: (any NativeSessionSurfaceStoring)? = nil,
     nativeTmuxPathProvider:
     (@Sendable () -> Result<ResolvedTmuxBinary, TmuxBinaryError>)? = nil,
     nativeHerdrPathProvider: (@Sendable (CommandHost)
         -> Result<String, HerdrCommandError>)? = nil,
+    nativeZellijPathProvider: (@Sendable (CommandHost)
+        -> Result<String, ZellijCommandError>)? = nil,
     herdrPaneSplitCapabilityProvider:
     NativeHerdrSessionCoordinator.PaneSplitCapabilityProvider? = nil,
     herdrPaneSplitter: HerdrPaneSplitter = HerdrPaneSplitter(),
@@ -349,6 +353,8 @@ func makeModel(
         WorktreeMutationCoordinator(),
     herdrLifecycleCoordinator: HerdrSessionLifecycleCoordinator =
         HerdrSessionLifecycleCoordinator(),
+    zellijSessionKillCoordinator: ZellijSessionKillCoordinator =
+        ZellijSessionKillCoordinator(),
     herdrSessionRecordReader:
     @escaping WorkspaceSceneModel.HerdrSessionRecordReading = { name, _, _ in
         .failure(.sessionMissing(name))
@@ -390,6 +396,16 @@ func makeModel(
     WorkspaceSceneModel.TmuxSessionDiscovery = { _ in .success([]) },
     herdrSessionDiscovery: @escaping
     WorkspaceSceneModel.HerdrSessionDiscovery = { _ in .unavailable },
+    zellijSessionDiscovery: @escaping
+    WorkspaceSceneModel.ZellijSessionDiscovery = { _ in .unavailable },
+    zellijSessionValidationDiscovery:
+    WorkspaceSceneModel.ZellijSessionValidationDiscovery? = nil,
+    zellijSessionKiller: @escaping
+    WorkspaceSceneModel.ZellijSessionKilling = { _, _, _ in .success(()) },
+    zellijSSHConnectionSnapshotProvider:
+    @escaping @Sendable (SSHHostInfo) -> SSHConnectionArgumentsSnapshot = {
+        _ in SSHConnectionArgumentsSnapshot(arguments: [])
+    },
     herdrSessionValidationDiscovery:
     WorkspaceSceneModel.HerdrSessionValidationDiscovery? = nil,
     herdrSessionExactProbe:
@@ -459,8 +475,10 @@ func makeModel(
         notificationService: notificationService,
         nativeTmuxSurfaceStore: nativeTmuxSurfaceStore,
         nativeHerdrSurfaceStore: nativeHerdrSurfaceStore,
+        nativeZellijSurfaceStore: nativeZellijSurfaceStore,
         nativeTmuxPathProvider: nativeTmuxPathProvider,
         nativeHerdrPathProvider: nativeHerdrPathProvider,
+        nativeZellijPathProvider: nativeZellijPathProvider,
         herdrPaneSplitCapabilityProvider: herdrPaneSplitCapabilityProvider,
         herdrPaneSplitter: herdrPaneSplitter,
         localKwtPathProvider: localKwtPathProvider,
@@ -474,6 +492,7 @@ func makeModel(
         kwtWorktreeRemover: kwtWorktreeRemover,
         worktreeMutationCoordinator: worktreeMutationCoordinator,
         herdrLifecycleCoordinator: herdrLifecycleCoordinator,
+        zellijSessionKillCoordinator: zellijSessionKillCoordinator,
         herdrSessionRecordReader: herdrSessionRecordReader,
         herdrSessionMutator: herdrSessionMutator,
         herdrSSHConnectionSnapshotProvider:
@@ -483,6 +502,14 @@ func makeModel(
         kwtProjectRegistration: kwtProjectRegistration,
         tmuxSessionDiscovery: tmuxSessionDiscovery,
         herdrSessionDiscovery: herdrSessionDiscovery,
+        zellijSessionDiscovery: zellijSessionDiscovery,
+        zellijSessionValidationDiscovery:
+        zellijSessionValidationDiscovery ?? { host, _ in
+            zellijSessionDiscovery(host)
+        },
+        zellijSessionKiller: zellijSessionKiller,
+        zellijSSHConnectionSnapshotProvider:
+        zellijSSHConnectionSnapshotProvider,
         herdrSessionValidationDiscovery:
         herdrSessionValidationDiscovery ?? { host, _ in
             herdrSessionDiscovery(host)
@@ -529,8 +556,14 @@ final class RecordingNativeSessionSurfaceStore: NativeSessionSurfaceStoring {
 
     var lastCommand: String? { requestedConfigurations.last?.command }
 
-    init(launchError: Error? = nil) {
-        surface = RecordingNativeSessionPaneSurface(launchError: launchError)
+    init(
+        launchError: Error? = nil,
+        closeOnRegistrationCode: UInt32? = nil
+    ) {
+        surface = RecordingNativeSessionPaneSurface(
+            launchError: launchError,
+            closeOnRegistrationCode: closeOnRegistrationCode
+        )
     }
 
     func paneSurface(
@@ -560,11 +593,16 @@ final class RecordingNativeSessionPaneSurface: NativeSessionPaneSurfacing {
     var hasEffectiveKeyboardFocus = false
     var paneSplitShortcutHandler: ((TerminalPaneSplitShortcut) -> Void)?
     let launchError: Error?
+    private var closeOnRegistrationCode: UInt32?
     var childExitCode: UInt32?
     private(set) var closeObservers: [UUID: (Bool, UInt32?) -> Void] = [:]
 
-    init(launchError: Error? = nil) {
+    init(
+        launchError: Error? = nil,
+        closeOnRegistrationCode: UInt32? = nil
+    ) {
         self.launchError = launchError
+        self.closeOnRegistrationCode = closeOnRegistrationCode
     }
 
     func registerSurfaceCloseObserver(
@@ -572,6 +610,11 @@ final class RecordingNativeSessionPaneSurface: NativeSessionPaneSurfacing {
         onSurfaceClosed: @escaping (Bool, UInt32?) -> Void
     ) {
         closeObservers[id] = onSurfaceClosed
+        guard let code = closeOnRegistrationCode else { return }
+        closeOnRegistrationCode = nil
+        Task { @MainActor in
+            onSurfaceClosed(false, code)
+        }
     }
 }
 

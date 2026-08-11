@@ -481,6 +481,7 @@ struct GhosthubApp: App {
                 invoke(.commandPalette)
             }
             .keyboardShortcut(shortcut(.commandPalette))
+            .disabled(focusedSceneModel == nil)
 
             Divider()
 

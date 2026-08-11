@@ -7,20 +7,21 @@ the [Threat Model](threat-model.md).
 
 ## Mental Model
 
-- **Host:** a machine that runs tmux and optionally Herdr sessions. The local
+- **Host:** a machine that runs tmux and optionally Herdr or Zellij sessions. The local
   Mac is the default host. Remote hosts are reachable over SSH, commonly
   through a tailnet.
 - **Project:** a git repository reported by kwt on a host.
 - **Worktree:** a kwt workspace with an exact tmux session name.
 - **Directory workspace:** one kwt-registered plain directory with an exact
   tmux session name and no Git children.
-- **Session:** an ordinary tmux session or running/stopped Herdr session on a host.
+- **Session:** an ordinary tmux session, running/stopped Herdr session, or
+  active Zellij session on a host.
 
 The sidebar is a host-wide session navigator. Its **Projects** group shows
 repository hierarchies followed by flat registered-directory rows. It also
-shows directly discovered tmux sessions and running or stopped Herdr sessions
-on each host, including sessions that were not created by Ghosthub or kwt. The
-three inventories are independent; kwt worktrees and directory workspaces
+shows directly discovered tmux sessions, running or stopped Herdr sessions,
+and active Zellij sessions on each host, including sessions that were not
+created by Ghosthub or kwt. The four inventories are independent; kwt worktrees and directory workspaces
 remain tmux-backed. Users may hide matching standalone tmux sessions
 from navigation with case-sensitive wildcard patterns; discovery retains the
 complete inventory so a kwt-owned session confirmed by current discovery is
@@ -28,7 +29,7 @@ indicated on its worktree or directory row. Cached sessions do not remain live
 while a host is unreachable. Kwt-owned sessions are hidden from the separate tmux session
 group by default, with a Worktrees setting that exposes those duplicate
 entries.
-Tmux and Herdr sessions are each presented through their ordinary native
+Tmux, Herdr, and Zellij sessions are each presented through their ordinary native
 whole-session client. The selected backend alone owns and renders its internal
 layout, and each scene presents at most one such client.
 
@@ -59,8 +60,8 @@ into native UI.
 
 The workspace `WindowGroup` is data-backed. Each scene continuously captures a
 small logical descriptor containing stable host and project keys, the durable
-kwt worktree generation or registered directory path, and either exact tmux
-session/protected-socket identity or exact Herdr session identity. Its window UUID exists only for native scene
+kwt worktree generation or registered directory path, and an exact tmux
+session/protected-socket, Herdr session, or Zellij session identity. Its window UUID exists only for native scene
 adoption; runtime model UUIDs and worktree paths are never persisted as host,
 project, or worktree identity. A worktree without a canonical generation
 degrades to project-only navigation and does not persist its worktree-owned
@@ -102,8 +103,9 @@ refreshes. Explicit user navigation cancels pending restoration so a stale
 scene can never take the window back.
 Herdr restoration requires a completed fresh Herdr probe for the restored host
 and the exact running name; cached pre-refresh rows never authorize attachment.
-A captured scene contains one tmux descriptor, one Herdr descriptor, or neither,
-never both.
+Zellij restoration has the same fresh-inventory requirement for the exact
+active name. A captured scene contains one tmux, Herdr, or Zellij descriptor,
+or none, never more than one.
 A scene captured without an active native presentation restores its navigation
 without opening or creating the selected worktree or directory session; the
 user explicitly selects the workspace to attach again.
@@ -120,8 +122,8 @@ the final workspace window leaves Ghosthub running, matching ordinary macOS
 terminal behavior; Cmd-Q remains the explicit app-termination path. Ghosthub
 confirms app termination by default, and users can disable that confirmation in
 **Settings -> Terminal**. Closing presentations or quitting never terminates a
-tmux or Herdr session: both detach clients. Kill Session remains a separate
-confirmed tmux action. Herdr exposes separate Create, Stop, Restart, and Delete
+tmux, Herdr, or Zellij session: all detach clients. Kill Session remains a
+separate confirmed tmux or Zellij action. Herdr exposes separate Create, Stop, Restart, and Delete
 actions; Stop and Delete require confirmation and are never implied by
 navigation or closing.
 
@@ -135,7 +137,7 @@ The Swift app owns native presentation and terminal rendering:
 - libghostty surface lifecycle, input, resize, and rendering.
 - Workspace/session selection and presentation state.
 - Local GRDB persistence for app-owned state.
-- SSH host settings and native tmux/Herdr client presentation.
+- SSH host settings and native tmux/Herdr/Zellij client presentation.
 
 Swift should stay focused on native app behavior and terminal hosting. Shared
 pure domain models belong in `Sources/Workspace`; external workspace state is
@@ -395,9 +397,9 @@ the environment of an existing session or running pane.
 
 ## Startup and Onboarding
 
-Ghosthub starts independent kwt, tmux, and Herdr inventories before deciding
-which empty state to show. Herdr is additive and never blocks the workspace;
-missing Herdr is silent. Existing users go directly to their host-wide session
+Ghosthub starts independent kwt, tmux, Herdr, and Zellij inventories before deciding
+which empty state to show. Herdr and Zellij are additive and never block the workspace;
+missing installations are silent. Existing users go directly to their host-wide session
 sidebar;
 there is no repository-intake interstitial and no first-launch modal.
 
@@ -421,6 +423,7 @@ repositories.
 | `Sources/Transport/` | Shared local/SSH routing, quoting, and command execution primitives |
 | `Sources/Tmux/` | Native tmux discovery and attachment command model |
 | `Sources/Herdr/` | Native Herdr discovery and attachment command model |
+| `Sources/Zellij/` | Native Zellij discovery and attachment command model |
 | `Sources/Workspace/` | Pure workspace, host, project, worktree, and session models |
 | `Sources/Persistence/` | GRDB repositories for app-local state |
 | `tools/` | Python bootstrap and packaging automation |
@@ -434,7 +437,7 @@ remain visible, and explicit reloads publish a user-visible result.
 
 ## Session Attachment
 
-Each scene owns one native presentation slot shared by tmux and Herdr.
+Each scene owns one native presentation slot shared by tmux, Herdr, and Zellij.
 Selecting either backend disposes the other client before opening the new one.
 Herdr discovery and attachment are supported on the local Mac and configured
 remote POSIX hosts, not experimental Windows/psmux hosts. Ghosthub shows
@@ -453,6 +456,35 @@ state, and Herdr record immediately before execution. Herdr exposes no stable
 session-generation identifier, so same-name/same-socket replacement cannot
 receive tmux-strength identity protection; this race is documented rather than
 hidden behind a false guarantee.
+
+Zellij discovery and attachment are supported on the local Mac and configured
+remote POSIX hosts. Ghosthub lists only active sessions, filtering Zellij's
+exited/resurrectable entries. Ordinary open and restoration use attach-only;
+remote restoration samples and rechecks one SSH connection snapshot, then
+passes that frozen route to the client presentation. If the route changes,
+restoration is canceled without attaching.
+New Zellij Session uses `--session`, which refuses active and resurrectable
+name collisions while Zellij creates and presents the new session. Ghosthub
+does not expose resurrection or delete exited sessions and does not manage
+tabs, panes, layouts, themes, plugins, configuration, updates, or processes
+inside a session. Zellij provides no atomic active-only attachment, so a
+session that exits between Ghosthub's active-state probe and `zellij attach`
+may be resurrected by Zellij; Ghosthub does not pass `--force-run-commands`.
+
+Closing a Zellij presentation only detaches. Kill Session is a separate
+confirmed action that revalidates the exact name and current host immediately
+before `kill-session`. A shared kill fence cancels matching reconnects and
+detaches matching presentations across workspace scenes before the command,
+preventing an already-launched Ghosthub client from undoing an intentional
+kill. The successful event also invalidates in-flight Zellij discovery, removes
+the killed row from every scene's cached inventory, and starts fresh discovery.
+Per-session kill revisions prevent validation begun before the kill from
+attaching afterward. A failed kill releases the fence and revalidates an
+eligible detached presentation or matching pending open or restoration before
+resuming it, while preserving its navigation and route checks. Zellij exposes
+no stable session-generation identifier, so a same-name replacement between
+that final check and the command remains an accepted race rather than receiving
+tmux's stronger identity guarantee.
 
 Kwt workspaces and otherwise-unbound host sessions use the same native tmux
 client. Ghosthub never projects tmux windows or panes into a Swift split tree.
@@ -597,6 +629,16 @@ Herdr's JSON session list is independently authoritative for running and
 stopped Herdr sessions. Exit 127 means optional capability absence and emits no diagnostic;
 malformed output or another failure produces only a host-scoped warning and
 never changes tmux reachability, kwt availability, or blocking workspace state.
+Zellij's unformatted session list is independently authoritative for active
+Zellij sessions. Exited entries are excluded. Missing Zellij is silent, while
+malformed output or another failure produces only a host-scoped warning.
+Zellij fleet sweeps accumulate their host results and publish the completed
+runtime inventory once. Tmux and Herdr publish host-scoped runtime results as
+hosts complete. Session-only publication uses the runtime overlay, which cannot
+reconcile kwt projects or worktrees and cannot normalize their paths. The full
+overlay remains reserved for authoritative kwt changes. Application activation
+starts neither inventory discovery nor process sampling; explicit refresh and
+lifecycle reconciliation own those costs.
 
 Ghosthub local persistence stores app-owned state:
 
@@ -612,6 +654,6 @@ current schema, bootstrap paths, fixtures, and tests directly.
 ## Direction
 
 Ghosthub should remain a native terminal client and session switcher: one
-sidebar for tmux and Herdr fleets across a user's Macs, Linux hosts, and tailnet.
+sidebar for tmux, Herdr, and Zellij fleets across a user's Macs, Linux hosts, and tailnet.
 The native app owns discovery, native client presentation, and SSH reconnect
-supervision. It does not reconstruct tmux or Herdr terminal state in Swift.
+supervision. It does not reconstruct tmux, Herdr, or Zellij terminal state in Swift.
