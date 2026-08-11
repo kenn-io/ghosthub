@@ -56,7 +56,7 @@ KWT_SOURCE_REVISION ?= unpinned
 endif
 SWIFT_TEST_FILTER ?=
 
-.PHONY: help ensure-go bootstrap-kwt bootstrap-kwt-variants ensure-kwt ensure-kwt-variants bootstrap-libghostty bootstrap-libghostty-release check-libghostty check-libghostty-release test-libghostty-bootstrap test-terminal-fallback test-stage-release-app-bundles test-assemble-app-bundle test-kwt-contract test-essential-workflows test-ssh-authentication-live build swift-warning-check build-release debug-app release-app release-dmg release-appcast run-release-app run-app swift-test test-tmux-attach purge-test-tmux python-test test smoke-test docs-build docs-serve site-docs-serve site-deploy reset-app-state install-hooks format format-check
+.PHONY: help ensure-go ensure-tmux bootstrap-kwt bootstrap-kwt-variants ensure-kwt ensure-kwt-variants bootstrap-libghostty bootstrap-libghostty-release check-libghostty check-libghostty-release test-libghostty-bootstrap test-terminal-fallback test-stage-release-app-bundles test-assemble-app-bundle test-kwt-contract test-essential-workflows test-ssh-authentication-live build swift-warning-check build-release debug-app release-app release-dmg release-appcast run-release-app run-app swift-test test-tmux-attach purge-test-tmux python-test test smoke-test docs-build docs-serve site-docs-serve site-deploy reset-app-state install-hooks format format-check
 
 help:
 	@printf '%s\n' \
@@ -278,7 +278,16 @@ test-stage-release-app-bundles:
 test-assemble-app-bundle:
 	@$(UV) run --frozen --group dev pytest Tests/test_assemble_app_bundle.py
 
-test-kwt-contract: ensure-kwt
+ensure-tmux:
+	@command -v tmux >/dev/null || { \
+		command -v brew >/dev/null || { \
+			echo "tmux is required for the pinned kwt contract tests" >&2; \
+			exit 1; \
+		}; \
+		brew install tmux; \
+	}
+
+test-kwt-contract: ensure-kwt ensure-tmux
 	@GHOSTHUB_RUN_PINNED_KWT_CONTRACT_TESTS=1 \
 		GHOSTHUB_KWT_CONTRACT_BINARY="$(KWT_BINARY_PATH)" \
 		sh tools/run_with_timeout.sh 600 sh tools/run_swift_tests.sh \
