@@ -331,6 +331,7 @@ struct WorkspaceZellijTests {
         let validations = Mutex<[ZellijDiscoveryResult]>([
             .available([]),
             .available(sessionBecameActive ? ["release"] : []),
+            .available([]),
         ])
         let model = try makeModel(
             database: environment.database,
@@ -365,6 +366,19 @@ struct WorkspaceZellijTests {
         if sessionBecameActive {
             #expect(retryCommand.contains("'attach'"))
             #expect(!retryCommand.contains("--session=release"))
+
+            await waitUntilMainActor {
+                model.activeBorrowedZellijConnectionState == .disconnected(
+                    reason: ZellijCommandError.unavailable.localizedDescription
+                )
+            }
+            model.retryBorrowedZellijSession(selection)
+            await waitUntilMainActor(timeout: .seconds(1)) {
+                store.requestedConfigurations.count == 3
+            }
+
+            #expect(store.lastCommand?.contains("--session=release") == true)
+            #expect(store.lastCommand?.contains("'attach'") == false)
         } else {
             #expect(retryCommand.contains("--session=release"))
             #expect(!retryCommand.contains("'attach'"))
@@ -2224,6 +2238,315 @@ struct WorkspaceZellijTests {
         #expect(model.sessionConnectionRecoveryRequest == nil)
         #expect(model.activeBorrowedZellijRecoveryState == nil)
         #expect(model.activeBorrowedZellijConnectionState == .connected)
+        await model.shutdown()
+    }
+
+    @Test("Zellij resolver transport failure retries reconnect")
+    func resolverTransportFailureRetriesReconnect() async throws {
+        let host = HostSummary(
+            id: UUID(),
+            configKey: "builder",
+            name: "Builder",
+            kind: .remote,
+            platform: .linux,
+            sshDestination: "dev@builder",
+            zellijSessions: [ZellijSessionSummary(name: "api")],
+            zellijAvailable: true
+        )
+        let store = RecordingNativeSessionSurfaceStore()
+        let resolutions = Mutex(0)
+        let model = try makeModel(
+            database: .inMemory(),
+            localHostID: UUID(),
+            snapshot: WorkspaceSnapshot(
+                hosts: [host],
+                projects: [],
+                worktrees: []
+            ),
+            nativeZellijSurfaceStore: store,
+            nativeZellijPathProvider: { _ in
+                let attempt = resolutions.withLock {
+                    $0 += 1
+                    return $0
+                }
+                return attempt == 2
+                    ? .failure(.commandFailed(
+                        status: 255,
+                        stderr: "ssh: connect to host builder port 22: Network is unreachable"
+                    ))
+                    : .success("/usr/bin/zellij")
+            },
+            zellijSessionValidationDiscovery: { _, _ in
+                .available(["api"])
+            },
+            tmuxReconnectIntervals: [.zero],
+            tmuxReconnectProbeDeadline: .seconds(1)
+        )
+        let selection = WorkspaceZellijSessionSelection(
+            hostID: host.id,
+            name: "api"
+        )
+
+        model.openBorrowedZellijSession(selection)
+        await waitUntilMainActor {
+            store.requestedConfigurations.count == 1
+                && !store.surface.closeObservers.isEmpty
+        }
+        let close = try #require(store.surface.closeObservers.values.first)
+        close(false, 255)
+        await waitUntilMainActor(timeout: .seconds(1)) {
+            resolutions.withLock { $0 } >= 3
+                && store.requestedConfigurations.count == 2
+        }
+
+        #expect(model.activeBorrowedZellijConnectionState == .connected)
+        #expect(model.sessionConnectionRecoveryRequest == nil)
+        await model.shutdown()
+    }
+
+    @Test(
+        "Zellij resolver SSH failure publishes connection recovery",
+        arguments: [
+            (
+                "Permission denied (publickey,password).",
+                true
+            ),
+            (
+                "Host key verification failed.",
+                true
+            ),
+            (
+                "WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!",
+                false
+            ),
+        ]
+    )
+    func resolverSSHFailurePublishesRecovery(
+        stderr: String,
+        canReviewConnection: Bool
+    ) async throws {
+        let host = HostSummary(
+            id: UUID(),
+            configKey: "builder",
+            name: "Builder",
+            kind: .remote,
+            platform: .linux,
+            sshDestination: "dev@builder",
+            zellijSessions: [ZellijSessionSummary(name: "api")],
+            zellijAvailable: true
+        )
+        let store = RecordingNativeSessionSurfaceStore()
+        let resolutions = Mutex(0)
+        let model = try makeModel(
+            database: .inMemory(),
+            localHostID: UUID(),
+            snapshot: WorkspaceSnapshot(
+                hosts: [host],
+                projects: [],
+                worktrees: []
+            ),
+            nativeZellijSurfaceStore: store,
+            nativeZellijPathProvider: { _ in
+                let attempt = resolutions.withLock {
+                    $0 += 1
+                    return $0
+                }
+                return attempt == 1
+                    ? .success("/usr/bin/zellij")
+                    : .failure(.commandFailed(status: 255, stderr: stderr))
+            },
+            zellijSessionValidationDiscovery: { _, _ in
+                .available(["api"])
+            },
+            tmuxReconnectIntervals: [.zero],
+            tmuxReconnectProbeDeadline: .seconds(1)
+        )
+        let selection = WorkspaceZellijSessionSelection(
+            hostID: host.id,
+            name: "api"
+        )
+
+        model.openBorrowedZellijSession(selection)
+        await waitUntilMainActor {
+            store.requestedConfigurations.count == 1
+                && !store.surface.closeObservers.isEmpty
+        }
+        let close = try #require(store.surface.closeObservers.values.first)
+        close(false, 255)
+        await waitUntilMainActor(timeout: .seconds(1)) {
+            if case .needsAttention = model.activeBorrowedZellijRecoveryState {
+                return true
+            }
+            return false
+        }
+
+        guard case let .needsAttention(_, allowsReview) =
+            model.activeBorrowedZellijRecoveryState
+        else {
+            Issue.record("Expected Zellij resolver recovery state")
+            await model.shutdown()
+            return
+        }
+        #expect(allowsReview == canReviewConnection)
+        #expect(
+            (model.sessionConnectionRecoveryRequest != nil)
+                == canReviewConnection
+        )
+        await model.shutdown()
+    }
+
+    @Test("Zellij resolver deadline keeps reconnect retryable")
+    func resolverDeadlineKeepsReconnectRetryable() async throws {
+        let host = HostSummary(
+            id: UUID(),
+            configKey: "builder",
+            name: "Builder",
+            kind: .remote,
+            platform: .linux,
+            sshDestination: "dev@builder",
+            zellijSessions: [ZellijSessionSummary(name: "api")],
+            zellijAvailable: true
+        )
+        let store = RecordingNativeSessionSurfaceStore()
+        let resolverState = Mutex((calls: 0, cancellations: 0))
+        let model = try makeModel(
+            database: .inMemory(),
+            localHostID: UUID(),
+            snapshot: WorkspaceSnapshot(
+                hosts: [host],
+                projects: [],
+                worktrees: []
+            ),
+            nativeZellijSurfaceStore: store,
+            nativeZellijPathProvider: { _ in
+                let call = resolverState.withLock {
+                    $0.calls += 1
+                    return $0.calls
+                }
+                guard call > 1 else { return .success("/usr/bin/zellij") }
+                while !Task.isCancelled {
+                    Thread.sleep(forTimeInterval: 0.001)
+                }
+                resolverState.withLock { $0.cancellations += 1 }
+                return .failure(.unavailable)
+            },
+            zellijSessionValidationDiscovery: { _, _ in
+                .available(["api"])
+            },
+            tmuxReconnectIntervals: [.seconds(1)],
+            tmuxReconnectProbeDeadline: .milliseconds(20)
+        )
+        let selection = WorkspaceZellijSessionSelection(
+            hostID: host.id,
+            name: "api"
+        )
+
+        model.openBorrowedZellijSession(selection)
+        await waitUntilMainActor {
+            store.requestedConfigurations.count == 1
+                && !store.surface.closeObservers.isEmpty
+        }
+        let close = try #require(store.surface.closeObservers.values.first)
+        close(false, 255)
+        await waitUntilMainActor(timeout: .seconds(1)) {
+            resolverState.withLock { $0.cancellations } >= 1
+        }
+
+        #expect(model.zellijReconnectSupervisorIsRunning)
+        if case .reconnecting = model.activeBorrowedZellijConnectionState {
+            // Expected: the supervisor remains responsible for recovery.
+        } else {
+            Issue.record("Expected Zellij reconnect to remain retryable")
+        }
+        await model.shutdown()
+    }
+
+    @Test("superseded Zellij resolver cannot disconnect replacement")
+    func supersededResolverPreservesReplacement() async throws {
+        let host = HostSummary(
+            id: UUID(),
+            configKey: "builder",
+            name: "Builder",
+            kind: .remote,
+            platform: .linux,
+            sshDestination: "dev@builder",
+            zellijSessions: [
+                ZellijSessionSummary(name: "api"),
+                ZellijSessionSummary(name: "replacement"),
+            ],
+            zellijAvailable: true
+        )
+        let store = RecordingNativeSessionSurfaceStore()
+        let resolverState = Mutex((
+            calls: 0,
+            blocked: false,
+            cancelled: false,
+            released: false
+        ))
+        defer { resolverState.withLock { $0.released = true } }
+        let model = try makeModel(
+            database: .inMemory(),
+            localHostID: UUID(),
+            snapshot: WorkspaceSnapshot(
+                hosts: [host],
+                projects: [],
+                worktrees: []
+            ),
+            nativeZellijSurfaceStore: store,
+            nativeZellijPathProvider: { _ in
+                let call = resolverState.withLock {
+                    $0.calls += 1
+                    return $0.calls
+                }
+                guard call == 2 else { return .success("/usr/bin/zellij") }
+                resolverState.withLock { $0.blocked = true }
+                while !Task.isCancelled {
+                    Thread.sleep(forTimeInterval: 0.001)
+                }
+                resolverState.withLock { $0.cancelled = true }
+                while !resolverState.withLock({ $0.released }) {
+                    Thread.sleep(forTimeInterval: 0.001)
+                }
+                return .failure(.unavailable)
+            },
+            zellijSessionValidationDiscovery: { _, _ in
+                .available(["api", "replacement"])
+            },
+            tmuxReconnectIntervals: [.zero],
+            tmuxReconnectProbeDeadline: .seconds(1)
+        )
+        let initial = WorkspaceZellijSessionSelection(
+            hostID: host.id,
+            name: "api"
+        )
+        let replacement = WorkspaceZellijSessionSelection(
+            hostID: host.id,
+            name: "replacement"
+        )
+
+        model.openBorrowedZellijSession(initial)
+        await waitUntilMainActor {
+            store.requestedConfigurations.count == 1
+                && !store.surface.closeObservers.isEmpty
+        }
+        let close = try #require(store.surface.closeObservers.values.first)
+        close(false, 255)
+        await waitUntilMainActor {
+            resolverState.withLock { $0.blocked }
+        }
+
+        model.openBorrowedZellijSession(replacement)
+        await waitUntilMainActor(timeout: .seconds(1)) {
+            model.activeBorrowedZellijSelection == replacement
+                && store.requestedConfigurations.count == 2
+                && resolverState.withLock { $0.cancelled }
+        }
+        resolverState.withLock { $0.released = true }
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(model.activeBorrowedZellijSelection == replacement)
+        #expect(model.activeBorrowedZellijConnectionState == .connected)
+        #expect(model.activeBorrowedZellijRecoveryState == nil)
         await model.shutdown()
     }
 

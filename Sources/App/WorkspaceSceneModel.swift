@@ -6391,8 +6391,6 @@ final class WorkspaceSceneModel: ObservableObject {
                         handle: handle,
                         selection: selection
                     )
-                } else if failedZellijCreationIntent == selection {
-                    failedZellijCreationIntent = nil
                 }
                 return
             case .unavailable:
@@ -8396,12 +8394,22 @@ final class WorkspaceSceneModel: ObservableObject {
             } onCancel: {
                 probe.cancel()
             }
+            guard !Task.isCancelled else { return .retry }
+            guard activeZellijReconnectContext == context,
+                  activeBorrowedZellijHandle?.id == context.handleID,
+                  snapshot.host(id: context.selection.hostID)
+                  .flatMap(CommandHostResolver.resolve) == context.host
+            else { return .stop }
             switch resolution {
             case let .success(path):
                 executablePath = path
             case let .failure(error):
-                stopZellijReconnect(error.localizedDescription)
-                return .stop
+                return zellijReconnectDecision(
+                    for: context,
+                    result: .failure(error),
+                    connection: connection,
+                    executablePath: nil
+                )
             }
             let finalConnection = await zellijConnectionSnapshot(
                 on: context.host
