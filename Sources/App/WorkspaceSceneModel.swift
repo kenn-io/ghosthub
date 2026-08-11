@@ -525,7 +525,7 @@ final class WorkspaceSceneModel: ObservableObject {
         String, CommandHost
     ) async throws -> KwtProjectRecord
     typealias KwtProjectRemoval = @Sendable (
-        String, String, CommandHost
+        String, String, String, CommandHost
     ) async throws -> KwtProjectRecord
     typealias TmuxSessionDiscovery = @Sendable (
         CommandHost
@@ -1419,10 +1419,11 @@ final class WorkspaceSceneModel: ObservableObject {
             )
         },
         kwtProjectRemoval: @escaping KwtProjectRemoval = {
-            projectPath, expectedRepository, host in
+            projectPath, expectedRepository, expectedRegistration, host in
             try await KwtProjectRegistryClient().unregister(
                 projectPath: projectPath,
                 expectedRepository: expectedRepository,
+                expectedRegistration: expectedRegistration,
                 on: host
             )
         },
@@ -3636,7 +3637,9 @@ final class WorkspaceSceneModel: ObservableObject {
                     repository: project.scopedKey,
                     name: project.name,
                     path: project.rootPath,
-                    lastTouched: nil
+                    lastTouched: nil,
+                    registrationFingerprint:
+                    project.registrationFingerprint
                 ),
                 worktrees: [worktree],
                 warning: nil
@@ -6489,6 +6492,15 @@ final class WorkspaceSceneModel: ObservableObject {
         else {
             return .failure(projectRemovalTargetChangedError)
         }
+        guard !project.registrationFingerprint.isEmpty else {
+            refreshKwtInventory()
+            return .failure(.message(
+                "Refresh projects and confirm removal again."
+            ))
+        }
+        let authorizedPath = project.rootPath
+        let authorizedRepository = project.scopedKey
+        let authorizedRegistration = project.registrationFingerprint
         guard !ownsWorktreeMutation else {
             return .failure(.message(
                 "Another project or worktree change is already in progress."
@@ -6607,8 +6619,9 @@ final class WorkspaceSceneModel: ObservableObject {
             )
             do {
                 let removed = try await kwtProjectRemoval(
-                    removal.project.rootPath,
-                    removal.project.scopedKey,
+                    authorizedPath,
+                    authorizedRepository,
+                    authorizedRegistration,
                     removal.host
                 )
                 guard validatedProjectRemovalTarget(
@@ -6633,6 +6646,19 @@ final class WorkspaceSceneModel: ObservableObject {
                 return .success(removed.name)
             } catch {
                 let removalError = error
+                if case let .commandFailed(
+                    _, _, code, _, _, _
+                ) = removalError as? KwtProjectCommandError,
+                    code == "registration_changed" {
+                    reconciledRestorationTargets = projectRestorationTargets(
+                        hostID: removal.project.hostID,
+                        projectIdentity: removal.project.scopedKey
+                    )
+                    shouldRefresh = true
+                    return .failure(.message(
+                        removalError.localizedDescription
+                    ))
+                }
                 let reconciliation = await reconcileFailedProjectRemoval(
                     removal.project,
                     on: removal.host

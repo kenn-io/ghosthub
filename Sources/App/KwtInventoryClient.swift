@@ -10,15 +10,54 @@ enum WorkspaceInventoryState: Equatable, Sendable {
     case failed(String)
 }
 
-struct KwtProjectRecord: Codable, Equatable, Sendable {
+struct KwtProjectRecord: Decodable, Equatable, Sendable {
     var repository: String
     var name: String
     var path: String
     var lastTouched: String?
+    var registrationFingerprint: String
+
+    init(
+        repository: String,
+        name: String,
+        path: String,
+        lastTouched: String?,
+        registrationFingerprint: String = ""
+    ) {
+        self.repository = repository
+        self.name = name
+        self.path = path
+        self.lastTouched = lastTouched
+        self.registrationFingerprint = registrationFingerprint
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        repository = try container.decode(String.self, forKey: .repository)
+        name = try container.decode(String.self, forKey: .name)
+        path = try container.decode(String.self, forKey: .path)
+        lastTouched = try container.decodeIfPresent(
+            String.self,
+            forKey: .lastTouched
+        )
+        registrationFingerprint = try container.decode(
+            String.self,
+            forKey: .registrationFingerprint
+        )
+        guard !registrationFingerprint.isEmpty else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .registrationFingerprint,
+                in: container,
+                debugDescription:
+                "registration_fingerprint must be nonempty"
+            )
+        }
+    }
 
     private enum CodingKeys: String, CodingKey {
         case repository, name, path
         case lastTouched = "last_touched"
+        case registrationFingerprint = "registration_fingerprint"
     }
 }
 
@@ -615,6 +654,7 @@ enum KwtSnapshotMerger {
             project.registryID = nil
             project.name = record.name
             project.rootPath = record.path
+            project.registrationFingerprint = record.registrationFingerprint
             project.isStale = false
             project.kind = .repository
             project.isSynthesized = false

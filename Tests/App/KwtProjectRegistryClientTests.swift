@@ -124,7 +124,7 @@ struct KwtProjectRegistryClientTests {
                     2,
                     """
                     GHOSTHUB_KWT_PROJECT_JSON
-                    {"error":{"code":"invalid_repository","message":"/missing is not an accessible Git repository","retryable":false}}
+                    {"error":{"code":"invalid_repository","message":"/missing is not an accessible Git repository","retryable":false,"details":{"path":"/missing","operation":"add"}}}
                     """
                 )
             },
@@ -148,7 +148,11 @@ struct KwtProjectRegistryClientTests {
                     code: "invalid_repository",
                     message:
                     "/missing is not an accessible Git repository",
-                    retryable: false
+                    retryable: false,
+                    details: [
+                        "operation": .string("add"),
+                        "path": .string("/missing"),
+                    ]
                 )
         }
     }
@@ -169,7 +173,7 @@ struct KwtProjectRegistryClientTests {
                     0,
                     """
                     GHOSTHUB_KWT_PROJECT_JSON
-                    {"status":"unregistered","project":{"repository":"github.com/acme/widget","name":"widget","path":"/srv/widget"}}
+                    {"status":"unregistered","project":{"repository":"github.com/acme/widget","name":"widget","path":"/srv/wesm's widget "}}
                     """
                 )
             },
@@ -177,18 +181,20 @@ struct KwtProjectRegistryClientTests {
         )
 
         let project = try await client.unregister(
-            projectPath: "/srv/wesm's widget",
+            projectPath: "/srv/wesm's widget ",
             expectedRepository: "github.com/acme/widget",
+            expectedRegistration: "opaque-registration",
             on: .ssh(ssh)
         )
 
         let command = try #require(invocation.load())
         #expect(command.contains(
-            "projects remove '/srv/wesm'\\''s widget' "
-                + "--expected-repository 'github.com/acme/widget' --json"
+            "projects remove '/srv/wesm'\\''s widget ' "
+                + "--expected-repository 'github.com/acme/widget' "
+                + "--expected-registration 'opaque-registration' --json"
         ))
         #expect(project.name == "widget")
-        #expect(project.path == "/srv/widget")
+        #expect(project.path == "/srv/wesm's widget ")
     }
 
     @Test("removal preserves the authoritative project path exactly")
@@ -211,12 +217,51 @@ struct KwtProjectRegistryClientTests {
         _ = try await client.unregister(
             projectPath: "/srv/widget ",
             expectedRepository: "github.com/acme/widget",
+            expectedRegistration: "opaque registration ",
             on: .local
         )
 
         #expect(invocation.load()?.contains(
             "projects remove '/srv/widget ' "
-                + "--expected-repository 'github.com/acme/widget' --json"
+                + "--expected-repository 'github.com/acme/widget' "
+                + "--expected-registration 'opaque registration ' --json"
         ) == true)
+    }
+
+    @Test("removal preserves a stale-registration error without retrying")
+    func removalPreservesRegistrationChangedError() async {
+        let invocations = LockedValue(0)
+        let client = KwtProjectRegistryClient(
+            localRunner: { _ in
+                invocations.withLock { $0 += 1 }
+                return (
+                    1,
+                    """
+                    GHOSTHUB_KWT_PROJECT_JSON
+                    {"error":{"code":"registration_changed","message":"project registration changed","retryable":true,"details":{"path":"/srv/widget"}}}
+                    """
+                )
+            },
+            localBinaryPath: "/Applications/Ghosthub.app/kwt"
+        )
+
+        await #expect {
+            try await client.unregister(
+                projectPath: "/srv/widget",
+                expectedRepository: "github.com/acme/widget",
+                expectedRegistration: "stale-registration",
+                on: .local
+            )
+        } throws: { error in
+            error as? KwtProjectCommandError == .commandFailed(
+                host: "this Mac",
+                status: 1,
+                code: "registration_changed",
+                message: "project registration changed",
+                retryable: true,
+                details: ["path": .string("/srv/widget")]
+            )
+        }
+        #expect(invocations.load() == 1)
     }
 }

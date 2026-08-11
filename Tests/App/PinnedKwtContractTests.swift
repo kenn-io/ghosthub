@@ -9,6 +9,7 @@ struct PinnedKwtContractTests {
     enum RemovalGuard: CaseIterable, Sendable {
         case repositoryMismatch
         case liveProtectedSession
+        case incompleteLegacyProvenance
     }
 
     private func initializeRepository(_ repository: URL) throws {
@@ -102,6 +103,7 @@ struct PinnedKwtContractTests {
         let project = try #require(initialInventory.projects.first)
         let primaryRecord = project.worktrees.first { $0.isMain }
         let primary = try #require(primaryRecord)
+        #expect(!project.project.registrationFingerprint.isEmpty)
         #expect(project.project.path == registered.path)
         #expect(primary.path == registered.path)
         #expect(!primary.repository.isEmpty)
@@ -114,6 +116,8 @@ struct PinnedKwtContractTests {
         let removed = try await registry.unregister(
             projectPath: project.project.path,
             expectedRepository: project.project.repository,
+            expectedRegistration:
+            project.project.registrationFingerprint,
             on: .local
         )
         #expect(removed.path == project.project.path)
@@ -263,6 +267,8 @@ struct PinnedKwtContractTests {
         _ = try await registry.unregister(
             projectPath: registeredProject.project.path,
             expectedRepository: registeredProject.project.repository,
+            expectedRegistration:
+            registeredProject.project.registrationFingerprint,
             on: .local
         )
 
@@ -379,6 +385,7 @@ struct PinnedKwtContractTests {
         )
 
         var expectedRepository = registered.repository
+        var preservedProvenance: (url: URL, data: Data)?
         var protectedSession: (
             tmux: String,
             socket: String,
@@ -403,6 +410,17 @@ struct PinnedKwtContractTests {
             let generation = try #require(primary.generation)
             let session = "guarded-pr-\(UUID().uuidString.prefix(8))"
             let pullRequestID = "github:\(registered.repository)#1"
+            var workspace: [String: Any] = [
+                "id": "guarded-pr-1",
+                "repository": registered.repository,
+                "branch": primary.branch,
+                "path": primary.path,
+                "state": "active",
+                "session_name": session,
+            ]
+            if guardCase == .liveProtectedSession {
+                workspace["generation"] = generation
+            }
             let provenance: [String: Any] = [
                 "version": 1,
                 "imports": [
@@ -420,15 +438,7 @@ struct PinnedKwtContractTests {
                             "name": registered.name,
                             "path": registered.path,
                         ],
-                        "workspace": [
-                            "id": "guarded-pr-1",
-                            "repository": registered.repository,
-                            "branch": primary.branch,
-                            "path": primary.path,
-                            "generation": generation,
-                            "state": "active",
-                            "session_name": session,
-                        ],
+                        "workspace": workspace,
                     ],
                 ],
             ]
@@ -436,40 +446,46 @@ struct PinnedKwtContractTests {
                 withJSONObject: provenance,
                 options: [.prettyPrinted, .sortedKeys]
             )
-            try provenanceData.write(
-                to: kwtHome.appendingPathComponent("pull-requests.json")
+            let provenanceURL = kwtHome.appendingPathComponent(
+                "pull-requests.json"
             )
-            let socketDigest = SHA256.hash(
-                data: Data("\(session)\0\(primary.path)".utf8)
-            )
-            let socket = "kwt-pr-" + socketDigest.prefix(8).map {
-                String(format: "%02x", $0)
-            }.joined()
-            let tmux = try TmuxBinaryResolver().resolveTmuxPath().get()
-            let startSession = AccountCommandRunner.runProcess(
-                executable: tmux,
-                arguments: [
-                    "-f", "/dev/null", "-L", socket,
-                    "new-session", "-d", "-s", session,
-                ],
-                timeout: 10
-            )
-            try #require(
-                startSession.status == 0,
-                Comment(rawValue: startSession.stderr)
-            )
-            protectedSession = (tmux, socket, session)
+            try provenanceData.write(to: provenanceURL)
+            preservedProvenance = (provenanceURL, provenanceData)
+            if guardCase == .liveProtectedSession {
+                let socketDigest = SHA256.hash(
+                    data: Data("\(session)\0\(primary.path)".utf8)
+                )
+                let socket = "kwt-pr-" + socketDigest.prefix(8).map {
+                    String(format: "%02x", $0)
+                }.joined()
+                let tmux = try TmuxBinaryResolver().resolveTmuxPath().get()
+                let startSession = AccountCommandRunner.runProcess(
+                    executable: tmux,
+                    arguments: [
+                        "-f", "/dev/null", "-L", socket,
+                        "new-session", "-d", "-s", session,
+                    ],
+                    timeout: 10
+                )
+                try #require(
+                    startSession.status == 0,
+                    Comment(rawValue: startSession.stderr)
+                )
+                protectedSession = (tmux, socket, session)
+            }
         }
 
         await #expect {
             try await registry.unregister(
                 projectPath: registered.path,
                 expectedRepository: expectedRepository,
+                expectedRegistration:
+                initialProject.project.registrationFingerprint,
                 on: .local
             )
         } throws: { error in
             guard case let .commandFailed(
-                _, status, code, _, retryable
+                _, status, code, _, retryable, _
             ) = error as? KwtProjectCommandError else { return false }
             switch guardCase {
             case .repositoryMismatch:
@@ -479,6 +495,10 @@ struct PinnedKwtContractTests {
             case .liveProtectedSession:
                 return status == 1
                     && code == "protected_session_live"
+                    && !retryable
+            case .incompleteLegacyProvenance:
+                return status == 1
+                    && code == "protected_endpoint_inventory_incomplete"
                     && !retryable
             }
         }
@@ -493,6 +513,12 @@ struct PinnedKwtContractTests {
             retainedInventory.projects.first?.project.path == registered.path
         )
         #expect(try Data(contentsOf: sentinel) == Data("sentinel".utf8))
+        if let preservedProvenance {
+            #expect(
+                try Data(contentsOf: preservedProvenance.url)
+                    == preservedProvenance.data
+            )
+        }
         if let protectedSession {
             let liveSession = AccountCommandRunner.runProcess(
                 executable: protectedSession.tmux,
@@ -507,5 +533,95 @@ struct PinnedKwtContractTests {
                 Comment(rawValue: liveSession.stderr)
             )
         }
+    }
+
+    @Test("registration mutation invalidates an observed removal tuple")
+    func registrationMutationInvalidatesRemoval() async throws {
+        guard ProcessInfo.processInfo.environment[
+            "GHOSTHUB_RUN_PINNED_KWT_CONTRACT_TESTS"
+        ] == "1" else { return }
+        let binary = try #require(
+            ProcessInfo.processInfo.environment[
+                "GHOSTHUB_KWT_CONTRACT_BINARY"
+            ]
+        )
+        let fixture = try TempDirectoryFixture(shortPath: true)
+        let kwtHome = try fixture.createSubdirectory("kwt-home")
+        let repository = try fixture.createSubdirectory("changed-widget")
+        let environment = ["KWT_HOME": kwtHome.path]
+        let timeout: TimeInterval = 45
+        let registry = KwtProjectRegistryClient(
+            localRunner: { command in
+                AccountCommandRunner.runLoginShell(
+                    shell: "/bin/zsh",
+                    command: command,
+                    timeout: timeout,
+                    environmentOverrides: environment
+                )
+            },
+            localBinaryPath: binary
+        )
+        let inventoryClient = KwtInventoryClient(
+            localRunner: { shell, command in
+                AccountCommandRunner.runLoginShell(
+                    shell: shell,
+                    command: command,
+                    timeout: timeout,
+                    environmentOverrides: environment
+                )
+            },
+            localBinaryPath: binary,
+            loginShellProvider: { "/bin/zsh" }
+        )
+        defer {
+            _ = AccountCommandRunner.runProcess(
+                executable: binary,
+                arguments: ["daemon", "stop"],
+                timeout: 10,
+                environmentOverrides: environment
+            )
+        }
+
+        try initializeRepository(repository)
+        _ = try await registry.register(
+            projectPath: repository.path,
+            on: .local
+        )
+        let observed = try #require(
+            try await inventoryClient.load(from: .local).projects.first
+        ).project
+        try await Task.sleep(for: .milliseconds(10))
+        _ = try await registry.register(
+            projectPath: repository.path,
+            on: .local
+        )
+        let changed = try #require(
+            try await inventoryClient.load(from: .local).projects.first
+        ).project
+        #expect(changed.registrationFingerprint
+            != observed.registrationFingerprint)
+
+        await #expect {
+            try await registry.unregister(
+                projectPath: observed.path,
+                expectedRepository: observed.repository,
+                expectedRegistration: observed.registrationFingerprint,
+                on: .local
+            )
+        } throws: { error in
+            guard case let .commandFailed(
+                _, status, code, _, retryable, _
+            ) = error as? KwtProjectCommandError else { return false }
+            return status == 1
+                && code == "registration_changed"
+                && retryable
+        }
+
+        let retained = try await inventoryClient.load(from: .local)
+        #expect(retained.projects.count == 1)
+        #expect(
+            retained.projects.first?.project.registrationFingerprint
+                == changed.registrationFingerprint
+        )
     }
 }

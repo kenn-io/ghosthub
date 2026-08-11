@@ -2,14 +2,63 @@ import GhosthubTransport
 import Foundation
 import GhosthubTmux
 
+indirect enum KwtProjectErrorDetail: Codable, Equatable, Sendable {
+    case string(String)
+    case number(Double)
+    case bool(Bool)
+    case object([String: KwtProjectErrorDetail])
+    case array([KwtProjectErrorDetail])
+    case null
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() {
+            self = .null
+        } else if let value = try? container.decode(String.self) {
+            self = .string(value)
+        } else if let value = try? container.decode(Bool.self) {
+            self = .bool(value)
+        } else if let value = try? container.decode(Double.self) {
+            self = .number(value)
+        } else if let value = try? container.decode(
+            [String: KwtProjectErrorDetail].self
+        ) {
+            self = .object(value)
+        } else if let value = try? container.decode(
+            [KwtProjectErrorDetail].self
+        ) {
+            self = .array(value)
+        } else {
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Unsupported kwt error detail"
+            )
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case let .string(value): try container.encode(value)
+        case let .number(value): try container.encode(value)
+        case let .bool(value): try container.encode(value)
+        case let .object(value): try container.encode(value)
+        case let .array(value): try container.encode(value)
+        case .null: try container.encodeNil()
+        }
+    }
+}
+
 enum KwtProjectCommandError: Error, Equatable, LocalizedError {
     case invalidProjectPath
+    case invalidRegistrationFingerprint
     case commandFailed(
         host: String,
         status: Int32,
         code: String?,
         message: String?,
-        retryable: Bool
+        retryable: Bool,
+        details: [String: KwtProjectErrorDetail]
     )
     case malformedOutput(host: String)
 
@@ -17,12 +66,15 @@ enum KwtProjectCommandError: Error, Equatable, LocalizedError {
         switch self {
         case .invalidProjectPath:
             return "Enter an absolute project path beginning with /."
+        case .invalidRegistrationFingerprint:
+            return "Refresh projects and confirm removal again."
         case let .commandFailed(
             host,
             status,
             _,
             message,
-            retryable
+            retryable,
+            _
         ):
             let detail = message
                 ?? "kwt exited with status \(status) on \(host)."
@@ -107,12 +159,14 @@ struct KwtProjectRegistryClient: Sendable {
     func unregister(
         projectPath: String,
         expectedRepository: String,
+        expectedRegistration: String,
         on host: CommandHost
     ) async throws -> KwtProjectRecord {
         try await mutate(
             .unregister,
             projectPath: projectPath,
             expectedRepository: expectedRepository,
+            expectedRegistration: expectedRegistration,
             on: host
         )
     }
@@ -121,6 +175,7 @@ struct KwtProjectRegistryClient: Sendable {
         _ operation: Operation,
         projectPath: String,
         expectedRepository: String? = nil,
+        expectedRegistration: String? = nil,
         on host: CommandHost
     ) async throws -> KwtProjectRecord {
         switch host {
@@ -129,6 +184,7 @@ struct KwtProjectRegistryClient: Sendable {
                 operation: operation,
                 projectPath: projectPath,
                 expectedRepository: expectedRepository,
+                expectedRegistration: expectedRegistration,
                 binaryPrelude: KwtBinaryLocator.commandPrelude(
                     exactPath: localBinaryPath
                 )
@@ -152,6 +208,7 @@ struct KwtProjectRegistryClient: Sendable {
                 operation,
                 projectPath: projectPath,
                 expectedRepository: expectedRepository,
+                expectedRegistration: expectedRegistration,
                 on: info
             )
         }
@@ -161,12 +218,14 @@ struct KwtProjectRegistryClient: Sendable {
         _ operation: Operation,
         projectPath: String,
         expectedRepository: String? = nil,
+        expectedRegistration: String? = nil,
         on host: SSHHostInfo
     ) async throws -> KwtProjectRecord {
         let command = try Self.command(
             operation: operation,
             projectPath: projectPath,
             expectedRepository: expectedRepository,
+            expectedRegistration: expectedRegistration,
             binaryPrelude: KwtBinaryLocator.remoteCommandPrelude(
                 revision: remoteBinaryRevision
             )
@@ -191,6 +250,7 @@ struct KwtProjectRegistryClient: Sendable {
         operation: Operation,
         projectPath: String,
         expectedRepository: String?,
+        expectedRegistration: String?,
         binaryPrelude: String
     ) throws -> String {
         guard projectPath.hasPrefix("/") else {
@@ -198,9 +258,17 @@ struct KwtProjectRegistryClient: Sendable {
         }
         var arguments = "projects \(operation.rawValue) "
             + shellQuotedCommandArgument(projectPath)
-        if operation == .unregister, let expectedRepository {
+        if operation == .unregister {
+            guard let expectedRepository,
+                  let expectedRegistration,
+                  !expectedRegistration.isEmpty
+            else {
+                throw KwtProjectCommandError.invalidRegistrationFingerprint
+            }
             arguments += " --expected-repository "
                 + shellQuotedCommandArgument(expectedRepository)
+            arguments += " --expected-registration "
+                + shellQuotedCommandArgument(expectedRegistration)
         }
         return binaryPrelude
             + "printf 'GHOSTHUB_KWT_PROJECT_JSON\\n'; "
@@ -222,7 +290,8 @@ struct KwtProjectRegistryClient: Sendable {
                     status: result.status,
                     code: nil,
                     message: nil,
-                    retryable: false
+                    retryable: false,
+                    details: [:]
                 )
             }
             throw KwtProjectCommandError.malformedOutput(host: hostLabel)
@@ -238,7 +307,8 @@ struct KwtProjectRegistryClient: Sendable {
                 status: result.status,
                 code: envelope?.error.code,
                 message: envelope?.error.message,
-                retryable: envelope?.error.retryable ?? false
+                retryable: envelope?.error.retryable ?? false,
+                details: envelope?.error.details ?? [:]
             )
         }
         do {
@@ -249,7 +319,12 @@ struct KwtProjectRegistryClient: Sendable {
             guard response.status == expectedStatus else {
                 throw KwtProjectCommandError.malformedOutput(host: hostLabel)
             }
-            return response.project
+            return KwtProjectRecord(
+                repository: response.project.repository,
+                name: response.project.name,
+                path: response.project.path,
+                lastTouched: response.project.lastTouched
+            )
         } catch let error as KwtProjectCommandError {
             throw error
         } catch {
@@ -260,7 +335,19 @@ struct KwtProjectRegistryClient: Sendable {
 
 private struct ProjectMutationResponse: Decodable {
     var status: String
-    var project: KwtProjectRecord
+    var project: ProjectMutationRecord
+}
+
+private struct ProjectMutationRecord: Decodable {
+    var repository: String
+    var name: String
+    var path: String
+    var lastTouched: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case repository, name, path
+        case lastTouched = "last_touched"
+    }
 }
 
 private struct ProjectMutationErrorEnvelope: Decodable {
@@ -271,4 +358,5 @@ private struct ProjectMutationErrorDTO: Decodable {
     var code: String
     var message: String
     var retryable: Bool
+    var details: [String: KwtProjectErrorDetail]?
 }

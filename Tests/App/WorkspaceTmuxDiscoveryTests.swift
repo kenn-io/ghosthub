@@ -24,7 +24,9 @@ struct WorkspaceTmuxDiscoveryTests {
                     repository: project.scopedKey,
                     name: project.name,
                     path: project.rootPath,
-                    lastTouched: nil
+                    lastTouched: nil,
+                    registrationFingerprint:
+                    project.registrationFingerprint
                 ),
                 worktrees: worktrees.map { worktree in
                     KwtWorktreeRecord(
@@ -6103,7 +6105,7 @@ struct WorkspaceTmuxDiscoveryTests {
             snapshot: environment.snapshot,
             kwtInventoryLoader: { _ in inventory },
             worktreeMutationCoordinator: coordinator,
-            kwtProjectRemoval: { path, _, _ in
+            kwtProjectRemoval: { path, _, _, _ in
                 await removalGate.suspend()
                 return KwtProjectRecord(
                     repository: project.scopedKey,
@@ -6142,6 +6144,7 @@ struct WorkspaceTmuxDiscoveryTests {
                 project.rootPath,
                 on: draft
             )
+        #expect(removalModel.snapshot.project(id: project.id) != nil)
 
         await removalGate.release()
         let removalResult = await removalTask.value
@@ -6150,6 +6153,9 @@ struct WorkspaceTmuxDiscoveryTests {
         )))
         #expect(registrationCalls.count == 0)
         #expect(removalResult == .success(project.name))
+        await waitUntilMainActor {
+            removalModel.snapshot.project(id: project.id) == nil
+        }
         await removalModel.shutdown()
         await registrationModel.shutdown()
     }
@@ -6285,7 +6291,7 @@ struct WorkspaceTmuxDiscoveryTests {
                 )
             },
             worktreeMutationCoordinator: coordinator,
-            kwtProjectRemoval: { path, _, _ in
+            kwtProjectRemoval: { path, _, _, _ in
                 _ = removalCalls.increment()
                 return KwtProjectRecord(
                     repository: project.scopedKey,
@@ -6295,7 +6301,6 @@ struct WorkspaceTmuxDiscoveryTests {
                 )
             }
         )
-
         let result = await model.unregisterProject(
             project,
             confirmedHost: host
@@ -6313,7 +6318,9 @@ struct WorkspaceTmuxDiscoveryTests {
         let environment = try setupStandardEnvironment()
         let project = try #require(environment.snapshot.projects.first)
         let host = try #require(environment.snapshot.hosts.first)
-        let removal = LockedValue<(String, String, CommandHost)?>(nil)
+        let removal = LockedValue<(
+            String, String, String, CommandHost
+        )?>(nil)
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
@@ -6324,8 +6331,11 @@ struct WorkspaceTmuxDiscoveryTests {
                     worktrees: environment.snapshot.worktrees
                 )
             },
-            kwtProjectRemoval: { path, expectedRepository, host in
-                removal.store((path, expectedRepository, host))
+            kwtProjectRemoval: {
+                path, expectedRepository, expectedRegistration, host in
+                removal.store((
+                    path, expectedRepository, expectedRegistration, host
+                ))
                 return KwtProjectRecord(
                     repository: project.scopedKey,
                     name: project.name,
@@ -6334,7 +6344,6 @@ struct WorkspaceTmuxDiscoveryTests {
                 )
             }
         )
-
         let result = await model.unregisterProject(
             project,
             confirmedHost: host
@@ -6343,7 +6352,65 @@ struct WorkspaceTmuxDiscoveryTests {
         #expect(result == .success(project.name))
         #expect(removal.load()?.0 == project.rootPath)
         #expect(removal.load()?.1 == project.scopedKey)
-        #expect(removal.load()?.2 == .local)
+        #expect(
+            removal.load()?.2 == project.registrationFingerprint
+        )
+        #expect(removal.load()?.3 == .local)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("Remove Project never retries with a refreshed registration")
+    func removeProjectDoesNotRetryRegistrationChanged() async throws {
+        let environment = try setupStandardEnvironment()
+        let project = try #require(environment.snapshot.projects.first)
+        let host = try #require(environment.snapshot.hosts.first)
+        var refreshedProject = project
+        refreshedProject.registrationFingerprint = "replacement-registration"
+        let refreshedInventory = Self.inventory(
+            project: refreshedProject,
+            worktrees: environment.snapshot.worktrees
+        )
+        let inventoryLoads = Counter()
+        let removals = LockedValue<[String]>([])
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            kwtInventoryLoader: { _ in
+                _ = inventoryLoads.increment()
+                return refreshedInventory
+            },
+            kwtProjectRemoval: { _, _, expectedRegistration, _ in
+                removals.withLock { $0.append(expectedRegistration) }
+                throw KwtProjectCommandError.commandFailed(
+                    host: "this Mac",
+                    status: 1,
+                    code: "registration_changed",
+                    message: "project registration changed",
+                    retryable: true,
+                    details: [:]
+                )
+            }
+        )
+        model.startKwtInventory()
+        await waitUntilMainActor { inventoryLoads.count == 1 }
+
+        let result = await model.unregisterProject(
+            project,
+            confirmedHost: host
+        )
+
+        #expect(result == .failure(.message(
+            "project registration changed Try again."
+        )))
+        await waitUntilMainActor { inventoryLoads.count >= 3 }
+        #expect(removals.load() == [project.registrationFingerprint])
+        #expect(model.snapshot.projects.count == 1)
+        #expect(
+            model.snapshot.projects.first?.registrationFingerprint
+                == "replacement-registration"
+        )
         await model.shutdown()
     }
 
@@ -6382,7 +6449,7 @@ struct WorkspaceTmuxDiscoveryTests {
             },
             kwtInventoryLoader: { _ in currentInventory },
             worktreeMutationCoordinator: coordinator,
-            kwtProjectRemoval: { _, _, _ in
+            kwtProjectRemoval: { _, _, _, _ in
                 _ = removalCalls.increment()
                 return KwtProjectRecord(
                     repository: project.scopedKey,
@@ -6467,7 +6534,7 @@ struct WorkspaceTmuxDiscoveryTests {
             snapshot: removalSnapshot,
             kwtInventoryLoader: { _ in currentInventory },
             worktreeMutationCoordinator: coordinator,
-            kwtProjectRemoval: { path, _, _ in
+            kwtProjectRemoval: { path, _, _, _ in
                 _ = removalCalls.increment()
                 return KwtProjectRecord(
                     repository: project.scopedKey,
@@ -6548,7 +6615,7 @@ struct WorkspaceTmuxDiscoveryTests {
             snapshot: snapshot,
             kwtInventoryLoader: { _ in inventory },
             worktreeMutationCoordinator: coordinator,
-            kwtProjectRemoval: { path, _, _ in
+            kwtProjectRemoval: { path, _, _, _ in
                 _ = removalCalls.increment()
                 return KwtProjectRecord(
                     repository: project.scopedKey,
@@ -6616,7 +6683,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             kwtInventoryLoader: { _ in currentInventory },
-            kwtProjectRemoval: { path, _, _ in
+            kwtProjectRemoval: { path, _, _, _ in
                 _ = removalCalls.increment()
                 return KwtProjectRecord(
                     repository: project.scopedKey,
@@ -6689,7 +6756,7 @@ struct WorkspaceTmuxDiscoveryTests {
                 successfulTmuxResolution("/usr/bin/tmux")
             },
             kwtInventoryLoader: { _ in inventory },
-            kwtProjectRemoval: { path, _, _ in
+            kwtProjectRemoval: { path, _, _, _ in
                 _ = removalCalls.increment()
                 return KwtProjectRecord(
                     repository: project.scopedKey,
@@ -6768,7 +6835,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             kwtInventoryLoader: { _ in inventory },
-            kwtProjectRemoval: { path, _, _ in
+            kwtProjectRemoval: { path, _, _, _ in
                 _ = removalCalls.increment()
                 return KwtProjectRecord(
                     repository: project.scopedKey,
@@ -6823,7 +6890,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             kwtInventoryLoader: { _ in inventory },
-            kwtProjectRemoval: { path, _, _ in
+            kwtProjectRemoval: { path, _, _, _ in
                 _ = removalCalls.increment()
                 return KwtProjectRecord(
                     repository: project.scopedKey,
@@ -6884,7 +6951,7 @@ struct WorkspaceTmuxDiscoveryTests {
             snapshot: snapshot,
             kwtInventoryLoader: { _ in inventory },
             worktreeMutationCoordinator: coordinator,
-            kwtProjectRemoval: { path, _, _ in
+            kwtProjectRemoval: { path, _, _, _ in
                 _ = removalCalls.increment()
                 return KwtProjectRecord(
                     repository: project.scopedKey,
@@ -6932,7 +6999,7 @@ struct WorkspaceTmuxDiscoveryTests {
             snapshot: environment.snapshot,
             kwtInventoryLoader: { _ in throw inventoryError },
             worktreeMutationCoordinator: coordinator,
-            kwtProjectRemoval: { path, _, _ in
+            kwtProjectRemoval: { path, _, _, _ in
                 _ = removalCalls.increment()
                 return KwtProjectRecord(
                     repository: project.scopedKey,
@@ -6979,7 +7046,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.host.id,
             snapshot: snapshot,
             kwtInventoryLoader: { _ in warnedInventory },
-            kwtProjectRemoval: { path, expectedRepository, _ in
+            kwtProjectRemoval: { path, expectedRepository, _, _ in
                 removal.store((path, expectedRepository))
                 return KwtProjectRecord(
                     repository: project.scopedKey,
@@ -7065,7 +7132,7 @@ struct WorkspaceTmuxDiscoveryTests {
                 }
             },
             worktreeMutationCoordinator: coordinator,
-            kwtProjectRemoval: { _, _, _ in throw removalError },
+            kwtProjectRemoval: { _, _, _, _ in throw removalError },
             tmuxSessionIdentityReader: { selection, host in
                 throw TmuxSessionKillError.sessionNotRunning(
                     host: host.displayName,
@@ -7180,7 +7247,7 @@ struct WorkspaceTmuxDiscoveryTests {
                 return inventory.load()
             },
             worktreeMutationCoordinator: coordinator,
-            kwtProjectRemoval: { path, _, _ in
+            kwtProjectRemoval: { path, _, _, _ in
                 guard removalCalls.increment() > 1 else {
                     throw removalError
                 }
@@ -7335,7 +7402,7 @@ struct WorkspaceTmuxDiscoveryTests {
                 }
             },
             worktreeMutationCoordinator: coordinator,
-            kwtProjectRemoval: { _, _, _ in
+            kwtProjectRemoval: { _, _, _, _ in
                 await removalGate.suspend()
                 throw removalError
             },
@@ -7790,7 +7857,7 @@ struct WorkspaceTmuxDiscoveryTests {
                 }
             },
             worktreeMutationCoordinator: coordinator,
-            kwtProjectRemoval: { _, _, _ in throw removalError }
+            kwtProjectRemoval: { _, _, _, _ in throw removalError }
         )
 
         let result = await model.unregisterProject(
@@ -7858,7 +7925,7 @@ struct WorkspaceTmuxDiscoveryTests {
             snapshot: snapshot,
             kwtInventoryLoader: { _ in inventory },
             worktreeMutationCoordinator: coordinator,
-            kwtProjectRemoval: { path, _, _ in
+            kwtProjectRemoval: { path, _, _, _ in
                 _ = removalCalls.increment()
                 return KwtProjectRecord(
                     repository: project.scopedKey,
@@ -8157,7 +8224,7 @@ struct WorkspaceTmuxDiscoveryTests {
             snapshot: snapshot,
             kwtInventoryLoader: { _ in inventory },
             worktreeMutationCoordinator: coordinator,
-            kwtProjectRemoval: { path, _, _ in
+            kwtProjectRemoval: { path, _, _, _ in
                 _ = removalCalls.increment()
                 return KwtProjectRecord(
                     repository: project.scopedKey,
@@ -8244,7 +8311,7 @@ struct WorkspaceTmuxDiscoveryTests {
             snapshot: snapshot,
             kwtInventoryLoader: { _ in inventory },
             worktreeMutationCoordinator: coordinator,
-            kwtProjectRemoval: { path, _, _ in
+            kwtProjectRemoval: { path, _, _, _ in
                 _ = removalCalls.increment()
                 return KwtProjectRecord(
                     repository: project.scopedKey,
@@ -8423,7 +8490,7 @@ struct WorkspaceTmuxDiscoveryTests {
             localHostID: environment.host.id,
             snapshot: environment.snapshot,
             kwtInventoryLoader: { _ in refreshedInventory },
-            kwtProjectRemoval: { path, _, _ in
+            kwtProjectRemoval: { path, _, _, _ in
                 _ = removalCalls.increment()
                 return KwtProjectRecord(
                     repository: project.scopedKey,
@@ -8507,7 +8574,7 @@ struct WorkspaceTmuxDiscoveryTests {
                 _ = inventoryLoads.increment()
                 return inventory
             },
-            kwtProjectRemoval: { path, _, _ in
+            kwtProjectRemoval: { path, _, _, _ in
                 _ = removalCalls.increment()
                 return KwtProjectRecord(
                     repository: project.scopedKey,
@@ -8600,7 +8667,7 @@ struct WorkspaceTmuxDiscoveryTests {
             snapshot: snapshot,
             kwtInventoryLoader: { _ in inventory },
             worktreeMutationCoordinator: coordinator,
-            kwtProjectRemoval: { path, _, _ in
+            kwtProjectRemoval: { path, _, _, _ in
                 await removalGate.suspend()
                 return KwtProjectRecord(
                     repository: project.scopedKey,
@@ -8694,7 +8761,7 @@ struct WorkspaceTmuxDiscoveryTests {
                 return inventory
             },
             worktreeMutationCoordinator: coordinator,
-            kwtProjectRemoval: { path, _, _ in
+            kwtProjectRemoval: { path, _, _, _ in
                 switch phase {
                 case .unregistration:
                     await suspensionGate.suspend()
@@ -8798,7 +8865,7 @@ struct WorkspaceTmuxDiscoveryTests {
                 }
             },
             worktreeMutationCoordinator: coordinator,
-            kwtProjectRemoval: { _, _, _ in throw removalError },
+            kwtProjectRemoval: { _, _, _, _ in throw removalError },
             configuredSSHHostsProvider: { configuredHosts.value }
         )
         let publishedRepositories = LockedValue<[Set<String>]>([])

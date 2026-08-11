@@ -309,10 +309,12 @@ registration to `kwt projects add --json`, then refreshes ordinary kwt
 inventory; it does not search the host's filesystem or write kwt's
 configuration itself. A project's sidebar context menu exposes a confirmed
 **Remove Project** action backed by
-`kwt projects remove <path> --expected-repository <identity> --json`.
-Ghosthub supplies the exact path and credential-free identity from current
-project inventory, so a missing checkout remains removable without trusting
-stale UI identity. Ghosthub preflights protected endpoints it already knows for
+`kwt projects remove <path> --expected-repository <identity>
+--expected-registration <fingerprint> --json`. Ghosthub supplies the exact
+path, credential-free identity, and opaque registration fingerprint from the
+record the user confirmed. A changed registration fails closed and requires a
+new confirmation; a missing checkout remains removable when the guard
+succeeds. Ghosthub preflights protected endpoints it already knows for
 immediate feedback; kwt's daemon serializes the mutation with registration,
 worktree, and protected-attachment operations, verifies durable protected
 endpoint authority, and performs the final registry compare-and-swap. The

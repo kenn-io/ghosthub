@@ -96,7 +96,7 @@ struct KwtInventoryClientTests {
                     return (
                         0,
                         "zsh banner\nGHOSTHUB_KWT_JSON\n" +
-                            #"[{"repository":"github.com/kenn-io/docbank","name":"docbank","path":"/code/docbank","last_touched":"2026-07-20T00:00:00Z"}]"#
+                            #"[{"repository":"github.com/kenn-io/docbank","name":"docbank","path":"/code/docbank","last_touched":"2026-07-20T00:00:00Z","registration_fingerprint":"opaque-observation"}]"#
                     )
                 }
                 if command.contains("workspace list --json") {
@@ -116,6 +116,10 @@ struct KwtInventoryClientTests {
 
         #expect(inventory.projects.map(\.project.name) == ["docbank"])
         #expect(
+            inventory.projects[0].project.registrationFingerprint
+                == "opaque-observation"
+        )
+        #expect(
             inventory.projects[0].worktrees.map(\.sessionName)
                 == ["kwt-docbank-main"]
         )
@@ -124,6 +128,42 @@ struct KwtInventoryClientTests {
                 == ["kwt-pr-0123456789abcdef"]
         )
         #expect(inventory.projects[0].warning == nil)
+    }
+
+    @Test(
+        "project inventory requires a nonempty registration fingerprint",
+        arguments: [
+            #"{"repository":"repo","name":"repo","path":"/repo"}"#,
+            #"{"repository":"repo","name":"repo","path":"/repo","registration_fingerprint":""}"#,
+        ]
+    )
+    func rejectsMissingRegistrationFingerprint(record: String) async throws {
+        let client = KwtInventoryClient(
+            localRunner: { _, command in
+                if command.contains("projects --json") {
+                    return (0, "GHOSTHUB_KWT_JSON\n[\(record)]")
+                }
+                return (0, "GHOSTHUB_KWT_JSON\n[]")
+            }
+        )
+
+        let inventory = try await client.load(from: .local)
+
+        #expect(inventory.projects.isEmpty)
+        #expect(inventory.projectsWarning != nil)
+    }
+
+    @Test("project records preserve trailing path whitespace")
+    func projectRecordPreservesTrailingWhitespace() throws {
+        let record = try JSONDecoder().decode(
+            KwtProjectRecord.self,
+            from: Data(
+                #"{"repository":"repo","name":"repo","path":"/repo ","registration_fingerprint":"opaque"}"#
+                    .utf8
+            )
+        )
+
+        #expect(record.path == "/repo ")
     }
 
     @Test("registered directories are loaded independently of projects")
@@ -166,7 +206,7 @@ struct KwtInventoryClientTests {
                     return (
                         0,
                         "GHOSTHUB_KWT_JSON\n" +
-                            #"[{"repository":"repo","name":"repo","path":"/repo"}]"#
+                            #"[{"repository":"repo","name":"repo","path":"/repo","registration_fingerprint":"repo-fingerprint"}]"#
                     )
                 }
                 return (0, "GHOSTHUB_KWT_JSON\n[]")
@@ -332,7 +372,7 @@ struct KwtInventoryClientTests {
                     return (
                         0,
                         "GHOSTHUB_KWT_JSON\n" +
-                            #"[{"repository":"one","name":"one","path":"/one"},{"repository":"two","name":"two","path":"/two"}]"#
+                            #"[{"repository":"one","name":"one","path":"/one","registration_fingerprint":"one-fingerprint"},{"repository":"two","name":"two","path":"/two","registration_fingerprint":"two-fingerprint"}]"#
                     )
                 }
                 if command.contains("/one") {

@@ -77,6 +77,8 @@ public struct ProjectSummary: Identifiable, Equatable, Sendable {
     public var registryID: String?
     public var name: String
     public var rootPath: String
+    /// Opaque kwt registry observation required to authorize removal.
+    public var registrationFingerprint: String
     public var isStale: Bool
     public var repositoryKind: ProjectRepositoryKind
     public var kind: ProjectKind
@@ -96,6 +98,7 @@ public struct ProjectSummary: Identifiable, Equatable, Sendable {
         registryID: String? = nil,
         name: String,
         rootPath: String,
+        registrationFingerprint: String = "",
         isStale: Bool = false,
         repositoryKind: ProjectRepositoryKind = .standard,
         kind: ProjectKind = .repository,
@@ -110,6 +113,7 @@ public struct ProjectSummary: Identifiable, Equatable, Sendable {
         self.registryID = registryID
         self.name = name
         self.rootPath = rootPath
+        self.registrationFingerprint = registrationFingerprint
         self.isStale = isStale
         self.repositoryKind = repositoryKind
         self.kind = kind

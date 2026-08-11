@@ -116,6 +116,7 @@ func setupStandardEnvironment() throws -> StandardEnvironment {
                 registryID: project.registryID,
                 name: project.name,
                 rootPath: project.rootPath,
+                registrationFingerprint: "standard-registration",
                 defaultBranch: project.defaultBranch
             ),
         ],
@@ -267,6 +268,7 @@ func setupRemoteEnvironment() throws -> RemoteEnvironment {
                 registryID: project.registryID,
                 name: project.name,
                 rootPath: project.rootPath,
+                registrationFingerprint: "remote-registration",
                 defaultBranch: project.defaultBranch
             ),
         ],
@@ -394,10 +396,11 @@ func makeModel(
     },
     kwtProjectRemoval:
     @escaping WorkspaceSceneModel.KwtProjectRemoval = {
-        projectPath, expectedRepository, host in
+        projectPath, expectedRepository, expectedRegistration, host in
         try await KwtProjectRegistryClient().unregister(
             projectPath: projectPath,
             expectedRepository: expectedRepository,
+            expectedRegistration: expectedRegistration,
             on: host
         )
     },

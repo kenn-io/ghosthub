@@ -98,10 +98,11 @@ boundary for fresh hosts. Argument, flag, configuration, and repository
 failures must retain the structured error contract, and repeated registration
 must converge across clone paths using the host-aware repository identity.
 The matching
-`projects remove <exact-path> --expected-repository <identity> --json`
-boundary unregisters metadata without deleting repositories, worktrees, or
-tmux sessions. It must accept a missing checkout using the exact stable path
-and credential-free identity published by project inventory. The daemon
+`projects remove <exact-path> --expected-repository <identity>
+--expected-registration <fingerprint> --json` boundary unregisters metadata
+without deleting repositories, worktrees, or tmux sessions. It must accept a
+missing checkout using the exact stable path, credential-free identity, and
+opaque registration fingerprint published by project inventory. The daemon
 serializes registration and protected project operations, verifies every
 durable protected endpoint, rejects live sessions or incomplete endpoint
 authority, and compare-and-swaps the registration. Missing and concurrently
