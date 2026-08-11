@@ -83,7 +83,7 @@ bytes in, resize, modes queryable, semantic effects, and Rust-owned paint
 state out. No public crate or UI API presumes the outcome.
 
 The exact kwt revision in repository-root `KWT_REVISION` is
-12463d3a0b194d2d3937037ac5b57ad630114854. That source uses KWT_HOME or the
+1afb99003adaf686012be693a66adfff4ebfd2a1. That source uses KWT_HOME or the
 fixed $HOME/.config/kwt default. It does not read Ghosthub init.toml,
 config_home, or XDG_CONFIG_HOME. Rust must not reproduce the unsupported
 Ghosthub init.toml scanner. The two existing Swift copies are outside the Rust
@@ -160,11 +160,14 @@ flag, focus, and other in-memory view state, but it never starts host discovery,
 process sampling, filesystem access, database work, or inventory reconciliation.
 Connecting, disconnected, and unavailable hosts do not retry automatically;
 their existing Cancel, Connect, and Retry actions remain authoritative. Refresh
-retains the last published session rows while work is in flight and reuses the
-admitted WSL host capability, including its endpoint- and runtime-bound tmux
-verification cache. A resolved default-distro change always requires fresh
-admission even when two WSL distributions report the same kernel boot ID and
-PID 1 start time.
+of an already-ready host retains Ready state, the last published session rows,
+and constructive actions while work is in flight; starting it publishes no
+transient UI revision. Automatic cadence skips an in-flight host refresh or
+session operation and never starts the separate KWT inventory lane. It reuses
+the admitted WSL host capability, including its endpoint- and runtime-bound
+tmux verification cache. A resolved default-distro change always requires
+fresh admission even when two WSL distributions report the same kernel boot ID
+and PID 1 start time.
 
 Each host command runs in a disposable descendant container: a kill-on-close
 Job Object on Windows and a dedicated process group on Unix. Stdout and stderr
@@ -604,6 +607,62 @@ state and never relocates helpers. The default POSIX state being the home root
 itself is a shipped irregularity. Local kwt operations use the packaged pinned
 binary, never a helper resolved from these directories or PATH.
 
+The Windows Rust build cross-compiles that exact revision for the WSL
+architecture with `tools/build_rust_kwt.ps1`. Cargo embeds the staged Linux
+binary plus its SHA-256 and revision. Cargo tracks the configured staging path
+even before it exists and accepts the helper only when its ELF machine matches
+the selected Linux architecture and its bytes contain the pinned revision;
+release builds fail if the helper is absent or invalid.
+The host activates it at the POSIX managed-helper path with an atomic rename
+and verifies both digest and reported revision before use. A process-local
+cache remembers only the managed path: every operation revalidates the helper
+before execution, and a missing or replaced helper is repaired atomically
+before the requested KWT command runs. Developer builds may omit the bundle,
+in which case KWT inventory alone is unavailable.
+
+KWT project and worktree reads are a separate cancellable host operation from
+tmux and Herdr inventory. The frequent session cadence never installs the KWT
+helper, invokes KWT, or replays worktree reconciliation. One KWT inventory read
+uses exactly three machine-readable crossings: registered projects, the global
+worktree list, and directory workspaces. After the admitted host first
+publishes, Rust performs one background KWT read and then refreshes it every 60
+seconds only while the window is active. A manual host refresh supersedes both
+read generations. Failed or in-flight KWT reads retain the last usable project
+tree and affect neither session availability nor terminal presentation.
+
+The Projects header exposes **Add Project** whenever the current WSL host has
+usable KWT inventory. The native folder picker accepts Windows folders and
+`\\wsl.localhost\<distro>\...` paths; Ghosthub resolves drive paths through
+that distro's `wslpath`, maps a matching WSL UNC path directly to its POSIX
+path, and rejects a UNC path owned by another distro. An explicitly entered
+POSIX absolute path remains supported. Registration delegates the resolved
+path to the pinned helper's `projects add <path> --json` command. Each
+registered project also exposes a confirmed **Remove Project** action. Removal
+first re-reads project inventory, then invokes
+`projects remove <exact-path> --expected-repository <credential-free-id>
+--json`; KWT performs the final identity check. Unregistration changes KWT
+metadata only. It cannot delete the repository or worktrees and cannot stop or
+kill tmux sessions. Ghosthub never scans WSL and never edits KWT configuration.
+
+Project mutations use a serialized background lane distinct from GPUI and the
+terminal worker. The last usable project tree remains visible while a command
+runs. KWT's successful machine-readable mutation response is published
+immediately; the broader project/worktree read then reconciles it. A failed
+reconciliation cannot hide an add or resurrect a removal that KWT already
+confirmed. A mutation supersedes only older KWT reads, and ordinary KWT
+cadence waits for the mutation and its reconciliation to finish. Commands that
+may already have crossed the process boundary are not cancelled or silently
+retried. Every KWT command receives the same explicit `TMUX_TMPDIR` as tmux
+discovery and attachment, so project session availability cannot be inferred
+from a different server namespace.
+
+The Rust sidebar projects KWT-owned default-socket tmux sessions under their
+project/worktree rows and removes only those exact sessions from the unbound
+tmux group. Custom-socket worktrees remain visible as project inventory but do
+not claim a default-socket session with the same name. KWT rows carry display
+identity and exact session names; they do not acquire creation, repair, or
+destruction authority from cached inventory.
+
 The remote helper activation root is a separate cross-controller contract:
 
 - POSIX remote: $HOME/.ghosthub/helpers/kwt/{revision}/kwt
@@ -812,7 +871,11 @@ host performs a background inventory refresh; a disconnected, unavailable, or
 changed endpoint must be selected again. Workspace performs one
 fresh admitted-host read, terminal consumes a non-cloneable CreateOnce whose
 ordinary client executes `new-session -A -E -s <name>`, and host captures the
-resulting runtime, server, session ID, and creation time. Admission proves
+resulting runtime, server, session ID, and creation time from a nonce-scoped
+private WSL receipt written by the same tmux command queue. The receipt is
+written by an explicit `/bin/sh -c` command rather than tmux's configurable
+default shell, is opaque outside host, is removed after capture, and never
+crosses ConPTY or the VT. Admission proves
 `xterm-256color` on that same atomic client shape before caching it for
 creation; if the distro lacks that terminfo entry, admission proves `xterm`
 instead and creation immediately displays the reduced-color notice. Creation
@@ -917,6 +980,8 @@ Rust keeps the same separation:
 
 - cargo test-contracts is the fast manifest, parsing, capability, plan,
   sidebar, registry, and architecture gate
+- cargo test-wsl-kwt-live installs and verifies a staged pinned KWT helper and
+  reads its real inventory
 - `make rust-test-wsl-live` launches real isolated tmux servers inside a WSL2
   distro plus PTYs and supervisor children for detach and app-death survival
 
@@ -938,7 +1003,7 @@ the persistent runner. Feature changes run `make rust-test-wsl-live` on an
 isolated developer machine before merge; after merge, the trusted integration
 SHA receives the GitHub acceptance run. A successful live run is required
 acceptance evidence for changes to WSL attachment, creation, guarded kill, or
-client-lifetime behavior.
+client-lifetime behavior, and for KWT helper provisioning or inventory.
 
 GitHub-hosted Windows runners remain the fast compile, unit, contract, and lint
 gate because their installed WSL tooling does not guarantee a usable WSL2

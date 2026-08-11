@@ -15,7 +15,8 @@ use session::{
 };
 
 use crate::herdr::{self, ExecutableProbe};
-use crate::{CancellationToken, CommandOutput, CommandRunner};
+use crate::kwt::{parse_project_mutation, project_command_error};
+use crate::{CancellationToken, CommandOutput, CommandRunner, KwtBundle, KwtInventory, KwtProject};
 
 const DEFAULT_TMUX: &str = "/usr/bin/tmux";
 const DISCOVERY_ATTEMPTS: usize = 2;
@@ -48,6 +49,7 @@ pub struct WslConfig {
     distro: Option<String>,
     tmux_binary: String,
     tmux_tmpdir: Option<String>,
+    kwt_bundle: Option<KwtBundle>,
 }
 
 impl WslConfig {
@@ -59,6 +61,17 @@ impl WslConfig {
     #[must_use]
     pub fn socket_directory(&self) -> Option<&str> {
         self.tmux_tmpdir.as_deref()
+    }
+
+    #[must_use]
+    pub const fn kwt_bundle(&self) -> Option<&KwtBundle> {
+        self.kwt_bundle.as_ref()
+    }
+
+    #[must_use]
+    pub fn with_kwt_bundle(mut self, bundle: KwtBundle) -> Self {
+        self.kwt_bundle = Some(bundle);
+        self
     }
 
     /// Select a specific WSL distro with the default tmux path.
@@ -108,6 +121,7 @@ impl WslConfig {
             distro,
             tmux_binary,
             tmux_tmpdir,
+            kwt_bundle: None,
         })
     }
 }
@@ -118,6 +132,7 @@ impl Default for WslConfig {
             distro: None,
             tmux_binary: DEFAULT_TMUX.to_owned(),
             tmux_tmpdir: None,
+            kwt_bundle: None,
         }
     }
 }
@@ -138,6 +153,14 @@ impl WslEndpoint {
 pub struct WslRuntimeIdentity {
     kernel_boot_id: String,
     init_start_ticks: u64,
+}
+
+/// Opaque authority to read and remove one nonce-scoped creation receipt.
+/// Only [`WslHost`] can construct its private path.
+#[derive(Debug, Eq, PartialEq)]
+pub struct CreationReceipt {
+    path: String,
+    staging_path: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -174,6 +197,30 @@ pub struct HostSnapshot {
     creation_term: AttachTerm,
     sessions: Vec<DiscoveredSession>,
     herdr: Box<HerdrInventory>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KwtHostSnapshot {
+    endpoint: WslEndpoint,
+    runtime: WslRuntimeIdentity,
+    inventory: Option<KwtInventory>,
+}
+
+impl KwtHostSnapshot {
+    #[must_use]
+    pub const fn endpoint(&self) -> &WslEndpoint {
+        &self.endpoint
+    }
+
+    #[must_use]
+    pub const fn runtime(&self) -> &WslRuntimeIdentity {
+        &self.runtime
+    }
+
+    #[must_use]
+    pub const fn inventory(&self) -> Option<&KwtInventory> {
+        self.inventory.as_ref()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -519,6 +566,8 @@ pub struct WslHost<R> {
     runner: R,
     wsl_executable: WslExecutable,
     verified_tmux: Arc<Mutex<Option<VerifiedAdmission>>>,
+    verified_kwt: Arc<Mutex<Option<VerifiedKwtHelper>>>,
+    kwt_activation: Arc<Mutex<()>>,
 }
 
 #[derive(Debug)]
@@ -529,6 +578,13 @@ struct VerifiedAdmission {
     _binary: VerifiedTmuxBinary,
 }
 
+#[derive(Clone, Debug)]
+struct VerifiedKwtHelper {
+    endpoint: WslEndpoint,
+    runtime: WslRuntimeIdentity,
+    path: String,
+}
+
 impl<R: CommandRunner> WslHost<R> {
     #[must_use]
     pub fn new(config: WslConfig, runner: R, wsl_executable: WslExecutable) -> Self {
@@ -537,6 +593,8 @@ impl<R: CommandRunner> WslHost<R> {
             runner,
             wsl_executable,
             verified_tmux: Arc::new(Mutex::new(None)),
+            verified_kwt: Arc::new(Mutex::new(None)),
+            kwt_activation: Arc::new(Mutex::new(())),
         }
     }
 
@@ -548,6 +606,445 @@ impl<R: CommandRunner> WslHost<R> {
     #[must_use]
     pub fn socket_directory(&self) -> Option<&str> {
         self.config.socket_directory()
+    }
+
+    /// Read KWT project and worktree inventory independently from session
+    /// discovery. Callers schedule this on the slower worktree cadence; tmux
+    /// and Herdr refreshes never invoke it.
+    ///
+    /// A missing embedded helper is normal in developer builds and returns
+    /// `Ok(None)`. Packaged builds require the bundle during compilation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified error when helper activation, execution, parsing,
+    /// or the WSL runtime boundary fails.
+    pub fn discover_kwt(
+        &self,
+        endpoint: &WslEndpoint,
+        runtime: &WslRuntimeIdentity,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<KwtInventory>, HostError> {
+        let Some(bundle) = self.config.kwt_bundle() else {
+            return Ok(None);
+        };
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let helper = self.ensure_kwt_helper(endpoint, runtime, bundle, cancellation)?;
+        let projects = self.run_kwt(endpoint, &helper, &["projects", "--json"], cancellation)?;
+        let worktrees = self.run_kwt(
+            endpoint,
+            &helper,
+            &["list", "--global", "--json"],
+            cancellation,
+        )?;
+        let directories = self.run_kwt(
+            endpoint,
+            &helper,
+            &["workspace", "list", "--json"],
+            cancellation,
+        )?;
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        KwtInventory::parse(&projects.stdout, &worktrees.stdout, &directories.stdout)
+            .map(Some)
+            .map_err(|error| {
+                HostError::new(
+                    DiagnosticKind::MalformedOutput,
+                    format!("KWT returned invalid project or worktree inventory: {error}"),
+                )
+            })
+    }
+
+    /// Resolve the current WSL instance and read only KWT inventory.
+    ///
+    /// This does not perform tmux admission, tmux discovery, or Herdr
+    /// discovery, making it suitable for the independent worktree cadence.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified WSL, helper, command, or schema error.
+    pub fn discover_kwt_current(
+        &self,
+        cancellation: &CancellationToken,
+    ) -> Result<KwtHostSnapshot, HostError> {
+        let endpoint = self.resolve_endpoint(cancellation)?;
+        let runtime = self.resolve_runtime(&endpoint, cancellation)?;
+        let inventory = self.discover_kwt(&endpoint, &runtime, cancellation)?;
+        Ok(KwtHostSnapshot {
+            endpoint,
+            runtime,
+            inventory,
+        })
+    }
+
+    /// Register one explicit absolute repository path with the pinned KWT helper.
+    ///
+    /// Ghosthub never scans WSL or edits KWT configuration directly. The
+    /// returned project is the helper's authoritative machine-readable record.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified path, helper, command, schema, or runtime error.
+    pub fn register_kwt_project(
+        &self,
+        endpoint: &WslEndpoint,
+        runtime: &WslRuntimeIdentity,
+        project_path: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<KwtProject, HostError> {
+        let project_path = project_path.trim();
+        if !is_project_path_input_absolute(project_path) {
+            return Err(HostError::new(
+                DiagnosticKind::MalformedOutput,
+                "Choose a project folder or enter an absolute Windows or WSL path.",
+            ));
+        }
+        let bundle = self.config.kwt_bundle().ok_or_else(|| {
+            HostError::new(
+                DiagnosticKind::ExecutableNotFound,
+                "The pinned KWT helper is unavailable in this build",
+            )
+        })?;
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let helper = self.ensure_kwt_helper(endpoint, runtime, bundle, cancellation)?;
+        let project_path = self.resolve_kwt_project_path(endpoint, project_path, cancellation)?;
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let output = self.run_scrubbed(
+            endpoint,
+            &[&helper, "projects", "add", &project_path, "--json"],
+            cancellation,
+        )?;
+        require_kwt_project_command(&output, "register the KWT project")?;
+        let project = parse_project_mutation(&output.stdout, "registered").map_err(|error| {
+            HostError::new(
+                DiagnosticKind::MalformedOutput,
+                format!("KWT returned an invalid project registration response: {error}"),
+            )
+        })?;
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        Ok(project)
+    }
+
+    fn resolve_kwt_project_path(
+        &self,
+        endpoint: &WslEndpoint,
+        project_path: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<String, HostError> {
+        if let Some(path) = resolve_wsl_unc_project_path(endpoint, project_path)? {
+            return Ok(path);
+        }
+        if is_posix_absolute(project_path) {
+            return Ok(project_path.to_owned());
+        }
+        let output = self.run_scrubbed(
+            endpoint,
+            &["/usr/bin/wslpath", "-a", "-u", project_path],
+            cancellation,
+        )?;
+        if output.status != 0 {
+            return Err(HostError::new(
+                DiagnosticKind::MalformedOutput,
+                format!(
+                    "That Windows folder is not available in {} through WSL.",
+                    endpoint.distro()
+                ),
+            ));
+        }
+        let stdout = decode(&output.stdout, "resolved WSL project path")?;
+        let mut lines = stdout.lines();
+        let resolved = lines.next().map(str::trim).unwrap_or_default();
+        if !is_posix_absolute(resolved) || lines.any(|line| !line.trim().is_empty()) {
+            return Err(HostError::new(
+                DiagnosticKind::MalformedOutput,
+                "WSL returned an invalid project path",
+            ));
+        }
+        Ok(resolved.to_owned())
+    }
+
+    /// Unregister one freshly revalidated project without deleting its checkout.
+    ///
+    /// KWT performs the final guarded compare-and-swap using both the exact
+    /// persisted path and credential-free repository identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified error when identity changed, KWT refuses the
+    /// removal, output is malformed, or the WSL runtime boundary moved.
+    pub fn remove_kwt_project(
+        &self,
+        endpoint: &WslEndpoint,
+        runtime: &WslRuntimeIdentity,
+        expected_path: &str,
+        expected_repository: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<KwtProject, HostError> {
+        let bundle = self.config.kwt_bundle().ok_or_else(|| {
+            HostError::new(
+                DiagnosticKind::ExecutableNotFound,
+                "The pinned KWT helper is unavailable in this build",
+            )
+        })?;
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let helper = self.ensure_kwt_helper(endpoint, runtime, bundle, cancellation)?;
+        let projects = self.run_kwt(endpoint, &helper, &["projects", "--json"], cancellation)?;
+        let current: Vec<KwtProject> =
+            serde_json::from_slice(&projects.stdout).map_err(|error| {
+                HostError::new(
+                    DiagnosticKind::MalformedOutput,
+                    format!("KWT returned invalid project inventory before removal: {error}"),
+                )
+            })?;
+        if !current.iter().any(|project| {
+            project.path() == expected_path && project.repository() == expected_repository
+        }) {
+            return Err(HostError::new(
+                DiagnosticKind::MalformedOutput,
+                "The project registration changed. Refresh and confirm removal again.",
+            ));
+        }
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let output = self.run_scrubbed(
+            endpoint,
+            &[
+                &helper,
+                "projects",
+                "remove",
+                expected_path,
+                "--expected-repository",
+                expected_repository,
+                "--json",
+            ],
+            cancellation,
+        )?;
+        require_kwt_project_command(&output, "unregister the KWT project")?;
+        let project = parse_project_mutation(&output.stdout, "unregistered").map_err(|error| {
+            HostError::new(
+                DiagnosticKind::MalformedOutput,
+                format!("KWT returned an invalid project removal response: {error}"),
+            )
+        })?;
+        if project.path() != expected_path || project.repository() != expected_repository {
+            return Err(HostError::new(
+                DiagnosticKind::MalformedOutput,
+                "KWT removed a project other than the confirmed identity",
+            ));
+        }
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        Ok(project)
+    }
+
+    fn ensure_kwt_helper(
+        &self,
+        endpoint: &WslEndpoint,
+        runtime: &WslRuntimeIdentity,
+        bundle: &KwtBundle,
+        cancellation: &CancellationToken,
+    ) -> Result<String, HostError> {
+        let _activation = self
+            .kwt_activation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let cached = self
+            .verified_kwt
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .filter(|verified| verified.endpoint == *endpoint && verified.runtime == *runtime)
+            .cloned();
+        if let Some(verified) = cached {
+            if self.kwt_helper_matches(endpoint, &verified.path, bundle, cancellation)? {
+                self.require_runtime(endpoint, runtime, cancellation)?;
+                return Ok(verified.path);
+            }
+            *self
+                .verified_kwt
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        }
+
+        let home = self.resolve_home(endpoint, cancellation)?;
+        let directory = format!("{home}/.ghosthub/helpers/kwt/{}", bundle.revision());
+        let path = format!("{directory}/kwt");
+        if !self.kwt_helper_matches(endpoint, &path, bundle, cancellation)? {
+            self.install_kwt_helper(endpoint, &directory, &path, bundle, cancellation)?;
+        }
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        *self
+            .verified_kwt
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(VerifiedKwtHelper {
+            endpoint: endpoint.clone(),
+            runtime: runtime.clone(),
+            path: path.clone(),
+        });
+        Ok(path)
+    }
+
+    fn resolve_home(
+        &self,
+        endpoint: &WslEndpoint,
+        cancellation: &CancellationToken,
+    ) -> Result<String, HostError> {
+        let mut args = pinned_prefix(endpoint);
+        args.push(OsString::from("/usr/bin/env"));
+        let output = self.run(&args, cancellation)?;
+        if output.status != 0 {
+            return Err(classify_command_failure(
+                output.status,
+                &output.stderr,
+                "resolve the WSL home directory",
+            ));
+        }
+        let environment = decode(&output.stdout, "WSL environment")?;
+        environment
+            .lines()
+            .find_map(|line| line.strip_prefix("HOME="))
+            .filter(|home| is_posix_absolute(home))
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                HostError::new(
+                    DiagnosticKind::MalformedOutput,
+                    "WSL HOME is missing or is not an absolute path",
+                )
+            })
+    }
+
+    fn install_kwt_helper(
+        &self,
+        endpoint: &WslEndpoint,
+        directory: &str,
+        path: &str,
+        bundle: &KwtBundle,
+        cancellation: &CancellationToken,
+    ) -> Result<(), HostError> {
+        let output = self.run_scrubbed(
+            endpoint,
+            &["/usr/bin/install", "-d", "-m", "0700", directory],
+            cancellation,
+        )?;
+        require_kwt_command(&output, "create the managed KWT helper directory")?;
+
+        let temp = format!("{path}.tmp-{}", helper_nonce()?);
+        let upload = self.run_scrubbed_with_input(
+            endpoint,
+            &[
+                "/usr/bin/dd",
+                &format!("of={temp}"),
+                "status=none",
+                "conv=fsync",
+            ],
+            bundle.bytes(),
+            cancellation,
+        );
+        let result = upload.and_then(|output| {
+            require_kwt_command(&output, "upload the managed KWT helper")?;
+            let chmod =
+                self.run_scrubbed(endpoint, &["/usr/bin/chmod", "0755", &temp], cancellation)?;
+            require_kwt_command(&chmod, "make the managed KWT helper executable")?;
+            if !self.kwt_helper_matches(endpoint, &temp, bundle, cancellation)? {
+                return Err(HostError::new(
+                    DiagnosticKind::MalformedOutput,
+                    "uploaded KWT helper failed revision or digest verification",
+                ));
+            }
+            let activate =
+                self.run_scrubbed(endpoint, &["/usr/bin/mv", "-f", &temp, path], cancellation)?;
+            require_kwt_command(&activate, "activate the managed KWT helper")?;
+            if !self.kwt_helper_matches(endpoint, path, bundle, cancellation)? {
+                return Err(HostError::new(
+                    DiagnosticKind::MalformedOutput,
+                    "activated KWT helper failed revision or digest verification",
+                ));
+            }
+            Ok(())
+        });
+        if result.is_err() {
+            let _ignored = self.run_scrubbed(
+                endpoint,
+                &["/usr/bin/rm", "-f", &temp],
+                &CancellationToken::new(),
+            );
+        }
+        result
+    }
+
+    fn kwt_helper_matches(
+        &self,
+        endpoint: &WslEndpoint,
+        path: &str,
+        bundle: &KwtBundle,
+        cancellation: &CancellationToken,
+    ) -> Result<bool, HostError> {
+        let digest = self.run_scrubbed(endpoint, &["/usr/bin/sha256sum", path], cancellation)?;
+        if digest.status != 0 {
+            return Ok(false);
+        }
+        let digest = decode(&digest.stdout, "KWT helper digest")?;
+        if digest.split_whitespace().next() != Some(bundle.sha256()) {
+            return Ok(false);
+        }
+        let version = self.run_scrubbed(endpoint, &[path, "version"], cancellation)?;
+        if version.status != 0 {
+            return Ok(false);
+        }
+        let version = decode(&version.stdout, "KWT helper version")?;
+        Ok(version.lines().next() == Some(&format!("kwt version {}", bundle.revision())))
+    }
+
+    fn run_kwt(
+        &self,
+        endpoint: &WslEndpoint,
+        helper: &str,
+        command: &[&str],
+        cancellation: &CancellationToken,
+    ) -> Result<CommandOutput, HostError> {
+        let mut arguments = Vec::with_capacity(command.len() + 1);
+        arguments.push(helper);
+        arguments.extend_from_slice(command);
+        let output = self.run_scrubbed(endpoint, &arguments, cancellation)?;
+        if output.status == 0 {
+            Ok(output)
+        } else {
+            Err(classify_command_failure(
+                output.status,
+                &output.stderr,
+                "read KWT inventory",
+            ))
+        }
+    }
+
+    fn run_scrubbed(
+        &self,
+        endpoint: &WslEndpoint,
+        command: &[&str],
+        cancellation: &CancellationToken,
+    ) -> Result<CommandOutput, HostError> {
+        let mut args = pinned_prefix(endpoint);
+        append_tmux_environment(&mut args, None, self.config.tmux_tmpdir.as_deref(), &[]);
+        args.extend(command.iter().map(OsString::from));
+        self.run(&args, cancellation)
+    }
+
+    fn run_scrubbed_with_input(
+        &self,
+        endpoint: &WslEndpoint,
+        command: &[&str],
+        input: &[u8],
+        cancellation: &CancellationToken,
+    ) -> Result<CommandOutput, HostError> {
+        let mut args = pinned_prefix(endpoint);
+        append_tmux_environment(&mut args, None, self.config.tmux_tmpdir.as_deref(), &[]);
+        args.extend(command.iter().map(OsString::from));
+        self.runner
+            .run_with_input(
+                self.wsl_executable.as_os_str(),
+                &args,
+                input,
+                cancellation,
+                COMMAND_TIMEOUT,
+            )
+            .map_err(|error| classify_runner_error(&error))
     }
 
     /// Resolve the exact WSL runtime and discover its tmux inventory.
@@ -824,7 +1321,7 @@ impl<R: CommandRunner> WslHost<R> {
         endpoint: &WslEndpoint,
         runtime: &WslRuntimeIdentity,
         name: SessionName,
-    ) -> Result<(CreateOnce, AttachTerm), HostError> {
+    ) -> Result<(CreateOnce, CreationReceipt, AttachTerm), HostError> {
         let term = self
             .verified_tmux
             .lock()
@@ -840,8 +1337,8 @@ impl<R: CommandRunner> WslHost<R> {
                     "tmux creation requires fresh admission for this WSL runtime",
                 )
             })?;
-        let authority = self.create_once_with_term(endpoint, name, term)?;
-        Ok((authority, term))
+        let (authority, receipt) = self.create_once_with_term(endpoint, name, term)?;
+        Ok((authority, receipt, term))
     }
 
     fn create_once_with_term(
@@ -849,8 +1346,8 @@ impl<R: CommandRunner> WslHost<R> {
         endpoint: &WslEndpoint,
         name: SessionName,
         term: AttachTerm,
-    ) -> Result<CreateOnce, HostError> {
-        let identity_marker = creation_identity_marker()?;
+    ) -> Result<(CreateOnce, CreationReceipt), HostError> {
+        let receipt = creation_identity_receipt()?;
         let mut args = pinned_prefix(endpoint);
         append_tmux_environment(
             &mut args,
@@ -865,20 +1362,116 @@ impl<R: CommandRunner> WslHost<R> {
                 .map(OsString::from),
         );
         args.push(OsString::from(name.as_str()));
-        args.extend(
-            [";", "display-message", "-p", "-F"]
+        args.extend([";", "run-shell", "-b"].into_iter().map(OsString::from));
+        args.push(OsString::from(creation_receipt_command(&receipt)));
+        Ok((
+            CreateOnce::local_atomic(self.wsl_executable.as_os_str(), args, name),
+            receipt,
+        ))
+    }
+
+    /// Read the exact identity written by the consumed create-or-attach
+    /// command queue without sending internal framing through `ConPTY`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the receipt is absent, malformed, or cannot be
+    /// read before the bounded creation deadline.
+    pub fn wait_for_creation_identity(
+        &self,
+        endpoint: &WslEndpoint,
+        receipt: &CreationReceipt,
+        cancellation: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<SessionIdentity, HostError> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if cancellation.is_cancelled() {
+                self.remove_creation_receipt(endpoint, receipt);
+                return Err(HostError::new(
+                    DiagnosticKind::Transport,
+                    "tmux creation identity wait was cancelled",
+                ));
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                self.remove_creation_receipt(endpoint, receipt);
+                return Err(HostError::new(
+                    DiagnosticKind::Timeout,
+                    "timed out waiting for the ordinary tmux client identity",
+                ));
+            }
+            let mut args = pinned_prefix(endpoint);
+            args.extend(
+                [
+                    "/usr/bin/env",
+                    "LC_ALL=C",
+                    "/usr/bin/cat",
+                    "--",
+                    receipt.path.as_str(),
+                ]
                 .into_iter()
                 .map(OsString::from),
+            );
+            let output = self
+                .runner
+                .run(
+                    self.wsl_executable.as_os_str(),
+                    &args,
+                    cancellation,
+                    remaining.min(COMMAND_TIMEOUT),
+                )
+                .map_err(|error| {
+                    HostError::new(
+                        if error.kind() == std::io::ErrorKind::TimedOut {
+                            DiagnosticKind::Timeout
+                        } else {
+                            DiagnosticKind::Transport
+                        },
+                        error.to_string(),
+                    )
+                })?;
+            if output.status == 0 {
+                self.remove_creation_receipt(endpoint, receipt);
+                return parse_creation_receipt(&output.stdout);
+            }
+            if !is_missing_creation_receipt(&output.stderr) {
+                self.remove_creation_receipt(endpoint, receipt);
+                return Err(classify_command_failure(
+                    output.status,
+                    &output.stderr,
+                    "read tmux creation identity",
+                ));
+            }
+            if cancellation.wait_cancelled(Duration::from_millis(20)) {
+                self.remove_creation_receipt(endpoint, receipt);
+                return Err(HostError::new(
+                    DiagnosticKind::Transport,
+                    "tmux creation identity wait was cancelled",
+                ));
+            }
+        }
+    }
+
+    fn remove_creation_receipt(&self, endpoint: &WslEndpoint, receipt: &CreationReceipt) {
+        let mut args = pinned_prefix(endpoint);
+        args.extend(
+            [
+                "/usr/bin/rm",
+                "-f",
+                "--",
+                receipt.path.as_str(),
+                receipt.staging_path.as_str(),
+            ]
+            .into_iter()
+            .map(OsString::from),
         );
-        args.push(OsString::from(format!(
-            "{identity_marker}#{{pid}}|#{{session_id}}|#{{session_created}}|!"
-        )));
-        Ok(CreateOnce::local_atomic(
+        let _ignored = self.runner.run(
             self.wsl_executable.as_os_str(),
-            args,
-            name,
-            identity_marker,
-        ))
+            &args,
+            &CancellationToken::new(),
+            CLEANUP_COMMAND_TIMEOUT,
+        );
     }
 
     /// Capture the exact inventory after a one-shot create client has started,
@@ -2609,15 +3202,126 @@ struct AdmissionScope {
     name_nonce: String,
 }
 
-fn creation_identity_marker() -> Result<String, HostError> {
+fn creation_identity_receipt() -> Result<CreationReceipt, HostError> {
     let mut nonce = [0_u8; 16];
     getrandom::fill(&mut nonce).map_err(|error| {
         HostError::new(
             DiagnosticKind::Transport,
-            format!("generate tmux creation identity marker: {error}"),
+            format!("generate tmux creation identity receipt: {error}"),
         )
     })?;
-    Ok(format!("__ghc_{:032x}__", u128::from_ne_bytes(nonce)))
+    let path = format!("/tmp/.ghosthub-create-{:032x}", u128::from_ne_bytes(nonce));
+    Ok(CreationReceipt {
+        staging_path: format!("{path}.tmp"),
+        path,
+    })
+}
+
+fn creation_receipt_command(receipt: &CreationReceipt) -> String {
+    format!(
+        "/bin/sh -c 'umask 077; set -C; /usr/bin/printf \"%s|%s|%s|!\" \"$1\" \"$2\" \"$3\" > \"$4\" && /usr/bin/mv -T -- \"$4\" \"$5\"' ghosthub-receipt '#{{pid}}' '#{{session_id}}' '#{{session_created}}' '{}' '{}'",
+        receipt.staging_path, receipt.path
+    )
+}
+
+fn parse_creation_receipt(bytes: &[u8]) -> Result<SessionIdentity, HostError> {
+    let value = decode(bytes, "tmux creation identity")?
+        .strip_suffix("|!")
+        .ok_or_else(|| {
+            HostError::new(
+                DiagnosticKind::MalformedOutput,
+                "tmux creation identity had invalid framing",
+            )
+        })?;
+    let mut fields = value.split('|');
+    let server_pid = fields
+        .next()
+        .and_then(|field| field.parse::<u32>().ok())
+        .ok_or_else(|| {
+            HostError::new(
+                DiagnosticKind::MalformedOutput,
+                "tmux creation identity had an invalid server PID",
+            )
+        })?;
+    let session_id = fields
+        .next()
+        .filter(|field| !field.is_empty())
+        .ok_or_else(|| {
+            HostError::new(
+                DiagnosticKind::MalformedOutput,
+                "tmux creation identity had an empty session ID",
+            )
+        })?;
+    let created_at = fields
+        .next()
+        .and_then(|field| field.parse::<u64>().ok())
+        .ok_or_else(|| {
+            HostError::new(
+                DiagnosticKind::MalformedOutput,
+                "tmux creation identity had an invalid creation time",
+            )
+        })?;
+    if fields.next().is_some() {
+        return Err(HostError::new(
+            DiagnosticKind::MalformedOutput,
+            "tmux creation identity had extra fields",
+        ));
+    }
+    Ok(SessionIdentity::new(server_pid, session_id, created_at))
+}
+
+fn is_missing_creation_receipt(stderr: &[u8]) -> bool {
+    String::from_utf8_lossy(stderr)
+        .to_ascii_lowercase()
+        .contains("no such file")
+}
+
+fn helper_nonce() -> Result<String, HostError> {
+    let mut nonce = [0_u8; 16];
+    getrandom::fill(&mut nonce).map_err(|error| {
+        HostError::new(
+            DiagnosticKind::Transport,
+            format!("generate managed KWT helper name: {error}"),
+        )
+    })?;
+    Ok(format!("{:032x}", u128::from_ne_bytes(nonce)))
+}
+
+fn require_kwt_command(output: &CommandOutput, subject: &str) -> Result<(), HostError> {
+    if output.status == 0 {
+        Ok(())
+    } else {
+        Err(classify_command_failure(
+            output.status,
+            &output.stderr,
+            subject,
+        ))
+    }
+}
+
+fn require_kwt_project_command(output: &CommandOutput, subject: &str) -> Result<(), HostError> {
+    if output.status == 0 {
+        return Ok(());
+    }
+    if let Some(message) = project_command_error(&output.stdout) {
+        return Err(HostError::new(DiagnosticKind::Transport, message));
+    }
+    Err(classify_command_failure(
+        output.status,
+        &output.stderr,
+        subject,
+    ))
+}
+
+fn classify_runner_error(error: &std::io::Error) -> HostError {
+    HostError::new(
+        if error.kind() == std::io::ErrorKind::TimedOut {
+            DiagnosticKind::Timeout
+        } else {
+            DiagnosticKind::Transport
+        },
+        error.to_string(),
+    )
 }
 
 fn admission_scope(sequence: u64) -> Result<AdmissionScope, HostError> {
@@ -2872,6 +3576,48 @@ fn is_posix_absolute(path: &str) -> bool {
     path.starts_with('/')
 }
 
+fn is_project_path_input_absolute(path: &str) -> bool {
+    if is_posix_absolute(path) || path.starts_with(r"\\") || path.starts_with("//") {
+        return true;
+    }
+    let bytes = path.as_bytes();
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'\\' | b'/')
+}
+
+fn resolve_wsl_unc_project_path(
+    endpoint: &WslEndpoint,
+    path: &str,
+) -> Result<Option<String>, HostError> {
+    if !path.starts_with(r"\\") && !path.starts_with("//") {
+        return Ok(None);
+    }
+    let normalized = path.replace('\\', "/");
+    let mut components = normalized.trim_start_matches('/').split('/');
+    let server = components.next().unwrap_or_default();
+    if !server.eq_ignore_ascii_case("wsl.localhost") && !server.eq_ignore_ascii_case("wsl$") {
+        return Ok(None);
+    }
+    let distro = components.next().unwrap_or_default();
+    if distro.is_empty() || !distro.eq_ignore_ascii_case(endpoint.distro()) {
+        return Err(HostError::new(
+            DiagnosticKind::MalformedOutput,
+            format!(
+                "That folder belongs to WSL distro {distro:?}, but this host uses {}.",
+                endpoint.distro()
+            ),
+        ));
+    }
+    let suffix = components.collect::<Vec<_>>().join("/");
+    Ok(Some(if suffix.is_empty() {
+        "/".to_owned()
+    } else {
+        format!("/{suffix}")
+    }))
+}
+
 fn is_boot_id(value: &str) -> bool {
     value.len() == 36
         && value.bytes().enumerate().all(|(index, byte)| match index {
@@ -2907,9 +3653,322 @@ fn tmux_identity_condition(identity: &SessionIdentity) -> String {
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
+    use std::ffi::{OsStr, OsString};
     use std::io;
+    use std::sync::{Arc, Mutex, atomic::AtomicBool};
 
     use super::*;
+
+    const TEST_RUNTIME_OUTPUT: &[u8] = b"Linux 6.6.0-WSL2\n12345678-1234-1234-1234-123456789abc\n1 (init) S 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 42\n";
+
+    #[derive(Clone)]
+    struct KwtMutationRunner {
+        calls: Arc<Mutex<Vec<Vec<String>>>>,
+        helper_matches: Arc<AtomicBool>,
+    }
+
+    impl Default for KwtMutationRunner {
+        fn default() -> Self {
+            Self {
+                calls: Arc::default(),
+                helper_matches: Arc::new(AtomicBool::new(true)),
+            }
+        }
+    }
+
+    impl CommandRunner for KwtMutationRunner {
+        fn run(
+            &self,
+            _program: &OsStr,
+            args: &[OsString],
+            _cancellation: &CancellationToken,
+            _timeout: Duration,
+        ) -> io::Result<CommandOutput> {
+            let args = args
+                .iter()
+                .map(|argument| argument.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            self.calls.lock().expect("calls").push(args.clone());
+            let stdout = if args.iter().any(|argument| argument == "/usr/bin/cat") {
+                TEST_RUNTIME_OUTPUT.to_vec()
+            } else if args.iter().any(|argument| argument == "/usr/bin/sha256sum") {
+                let digest = if self.helper_matches.load(Ordering::Acquire) {
+                    "b".repeat(64)
+                } else {
+                    "c".repeat(64)
+                };
+                format!("{digest}  helper\n").into_bytes()
+            } else if args.last().is_some_and(|argument| argument == "version") {
+                format!("kwt version {}\n", "a".repeat(40)).into_bytes()
+            } else if args
+                .last()
+                .is_some_and(|argument| argument == "/usr/bin/env")
+            {
+                b"HOME=/home/test\n".to_vec()
+            } else if args.iter().any(|argument| argument == "/usr/bin/wslpath") {
+                b"/mnt/c/Users/test/code/widget\n".to_vec()
+            } else if args.windows(2).any(|pair| pair == ["projects", "add"]) {
+                br#"{"status":"registered","project":{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null}}"#.to_vec()
+            } else if args.windows(2).any(|pair| pair == ["projects", "remove"]) {
+                br#"{"status":"unregistered","project":{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null}}"#.to_vec()
+            } else if args.iter().any(|argument| argument == "projects") {
+                br#"[{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null}]"#.to_vec()
+            } else if args.iter().any(|argument| {
+                matches!(
+                    argument.as_str(),
+                    "/usr/bin/install"
+                        | "/usr/bin/dd"
+                        | "/usr/bin/chmod"
+                        | "/usr/bin/mv"
+                        | "/usr/bin/rm"
+                )
+            }) {
+                Vec::new()
+            } else {
+                return Err(io::Error::other(format!(
+                    "unexpected KWT mutation command: {args:?}"
+                )));
+            };
+            Ok(CommandOutput {
+                status: 0,
+                stdout,
+                stderr: Vec::new(),
+            })
+        }
+
+        fn run_with_input(
+            &self,
+            program: &OsStr,
+            args: &[OsString],
+            _input: &[u8],
+            cancellation: &CancellationToken,
+            timeout: Duration,
+        ) -> io::Result<CommandOutput> {
+            self.helper_matches.store(true, Ordering::Release);
+            self.run(program, args, cancellation, timeout)
+        }
+    }
+
+    fn kwt_mutation_host() -> (
+        WslHost<KwtMutationRunner>,
+        KwtMutationRunner,
+        WslEndpoint,
+        WslRuntimeIdentity,
+    ) {
+        kwt_mutation_host_with_config(WslConfig::with_distro("Ubuntu").expect("config"))
+    }
+
+    fn kwt_mutation_host_with_config(
+        config: WslConfig,
+    ) -> (
+        WslHost<KwtMutationRunner>,
+        KwtMutationRunner,
+        WslEndpoint,
+        WslRuntimeIdentity,
+    ) {
+        let runner = KwtMutationRunner::default();
+        let endpoint = WslEndpoint {
+            distro: "Ubuntu".to_owned(),
+        };
+        let runtime = WslRuntimeIdentity {
+            kernel_boot_id: "12345678-1234-1234-1234-123456789abc".to_owned(),
+            init_start_ticks: 42,
+        };
+        let bundle =
+            KwtBundle::new("a".repeat(40), "b".repeat(64), vec![1_u8]).expect("valid bundle");
+        let host = WslHost::new(
+            config.with_kwt_bundle(bundle),
+            runner.clone(),
+            WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("WSL path"),
+        );
+        *host.verified_kwt.lock().expect("verified KWT") = Some(VerifiedKwtHelper {
+            endpoint: endpoint.clone(),
+            runtime: runtime.clone(),
+            path: "/home/test/.ghosthub/helpers/kwt/revision/kwt".to_owned(),
+        });
+        (host, runner, endpoint, runtime)
+    }
+
+    #[test]
+    fn kwt_project_mutations_use_exact_machine_readable_arguments() {
+        let (host, runner, endpoint, runtime) = kwt_mutation_host();
+        let cancellation = CancellationToken::new();
+        let registered = host
+            .register_kwt_project(&endpoint, &runtime, "/code/widget", &cancellation)
+            .expect("register project");
+        assert_eq!(registered.repository(), "github.com/acme/widget");
+        let removed = host
+            .remove_kwt_project(
+                &endpoint,
+                &runtime,
+                "/code/widget",
+                "github.com/acme/widget",
+                &cancellation,
+            )
+            .expect("remove project");
+        assert_eq!(removed.path(), "/code/widget");
+
+        let calls = runner.calls.lock().expect("calls");
+        assert!(calls.iter().any(|args| {
+            args.ends_with(&[
+                "projects".to_owned(),
+                "add".to_owned(),
+                "/code/widget".to_owned(),
+                "--json".to_owned(),
+            ])
+        }));
+        assert!(calls.iter().any(|args| {
+            args.ends_with(&[
+                "projects".to_owned(),
+                "remove".to_owned(),
+                "/code/widget".to_owned(),
+                "--expected-repository".to_owned(),
+                "github.com/acme/widget".to_owned(),
+                "--json".to_owned(),
+            ])
+        }));
+    }
+
+    #[test]
+    fn kwt_commands_use_the_configured_tmux_socket_directory() {
+        let config = WslConfig::configured(
+            Some("Ubuntu".to_owned()),
+            "/usr/bin/tmux",
+            Some("/run/user/1000/ghosthub".to_owned()),
+        )
+        .expect("configured socket directory");
+        let (host, runner, endpoint, runtime) = kwt_mutation_host_with_config(config);
+
+        host.register_kwt_project(
+            &endpoint,
+            &runtime,
+            "/code/widget",
+            &CancellationToken::new(),
+        )
+        .expect("register project through configured tmux namespace");
+
+        let calls = runner.calls.lock().expect("calls");
+        assert!(calls.iter().any(|args| {
+            args.windows(2).any(|pair| pair == ["projects", "add"])
+                && args
+                    .iter()
+                    .any(|argument| argument == "TMUX_TMPDIR=/run/user/1000/ghosthub")
+        }));
+    }
+
+    #[test]
+    fn cached_kwt_helper_is_revalidated_and_repaired_before_execution() {
+        let (host, runner, endpoint, runtime) = kwt_mutation_host();
+        runner.helper_matches.store(false, Ordering::Release);
+
+        host.register_kwt_project(
+            &endpoint,
+            &runtime,
+            "/code/widget",
+            &CancellationToken::new(),
+        )
+        .expect("replace the stale helper before project execution");
+
+        let calls = runner.calls.lock().expect("calls");
+        let digest_check = calls
+            .iter()
+            .position(|args| args.iter().any(|argument| argument == "/usr/bin/sha256sum"))
+            .expect("cached helper digest is checked");
+        let upload = calls
+            .iter()
+            .position(|args| args.iter().any(|argument| argument == "/usr/bin/dd"))
+            .expect("stale helper is reinstalled");
+        let project_command = calls
+            .iter()
+            .position(|args| args.windows(2).any(|pair| pair == ["projects", "add"]))
+            .expect("project command executes after repair");
+        assert!(digest_check < upload && upload < project_command);
+    }
+
+    #[test]
+    fn kwt_project_registration_resolves_windows_paths_inside_the_distro() {
+        let (host, runner, endpoint, runtime) = kwt_mutation_host();
+        let cancellation = CancellationToken::new();
+
+        host.register_kwt_project(
+            &endpoint,
+            &runtime,
+            r"C:\Users\test\code\widget",
+            &cancellation,
+        )
+        .expect("register Windows project path");
+
+        let calls = runner.calls.lock().expect("calls");
+        assert!(calls.iter().any(|args| {
+            args.ends_with(&[
+                "/usr/bin/wslpath".to_owned(),
+                "-a".to_owned(),
+                "-u".to_owned(),
+                r"C:\Users\test\code\widget".to_owned(),
+            ])
+        }));
+        assert!(calls.iter().any(|args| {
+            args.ends_with(&[
+                "projects".to_owned(),
+                "add".to_owned(),
+                "/mnt/c/Users/test/code/widget".to_owned(),
+                "--json".to_owned(),
+            ])
+        }));
+    }
+
+    #[test]
+    fn kwt_project_registration_maps_the_selected_distros_unc_path_directly() {
+        let (host, runner, endpoint, runtime) = kwt_mutation_host();
+        let cancellation = CancellationToken::new();
+
+        for path in [
+            r"\\wsl.localhost\Ubuntu\home\test\code\widget",
+            "//wsl.localhost/Ubuntu/home/test/code/widget",
+        ] {
+            host.register_kwt_project(&endpoint, &runtime, path, &cancellation)
+                .expect("register WSL UNC project path");
+        }
+
+        let calls = runner.calls.lock().expect("calls");
+        assert!(
+            !calls
+                .iter()
+                .any(|args| { args.iter().any(|argument| argument == "/usr/bin/wslpath") })
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|args| {
+                    args.ends_with(&[
+                        "projects".to_owned(),
+                        "add".to_owned(),
+                        "/home/test/code/widget".to_owned(),
+                        "--json".to_owned(),
+                    ])
+                })
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn kwt_project_registration_rejects_a_different_distros_unc_path() {
+        let (host, _runner, endpoint, runtime) = kwt_mutation_host();
+        let cancellation = CancellationToken::new();
+
+        for path in [
+            r"\\wsl.localhost\Debian\home\test\code\widget",
+            "//wsl.localhost/Debian/home/test/code/widget",
+        ] {
+            let error = host
+                .register_kwt_project(&endpoint, &runtime, path, &cancellation)
+                .expect_err("a WSL UNC path cannot cross distro identity");
+
+            assert_eq!(error.kind(), DiagnosticKind::MalformedOutput);
+            assert!(error.to_string().contains("this host uses Ubuntu"));
+        }
+    }
 
     #[test]
     fn authoritative_herdr_lifecycle_updates_only_the_target_session() {
@@ -3131,14 +4190,14 @@ mod tests {
         let endpoint = WslEndpoint {
             distro: "Ubuntu Work".to_owned(),
         };
-        let plan = host
+        let (plan, receipt) = host
             .create_once_with_term(
                 &endpoint,
                 SessionName::parse("release work").expect("valid name"),
                 AttachTerm::Xterm256Color,
             )
             .expect("creation plan");
-        let (program, args, target, marker) = plan.into_parts();
+        let (program, args, target) = plan.into_parts();
 
         assert_eq!(program, r"C:\Windows\System32\wsl.exe");
         assert_eq!(target.as_str(), "release work");
@@ -3164,18 +4223,19 @@ mod tests {
                 "-s",
                 "release work",
                 ";",
-                "display-message",
-                "-p",
-                "-F",
+                "run-shell",
+                "-b",
             ]
             .into_iter()
             .map(OsString::from)
             .chain([OsString::from(format!(
-                "{marker}#{{pid}}|#{{session_id}}|#{{session_created}}|!"
+                "/bin/sh -c 'umask 077; set -C; /usr/bin/printf \"%s|%s|%s|!\" \"$1\" \"$2\" \"$3\" > \"$4\" && /usr/bin/mv -T -- \"$4\" \"$5\"' ghosthub-receipt '#{{pid}}' '#{{session_id}}' '#{{session_created}}' '{}' '{}'",
+                receipt.staging_path, receipt.path
             ))])
             .collect::<Vec<_>>()
         );
-        assert!(marker.starts_with("__ghc_") && marker.ends_with("__"));
+        assert!(receipt.path.starts_with("/tmp/.ghosthub-create-"));
+        assert_eq!(receipt.staging_path, format!("{}.tmp", receipt.path));
     }
 
     #[test]
