@@ -974,6 +974,8 @@ Rust keeps the same separation:
 
 - cargo test-contracts is the fast manifest, parsing, capability, plan,
   sidebar, registry, and architecture gate
+- cargo test-wsl-kwt-live installs and verifies a staged pinned KWT helper and
+  reads its real inventory
 - `make rust-test-wsl-live` launches real isolated tmux servers inside a WSL2
   distro plus PTYs and supervisor children for detach and app-death survival
 
@@ -995,7 +997,7 @@ the persistent runner. Feature changes run `make rust-test-wsl-live` on an
 isolated developer machine before merge; after merge, the trusted integration
 SHA receives the GitHub acceptance run. A successful live run is required
 acceptance evidence for changes to WSL attachment, creation, guarded kill, or
-client-lifetime behavior.
+client-lifetime behavior, and for KWT helper provisioning or inventory.
 
 GitHub-hosted Windows runners remain the fast compile, unit, contract, and lint
 gate because their installed WSL tooling does not guarantee a usable WSL2

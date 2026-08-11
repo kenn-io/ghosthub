@@ -730,11 +730,11 @@ impl<R: CommandRunner> WslHost<R> {
         project_path: &str,
         cancellation: &CancellationToken,
     ) -> Result<String, HostError> {
-        if is_posix_absolute(project_path) {
-            return Ok(project_path.to_owned());
-        }
         if let Some(path) = resolve_wsl_unc_project_path(endpoint, project_path)? {
             return Ok(path);
+        }
+        if is_posix_absolute(project_path) {
+            return Ok(project_path.to_owned());
         }
         let output = self.run_scrubbed(
             endpoint,
@@ -3803,13 +3803,13 @@ mod tests {
         let (host, runner, endpoint, runtime) = kwt_mutation_host();
         let cancellation = CancellationToken::new();
 
-        host.register_kwt_project(
-            &endpoint,
-            &runtime,
+        for path in [
             r"\\wsl.localhost\Ubuntu\home\test\code\widget",
-            &cancellation,
-        )
-        .expect("register WSL UNC project path");
+            "//wsl.localhost/Ubuntu/home/test/code/widget",
+        ] {
+            host.register_kwt_project(&endpoint, &runtime, path, &cancellation)
+                .expect("register WSL UNC project path");
+        }
 
         let calls = runner.calls.lock().expect("calls");
         assert!(
@@ -3817,14 +3817,20 @@ mod tests {
                 .iter()
                 .any(|args| { args.iter().any(|argument| argument == "/usr/bin/wslpath") })
         );
-        assert!(calls.iter().any(|args| {
-            args.ends_with(&[
-                "projects".to_owned(),
-                "add".to_owned(),
-                "/home/test/code/widget".to_owned(),
-                "--json".to_owned(),
-            ])
-        }));
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|args| {
+                    args.ends_with(&[
+                        "projects".to_owned(),
+                        "add".to_owned(),
+                        "/home/test/code/widget".to_owned(),
+                        "--json".to_owned(),
+                    ])
+                })
+                .count(),
+            2
+        );
     }
 
     #[test]
@@ -3832,17 +3838,17 @@ mod tests {
         let (host, _runner, endpoint, runtime) = kwt_mutation_host();
         let cancellation = CancellationToken::new();
 
-        let error = host
-            .register_kwt_project(
-                &endpoint,
-                &runtime,
-                r"\\wsl.localhost\Debian\home\test\code\widget",
-                &cancellation,
-            )
-            .expect_err("a WSL UNC path cannot cross distro identity");
+        for path in [
+            r"\\wsl.localhost\Debian\home\test\code\widget",
+            "//wsl.localhost/Debian/home/test/code/widget",
+        ] {
+            let error = host
+                .register_kwt_project(&endpoint, &runtime, path, &cancellation)
+                .expect_err("a WSL UNC path cannot cross distro identity");
 
-        assert_eq!(error.kind(), DiagnosticKind::MalformedOutput);
-        assert!(error.to_string().contains("this host uses Ubuntu"));
+            assert_eq!(error.kind(), DiagnosticKind::MalformedOutput);
+            assert!(error.to_string().contains("this host uses Ubuntu"));
+        }
     }
 
     #[test]
