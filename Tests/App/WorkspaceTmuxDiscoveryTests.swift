@@ -6416,6 +6416,77 @@ struct WorkspaceTmuxDiscoveryTests {
 
     @MainActor
     @Test(
+        "Definitive kwt removal rejections restore without reconciliation",
+        arguments: [
+            "protected_session_live",
+            "protected_endpoint_inventory_incomplete",
+        ]
+    )
+    func definitiveRemovalRejectionRestoresImmediately(
+        code: String
+    ) async throws {
+        let environment = try setupStandardEnvironment()
+        var snapshot = environment.snapshot
+        snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-root"
+        let project = try #require(snapshot.projects.first)
+        let host = try #require(snapshot.hosts.first)
+        let worktree = try #require(snapshot.worktrees.first)
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: worktree)
+        )
+        let inventory = Self.inventory(
+            project: project,
+            worktrees: snapshot.worktrees
+        )
+        let inventoryLoads = Counter()
+        let coordinator = WorktreeMutationCoordinator()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let removalError = KwtProjectCommandError.commandFailed(
+            host: "this Mac",
+            status: 1,
+            code: code,
+            message: "kwt rejected project removal",
+            retryable: false,
+            details: [:]
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            kwtInventoryLoader: { _ in
+                guard inventoryLoads.increment() == 1 else {
+                    throw KwtInventoryError.commandFailed(
+                        host: "this Mac",
+                        status: 75
+                    )
+                }
+                return inventory
+            },
+            worktreeMutationCoordinator: coordinator,
+            kwtProjectRemoval: { _, _, _, _ in throw removalError }
+        )
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+
+        let result = await model.unregisterProject(
+            project,
+            confirmedHost: host
+        )
+
+        #expect(result == .failure(.message(
+            removalError.localizedDescription
+        )))
+        #expect(coordinator.scopes.isEmpty)
+        #expect(model.activeBorrowedTmuxSelection == selection)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test(
         "Remove Project rejects live protected sessions",
         arguments: [false, true]
     )
@@ -6576,39 +6647,38 @@ struct WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
-    @Test("Remove Project probes retired endpoints after socket drift")
-    func removeProjectProbesRetiredEndpointAfterSocketDrift() async throws {
+    @Test("Remove Project probes endpoints replaced by an active scene")
+    func removeProjectProbesEndpointReplacedByActiveScene() async throws {
         let environment = try setupStandardEnvironment()
         var snapshot = environment.snapshot
         snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-current"
         snapshot.worktrees[0].tmuxSocketName = "kwt-current"
         let project = try #require(snapshot.projects.first)
         let host = try #require(snapshot.hosts.first)
-        let worktree = try #require(snapshot.worktrees.first)
-        let currentSelection = try #require(
-            WorkspaceSidebarModel.tmuxSessionSelection(for: worktree)
+        var previousSnapshot = snapshot
+        previousSnapshot.worktrees[0].tmuxSessionName =
+            "kwt-ghosthub-retired"
+        previousSnapshot.worktrees[0].tmuxSocketName = "kwt-retired"
+        let liveRetiredSelection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(
+                for: previousSnapshot.worktrees[0]
+            )
         )
-        var retiredSelection = currentSelection
-        retiredSelection.name = "kwt-ghosthub-retired"
-        retiredSelection.socketName = "kwt-retired"
-        let liveRetiredSelection = retiredSelection
         let inventory = Self.inventory(
             project: project,
             worktrees: snapshot.worktrees
-        )
-        let scope = WorktreeMutationCoordinator.Scope(
-            hostID: project.hostID,
-            projectIdentity: project.scopedKey
-        )
-        let identity = KwtWorktreeIdentity(
-            path: worktree.path,
-            generation: worktree.generation ?? ""
         )
         let coordinator = WorktreeMutationCoordinator()
         let removalCalls = Counter()
         let probedSelections = LockedValue<
             Set<WorkspaceTmuxSessionSelection>
         >([])
+        let activeScene = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: previousSnapshot,
+            worktreeMutationCoordinator: coordinator
+        )
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
@@ -6639,15 +6709,7 @@ struct WorkspaceTmuxDiscoveryTests {
                 )
             }
         )
-        let retiredParticipant = UUID()
-        coordinator.replaceProtectedEndpoints([
-            scope: [WorktreeMutationCoordinator.ProtectedEndpoint(
-                worktreeName: worktree.name,
-                worktreeIdentity: identity,
-                selection: liveRetiredSelection
-            )],
-        ], for: retiredParticipant)
-        coordinator.retireProtectedEndpoints(for: retiredParticipant)
+        activeScene.snapshot = snapshot
 
         let result = await model.unregisterProject(
             project,
@@ -6661,6 +6723,7 @@ struct WorkspaceTmuxDiscoveryTests {
         )))
         #expect(probedSelections.load().contains(liveRetiredSelection))
         #expect(removalCalls.count == 0)
+        await activeScene.shutdown()
         await model.shutdown()
     }
 
@@ -8712,6 +8775,91 @@ struct WorkspaceTmuxDiscoveryTests {
         )
         #expect(coordinator.acquireProjectRegistry(host: registryHost))
         coordinator.releaseProjectRegistry(host: registryHost)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("Registration change cannot restore on a replacement host")
+    func registrationChangeDoesNotRestoreOnReplacementHost() async throws {
+        let environment = try setupRemoteEnvironment()
+        var snapshot = environment.snapshot
+        snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-root"
+        let project = try #require(snapshot.projects.first)
+        let confirmedHost = try #require(snapshot.hosts.first)
+        let worktree = try #require(snapshot.worktrees.first)
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: worktree)
+        )
+        let inventory = Self.inventory(
+            project: project,
+            worktrees: snapshot.worktrees
+        )
+        let initialHost = SSHHost(
+            configKey: environment.host.configKey,
+            name: environment.host.name,
+            platform: environment.host.platform,
+            sshDestination: try #require(
+                environment.host.sshDestination
+            )
+        )
+        let configuredHosts = CurrentValueSubject<[SSHHost], Never>([
+            initialHost,
+        ])
+        let removalGate = KillGate()
+        let coordinator = WorktreeMutationCoordinator()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: UUID(),
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            kwtInventoryLoader: { _ in inventory },
+            worktreeMutationCoordinator: coordinator,
+            kwtProjectRemoval: { _, _, _, _ in
+                await removalGate.suspend()
+                throw KwtProjectCommandError.commandFailed(
+                    host: initialHost.name,
+                    status: 1,
+                    code: "registration_changed",
+                    message: "project registration changed",
+                    retryable: true,
+                    details: [:]
+                )
+            },
+            configuredSSHHostsProvider: { configuredHosts.value }
+        )
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        let initialRequestCount = surfaceStore.requestCount
+
+        let removalTask: Task<Result<String, HostProbeError>, Never> = Task {
+            @MainActor in
+            await model.unregisterProject(
+                project,
+                confirmedHost: confirmedHost
+            )
+        }
+        await removalGate.waitUntilStarted()
+        configuredHosts.send([
+            SSHHost(
+                configKey: initialHost.configKey,
+                name: initialHost.name,
+                platform: initialHost.platform,
+                sshDestination: "wesm@replacement-office-linux"
+            ),
+        ])
+        model.refreshHosts()
+        await removalGate.release()
+
+        #expect(await removalTask.value == .failure(.message(
+            "The project or host connection changed. Try removing it again."
+        )))
+        #expect(coordinator.scopes.isEmpty)
+        #expect(model.activeBorrowedTmuxSelection == nil)
+        #expect(surfaceStore.requestCount == initialRequestCount)
         await model.shutdown()
     }
 

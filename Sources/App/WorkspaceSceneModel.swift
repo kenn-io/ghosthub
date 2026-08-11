@@ -242,6 +242,12 @@ final class WorktreeMutationCoordinator {
         _ endpoints: [Scope: Set<ProtectedEndpoint>],
         for participantID: UUID
     ) {
+        for (scope, previous) in
+            protectedEndpointsByParticipant[participantID] ?? [:] {
+            let superseded = previous.subtracting(endpoints[scope] ?? [])
+            retiredProtectedEndpointsByScope[scope, default: []]
+                .formUnion(superseded)
+        }
         for (scope, replacements) in endpoints {
             let resolvedIdentities = Set(replacements.compactMap { endpoint in
                 endpoint.selection == nil ? nil : endpoint.worktreeIdentity
@@ -6649,12 +6655,25 @@ final class WorkspaceSceneModel: ObservableObject {
                 if case let .commandFailed(
                     _, _, code, _, _, _
                 ) = removalError as? KwtProjectCommandError,
-                    code == "registration_changed" {
+                    [
+                        "registration_changed",
+                        "protected_session_live",
+                        "protected_endpoint_inventory_incomplete",
+                    ].contains(code) {
+                    guard validatedProjectRemovalTarget(
+                        project,
+                        confirmedHostID: confirmedHost.id,
+                        capturedTarget: capturedTarget
+                    ) != nil else {
+                        allowsRemovalRestoration = false
+                        shouldRefresh = true
+                        return .failure(projectRemovalTargetChangedError)
+                    }
                     reconciledRestorationTargets = projectRestorationTargets(
                         hostID: removal.project.hostID,
                         projectIdentity: removal.project.scopedKey
                     )
-                    shouldRefresh = true
+                    shouldRefresh = code == "registration_changed"
                     return .failure(.message(
                         removalError.localizedDescription
                     ))
