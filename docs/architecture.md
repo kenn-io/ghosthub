@@ -169,8 +169,12 @@ timeouts. An application-owned background cadence refreshes ready WSL inventory
 every ten seconds while the window is active. Window activation changes only an
 in-memory polling flag; it performs no inventory, process sampling, filesystem,
 database, or reconciliation work. The cadence starts no new inventory refresh
-while the window is inactive. Disconnected and failed hosts are not retried in a loop. Later
-refreshes reuse the admitted host capability so
+while the window is inactive or another host refresh or session operation is
+in flight. Starting a refresh for an already-ready host publishes no transient
+Connecting state or revision: cached rows and their constructive actions remain
+stable until replacement inventory arrives. The ten-second session cadence does
+not start KWT inventory. Disconnected and failed hosts are not retried in a
+loop. Later refreshes reuse the admitted host capability so
 they perform ordinary inventory reads instead of repeating tmux admission. The
 same refresh resolves optional Herdr through WSL's POSIX login profile,
 scrubs inherited Herdr routing variables, and publishes running and stopped

@@ -190,6 +190,12 @@ pub enum HostConnectionState {
     Unavailable,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RefreshPresentation {
+    Connecting,
+    PreserveReady,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HostDiagnostic {
     kind: DiagnosticKind,
@@ -2189,7 +2195,7 @@ impl Workspace {
                 terminal_notice: RwLock::new(None),
             }),
         };
-        workspace.start_refresh(config, None);
+        workspace.start_refresh(config, None, RefreshPresentation::Connecting);
         workspace
     }
 
@@ -2209,7 +2215,7 @@ impl Workspace {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         if executable.is_some() {
-            self.start_refresh(config, executable);
+            self.start_refresh(config, executable, RefreshPresentation::Connecting);
         }
         Ok(())
     }
@@ -2231,7 +2237,12 @@ impl Workspace {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
-        self.start_refresh(config, executable);
+        let presentation = if self.host_is_ready() {
+            RefreshPresentation::PreserveReady
+        } else {
+            RefreshPresentation::Connecting
+        };
+        self.start_refresh(config, executable, presentation);
         start_kwt_refresh(&self.inner, true);
         Ok(())
     }
@@ -2372,18 +2383,31 @@ impl Workspace {
     }
 
     fn refresh_if_ready(&self) -> Result<bool, WorkspaceError> {
-        let ready = self
+        if !self.host_is_ready() || refresh_is_in_flight(&self.inner) {
+            return Ok(false);
+        }
+        let config = self
             .inner
+            .wsl_config
+            .clone()
+            .ok_or_else(|| WorkspaceError::new("preview workspace cannot refresh WSL"))?;
+        let executable = self
+            .inner
+            .wsl_executable
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        self.start_refresh(config, executable, RefreshPresentation::PreserveReady);
+        Ok(true)
+    }
+
+    fn host_is_ready(&self) -> bool {
+        self.inner
             .hosts
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
-            .any(|host| host.id == "wsl" && host.connection == HostConnectionState::Ready);
-        if !ready {
-            return Ok(false);
-        }
-        self.refresh()?;
-        Ok(true)
+            .any(|host| host.id == "wsl" && host.connection == HostConnectionState::Ready)
     }
 
     /// Cancel the active WSL inventory refresh, if one is connecting.
@@ -3958,10 +3982,15 @@ impl Workspace {
         }
     }
 
-    fn start_refresh(&self, config: WslConfig, executable: Option<WslExecutable>) {
+    fn start_refresh(
+        &self,
+        config: WslConfig,
+        executable: Option<WslExecutable>,
+        presentation: RefreshPresentation,
+    ) {
         let inner = Arc::clone(&self.inner);
         let cancellation = CancellationToken::new();
-        let generation = begin_refresh(&inner, &cancellation);
+        let generation = begin_refresh(&inner, &cancellation, presentation);
         let deadline_inner = Arc::clone(&inner);
         let deadline_cancellation = cancellation.clone();
         if let Err(error) = inner.refresh_runtime.spawn_after(
@@ -4786,24 +4815,39 @@ fn choose_navigation_target(
     }
 }
 
-fn begin_refresh(inner: &Inner, cancellation: &CancellationToken) -> u64 {
+fn begin_refresh(
+    inner: &Inner,
+    cancellation: &CancellationToken,
+    presentation: RefreshPresentation,
+) -> u64 {
     let generation = reserve_refresh(inner, cancellation);
-    publish_refresh(inner, generation, || {
-        if inner.host_scoped_inventory {
-            let mut hosts = inner
-                .hosts
-                .write()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(host) = hosts.iter_mut().find(|host| host.id == "wsl") {
-                host.connection = HostConnectionState::Connecting;
-                host.diagnostic = None;
+    if presentation == RefreshPresentation::Connecting {
+        publish_refresh(inner, generation, || {
+            if inner.host_scoped_inventory {
+                let mut hosts = inner
+                    .hosts
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some(host) = hosts.iter_mut().find(|host| host.id == "wsl") {
+                    host.connection = HostConnectionState::Connecting;
+                    host.diagnostic = None;
+                }
+                inner.revision.fetch_add(1, Ordering::Release);
+            } else {
+                set_inventory_state(inner, WorkspaceContent::Loading);
             }
-            inner.revision.fetch_add(1, Ordering::Release);
-        } else {
-            set_inventory_state(inner, WorkspaceContent::Loading);
-        }
-    });
+        });
+    }
     generation
+}
+
+fn refresh_is_in_flight(inner: &Inner) -> bool {
+    inner
+        .discovery_cancel
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .is_some_and(|cancellation| !cancellation.is_cancelled())
 }
 
 fn reserve_refresh(inner: &Inner, cancellation: &CancellationToken) -> u64 {
@@ -8167,7 +8211,11 @@ mod tests {
                 .expect("absolute WSL path"),
         );
         let workspace = Workspace::application(TerminalAppearance::default(), Some(spec));
-        let newer_generation = begin_refresh(&workspace.inner, &CancellationToken::new());
+        let newer_generation = begin_refresh(
+            &workspace.inner,
+            &CancellationToken::new(),
+            RefreshPresentation::Connecting,
+        );
         set_inner_state(
             &workspace.inner,
             WorkspaceContent::Attaching {
@@ -9063,7 +9111,11 @@ mod tests {
             },
         );
 
-        let refresh_generation = begin_refresh(&workspace.inner, &CancellationToken::new());
+        let refresh_generation = begin_refresh(
+            &workspace.inner,
+            &CancellationToken::new(),
+            RefreshPresentation::Connecting,
+        );
         let request = capture_attach_request(
             &workspace.inner,
             &SessionSelection::new("wsl", "Ubuntu", "work"),
@@ -9188,7 +9240,11 @@ mod tests {
         };
 
         let operation_generation = reserve_constructive_inventory(&workspace.inner);
-        let refresh_generation = begin_refresh(&workspace.inner, &CancellationToken::new());
+        let refresh_generation = begin_refresh(
+            &workspace.inner,
+            &CancellationToken::new(),
+            RefreshPresentation::Connecting,
+        );
         let refreshed = HostSnapshot::test_fixture(
             "Ubuntu",
             "boot-id",
@@ -9273,7 +9329,11 @@ mod tests {
             name: SessionName::parse("created").expect("valid name"),
         };
         let cancellation = CancellationToken::new();
-        let refresh_generation = begin_refresh(&workspace.inner, &cancellation);
+        let refresh_generation = begin_refresh(
+            &workspace.inner,
+            &cancellation,
+            RefreshPresentation::Connecting,
+        );
         let operation_generation = reserve_constructive_inventory(&workspace.inner);
         let created = HostSnapshot::test_fixture(
             "Ubuntu",
@@ -9310,7 +9370,11 @@ mod tests {
         let navigation_generation = workspace.begin_navigation();
         let operation_cancellation = CancellationToken::new();
         let refresh_cancellation = CancellationToken::new();
-        let refresh_generation = begin_refresh(&workspace.inner, &refresh_cancellation);
+        let refresh_generation = begin_refresh(
+            &workspace.inner,
+            &refresh_cancellation,
+            RefreshPresentation::Connecting,
+        );
         assert_eq!(
             workspace.snapshot().hosts()[0].connection(),
             HostConnectionState::Connecting
@@ -9341,7 +9405,11 @@ mod tests {
         let cancelled = CancellationToken::new();
         cancelled.cancel();
         let refresh_cancellation = CancellationToken::new();
-        let refresh_generation = begin_refresh(&workspace.inner, &refresh_cancellation);
+        let refresh_generation = begin_refresh(
+            &workspace.inner,
+            &refresh_cancellation,
+            RefreshPresentation::Connecting,
+        );
 
         assert_eq!(
             reserve_current_constructive_inventory(&workspace.inner, queued_navigation, &cancelled,),
@@ -9390,7 +9458,11 @@ mod tests {
 
         reserved.wait();
         let current_cancellation = CancellationToken::new();
-        let current_generation = begin_refresh(&workspace.inner, &current_cancellation);
+        let current_generation = begin_refresh(
+            &workspace.inner,
+            &current_cancellation,
+            RefreshPresentation::Connecting,
+        );
         assert!(publish_refresh(
             &workspace.inner,
             current_generation,
@@ -11109,7 +11181,11 @@ mod tests {
             )];
         }
 
-        begin_refresh(&workspace.inner, &CancellationToken::new());
+        begin_refresh(
+            &workspace.inner,
+            &CancellationToken::new(),
+            RefreshPresentation::Connecting,
+        );
 
         let snapshot = workspace.snapshot();
         assert!(matches!(snapshot.content(), WorkspaceContent::Shell));
@@ -11319,10 +11395,18 @@ mod tests {
             .start_inventory_cadence()
             .expect("cadence start is idempotent");
         assert_eq!(runtime.deadline_delays(), vec![INVENTORY_REFRESH_INTERVAL]);
+        let before_refresh = workspace.snapshot();
         runtime.run_next_deadline();
+        let refreshing = workspace.snapshot();
         assert_eq!(
-            workspace.snapshot().hosts()[0].connection(),
-            HostConnectionState::Connecting
+            refreshing.hosts()[0].connection(),
+            HostConnectionState::Ready,
+            "background refresh keeps the usable host and its actions visible"
+        );
+        assert_eq!(
+            refreshing.revision(),
+            before_refresh.revision(),
+            "starting background work does not publish transient UI state"
         );
         assert!(
             capture_create_request(
@@ -11501,8 +11585,8 @@ mod tests {
         runtime.run_next_deadline();
         assert_eq!(
             workspace.snapshot().hosts()[0].connection(),
-            HostConnectionState::Connecting,
-            "cadence resumes after the operation lane is released"
+            HostConnectionState::Ready,
+            "cadence resumes without demoting the usable host"
         );
         assert_eq!(
             workspace.inner.refresh_generation.load(Ordering::Acquire),
@@ -11625,9 +11709,11 @@ mod tests {
         );
         let workspace = Workspace::application(TerminalAppearance::default(), Some(spec));
         let stale = CancellationToken::new();
-        let stale_generation = begin_refresh(&workspace.inner, &stale);
+        let stale_generation =
+            begin_refresh(&workspace.inner, &stale, RefreshPresentation::Connecting);
         let current = CancellationToken::new();
-        let current_generation = begin_refresh(&workspace.inner, &current);
+        let current_generation =
+            begin_refresh(&workspace.inner, &current, RefreshPresentation::Connecting);
 
         assert!(!expire_refresh(&workspace.inner, stale_generation, &stale));
         assert!(expire_refresh(
