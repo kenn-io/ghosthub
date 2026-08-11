@@ -220,10 +220,14 @@ EOF
 capture_project_removal() {
   demo_input click "32,489"
   sleep 1
-  demo_input click "300,450"
+  demo_input click "32,450"
+  sleep 1
+  demo_input click "300,412"
   sleep 1
   capture_state guide-project-removal.png
   demo_input escape
+  sleep 1
+  demo_input click "32,450"
   sleep 1
   demo_input click "32,489"
   sleep 1

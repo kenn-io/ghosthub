@@ -19,6 +19,8 @@ tmux, Herdr, and Zellij can all be active on the same host fleet. Each continues
 to own its own windows or tabs, panes, layout, history, key bindings, plugins,
 and processes.
 
+![Ghosthub showing tmux, Herdr, and Zellij session groups with an active Zellij session and its Command Palette actions](assets/guide-sessions.png)
+
 ## Create a standalone session
 
 1. Expand the target host.

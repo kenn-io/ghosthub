@@ -10,11 +10,14 @@ projects_json() {
   cat <<EOF
 [
   {"repository": "github.com/kenn-io/ghosthub", "name": "ghosthub",
-   "path": "$scratch/repos/ghosthub", "last_touched": "2026-07-21T14:02:11Z"},
+   "path": "$scratch/repos/ghosthub", "last_touched": "2026-07-21T14:02:11Z",
+   "registration_fingerprint": "demo-ghosthub-registration-v1"},
   {"repository": "github.com/kenn-io/agentsview", "name": "agentsview",
-   "path": "$scratch/repos/agentsview", "last_touched": "2026-07-21T09:47:03Z"},
+   "path": "$scratch/repos/agentsview", "last_touched": "2026-07-21T09:47:03Z",
+   "registration_fingerprint": "demo-agentsview-registration-v1"},
   {"repository": "github.com/kenn-io/msgvault", "name": "msgvault",
-   "path": "$scratch/repos/msgvault", "last_touched": "2026-07-20T22:15:40Z"}
+   "path": "$scratch/repos/msgvault", "last_touched": "2026-07-20T22:15:40Z",
+   "registration_fingerprint": "demo-msgvault-registration-v1"}
 ]
 EOF
 }

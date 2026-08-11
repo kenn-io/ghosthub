@@ -34,14 +34,14 @@ sheet and start again so the confirmation applies to the current host.
 
 ## Remove a project
 
-Control-click a project row and choose **Remove Project…**, then confirm the
-project and host. Ghosthub asks kwt to unregister that project and refreshes
-inventory. You can remove the registration even if its checkout folder has
-already been deleted. This does not delete the repository, any worktree
-directory, or any tmux session. If an imported pull-request worktree still has
-a live session on its protected tmux server, kill that session before removing
-the project. Ordinary sessions that remain live are still available under the
-host's **Tmux Sessions** group.
+Hover over a project row and select its trash control, or Control-click the row
+and choose **Remove Project…**. Then confirm the project and host. Ghosthub asks
+kwt to unregister that project and refreshes inventory. You can remove the
+registration even if its checkout folder has already been deleted. This does
+not delete the repository, any worktree directory, or any tmux session. If an
+imported pull-request worktree still has a live session on its protected tmux
+server, kill that session before removing the project. Ordinary sessions that
+remain live are still available under the host's **Tmux Sessions** group.
 
 ![Ghosthub showing the Remove Project action and its non-destructive confirmation](assets/guide-project-removal.png)
 
