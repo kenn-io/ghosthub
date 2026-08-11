@@ -1186,12 +1186,17 @@ final class WorkspaceSceneModel: ObservableObject {
         },
         zellijSessionValidationDiscovery:
         @escaping ZellijSessionValidationDiscovery = { host, arguments in
-            await Task.detached(priority: .utility) {
+            let probe = Task.detached(priority: .utility) {
                 ZellijInventoryClient().discover(
                     on: host,
                     sshConnectionArguments: arguments
                 )
-            }.value
+            }
+            return await withTaskCancellationHandler {
+                await probe.value
+            } onCancel: {
+                probe.cancel()
+            }
         },
         zellijSessionKiller:
         @escaping ZellijSessionKilling = { name, host, arguments in
@@ -4544,7 +4549,12 @@ final class WorkspaceSceneModel: ObservableObject {
                         let probe = Task.detached(priority: .utility) {
                             discovery(host)
                         }
-                        return await (hostID, probe.value)
+                        let result = await withTaskCancellationHandler {
+                            await probe.value
+                        } onCancel: {
+                            probe.cancel()
+                        }
+                        return (hostID, result)
                     }
                 }
                 var results: [(UUID, ZellijDiscoveryResult)] = []
@@ -4690,7 +4700,12 @@ final class WorkspaceSceneModel: ObservableObject {
                         let probe = Task.detached(priority: .utility) {
                             discovery(host)
                         }
-                        return await (hostID, probe.value)
+                        let result = await withTaskCancellationHandler {
+                            await probe.value
+                        } onCancel: {
+                            probe.cancel()
+                        }
+                        return (hostID, result)
                     }
                 }
                 var results: [(UUID, ZellijDiscoveryResult)] = []
@@ -6356,10 +6371,16 @@ final class WorkspaceSceneModel: ObservableObject {
         )
         let resolvedPath: Result<String, ZellijCommandError>
         if case .available = result {
+            guard !Task.isCancelled else { return nil }
             let resolver = zellijExecutableResolver
-            resolvedPath = await Task.detached(priority: .userInitiated) {
+            let probe = Task.detached(priority: .userInitiated) {
                 resolver(host, connection.arguments)
-            }.value
+            }
+            resolvedPath = await withTaskCancellationHandler {
+                await probe.value
+            } onCancel: {
+                probe.cancel()
+            }
         } else {
             resolvedPath = .failure(.unavailable)
         }
@@ -8305,10 +8326,16 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         let executablePath: String?
         if case .available = result {
+            guard !Task.isCancelled else { return .retry }
             let resolver = zellijExecutableResolver
-            let resolution = await Task.detached(priority: .userInitiated) {
+            let probe = Task.detached(priority: .userInitiated) {
                 resolver(context.host, connection.arguments)
-            }.value
+            }
+            let resolution = await withTaskCancellationHandler {
+                await probe.value
+            } onCancel: {
+                probe.cancel()
+            }
             switch resolution {
             case let .success(path):
                 executablePath = path

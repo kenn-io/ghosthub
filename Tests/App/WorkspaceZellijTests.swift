@@ -46,6 +46,49 @@ struct ZellijKillValidationFailureCase:
     var testDescription: String { name }
 }
 
+private final class CancellableZellijDiscoveryProbe: @unchecked Sendable {
+    private struct State {
+        var calls = 0
+        var cancelled = false
+        var released = false
+    }
+
+    private let blockingCall: Int
+    private let state = Mutex(State())
+
+    init(blockingCall: Int) {
+        self.blockingCall = blockingCall
+    }
+
+    func discover(_: CommandHost) -> ZellijDiscoveryResult {
+        let call = state.withLock {
+            $0.calls += 1
+            return $0.calls
+        }
+        guard call == blockingCall else {
+            return .available(call > blockingCall ? ["replacement"] : [])
+        }
+        while !state.withLock({ $0.released }) {
+            if Task.isCancelled {
+                state.withLock { $0.cancelled = true }
+                return .failure(.commandFailed(
+                    status: -1,
+                    stderr: "cancelled"
+                ))
+            }
+            Thread.sleep(forTimeInterval: 0.001)
+        }
+        return .available([])
+    }
+
+    var calls: Int { state.withLock { $0.calls } }
+    var didCancel: Bool { state.withLock { $0.cancelled } }
+
+    func release() {
+        state.withLock { $0.released = true }
+    }
+}
+
 @Suite("Workspace Zellij support", .serialized)
 @MainActor
 struct WorkspaceZellijTests {
@@ -70,6 +113,65 @@ struct WorkspaceZellijTests {
 
         #expect(discoveries.withLock { $0 } == 1)
         await model.shutdown()
+    }
+
+    @Test("explicit refresh cancels the superseded Zellij probe")
+    func refreshCancelsSupersededDiscovery() async throws {
+        let environment = try zellijEnvironment(sessions: [])
+        let discovery = CancellableZellijDiscoveryProbe(blockingCall: 1)
+        defer { discovery.release() }
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            zellijSessionDiscovery: discovery.discover
+        )
+
+        model.startZellijSessionDiscovery()
+        await waitUntilMainActor { discovery.calls == 1 }
+        model.refreshWorkspaceInventory()
+        await waitUntilMainActor {
+            discovery.didCancel
+                && discovery.calls == 2
+                && model.snapshot.host(id: environment.host.id)?
+                .zellijSessions.map(\.name) == ["replacement"]
+        }
+
+        #expect(discovery.didCancel)
+        await model.shutdown()
+    }
+
+    @Test("shutdown cancels detached Zellij creation retry discovery")
+    func shutdownCancelsCreationRetryDiscovery() async throws {
+        let environment = try zellijEnvironment(sessions: [])
+        let discovery = CancellableZellijDiscoveryProbe(blockingCall: 3)
+        defer { discovery.release() }
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeZellijSurfaceStore: RecordingNativeSessionSurfaceStore(),
+            nativeZellijPathProvider: { _ in .success("/usr/bin/zellij") },
+            zellijSessionDiscovery: discovery.discover,
+            zellijSessionValidationDiscovery: { _, _ in .available([]) },
+            createdSessionDiscoveryDelays: [.zero]
+        )
+        let selection = WorkspaceZellijSessionSelection(
+            hostID: environment.host.id,
+            name: "release"
+        )
+
+        model.startZellijSessionDiscovery()
+        await waitUntilMainActor { discovery.calls == 1 }
+        try await model.createZellijSession(selection)
+        await waitUntilMainActor(timeout: .seconds(1)) {
+            discovery.calls == 3
+        }
+
+        await model.shutdown()
+        await waitUntilMainActor { discovery.didCancel }
+
+        #expect(discovery.didCancel)
     }
 
     @Test("multi-host discovery publishes one completed Zellij inventory")
@@ -469,13 +571,17 @@ struct WorkspaceZellijTests {
         let zellijStore = RecordingNativeSessionSurfaceStore()
         let probeStarted = Mutex(false)
         let probeFinished = Mutex(false)
+        let executableResolutions = Mutex(0)
         let probeContinuation = Mutex<CheckedContinuation<Void, Never>?>(nil)
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.host.id,
             snapshot: environment.snapshot,
             nativeZellijSurfaceStore: zellijStore,
-            nativeZellijPathProvider: { _ in .success("/usr/bin/zellij") },
+            nativeZellijPathProvider: { _ in
+                executableResolutions.withLock { $0 += 1 }
+                return .success("/usr/bin/zellij")
+            },
             zellijSessionValidationDiscovery: { _, _ in
                 probeStarted.withLock { $0 = true }
                 await withCheckedContinuation { continuation in
@@ -506,6 +612,55 @@ struct WorkspaceZellijTests {
         try await Task.sleep(for: .milliseconds(50))
 
         #expect(model.activeBorrowedZellijSelection == nil)
+        #expect(zellijStore.requestedConfigurations.isEmpty)
+        #expect(executableResolutions.withLock { $0 } == 0)
+        await model.shutdown()
+    }
+
+    @Test("navigation cancellation terminates Zellij executable resolution")
+    func navigationCancelsExecutableResolution() async throws {
+        let environment = try zellijEnvironment(sessions: ["zellij-work"])
+        let zellijStore = RecordingNativeSessionSurfaceStore()
+        let resolverState = Mutex((
+            started: false,
+            cancelled: false,
+            released: false
+        ))
+        defer { resolverState.withLock { $0.released = true } }
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeZellijSurfaceStore: zellijStore,
+            nativeZellijPathProvider: { _ in
+                resolverState.withLock { $0.started = true }
+                while !resolverState.withLock({ $0.released }) {
+                    if Task.isCancelled {
+                        resolverState.withLock { $0.cancelled = true }
+                        return .failure(.unavailable)
+                    }
+                    Thread.sleep(forTimeInterval: 0.001)
+                }
+                return .failure(.unavailable)
+            },
+            zellijSessionValidationDiscovery: { _, _ in
+                .available(["zellij-work"])
+            }
+        )
+        let selection = WorkspaceZellijSessionSelection(
+            hostID: environment.host.id,
+            name: "zellij-work"
+        )
+
+        model.openBorrowedZellijSession(selection)
+        await waitUntilMainActor {
+            resolverState.withLock { $0.started }
+        }
+        model.cancelPendingZellijPresentation()
+        await waitUntilMainActor {
+            resolverState.withLock { $0.cancelled }
+        }
+
         #expect(zellijStore.requestedConfigurations.isEmpty)
         await model.shutdown()
     }
