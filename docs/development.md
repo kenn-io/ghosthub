@@ -85,8 +85,10 @@ The primary native workflow suite is:
 make test-essential-workflows
 ```
 
-This runs the focused kwt inventory, host resolution, sidebar, and ordinary
-tmux attachment contracts.
+This first builds the exact `KWT_REVISION` helper and exercises project
+registration, daemon-backed inventory, removal of a missing checkout, and
+inventory refresh in an isolated `KWT_HOME`. It then runs the focused kwt
+inventory, host resolution, sidebar, and ordinary tmux attachment contracts.
 
 ## Apple Silicon macOS toolchain
 

@@ -54,6 +54,43 @@ private actor ReconnectSleepRecorder {
     }
 }
 
+private actor FirstReconnectDeadline {
+    private var continuation: CheckedContinuation<Void, any Error>?
+    private var callCount = 0
+
+    func sleep() async throws {
+        callCount += 1
+        guard callCount == 1 else {
+            try await Task.sleep(for: .seconds(10))
+            return
+        }
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                self.continuation = continuation
+                if Task.isCancelled {
+                    cancel()
+                }
+            }
+        } onCancel: {
+            Task { await self.cancel() }
+        }
+    }
+
+    func isBlocked() -> Bool {
+        continuation != nil
+    }
+
+    func expire() {
+        continuation?.resume()
+        continuation = nil
+    }
+
+    private func cancel() {
+        continuation?.resume(throwing: CancellationError())
+        continuation = nil
+    }
+}
+
 @Suite("Session reconnect supervisor", .serialized)
 @MainActor
 struct SessionReconnectSupervisorTests {
@@ -209,9 +246,11 @@ struct SessionReconnectSupervisorTests {
     @Test("overlong probes are cancelled before retrying")
     func cancelsOverlongProbe() async {
         let attempts = ReconnectAttemptCounter()
+        let deadline = FirstReconnectDeadline()
         let supervisor = SessionReconnectSupervisor(
             intervals: [.milliseconds(1)],
-            probeDeadline: .milliseconds(20)
+            probeDeadline: .milliseconds(20),
+            probeSleep: { _ in try await deadline.sleep() }
         )
         supervisor.start {
             let count = attempts.begin()
@@ -227,6 +266,9 @@ struct SessionReconnectSupervisorTests {
             }
             return .retry
         }
+        await waitUntil { await deadline.isBlocked() }
+        #expect(attempts.count == 1)
+        await deadline.expire()
 
         await waitUntilMainActor {
             attempts.count == 2 && !supervisor.isRunning

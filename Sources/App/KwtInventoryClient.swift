@@ -101,12 +101,25 @@ struct KwtHostInventory: Equatable, Sendable {
             projects: retainedProjects.map { item in
                 var retained = item
                 if item.warning != nil,
-                   item.worktrees.isEmpty,
                    let prior = previous?.projects.first(where: {
-                       $0.project.repository == item.project.repository
-                           || $0.project.path == item.project.path
+                       if item.project.repository.isEmpty,
+                          $0.project.repository.isEmpty {
+                           return $0.project.path == item.project.path
+                       }
+                       return !item.project.repository.isEmpty
+                           && $0.project.repository
+                           == item.project.repository
                    }) {
-                    retained.worktrees = prior.worktrees
+                    let refreshed = retained.worktrees
+                    retained.worktrees.append(contentsOf:
+                        prior.worktrees.filter { cached in
+                            !refreshed.contains { current in
+                                current.path == cached.path
+                                    || (cached.generation != nil
+                                        && current.generation
+                                        == cached.generation)
+                            }
+                        })
                 }
                 let exclusions =
                     excludingWorktrees[item.project.repository] ?? []
@@ -191,7 +204,7 @@ struct KwtInventoryClient: Sendable {
     init(
         localRunner: LocalRunner? = nil,
         remoteRunner: RemoteRunner? = nil,
-        processTimeout: TimeInterval = 15,
+        processTimeout: TimeInterval = 45,
         localBinaryPath: String? = KwtBinaryLocator.bundledPath(),
         remoteBinaryRevision: String? =
             KwtBinaryLocator.bundledRemoteRevision(),

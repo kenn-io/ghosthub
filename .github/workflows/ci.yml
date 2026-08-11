@@ -86,6 +86,12 @@ jobs:
           xcodebuild -version
           xcrun swift --version
 
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: stable
+          cache: false
+
       - name: Set up uv
         uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
 
@@ -126,6 +132,7 @@ jobs:
         shell: bash
         run: |
           "$LIBGHOSTTY_ZIG" version
+          go version
           uv --version
           xcrun -sdk macosx --find metal
 
@@ -134,6 +141,9 @@ jobs:
       # failure does not wait on a full compile.
       - name: Install SwiftFormat
         run: command -v swiftformat >/dev/null || brew install swiftformat
+
+      - name: Install tmux
+        run: command -v tmux >/dev/null || brew install tmux
 
       - name: Check Swift formatting
         run: make format-check

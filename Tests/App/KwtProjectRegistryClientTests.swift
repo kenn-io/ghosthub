@@ -4,8 +4,8 @@ import GhosthubTmux
 import Testing
 @testable import GhosthubApp
 
-@Suite("kwt project registration")
-struct KwtProjectRegistrarTests {
+@Suite("kwt project registry")
+struct KwtProjectRegistryClientTests {
     @Test(
         "registration rejects relative paths before invoking kwt",
         arguments: [
@@ -19,7 +19,7 @@ struct KwtProjectRegistrarTests {
     )
     func rejectsRelativeProjectPath(host: CommandHost) async {
         let invoked = LockedValue(false)
-        let client = KwtProjectRegistrar(
+        let client = KwtProjectRegistryClient(
             localRunner: { _ in
                 invoked.store(true)
                 return (0, "")
@@ -39,7 +39,7 @@ struct KwtProjectRegistrarTests {
                 on: host
             )
         } throws: { error in
-            error as? KwtProjectRegistrationError == .invalidProjectPath
+            error as? KwtProjectCommandError == .invalidProjectPath
         }
         #expect(!invoked.load())
     }
@@ -47,7 +47,7 @@ struct KwtProjectRegistrarTests {
     @Test("local registration uses Ghosthub's exact kwt helper")
     func registersLocalProject() async throws {
         let invocation = LockedValue<String?>(nil)
-        let client = KwtProjectRegistrar(
+        let client = KwtProjectRegistryClient(
             localRunner: { command in
                 invocation.store(command)
                 return (
@@ -82,7 +82,7 @@ struct KwtProjectRegistrarTests {
             port: 2222
         )
         let invocation = LockedValue<(SSHHostInfo, String)?>(nil)
-        let client = KwtProjectRegistrar(
+        let client = KwtProjectRegistryClient(
             remoteRunner: { host, command in
                 invocation.store((host, command))
                 return (
@@ -118,7 +118,7 @@ struct KwtProjectRegistrarTests {
 
     @Test("registration preserves kwt's structured error")
     func preservesStructuredError() async {
-        let client = KwtProjectRegistrar(
+        let client = KwtProjectRegistryClient(
             remoteRunner: { _, _ in
                 (
                     2,
@@ -141,7 +141,7 @@ struct KwtProjectRegistrarTests {
                 )
             )
         } throws: { error in
-            error as? KwtProjectRegistrationError
+            error as? KwtProjectCommandError
                 == .commandFailed(
                     host: "spark",
                     status: 2,
@@ -151,5 +151,72 @@ struct KwtProjectRegistrarTests {
                     retryable: false
                 )
         }
+    }
+
+    @Test("remote removal uses the managed helper and canonical response")
+    func removesRemoteProject() async throws {
+        let revision = String(repeating: "c", count: 40)
+        let ssh = SSHHostInfo(
+            user: "wesm",
+            hostname: "spark",
+            port: 2222
+        )
+        let invocation = LockedValue<String?>(nil)
+        let client = KwtProjectRegistryClient(
+            remoteRunner: { _, command in
+                invocation.store(command)
+                return (
+                    0,
+                    """
+                    GHOSTHUB_KWT_PROJECT_JSON
+                    {"status":"unregistered","project":{"repository":"github.com/acme/widget","name":"widget","path":"/srv/widget"}}
+                    """
+                )
+            },
+            remoteBinaryRevision: revision
+        )
+
+        let project = try await client.unregister(
+            projectPath: "/srv/wesm's widget",
+            expectedRepository: "github.com/acme/widget",
+            on: .ssh(ssh)
+        )
+
+        let command = try #require(invocation.load())
+        #expect(command.contains(
+            "projects remove '/srv/wesm'\\''s widget' "
+                + "--expected-repository 'github.com/acme/widget' --json"
+        ))
+        #expect(project.name == "widget")
+        #expect(project.path == "/srv/widget")
+    }
+
+    @Test("removal preserves the authoritative project path exactly")
+    func removalPreservesTrailingWhitespace() async throws {
+        let invocation = LockedValue<String?>(nil)
+        let client = KwtProjectRegistryClient(
+            localRunner: { command in
+                invocation.store(command)
+                return (
+                    0,
+                    """
+                    GHOSTHUB_KWT_PROJECT_JSON
+                    {"status":"unregistered","project":{"repository":"github.com/acme/widget","name":"widget","path":"/srv/widget "}}
+                    """
+                )
+            },
+            localBinaryPath: "/Applications/Ghosthub.app/Contents/Helpers/kwt"
+        )
+
+        _ = try await client.unregister(
+            projectPath: "/srv/widget ",
+            expectedRepository: "github.com/acme/widget",
+            on: .local
+        )
+
+        #expect(invocation.load()?.contains(
+            "projects remove '/srv/widget ' "
+                + "--expected-repository 'github.com/acme/widget' --json"
+        ) == true)
     }
 }

@@ -2,7 +2,7 @@ import GhosthubTransport
 import Foundation
 import GhosthubTmux
 
-enum KwtProjectRegistrationError: Error, Equatable, LocalizedError {
+enum KwtProjectCommandError: Error, Equatable, LocalizedError {
     case invalidProjectPath
     case commandFailed(
         host: String,
@@ -28,20 +28,32 @@ enum KwtProjectRegistrationError: Error, Equatable, LocalizedError {
                 ?? "kwt exited with status \(status) on \(host)."
             return retryable ? "\(detail) Try again." : detail
         case let .malformedOutput(host):
-            return "kwt returned an invalid project registration response on \(host)."
+            return "kwt returned an invalid project response on \(host)."
         }
     }
 }
 
-/// Registers a repository through kwt's supported machine-readable boundary.
-/// Ghosthub never edits kwt configuration or scans the host filesystem.
-struct KwtProjectRegistrar: Sendable {
+/// Mutates kwt's project registry through its supported machine-readable
+/// boundary. Ghosthub never edits kwt configuration or scans the host.
+struct KwtProjectRegistryClient: Sendable {
     typealias LocalRunner = @Sendable (
         _ command: String
     ) -> (status: Int32, stdout: String)
     typealias RemoteRunner = @Sendable (
         _ host: SSHHostInfo, _ command: String
     ) -> (status: Int32, stdout: String)
+
+    private enum Operation: String {
+        case register = "add"
+        case unregister = "remove"
+
+        var successStatus: String {
+            switch self {
+            case .register: "registered"
+            case .unregister: "unregistered"
+            }
+        }
+    }
 
     private static let jsonMarker =
         "GHOSTHUB_KWT_PROJECT_JSON\n"
@@ -82,10 +94,41 @@ struct KwtProjectRegistrar: Sendable {
         projectPath: String,
         on host: CommandHost
     ) async throws -> KwtProjectRecord {
+        try await mutate(.register, projectPath: projectPath, on: host)
+    }
+
+    func register(
+        projectPath: String,
+        on host: SSHHostInfo
+    ) async throws -> KwtProjectRecord {
+        try await mutate(.register, projectPath: projectPath, on: host)
+    }
+
+    func unregister(
+        projectPath: String,
+        expectedRepository: String,
+        on host: CommandHost
+    ) async throws -> KwtProjectRecord {
+        try await mutate(
+            .unregister,
+            projectPath: projectPath,
+            expectedRepository: expectedRepository,
+            on: host
+        )
+    }
+
+    private func mutate(
+        _ operation: Operation,
+        projectPath: String,
+        expectedRepository: String? = nil,
+        on host: CommandHost
+    ) async throws -> KwtProjectRecord {
         switch host {
         case .local:
             let command = try Self.command(
+                operation: operation,
                 projectPath: projectPath,
+                expectedRepository: expectedRepository,
                 binaryPrelude: KwtBinaryLocator.commandPrelude(
                     exactPath: localBinaryPath
                 )
@@ -99,18 +142,31 @@ struct KwtProjectRegistrar: Sendable {
             } onCancel: {
                 task.cancel()
             }
-            return try Self.decode(result, hostLabel: "this Mac")
+            return try Self.decode(
+                result,
+                hostLabel: "this Mac",
+                expectedStatus: operation.successStatus
+            )
         case let .ssh(info):
-            return try await register(projectPath: projectPath, on: info)
+            return try await mutate(
+                operation,
+                projectPath: projectPath,
+                expectedRepository: expectedRepository,
+                on: info
+            )
         }
     }
 
-    func register(
+    private func mutate(
+        _ operation: Operation,
         projectPath: String,
+        expectedRepository: String? = nil,
         on host: SSHHostInfo
     ) async throws -> KwtProjectRecord {
         let command = try Self.command(
+            operation: operation,
             projectPath: projectPath,
+            expectedRepository: expectedRepository,
             binaryPrelude: KwtBinaryLocator.remoteCommandPrelude(
                 revision: remoteBinaryRevision
             )
@@ -126,37 +182,42 @@ struct KwtProjectRegistrar: Sendable {
         }
         return try Self.decode(
             result,
-            hostLabel: host.displayName
+            hostLabel: host.displayName,
+            expectedStatus: operation.successStatus
         )
     }
 
-    static func command(
+    private static func command(
+        operation: Operation,
         projectPath: String,
+        expectedRepository: String?,
         binaryPrelude: String
     ) throws -> String {
-        let projectPath = projectPath.trimmingCharacters(
-            in: .whitespacesAndNewlines
-        )
         guard projectPath.hasPrefix("/") else {
-            throw KwtProjectRegistrationError.invalidProjectPath
+            throw KwtProjectCommandError.invalidProjectPath
+        }
+        var arguments = "projects \(operation.rawValue) "
+            + shellQuotedCommandArgument(projectPath)
+        if operation == .unregister, let expectedRepository {
+            arguments += " --expected-repository "
+                + shellQuotedCommandArgument(expectedRepository)
         }
         return binaryPrelude
             + "printf 'GHOSTHUB_KWT_PROJECT_JSON\\n'; "
-            + "exec \"$ghosthub_kwt_path\" projects add "
-            + shellQuotedCommandArgument(projectPath)
-            + " --json"
+            + "exec \"$ghosthub_kwt_path\" \(arguments) --json"
     }
 
     private static func decode(
         _ result: (status: Int32, stdout: String),
-        hostLabel: String
+        hostLabel: String,
+        expectedStatus: String
     ) throws -> KwtProjectRecord {
         guard let markerRange = result.stdout.range(
             of: jsonMarker,
             options: .backwards
         ) else {
             if result.status != 0 {
-                throw KwtProjectRegistrationError.commandFailed(
+                throw KwtProjectCommandError.commandFailed(
                     host: hostLabel,
                     status: result.status,
                     code: nil,
@@ -164,17 +225,15 @@ struct KwtProjectRegistrar: Sendable {
                     retryable: false
                 )
             }
-            throw KwtProjectRegistrationError.malformedOutput(
-                host: hostLabel
-            )
+            throw KwtProjectCommandError.malformedOutput(host: hostLabel)
         }
         let data = Data(result.stdout[markerRange.upperBound...].utf8)
         guard result.status == 0 else {
             let envelope = try? JSONDecoder().decode(
-                ProjectRegistrationErrorEnvelope.self,
+                ProjectMutationErrorEnvelope.self,
                 from: data
             )
-            throw KwtProjectRegistrationError.commandFailed(
+            throw KwtProjectCommandError.commandFailed(
                 host: hostLabel,
                 status: result.status,
                 code: envelope?.error.code,
@@ -184,35 +243,31 @@ struct KwtProjectRegistrar: Sendable {
         }
         do {
             let response = try JSONDecoder().decode(
-                ProjectRegistrationResponse.self,
+                ProjectMutationResponse.self,
                 from: data
             )
-            guard response.status == "registered" else {
-                throw KwtProjectRegistrationError.malformedOutput(
-                    host: hostLabel
-                )
+            guard response.status == expectedStatus else {
+                throw KwtProjectCommandError.malformedOutput(host: hostLabel)
             }
             return response.project
-        } catch let error as KwtProjectRegistrationError {
+        } catch let error as KwtProjectCommandError {
             throw error
         } catch {
-            throw KwtProjectRegistrationError.malformedOutput(
-                host: hostLabel
-            )
+            throw KwtProjectCommandError.malformedOutput(host: hostLabel)
         }
     }
 }
 
-private struct ProjectRegistrationResponse: Decodable {
+private struct ProjectMutationResponse: Decodable {
     var status: String
     var project: KwtProjectRecord
 }
 
-private struct ProjectRegistrationErrorEnvelope: Decodable {
-    var error: ProjectRegistrationErrorDTO
+private struct ProjectMutationErrorEnvelope: Decodable {
+    var error: ProjectMutationErrorDTO
 }
 
-private struct ProjectRegistrationErrorDTO: Decodable {
+private struct ProjectMutationErrorDTO: Decodable {
     var code: String
     var message: String
     var retryable: Bool

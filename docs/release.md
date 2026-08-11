@@ -61,10 +61,12 @@ release notes. Release CI checks out that revision under
 building the remote variant matrix; the repository slug used by
 `actions/checkout` is never passed to `git clone`. Release CI records the
 helper it built from the pin; a local build against a substituted
-`KWT_BINARY_PATH` is recorded as `unpinned` rather than inheriting the pin. Kwt is part of Ghosthub's
-signed code, but it remains an ordinary CLI rather than a daemon or state
-authority of its own. The pinned revision supports the complete automation
-contract consumed by the app, including the isolated tmux socket identity
+`KWT_BINARY_PATH` is recorded as `unpinned` rather than inheriting the pin. Kwt
+is part of Ghosthub's signed code, but Ghosthub invokes only its CLI and never
+manages its service or state directly. The pinned CLI may auto-start or reuse
+kwt's same-account daemon for inventory. The pinned revision supports the
+complete automation contract consumed by the app, including the isolated tmux
+socket identity
 returned by session-free `pr import`, the inert shell-only protected session
 created or repaired by `pr attach`, and refusal to open protected imports
 through kwt's ordinary default-server open paths. It also supports
@@ -95,6 +97,18 @@ It also includes `projects add <path> --json` as the supported registration
 boundary for fresh hosts. Argument, flag, configuration, and repository
 failures must retain the structured error contract, and repeated registration
 must converge across clone paths using the host-aware repository identity.
+The matching
+`projects remove <exact-path> --expected-repository <identity> --json`
+boundary unregisters metadata without deleting repositories, worktrees, or
+tmux sessions. It must accept a missing checkout using the exact stable path
+and credential-free identity published by project inventory. The daemon
+serializes registration and protected project operations, verifies every
+durable protected endpoint, rejects live sessions or incomplete endpoint
+authority, and compare-and-swaps the registration. Missing and concurrently
+changed registrations retain their structured error contracts.
+The pinned-helper acceptance suite exercises registration, daemon-backed
+inventory, missing-checkout removal, and another inventory request against an
+isolated `KWT_HOME`.
 The pinned implementation removes `KWT_GITHUB_TOKEN`, `KWT_FLEET_TOKEN`, and
 the configured fleet token variable from tmux subprocess and session
 environments before imported workspace panes start, while preserving

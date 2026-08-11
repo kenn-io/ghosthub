@@ -669,6 +669,7 @@ public struct RootView: View {
             onRequestKillTmuxSession: requestSessionKill,
             onRequestKillZellijSession: requestZellijSessionKill,
             onRequestRemoveWorktree: requestWorktreeRemoval,
+            onRequestRemoveProject: requestProjectRemoval,
             onNewWorktree: openNewWorktree,
             onImportPullRequest: openImportPullRequest,
             onNewTmuxSession: { host in
@@ -1387,7 +1388,7 @@ public struct RootView: View {
                 : " Its live tmux session will be terminated first,"
                 + " including every window, pane, and process."
             return Alert(
-                title: Text("Remove “\(request.worktree.name)”?”"),
+                title: Text("Remove “\(request.worktree.name)”?"),
                 message: Text(
                     "This removes the worktree at "
                         + "\(request.worktree.path)."
@@ -1445,7 +1446,61 @@ public struct RootView: View {
                 message: Text(message),
                 dismissButton: .default(Text("OK"))
             )
+        case let .projectRemovalConfirmation(project, host):
+            return Alert(
+                title: Text("Remove “\(project.name)”?"),
+                message: Text(
+                    "This unregisters the project from kwt on "
+                        + "\(host.sidebarTitle). The repository, its"
+                        + " worktrees, and tmux sessions will not be deleted."
+                ),
+                primaryButton: .destructive(Text("Remove Project")) {
+                    Task {
+                        guard let unregister = handlers.unregisterProject
+                        else {
+                            presentNonWorktreeWorkspaceAlert(
+                                .projectRemovalFailure(
+                                    project: project.name,
+                                    message: "Project removal is unavailable."
+                                )
+                            )
+                            return
+                        }
+                        switch await unregister(project, host) {
+                        case .success:
+                            break
+                        case let .failure(error):
+                            presentNonWorktreeWorkspaceAlert(
+                                .projectRemovalFailure(
+                                    project: project.name,
+                                    message: error.localizedDescription
+                                )
+                            )
+                        }
+                    }
+                },
+                secondaryButton: .cancel()
+            )
+        case let .projectRemovalFailure(project, message):
+            return Alert(
+                title: Text("Could Not Remove “\(project)”"),
+                message: Text(message),
+                dismissButton: .default(Text("OK"))
+            )
         }
+    }
+
+    private func requestProjectRemoval(_ project: ProjectSummary) {
+        guard let host = snapshot.host(id: project.hostID) else {
+            presentNonWorktreeWorkspaceAlert(.projectRemovalFailure(
+                project: project.name,
+                message: "The project host is no longer available."
+            ))
+            return
+        }
+        presentNonWorktreeWorkspaceAlert(
+            .projectRemovalConfirmation(project: project, host: host)
+        )
     }
 
     private func requestWorktreeRemoval(_ worktree: WorktreeSummary) {
@@ -2478,6 +2533,11 @@ enum WorkspaceAlert: Identifiable {
     case sessionThemeFailure(session: String, message: String)
     case worktreeRemovalConfirmation(WorktreeRemovalRequest)
     case worktreeRemovalFailure(worktree: String, message: String)
+    case projectRemovalConfirmation(
+        project: ProjectSummary,
+        host: HostSummary
+    )
+    case projectRemovalFailure(project: String, message: String)
 
     var id: String {
         switch self {
@@ -2501,6 +2561,10 @@ enum WorkspaceAlert: Identifiable {
             return "worktree:confirm:\(request.worktree.id.uuidString)"
         case let .worktreeRemovalFailure(worktree, message):
             return "worktree:failure:\(worktree):\(message)"
+        case let .projectRemovalConfirmation(project, host):
+            return "project:confirm:\(host.id.uuidString):\(project.id.uuidString)"
+        case let .projectRemovalFailure(project, message):
+            return "project:failure:\(project):\(message)"
         }
     }
 }

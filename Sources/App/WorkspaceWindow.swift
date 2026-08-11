@@ -969,6 +969,12 @@ struct WorkspaceWindow: View {
                 registerProject: { [sceneModel] host, path in
                     await sceneModel.registerProject(path, on: host)
                 },
+                unregisterProject: { [sceneModel] project, host in
+                    await sceneModel.unregisterProject(
+                        project,
+                        confirmedHost: host
+                    )
+                },
                 createWorktree: { [sceneModel] request in
                     try await sceneModel.createWorktree(request)
                 },

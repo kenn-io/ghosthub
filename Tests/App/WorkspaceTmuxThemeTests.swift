@@ -253,7 +253,7 @@ struct WorkspaceTmuxThemeTests {
         let update = [UInt(42): colors]
         publishedColors.send(update)
         runtimeColors = update
-        await waitUntilMainActor(timeout: .milliseconds(250)) {
+        await waitUntilMainActor {
             appliedStyles.load() == [primaryStyle]
         }
 
@@ -832,8 +832,9 @@ private func makeThemedScene(
         .milliseconds(250), .milliseconds(500), .seconds(1), .seconds(2),
         .seconds(4), .seconds(8),
     ],
-    terminalColorsPublisher:
-    AnyPublisher<[UInt: TerminalResolvedColors], Never>? = nil,
+    terminalColorsPublisher: AnyPublisher<
+        [UInt: TerminalResolvedColors], Never
+    > = Empty(completeImmediately: false).eraseToAnyPublisher(),
     tmuxPresentationStyleProvider:
     @escaping (UInt?) -> TmuxPresentationStyle?,
     tmuxSessionStyler: @escaping WorkspaceSceneModel.TmuxSessionStyling =

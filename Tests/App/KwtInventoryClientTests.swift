@@ -966,6 +966,54 @@ struct KwtInventoryClientTests {
         #expect(retained.projects[0].warning == "temporary failure")
     }
 
+    @Test("partial project failure retains omitted cached worktrees")
+    func retainsWorktreesOmittedByPartialProjectFailure() {
+        let project = KwtProjectRecord(
+            repository: "repo",
+            name: "repo",
+            path: "/repo",
+            lastTouched: nil
+        )
+        let refreshed = KwtWorktreeRecord(
+            path: "/repo",
+            branch: "main",
+            commitHash: "def",
+            isMain: true,
+            createdAt: nil,
+            generation: "refreshed-generation",
+            repository: "repo",
+            sessionName: "kwt-repo-main"
+        )
+        let omitted = KwtWorktreeRecord(
+            path: "/worktrees/feature",
+            branch: "feature",
+            commitHash: "abc",
+            isMain: false,
+            createdAt: nil,
+            generation: "omitted-generation",
+            repository: "repo",
+            sessionName: "kwt-repo-feature"
+        )
+        let previous = KwtHostInventory(projects: [
+            KwtProjectInventory(
+                project: project,
+                worktrees: [omitted],
+                warning: nil
+            ),
+        ])
+        let partial = KwtHostInventory(projects: [
+            KwtProjectInventory(
+                project: project,
+                worktrees: [refreshed],
+                warning: "temporary failure"
+            ),
+        ])
+
+        let retained = partial.retainingFailedProjectWorktrees(from: previous)
+
+        #expect(retained.projects[0].worktrees == [refreshed, omitted])
+    }
+
     @Test("failed project list refresh retains cached projects")
     func retainsCachedProjectsWhenProjectListFails() {
         let project = KwtProjectRecord(
@@ -1208,6 +1256,49 @@ struct KwtInventoryClientTests {
         )
 
         #expect(retained.projects[0].worktrees == [replacement])
+    }
+
+    @Test("partial refresh does not inherit a replaced repository's worktrees")
+    func partialRefreshRejectsSamePathReplacementCache() {
+        let staleWorktree = KwtWorktreeRecord(
+            path: "/worktrees/stale",
+            branch: "stale",
+            commitHash: "abc",
+            isMain: false,
+            createdAt: nil,
+            repository: "old-repo",
+            sessionName: "kwt-old-stale"
+        )
+        let previous = KwtHostInventory(projects: [
+            KwtProjectInventory(
+                project: KwtProjectRecord(
+                    repository: "old-repo",
+                    name: "old",
+                    path: "/repo",
+                    lastTouched: nil
+                ),
+                worktrees: [staleWorktree],
+                warning: nil
+            ),
+        ])
+        let replacement = KwtHostInventory(projects: [
+            KwtProjectInventory(
+                project: KwtProjectRecord(
+                    repository: "new-repo",
+                    name: "new",
+                    path: "/repo",
+                    lastTouched: nil
+                ),
+                worktrees: [],
+                warning: "temporary failure"
+            ),
+        ])
+
+        let retained = replacement.retainingFailedProjectWorktrees(
+            from: previous
+        )
+
+        #expect(retained.projects[0].worktrees.isEmpty)
     }
 
     @Test("worktree exclusions apply only to their own repository")

@@ -157,11 +157,22 @@ final class WorktreeMutationCoordinator {
         let projectIdentity: String
     }
 
+    struct ProjectRegistryHost: Hashable, Sendable {
+        let target: CommandHost
+    }
+
+    struct ProtectedEndpoint: Hashable, Sendable {
+        let worktreeName: String
+        let worktreeIdentity: KwtWorktreeIdentity
+        let selection: WorkspaceTmuxSessionSelection?
+    }
+
     typealias RemovalTombstone = KwtWorktreeIdentity
 
     enum Phase: Sendable {
         case began
         case willRemove
+        case quarantined
         case ended
     }
 
@@ -175,12 +186,28 @@ final class WorktreeMutationCoordinator {
         /// reconciled the failure.
         let reconciledRestorationTargets: Set<WorkspaceTmuxSessionSelection>?
         let requiresWorkspaceReestablishment: Bool
+        let removesProject: Bool
+        let allowsRemovalRestoration: Bool
+    }
+
+    struct QuarantinedProjectRemoval: Equatable, Sendable {
+        let projectPath: String
+        let host: CommandHost
     }
 
     static let shared = WorktreeMutationCoordinator()
 
     private var activeScopes: Set<Scope> = []
+    private var activeProjectRegistryHosts: Set<ProjectRegistryHost> = []
+    private var projectRemovalRegistryHostsByScope:
+        [Scope: ProjectRegistryHost] = [:]
     private var pendingRemovalsByScope: [Scope: Set<RemovalTombstone>] = [:]
+    private var quarantinedProjectRemovalsByScope:
+        [Scope: QuarantinedProjectRemoval] = [:]
+    private var protectedEndpointsByParticipant:
+        [UUID: [Scope: Set<ProtectedEndpoint>]] = [:]
+    private var retiredProtectedEndpointsByScope:
+        [Scope: Set<ProtectedEndpoint>] = [:]
     private let eventSubject = PassthroughSubject<Event, Never>()
 
     var events: AnyPublisher<Event, Never> {
@@ -193,6 +220,102 @@ final class WorktreeMutationCoordinator {
 
     var pendingRemovals: [Scope: Set<RemovalTombstone>] {
         pendingRemovalsByScope
+    }
+
+    var quarantinedProjectRemovals: [Scope: QuarantinedProjectRemoval] {
+        quarantinedProjectRemovalsByScope
+    }
+
+    func replaceProtectedEndpoints(
+        _ endpoints: [Scope: Set<ProtectedEndpoint>],
+        for participantID: UUID
+    ) {
+        for (scope, replacements) in endpoints {
+            let resolvedIdentities = Set(replacements.compactMap { endpoint in
+                endpoint.selection == nil ? nil : endpoint.worktreeIdentity
+            })
+            guard !resolvedIdentities.isEmpty,
+                  let retired = retiredProtectedEndpointsByScope[scope]
+            else { continue }
+            let remaining = retired.filter {
+                !resolvedIdentities.contains($0.worktreeIdentity)
+            }
+            if remaining.isEmpty {
+                retiredProtectedEndpointsByScope.removeValue(forKey: scope)
+            } else {
+                retiredProtectedEndpointsByScope[scope] = Set(remaining)
+            }
+        }
+        protectedEndpointsByParticipant[participantID] = endpoints
+    }
+
+    func retireProtectedEndpoints(for participantID: UUID) {
+        guard let endpoints = protectedEndpointsByParticipant.removeValue(
+            forKey: participantID
+        ) else { return }
+        for (scope, values) in endpoints {
+            retiredProtectedEndpointsByScope[scope, default: []]
+                .formUnion(values)
+        }
+    }
+
+    func confirmProtectedEndpointAbsent(
+        _ selection: WorkspaceTmuxSessionSelection,
+        in scope: Scope
+    ) {
+        guard let endpoints = retiredProtectedEndpointsByScope[scope]
+        else { return }
+        let remaining = Set(endpoints.filter { endpoint in
+            endpoint.selection != selection
+        })
+        if remaining.isEmpty {
+            retiredProtectedEndpointsByScope.removeValue(forKey: scope)
+        } else {
+            retiredProtectedEndpointsByScope[scope] = remaining
+        }
+    }
+
+    func reconcileRetiredProtectedEndpoints(
+        after inventory: KwtHostInventory,
+        hostID: UUID
+    ) {
+        guard inventory.projectsWarning == nil else { return }
+        let scopes = retiredProtectedEndpointsByScope.keys.filter {
+            $0.hostID == hostID
+        }
+        for scope in scopes {
+            guard let project = inventory.projects.first(where: {
+                $0.project.repository == scope.projectIdentity
+            }) else {
+                retiredProtectedEndpointsByScope.removeValue(forKey: scope)
+                continue
+            }
+            guard project.warning == nil,
+                  let retired = retiredProtectedEndpointsByScope[scope]
+            else { continue }
+            let currentIdentities = Set(project.worktrees.map {
+                KwtWorktreeIdentity(
+                    path: $0.path,
+                    generation: $0.generation ?? ""
+                )
+            })
+            let remaining = retired.filter {
+                currentIdentities.contains($0.worktreeIdentity)
+            }
+            if remaining.isEmpty {
+                retiredProtectedEndpointsByScope.removeValue(forKey: scope)
+            } else {
+                retiredProtectedEndpointsByScope[scope] = Set(remaining)
+            }
+        }
+    }
+
+    func protectedEndpoints(in scope: Scope) -> Set<ProtectedEndpoint> {
+        protectedEndpointsByParticipant.values.reduce(
+            into: retiredProtectedEndpointsByScope[scope] ?? []
+        ) {
+            $0.formUnion($1[scope] ?? [])
+        }
     }
 
     func acquire(
@@ -212,11 +335,51 @@ final class WorktreeMutationCoordinator {
                     removalTombstones: [],
                     removalPresentationTargets: [],
                     reconciledRestorationTargets: nil,
-                    requiresWorkspaceReestablishment: false
+                    requiresWorkspaceReestablishment: false,
+                    removesProject: false,
+                    allowsRemovalRestoration: true
                 )
             )
         }
         return inserted
+    }
+
+    func acquireProjectRegistry(host: ProjectRegistryHost) -> Bool {
+        activeProjectRegistryHosts.insert(host).inserted
+    }
+
+    func releaseProjectRegistry(host: ProjectRegistryHost) {
+        activeProjectRegistryHosts.remove(host)
+    }
+
+    func acquireProjectRemoval(
+        hostID: UUID,
+        projectIdentity: String,
+        registryHost: ProjectRegistryHost
+    ) -> Bool {
+        let scope = Scope(
+            hostID: hostID,
+            projectIdentity: projectIdentity
+        )
+        guard !activeProjectRegistryHosts.contains(registryHost),
+              !activeScopes.contains(scope)
+        else { return false }
+        activeProjectRegistryHosts.insert(registryHost)
+        projectRemovalRegistryHostsByScope[scope] = registryHost
+        activeScopes.insert(scope)
+        eventSubject.send(
+            Event(
+                phase: .began,
+                scope: scope,
+                removalTombstones: [],
+                removalPresentationTargets: [],
+                reconciledRestorationTargets: nil,
+                requiresWorkspaceReestablishment: false,
+                removesProject: false,
+                allowsRemovalRestoration: true
+            )
+        )
+        return true
     }
 
     func release(
@@ -225,14 +388,21 @@ final class WorktreeMutationCoordinator {
         removalTombstones: Set<RemovalTombstone> = [],
         reconciledRestorationTargets:
         Set<WorkspaceTmuxSessionSelection>? = nil,
-        requiresWorkspaceReestablishment: Bool = false
+        requiresWorkspaceReestablishment: Bool = false,
+        removesProject: Bool = false,
+        allowsRemovalRestoration: Bool = true
     ) {
         let scope = Scope(
             hostID: hostID,
             projectIdentity: projectIdentity
         )
         if activeScopes.remove(scope) != nil {
+            if let registryHost = projectRemovalRegistryHostsByScope
+                .removeValue(forKey: scope) {
+                activeProjectRegistryHosts.remove(registryHost)
+            }
             pendingRemovalsByScope.removeValue(forKey: scope)
+            quarantinedProjectRemovalsByScope.removeValue(forKey: scope)
             eventSubject.send(
                 Event(
                     phase: .ended,
@@ -242,7 +412,9 @@ final class WorktreeMutationCoordinator {
                     reconciledRestorationTargets:
                     reconciledRestorationTargets,
                     requiresWorkspaceReestablishment:
-                    requiresWorkspaceReestablishment
+                    requiresWorkspaceReestablishment,
+                    removesProject: removesProject,
+                    allowsRemovalRestoration: allowsRemovalRestoration
                 )
             )
         }
@@ -258,7 +430,7 @@ final class WorktreeMutationCoordinator {
             hostID: hostID,
             projectIdentity: projectIdentity
         )
-        guard activeScopes.contains(scope), !worktrees.isEmpty else { return }
+        guard activeScopes.contains(scope) else { return }
         pendingRemovalsByScope[scope, default: []].formUnion(worktrees)
         eventSubject.send(
             Event(
@@ -267,7 +439,40 @@ final class WorktreeMutationCoordinator {
                 removalTombstones: worktrees,
                 removalPresentationTargets: presentationTargets,
                 reconciledRestorationTargets: nil,
-                requiresWorkspaceReestablishment: false
+                requiresWorkspaceReestablishment: false,
+                removesProject: false,
+                allowsRemovalRestoration: true
+            )
+        )
+    }
+
+    func quarantineProjectRemoval(
+        hostID: UUID,
+        projectIdentity: String,
+        projectPath: String,
+        host: CommandHost
+    ) {
+        let scope = Scope(
+            hostID: hostID,
+            projectIdentity: projectIdentity
+        )
+        guard activeScopes.contains(scope),
+              pendingRemovalsByScope[scope] != nil
+        else { return }
+        quarantinedProjectRemovalsByScope[scope] = QuarantinedProjectRemoval(
+            projectPath: projectPath,
+            host: host
+        )
+        eventSubject.send(
+            Event(
+                phase: .quarantined,
+                scope: scope,
+                removalTombstones: [],
+                removalPresentationTargets: [],
+                reconciledRestorationTargets: nil,
+                requiresWorkspaceReestablishment: false,
+                removesProject: false,
+                allowsRemovalRestoration: false
             )
         )
     }
@@ -298,6 +503,9 @@ final class WorkspaceSceneModel: ObservableObject {
     ) async throws -> KwtPullRequestImportResult
     typealias KwtProjectRegistration = @Sendable (
         String, CommandHost
+    ) async throws -> KwtProjectRecord
+    typealias KwtProjectRemoval = @Sendable (
+        String, String, CommandHost
     ) async throws -> KwtProjectRecord
     typealias TmuxSessionDiscovery = @Sendable (
         CommandHost
@@ -345,6 +553,7 @@ final class WorkspaceSceneModel: ObservableObject {
 
     @Published var snapshot: WorkspaceSnapshot {
         didSet {
+            publishProtectedTmuxEndpoints()
             reconcileInventoryHosts()
         }
     }
@@ -406,6 +615,7 @@ final class WorkspaceSceneModel: ObservableObject {
     private var isKwtInventoryLoading = false
     private var ownsWorktreeMutation = false
     private let worktreeMutationCoordinator: WorktreeMutationCoordinator
+    private let worktreeMutationParticipantID = UUID()
     private let herdrLifecycleCoordinator: HerdrSessionLifecycleCoordinator
     private let zellijSessionKillCoordinator: ZellijSessionKillCoordinator
     private let herdrSessionRecordReader: HerdrSessionRecordReading
@@ -672,6 +882,10 @@ final class WorkspaceSceneModel: ObservableObject {
         [TmuxPresentationKey: RetainedTmuxPresentation] = [:]
     private var retainedTmuxPresentationKeysByHandle:
         [UUID: TmuxPresentationKey] = [:]
+    private var protectedTmuxAttachmentScopesByHandle:
+        [UUID: WorktreeMutationCoordinator.Scope] = [:]
+    private var pendingProtectedTmuxAttachmentScopesByHandle:
+        [UUID: WorktreeMutationCoordinator.Scope] = [:]
     private struct ActiveHerdrReconnectContext: Equatable {
         var selection: WorkspaceHerdrSessionSelection
         var handleID: UUID
@@ -910,6 +1124,7 @@ final class WorkspaceSceneModel: ObservableObject {
     private let kwtPullRequestLister: KwtPullRequestLister
     private let kwtPullRequestImporter: KwtPullRequestImporter
     private let kwtProjectRegistration: KwtProjectRegistration
+    private let kwtProjectRemoval: KwtProjectRemoval
     private let tmuxSessionDiscovery: TmuxSessionDiscovery
     private let zellijSessionDiscovery: ZellijSessionDiscovery
     private let zellijSessionValidationDiscovery:
@@ -1178,8 +1393,16 @@ final class WorkspaceSceneModel: ObservableObject {
         },
         kwtProjectRegistration: @escaping KwtProjectRegistration = {
             projectPath, host in
-            try await KwtProjectRegistrar().register(
+            try await KwtProjectRegistryClient().register(
                 projectPath: projectPath,
+                on: host
+            )
+        },
+        kwtProjectRemoval: @escaping KwtProjectRemoval = {
+            projectPath, expectedRepository, host in
+            try await KwtProjectRegistryClient().unregister(
+                projectPath: projectPath,
+                expectedRepository: expectedRepository,
                 on: host
             )
         },
@@ -1352,6 +1575,7 @@ final class WorkspaceSceneModel: ObservableObject {
         self.kwtPullRequestLister = kwtPullRequestLister
         self.kwtPullRequestImporter = kwtPullRequestImporter
         self.kwtProjectRegistration = kwtProjectRegistration
+        self.kwtProjectRemoval = kwtProjectRemoval
         self.tmuxSessionDiscovery = tmuxSessionDiscovery
         self.zellijSessionDiscovery = zellijSessionDiscovery
         self.zellijSessionValidationDiscovery =
@@ -1515,9 +1739,12 @@ final class WorkspaceSceneModel: ObservableObject {
         nativeTmuxSessionCoordinatorBacking?.onSurfaceReady = {
             [weak self] handle in
             guard let self,
-                  retainedTmuxPresentation(for: handle) != nil
+                  let presentation = retainedTmuxPresentation(for: handle),
+                  acquireProtectedTmuxAttachmentScopeIfNeeded(
+                      for: presentation
+                  )
             else { return }
-            _ = nativeTmuxSessionCoordinator.surface(handle: handle)
+            _ = protectedTmuxSurface(handle: handle)
             if activeBorrowedTmuxHandle == handle {
                 objectWillChange.send()
             }
@@ -1705,6 +1932,7 @@ final class WorkspaceSceneModel: ObservableObject {
             [weak self] event in
             self?.worktreeMutationEvent(event)
         }
+        publishProtectedTmuxEndpoints()
         herdrLifecycleCancellable = herdrLifecycleCoordinator.events.sink {
             [weak self] event in
             self?.herdrLifecycleEvent(event)
@@ -1713,7 +1941,11 @@ final class WorkspaceSceneModel: ObservableObject {
             [weak self] event in
             self?.zellijSessionKillEvent(event)
         }
+        let quarantinedScopes = Set(
+            worktreeMutationCoordinator.quarantinedProjectRemovals.keys
+        )
         fencedWorktreeMutationScopes = worktreeMutationCoordinator.scopes
+            .subtracting(quarantinedScopes)
         pendingWorktreeRemovals = worktreeMutationCoordinator.pendingRemovals
         let sshHostsPublisher = configuredSSHHostsPublisher
             ?? SettingsStore.shared.$sshHosts.eraseToAnyPublisher()
@@ -1724,6 +1956,7 @@ final class WorkspaceSceneModel: ObservableObject {
         // @StateObject creates the model during body evaluation.
         DispatchQueue.main.async {
             [self, sshHostsPublisher, exeHostsPublisher] in
+            guard !isShutDown else { return }
             configuredSSHHostsCancellable = sshHostsPublisher.sink {
                 [weak self] hosts in
                 guard let self, !self.hasOverrideSnapshot else { return }
@@ -1778,6 +2011,13 @@ final class WorkspaceSceneModel: ObservableObject {
         configuredExeHostsCancellable?.cancel()
         terminalColorsCancellable?.cancel()
         worktreeMutationCancellable?.cancel()
+        let mutationCoordinator = worktreeMutationCoordinator
+        let mutationParticipantID = worktreeMutationParticipantID
+        Task { @MainActor in
+            mutationCoordinator.retireProtectedEndpoints(
+                for: mutationParticipantID
+            )
+        }
         herdrLifecycleCancellable?.cancel()
         zellijSessionKillCancellable?.cancel()
         kwtInventoryTask?.cancel()
@@ -2336,6 +2576,12 @@ final class WorkspaceSceneModel: ObservableObject {
     func shutdown() async {
         guard !isShutDown else { return }
         isShutDown = true
+        configuredSSHHostsCancellable?.cancel()
+        configuredExeHostsCancellable?.cancel()
+        worktreeMutationCancellable?.cancel()
+        worktreeMutationCoordinator.retireProtectedEndpoints(
+            for: worktreeMutationParticipantID
+        )
         sceneActivityGeneration &+= 1
         userNavigationRevision &+= 1
         cancelPendingRestoration()
@@ -2343,6 +2589,7 @@ final class WorkspaceSceneModel: ObservableObject {
         for presentation in retainedTmuxPresentations.values {
             cancelTmuxReconnect(presentation)
         }
+        releaseAllProtectedTmuxAttachmentScopes()
         retainedTmuxPresentations.removeAll()
         retainedTmuxPresentationKeysByHandle.removeAll()
         pendingRemovalPresentationRestorations.removeAll()
@@ -3658,7 +3905,11 @@ final class WorkspaceSceneModel: ObservableObject {
         let kwtRemoteProvisioner = kwtRemoteProvisioner
         kwtInventoryTask = Task { [weak self] in
             await withTaskGroup(
-                of: (UUID, Result<KwtHostInventory, Error>).self
+                of: (
+                    UUID,
+                    CommandHost,
+                    Result<KwtHostInventory, Error>
+                ).self
             ) { group in
                 for (hostID, host) in targets {
                     group.addTask {
@@ -3669,16 +3920,17 @@ final class WorkspaceSceneModel: ObservableObject {
                             }
                             return await (
                                 hostID,
+                                host,
                                 .success(
                                     try kwtInventoryLoader(host)
                                 )
                             )
                         } catch {
-                            return (hostID, .failure(error))
+                            return (hostID, host, .failure(error))
                         }
                     }
                 }
-                for await (hostID, result) in group {
+                for await (hostID, sourceHost, result) in group {
                     guard let self, !Task.isCancelled,
                           generation == self.kwtInventoryGeneration else {
                         group.cancelAll()
@@ -3726,9 +3978,14 @@ final class WorkspaceSceneModel: ObservableObject {
                         hostID: hostID,
                         includeKwtInventory: true
                     )
-                    if case .success = result {
+                    if case let .success(inventory) = result {
                         self.reconcileRetainedTmuxPresentations(
                             afterAuthoritativeInventoryFor: hostID
+                        )
+                        self.resolveQuarantinedProjectRemovals(
+                            after: inventory,
+                            hostID: hostID,
+                            sourceHost: sourceHost
                         )
                     }
                     self.updateWorkspaceInventoryState()
@@ -3762,14 +4019,23 @@ final class WorkspaceSceneModel: ObservableObject {
                 .formUnion(event.removalTombstones)
             retainPresentationsForFailedRemoval(event)
             return
-        case .ended:
+        case .quarantined:
             fencedWorktreeMutationScopes.remove(event.scope)
+        case .ended:
+            if !worktreeMutationCoordinator.scopes.contains(event.scope) {
+                fencedWorktreeMutationScopes.remove(event.scope)
+            }
             pendingWorktreeRemovals.removeValue(forKey: event.scope)
             let pendingRestoration =
                 pendingRemovalPresentationRestorations.removeValue(
                     forKey: event.scope
                 )
-            if !event.removalTombstones.isEmpty {
+            if !event.allowsRemovalRestoration, !event.removesProject {
+                dismissSelectedWorktreePresentation(in: event.scope)
+            }
+            if event.removesProject {
+                applyProjectRemoval(scope: event.scope)
+            } else if !event.removalTombstones.isEmpty {
                 worktreeRemovalTombstones[event.scope, default: []]
                     .formUnion(event.removalTombstones)
                 applyRemovalTombstones(
@@ -3777,12 +4043,23 @@ final class WorkspaceSceneModel: ObservableObject {
                     scope: event.scope
                 )
             } else if let pendingRestoration {
-                restorePresentationsAfterFailedRemoval(
-                    pendingRestoration,
-                    reconciledTargets: event.reconciledRestorationTargets,
-                    requiresWorkspaceReestablishment:
-                    event.requiresWorkspaceReestablishment
-                )
+                if event.allowsRemovalRestoration {
+                    restorePresentationsAfterFailedRemoval(
+                        pendingRestoration,
+                        reconciledTargets: event.reconciledRestorationTargets,
+                        requiresWorkspaceReestablishment:
+                        event.requiresWorkspaceReestablishment
+                    )
+                } else {
+                    explicitlyDismissedWorktreePresentationIDs.formUnion(
+                        pendingRestoration.values.compactMap {
+                            $0.selection.worktreeID
+                        }
+                    )
+                }
+            }
+            if !event.removesProject {
+                retryProtectedTmuxAttachments(after: event.scope)
             }
         }
         guard inventoryHosts[event.scope.hostID] != nil else { return }
@@ -3791,6 +4068,58 @@ final class WorkspaceSceneModel: ObservableObject {
         if event.phase == .ended {
             scheduleTmuxSessionDiscovery()
         }
+    }
+
+    private func retryProtectedTmuxAttachments(
+        after scope: WorktreeMutationCoordinator.Scope
+    ) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let presentations = retainedTmuxPresentations.values.filter {
+                protectedTmuxAttachmentScope(for: $0) == scope
+                    && pendingProtectedTmuxAttachmentScopesByHandle[
+                        $0.handle.id
+                    ] == scope
+            }
+            for presentation in presentations {
+                guard acquireProtectedTmuxAttachmentScopeIfNeeded(
+                    for: presentation
+                ) else { continue }
+                _ = protectedTmuxSurface(handle: presentation.handle)
+            }
+        }
+    }
+
+    private func applyProjectRemoval(
+        scope: WorktreeMutationCoordinator.Scope
+    ) {
+        if var inventory = kwtInventoriesByHost[scope.hostID] {
+            inventory.projects.removeAll {
+                $0.project.repository == scope.projectIdentity
+            }
+            kwtInventoriesByHost[scope.hostID] = inventory
+        }
+        let projectIDs = Set(snapshot.projects.compactMap { project in
+            project.hostID == scope.hostID
+                && project.scopedKey == scope.projectIdentity
+                ? project.id : nil
+        })
+        let worktreeIDs = Set(snapshot.worktrees.compactMap { worktree in
+            projectIDs.contains(worktree.projectID) ? worktree.id : nil
+        })
+        closeRetainedTmuxPresentations(forWorktreeIDs: worktreeIDs)
+        explicitlyDismissedWorktreePresentationIDs.subtract(worktreeIDs)
+        snapshot.sessions.removeAll { session in
+            session.worktreeID.map(worktreeIDs.contains) == true
+        }
+        snapshot.worktrees.removeAll { worktreeIDs.contains($0.id) }
+        snapshot.projects.removeAll { projectIDs.contains($0.id) }
+        applyInventoryOverlayIfNeeded()
+        selection = selection.normalized(
+            in: snapshot,
+            visibility: worktreeVisibility
+        )
+        updateWorkspaceInventoryState()
     }
 
     private func herdrLifecycleEvent(
@@ -4328,6 +4657,18 @@ final class WorkspaceSceneModel: ObservableObject {
         }
     }
 
+    private func dismissSelectedWorktreePresentation(
+        in scope: WorktreeMutationCoordinator.Scope
+    ) {
+        guard let worktreeID = selection.selectedWorktreeID,
+              let worktree = snapshot.worktree(id: worktreeID),
+              let project = snapshot.project(id: worktree.projectID),
+              project.hostID == scope.hostID,
+              project.scopedKey == scope.projectIdentity
+        else { return }
+        explicitlyDismissedWorktreePresentationIDs.insert(worktreeID)
+    }
+
     private func restorePresentationsAfterFailedRemoval(
         _ restoration: [TmuxPresentationKey: PendingRemovalPresentation],
         reconciledTargets: Set<WorkspaceTmuxSessionSelection>?,
@@ -4469,6 +4810,10 @@ final class WorkspaceSceneModel: ObservableObject {
         excludingWorktrees: [String: Set<KwtWorktreeIdentity>] = [:],
         publish: Bool = true
     ) {
+        worktreeMutationCoordinator.reconcileRetiredProtectedEndpoints(
+            after: inventory,
+            hostID: hostID
+        )
         let previous = kwtInventoriesByHost[hostID]
         kwtInventoriesByHost[hostID] =
             inventory.retainingFailedProjectWorktrees(
@@ -4484,6 +4829,131 @@ final class WorkspaceSceneModel: ObservableObject {
             )
             updateWorkspaceInventoryState()
         }
+    }
+
+    private func resolveQuarantinedProjectRemovals(
+        after inventory: KwtHostInventory,
+        hostID: UUID,
+        sourceHost: CommandHost
+    ) {
+        guard inventory.projectsWarning == nil else { return }
+        let quarantines = worktreeMutationCoordinator
+            .quarantinedProjectRemovals.filter { scope, _ in
+                scope.hostID == hostID
+            }
+        for (scope, quarantine) in quarantines {
+            guard quarantine.host == sourceHost else {
+                worktreeMutationCoordinator.release(
+                    hostID: scope.hostID,
+                    projectIdentity: scope.projectIdentity,
+                    allowsRemovalRestoration: false
+                )
+                continue
+            }
+            let projectPath = quarantine.projectPath
+            if let item = inventory.projects.first(where: {
+                $0.project.repository == scope.projectIdentity
+            }) {
+                if item.warning != nil {
+                    guard normalizedWorkspacePath(item.project.path)
+                        == normalizedWorkspacePath(projectPath)
+                    else { continue }
+                    worktreeMutationCoordinator.release(
+                        hostID: scope.hostID,
+                        projectIdentity: scope.projectIdentity,
+                        allowsRemovalRestoration: false
+                    )
+                    continue
+                }
+                worktreeMutationCoordinator.release(
+                    hostID: scope.hostID,
+                    projectIdentity: scope.projectIdentity,
+                    reconciledRestorationTargets:
+                    projectRestorationTargets(
+                        hostID: scope.hostID,
+                        projectIdentity: scope.projectIdentity
+                    )
+                )
+                continue
+            }
+            if let replacement = inventory.projects.first(where: {
+                normalizedWorkspacePath($0.project.path)
+                    == normalizedWorkspacePath(projectPath)
+            }) {
+                guard replacement.warning == nil else { continue }
+            }
+            worktreeMutationCoordinator.release(
+                hostID: scope.hostID,
+                projectIdentity: scope.projectIdentity,
+                removalTombstones: worktreeMutationCoordinator
+                    .pendingRemovals[scope] ?? [],
+                removesProject: true,
+                allowsRemovalRestoration: false
+            )
+        }
+    }
+
+    private func projectRestorationTargets(
+        hostID: UUID,
+        projectIdentity: String
+    ) -> Set<WorkspaceTmuxSessionSelection> {
+        let projectIDs = Set(snapshot.projects.compactMap { project in
+            project.hostID == hostID
+                && project.scopedKey == projectIdentity
+                ? project.id : nil
+        })
+        return Set(snapshot.worktrees.compactMap { worktree in
+            guard worktree.hostID == hostID,
+                  projectIDs.contains(worktree.projectID)
+            else { return nil }
+            return WorkspaceSidebarModel.tmuxSessionSelection(for: worktree)
+        })
+    }
+
+    private func publishProtectedTmuxEndpoints() {
+        guard !isShutDown else {
+            worktreeMutationCoordinator.retireProtectedEndpoints(
+                for: worktreeMutationParticipantID
+            )
+            return
+        }
+        let scopesByProjectID = Dictionary(
+            uniqueKeysWithValues: snapshot.projects.map { project in
+                (
+                    project.id,
+                    WorktreeMutationCoordinator.Scope(
+                        hostID: project.hostID,
+                        projectIdentity: project.scopedKey
+                    )
+                )
+            }
+        )
+        var endpoints:
+            [
+                WorktreeMutationCoordinator.Scope:
+                    Set<WorktreeMutationCoordinator.ProtectedEndpoint>
+            ] = [:]
+        for worktree in snapshot.worktrees where worktree.tmuxSocketName != nil {
+            guard let scope = scopesByProjectID[worktree.projectID],
+                  scope.hostID == worktree.hostID
+            else { continue }
+            endpoints[scope, default: []].insert(
+                WorktreeMutationCoordinator.ProtectedEndpoint(
+                    worktreeName: worktree.name,
+                    worktreeIdentity: KwtWorktreeIdentity(
+                        path: worktree.path,
+                        generation: worktree.generation ?? ""
+                    ),
+                    selection: WorkspaceSidebarModel.tmuxSessionSelection(
+                        for: worktree
+                    )
+                )
+            )
+        }
+        worktreeMutationCoordinator.replaceProtectedEndpoints(
+            endpoints,
+            for: worktreeMutationParticipantID
+        )
     }
 
     private func isRemoteKwtUnavailable(
@@ -5189,7 +5659,24 @@ final class WorkspaceSceneModel: ObservableObject {
             endpointsByHostID: updatedTargets
         )
         invalidateNativeSessionAttachments(for: invalidatedHostIDs)
+        releaseObsoleteProjectRemovalQuarantines(
+            resolvedEndpoints: updatedTargets
+        )
         return updated
+    }
+
+    private func releaseObsoleteProjectRemovalQuarantines(
+        resolvedEndpoints: [UUID: CommandHost]
+    ) {
+        for (scope, quarantine) in worktreeMutationCoordinator
+            .quarantinedProjectRemovals
+            where resolvedEndpoints[scope.hostID] != quarantine.host {
+            worktreeMutationCoordinator.release(
+                hostID: scope.hostID,
+                projectIdentity: scope.projectIdentity,
+                allowsRemovalRestoration: false
+            )
+        }
     }
 
     private static func resolvedEndpoints(
@@ -5229,6 +5716,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 hostID: hostID
             )
             for handle in handles {
+                releaseProtectedTmuxAttachmentScope(handleID: handle.id)
                 if let key = retainedTmuxPresentationKeysByHandle
                     .removeValue(forKey: handle.id),
                     let presentation = retainedTmuxPresentations
@@ -5895,21 +6383,24 @@ final class WorkspaceSceneModel: ObservableObject {
         _ projectPath: String,
         on host: SSHHost
     ) async -> Result<String, HostProbeError> {
+        let destination = host.sshDestination.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
         guard let sshHost = CommandHostResolver.parseSSHDestination(
-            host.sshDestination
+            destination
         ) else {
             return .failure(.message("Enter a valid SSH destination."))
         }
-        do {
-            let project = try await KwtProjectRegistrar().register(
-                projectPath: projectPath,
-                on: sshHost
-            )
-            refreshKwtInventory()
-            return .success(project.name)
-        } catch {
-            return .failure(.message(error.localizedDescription))
-        }
+        let target = CommandHost.ssh(SSHHostInfo(
+            user: sshHost.user,
+            hostname: sshHost.hostname,
+            port: sshHost.port,
+            platform: host.platform == .windows ? .windows : .posix
+        ))
+        return await performProjectRegistration(
+            projectPath,
+            on: target
+        )
     }
 
     func registerProject(
@@ -5927,16 +6418,483 @@ final class WorkspaceSceneModel: ObservableObject {
                 "The host connection changed. Close Add Project and try again."
             ))
         }
+        return await performProjectRegistration(
+            projectPath,
+            on: currentTarget
+        )
+    }
+
+    private func performProjectRegistration(
+        _ projectPath: String,
+        on target: CommandHost
+    ) async -> Result<String, HostProbeError> {
+        let registryHost = projectRegistryHost(for: target)
+        guard worktreeMutationCoordinator.acquireProjectRegistry(
+            host: registryHost
+        ) else {
+            return .failure(.message(
+                "Another project or worktree change is already in progress."
+            ))
+        }
+        defer {
+            worktreeMutationCoordinator.releaseProjectRegistry(
+                host: registryHost
+            )
+        }
         do {
             let project = try await kwtProjectRegistration(
                 projectPath,
-                currentTarget
+                target
             )
             refreshKwtInventory()
             return .success(project.name)
         } catch {
             return .failure(.message(error.localizedDescription))
         }
+    }
+
+    func unregisterProject(
+        _ project: ProjectSummary,
+        confirmedHost: HostSummary
+    ) async -> Result<String, HostProbeError> {
+        guard let capturedTarget = CommandHostResolver.resolve(confirmedHost)
+        else {
+            return .failure(.message("Enter a valid SSH destination."))
+        }
+        guard let initial = validatedProjectRemovalTarget(
+            project,
+            confirmedHostID: confirmedHost.id,
+            capturedTarget: capturedTarget
+        )
+        else {
+            return .failure(projectRemovalTargetChangedError)
+        }
+        guard !ownsWorktreeMutation else {
+            return .failure(.message(
+                "Another project or worktree change is already in progress."
+            ))
+        }
+        ownsWorktreeMutation = true
+        guard worktreeMutationCoordinator.acquireProjectRemoval(
+            hostID: initial.project.hostID,
+            projectIdentity: initial.project.scopedKey,
+            registryHost: projectRegistryHost(for: capturedTarget)
+        ) else {
+            ownsWorktreeMutation = false
+            return .failure(.message(
+                "Another project or worktree change is already in progress."
+            ))
+        }
+        invalidateKwtInventoryRefresh()
+        var shouldRefresh = false
+        var removalTombstones:
+            Set<WorktreeMutationCoordinator.RemovalTombstone> = []
+        var removesProject = false
+        var allowsRemovalRestoration = true
+        var reconciledRestorationTargets:
+            Set<WorkspaceTmuxSessionSelection>?
+        var quarantinesProjectRemoval = false
+        let retainedProjectWorktrees = snapshot.worktrees.filter {
+            $0.hostID == initial.project.hostID
+                && $0.projectID == initial.project.id
+        }
+        defer {
+            ownsWorktreeMutation = false
+            if !quarantinesProjectRemoval {
+                worktreeMutationCoordinator.release(
+                    hostID: initial.project.hostID,
+                    projectIdentity: initial.project.scopedKey,
+                    removalTombstones: removalTombstones,
+                    reconciledRestorationTargets:
+                    reconciledRestorationTargets,
+                    removesProject: removesProject,
+                    allowsRemovalRestoration: allowsRemovalRestoration
+                )
+            }
+            if shouldRefresh {
+                refreshKwtInventory()
+            }
+        }
+
+        do {
+            let refreshed = try await kwtInventoryLoader(initial.host)
+            if let warning = refreshed.projectsWarning {
+                return .failure(projectRemovalInventoryError(warning))
+            }
+            let refreshedProjectWorktrees = KwtSnapshotMerger.merge(
+                refreshed,
+                hostID: initial.project.hostID,
+                into: snapshot
+            ).worktrees.filter {
+                $0.hostID == initial.project.hostID
+                    && $0.projectID == initial.project.id
+            }
+            guard let probed = validatedProjectRemovalTarget(
+                project,
+                confirmedHostID: confirmedHost.id,
+                capturedTarget: capturedTarget
+            ) else {
+                return .failure(projectRemovalTargetChangedError)
+            }
+            worktreeMutationCoordinator.reconcileRetiredProtectedEndpoints(
+                after: refreshed,
+                hostID: initial.project.hostID
+            )
+            if let protectedSessionError = await protectedSessionRemovalError(
+                for: probed.project,
+                on: probed.host,
+                retaining: retainedProjectWorktrees
+                    + refreshedProjectWorktrees
+            ) {
+                return .failure(protectedSessionError)
+            }
+            guard validatedProjectRemovalTarget(
+                project,
+                confirmedHostID: confirmedHost.id,
+                capturedTarget: capturedTarget
+            ) != nil else {
+                shouldRefresh = true
+                return .failure(projectRemovalTargetChangedError)
+            }
+            applyAuthoritativeKwtInventory(
+                refreshed,
+                hostID: initial.project.hostID
+            )
+            guard let removal = validatedProjectRemovalTarget(
+                project,
+                confirmedHostID: confirmedHost.id,
+                capturedTarget: capturedTarget
+            ) else {
+                return .failure(projectRemovalTargetChangedError)
+            }
+            let projectWorktrees = snapshot.worktrees.filter {
+                $0.hostID == removal.project.hostID
+                    && $0.projectID == removal.project.id
+            }
+            let preparedTombstones = Set(projectWorktrees.map { worktree in
+                WorktreeMutationCoordinator.RemovalTombstone(
+                    path: worktree.path,
+                    generation: worktree.generation ?? ""
+                )
+            })
+            worktreeMutationCoordinator.prepareRemoval(
+                hostID: removal.project.hostID,
+                projectIdentity: removal.project.scopedKey,
+                worktrees: preparedTombstones,
+                presentationTargets: Set(projectWorktrees.compactMap {
+                    WorkspaceSidebarModel.tmuxSessionSelection(for: $0)
+                })
+            )
+            do {
+                let removed = try await kwtProjectRemoval(
+                    removal.project.rootPath,
+                    removal.project.scopedKey,
+                    removal.host
+                )
+                guard validatedProjectRemovalTarget(
+                    project,
+                    confirmedHostID: confirmedHost.id,
+                    capturedTarget: capturedTarget
+                ) != nil else {
+                    allowsRemovalRestoration = false
+                    quarantinesProjectRemoval =
+                        quarantineProjectRemovalIfHostIsResolvable(
+                            removal.project,
+                            on: removal.host
+                        )
+                    if quarantinesProjectRemoval {
+                        shouldRefresh = true
+                    }
+                    return .failure(projectRemovalTargetChangedError)
+                }
+                removalTombstones = preparedTombstones
+                removesProject = true
+                shouldRefresh = true
+                return .success(removed.name)
+            } catch {
+                let removalError = error
+                let reconciliation = await reconcileFailedProjectRemoval(
+                    removal.project,
+                    on: removal.host
+                )
+                guard snapshot.host(id: confirmedHost.id)
+                    .flatMap(CommandHostResolver.resolve) == capturedTarget
+                else {
+                    allowsRemovalRestoration = false
+                    quarantinesProjectRemoval =
+                        quarantineProjectRemovalIfHostIsResolvable(
+                            removal.project,
+                            on: removal.host
+                        )
+                    if quarantinesProjectRemoval {
+                        shouldRefresh = true
+                    }
+                    return .failure(projectRemovalTargetChangedError)
+                }
+                switch reconciliation {
+                case .removed:
+                    removalTombstones = preparedTombstones
+                    removesProject = true
+                    shouldRefresh = true
+                    return .success(removal.project.name)
+                case let .present(restorationTargets):
+                    reconciledRestorationTargets = restorationTargets
+                    return .failure(.message(
+                        removalError.localizedDescription
+                    ))
+                case .unverified:
+                    allowsRemovalRestoration = false
+                    quarantinesProjectRemoval = true
+                    worktreeMutationCoordinator.quarantineProjectRemoval(
+                        hostID: removal.project.hostID,
+                        projectIdentity: removal.project.scopedKey,
+                        projectPath: removal.project.rootPath,
+                        host: removal.host
+                    )
+                    shouldRefresh = true
+                    return .failure(.message(
+                        removalError.localizedDescription
+                    ))
+                }
+            }
+        } catch {
+            return .failure(.message(error.localizedDescription))
+        }
+    }
+
+    private func quarantineProjectRemovalIfHostIsResolvable(
+        _ project: ProjectSummary,
+        on host: CommandHost
+    ) -> Bool {
+        guard snapshot.host(id: project.hostID)
+            .flatMap(CommandHostResolver.resolve) != nil
+        else { return false }
+        worktreeMutationCoordinator.quarantineProjectRemoval(
+            hostID: project.hostID,
+            projectIdentity: project.scopedKey,
+            projectPath: project.rootPath,
+            host: host
+        )
+        return true
+    }
+
+    private func projectRegistryHost(
+        for host: CommandHost
+    ) -> WorktreeMutationCoordinator.ProjectRegistryHost {
+        let target = switch host {
+        case .local:
+            CommandHost.local
+        case let .ssh(info):
+            CommandHost.ssh(SSHHostInfo(
+                user: info.user,
+                hostname: info.hostname.lowercased(),
+                port: info.port ?? 22,
+                platform: info.platform
+            ))
+        }
+        return WorktreeMutationCoordinator.ProjectRegistryHost(
+            target: target
+        )
+    }
+
+    private enum FailedProjectRemovalReconciliation {
+        case removed
+        case present(Set<WorkspaceTmuxSessionSelection>)
+        case unverified
+    }
+
+    private func reconcileFailedProjectRemoval(
+        _ project: ProjectSummary,
+        on host: CommandHost
+    ) async -> FailedProjectRemovalReconciliation {
+        do {
+            let inventory = try await kwtInventoryLoader(host)
+            guard validatedProjectRemovalTarget(
+                project,
+                confirmedHostID: project.hostID,
+                capturedTarget: host
+            ) != nil else {
+                return .unverified
+            }
+            guard inventory.projectsWarning == nil else {
+                return .unverified
+            }
+            if let repositoryItem = inventory.projects.first(where: {
+                $0.project.repository == project.scopedKey
+            }) {
+                guard repositoryItem.warning == nil else {
+                    return .unverified
+                }
+                applyAuthoritativeKwtInventory(
+                    inventory,
+                    hostID: project.hostID
+                )
+                guard normalizedWorkspacePath(repositoryItem.project.path)
+                    == normalizedWorkspacePath(project.rootPath)
+                else { return .unverified }
+                return .present(projectRestorationTargets(
+                    hostID: project.hostID,
+                    projectIdentity: project.scopedKey
+                ))
+            }
+            if inventory.projects.contains(where: {
+                normalizedWorkspacePath($0.project.path)
+                    == normalizedWorkspacePath(project.rootPath)
+            }) {
+                applyAuthoritativeKwtInventory(
+                    inventory,
+                    hostID: project.hostID
+                )
+                return .unverified
+            }
+            applyAuthoritativeKwtInventory(
+                inventory,
+                hostID: project.hostID
+            )
+            return .removed
+        } catch {
+            return .unverified
+        }
+    }
+
+    private var projectRemovalTargetChangedError: HostProbeError {
+        .message(
+            "The project or host connection changed. Try removing it again."
+        )
+    }
+
+    private func projectRemovalInventoryError(
+        _ message: String
+    ) -> HostProbeError {
+        .message(
+            "Ghosthub could not verify the project's worktrees. " + message
+        )
+    }
+
+    private func validatedProjectRemovalTarget(
+        _ confirmedProject: ProjectSummary,
+        confirmedHostID: UUID,
+        capturedTarget: CommandHost
+    ) -> (project: ProjectSummary, host: CommandHost)? {
+        guard let currentProject = snapshot.project(id: confirmedProject.id),
+              let currentHost = snapshot.host(id: confirmedProject.hostID)
+        else { return nil }
+        return Self.validatedProjectRemovalTarget(
+            confirmedProject,
+            confirmedHostID: confirmedHostID,
+            capturedTarget: capturedTarget,
+            currentProject: currentProject,
+            currentHost: currentHost
+        )
+    }
+
+    static func validatedProjectRemovalTarget(
+        _ confirmedProject: ProjectSummary,
+        confirmedHostID: UUID,
+        capturedTarget: CommandHost,
+        currentProject: ProjectSummary,
+        currentHost: HostSummary
+    ) -> (project: ProjectSummary, host: CommandHost)? {
+        guard confirmedHostID == confirmedProject.hostID,
+              currentProject.id == confirmedProject.id,
+              currentProject.hostID == confirmedProject.hostID,
+              currentProject.scopedKey == confirmedProject.scopedKey,
+              currentProject.rootPath == confirmedProject.rootPath,
+              currentHost.id == confirmedHostID,
+              let currentTarget = CommandHostResolver.resolve(currentHost),
+              currentTarget == capturedTarget
+        else { return nil }
+        return (currentProject, currentTarget)
+    }
+
+    private func protectedSessionRemovalError(
+        for project: ProjectSummary,
+        on host: CommandHost,
+        retaining cachedWorktrees: [WorktreeSummary] = []
+    ) async -> HostProbeError? {
+        let protectedWorktrees = (snapshot.worktrees + cachedWorktrees).filter {
+            $0.projectID == project.id
+                && $0.hostID == project.hostID
+                && $0.tmuxSocketName != nil
+        }
+        let localEndpoints = preferredProtectedEndpoints(
+            protectedWorktrees.map { worktree in
+                WorktreeMutationCoordinator.ProtectedEndpoint(
+                    worktreeName: worktree.name,
+                    worktreeIdentity: KwtWorktreeIdentity(
+                        path: worktree.path,
+                        generation: worktree.generation ?? ""
+                    ),
+                    selection: WorkspaceSidebarModel.tmuxSessionSelection(
+                        for: worktree
+                    )
+                )
+            }
+        )
+        let scope = WorktreeMutationCoordinator.Scope(
+            hostID: project.hostID,
+            projectIdentity: project.scopedKey
+        )
+        var probedEndpoints: Set<TmuxPresentationKey> = []
+        while true {
+            let protectedEndpoints = preferredProtectedEndpoints(
+                Array(worktreeMutationCoordinator.protectedEndpoints(
+                    in: scope
+                )) + Array(localEndpoints)
+            )
+            if let unresolved = protectedEndpoints.first(where: {
+                $0.selection == nil
+            }) {
+                return .message(
+                    "Ghosthub could not verify a protected tmux session for "
+                        + "worktree “\(unresolved.worktreeName)”. "
+                        + "Refresh the host and "
+                        + "try again."
+                )
+            }
+            guard let selection = protectedEndpoints.lazy
+                .compactMap(\.selection)
+                .first(where: {
+                    !probedEndpoints.contains(TmuxPresentationKey($0))
+                })
+            else { return nil }
+            probedEndpoints.insert(TmuxPresentationKey(selection))
+            do {
+                _ = try await tmuxSessionIdentityReader(selection, host)
+                return .message(
+                    "Session “\(selection.name)” is still running on its "
+                        + "protected tmux server. Kill it before removing "
+                        + "project “\(project.name)”."
+                )
+            } catch TmuxSessionKillError.sessionNotRunning {
+                worktreeMutationCoordinator.confirmProtectedEndpointAbsent(
+                    selection,
+                    in: scope
+                )
+                continue
+            } catch {
+                return .message(
+                    "Ghosthub could not verify protected session "
+                        + "“\(selection.name)”. \(error.localizedDescription)"
+                )
+            }
+        }
+    }
+
+    private func preferredProtectedEndpoints(
+        _ endpoints: [WorktreeMutationCoordinator.ProtectedEndpoint]
+    ) -> Set<WorktreeMutationCoordinator.ProtectedEndpoint> {
+        var preferred: [
+            KwtWorktreeIdentity:
+                WorktreeMutationCoordinator.ProtectedEndpoint
+        ] = [:]
+        for endpoint in endpoints {
+            if preferred[endpoint.worktreeIdentity] == nil
+                || endpoint.selection != nil {
+                preferred[endpoint.worktreeIdentity] = endpoint
+            }
+        }
+        return Set(preferred.values)
     }
 
     private func fetchEnrichedSnapshot(
@@ -6082,7 +7040,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 activeBorrowedTmuxRetryRequiresConfirmation,
                 retryCommand: activeBorrowedTmuxRetryCommand,
                 surface: { [weak self] in
-                    self?.nativeTmuxSessionCoordinator.surface(handle: handle)
+                    self?.protectedTmuxSurface(handle: handle)
                 },
                 onCloseRequest: {
                     NotificationCenter.default.post(
@@ -6112,8 +7070,13 @@ final class WorkspaceSceneModel: ObservableObject {
     /// runtime. Kept separate from binary resolution so creation reconciliation
     /// cannot race ahead of the command launch.
     func prepareActiveBorrowedTmuxSurface() {
-        guard let handle = activeBorrowedTmuxHandle else { return }
-        _ = nativeTmuxSessionCoordinator.surface(handle: handle)
+        guard let handle = activeBorrowedTmuxHandle,
+              let presentation = retainedTmuxPresentation(for: handle),
+              acquireProtectedTmuxAttachmentScopeIfNeeded(
+                  for: presentation
+              )
+        else { return }
+        _ = protectedTmuxSurface(handle: handle)
     }
 
     func openBorrowedTmuxSession(_ selection: WorkspaceTmuxSessionSelection) {
@@ -7650,6 +8613,9 @@ final class WorkspaceSceneModel: ObservableObject {
                         retained.reconnectContext?.phase = .attachOnly
                         retained.establishmentConfirmationTask?.cancel()
                         retained.establishmentConfirmationTask = nil
+                        releaseProtectedTmuxAttachmentScope(
+                            handleID: retained.handle.id
+                        )
                     }
                     if reconnectWasRunning,
                        let reboundContext = retained.reconnectContext {
@@ -7742,6 +8708,9 @@ final class WorkspaceSceneModel: ObservableObject {
         )
         retainedTmuxPresentations[key] = presentation
         retainedTmuxPresentationKeysByHandle[handle.id] = key
+        _ = acquireProtectedTmuxAttachmentScopeIfNeeded(
+            for: presentation
+        )
         if activatesPresentation {
             activateTmuxPresentation(presentation)
         }
@@ -7773,6 +8742,88 @@ final class WorkspaceSceneModel: ObservableObject {
         for selection: WorkspaceTmuxSessionSelection
     ) -> RetainedTmuxPresentation? {
         retainedTmuxPresentations[TmuxPresentationKey(selection)]
+    }
+
+    private func protectedTmuxSurface(
+        handle: BorrowedTmuxSessionHandle
+    ) -> TerminalSurfaceView? {
+        guard let presentation = retainedTmuxPresentation(for: handle) else {
+            return nil
+        }
+        if let scope = protectedTmuxAttachmentScope(for: presentation),
+           protectedTmuxAttachmentScopesByHandle[handle.id] != scope {
+            return nil
+        }
+        return nativeTmuxSessionCoordinator.surface(handle: handle)
+    }
+
+    private func acquireProtectedTmuxAttachmentScopeIfNeeded(
+        for presentation: RetainedTmuxPresentation
+    ) -> Bool {
+        let handleID = presentation.handle.id
+        guard let scope = protectedTmuxAttachmentScope(for: presentation)
+        else {
+            pendingProtectedTmuxAttachmentScopesByHandle.removeValue(
+                forKey: handleID
+            )
+            return true
+        }
+        if let acquired = protectedTmuxAttachmentScopesByHandle[handleID] {
+            return acquired == scope
+        }
+        guard worktreeMutationCoordinator.acquire(
+            hostID: scope.hostID,
+            projectIdentity: scope.projectIdentity
+        ) else {
+            pendingProtectedTmuxAttachmentScopesByHandle[handleID] = scope
+            return false
+        }
+        pendingProtectedTmuxAttachmentScopesByHandle.removeValue(
+            forKey: handleID
+        )
+        protectedTmuxAttachmentScopesByHandle[handleID] = scope
+        return true
+    }
+
+    private func protectedTmuxAttachmentScope(
+        for presentation: RetainedTmuxPresentation
+    ) -> WorktreeMutationCoordinator.Scope? {
+        guard presentation.selection.socketName != nil,
+              presentation.reconnectContext?.phase == .establishingWorkspace,
+              let worktreeID = presentation.selection.worktreeID,
+              let worktree = snapshot.worktree(id: worktreeID),
+              let project = snapshot.project(id: worktree.projectID),
+              project.hostID == presentation.selection.hostID
+        else { return nil }
+        return WorktreeMutationCoordinator.Scope(
+            hostID: project.hostID,
+            projectIdentity: project.scopedKey
+        )
+    }
+
+    private func releaseProtectedTmuxAttachmentScope(handleID: UUID) {
+        pendingProtectedTmuxAttachmentScopesByHandle.removeValue(
+            forKey: handleID
+        )
+        guard let scope = protectedTmuxAttachmentScopesByHandle.removeValue(
+            forKey: handleID
+        ) else { return }
+        worktreeMutationCoordinator.release(
+            hostID: scope.hostID,
+            projectIdentity: scope.projectIdentity
+        )
+    }
+
+    private func releaseAllProtectedTmuxAttachmentScopes() {
+        let scopes = Array(protectedTmuxAttachmentScopesByHandle.values)
+        protectedTmuxAttachmentScopesByHandle.removeAll()
+        pendingProtectedTmuxAttachmentScopesByHandle.removeAll()
+        for scope in scopes {
+            worktreeMutationCoordinator.release(
+                hostID: scope.hostID,
+                projectIdentity: scope.projectIdentity
+            )
+        }
     }
 
     private var selectedWorktreeRemovalIsPending: Bool {
@@ -8013,6 +9064,9 @@ final class WorkspaceSceneModel: ObservableObject {
             forKey: key
         ) else {
             guard activeBorrowedTmuxSelection == selection else { return }
+            if let handle = activeBorrowedTmuxHandle {
+                releaseProtectedTmuxAttachmentScope(handleID: handle.id)
+            }
             activeBorrowedTmuxSelection = nil
             activeBorrowedTmuxHandle = nil
             activeBorrowedTmuxLaunchMode = nil
@@ -8021,6 +9075,7 @@ final class WorkspaceSceneModel: ObservableObject {
             return
         }
         let handle = presentation.handle
+        releaseProtectedTmuxAttachmentScope(handleID: handle.id)
         retainedTmuxPresentationKeysByHandle.removeValue(forKey: handle.id)
         cancelTmuxReconnect(presentation)
         cancelTmuxPresentationTasks(handleID: handle.id)
@@ -8268,6 +9323,12 @@ final class WorkspaceSceneModel: ObservableObject {
         handle: BorrowedTmuxSessionHandle,
         state: ConnectionState
     ) {
+        switch state {
+        case .disconnected:
+            releaseProtectedTmuxAttachmentScope(handleID: handle.id)
+        case .connecting, .connected, .reconnecting:
+            break
+        }
         borrowedTmuxConnectionStates[handle.id] = state
         guard let presentation = retainedTmuxPresentation(for: handle) else {
             return
@@ -9124,6 +10185,20 @@ final class WorkspaceSceneModel: ObservableObject {
         for presentation: RetainedTmuxPresentation,
         context: TmuxReconnectContext
     ) async -> TmuxSessionProbeOutcome {
+        if context.selection.socketName != nil,
+           context.host == .local {
+            do {
+                _ = try await tmuxSessionIdentityReader(
+                    context.selection,
+                    context.host
+                )
+                return .present
+            } catch TmuxSessionKillError.sessionNotRunning {
+                return .absent
+            } catch {
+                return .failure(.sessionContextUnavailable)
+            }
+        }
         guard case let .ssh(host) = context.host else {
             return .failure(.sessionContextUnavailable)
         }
@@ -9351,7 +10426,10 @@ final class WorkspaceSceneModel: ObservableObject {
             activeBorrowedTmuxHandle = handle
             publishActiveState(for: presentation)
         }
-        _ = nativeTmuxSessionCoordinator.surface(handle: handle)
+        guard acquireProtectedTmuxAttachmentScopeIfNeeded(
+            for: presentation
+        ) else { return }
+        _ = protectedTmuxSurface(handle: handle)
     }
 
     private func stopTmuxReconnectWithUnableToAttach(
@@ -9449,10 +10527,19 @@ final class WorkspaceSceneModel: ObservableObject {
               context.phase != .attachOnly
         else { return }
         presentation.establishmentConfirmationTask?.cancel()
-        let delays = [.zero] + createdSessionDiscoveryDelays
+        let initialDelays = [.zero] + createdSessionDiscoveryDelays
+        let keepsProbingUntilConfirmed = context.selection.socketName != nil
+        let settledDelay = createdSessionDiscoveryDelays.last(where: {
+            $0 > .zero
+        }) ?? .seconds(4)
         presentation.establishmentConfirmationTask = Task {
             [weak self, weak presentation] in
-            for delay in delays {
+            var retryIndex = 0
+            while retryIndex < initialDelays.count
+                || keepsProbingUntilConfirmed {
+                let delay = retryIndex < initialDelays.count
+                    ? initialDelays[retryIndex] : settledDelay
+                retryIndex += 1
                 do {
                     try await Task.sleep(for: delay)
                 } catch {
@@ -9474,6 +10561,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 if outcome == .present {
                     presentation.reconnectContext?.phase = .attachOnly
                     presentation.establishmentConfirmationTask = nil
+                    releaseProtectedTmuxAttachmentScope(handleID: handle.id)
                     return
                 }
             }
