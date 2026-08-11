@@ -317,6 +317,61 @@ struct WorkspaceZellijTests {
         await model.shutdown()
     }
 
+    @Test(
+        "failed creation retry follows the live Zellij session state",
+        arguments: [false, true]
+    )
+    func failedCreationRetryUsesLiveState(
+        sessionBecameActive: Bool
+    ) async throws {
+        let environment = try zellijEnvironment(sessions: [])
+        let store = RecordingNativeSessionSurfaceStore(
+            launchError: ZellijCommandError.unavailable
+        )
+        let validations = Mutex<[ZellijDiscoveryResult]>([
+            .available([]),
+            .available(sessionBecameActive ? ["release"] : []),
+        ])
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeZellijSurfaceStore: store,
+            nativeZellijPathProvider: { _ in .success("/usr/bin/zellij") },
+            zellijSessionDiscovery: { _ in .available([]) },
+            zellijSessionValidationDiscovery: { _, _ in
+                validations.withLock { $0.removeFirst() }
+            }
+        )
+        let selection = WorkspaceZellijSessionSelection(
+            hostID: environment.host.id,
+            name: "release"
+        )
+
+        try await model.createZellijSession(selection)
+        await waitUntilMainActor {
+            store.requestedConfigurations.count == 1
+                && model.activeBorrowedZellijConnectionState == .disconnected(
+                    reason: ZellijCommandError.unavailable.localizedDescription
+                )
+        }
+
+        model.retryBorrowedZellijSession(selection)
+        await waitUntilMainActor(timeout: .seconds(1)) {
+            store.requestedConfigurations.count == 2
+        }
+
+        let retryCommand = try #require(store.lastCommand)
+        if sessionBecameActive {
+            #expect(retryCommand.contains("'attach'"))
+            #expect(!retryCommand.contains("--session=release"))
+        } else {
+            #expect(retryCommand.contains("--session=release"))
+            #expect(!retryCommand.contains("'attach'"))
+        }
+        await model.shutdown()
+    }
+
     @Test("creation rejects a newly conflicting name without replacing tmux")
     func creationConflictPreservesTmux() async throws {
         var environment = try zellijEnvironment(sessions: [])

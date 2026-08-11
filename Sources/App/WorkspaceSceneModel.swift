@@ -598,6 +598,8 @@ final class WorkspaceSceneModel: ObservableObject {
     private var zellijKillAuthorities: [UUID: ZellijKillAuthority] = [:]
     private var pendingCreatedZellijSessions:
         [UUID: WorkspaceZellijSessionSelection] = [:]
+    private var failedZellijCreationIntent:
+        WorkspaceZellijSessionSelection?
     var zellijReconnectSupervisorIsRunning: Bool {
         zellijReconnectSupervisor.isRunning
     }
@@ -2323,6 +2325,7 @@ final class WorkspaceSceneModel: ObservableObject {
         cancelZellijReconnect()
         zellijKillAuthorities.removeAll()
         pendingCreatedZellijSessions.removeAll()
+        failedZellijCreationIntent = nil
         suppressedZellijKillPresentations.removeAll()
         activeBorrowedZellijSelection = nil
         activeBorrowedZellijHandle = nil
@@ -3837,6 +3840,9 @@ final class WorkspaceSceneModel: ObservableObject {
             pendingCreatedZellijSessions = pendingCreatedZellijSessions.filter {
                 $0.value != selection
             }
+            if failedZellijCreationIntent == selection {
+                failedZellijCreationIntent = nil
+            }
             if activeBorrowedZellijSelection == selection {
                 closeBorrowedZellijSession(selection)
             }
@@ -5081,6 +5087,9 @@ final class WorkspaceSceneModel: ObservableObject {
            hostIDs.contains(activeZellij.hostID) {
             invalidateZellijPresentationIntent()
             cancelZellijReconnect()
+            if failedZellijCreationIntent == activeZellij {
+                failedZellijCreationIntent = nil
+            }
             activeBorrowedZellijSelection = nil
             activeBorrowedZellijHandle = nil
         }
@@ -6171,6 +6180,16 @@ final class WorkspaceSceneModel: ObservableObject {
         ) else {
             throw ZellijSessionPresentationError.hostChanged(selection.name)
         }
+        publishPendingZellijCreation(handle: handle, selection: selection)
+    }
+
+    private func publishPendingZellijCreation(
+        handle: BorrowedZellijSessionHandle,
+        selection: WorkspaceZellijSessionSelection
+    ) {
+        if failedZellijCreationIntent == selection {
+            failedZellijCreationIntent = nil
+        }
         pendingCreatedZellijSessions[handle.id] = selection
         var sessions = snapshot.host(id: selection.hostID)?.zellijSessions ?? []
         if !sessions.contains(where: { $0.name == selection.name }) {
@@ -6256,6 +6275,9 @@ final class WorkspaceSceneModel: ObservableObject {
         invalidateZellijPresentationIntent()
         guard activeBorrowedZellijSelection == selection else { return }
         cancelZellijReconnect()
+        if failedZellijCreationIntent == selection {
+            failedZellijCreationIntent = nil
+        }
         var wasPendingCreation = false
         if let handle = activeBorrowedZellijHandle {
             wasPendingCreation = pendingCreatedZellijSessions
@@ -6278,11 +6300,15 @@ final class WorkspaceSceneModel: ObservableObject {
         _ selection: WorkspaceZellijSessionSelection
     ) {
         guard activeBorrowedZellijSelection == selection else { return }
-        validateAndPresentZellijSession(selection)
+        validateAndPresentZellijSession(
+            selection,
+            createsSessionIfMissing: failedZellijCreationIntent == selection
+        )
     }
 
     private func validateAndPresentZellijSession(
-        _ selection: WorkspaceZellijSessionSelection
+        _ selection: WorkspaceZellijSessionSelection,
+        createsSessionIfMissing: Bool = false
     ) {
         invalidateZellijPresentationIntent()
         let killKey = ZellijSessionKillCoordinator.Key(
@@ -6336,16 +6362,33 @@ final class WorkspaceSceneModel: ObservableObject {
             }
             let failureReason: String
             switch validation.result {
-            case let .available(names) where names.contains(selection.name):
-                _ = presentZellijSession(
+            case let .available(names):
+                let sessionIsActive = names.contains(selection.name)
+                guard sessionIsActive || createsSessionIfMissing else {
+                    failureReason =
+                        "The Zellij session is no longer running."
+                    break
+                }
+                let launchMode: ZellijAttachmentLaunchMode = sessionIsActive
+                    ? .attachExisting : .create
+                guard launchMode != .create
+                    || failedZellijCreationIntent == selection
+                else { return }
+                guard let handle = presentZellijSession(
                     selection,
-                    launchMode: .attachExisting,
+                    launchMode: launchMode,
                     validation: validation,
                     expectedKillRevision: killRevision
-                )
+                ) else { return }
+                if launchMode == .create {
+                    publishPendingZellijCreation(
+                        handle: handle,
+                        selection: selection
+                    )
+                } else if failedZellijCreationIntent == selection {
+                    failedZellijCreationIntent = nil
+                }
                 return
-            case .available:
-                failureReason = "The Zellij session is no longer running."
             case .unavailable:
                 failureReason = ZellijCommandError.unavailable
                     .localizedDescription
@@ -8206,6 +8249,10 @@ final class WorkspaceSceneModel: ObservableObject {
         case .connected:
             zellijReconnectSupervisor.cancel()
             activeBorrowedZellijRecoveryState = nil
+            if failedZellijCreationIntent
+                == activeBorrowedZellijSelection {
+                failedZellijCreationIntent = nil
+            }
             if var context = activeZellijReconnectContext,
                context.handleID == handle.id {
                 context.connection = nativeZellijSessionCoordinator
@@ -8219,6 +8266,7 @@ final class WorkspaceSceneModel: ObservableObject {
             guard nativeZellijSessionCoordinator.hasLaunched(handle) else {
                 if let selection = pendingCreatedZellijSessions
                     .removeValue(forKey: handle.id) {
+                    failedZellijCreationIntent = selection
                     zellijSessionsByHost[selection.hostID] = snapshot
                         .host(id: selection.hostID)?
                         .zellijSessions.filter {
@@ -8244,7 +8292,10 @@ final class WorkspaceSceneModel: ObservableObject {
                       context.host.isRemote,
                       code == 255
                 else {
-                    pendingCreatedZellijSessions.removeValue(forKey: handle.id)
+                    if let selection = pendingCreatedZellijSessions
+                        .removeValue(forKey: handle.id) {
+                        failedZellijCreationIntent = selection
+                    }
                     zellijReconnectSupervisor.cancel()
                     activeBorrowedZellijRecoveryState = nil
                     scheduleZellijSessionDiscovery()
@@ -8254,7 +8305,10 @@ final class WorkspaceSceneModel: ObservableObject {
                 activeZellijReconnectContext = context
                 startZellijReconnect(context)
             case .launchFailed, nil:
-                pendingCreatedZellijSessions.removeValue(forKey: handle.id)
+                if let selection = pendingCreatedZellijSessions
+                    .removeValue(forKey: handle.id) {
+                    failedZellijCreationIntent = selection
+                }
                 zellijReconnectSupervisor.cancel()
                 activeBorrowedZellijRecoveryState = nil
                 scheduleZellijSessionDiscovery()
@@ -8378,9 +8432,11 @@ final class WorkspaceSceneModel: ObservableObject {
         switch result {
         case let .available(names):
             guard names.contains(context.selection.name) else {
-                pendingCreatedZellijSessions.removeValue(
+                if let selection = pendingCreatedZellijSessions.removeValue(
                     forKey: context.handleID
-                )
+                ) {
+                    failedZellijCreationIntent = selection
+                }
                 stopZellijReconnect(
                     "The Zellij session is no longer running."
                 )
@@ -8477,6 +8533,7 @@ final class WorkspaceSceneModel: ObservableObject {
         if let selection = pendingCreatedZellijSessions.removeValue(
             forKey: handle.id
         ) {
+            failedZellijCreationIntent = selection
             zellijSessionsByHost[selection.hostID] = snapshot
                 .host(id: selection.hostID)?
                 .zellijSessions.filter { $0.name != selection.name } ?? []
