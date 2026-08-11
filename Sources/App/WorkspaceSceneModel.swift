@@ -3835,14 +3835,12 @@ final class WorkspaceSceneModel: ObservableObject {
             }
             if let restorationState = pendingRestoration,
                let restoration = restorationState.zellij,
-               restoration.sessionName == selection.name {
-                let matchesStableRoute =
-                    zellijRestorationRoute?.state == restorationState
-                        && zellijRestorationRoute?.selection == selection
-                if restoration.hostKey == event.operation.hostKey
-                    || matchesStableRoute {
-                    cancelPendingRestoration()
-                }
+               restoration.sessionName == selection.name,
+               let route = zellijRestorationRoute,
+               route.state == restorationState,
+               route.selection.name == selection.name,
+               route.host == event.operation.host {
+                cancelPendingRestoration()
             }
             zellijDiscoveryGeneration += 1
             zellijDiscoveryTask?.cancel()
@@ -6563,7 +6561,7 @@ final class WorkspaceSceneModel: ObservableObject {
         )
         guard let operation = zellijSessionKillCoordinator.begin(
             key: key,
-            hostKey: request.confirmedHost.configKey
+            host: authority.host
         )
         else {
             throw ZellijSessionPresentationError.operationPending(
@@ -8402,6 +8400,12 @@ final class WorkspaceSceneModel: ObservableObject {
             } onCancel: {
                 probe.cancel()
             }
+            guard !Task.isCancelled else { return .retry }
+            guard activeZellijReconnectContext == context,
+                  activeBorrowedZellijHandle?.id == context.handleID,
+                  snapshot.host(id: context.selection.hostID)
+                  .flatMap(CommandHostResolver.resolve) == context.host
+            else { return .stop }
             let finalConnection = await zellijConnectionSnapshot(
                 on: context.host
             )

@@ -1,5 +1,6 @@
 @preconcurrency import Combine
 import Foundation
+import GhosthubTransport
 
 @MainActor
 final class ZellijSessionKillCoordinator {
@@ -22,7 +23,7 @@ final class ZellijSessionKillCoordinator {
     struct Operation: Identifiable, Equatable, Sendable {
         let id: UUID
         let key: Key
-        let hostKey: String
+        let host: CommandHost
     }
 
     struct Event: Equatable, Sendable {
@@ -40,9 +41,9 @@ final class ZellijSessionKillCoordinator {
         eventSubject.eraseToAnyPublisher()
     }
 
-    func begin(key: Key, hostKey: String) -> Operation? {
+    func begin(key: Key, host: CommandHost) -> Operation? {
         guard activeOperations[key] == nil else { return nil }
-        let operation = Operation(id: UUID(), key: key, hostKey: hostKey)
+        let operation = Operation(id: UUID(), key: key, host: host)
         activeOperations[key] = operation
         revisions[key, default: 0] &+= 1
         eventSubject.send(Event(operation: operation, phase: .began))

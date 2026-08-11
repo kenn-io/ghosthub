@@ -2003,12 +2003,13 @@ struct WorkspaceZellijTests {
             hostID: host.id,
             name: "api"
         )
+        let confirmedHost = try #require(CommandHostResolver.resolve(host))
         let operation = try #require(killCoordinator.begin(
             key: .init(
                 hostID: host.id,
                 sessionName: selection.name
             ),
-            hostKey: host.configKey
+            host: confirmedHost
         ))
 
         model.openBorrowedZellijSession(selection)
@@ -2565,6 +2566,7 @@ struct WorkspaceZellijTests {
             zellijAvailable: true
         )
         let store = RecordingNativeSessionSurfaceStore()
+        let connectionReads = Mutex(0)
         let resolverState = Mutex((
             calls: 0,
             blocked: false,
@@ -2600,6 +2602,10 @@ struct WorkspaceZellijTests {
             zellijSessionValidationDiscovery: { _, _ in
                 .available(["api", "replacement"])
             },
+            zellijSSHConnectionSnapshotProvider: { _ in
+                connectionReads.withLock { $0 += 1 }
+                return SSHConnectionArgumentsSnapshot(arguments: [])
+            },
             tmuxReconnectIntervals: [.zero],
             tmuxReconnectProbeDeadline: .seconds(1)
         )
@@ -2629,9 +2635,11 @@ struct WorkspaceZellijTests {
                 && store.requestedConfigurations.count == 2
                 && resolverState.withLock { $0.cancelled }
         }
+        let readsBeforeRelease = connectionReads.withLock { $0 }
         resolverState.withLock { $0.released = true }
         try await Task.sleep(for: .milliseconds(50))
 
+        #expect(connectionReads.withLock { $0 } == readsBeforeRelease)
         #expect(model.activeBorrowedZellijSelection == replacement)
         #expect(model.activeBorrowedZellijConnectionState == .connected)
         #expect(model.activeBorrowedZellijRecoveryState == nil)
