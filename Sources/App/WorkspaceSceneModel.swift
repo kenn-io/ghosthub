@@ -3855,19 +3855,29 @@ final class WorkspaceSceneModel: ObservableObject {
         )
         switch event.phase {
         case .began:
+            let activePresentationHost = activeZellijReconnectContext?.host
+                ?? snapshot.host(id: selection.hostID)
+                .flatMap(CommandHostResolver.resolve)
+            let activeConnection = activeBorrowedZellijHandle.flatMap {
+                nativeZellijSessionCoordinator
+                    .attachmentConnectionSnapshot($0)
+            } ?? activeZellijReconnectContext?.connection
             let restoresActivePresentation =
                 activeBorrowedZellijSelection == selection
+                    && activePresentationHost == event.operation.host
+                    && (!event.operation.host.isRemote
+                        || activeConnection?.cacheKey
+                        == event.operation.connectionCacheKey)
             let presentationIntent = zellijPresentationIntent.flatMap {
                 $0.selection == selection
                     && $0.navigationRevision == userNavigationRevision
+                    && $0.host == event.operation.host
                     ? $0
                     : nil
             }
             guard restoresActivePresentation || presentationIntent != nil,
                   let host = presentationIntent?.host
-                  ?? activeZellijReconnectContext?.host
-                  ?? snapshot.host(id: selection.hostID)
-                  .flatMap(CommandHostResolver.resolve)
+                  ?? activePresentationHost
             else {
                 return
             }
@@ -3885,6 +3895,9 @@ final class WorkspaceSceneModel: ObservableObject {
             suppressedZellijKillPresentations.removeValue(
                 forKey: event.operation.id
             )
+            zellijDiscoveryGeneration += 1
+            zellijDiscoveryTask?.cancel()
+            zellijDiscoveryTask = nil
             let sessions = zellijSessionsByHost[selection.hostID]
                 ?? snapshot.host(id: selection.hostID)?.zellijSessions
                 ?? []
@@ -4051,6 +4064,8 @@ final class WorkspaceSceneModel: ObservableObject {
     private func resumeZellijRouteAfterIgnoredKill(
         _ selection: WorkspaceZellijSessionSelection
     ) {
+        zellijFreshHostIDs.remove(selection.hostID)
+        scheduleZellijSessionDiscovery()
         let currentHost = snapshot.host(id: selection.hostID)
             .flatMap(CommandHostResolver.resolve)
         if let intent = zellijPresentationIntent,

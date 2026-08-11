@@ -2189,6 +2189,155 @@ struct WorkspaceZellijTests {
         await model.shutdown()
     }
 
+    @Test("kill on a stale SSH route preserves the active attachment")
+    func staleRouteKillPreservesActiveAttachment() async throws {
+        let host = HostSummary(
+            id: UUID(),
+            configKey: "builder",
+            name: "Builder",
+            kind: .remote,
+            platform: .linux,
+            sshDestination: "dev@builder",
+            zellijSessions: [ZellijSessionSummary(name: "api")],
+            zellijAvailable: true
+        )
+        let currentConnection = SSHConnectionArgumentsSnapshot(arguments: [
+            "-p", "2222",
+        ])
+        let staleConnection = SSHConnectionArgumentsSnapshot(arguments: [
+            "-p", "2200",
+        ])
+        let killCoordinator = ZellijSessionKillCoordinator()
+        let store = RecordingNativeSessionSurfaceStore()
+        let model = try makeModel(
+            database: .inMemory(),
+            localHostID: UUID(),
+            snapshot: WorkspaceSnapshot(
+                hosts: [host],
+                projects: [],
+                worktrees: []
+            ),
+            nativeZellijSurfaceStore: store,
+            nativeZellijPathProvider: { _ in .success("/usr/bin/zellij") },
+            zellijSessionKillCoordinator: killCoordinator,
+            zellijSessionValidationDiscovery: { _, _ in
+                .available(["api"])
+            },
+            zellijSSHConnectionSnapshotProvider: { _ in currentConnection }
+        )
+        let selection = WorkspaceZellijSessionSelection(
+            hostID: host.id,
+            name: "api"
+        )
+
+        model.openBorrowedZellijSession(selection)
+        await waitUntilMainActor {
+            model.activeBorrowedZellijSelection == selection
+                && store.requestedConfigurations.count == 1
+        }
+        let resolvedHost = try #require(CommandHostResolver.resolve(host))
+        let operation = try #require(killCoordinator.begin(
+            key: .init(hostID: host.id, sessionName: selection.name),
+            host: resolvedHost,
+            connectionCacheKey: staleConnection.cacheKey
+        ))
+
+        #expect(model.activeBorrowedZellijSelection == selection)
+        #expect(store.requestedConfigurations.count == 1)
+        killCoordinator.finish(operation, outcome: .failed)
+        await model.shutdown()
+    }
+
+    @Test("successful kill cancels in-flight inventory before fencing")
+    func successfulKillCancelsInFlightInventory() async throws {
+        let host = HostSummary(
+            id: UUID(),
+            configKey: "builder",
+            name: "Builder",
+            kind: .remote,
+            platform: .linux,
+            sshDestination: "dev@builder",
+            zellijSessions: [ZellijSessionSummary(name: "api")],
+            zellijAvailable: true
+        )
+        let resolvedHost = try #require(CommandHostResolver.resolve(host))
+        let discoveryState = Mutex((
+            attempts: 0,
+            initialStarted: false,
+            initialCancelled: false,
+            releaseAll: false
+        ))
+        let connectionState = Mutex((blocked: false, released: false))
+        defer {
+            discoveryState.withLock { $0.releaseAll = true }
+            connectionState.withLock { $0.released = true }
+        }
+        let killCoordinator = ZellijSessionKillCoordinator()
+        let model = try makeModel(
+            database: .inMemory(),
+            localHostID: UUID(),
+            snapshot: WorkspaceSnapshot(
+                hosts: [host],
+                projects: [],
+                worktrees: []
+            ),
+            zellijSessionKillCoordinator: killCoordinator,
+            zellijSessionDiscovery: { _ in
+                let attempt = discoveryState.withLock {
+                    $0.attempts += 1
+                    if $0.attempts == 1 {
+                        $0.initialStarted = true
+                    }
+                    return $0.attempts
+                }
+                while !discoveryState.withLock({ $0.releaseAll }) {
+                    if Task.isCancelled {
+                        if attempt == 1 {
+                            discoveryState.withLock {
+                                $0.initialCancelled = true
+                            }
+                        }
+                        break
+                    }
+                    Thread.sleep(forTimeInterval: 0.001)
+                }
+                return .available(["api"])
+            },
+            zellijSSHConnectionSnapshotProvider: { _ in
+                connectionState.withLock { $0.blocked = true }
+                while !connectionState.withLock({ $0.released }) {
+                    Thread.sleep(forTimeInterval: 0.001)
+                }
+                return SSHConnectionArgumentsSnapshot(arguments: [])
+            }
+        )
+        let selection = WorkspaceZellijSessionSelection(
+            hostID: host.id,
+            name: "api"
+        )
+
+        model.startZellijSessionDiscovery()
+        await waitUntilMainActor {
+            discoveryState.withLock { $0.initialStarted }
+        }
+        let operation = try #require(killCoordinator.begin(
+            key: .init(hostID: host.id, sessionName: selection.name),
+            host: resolvedHost,
+            connectionCacheKey: SSHConnectionArgumentsSnapshot(
+                arguments: []
+            ).cacheKey
+        ))
+        killCoordinator.finish(operation, outcome: .succeeded)
+        await waitUntilMainActor {
+            connectionState.withLock { $0.blocked }
+                && discoveryState.withLock { $0.initialCancelled }
+        }
+        #expect(discoveryState.withLock { $0.initialCancelled })
+        discoveryState.withLock { $0.releaseAll = true }
+        connectionState.withLock { $0.released = true }
+        await model.shutdown()
+    }
+
     @Test("successful kill ignores transient Zellij availability")
     func successfulKillIgnoresTransientAvailability() async throws {
         let host = HostSummary(
