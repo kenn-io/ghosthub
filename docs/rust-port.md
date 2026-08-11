@@ -687,6 +687,22 @@ retried. Every KWT command receives the same explicit `TMUX_TMPDIR` as tmux
 discovery and attachment, so project session availability cannot be inferred
 from a different server namespace.
 
+The same serialized KWT lane now owns the first local worktree workflow.
+Each registered project can load `branches --json` from its exact checkout and
+create either a new branch (`add --branch`) or an existing local/remote branch
+(`add`, optionally with `--from`) using `--no-launch`. After creation, Rust
+refreshes authoritative KWT inventory and selects the exact repository,
+worktree path, generation, and computed session name returned by that refresh.
+The UI thread performs none of those commands and keeps the previous project
+tree visible throughout the operation.
+
+Opening a worktree consumes no one-shot tmux creation authority. The host
+revalidates its exact KWT identity and revision-pinned managed helper, then the
+terminal launches `kwt open <exact-path>` as the ordinary PTY client. This is a
+cloneable, deliberately re-runnable RepairOrOpen capability: KWT owns
+probe/repair/bootstrap behavior and tmux continues to own the session. Directly
+discovered unbound sessions remain strictly attach-only.
+
 The Rust sidebar projects KWT-owned default-socket tmux sessions under their
 project/worktree rows and removes only those exact sessions from the unbound
 tmux group. Custom-socket worktrees remain visible as project inventory but do
@@ -1050,16 +1066,15 @@ used as evidence for the Windows ConPTY-to-WSL relay path.
 
 After Slice 1:
 
-1. Local Ghosthub inventory adds pinned bundled kwt, project/worktree
-   inventory, unbound reconciliation, and the full sidebar hierarchy.
-2. Worktree selection adds ordinary/protected RepairOrOpen authority; plain
-   local session creation already ships through CreateOnce in the WSL slice.
-3. Local lifecycle adds project registration, worktree creation, branch/PR
-   import, and deletion; the WSL slice already ships fresh-identity conditional
-   Kill Session for bare sessions.
-4. Remote hosts add OpenSSH diagnostics, managed-helper installation,
+1. Local Ghosthub inventory and ordinary worktree RepairOrOpen now ship with
+   pinned bundled kwt, project/worktree inventory, branch-backed creation, and
+   unbound reconciliation.
+2. Local lifecycle adds pull-request import, worktree removal, and protected
+   worktree behavior; plain local session creation already ships through
+   CreateOnce in the WSL slice.
+3. Remote hosts add OpenSSH diagnostics, managed-helper installation,
    attach-only transport reconnect, repair/open reconnect, and remote Windows.
-5. Persistence and restoration add the coalescing writer, host settings,
+4. Persistence and restoration add the coalescing writer, host settings,
    attach-only descriptors, bounded pending restoration, and inventory-only
    cold-start reconciliation.
 6. Product completion adds multi-window behavior, Console Panel, settings,

@@ -320,6 +320,18 @@ struct NewSessionDraft {
     name: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct WorktreeOpenTarget {
+    host_id: String,
+    endpoint: String,
+    repository: String,
+    project_path: String,
+    registration_fingerprint: String,
+    worktree_path: String,
+    generation: Option<String>,
+    session_name: String,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NewSessionKind {
     Tmux,
@@ -360,15 +372,52 @@ enum ProjectDialog {
         submitting: bool,
         error: Option<String>,
     },
+    NewWorktree {
+        host_id: String,
+        endpoint: String,
+        project_name: String,
+        repository: String,
+        project_path: String,
+        registration_fingerprint: String,
+        branch: String,
+        selected_source: Option<String>,
+        branches: Vec<workspace::KwtBranchItem>,
+        loading: bool,
+        submitting: bool,
+        error: Option<String>,
+    },
 }
 
 impl ProjectDialog {
-    const fn action(&self) -> KwtProjectAction {
+    const fn action(&self) -> Option<KwtProjectAction> {
         match self {
-            Self::Add { .. } => KwtProjectAction::Add,
-            Self::Remove { .. } => KwtProjectAction::Remove,
+            Self::Add { .. } => Some(KwtProjectAction::Add),
+            Self::Remove { .. } => Some(KwtProjectAction::Remove),
+            Self::NewWorktree { .. } => None,
         }
     }
+}
+
+fn has_ambiguous_worktree_source(dialog: &ProjectDialog) -> bool {
+    let ProjectDialog::NewWorktree {
+        branch,
+        selected_source,
+        branches,
+        loading: false,
+        submitting: false,
+        ..
+    } = dialog
+    else {
+        return false;
+    };
+    let normalized = branch.trim();
+    selected_source.is_none()
+        && branches
+            .iter()
+            .filter(|candidate| candidate.name() == normalized)
+            .take(2)
+            .count()
+            > 1
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -759,6 +808,35 @@ impl RootView {
         cx.notify();
     }
 
+    fn select_worktree(
+        &mut self,
+        target: &WorktreeOpenTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let result = self.workspace.open_kwt_worktree(
+            &target.host_id,
+            &target.endpoint,
+            &target.repository,
+            &target.project_path,
+            &target.registration_fingerprint,
+            &target.worktree_path,
+            target.generation.as_deref(),
+            &target.session_name,
+        );
+        if let Err(error) = result {
+            self.diagnostic = Some(error.to_string());
+        } else {
+            self.diagnostic = None;
+            self.observed_presentation_id = None;
+            self.clear_terminal_input();
+            self.paint_cache.clear();
+            self.resize_for_window(window);
+            window.focus(&self.focus);
+        }
+        cx.notify();
+    }
+
     fn refresh(&mut self, cx: &mut Context<Self>) {
         if let Err(error) = self.workspace.refresh() {
             self.diagnostic = Some(error.to_string());
@@ -881,13 +959,48 @@ impl RootView {
         cx.notify();
     }
 
+    fn open_new_worktree(
+        &mut self,
+        host_id: &str,
+        endpoint: &str,
+        project: &workspace::ProjectItem,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let result = self.workspace.load_kwt_branches(
+            host_id,
+            endpoint,
+            project.repository(),
+            project.path(),
+            project.registration_fingerprint(),
+        );
+        self.project_dialog = Some(ProjectDialog::NewWorktree {
+            host_id: host_id.to_owned(),
+            endpoint: endpoint.to_owned(),
+            project_name: project.name().to_owned(),
+            repository: project.repository().to_owned(),
+            project_path: project.path().to_owned(),
+            registration_fingerprint: project.registration_fingerprint().to_owned(),
+            branch: String::new(),
+            selected_source: None,
+            branches: Vec::new(),
+            loading: result.is_ok(),
+            submitting: false,
+            error: result.err().map(|error| error.to_string()),
+        });
+        self.diagnostic = None;
+        window.focus(&self.project_focus);
+        cx.notify();
+    }
+
     fn cancel_project_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self
             .project_dialog
             .as_ref()
             .is_some_and(|dialog| match dialog {
                 ProjectDialog::Add { submitting, .. }
-                | ProjectDialog::Remove { submitting, .. } => *submitting,
+                | ProjectDialog::Remove { submitting, .. }
+                | ProjectDialog::NewWorktree { submitting, .. } => *submitting,
             })
         {
             return;
@@ -897,7 +1010,28 @@ impl RootView {
         cx.notify();
     }
 
+    fn set_project_dialog_error(&mut self, message: impl Into<String>) {
+        let Some(dialog) = &mut self.project_dialog else {
+            return;
+        };
+        let error = match dialog {
+            ProjectDialog::Add { error, .. }
+            | ProjectDialog::Remove { error, .. }
+            | ProjectDialog::NewWorktree { error, .. } => error,
+        };
+        *error = Some(message.into());
+    }
+
     fn submit_project_dialog(&mut self, cx: &mut Context<Self>) {
+        if self
+            .project_dialog
+            .as_ref()
+            .is_some_and(has_ambiguous_worktree_source)
+        {
+            self.set_project_dialog_error("Choose which existing branch to use.");
+            cx.notify();
+            return;
+        }
         let result = match self.project_dialog.as_ref() {
             Some(ProjectDialog::Add {
                 host_id,
@@ -921,6 +1055,40 @@ impl RootView {
                 path,
                 registration_fingerprint,
             ),
+            Some(ProjectDialog::NewWorktree {
+                host_id,
+                endpoint,
+                repository,
+                project_path,
+                registration_fingerprint,
+                branch,
+                selected_source,
+                branches,
+                loading: false,
+                submitting: false,
+                ..
+            }) => {
+                let normalized = branch.trim();
+                let exact = branches
+                    .iter()
+                    .filter(|candidate| {
+                        candidate.name() == normalized
+                            && selected_source
+                                .as_deref()
+                                .is_none_or(|source| source == candidate.source())
+                    })
+                    .collect::<Vec<_>>();
+                self.workspace.create_kwt_worktree(
+                    host_id,
+                    endpoint,
+                    repository,
+                    project_path,
+                    registration_fingerprint,
+                    normalized,
+                    exact.first().map(|candidate| candidate.source()),
+                    exact.is_empty(),
+                )
+            }
             _ => return,
         };
         match result {
@@ -932,6 +1100,9 @@ impl RootView {
                         }
                         | ProjectDialog::Remove {
                             submitting, error, ..
+                        }
+                        | ProjectDialog::NewWorktree {
+                            submitting, error, ..
                         } => {
                             *submitting = true;
                             *error = None;
@@ -940,14 +1111,7 @@ impl RootView {
                 }
             }
             Err(error) => {
-                if let Some(dialog) = &mut self.project_dialog {
-                    match dialog {
-                        ProjectDialog::Add { error: inline, .. }
-                        | ProjectDialog::Remove { error: inline, .. } => {
-                            *inline = Some(error.to_string());
-                        }
-                    }
-                }
+                self.set_project_dialog_error(error.to_string());
             }
         }
         cx.notify();
@@ -970,26 +1134,43 @@ impl RootView {
             cx.stop_propagation();
             return;
         }
-        let Some(ProjectDialog::Add {
-            path,
-            submitting: false,
-            error,
-            ..
-        }) = &mut self.project_dialog
-        else {
-            cx.stop_propagation();
+        let Some(dialog) = &mut self.project_dialog else {
             return;
+        };
+        let (value, error) = match dialog {
+            ProjectDialog::Add {
+                path,
+                submitting: false,
+                error,
+                ..
+            } => (path, error),
+            ProjectDialog::NewWorktree {
+                branch,
+                selected_source,
+                submitting: false,
+                error,
+                ..
+            } => {
+                *selected_source = None;
+                (branch, error)
+            }
+            ProjectDialog::Remove { .. }
+            | ProjectDialog::Add { .. }
+            | ProjectDialog::NewWorktree { .. } => {
+                cx.stop_propagation();
+                return;
+            }
         };
         *error = None;
         if is_paste_shortcut(&event.keystroke) {
             if !event.is_held
                 && let Some(text) = cx.read_from_clipboard().and_then(|item| item.text())
             {
-                path.extend(text.chars().filter(|character| !character.is_control()));
+                value.extend(text.chars().filter(|character| !character.is_control()));
                 cx.notify();
             }
         } else if key == "backspace" {
-            path.pop();
+            value.pop();
             cx.notify();
         } else if !event.keystroke.modifiers.control
             && !event.keystroke.modifiers.alt
@@ -997,7 +1178,7 @@ impl RootView {
             && !event.keystroke.modifiers.function
             && let Some(text) = &event.keystroke.key_char
         {
-            path.extend(text.chars().filter(|character| !character.is_control()));
+            value.extend(text.chars().filter(|character| !character.is_control()));
             cx.notify();
         }
         cx.stop_propagation();
@@ -1231,6 +1412,10 @@ impl RootView {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "workspace events stay in one exhaustive UI-thread dispatch"
+    )]
     fn handle_events(&mut self, cx: &mut Context<Self>) -> bool {
         let (events, may_have_more) = self.workspace.drain_events();
         if may_have_more {
@@ -1262,7 +1447,7 @@ impl RootView {
                     if self
                         .project_dialog
                         .as_ref()
-                        .is_some_and(|dialog| dialog.action() == action)
+                        .is_some_and(|dialog| dialog.action() == Some(action))
                     {
                         self.project_dialog = None;
                         self.restore_focus = true;
@@ -1271,7 +1456,7 @@ impl RootView {
                 }
                 WorkspaceEvent::KwtProjectMutationFailed { action, message } => {
                     if let Some(dialog) = &mut self.project_dialog
-                        && dialog.action() == action
+                        && dialog.action() == Some(action)
                     {
                         match dialog {
                             ProjectDialog::Add {
@@ -1283,7 +1468,77 @@ impl RootView {
                                 *submitting = false;
                                 *error = Some(message);
                             }
+                            ProjectDialog::NewWorktree { .. } => {}
                         }
+                    } else {
+                        self.diagnostic = Some(message);
+                    }
+                }
+                WorkspaceEvent::KwtBranchesLoaded {
+                    project_path,
+                    branches,
+                } => {
+                    if let Some(ProjectDialog::NewWorktree {
+                        project_path: dialog_path,
+                        branches: dialog_branches,
+                        loading,
+                        error,
+                        ..
+                    }) = &mut self.project_dialog
+                        && *dialog_path == project_path
+                    {
+                        *dialog_branches = branches;
+                        *loading = false;
+                        *error = None;
+                    }
+                }
+                WorkspaceEvent::KwtWorktreeCreated { target } => {
+                    let open = WorktreeOpenTarget {
+                        host_id: target.host_id().to_owned(),
+                        endpoint: target.endpoint().to_owned(),
+                        repository: target.repository().to_owned(),
+                        project_path: target.project_path().to_owned(),
+                        registration_fingerprint: target.registration_fingerprint().to_owned(),
+                        worktree_path: target.worktree_path().to_owned(),
+                        generation: target.generation().map(str::to_owned),
+                        session_name: target.session_name().to_owned(),
+                    };
+                    self.project_dialog = None;
+                    self.restore_focus = true;
+                    if let Err(error) = self.workspace.open_kwt_worktree(
+                        &open.host_id,
+                        &open.endpoint,
+                        &open.repository,
+                        &open.project_path,
+                        &open.registration_fingerprint,
+                        &open.worktree_path,
+                        open.generation.as_deref(),
+                        &open.session_name,
+                    ) {
+                        self.diagnostic = Some(error.to_string());
+                    } else {
+                        self.diagnostic = None;
+                        self.observed_presentation_id = None;
+                        self.clear_terminal_input();
+                        self.paint_cache.clear();
+                    }
+                }
+                WorkspaceEvent::KwtWorktreeOperationFailed {
+                    project_path,
+                    message,
+                } => {
+                    if let Some(ProjectDialog::NewWorktree {
+                        project_path: dialog_path,
+                        loading,
+                        submitting,
+                        error,
+                        ..
+                    }) = &mut self.project_dialog
+                        && *dialog_path == project_path
+                    {
+                        *loading = false;
+                        *submitting = false;
+                        *error = Some(message);
                     } else {
                         self.diagnostic = Some(message);
                     }
@@ -2171,27 +2426,159 @@ impl RootView {
     fn project_overlay(&self, window: &Window, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         let dialog = self.project_dialog.as_ref()?;
         let focused = self.project_focus.is_focused(window);
-        let (title, body, action_label, submitting, can_submit, error) =
-            match dialog {
-                ProjectDialog::Add {
-                    path,
-                    submitting,
-                    error,
-                    ..
-                } => {
-                    let valid = workspace::is_absolute_project_path_input(path);
-                    let text = if path.is_empty() && !focused {
-                        "Choose a folder or enter a WSL path".to_owned()
-                    } else if path.is_empty() {
-                        "▏".to_owned()
+        let (title, body, action_label, submitting, can_submit, error) = match dialog {
+            ProjectDialog::Add {
+                path,
+                submitting,
+                error,
+                ..
+            } => {
+                let valid = workspace::is_absolute_project_path_input(path);
+                let text = if path.is_empty() && !focused {
+                    "Choose a folder or enter a WSL path".to_owned()
+                } else if path.is_empty() {
+                    "▏".to_owned()
+                } else {
+                    format!("{path}▏")
+                };
+                let input = div()
+                    .id("kwt-project-path-input")
+                    .px_3()
+                    .h(px(38.0))
+                    .flex_1()
+                    .flex()
+                    .items_center()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(rgb(if focused { 0x4a_8f_cf } else { 0x3a_404c }))
+                    .bg(rgb(0x0f_1218))
+                    .cursor_text()
+                    .text_sm()
+                    .text_color(rgb(if path.is_empty() && !focused {
+                        0x72_7986
                     } else {
-                        format!("{path}▏")
-                    };
-                    let input = div()
-                        .id("kwt-project-path-input")
+                        0xe1_e5ec
+                    }))
+                    .child(text)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        window.focus(&this.project_focus);
+                        cx.notify();
+                    }))
+                    .into_any_element();
+                let body = div()
+                    .m_4()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(input)
+                    .child(
+                        div()
+                            .id("browse-kwt-project")
+                            .h(px(38.0))
+                            .px_3()
+                            .flex()
+                            .items_center()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(rgb(0x3a_404c))
+                            .text_sm()
+                            .text_color(rgb(if *submitting { 0x72_7986 } else { 0xc7_ccd5 }))
+                            .child("Browse…")
+                            .when(!*submitting, |element| {
+                                element
+                                    .cursor_pointer()
+                                    .hover(|style| style.bg(rgb(0x29_2e38)))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.browse_for_project(cx);
+                                    }))
+                            }),
+                    )
+                    .into_any_element();
+                (
+                    "Add Project".to_owned(),
+                    body,
+                    if *submitting {
+                        "Adding…"
+                    } else {
+                        "Add Project"
+                    },
+                    *submitting,
+                    valid && !*submitting,
+                    error.as_deref(),
+                )
+            }
+            ProjectDialog::Remove {
+                endpoint,
+                name,
+                path,
+                submitting,
+                error,
+                ..
+            } => {
+                let body = div()
+                    .px_4()
+                    .py_4()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .text_sm()
+                    .text_color(rgb(0xb6_bcc7))
+                    .child(format!("Remove “{name}” from {endpoint}?"))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(0x8f_96_a3))
+                            .child(path.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(0x8f_96_a3))
+                            .child("The repository, worktrees, and tmux sessions are not deleted."),
+                    )
+                    .into_any_element();
+                (
+                    "Remove Project".to_owned(),
+                    body,
+                    if *submitting { "Removing…" } else { "Remove" },
+                    *submitting,
+                    !*submitting,
+                    error.as_deref(),
+                )
+            }
+            ProjectDialog::NewWorktree {
+                project_name,
+                branch,
+                selected_source,
+                branches,
+                loading,
+                submitting,
+                error,
+                ..
+            } => {
+                let query = branch.trim().to_ascii_lowercase();
+                let visible = branches
+                    .iter()
+                    .filter(|candidate| {
+                        query.is_empty()
+                            || candidate.name().to_ascii_lowercase().contains(&query)
+                            || candidate.source().to_ascii_lowercase().contains(&query)
+                    })
+                    .take(7)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let text = if branch.is_empty() && !focused {
+                    "Branch name".to_owned()
+                } else if branch.is_empty() {
+                    "▏".to_owned()
+                } else {
+                    format!("{branch}▏")
+                };
+                let mut body = div().m_4().flex().flex_col().gap_2().child(
+                    div()
+                        .id("kwt-worktree-branch-input")
                         .px_3()
                         .h(px(38.0))
-                        .flex_1()
                         .flex()
                         .items_center()
                         .rounded_md()
@@ -2200,7 +2587,7 @@ impl RootView {
                         .bg(rgb(0x0f_1218))
                         .cursor_text()
                         .text_sm()
-                        .text_color(rgb(if path.is_empty() && !focused {
+                        .text_color(rgb(if branch.is_empty() && !focused {
                             0x72_7986
                         } else {
                             0xe1_e5ec
@@ -2209,88 +2596,70 @@ impl RootView {
                         .on_click(cx.listener(|this, _, window, cx| {
                             window.focus(&this.project_focus);
                             cx.notify();
-                        }))
-                        .into_any_element();
-                    let body = div()
-                        .m_4()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(input)
-                        .child(
+                        })),
+                );
+                if *loading {
+                    body = body.child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(0x8f_96_a3))
+                            .child("Loading branches…"),
+                    );
+                } else {
+                    for (index, candidate) in visible.into_iter().enumerate() {
+                        let name = candidate.name().to_owned();
+                        let source = candidate.source().to_owned();
+                        let selected = branch == &name
+                            && selected_source
+                                .as_deref()
+                                .is_some_and(|value| value == source);
+                        let detail = if candidate.is_remote() {
+                            format!("{}  ·  {}", candidate.name(), candidate.source())
+                        } else {
+                            candidate.name().to_owned()
+                        };
+                        body = body.child(
                             div()
-                                .id("browse-kwt-project")
-                                .h(px(38.0))
-                                .px_3()
+                                .id(("kwt-branch-candidate", index))
+                                .h(px(28.0))
+                                .px_2()
                                 .flex()
                                 .items_center()
-                                .rounded_md()
-                                .border_1()
-                                .border_color(rgb(0x3a_404c))
-                                .text_sm()
-                                .text_color(rgb(if *submitting { 0x72_7986 } else { 0xc7_ccd5 }))
-                                .child("Browse…")
-                                .when(!*submitting, |element| {
-                                    element
-                                        .cursor_pointer()
-                                        .hover(|style| style.bg(rgb(0x29_2e38)))
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.browse_for_project(cx);
-                                        }))
-                                }),
-                        )
-                        .into_any_element();
-                    (
-                        "Add Project",
-                        body,
-                        if *submitting {
-                            "Adding…"
-                        } else {
-                            "Add Project"
-                        },
-                        *submitting,
-                        valid && !*submitting,
-                        error.as_deref(),
-                    )
+                                .rounded_sm()
+                                .cursor_pointer()
+                                .bg(rgb(if selected { 0x1d_3f63 } else { 0x13_161c }))
+                                .text_xs()
+                                .text_color(rgb(0xc4_c9_d2))
+                                .hover(|style| style.bg(rgb(0x25_2a34)))
+                                .child(detail)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    if let Some(ProjectDialog::NewWorktree {
+                                        branch,
+                                        selected_source,
+                                        error,
+                                        ..
+                                    }) = &mut this.project_dialog
+                                    {
+                                        branch.clone_from(&name);
+                                        *selected_source = Some(source.clone());
+                                        *error = None;
+                                    }
+                                    window.focus(&this.project_focus);
+                                    cx.notify();
+                                })),
+                        );
+                    }
                 }
-                ProjectDialog::Remove {
-                    endpoint,
-                    name,
-                    path,
-                    submitting,
-                    error,
-                    ..
-                } => {
-                    let body =
-                        div()
-                            .px_4()
-                            .py_4()
-                            .flex()
-                            .flex_col()
-                            .gap_2()
-                            .text_sm()
-                            .text_color(rgb(0xb6_bcc7))
-                            .child(format!("Remove “{name}” from {endpoint}?"))
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(rgb(0x8f_96_a3))
-                                    .child(path.clone()),
-                            )
-                            .child(div().text_xs().text_color(rgb(0x8f_96_a3)).child(
-                                "The repository, worktrees, and tmux sessions are not deleted.",
-                            ))
-                            .into_any_element();
-                    (
-                        "Remove Project",
-                        body,
-                        if *submitting { "Removing…" } else { "Remove" },
-                        *submitting,
-                        !*submitting,
-                        error.as_deref(),
-                    )
-                }
-            };
+                (
+                    format!("New worktree · {project_name}"),
+                    body.into_any_element(),
+                    if *submitting { "Creating…" } else { "Create" },
+                    *submitting,
+                    workspace::is_valid_git_branch_name(branch.trim()) && !*loading && !*submitting,
+                    error.as_deref(),
+                )
+            }
+        };
 
         Some(
             div()
@@ -3159,6 +3528,7 @@ impl RootView {
         });
         for (project_index, project) in host.projects().iter().enumerate() {
             let project_for_remove = project.clone();
+            let project_for_create = project.clone();
             let host_id = host.id().to_owned();
             let endpoint = host.endpoint().to_owned();
             let mut row = div()
@@ -3185,6 +3555,34 @@ impl RootView {
                         .truncate()
                         .child(project.name().to_owned()),
                 );
+            if can_remove {
+                let create_host_id = host_id.clone();
+                let create_endpoint = endpoint.clone();
+                row = row.child(
+                    div()
+                        .id(("create-kwt-worktree", project_index))
+                        .size(px(22.0))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .text_sm()
+                        .text_color(rgb(0x7f_8794))
+                        .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xd2_d7_df)))
+                        .child("+")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_new_worktree(
+                                &create_host_id,
+                                &create_endpoint,
+                                &project_for_create,
+                                window,
+                                cx,
+                            );
+                        })),
+                );
+            }
             if can_remove {
                 row = row.child(
                     div()
@@ -3219,7 +3617,8 @@ impl RootView {
                 let is_retained = retained.contains(&selection);
                 let can_open = is_active
                     || is_retained
-                    || (worktree.session_available()
+                    || (worktree.tmux_socket_name().is_none()
+                        && host.kwt_available()
                         && !matches!(
                             host.connection(),
                             HostConnectionState::Disconnected | HostConnectionState::Unavailable
@@ -3238,6 +3637,16 @@ impl RootView {
                     is_active,
                     can_open,
                     can_kill,
+                    Some(WorktreeOpenTarget {
+                        host_id: host.id().to_owned(),
+                        endpoint: host.endpoint().to_owned(),
+                        repository: project.repository().to_owned(),
+                        project_path: project.path().to_owned(),
+                        registration_fingerprint: project.registration_fingerprint().to_owned(),
+                        worktree_path: worktree.path().to_owned(),
+                        generation: worktree.generation().map(str::to_owned),
+                        session_name: worktree.session_name().to_owned(),
+                    }),
                     cx,
                 ));
             }
@@ -3300,6 +3709,7 @@ impl RootView {
                 is_active,
                 can_open,
                 can_kill,
+                None,
                 cx,
             ));
         }
@@ -3316,6 +3726,7 @@ impl RootView {
         is_active: bool,
         can_open: bool,
         can_kill: bool,
+        worktree_target: Option<WorktreeOpenTarget>,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let row_group = format!("worktree-actions-{host_index}-{project_index}-{worktree_index}");
@@ -3369,7 +3780,11 @@ impl RootView {
         }
         row.when(can_open, |element| {
             element.on_click(cx.listener(move |this, _, window, cx| {
-                this.select_session(&selection, window, cx);
+                if let Some(target) = &worktree_target {
+                    this.select_worktree(target, window, cx);
+                } else {
+                    this.select_session(&selection, window, cx);
+                }
             }))
         })
         .into_any_element()
@@ -5155,28 +5570,60 @@ mod tests {
     use super::{
         APP_NAVIGATION_WIDTH, APP_TITLEBAR_HEIGHT, HerdrRowAccess, HerdrRowAction,
         INPUT_BUFFER_FULL_DIAGNOSTIC, INPUT_BUFFERED_DIAGNOSTIC, InputRefusal, LayoutKey,
-        NewSessionDraft, NewSessionKind, PendingUiInput, QueuedUiInput, SessionRowAction,
-        TerminalKeyIdentity, TerminalKeyboard, TerminalPointer, TerminalResize,
+        NewSessionDraft, NewSessionKind, PendingUiInput, ProjectDialog, QueuedUiInput,
+        SessionRowAction, TerminalKeyIdentity, TerminalKeyboard, TerminalPointer, TerminalResize,
         UI_INPUT_BYTE_CAPACITY, UI_INPUT_CAPACITY, WheelBatch, active_session_selection,
         application_navigation_width, canonical_terminal_key_with, clear_terminal_input_state,
         clears_after_input_delivery, clears_when_input_queue_is_empty, coalesce_last_resize,
-        coalesce_last_wheel, herdr_row_actions, herdr_session_menu_actions, host_tree_status,
-        input_queue_has_capacity, is_toggle_sidebar_shortcut, kill_confirmation_description,
-        kill_confirmation_title, named_key, new_session_validation, normalize_cell_width,
-        queued_input_matches_presentation, retained_key_event_with, session_action_menu_position,
-        session_backend_id, session_group_visibility, session_row_element_id,
-        terminal_cell_at_with_offset, terminal_key_input, terminal_key_input_with_canonical,
-        terminal_line_height, terminal_wheel_steps, tmux_row_actions, transitioned_presentation,
-        tree_herdr_sessions, tree_sessions, tree_zellij_sessions, workspace_window_title,
+        coalesce_last_wheel, has_ambiguous_worktree_source, herdr_row_actions,
+        herdr_session_menu_actions, host_tree_status, input_queue_has_capacity,
+        is_toggle_sidebar_shortcut, kill_confirmation_description, kill_confirmation_title,
+        named_key, new_session_validation, normalize_cell_width, queued_input_matches_presentation,
+        retained_key_event_with, session_action_menu_position, session_backend_id,
+        session_group_visibility, session_row_element_id, terminal_cell_at_with_offset,
+        terminal_key_input, terminal_key_input_with_canonical, terminal_line_height,
+        terminal_wheel_steps, tmux_row_actions, transitioned_presentation, tree_herdr_sessions,
+        tree_sessions, tree_zellij_sessions, workspace_window_title,
     };
     use model::DiagnosticKind;
     use std::sync::Arc;
     use surface::{GridSize, SurfaceFrame, SurfaceStore};
     use workspace::{
         HerdrSessionItem, HerdrSessionState, HostConnectionState, HostDiagnostic, HostItem,
-        KeyEvent, KeyInput, Modifiers, MouseAction, MouseButton, MouseInput, NamedKey, ProjectItem,
-        SessionItem, SessionSelection, WorkspaceContent, WorkspaceSnapshot, WorktreeItem,
+        KeyEvent, KeyInput, KwtBranchItem, Modifiers, MouseAction, MouseButton, MouseInput,
+        NamedKey, ProjectItem, SessionItem, SessionSelection, WorkspaceContent, WorkspaceSnapshot,
+        WorktreeItem,
     };
+
+    #[test]
+    fn ambiguous_existing_branch_requires_an_explicit_source() {
+        let mut dialog = ProjectDialog::NewWorktree {
+            host_id: "wsl".to_owned(),
+            endpoint: "Ubuntu".to_owned(),
+            repository: "github.com/acme/widget".to_owned(),
+            project_name: "widget".to_owned(),
+            project_path: "/code/widget".to_owned(),
+            registration_fingerprint: "registration".to_owned(),
+            branch: "topic".to_owned(),
+            selected_source: None,
+            branches: vec![
+                KwtBranchItem::new("topic", "topic", false),
+                KwtBranchItem::new("topic", "origin/topic", true),
+            ],
+            loading: false,
+            submitting: false,
+            error: None,
+        };
+
+        assert!(has_ambiguous_worktree_source(&dialog));
+        if let ProjectDialog::NewWorktree {
+            selected_source, ..
+        } = &mut dialog
+        {
+            *selected_source = Some("origin/topic".to_owned());
+        }
+        assert!(!has_ambiguous_worktree_source(&dialog));
+    }
 
     #[test]
     fn new_session_dialog_matches_the_shipped_name_and_duplicate_rules() {

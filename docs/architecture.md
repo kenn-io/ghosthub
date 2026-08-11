@@ -800,6 +800,13 @@ for the remaining live sessions on each host and for the eventual result of an
 explicit named-session creation request. A worktree open does not infer live
 session state from kwt inventory: it uses kwt's exact-path start-only command
 to converge the session before attachment.
+On the Rust Windows path, a selected ordinary worktree is revalidated by
+repository identity, exact path, generation, and computed session name before
+the revision-pinned helper is allowed to run `kwt open <exact-path>` as the
+PTY-hosted client. Worktree creation first uses KWT's no-launch branch flow,
+then refreshes machine-readable inventory before granting RepairOrOpen
+authority. Branch reads, creation, and reconciliation share the serialized KWT
+background lane and never block GPUI or replace the last usable sidebar tree.
 Herdr's JSON session list is independently authoritative for running and
 stopped Herdr sessions. Exit 127 means optional capability absence and emits no diagnostic;
 malformed output or another failure produces only a host-scoped warning and

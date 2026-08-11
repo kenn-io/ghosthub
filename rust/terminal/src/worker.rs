@@ -10,8 +10,8 @@ use crossbeam_channel::{Receiver, Sender, TryRecvError, TrySendError, bounded, n
 use input::{EncodedInput, KeyInput, MouseAction, MouseInput, encode_input, encode_mouse};
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 use session::{
-    AdmissionPlan, AttachPlan, CreateOnce, HerdrAttachPlan, HerdrLaunchOnce, ZellijAttachPlan,
-    ZellijLaunchOnce,
+    AdmissionPlan, AttachPlan, CreateOnce, HerdrAttachPlan, HerdrLaunchOnce, RepairOrOpenPlan,
+    ZellijAttachPlan, ZellijLaunchOnce,
 };
 use surface::{GridSize, PixelSize, SurfaceStore};
 
@@ -337,6 +337,31 @@ impl TerminalWorker {
     /// cannot be established.
     pub fn attach_zellij_with_metadata(
         plan: &ZellijAttachPlan,
+        size: GridSize,
+        resize_sequence: u64,
+        pixel_size: PixelSize,
+        clipboard_policy: ClipboardPolicy,
+        default_colors: DefaultColors,
+    ) -> Result<Self, WorkerError> {
+        Self::launch(
+            plan.program(),
+            plan.args(),
+            size,
+            resize_sequence,
+            pixel_size,
+            clipboard_policy,
+            default_colors,
+        )
+    }
+
+    /// Spawn a re-runnable KWT repair-or-open client for one exact worktree.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the PTY or ordinary KWT/tmux client cannot be
+    /// established.
+    pub fn repair_or_open_with_metadata(
+        plan: &RepairOrOpenPlan,
         size: GridSize,
         resize_sequence: u64,
         pixel_size: PixelSize,

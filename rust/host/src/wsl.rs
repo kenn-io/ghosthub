@@ -10,15 +10,18 @@ use model::DiagnosticKind;
 use session::{
     AdmissionPlan, AttachPlan, CreateOnce, DiscoveredSession, ExecutablePlatform, HerdrAttachPlan,
     HerdrLaunchOnce, HerdrLaunchTarget, HerdrLifecycleAction, HerdrSessionRecord,
-    HerdrSessionState, IDENTITY_MISMATCH_MARKER, ProbeObservation, SessionIdentity, SessionName,
-    VerifiedTmuxBinary, ZellijAttachPlan, ZellijLaunchOnce, ZellijSessionName, ZellijSessionRecord,
-    resolve_tmux_binary,
+    HerdrSessionState, IDENTITY_MISMATCH_MARKER, ProbeObservation, RepairOrOpenPlan,
+    SessionIdentity, SessionName, VerifiedTmuxBinary, ZellijAttachPlan, ZellijLaunchOnce,
+    ZellijSessionName, ZellijSessionRecord, resolve_tmux_binary,
 };
 
 use crate::herdr::{self, ExecutableProbe};
-use crate::kwt::{parse_project_mutation, project_command_error};
+use crate::kwt::{parse_branches, parse_project_mutation, project_command_error};
 use crate::zellij;
-use crate::{CancellationToken, CommandOutput, CommandRunner, KwtBundle, KwtInventory, KwtProject};
+use crate::{
+    CancellationToken, CommandOutput, CommandRunner, KwtBranchCandidate, KwtBundle, KwtInventory,
+    KwtProject, KwtWorktreeCreate,
+};
 
 const DEFAULT_TMUX: &str = "/usr/bin/tmux";
 const DISCOVERY_ATTEMPTS: usize = 2;
@@ -1082,6 +1085,172 @@ impl<R: CommandRunner> WslHost<R> {
                 "read KWT inventory",
             ))
         }
+    }
+
+    /// Resolve the revision-pinned helper and build a re-runnable ordinary
+    /// client for one exact KWT worktree.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the helper cannot be verified for the captured
+    /// WSL runtime.
+    pub fn kwt_repair_or_open_plan(
+        &self,
+        endpoint: &WslEndpoint,
+        runtime: &WslRuntimeIdentity,
+        worktree_path: &str,
+        session_name: &str,
+        term: AttachTerm,
+        cancellation: &CancellationToken,
+    ) -> Result<RepairOrOpenPlan, HostError> {
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let bundle = self.config.kwt_bundle().ok_or_else(|| {
+            HostError::new(
+                DiagnosticKind::ExecutableNotFound,
+                "the revision-pinned KWT helper is not bundled",
+            )
+        })?;
+        let helper = self.ensure_kwt_helper(endpoint, runtime, bundle, cancellation)?;
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let mut args = pinned_prefix(endpoint);
+        append_tmux_environment(
+            &mut args,
+            Some(term.environment()),
+            self.config.tmux_tmpdir.as_deref(),
+            &[],
+        );
+        args.extend(
+            [helper.as_str(), "open", worktree_path]
+                .into_iter()
+                .map(OsString::from),
+        );
+        Ok(RepairOrOpenPlan::worktree(
+            self.wsl_executable.as_os_str(),
+            args,
+            session_name,
+        ))
+    }
+
+    /// List existing branch candidates for one freshly identified project.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the project identity is stale, the managed helper
+    /// cannot be verified, or KWT emits malformed machine-readable output.
+    pub fn list_kwt_branches(
+        &self,
+        endpoint: &WslEndpoint,
+        runtime: &WslRuntimeIdentity,
+        project_path: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<KwtBranchCandidate>, HostError> {
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let bundle = self.config.kwt_bundle().ok_or_else(|| {
+            HostError::new(
+                DiagnosticKind::ExecutableNotFound,
+                "the revision-pinned KWT helper is not bundled",
+            )
+        })?;
+        let helper = self.ensure_kwt_helper(endpoint, runtime, bundle, cancellation)?;
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let output = self.run_kwt_in_directory(
+            endpoint,
+            &helper,
+            project_path,
+            &["branches", "--json"],
+            cancellation,
+        )?;
+        if output.status != 0 {
+            return Err(classify_command_failure(
+                output.status,
+                &output.stderr,
+                "list KWT branches",
+            ));
+        }
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        parse_branches(&output.stdout)
+            .map_err(|error| HostError::new(DiagnosticKind::MalformedOutput, error.to_string()))
+    }
+
+    /// Create one KWT worktree without launching its tmux client.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the project identity is stale, helper validation
+    /// fails, or KWT rejects the requested branch operation.
+    pub fn create_kwt_worktree(
+        &self,
+        endpoint: &WslEndpoint,
+        runtime: &WslRuntimeIdentity,
+        request: &KwtWorktreeCreate,
+        cancellation: &CancellationToken,
+    ) -> Result<(), HostError> {
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let bundle = self.config.kwt_bundle().ok_or_else(|| {
+            HostError::new(
+                DiagnosticKind::ExecutableNotFound,
+                "the revision-pinned KWT helper is not bundled",
+            )
+        })?;
+        let helper = self.ensure_kwt_helper(endpoint, runtime, bundle, cancellation)?;
+        let mut command = vec!["add"];
+        if request.creates_branch() {
+            command.push("--branch");
+        } else if let Some(source) = request
+            .source()
+            .filter(|source| *source != request.branch())
+        {
+            command.extend(["--from", source]);
+        }
+        command.extend([request.branch(), "--no-launch"]);
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let output = self.run_kwt_in_directory(
+            endpoint,
+            &helper,
+            request.project_path(),
+            &command,
+            cancellation,
+        )?;
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        if output.status == 0 {
+            Ok(())
+        } else {
+            Err(HostError::new(
+                if output.status == 127 {
+                    DiagnosticKind::ExecutableNotFound
+                } else {
+                    DiagnosticKind::Transport
+                },
+                project_command_error(&output.stdout).unwrap_or_else(|| {
+                    let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+                    if detail.is_empty() {
+                        "KWT could not create the worktree".to_owned()
+                    } else {
+                        detail
+                    }
+                }),
+            ))
+        }
+    }
+
+    fn run_kwt_in_directory(
+        &self,
+        endpoint: &WslEndpoint,
+        helper: &str,
+        directory: &str,
+        command: &[&str],
+        cancellation: &CancellationToken,
+    ) -> Result<CommandOutput, HostError> {
+        let mut args = pinned_prefix(endpoint);
+        append_scrubbed_environment(&mut args);
+        args.push(OsString::from("--chdir"));
+        args.push(OsString::from(directory));
+        if let Some(path) = self.config.tmux_tmpdir.as_deref() {
+            args.push(OsString::from(format!("TMUX_TMPDIR={path}")));
+        }
+        args.push(OsString::from(helper));
+        args.extend(command.iter().map(OsString::from));
+        self.run(&args, cancellation)
     }
 
     fn run_scrubbed(
@@ -3995,6 +4164,12 @@ mod tests {
                 br#"{"status":"registered","project":{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null,"registration_fingerprint":"opaque-registration"}}"#.to_vec()
             } else if args.windows(2).any(|pair| pair == ["projects", "remove"]) {
                 br#"{"status":"unregistered","project":{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null,"registration_fingerprint":"opaque-registration"}}"#.to_vec()
+            } else if args.windows(2).any(|pair| pair == ["branches", "--json"]) {
+                br#"[{"name":"feature/ready","label":"feature/ready","source":"origin/feature/ready","is_current":false,"is_remote":true,"last_commit":{"hash":"abc","message":"ready","author":"A","date":"2026-01-01T00:00:00Z"}}]"#.to_vec()
+            } else if args.iter().any(|argument| argument == "add")
+                && args.iter().any(|argument| argument == "--no-launch")
+            {
+                Vec::new()
             } else if args.iter().any(|argument| argument == "projects") {
                 br#"[{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null,"registration_fingerprint":"opaque-registration"}]"#.to_vec()
             } else if args.iter().any(|argument| {
@@ -4141,6 +4316,82 @@ mod tests {
                     .iter()
                     .any(|argument| argument == "TMUX_TMPDIR=/run/user/1000/ghosthub")
         }));
+    }
+
+    #[test]
+    fn kwt_worktree_commands_use_exact_project_directory_and_no_launch() {
+        let (host, runner, endpoint, runtime) = kwt_mutation_host();
+        let cancellation = CancellationToken::new();
+
+        let branches = host
+            .list_kwt_branches(&endpoint, &runtime, "/code/widget", &cancellation)
+            .expect("list branch candidates");
+        assert_eq!(branches[0].name(), "feature/ready");
+        assert_eq!(branches[0].source(), "origin/feature/ready");
+        host.create_kwt_worktree(
+            &endpoint,
+            &runtime,
+            &KwtWorktreeCreate::new(
+                "/code/widget",
+                "feature/ready",
+                Some("origin/feature/ready".to_owned()),
+                false,
+            ),
+            &cancellation,
+        )
+        .expect("create existing remote branch worktree");
+
+        let calls = runner.calls.lock().expect("calls");
+        assert!(calls.iter().any(|args| {
+            args.windows(2).any(|pair| pair == ["branches", "--json"])
+                && args
+                    .windows(2)
+                    .any(|pair| pair == ["--chdir", "/code/widget"])
+        }));
+        assert!(calls.iter().any(|args| {
+            args.ends_with(&[
+                "add".to_owned(),
+                "--from".to_owned(),
+                "origin/feature/ready".to_owned(),
+                "feature/ready".to_owned(),
+                "--no-launch".to_owned(),
+            ]) && args
+                .windows(2)
+                .any(|pair| pair == ["--chdir", "/code/widget"])
+        }));
+    }
+
+    #[test]
+    fn kwt_open_plan_is_re_runnable_and_uses_the_pinned_helper() {
+        let (host, _runner, endpoint, runtime) = kwt_mutation_host();
+        let plan = host
+            .kwt_repair_or_open_plan(
+                &endpoint,
+                &runtime,
+                "/work/widget/topic",
+                "widget-topic",
+                AttachTerm::Xterm256Color,
+                &CancellationToken::new(),
+            )
+            .expect("build worktree open plan");
+        let args = plan
+            .args()
+            .iter()
+            .map(|argument| argument.to_string_lossy())
+            .collect::<Vec<_>>();
+        assert!(args.windows(3).any(|args| {
+            args == [
+                "/home/test/.ghosthub/helpers/kwt/revision/kwt",
+                "open",
+                "/work/widget/topic",
+            ]
+        }));
+        assert!(
+            args.iter()
+                .any(|argument| argument == "TERM=xterm-256color")
+        );
+        assert_eq!(plan.target_name(), "widget-topic");
+        assert_eq!(plan.clone(), plan);
     }
 
     #[test]

@@ -386,6 +386,17 @@ pub struct ZellijAttachPlan {
     args: Vec<OsString>,
 }
 
+/// A re-runnable KWT repair-or-open action for one exact registered
+/// worktree. Unlike one-shot session creation, reconnecting through this plan
+/// is intentional: KWT probes and repairs the workspace before attaching its
+/// ordinary tmux client.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RepairOrOpenPlan {
+    program: OsString,
+    args: Vec<OsString>,
+    target_name: String,
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub struct ZellijLaunchOnce {
     program: OsString,
@@ -440,6 +451,36 @@ impl ZellijAttachPlan {
     #[must_use]
     pub fn args(&self) -> &[OsString] {
         &self.args
+    }
+}
+
+impl RepairOrOpenPlan {
+    #[must_use]
+    pub fn worktree(
+        program: impl Into<OsString>,
+        args: Vec<OsString>,
+        target_name: impl Into<String>,
+    ) -> Self {
+        Self {
+            program: program.into(),
+            args,
+            target_name: target_name.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn program(&self) -> &OsStr {
+        &self.program
+    }
+
+    #[must_use]
+    pub fn args(&self) -> &[OsString] {
+        &self.args
+    }
+
+    #[must_use]
+    pub fn target_name(&self) -> &str {
+        &self.target_name
     }
 }
 
@@ -816,14 +857,15 @@ fn parse_revision(output: &str) -> Option<String> {
 mod tests {
     use super::{
         CreateOnce, HerdrLaunchOnce, HerdrLaunchTarget, HerdrSessionName, HerdrSessionNameError,
-        HerdrSessionRecord, HerdrSessionState, SessionName, SessionNameError, ZellijLaunchOnce,
-        ZellijSessionName, ZellijSessionNameError,
+        HerdrSessionRecord, HerdrSessionState, RepairOrOpenPlan, SessionName, SessionNameError,
+        ZellijLaunchOnce, ZellijSessionName, ZellijSessionNameError,
     };
     use static_assertions::assert_not_impl_any;
 
     assert_not_impl_any!(CreateOnce: Clone, serde::Serialize);
     assert_not_impl_any!(HerdrLaunchOnce: Clone, serde::Serialize);
     assert_not_impl_any!(ZellijLaunchOnce: Clone, serde::Serialize);
+    assert_not_impl_any!(RepairOrOpenPlan: serde::Serialize);
 
     #[test]
     fn zellij_session_names_match_the_shipped_creation_contract() {

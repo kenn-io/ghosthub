@@ -183,6 +183,89 @@ pub struct KwtWorktree {
     tmux_socket_name: Option<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct KwtBranchCandidate {
+    name: String,
+    source: String,
+    is_remote: bool,
+    #[serde(default)]
+    #[serde(rename = "label")]
+    _label: String,
+    #[serde(default)]
+    #[serde(rename = "is_current")]
+    _is_current: bool,
+    #[serde(default)]
+    #[serde(rename = "last_commit")]
+    _last_commit: Option<serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KwtWorktreeCreate {
+    project_path: String,
+    branch: String,
+    source: Option<String>,
+    creates_branch: bool,
+}
+
+impl KwtWorktreeCreate {
+    #[must_use]
+    pub fn new(
+        project_path: impl Into<String>,
+        branch: impl Into<String>,
+        source: Option<String>,
+        creates_branch: bool,
+    ) -> Self {
+        Self {
+            project_path: project_path.into(),
+            branch: branch.into(),
+            source,
+            creates_branch,
+        }
+    }
+
+    #[must_use]
+    pub fn project_path(&self) -> &str {
+        &self.project_path
+    }
+
+    #[must_use]
+    pub fn branch(&self) -> &str {
+        &self.branch
+    }
+
+    #[must_use]
+    pub fn source(&self) -> Option<&str> {
+        self.source.as_deref()
+    }
+
+    #[must_use]
+    pub const fn creates_branch(&self) -> bool {
+        self.creates_branch
+    }
+}
+
+impl KwtBranchCandidate {
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    #[must_use]
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    #[must_use]
+    pub const fn is_remote(&self) -> bool {
+        self.is_remote
+    }
+}
+
+pub(crate) fn parse_branches(output: &[u8]) -> Result<Vec<KwtBranchCandidate>, serde_json::Error> {
+    serde_json::from_slice(output)
+}
+
 impl KwtWorktree {
     #[must_use]
     pub fn path(&self) -> &str {
