@@ -11,6 +11,8 @@ test, and documentation-only changes are omitted.
 
 - **Command-B** now toggles the sidebar exactly once instead of briefly
   animating it closed and immediately reopening it.
+- Switching between Ghosthub windows no longer rebuilds every open window's
+  scene, removing the remaining activation lag in multi-window workflows.
 
 ## [0.8.0] - 2026-08-11
 

@@ -3,11 +3,12 @@ import GhosthubTerminalSupport
 
 @MainActor
 final class ShortcutMonitor {
+    private static var menuOwnedKeyCodes: Set<UInt16> = []
+
     private nonisolated(unsafe) var monitor: Any?
     private let shortcuts: () -> ResolvedApplicationShortcuts
     private let perform: (ApplicationShortcutAction) -> Bool
     private var handledKeyCodes: Set<UInt16> = []
-    private var menuOwnedKeyCodes: Set<UInt16> = []
 
     init(
         shortcuts: @escaping () -> ResolvedApplicationShortcuts,
@@ -39,8 +40,8 @@ final class ShortcutMonitor {
 
     private func process(_ event: NSEvent) -> NSEvent? {
         if event.type == .keyUp {
-            if menuOwnedKeyCodes.remove(event.keyCode) != nil {
-                return event
+            if Self.menuOwnedKeyCodes.remove(event.keyCode) != nil {
+                return nil
             }
             return handledKeyCodes.remove(event.keyCode) == nil ? event : nil
         }
@@ -58,9 +59,10 @@ final class ShortcutMonitor {
         // also invokes the menu command, toggling the sidebar twice.
         if action == .toggleSidebar {
             if event.isARepeat {
-                return menuOwnedKeyCodes.contains(event.keyCode) ? nil : event
+                return Self.menuOwnedKeyCodes.contains(event.keyCode)
+                    ? nil : event
             }
-            menuOwnedKeyCodes.insert(event.keyCode)
+            Self.menuOwnedKeyCodes.insert(event.keyCode)
             return event
         }
 
