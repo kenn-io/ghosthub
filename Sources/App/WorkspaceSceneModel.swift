@@ -4036,6 +4036,10 @@ final class WorkspaceSceneModel: ObservableObject {
                 == pendingCreationHandleIDs
                 && fence.sessions == sessions
         guard statePredatesKill else {
+            if fence.presentationIntentID != nil,
+               zellijPresentationIntent?.id == fence.presentationIntentID {
+                invalidateZellijPresentationIntent()
+            }
             zellijFreshHostIDs.remove(selection.hostID)
             scheduleZellijSessionDiscovery()
             return

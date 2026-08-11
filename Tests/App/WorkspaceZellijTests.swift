@@ -2189,6 +2189,87 @@ struct WorkspaceZellijTests {
         await model.shutdown()
     }
 
+    @Test("successful kill drops a queued same-name open despite a stale fence")
+    func successfulKillDropsQueuedIntentDespiteStaleFence() async throws {
+        let host = HostSummary(
+            id: UUID(),
+            configKey: "builder",
+            name: "Builder",
+            kind: .remote,
+            platform: .linux,
+            sshDestination: "dev@builder",
+            zellijSessions: [
+                ZellijSessionSummary(name: "api"),
+                ZellijSessionSummary(name: "worker"),
+            ],
+            zellijAvailable: true
+        )
+        let connectionState = Mutex((
+            calls: 0,
+            blocked: false,
+            released: false
+        ))
+        defer { connectionState.withLock { $0.released = true } }
+        let killCoordinator = ZellijSessionKillCoordinator()
+        let model = try makeModel(
+            database: .inMemory(),
+            localHostID: UUID(),
+            snapshot: WorkspaceSnapshot(
+                hosts: [host],
+                projects: [],
+                worktrees: []
+            ),
+            nativeZellijPathProvider: { _ in .success("/usr/bin/zellij") },
+            zellijSessionKillCoordinator: killCoordinator,
+            zellijSessionValidationDiscovery: { _, _ in
+                .available(["api", "worker"])
+            },
+            zellijSSHConnectionSnapshotProvider: { _ in
+                let call = connectionState.withLock {
+                    $0.calls += 1
+                    return $0.calls
+                }
+                if call == 1 {
+                    connectionState.withLock { $0.blocked = true }
+                    while !connectionState.withLock({ $0.released }) {
+                        Thread.sleep(forTimeInterval: 0.001)
+                    }
+                }
+                return SSHConnectionArgumentsSnapshot(arguments: [])
+            }
+        )
+        let selection = WorkspaceZellijSessionSelection(
+            hostID: host.id,
+            name: "api"
+        )
+        let resolvedHost = try #require(CommandHostResolver.resolve(host))
+        let cacheKey = SSHConnectionArgumentsSnapshot(arguments: []).cacheKey
+        let operation = try #require(killCoordinator.begin(
+            key: .init(hostID: host.id, sessionName: selection.name),
+            host: resolvedHost,
+            connectionCacheKey: cacheKey
+        ))
+
+        model.openBorrowedZellijSession(selection)
+        #expect(model.pendingZellijPresentationSelection == selection)
+        killCoordinator.finish(operation, outcome: .succeeded)
+        await waitUntilMainActor {
+            connectionState.withLock { $0.blocked }
+        }
+        let workerOperation = try #require(killCoordinator.begin(
+            key: .init(hostID: host.id, sessionName: "worker"),
+            host: resolvedHost,
+            connectionCacheKey: cacheKey
+        ))
+        killCoordinator.finish(workerOperation, outcome: .succeeded)
+        connectionState.withLock { $0.released = true }
+
+        await waitUntilMainActor {
+            model.pendingZellijPresentationSelection == nil
+        }
+        await model.shutdown()
+    }
+
     @Test("kill on a stale SSH route preserves the active attachment")
     func staleRouteKillPreservesActiveAttachment() async throws {
         let host = HostSummary(
