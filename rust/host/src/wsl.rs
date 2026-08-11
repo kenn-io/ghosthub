@@ -160,6 +160,7 @@ pub struct WslRuntimeIdentity {
 #[derive(Debug, Eq, PartialEq)]
 pub struct CreationReceipt {
     path: String,
+    staging_path: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1442,9 +1443,15 @@ impl<R: CommandRunner> WslHost<R> {
     fn remove_creation_receipt(&self, endpoint: &WslEndpoint, receipt: &CreationReceipt) {
         let mut args = pinned_prefix(endpoint);
         args.extend(
-            ["/usr/bin/rm", "-f", "--", receipt.path.as_str()]
-                .into_iter()
-                .map(OsString::from),
+            [
+                "/usr/bin/rm",
+                "-f",
+                "--",
+                receipt.path.as_str(),
+                receipt.staging_path.as_str(),
+            ]
+            .into_iter()
+            .map(OsString::from),
         );
         let _ignored = self.runner.run(
             self.wsl_executable.as_os_str(),
@@ -3190,15 +3197,17 @@ fn creation_identity_receipt() -> Result<CreationReceipt, HostError> {
             format!("generate tmux creation identity receipt: {error}"),
         )
     })?;
+    let path = format!("/tmp/.ghosthub-create-{:032x}", u128::from_ne_bytes(nonce));
     Ok(CreationReceipt {
-        path: format!("/tmp/.ghosthub-create-{:032x}", u128::from_ne_bytes(nonce)),
+        staging_path: format!("{path}.tmp"),
+        path,
     })
 }
 
 fn creation_receipt_command(receipt: &CreationReceipt) -> String {
     format!(
-        "umask 077; set -C; /usr/bin/printf '%s|%s|%s|!' '#{{pid}}' '#{{session_id}}' '#{{session_created}}' > {}",
-        receipt.path
+        "umask 077; set -C; /usr/bin/printf '%s|%s|%s|!' '#{{pid}}' '#{{session_id}}' '#{{session_created}}' > {} && /usr/bin/mv -T -- {} {}",
+        receipt.staging_path, receipt.staging_path, receipt.path
     )
 }
 
@@ -4089,12 +4098,13 @@ mod tests {
             .into_iter()
             .map(OsString::from)
             .chain([OsString::from(format!(
-                "umask 077; set -C; /usr/bin/printf '%s|%s|%s|!' '#{{pid}}' '#{{session_id}}' '#{{session_created}}' > {}",
-                receipt.path
+                "umask 077; set -C; /usr/bin/printf '%s|%s|%s|!' '#{{pid}}' '#{{session_id}}' '#{{session_created}}' > {} && /usr/bin/mv -T -- {} {}",
+                receipt.staging_path, receipt.staging_path, receipt.path
             ))])
             .collect::<Vec<_>>()
         );
         assert!(receipt.path.starts_with("/tmp/.ghosthub-create-"));
+        assert_eq!(receipt.staging_path, format!("{}.tmp", receipt.path));
     }
 
     #[test]
