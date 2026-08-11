@@ -625,10 +625,14 @@ read generations. Failed or in-flight KWT reads retain the last usable project
 tree and affect neither session availability nor terminal presentation.
 
 The Projects header exposes **Add Project** whenever the current WSL host has
-usable KWT inventory. It accepts one explicit POSIX absolute checkout path and
-delegates registration to the pinned helper's `projects add <path> --json`
-command. Each registered project also exposes a confirmed **Remove Project**
-action. Removal first re-reads project inventory, then invokes
+usable KWT inventory. The native folder picker accepts Windows folders and
+`\\wsl.localhost\<distro>\...` paths; Ghosthub resolves drive paths through
+that distro's `wslpath`, maps a matching WSL UNC path directly to its POSIX
+path, and rejects a UNC path owned by another distro. An explicitly entered
+POSIX absolute path remains supported. Registration delegates the resolved
+path to the pinned helper's `projects add <path> --json` command. Each
+registered project also exposes a confirmed **Remove Project** action. Removal
+first re-reads project inventory, then invokes
 `projects remove <exact-path> --expected-repository <credential-free-id>
 --json`; KWT performs the final identity check. Unregistration changes KWT
 metadata only. It cannot delete the repository or worktrees and cannot stop or
@@ -636,10 +640,13 @@ kill tmux sessions. Ghosthub never scans WSL and never edits KWT configuration.
 
 Project mutations use a serialized background lane distinct from GPUI and the
 terminal worker. The last usable project tree remains visible while a command
-runs. A mutation supersedes only older KWT reads, and ordinary KWT cadence
-waits for the mutation and its authoritative post-operation inventory read to
-finish. Commands that may already have crossed the process boundary are not
-cancelled or silently retried.
+runs. KWT's successful machine-readable mutation response is published
+immediately; the broader project/worktree read then reconciles it. A failed
+reconciliation cannot hide an add or resurrect a removal that KWT already
+confirmed. A mutation supersedes only older KWT reads, and ordinary KWT
+cadence waits for the mutation and its reconciliation to finish. Commands that
+may already have crossed the process boundary are not cancelled or silently
+retried.
 
 The Rust sidebar projects KWT-owned default-socket tmux sessions under their
 project/worktree rows and removes only those exact sessions from the unbound

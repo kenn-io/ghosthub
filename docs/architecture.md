@@ -438,9 +438,13 @@ configuration itself. Registered projects expose a confirmed removal action
 through kwt's guarded machine-readable unregister command. Removal requires
 the exact path and credential-free repository identity and changes registry
 metadata only; it never deletes a checkout, worktree, or tmux session. The Rust
-Windows app applies these POSIX operations to its WSL host through the pinned
-Linux helper. Native remote Windows hosts do not expose project registration
-until that command boundary supports native Windows paths.
+Windows app maps a native Windows folder or matching WSL UNC folder into the
+selected distro, then applies these POSIX operations through the pinned Linux
+helper. It publishes a successful machine-readable registration or removal
+before attempting broader worktree reconciliation, so an unrelated inventory
+failure cannot erase the confirmed result. Native remote Windows hosts do not
+expose project registration until that command boundary supports native
+Windows paths.
 On macOS and Linux, the account login shell initializes the command
 environment, while Ghosthub's own inventory and discovery commands execute
 under the host's POSIX `/bin/sh`; non-POSIX account shells such as fish are not

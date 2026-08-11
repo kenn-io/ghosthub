@@ -5340,7 +5340,15 @@ fn run_kwt_project_mutation(inner: &Arc<Inner>, task: &KwtProjectMutationTask) {
         ),
     };
     match mutation {
-        Ok(_project) => {
+        Ok(project) => {
+            publish_kwt_project_mutation(
+                inner,
+                task.generation,
+                &task.endpoint,
+                &task.runtime,
+                action,
+                &project,
+            );
             let refreshed =
                 task.host
                     .discover_kwt(&task.endpoint, &task.runtime, &task.cancellation);
@@ -5352,9 +5360,16 @@ fn run_kwt_project_mutation(inner: &Arc<Inner>, task: &KwtProjectMutationTask) {
                     &task.runtime,
                     &inventory,
                 ),
-                Ok(None) => {
-                    publish_kwt_unavailable(inner, task.generation, &task.endpoint, &task.runtime);
-                }
+                Ok(None) => publish_kwt_error(
+                    inner,
+                    task.generation,
+                    &task.endpoint,
+                    &task.runtime,
+                    HostDiagnostic::new(
+                        DiagnosticKind::ExecutableNotFound,
+                        "The pinned KWT helper became unavailable after changing the project",
+                    ),
+                ),
                 Err(error) => publish_kwt_error(
                     inner,
                     task.generation,
@@ -5377,6 +5392,51 @@ fn run_kwt_project_mutation(inner: &Arc<Inner>, task: &KwtProjectMutationTask) {
         }
     }
     finish_kwt_project_mutation(inner, Some((&task.endpoint, &task.runtime)));
+}
+
+fn publish_kwt_project_mutation(
+    inner: &Inner,
+    generation: u64,
+    endpoint: &host::WslEndpoint,
+    runtime: &host::WslRuntimeIdentity,
+    action: KwtProjectAction,
+    project: &host::KwtProject,
+) {
+    publish_kwt(inner, generation, endpoint, runtime, |host| {
+        match action {
+            KwtProjectAction::Add => {
+                let worktrees = host
+                    .projects
+                    .iter()
+                    .find(|item| {
+                        item.repository == project.repository() && item.path == project.path()
+                    })
+                    .map(|item| item.worktrees.clone())
+                    .unwrap_or_default();
+                host.projects.retain(|item| {
+                    item.repository != project.repository() && item.path != project.path()
+                });
+                host.projects.push(ProjectItem::new(
+                    project.repository(),
+                    project.name(),
+                    project.path(),
+                    worktrees,
+                ));
+                host.projects.sort_by(|left, right| {
+                    left.name
+                        .cmp(&right.name)
+                        .then_with(|| left.path.cmp(&right.path))
+                });
+            }
+            KwtProjectAction::Remove => {
+                host.projects.retain(|item| {
+                    item.repository != project.repository() || item.path != project.path()
+                });
+            }
+        }
+        host.kwt_state = KwtState::Ready;
+        host.kwt_diagnostic = None;
+    });
 }
 
 fn publish_kwt_mutation_failure(
@@ -11295,6 +11355,72 @@ mod tests {
         assert_eq!(failed.hosts()[0].projects()[0].name(), "project");
         assert!(failed.hosts()[0].kwt_diagnostic().is_none());
         assert!(!failed.hosts()[0].kwt_mutating());
+    }
+
+    #[test]
+    fn confirmed_project_mutation_survives_failed_inventory_reconciliation() {
+        let config = WslConfig::with_distro("Ubuntu").expect("valid config");
+        let executable = WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
+            .expect("absolute WSL path");
+        let workspace = Workspace::application(
+            TerminalAppearance::default(),
+            Some(WslHostSpec::available(config.clone(), executable.clone())),
+        );
+        let snapshot = HostSnapshot::test_fixture("Ubuntu", "boot", 42, Vec::new());
+        *workspace.inner.host.lock().expect("published host") = Some(Published::new(
+            HostContext {
+                host: WslHost::new(
+                    config,
+                    Arc::new(StdCommandRunner) as SharedCommandRunner,
+                    executable,
+                ),
+                snapshot: snapshot.clone(),
+            },
+            1,
+        ));
+        workspace
+            .inner
+            .kwt_refresh_generation
+            .store(7, Ordering::Release);
+        let added = KwtInventory::parse(
+            br#"[{"repository":"added-id","name":"added","path":"/repos/added","last_touched":null}]"#,
+            b"[]",
+            b"[]",
+        )
+        .expect("valid mutation project");
+        let added = added.projects()[0].project();
+        publish_kwt_project_mutation(
+            &workspace.inner,
+            7,
+            snapshot.endpoint(),
+            snapshot.runtime(),
+            KwtProjectAction::Add,
+            added,
+        );
+        publish_kwt_error(
+            &workspace.inner,
+            7,
+            snapshot.endpoint(),
+            snapshot.runtime(),
+            HostDiagnostic::new(
+                DiagnosticKind::Transport,
+                "post-registration inventory failed",
+            ),
+        );
+        let reconciled = workspace.snapshot();
+        assert_eq!(reconciled.hosts()[0].projects()[0].name(), "added");
+        assert!(reconciled.hosts()[0].kwt_diagnostic().is_some());
+
+        publish_kwt_project_mutation(
+            &workspace.inner,
+            7,
+            snapshot.endpoint(),
+            snapshot.runtime(),
+            KwtProjectAction::Remove,
+            added,
+        );
+        let removed = workspace.snapshot();
+        assert!(removed.hosts()[0].projects().is_empty());
     }
 
     #[test]

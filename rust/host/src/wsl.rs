@@ -732,6 +732,9 @@ impl<R: CommandRunner> WslHost<R> {
         if is_posix_absolute(project_path) {
             return Ok(project_path.to_owned());
         }
+        if let Some(path) = resolve_wsl_unc_project_path(endpoint, project_path)? {
+            return Ok(path);
+        }
         let output = self.run_scrubbed(
             endpoint,
             &["/usr/bin/wslpath", "-a", "-u", project_path],
@@ -3562,6 +3565,37 @@ fn is_project_path_input_absolute(path: &str) -> bool {
         && matches!(bytes[2], b'\\' | b'/')
 }
 
+fn resolve_wsl_unc_project_path(
+    endpoint: &WslEndpoint,
+    path: &str,
+) -> Result<Option<String>, HostError> {
+    if !path.starts_with(r"\\") && !path.starts_with("//") {
+        return Ok(None);
+    }
+    let normalized = path.replace('\\', "/");
+    let mut components = normalized.trim_start_matches('/').split('/');
+    let server = components.next().unwrap_or_default();
+    if !server.eq_ignore_ascii_case("wsl.localhost") && !server.eq_ignore_ascii_case("wsl$") {
+        return Ok(None);
+    }
+    let distro = components.next().unwrap_or_default();
+    if distro.is_empty() || !distro.eq_ignore_ascii_case(endpoint.distro()) {
+        return Err(HostError::new(
+            DiagnosticKind::MalformedOutput,
+            format!(
+                "That folder belongs to WSL distro {distro:?}, but this host uses {}.",
+                endpoint.distro()
+            ),
+        ));
+    }
+    let suffix = components.collect::<Vec<_>>().join("/");
+    Ok(Some(if suffix.is_empty() {
+        "/".to_owned()
+    } else {
+        format!("/{suffix}")
+    }))
+}
+
 fn is_boot_id(value: &str) -> bool {
     value.len() == 36
         && value.bytes().enumerate().all(|(index, byte)| match index {
@@ -3747,6 +3781,53 @@ mod tests {
                 "--json".to_owned(),
             ])
         }));
+    }
+
+    #[test]
+    fn kwt_project_registration_maps_the_selected_distros_unc_path_directly() {
+        let (host, runner, endpoint, runtime) = kwt_mutation_host();
+        let cancellation = CancellationToken::new();
+
+        host.register_kwt_project(
+            &endpoint,
+            &runtime,
+            r"\\wsl.localhost\Ubuntu\home\test\code\widget",
+            &cancellation,
+        )
+        .expect("register WSL UNC project path");
+
+        let calls = runner.calls.lock().expect("calls");
+        assert!(
+            !calls
+                .iter()
+                .any(|args| { args.iter().any(|argument| argument == "/usr/bin/wslpath") })
+        );
+        assert!(calls.iter().any(|args| {
+            args.ends_with(&[
+                "projects".to_owned(),
+                "add".to_owned(),
+                "/home/test/code/widget".to_owned(),
+                "--json".to_owned(),
+            ])
+        }));
+    }
+
+    #[test]
+    fn kwt_project_registration_rejects_a_different_distros_unc_path() {
+        let (host, _runner, endpoint, runtime) = kwt_mutation_host();
+        let cancellation = CancellationToken::new();
+
+        let error = host
+            .register_kwt_project(
+                &endpoint,
+                &runtime,
+                r"\\wsl.localhost\Debian\home\test\code\widget",
+                &cancellation,
+            )
+            .expect_err("a WSL UNC path cannot cross distro identity");
+
+        assert_eq!(error.kind(), DiagnosticKind::MalformedOutput);
+        assert!(error.to_string().contains("this host uses Ubuntu"));
     }
 
     #[test]
