@@ -11,11 +11,13 @@ use session::{
     AdmissionPlan, AttachPlan, CreateOnce, DiscoveredSession, ExecutablePlatform, HerdrAttachPlan,
     HerdrLaunchOnce, HerdrLaunchTarget, HerdrLifecycleAction, HerdrSessionRecord,
     HerdrSessionState, IDENTITY_MISMATCH_MARKER, ProbeObservation, SessionIdentity, SessionName,
-    VerifiedTmuxBinary, resolve_tmux_binary,
+    VerifiedTmuxBinary, ZellijAttachPlan, ZellijLaunchOnce, ZellijSessionName, ZellijSessionRecord,
+    resolve_tmux_binary,
 };
 
 use crate::herdr::{self, ExecutableProbe};
 use crate::kwt::{parse_project_mutation, project_command_error};
+use crate::zellij;
 use crate::{CancellationToken, CommandOutput, CommandRunner, KwtBundle, KwtInventory, KwtProject};
 
 const DEFAULT_TMUX: &str = "/usr/bin/tmux";
@@ -197,6 +199,7 @@ pub struct HostSnapshot {
     creation_term: AttachTerm,
     sessions: Vec<DiscoveredSession>,
     herdr: Box<HerdrInventory>,
+    zellij: Box<ZellijInventory>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -231,6 +234,47 @@ pub enum HerdrInventory {
         sessions: Vec<HerdrSessionRecord>,
     },
     Failed(HostError),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ZellijInventory {
+    Unavailable,
+    Available {
+        executable: String,
+        sessions: Vec<ZellijSessionRecord>,
+    },
+    Failed(HostError),
+}
+
+impl ZellijInventory {
+    #[must_use]
+    pub const fn is_available(&self) -> bool {
+        matches!(self, Self::Available { .. })
+    }
+
+    #[must_use]
+    pub fn executable(&self) -> Option<&str> {
+        match self {
+            Self::Available { executable, .. } => Some(executable),
+            Self::Unavailable | Self::Failed(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn sessions(&self) -> &[ZellijSessionRecord] {
+        match self {
+            Self::Available { sessions, .. } => sessions,
+            Self::Unavailable | Self::Failed(_) => &[],
+        }
+    }
+
+    #[must_use]
+    pub const fn diagnostic(&self) -> Option<&HostError> {
+        match self {
+            Self::Failed(error) => Some(error),
+            Self::Unavailable | Self::Available { .. } => None,
+        }
+    }
 }
 
 impl HerdrInventory {
@@ -336,6 +380,7 @@ impl HostSnapshot {
             creation_term: AttachTerm::Xterm256Color,
             sessions,
             herdr: Box::new(HerdrInventory::Unavailable),
+            zellij: Box::new(ZellijInventory::Unavailable),
         }
     }
 
@@ -351,6 +396,21 @@ impl HostSnapshot {
     ) -> Self {
         let mut snapshot = Self::test_fixture(distro, kernel_boot_id, init_start_ticks, sessions);
         snapshot.herdr = Box::new(herdr);
+        snapshot
+    }
+
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn test_fixture_with_zellij(
+        distro: impl Into<String>,
+        kernel_boot_id: impl Into<String>,
+        init_start_ticks: u64,
+        sessions: Vec<DiscoveredSession>,
+        zellij: ZellijInventory,
+    ) -> Self {
+        let mut snapshot = Self::test_fixture(distro, kernel_boot_id, init_start_ticks, sessions);
+        snapshot.zellij = Box::new(zellij);
         snapshot
     }
 
@@ -385,6 +445,11 @@ impl HostSnapshot {
     #[must_use]
     pub fn herdr(&self) -> &HerdrInventory {
         self.herdr.as_ref()
+    }
+
+    #[must_use]
+    pub fn zellij(&self) -> &ZellijInventory {
+        self.zellij.as_ref()
     }
 
     /// Apply one authoritative Herdr lifecycle response to this snapshot.
@@ -777,6 +842,7 @@ impl<R: CommandRunner> WslHost<R> {
         runtime: &WslRuntimeIdentity,
         expected_path: &str,
         expected_repository: &str,
+        expected_registration: &str,
         cancellation: &CancellationToken,
     ) -> Result<KwtProject, HostError> {
         let bundle = self.config.kwt_bundle().ok_or_else(|| {
@@ -796,7 +862,9 @@ impl<R: CommandRunner> WslHost<R> {
                 )
             })?;
         if !current.iter().any(|project| {
-            project.path() == expected_path && project.repository() == expected_repository
+            project.path() == expected_path
+                && project.repository() == expected_repository
+                && project.registration_fingerprint() == expected_registration
         }) {
             return Err(HostError::new(
                 DiagnosticKind::MalformedOutput,
@@ -813,6 +881,8 @@ impl<R: CommandRunner> WslHost<R> {
                 expected_path,
                 "--expected-repository",
                 expected_repository,
+                "--expected-registration",
+                expected_registration,
                 "--json",
             ],
             cancellation,
@@ -1073,6 +1143,7 @@ impl<R: CommandRunner> WslHost<R> {
             let creation_term = self.verify_tmux(&endpoint, &runtime, attacher, cancellation)?;
             let sessions = self.discover_sessions(&endpoint, cancellation)?;
             let herdr = self.discover_herdr(&endpoint, cancellation);
+            let zellij = self.discover_zellij(&endpoint, cancellation);
             let observed_runtime = self.resolve_runtime(&endpoint, cancellation)?;
             if runtime == observed_runtime {
                 return Ok(HostSnapshot {
@@ -1081,6 +1152,7 @@ impl<R: CommandRunner> WslHost<R> {
                     creation_term,
                     sessions,
                     herdr: Box::new(herdr),
+                    zellij: Box::new(zellij),
                 });
             }
             runtime = observed_runtime;
@@ -1163,6 +1235,135 @@ impl<R: CommandRunner> WslHost<R> {
                 .map(OsString::from),
         );
         HerdrAttachPlan::attach_only(self.wsl_executable.as_os_str(), args)
+    }
+
+    /// Build an attach-only plan for one freshly discovered active Zellij session.
+    #[must_use]
+    pub fn zellij_attach_plan(
+        &self,
+        endpoint: &WslEndpoint,
+        executable: &str,
+        session: &ZellijSessionRecord,
+        term: AttachTerm,
+    ) -> ZellijAttachPlan {
+        let mut args = pinned_prefix(endpoint);
+        append_zellij_environment(&mut args);
+        args.push(OsString::from(term.environment()));
+        args.extend(
+            [executable, "attach", "--", session.name()]
+                .into_iter()
+                .map(OsString::from),
+        );
+        ZellijAttachPlan::attach_only(self.wsl_executable.as_os_str(), args)
+    }
+
+    /// Build one non-repeatable Zellij session creation client.
+    #[must_use]
+    pub fn zellij_launch_once(
+        &self,
+        endpoint: &WslEndpoint,
+        executable: &str,
+        name: ZellijSessionName,
+        term: AttachTerm,
+    ) -> ZellijLaunchOnce {
+        let mut args = pinned_prefix(endpoint);
+        append_zellij_environment(&mut args);
+        args.push(OsString::from(term.environment()));
+        args.push(OsString::from(executable));
+        args.push(OsString::from(format!("--session={}", name.as_str())));
+        ZellijLaunchOnce::create(self.wsl_executable.as_os_str(), args, name)
+    }
+
+    /// Revalidate and kill one exact active Zellij session.
+    ///
+    /// Zellij does not expose a stable session generation, so an exact
+    /// same-name replacement remains a documented backend limitation. The
+    /// runtime, executable, and active inventory are checked immediately
+    /// before the destructive command.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified error when the WSL runtime, Zellij executable, or
+    /// active session no longer matches confirmation, or when the direct kill
+    /// command fails.
+    pub fn kill_zellij_session(
+        &self,
+        endpoint: &WslEndpoint,
+        expected_runtime: &WslRuntimeIdentity,
+        expected_executable: &str,
+        name: &str,
+        cancellation: &CancellationToken,
+        before_mutation: impl FnOnce(),
+    ) -> Result<(), HostError> {
+        self.validate_current_zellij_target(
+            endpoint,
+            expected_runtime,
+            expected_executable,
+            name,
+            cancellation,
+        )?;
+        before_mutation();
+        self.validate_current_zellij_target(
+            endpoint,
+            expected_runtime,
+            expected_executable,
+            name,
+            cancellation,
+        )?;
+
+        let mut args = pinned_prefix(endpoint);
+        append_zellij_environment(&mut args);
+        args.extend(
+            [expected_executable, "kill-session", "--", name]
+                .into_iter()
+                .map(OsString::from),
+        );
+        let output = self.run(&args, cancellation)?;
+        if output.status != 0 {
+            return Err(classify_command_failure(
+                output.status,
+                &output.stderr,
+                "kill Zellij session",
+            ));
+        }
+        self.require_runtime(endpoint, expected_runtime, cancellation)
+    }
+
+    fn validate_current_zellij_target(
+        &self,
+        endpoint: &WslEndpoint,
+        expected_runtime: &WslRuntimeIdentity,
+        expected_executable: &str,
+        name: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<(), HostError> {
+        self.require_runtime(endpoint, expected_runtime, cancellation)?;
+        let (executable, sessions) = match self.discover_zellij(endpoint, cancellation) {
+            ZellijInventory::Available {
+                executable,
+                sessions,
+            } => (executable, sessions),
+            ZellijInventory::Unavailable => {
+                return Err(HostError::new(
+                    DiagnosticKind::ExecutableNotFound,
+                    "Zellij is unavailable on this host",
+                ));
+            }
+            ZellijInventory::Failed(error) => return Err(error),
+        };
+        if executable != expected_executable {
+            return Err(HostError::new(
+                DiagnosticKind::Transport,
+                "the Zellij executable changed after kill confirmation",
+            ));
+        }
+        if !sessions.iter().any(|session| session.name() == name) {
+            return Err(HostError::new(
+                DiagnosticKind::Transport,
+                format!("Zellij session ‘{name}’ is no longer active"),
+            ));
+        }
+        self.require_runtime(endpoint, expected_runtime, cancellation)
     }
 
     /// Build one Herdr launch-or-attach client. The returned authority is
@@ -1487,6 +1688,7 @@ impl<R: CommandRunner> WslHost<R> {
         runtime: &WslRuntimeIdentity,
         creation_term: AttachTerm,
         herdr: &HerdrInventory,
+        zellij: &ZellijInventory,
         cancellation: &CancellationToken,
     ) -> Result<HostSnapshot, HostError> {
         let sessions = self.discover_sessions(endpoint, cancellation)?;
@@ -1503,6 +1705,7 @@ impl<R: CommandRunner> WslHost<R> {
             creation_term,
             sessions,
             herdr: Box::new(herdr.clone()),
+            zellij: Box::new(zellij.clone()),
         })
     }
 
@@ -1730,6 +1933,79 @@ impl<R: CommandRunner> WslHost<R> {
             }
             Ok(ExecutableProbe::Unavailable) => HerdrInventory::Unavailable,
             Err(error) => HerdrInventory::Failed(error),
+        }
+    }
+
+    fn discover_zellij(
+        &self,
+        endpoint: &WslEndpoint,
+        cancellation: &CancellationToken,
+    ) -> ZellijInventory {
+        match self.resolve_zellij_executable(endpoint, cancellation) {
+            Ok(zellij::ExecutableProbe::Available(executable)) => {
+                self.list_zellij_sessions(endpoint, cancellation, executable)
+            }
+            Ok(zellij::ExecutableProbe::Unavailable) => ZellijInventory::Unavailable,
+            Err(error) => ZellijInventory::Failed(error),
+        }
+    }
+
+    fn resolve_zellij_executable(
+        &self,
+        endpoint: &WslEndpoint,
+        cancellation: &CancellationToken,
+    ) -> Result<zellij::ExecutableProbe, HostError> {
+        let mut args = pinned_prefix(endpoint);
+        args.extend(
+            ["/bin/sh", "-lc", zellij::RESOLVE_SCRIPT]
+                .into_iter()
+                .map(OsString::from),
+        );
+        let output = self.run(&args, cancellation)?;
+        if output.status != 0 && output.status != 127 {
+            return Err(classify_command_failure(
+                output.status,
+                &output.stderr,
+                "resolve Zellij executable",
+            ));
+        }
+        zellij::parse_executable(output.status, &output.stdout)
+            .map_err(|detail| HostError::new(DiagnosticKind::MalformedOutput, detail))
+    }
+
+    fn list_zellij_sessions(
+        &self,
+        endpoint: &WslEndpoint,
+        cancellation: &CancellationToken,
+        executable: String,
+    ) -> ZellijInventory {
+        let mut args = pinned_prefix(endpoint);
+        append_zellij_environment(&mut args);
+        args.extend(
+            [executable.as_str(), "list-sessions", "--no-formatting"]
+                .into_iter()
+                .map(OsString::from),
+        );
+        let output = match self.run(&args, cancellation) {
+            Ok(output) => output,
+            Err(error) => return ZellijInventory::Failed(error),
+        };
+        if output.status == 127 {
+            return ZellijInventory::Unavailable;
+        }
+        match zellij::parse_inventory(output.status, &output.stdout, &output.stderr) {
+            Ok(sessions) => ZellijInventory::Available {
+                executable,
+                sessions,
+            },
+            Err(detail) => ZellijInventory::Failed(HostError::new(
+                if output.status == 0 {
+                    DiagnosticKind::MalformedOutput
+                } else {
+                    DiagnosticKind::Transport
+                },
+                detail,
+            )),
         }
     }
 
@@ -3157,6 +3433,14 @@ fn append_herdr_environment(args: &mut Vec<OsString>) {
     }
 }
 
+fn append_zellij_environment(args: &mut Vec<OsString>) {
+    args.push(OsString::from("/usr/bin/env"));
+    for variable in zellij::CONTROL_VARIABLES {
+        args.push(OsString::from("-u"));
+        args.push(OsString::from(variable));
+    }
+}
+
 fn settle_uncertain_cleanup(
     mut elapsed: impl FnMut() -> Duration,
     mut wait: impl FnMut(Duration),
@@ -3708,11 +3992,11 @@ mod tests {
             } else if args.iter().any(|argument| argument == "/usr/bin/wslpath") {
                 b"/mnt/c/Users/test/code/widget\n".to_vec()
             } else if args.windows(2).any(|pair| pair == ["projects", "add"]) {
-                br#"{"status":"registered","project":{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null}}"#.to_vec()
+                br#"{"status":"registered","project":{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null,"registration_fingerprint":"opaque-registration"}}"#.to_vec()
             } else if args.windows(2).any(|pair| pair == ["projects", "remove"]) {
-                br#"{"status":"unregistered","project":{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null}}"#.to_vec()
+                br#"{"status":"unregistered","project":{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null,"registration_fingerprint":"opaque-registration"}}"#.to_vec()
             } else if args.iter().any(|argument| argument == "projects") {
-                br#"[{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null}]"#.to_vec()
+                br#"[{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null,"registration_fingerprint":"opaque-registration"}]"#.to_vec()
             } else if args.iter().any(|argument| {
                 matches!(
                     argument.as_str(),
@@ -3803,6 +4087,7 @@ mod tests {
                 &runtime,
                 "/code/widget",
                 "github.com/acme/widget",
+                "opaque-registration",
                 &cancellation,
             )
             .expect("remove project");
@@ -3824,6 +4109,8 @@ mod tests {
                 "/code/widget".to_owned(),
                 "--expected-repository".to_owned(),
                 "github.com/acme/widget".to_owned(),
+                "--expected-registration".to_owned(),
+                "opaque-registration".to_owned(),
                 "--json".to_owned(),
             ])
         }));
@@ -4000,6 +4287,7 @@ mod tests {
                 executable: "/usr/bin/herdr".to_owned(),
                 sessions: vec![running.clone(), other.clone()],
             }),
+            zellij: Box::new(ZellijInventory::Unavailable),
         };
         let stopped = HerdrSessionRecord::new(
             "work",
@@ -4064,6 +4352,7 @@ mod tests {
                 executable: executable.to_owned(),
                 sessions: vec![session],
             }),
+            zellij: Box::new(ZellijInventory::Unavailable),
         };
         let replacement = HerdrSessionRecord::new(
             "work",
