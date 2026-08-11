@@ -24,12 +24,18 @@ use workspace::{
 };
 
 pub const WINDOW_TITLE: &str = "Ghosthub";
-const APP_NAVIGATION_WIDTH: f32 = 260.0;
+const APP_NAVIGATION_WIDTH: f32 = 224.0;
 const APP_TITLEBAR_HEIGHT: f32 = 32.0;
 const APP_CHROME_BACKGROUND: u32 = 0x0f_1116;
-const NAVIGATION_HEADER_HEIGHT: f32 = 36.0;
-const HOST_ROW_HEIGHT: f32 = 30.0;
-const SESSION_ROW_HEIGHT: f32 = 30.0;
+const NAVIGATION_HEADER_HEIGHT: f32 = 32.0;
+const HOST_ROW_HEIGHT: f32 = 28.0;
+const SESSION_GROUP_ROW_HEIGHT: f32 = 24.0;
+const SESSION_ROW_HEIGHT: f32 = 27.0;
+const SESSION_GROUP_BACKGROUND: u32 = 0x12_151b;
+const SESSION_GROUP_TEXT: u32 = 0x86_8e9b;
+const SESSION_GROUP_INSET: f32 = 12.0;
+const SESSION_ROW_INSET: f32 = 18.0;
+const NESTED_SESSION_ROW_INSET: f32 = 28.0;
 const CELL_LINE_GAP: f32 = 4.0;
 const UI_INPUT_CAPACITY: usize = 512;
 const MOUSE_RELEASE_RESERVE: usize = 3;
@@ -2711,7 +2717,9 @@ impl RootView {
             .items_center()
             .gap_1()
             .px_2()
-            .bg(rgb(if is_selected { 0x16_1920 } else { 0x0f_1116 }))
+            .border_b_1()
+            .border_color(rgb(0x20_242c))
+            .bg(rgb(if is_selected { 0x18_1b22 } else { 0x14_171d }))
             .child(
                 div()
                     .w(px(12.0))
@@ -2781,59 +2789,54 @@ impl RootView {
         sessions: &[TreeSession],
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let mut tree = div()
-            .ml(px(18.0))
-            .border_l_1()
-            .border_color(rgb(0x25_2932))
-            .flex()
-            .flex_col()
-            .child({
-                let mut header = div()
-                    .h(px(24.0))
-                    .flex()
-                    .items_center()
-                    .pl(px(17.0))
-                    .pr_1()
-                    .text_xs()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(rgb(0x73_7a87))
-                    .child(div().flex_1().child("TMUX SESSIONS"));
-                if host.connection() == HostConnectionState::Ready {
-                    let host_id = host.id().to_owned();
-                    let endpoint = host.endpoint().to_owned();
-                    header = header.child(
-                        div()
-                            .id(("create-tmux-session", host_index))
-                            .size(px(22.0))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded_sm()
-                            .cursor_pointer()
-                            .text_sm()
-                            .text_color(rgb(0x8f_96_a3))
-                            .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xd2_d7_df)))
-                            .child("+")
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_new_session(
-                                    &host_id,
-                                    &endpoint,
-                                    NewSessionKind::Tmux,
-                                    window,
-                                    cx,
-                                );
-                            })),
-                    );
-                }
-                header
-            });
+        let mut tree = div().w_full().flex().flex_col().child({
+            let mut header = div()
+                .h(px(SESSION_GROUP_ROW_HEIGHT))
+                .flex()
+                .items_center()
+                .pl(px(SESSION_GROUP_INSET))
+                .pr_1()
+                .bg(rgb(SESSION_GROUP_BACKGROUND))
+                .text_xs()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(rgb(SESSION_GROUP_TEXT))
+                .child(div().flex_1().child("TMUX SESSIONS"));
+            if host.connection() == HostConnectionState::Ready {
+                let host_id = host.id().to_owned();
+                let endpoint = host.endpoint().to_owned();
+                header = header.child(
+                    div()
+                        .id(("create-tmux-session", host_index))
+                        .size(px(22.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .text_sm()
+                        .text_color(rgb(0x8f_96_a3))
+                        .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xd2_d7_df)))
+                        .child("+")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_new_session(
+                                &host_id,
+                                &endpoint,
+                                NewSessionKind::Tmux,
+                                window,
+                                cx,
+                            );
+                        })),
+                );
+            }
+            header
+        });
         if sessions.is_empty() {
             tree = tree.child(
                 div()
                     .h(px(SESSION_ROW_HEIGHT))
                     .flex()
                     .items_center()
-                    .pl(px(31.0))
+                    .pl(px(SESSION_ROW_INSET))
                     .text_xs()
                     .text_color(rgb(0x73_7a87))
                     .child("No sessions"),
@@ -2863,55 +2866,50 @@ impl RootView {
             && host.kwt_available()
             && host.kwt_diagnostic().is_none()
             && !host.kwt_mutating();
-        let mut tree = div()
-            .ml(px(18.0))
-            .border_l_1()
-            .border_color(rgb(0x25_2932))
-            .flex()
-            .flex_col()
-            .child({
-                let mut header = div()
-                    .h(px(24.0))
-                    .flex()
-                    .items_center()
-                    .pl(px(17.0))
-                    .pr_1()
-                    .text_xs()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(rgb(0x73_7a87))
-                    .child(div().flex_1().child("PROJECTS"));
-                if host.kwt_refreshing() {
-                    header = header.child(
-                        div()
-                            .px_1()
-                            .text_xs()
-                            .text_color(rgb(0x6f_7682))
-                            .child(if host.kwt_mutating() { "…" } else { "↻" }),
-                    );
-                }
-                if can_mutate {
-                    let host_id = host.id().to_owned();
-                    let endpoint = host.endpoint().to_owned();
-                    header = header.child(
-                        div()
-                            .id(("add-kwt-project", host_index))
-                            .size(px(22.0))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded_sm()
-                            .cursor_pointer()
-                            .text_sm()
-                            .text_color(rgb(0x8f_96_a3))
-                            .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xd2_d7_df)))
-                            .child("+")
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_add_project(&host_id, &endpoint, window, cx);
-                            })),
-                    );
-                }
-                header
-            });
+        let mut tree = div().w_full().flex().flex_col().child({
+            let mut header = div()
+                .h(px(SESSION_GROUP_ROW_HEIGHT))
+                .flex()
+                .items_center()
+                .pl(px(SESSION_GROUP_INSET))
+                .pr_1()
+                .bg(rgb(SESSION_GROUP_BACKGROUND))
+                .text_xs()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(rgb(SESSION_GROUP_TEXT))
+                .child(div().flex_1().child("PROJECTS"));
+            if host.kwt_refreshing() {
+                header = header.child(
+                    div()
+                        .px_1()
+                        .text_xs()
+                        .text_color(rgb(0x6f_7682))
+                        .child(if host.kwt_mutating() { "…" } else { "↻" }),
+                );
+            }
+            if can_mutate {
+                let host_id = host.id().to_owned();
+                let endpoint = host.endpoint().to_owned();
+                header = header.child(
+                    div()
+                        .id(("add-kwt-project", host_index))
+                        .size(px(22.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .text_sm()
+                        .text_color(rgb(0x8f_96_a3))
+                        .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xd2_d7_df)))
+                        .child("+")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_add_project(&host_id, &endpoint, window, cx);
+                        })),
+                );
+            }
+            header
+        });
         if let Some(diagnostic) = host.kwt_diagnostic() {
             tree = tree.child(Self::kwt_diagnostic_row(
                 host_index,
@@ -2928,7 +2926,7 @@ impl RootView {
                 .flex()
                 .items_center()
                 .gap_1()
-                .pl(px(14.0))
+                .pl(px(SESSION_ROW_INSET))
                 .pr_2()
                 .text_sm()
                 .text_color(rgb(0xb9_bfca))
@@ -3025,10 +3023,10 @@ impl RootView {
         if !host.directory_workspaces().is_empty() {
             rows.push(
                 div()
-                    .h(px(24.0))
+                    .h(px(SESSION_GROUP_ROW_HEIGHT))
                     .flex()
                     .items_center()
-                    .pl(px(31.0))
+                    .pl(px(SESSION_ROW_INSET))
                     .text_xs()
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(rgb(0x73_7a87))
@@ -3090,7 +3088,7 @@ impl RootView {
             .flex()
             .items_center()
             .gap_1()
-            .pl(px(31.0))
+            .pl(px(NESTED_SESSION_ROW_INSET))
             .pr_2()
             .bg(rgb(if is_active { 0x13_3d6a } else { 0x0f_1116 }))
             .when(can_open, |element| {
@@ -3245,53 +3243,48 @@ impl RootView {
     ) -> gpui::AnyElement {
         let host_id = host.id().to_owned();
         let endpoint = host.endpoint().to_owned();
-        let mut tree = div()
-            .ml(px(18.0))
-            .border_l_1()
-            .border_color(rgb(0x25_2932))
-            .flex()
-            .flex_col()
-            .child({
-                let mut header = div()
-                    .h(px(24.0))
-                    .flex()
-                    .items_center()
-                    .pl(px(17.0))
-                    .pr_1()
-                    .text_xs()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(rgb(0x73_7a87))
-                    .child(div().flex_1().child("HERDR SESSIONS"));
-                if host.connection() == HostConnectionState::Ready
-                    && host.herdr_available()
-                    && host.herdr_diagnostic().is_none()
-                {
-                    header = header.child(
-                        div()
-                            .id(("create-herdr-session", host_index))
-                            .size(px(22.0))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded_sm()
-                            .cursor_pointer()
-                            .text_sm()
-                            .text_color(rgb(0x8f_96_a3))
-                            .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xd2_d7_df)))
-                            .child("+")
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_new_session(
-                                    &host_id,
-                                    &endpoint,
-                                    NewSessionKind::Herdr,
-                                    window,
-                                    cx,
-                                );
-                            })),
-                    );
-                }
-                header
-            });
+        let mut tree = div().w_full().flex().flex_col().child({
+            let mut header = div()
+                .h(px(SESSION_GROUP_ROW_HEIGHT))
+                .flex()
+                .items_center()
+                .pl(px(SESSION_GROUP_INSET))
+                .pr_1()
+                .bg(rgb(SESSION_GROUP_BACKGROUND))
+                .text_xs()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(rgb(SESSION_GROUP_TEXT))
+                .child(div().flex_1().child("HERDR SESSIONS"));
+            if host.connection() == HostConnectionState::Ready
+                && host.herdr_available()
+                && host.herdr_diagnostic().is_none()
+            {
+                header = header.child(
+                    div()
+                        .id(("create-herdr-session", host_index))
+                        .size(px(22.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .text_sm()
+                        .text_color(rgb(0x8f_96_a3))
+                        .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xd2_d7_df)))
+                        .child("+")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_new_session(
+                                &host_id,
+                                &endpoint,
+                                NewSessionKind::Herdr,
+                                window,
+                                cx,
+                            );
+                        })),
+                );
+            }
+            header
+        });
         if let Some(diagnostic) = host.herdr_diagnostic() {
             tree = tree.child(Self::herdr_diagnostic_row(
                 host_index,
@@ -3304,7 +3297,7 @@ impl RootView {
                     .h(px(SESSION_ROW_HEIGHT))
                     .flex()
                     .items_center()
-                    .pl(px(31.0))
+                    .pl(px(SESSION_ROW_INSET))
                     .text_xs()
                     .text_color(rgb(0x73_7a87))
                     .child("No sessions"),
@@ -3390,7 +3383,7 @@ impl RootView {
             .flex()
             .items_center()
             .gap_1()
-            .pl(px(14.0))
+            .pl(px(SESSION_ROW_INSET))
             .pr_2()
             .bg(rgb(if active { 0x18_3f_68 } else { 0x0f_1116 }))
             .when(!operation_pending && row_is_actionable, |element| {
@@ -3549,7 +3542,7 @@ impl RootView {
             .flex()
             .items_center()
             .gap_1()
-            .pl(px(14.0))
+            .pl(px(SESSION_ROW_INSET))
             .pr_2()
             .bg(rgb(if is_active { 0x13_3d6a } else { 0x0f_1116 }))
             .when(can_open, |element| {
