@@ -222,6 +222,16 @@ await point. Runtime-only session refresh cannot replay project/worktree
 reconciliation, and each host publishes independently so a slow host cannot
 delay completed inventory from another host.
 
+On Windows, pinned KWT project/worktree inventory runs independently from the
+ten-second tmux/Herdr cadence: once after WSL admission and then every 60
+seconds while the window is active. Its three machine-readable CLI reads and
+managed-helper verification run entirely on the background host lane. A late
+or failed KWT generation keeps the last usable project tree, and a session-only
+refresh updates only worktree session availability. The sidebar treats a
+KWT-owned default-socket tmux session as a project row instead of duplicating
+it in the unbound tmux group; custom-socket worktrees cannot claim a
+same-named default-socket session.
+
 Ghosthub still has one UI application process and no Ghosthub-owned daemon.
 For the Windows MVP, tmux inside WSL2 is the long-lived session owner. Closing
 or forcibly terminating the Rust application must reap only its `wsl.exe`

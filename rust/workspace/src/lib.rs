@@ -9,7 +9,8 @@ use std::time::Duration;
 use config::TerminalAppearance;
 use host::{
     AdmissionAttacher, AttachTerm, CancellationToken, CommandRunner, HerdrInventory, HostError,
-    HostSnapshot, LiveSessionTarget, StdCommandRunner, WslConfig, WslExecutable, WslHost,
+    HostSnapshot, KwtInventory, LiveSessionTarget, StdCommandRunner, WslConfig, WslExecutable,
+    WslHost,
 };
 pub use input::{KeyEvent, KeyInput, Modifiers, MouseAction, MouseButton, MouseInput, NamedKey};
 use model::DiagnosticKind;
@@ -41,6 +42,8 @@ const HERDR_STARTUP_BACKOFF: [Duration; 8] = [
 const CREATE_IDENTITY_TIMEOUT: Duration = Duration::from_secs(5);
 const CREATE_IDENTITY_MIN_COLUMNS: usize = 120;
 const INVENTORY_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
+const KWT_REFRESH_INTERVAL: Duration = Duration::from_mins(1);
+const KWT_REFRESH_BUDGET: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Appearance {
@@ -225,6 +228,170 @@ pub struct HostItem {
     herdr_available: bool,
     herdr_sessions: Vec<HerdrSessionItem>,
     herdr_diagnostic: Option<HostDiagnostic>,
+    projects: Vec<ProjectItem>,
+    directory_workspaces: Vec<DirectoryWorkspaceItem>,
+    kwt_initialized: bool,
+    kwt_refreshing: bool,
+    kwt_diagnostic: Option<HostDiagnostic>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProjectItem {
+    repository: String,
+    name: String,
+    path: String,
+    worktrees: Vec<WorktreeItem>,
+}
+
+impl ProjectItem {
+    #[must_use]
+    pub fn new(
+        repository: impl Into<String>,
+        name: impl Into<String>,
+        path: impl Into<String>,
+        worktrees: Vec<WorktreeItem>,
+    ) -> Self {
+        Self {
+            repository: repository.into(),
+            name: name.into(),
+            path: path.into(),
+            worktrees,
+        }
+    }
+
+    #[must_use]
+    pub fn repository(&self) -> &str {
+        &self.repository
+    }
+
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    #[must_use]
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    #[must_use]
+    pub fn worktrees(&self) -> &[WorktreeItem] {
+        &self.worktrees
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorktreeItem {
+    path: String,
+    branch: String,
+    is_main: bool,
+    generation: Option<String>,
+    session_name: String,
+    tmux_socket_name: Option<String>,
+    session_available: bool,
+}
+
+impl WorktreeItem {
+    #[must_use]
+    pub fn new(
+        path: impl Into<String>,
+        branch: impl Into<String>,
+        is_main: bool,
+        generation: Option<String>,
+        session_name: impl Into<String>,
+        tmux_socket_name: Option<String>,
+        session_available: bool,
+    ) -> Self {
+        Self {
+            path: path.into(),
+            branch: branch.into(),
+            is_main,
+            generation,
+            session_name: session_name.into(),
+            tmux_socket_name,
+            session_available,
+        }
+    }
+
+    #[must_use]
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    #[must_use]
+    pub fn branch(&self) -> &str {
+        &self.branch
+    }
+
+    #[must_use]
+    pub const fn is_main(&self) -> bool {
+        self.is_main
+    }
+
+    #[must_use]
+    pub fn generation(&self) -> Option<&str> {
+        self.generation.as_deref()
+    }
+
+    #[must_use]
+    pub fn session_name(&self) -> &str {
+        &self.session_name
+    }
+
+    #[must_use]
+    pub fn tmux_socket_name(&self) -> Option<&str> {
+        self.tmux_socket_name.as_deref()
+    }
+
+    #[must_use]
+    pub const fn session_available(&self) -> bool {
+        self.session_available
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DirectoryWorkspaceItem {
+    name: String,
+    path: String,
+    session_name: String,
+    session_available: bool,
+}
+
+impl DirectoryWorkspaceItem {
+    #[must_use]
+    pub fn new(
+        name: impl Into<String>,
+        path: impl Into<String>,
+        session_name: impl Into<String>,
+        session_available: bool,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            path: path.into(),
+            session_name: session_name.into(),
+            session_available,
+        }
+    }
+
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    #[must_use]
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    #[must_use]
+    pub fn session_name(&self) -> &str {
+        &self.session_name
+    }
+
+    #[must_use]
+    pub const fn session_available(&self) -> bool {
+        self.session_available
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -294,6 +461,11 @@ impl HostItem {
             herdr_available: false,
             herdr_sessions: Vec::new(),
             herdr_diagnostic: None,
+            projects: Vec::new(),
+            directory_workspaces: Vec::new(),
+            kwt_initialized: false,
+            kwt_refreshing: false,
+            kwt_diagnostic: None,
         }
     }
 
@@ -358,6 +530,49 @@ impl HostItem {
     #[must_use]
     pub const fn herdr_diagnostic(&self) -> Option<&HostDiagnostic> {
         self.herdr_diagnostic.as_ref()
+    }
+
+    #[must_use]
+    pub fn projects(&self) -> &[ProjectItem] {
+        &self.projects
+    }
+
+    #[must_use]
+    pub fn directory_workspaces(&self) -> &[DirectoryWorkspaceItem] {
+        &self.directory_workspaces
+    }
+
+    #[must_use]
+    pub const fn kwt_refreshing(&self) -> bool {
+        self.kwt_refreshing
+    }
+
+    #[must_use]
+    pub const fn kwt_diagnostic(&self) -> Option<&HostDiagnostic> {
+        self.kwt_diagnostic.as_ref()
+    }
+
+    #[must_use]
+    pub fn with_kwt_inventory(
+        mut self,
+        projects: Vec<ProjectItem>,
+        directory_workspaces: Vec<DirectoryWorkspaceItem>,
+    ) -> Self {
+        self.projects = projects;
+        self.directory_workspaces = directory_workspaces;
+        self
+    }
+
+    #[must_use]
+    pub fn kwt_owns_default_tmux_session(&self, name: &str) -> bool {
+        self.projects.iter().any(|project| {
+            project.worktrees.iter().any(|worktree| {
+                worktree.tmux_socket_name.is_none() && worktree.session_name == name
+            })
+        }) || self
+            .directory_workspaces
+            .iter()
+            .any(|workspace| workspace.session_name == name)
     }
 }
 
@@ -1647,7 +1862,11 @@ struct Inner {
     refresh_finished: AtomicU64,
     refresh_publication: Mutex<()>,
     inventory_cadence_started: AtomicBool,
+    kwt_cadence_started: AtomicBool,
     inventory_polling_enabled: AtomicBool,
+    kwt_refresh_generation: AtomicU64,
+    kwt_discovery_cancel: Mutex<Option<CancellationToken>>,
+    kwt_publication: Mutex<()>,
     discovery: Arc<dyn WslDiscovery>,
     refresh_runtime: Arc<dyn RefreshRuntime>,
     attachment: Mutex<AttachmentState<AttachRequest>>,
@@ -1751,7 +1970,11 @@ impl Workspace {
                 refresh_finished: AtomicU64::new(0),
                 refresh_publication: Mutex::new(()),
                 inventory_cadence_started: AtomicBool::new(false),
+                kwt_cadence_started: AtomicBool::new(false),
                 inventory_polling_enabled: AtomicBool::new(false),
+                kwt_refresh_generation: AtomicU64::new(0),
+                kwt_discovery_cancel: Mutex::new(None),
+                kwt_publication: Mutex::new(()),
                 discovery: Arc::new(SystemWslDiscovery::new()),
                 refresh_runtime: Arc::new(ThreadRefreshRuntime),
                 attachment: Mutex::new(AttachmentState::new()),
@@ -1819,7 +2042,11 @@ impl Workspace {
                 refresh_finished: AtomicU64::new(0),
                 refresh_publication: Mutex::new(()),
                 inventory_cadence_started: AtomicBool::new(false),
+                kwt_cadence_started: AtomicBool::new(false),
                 inventory_polling_enabled: AtomicBool::new(false),
+                kwt_refresh_generation: AtomicU64::new(0),
+                kwt_discovery_cancel: Mutex::new(None),
+                kwt_publication: Mutex::new(()),
                 discovery,
                 refresh_runtime,
                 attachment: Mutex::new(AttachmentState::new()),
@@ -1871,7 +2098,11 @@ impl Workspace {
                 refresh_finished: AtomicU64::new(0),
                 refresh_publication: Mutex::new(()),
                 inventory_cadence_started: AtomicBool::new(false),
+                kwt_cadence_started: AtomicBool::new(false),
                 inventory_polling_enabled: AtomicBool::new(false),
+                kwt_refresh_generation: AtomicU64::new(0),
+                kwt_discovery_cancel: Mutex::new(None),
+                kwt_publication: Mutex::new(()),
                 discovery: Arc::new(SystemWslDiscovery::new()),
                 refresh_runtime: Arc::new(ThreadRefreshRuntime),
                 attachment: Mutex::new(AttachmentState::new()),
@@ -1921,6 +2152,7 @@ impl Workspace {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         self.start_refresh(config, executable);
+        start_kwt_refresh(&self.inner, true);
         Ok(())
     }
 
@@ -1941,16 +2173,33 @@ impl Workspace {
             .inner
             .inventory_cadence_started
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
+            .is_ok()
+            && let Err(error) = schedule_inventory_refresh(&self.inner)
         {
-            return Ok(());
-        }
-        if let Err(error) = schedule_inventory_refresh(&self.inner) {
             self.inner
                 .inventory_cadence_started
                 .store(false, Ordering::Release);
             return Err(WorkspaceError::new(format!(
                 "schedule inventory refresh cadence: {error}"
+            )));
+        }
+        if self
+            .inner
+            .wsl_config
+            .as_ref()
+            .is_some_and(|config| config.kwt_bundle().is_some())
+            && self
+                .inner
+                .kwt_cadence_started
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            && let Err(error) = schedule_kwt_refresh(&self.inner)
+        {
+            self.inner
+                .kwt_cadence_started
+                .store(false, Ordering::Release);
+            return Err(WorkspaceError::new(format!(
+                "schedule KWT refresh cadence: {error}"
             )));
         }
         Ok(())
@@ -3636,6 +3885,7 @@ impl Workspace {
                 task_cancellation.cancel();
                 if published {
                     Self::restore_delayed_herdr_presentations(&task_inner, delayed_recoveries);
+                    start_initial_kwt_refresh(&task_inner);
                 }
             }),
         );
@@ -4488,6 +4738,18 @@ fn publish_discovered_host(
     context: HostContext,
     generation: u64,
 ) -> Vec<SuppressedHerdrPresentation> {
+    let kwt_context_changed = inner
+        .host
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .is_some_and(|published| {
+            published.value.snapshot.endpoint() != context.snapshot.endpoint()
+                || published.value.snapshot.runtime() != context.snapshot.runtime()
+        });
+    if kwt_context_changed {
+        invalidate_kwt_inventory(inner);
+    }
     let state = ready_content(&context.snapshot);
     let reconciliation =
         reconcile_herdr_lifecycle_fences(inner, &context.snapshot, generation, true);
@@ -4499,6 +4761,35 @@ fn publish_discovered_host(
         Some(Published::new(context, generation));
     set_inventory_state(inner, state);
     reconciliation.recoveries
+}
+
+fn invalidate_kwt_inventory(inner: &Inner) {
+    let _publication = inner
+        .kwt_publication
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    inner.kwt_refresh_generation.fetch_add(1, Ordering::AcqRel);
+    if let Some(cancellation) = inner
+        .kwt_discovery_cancel
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+    {
+        cancellation.cancel();
+    }
+    if let Some(host) = inner
+        .hosts
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter_mut()
+        .find(|host| host.id == "wsl")
+    {
+        host.projects.clear();
+        host.directory_workspaces.clear();
+        host.kwt_initialized = false;
+        host.kwt_refreshing = false;
+        host.kwt_diagnostic = None;
+    }
 }
 
 fn cancel_refresh(inner: &Inner) -> bool {
@@ -4560,6 +4851,340 @@ fn schedule_inventory_refresh(inner: &Arc<Inner>) -> std::io::Result<()> {
             }
         }),
     )
+}
+
+fn schedule_kwt_refresh(inner: &Arc<Inner>) -> std::io::Result<()> {
+    let weak_inner = Arc::downgrade(inner);
+    inner.refresh_runtime.spawn_after(
+        "ghosthub-kwt-inventory-cadence",
+        KWT_REFRESH_INTERVAL,
+        CancellationToken::new(),
+        Box::new(move || {
+            let Some(inner) = weak_inner.upgrade() else {
+                return;
+            };
+            if inner.inventory_polling_enabled.load(Ordering::Acquire) {
+                start_kwt_refresh(&inner, false);
+            }
+            if let Err(error) = schedule_kwt_refresh(&inner) {
+                inner.kwt_cadence_started.store(false, Ordering::Release);
+                Workspace {
+                    inner: Arc::clone(&inner),
+                }
+                .push_operation_error(format!("KWT inventory cadence stopped: {error}"));
+            }
+        }),
+    )
+}
+
+fn start_initial_kwt_refresh(inner: &Arc<Inner>) {
+    let should_start = inner
+        .hosts
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .find(|host| host.id == "wsl")
+        .is_some_and(|host| !host.kwt_initialized && !host.kwt_refreshing);
+    if should_start {
+        start_kwt_refresh(inner, false);
+    }
+}
+
+struct KwtRefresh {
+    host: RuntimeHost,
+    endpoint: host::WslEndpoint,
+    runtime: host::WslRuntimeIdentity,
+    cancellation: CancellationToken,
+    generation: u64,
+}
+
+fn reserve_kwt_refresh(inner: &Arc<Inner>, supersede: bool) -> Option<KwtRefresh> {
+    if inner
+        .wsl_config
+        .as_ref()
+        .is_none_or(|config| config.kwt_bundle().is_none())
+    {
+        return None;
+    }
+    let (host, endpoint, runtime) = inner
+        .host
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .map(|published| {
+            (
+                published.value.host.clone(),
+                published.value.snapshot.endpoint().clone(),
+                published.value.snapshot.runtime().clone(),
+            )
+        })?;
+    if !supersede
+        && inner
+            .hosts
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .find(|item| item.id == "wsl" && item.endpoint == endpoint.distro())
+            .is_some_and(|item| item.kwt_refreshing)
+    {
+        return None;
+    }
+    let cancellation = CancellationToken::new();
+    let generation = {
+        let _publication = inner
+            .kwt_publication
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let generation = inner.kwt_refresh_generation.fetch_add(1, Ordering::AcqRel) + 1;
+        if let Some(previous) = inner
+            .kwt_discovery_cancel
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .replace(cancellation.clone())
+        {
+            previous.cancel();
+        }
+        let _snapshot_write = begin_snapshot_write(inner);
+        if let Some(item) = inner
+            .hosts
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter_mut()
+            .find(|item| item.id == "wsl" && item.endpoint == endpoint.distro())
+        {
+            item.kwt_refreshing = true;
+            inner.revision.fetch_add(1, Ordering::Release);
+        }
+        generation
+    };
+    Some(KwtRefresh {
+        host,
+        endpoint,
+        runtime,
+        cancellation,
+        generation,
+    })
+}
+
+fn start_kwt_refresh(inner: &Arc<Inner>, supersede: bool) -> bool {
+    let Some(refresh) = reserve_kwt_refresh(inner, supersede) else {
+        return false;
+    };
+    let KwtRefresh {
+        host,
+        endpoint,
+        runtime,
+        cancellation,
+        generation,
+    } = refresh;
+
+    let deadline_inner = Arc::clone(inner);
+    let deadline_cancellation = cancellation.clone();
+    let deadline_endpoint = endpoint.clone();
+    let deadline_runtime = runtime.clone();
+    if let Err(error) = inner.refresh_runtime.spawn_after(
+        "ghosthub-kwt-refresh-deadline",
+        KWT_REFRESH_BUDGET,
+        deadline_cancellation.clone(),
+        Box::new(move || {
+            deadline_cancellation.cancel();
+            publish_kwt_error(
+                &deadline_inner,
+                generation,
+                &deadline_endpoint,
+                &deadline_runtime,
+                HostDiagnostic::new(DiagnosticKind::Timeout, "KWT inventory timed out"),
+            );
+        }),
+    ) {
+        cancellation.cancel();
+        publish_kwt_error(
+            inner,
+            generation,
+            &endpoint,
+            &runtime,
+            HostDiagnostic::new(
+                DiagnosticKind::Transport,
+                format!("schedule KWT inventory deadline: {error}"),
+            ),
+        );
+        return false;
+    }
+
+    let task_inner = Arc::clone(inner);
+    let task_cancellation = cancellation.clone();
+    let task_endpoint = endpoint.clone();
+    let task_runtime = runtime.clone();
+    if let Err(error) = inner.refresh_runtime.spawn(
+        "ghosthub-kwt-discovery",
+        Box::new(move || {
+            let result = host.discover_kwt(&task_endpoint, &task_runtime, &task_cancellation);
+            if task_cancellation.is_cancelled() {
+                return;
+            }
+            match result {
+                Ok(Some(inventory)) => publish_kwt_inventory(
+                    &task_inner,
+                    generation,
+                    &task_endpoint,
+                    &task_runtime,
+                    &inventory,
+                ),
+                Ok(None) => {
+                    publish_kwt_unavailable(&task_inner, generation, &task_endpoint, &task_runtime);
+                }
+                Err(error) => publish_kwt_error(
+                    &task_inner,
+                    generation,
+                    &task_endpoint,
+                    &task_runtime,
+                    HostDiagnostic::new(error.kind(), error.to_string()),
+                ),
+            }
+            task_cancellation.cancel();
+        }),
+    ) {
+        cancellation.cancel();
+        publish_kwt_error(
+            inner,
+            generation,
+            &endpoint,
+            &runtime,
+            HostDiagnostic::new(
+                DiagnosticKind::Transport,
+                format!("start KWT inventory task: {error}"),
+            ),
+        );
+        return false;
+    }
+    true
+}
+
+fn publish_kwt_inventory(
+    inner: &Inner,
+    generation: u64,
+    endpoint: &host::WslEndpoint,
+    runtime: &host::WslRuntimeIdentity,
+    inventory: &KwtInventory,
+) {
+    publish_kwt(inner, generation, endpoint, runtime, |host| {
+        let session_names = host
+            .sessions
+            .iter()
+            .map(|session| session.name.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        host.projects = inventory
+            .projects()
+            .iter()
+            .map(|project| {
+                ProjectItem::new(
+                    project.project().repository(),
+                    project.project().name(),
+                    project.project().path(),
+                    project
+                        .worktrees()
+                        .iter()
+                        .map(|worktree| {
+                            let available = worktree.tmux_socket_name().is_none()
+                                && session_names.contains(worktree.session_name());
+                            WorktreeItem::new(
+                                worktree.path(),
+                                worktree.branch(),
+                                worktree.is_main(),
+                                worktree.generation().map(str::to_owned),
+                                worktree.session_name(),
+                                worktree.tmux_socket_name().map(str::to_owned),
+                                available,
+                            )
+                        })
+                        .collect(),
+                )
+            })
+            .collect();
+        host.directory_workspaces = inventory
+            .directory_workspaces()
+            .iter()
+            .map(|workspace| {
+                DirectoryWorkspaceItem::new(
+                    workspace.name(),
+                    workspace.path(),
+                    workspace.session_name(),
+                    workspace.session_live() && session_names.contains(workspace.session_name()),
+                )
+            })
+            .collect();
+        host.kwt_initialized = true;
+        host.kwt_refreshing = false;
+        host.kwt_diagnostic = None;
+    });
+}
+
+fn publish_kwt_error(
+    inner: &Inner,
+    generation: u64,
+    endpoint: &host::WslEndpoint,
+    runtime: &host::WslRuntimeIdentity,
+    diagnostic: HostDiagnostic,
+) {
+    publish_kwt(inner, generation, endpoint, runtime, |host| {
+        host.kwt_initialized = true;
+        host.kwt_refreshing = false;
+        host.kwt_diagnostic = Some(diagnostic);
+    });
+}
+
+fn publish_kwt_unavailable(
+    inner: &Inner,
+    generation: u64,
+    endpoint: &host::WslEndpoint,
+    runtime: &host::WslRuntimeIdentity,
+) {
+    publish_kwt(inner, generation, endpoint, runtime, |host| {
+        host.projects.clear();
+        host.directory_workspaces.clear();
+        host.kwt_initialized = true;
+        host.kwt_refreshing = false;
+        host.kwt_diagnostic = None;
+    });
+}
+
+fn publish_kwt(
+    inner: &Inner,
+    generation: u64,
+    endpoint: &host::WslEndpoint,
+    runtime: &host::WslRuntimeIdentity,
+    publish: impl FnOnce(&mut HostItem),
+) {
+    let _publication = inner
+        .kwt_publication
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if inner.kwt_refresh_generation.load(Ordering::Acquire) != generation {
+        return;
+    }
+    let current_matches = inner
+        .host
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .is_some_and(|published| {
+            published.value.snapshot.endpoint() == endpoint
+                && published.value.snapshot.runtime() == runtime
+        });
+    if !current_matches {
+        return;
+    }
+    let _snapshot_write = begin_snapshot_write(inner);
+    if let Some(host) = inner
+        .hosts
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter_mut()
+        .find(|host| host.id == "wsl" && host.endpoint == endpoint.distro())
+    {
+        publish(host);
+        inner.revision.fetch_add(1, Ordering::Release);
+    }
 }
 
 const fn refresh_budget(generation: u64) -> Duration {
@@ -6337,9 +6962,17 @@ fn set_inventory_state(inner: &Inner, state: WorkspaceContent) {
                     host.diagnostic = None;
                 }
                 WorkspaceContent::Ready { endpoint, sessions } => {
+                    if host.endpoint != *endpoint {
+                        host.projects.clear();
+                        host.directory_workspaces.clear();
+                        host.kwt_initialized = false;
+                        host.kwt_refreshing = false;
+                        host.kwt_diagnostic = None;
+                    }
                     host.endpoint.clone_from(endpoint);
                     host.connection = HostConnectionState::Ready;
                     host.sessions.clone_from(sessions);
+                    reconcile_kwt_session_availability(host);
                     host.diagnostic = None;
                 }
                 WorkspaceContent::Error { message } => {
@@ -6375,6 +7008,23 @@ fn set_inventory_state(inner: &Inner, state: WorkspaceContent) {
         return;
     }
     publish_legacy_inventory_state(inner, state);
+}
+
+fn reconcile_kwt_session_availability(host: &mut HostItem) {
+    let session_names = host
+        .sessions
+        .iter()
+        .map(|session| session.name.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    for project in &mut host.projects {
+        for worktree in &mut project.worktrees {
+            worktree.session_available = worktree.tmux_socket_name.is_none()
+                && session_names.contains(worktree.session_name.as_str());
+        }
+    }
+    for workspace in &mut host.directory_workspaces {
+        workspace.session_available = session_names.contains(workspace.session_name.as_str());
+    }
 }
 
 fn publish_legacy_inventory_state(inner: &Inner, state: WorkspaceContent) {
@@ -10020,6 +10670,128 @@ mod tests {
     }
 
     #[test]
+    fn kwt_inventory_projects_worktrees_without_replacing_session_state() {
+        let bundle =
+            host::KwtBundle::new("a".repeat(40), "b".repeat(64), [1_u8]).expect("valid bundle");
+        let config = WslConfig::with_distro("Ubuntu")
+            .expect("valid config")
+            .with_kwt_bundle(bundle);
+        let executable = WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
+            .expect("absolute WSL path");
+        let workspace = Workspace::application(
+            TerminalAppearance::default(),
+            Some(WslHostSpec::available(config.clone(), executable.clone())),
+        );
+        let snapshot = HostSnapshot::test_fixture(
+            "Ubuntu",
+            "boot",
+            42,
+            vec![session::DiscoveredSession::new(
+                "project-main",
+                session::SessionIdentity::new(100, "$1", 200),
+                0,
+            )],
+        );
+        let runtime_host = WslHost::new(
+            config,
+            Arc::new(StdCommandRunner) as SharedCommandRunner,
+            executable,
+        );
+        *workspace.inner.host.lock().expect("published host") = Some(Published::new(
+            HostContext {
+                host: runtime_host,
+                snapshot: snapshot.clone(),
+            },
+            1,
+        ));
+        set_inventory_state(&workspace.inner, ready_content(&snapshot));
+        workspace
+            .inner
+            .kwt_refresh_generation
+            .store(7, Ordering::Release);
+        let inventory = KwtInventory::parse(
+            br#"[{"repository":"project-id","name":"project","path":"/repos/project","last_touched":null}]"#,
+            br#"[{"path":"/repos/project","branch":"main","commit_hash":"abc","is_main":true,"created_at":null,"generation":"g1","repository":"project-id","session_name":"project-main","tmux_socket_name":null}]"#,
+            br#"[{"name":"scratch","path":"/work/scratch","session_name":"scratch","session_live":false}]"#,
+        )
+        .expect("valid KWT inventory");
+
+        publish_kwt_inventory(
+            &workspace.inner,
+            7,
+            snapshot.endpoint(),
+            snapshot.runtime(),
+            &inventory,
+        );
+
+        let projected = workspace.snapshot();
+        assert!(matches!(projected.content(), WorkspaceContent::Shell));
+        let host = &projected.hosts()[0];
+        assert_eq!(host.projects()[0].name(), "project");
+        assert_eq!(host.projects()[0].worktrees()[0].branch(), "main");
+        assert!(host.projects()[0].worktrees()[0].session_available());
+        assert_eq!(host.directory_workspaces()[0].name(), "scratch");
+        assert!(!host.directory_workspaces()[0].session_available());
+
+        set_inventory_state(
+            &workspace.inner,
+            WorkspaceContent::Ready {
+                endpoint: "Ubuntu".to_owned(),
+                sessions: Vec::new(),
+            },
+        );
+        let refreshed = workspace.snapshot();
+        assert_eq!(refreshed.hosts()[0].projects().len(), 1);
+        assert!(
+            !refreshed.hosts()[0].projects()[0].worktrees()[0].session_available(),
+            "the fast tmux refresh reconciles availability without rerunning KWT"
+        );
+    }
+
+    #[test]
+    fn stale_kwt_publication_cannot_replace_the_current_project_tree() {
+        let config = WslConfig::with_distro("Ubuntu").expect("valid config");
+        let executable = WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
+            .expect("absolute WSL path");
+        let workspace = Workspace::application(
+            TerminalAppearance::default(),
+            Some(WslHostSpec::available(config.clone(), executable.clone())),
+        );
+        let snapshot = HostSnapshot::test_fixture("Ubuntu", "boot", 42, Vec::new());
+        *workspace.inner.host.lock().expect("published host") = Some(Published::new(
+            HostContext {
+                host: WslHost::new(
+                    config,
+                    Arc::new(StdCommandRunner) as SharedCommandRunner,
+                    executable,
+                ),
+                snapshot: snapshot.clone(),
+            },
+            1,
+        ));
+        workspace
+            .inner
+            .kwt_refresh_generation
+            .store(2, Ordering::Release);
+        let inventory = KwtInventory::parse(
+            br#"[{"repository":"project-id","name":"stale","path":"/repos/stale","last_touched":null}]"#,
+            b"[]",
+            b"[]",
+        )
+        .expect("valid KWT inventory");
+
+        publish_kwt_inventory(
+            &workspace.inner,
+            1,
+            snapshot.endpoint(),
+            snapshot.runtime(),
+            &inventory,
+        );
+
+        assert!(workspace.snapshot().hosts()[0].projects().is_empty());
+    }
+
+    #[test]
     fn background_cadence_refreshes_ready_hosts_and_reuses_the_admitted_host() {
         let runtime = Arc::new(ManualRefreshRuntime::default());
         let discovery = Arc::new(FixedDiscovery::new(HostSnapshot::test_fixture(
@@ -10115,6 +10887,39 @@ mod tests {
                 .inner
                 .inventory_cadence_started
                 .load(Ordering::Acquire)
+        );
+    }
+
+    #[test]
+    fn kwt_inventory_uses_a_distinct_slower_cadence() {
+        let runtime = Arc::new(ManualRefreshRuntime::default());
+        let bundle =
+            host::KwtBundle::new("a".repeat(40), "b".repeat(64), [1_u8]).expect("valid bundle");
+        let config = WslConfig::with_distro("Ubuntu")
+            .expect("valid config")
+            .with_kwt_bundle(bundle);
+        let spec = WslHostSpec::available(
+            config,
+            WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
+                .expect("absolute WSL path"),
+        );
+        let workspace = Workspace::application_with_services(
+            TerminalAppearance::default(),
+            Some(spec),
+            Arc::new(SystemWslDiscovery::new()),
+            runtime.clone(),
+        );
+
+        workspace
+            .start_inventory_cadence()
+            .expect("start both inventory cadences");
+        workspace
+            .start_inventory_cadence()
+            .expect("cadence start remains idempotent");
+
+        assert_eq!(
+            runtime.deadline_delays(),
+            vec![INVENTORY_REFRESH_INTERVAL, KWT_REFRESH_INTERVAL]
         );
     }
 

@@ -558,6 +558,7 @@ pub struct WslHost<R> {
     wsl_executable: WslExecutable,
     verified_tmux: Arc<Mutex<Option<VerifiedAdmission>>>,
     verified_kwt: Arc<Mutex<Option<VerifiedKwtHelper>>>,
+    kwt_activation: Arc<Mutex<()>>,
 }
 
 #[derive(Debug)]
@@ -584,6 +585,7 @@ impl<R: CommandRunner> WslHost<R> {
             wsl_executable,
             verified_tmux: Arc::new(Mutex::new(None)),
             verified_kwt: Arc::new(Mutex::new(None)),
+            kwt_activation: Arc::new(Mutex::new(())),
         }
     }
 
@@ -672,6 +674,10 @@ impl<R: CommandRunner> WslHost<R> {
         bundle: &KwtBundle,
         cancellation: &CancellationToken,
     ) -> Result<String, HostError> {
+        let _activation = self
+            .kwt_activation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(path) = self
             .verified_kwt
             .lock()

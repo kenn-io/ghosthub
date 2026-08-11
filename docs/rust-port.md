@@ -615,7 +615,18 @@ KWT project and worktree reads are a separate cancellable host operation from
 tmux and Herdr inventory. The frequent session cadence never installs the KWT
 helper, invokes KWT, or replays worktree reconciliation. One KWT inventory read
 uses exactly three machine-readable crossings: registered projects, the global
-worktree list, and directory workspaces.
+worktree list, and directory workspaces. After the admitted host first
+publishes, Rust performs one background KWT read and then refreshes it every 60
+seconds only while the window is active. A manual host refresh supersedes both
+read generations. Failed or in-flight KWT reads retain the last usable project
+tree and affect neither session availability nor terminal presentation.
+
+The Rust sidebar projects KWT-owned default-socket tmux sessions under their
+project/worktree rows and removes only those exact sessions from the unbound
+tmux group. Custom-socket worktrees remain visible as project inventory but do
+not claim a default-socket session with the same name. KWT rows carry display
+identity and exact session names; they do not acquire creation, repair, or
+destruction authority from cached inventory.
 
 The remote helper activation root is a separate cross-controller contract:
 

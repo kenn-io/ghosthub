@@ -2261,6 +2261,13 @@ impl RootView {
         if groups.herdr {
             host_tree = host_tree.child(Self::herdr_tree(host_index, host, &herdr_sessions, cx));
         }
+        if !host.projects().is_empty()
+            || !host.directory_workspaces().is_empty()
+            || host.kwt_diagnostic().is_some()
+        {
+            host_tree =
+                host_tree.child(Self::project_tree(host_index, host, content, retained, cx));
+        }
         host_tree.into_any_element()
     }
 
@@ -2420,6 +2427,329 @@ impl RootView {
             ));
         }
         tree.into_any_element()
+    }
+
+    fn project_tree(
+        host_index: usize,
+        host: &HostItem,
+        content: &WorkspaceContent,
+        retained: &[SessionSelection],
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let active = active_session_selection(content);
+        let mut tree = div()
+            .ml(px(18.0))
+            .border_l_1()
+            .border_color(rgb(0x25_2932))
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .h(px(24.0))
+                    .flex()
+                    .items_center()
+                    .pl(px(17.0))
+                    .pr_1()
+                    .text_xs()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(rgb(0x73_7a87))
+                    .child("PROJECTS"),
+            );
+        if let Some(diagnostic) = host.kwt_diagnostic() {
+            tree = tree.child(Self::kwt_diagnostic_row(
+                host_index,
+                diagnostic.message().to_owned(),
+                cx,
+            ));
+        }
+        for (project_index, project) in host.projects().iter().enumerate() {
+            tree = tree.child(
+                div()
+                    .h(px(SESSION_ROW_HEIGHT))
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .pl(px(14.0))
+                    .pr_2()
+                    .text_sm()
+                    .text_color(rgb(0xb9_bfca))
+                    .child(
+                        div()
+                            .w(px(18.0))
+                            .flex_none()
+                            .text_xs()
+                            .text_color(rgb(0x7f_8794))
+                            .child("▾"),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .flex_1()
+                            .truncate()
+                            .child(project.name().to_owned()),
+                    ),
+            );
+            for (worktree_index, worktree) in project.worktrees().iter().enumerate() {
+                let selection =
+                    SessionSelection::new(host.id(), host.endpoint(), worktree.session_name());
+                let is_active = active.as_ref() == Some(&selection);
+                let is_retained = retained.contains(&selection);
+                let can_open = is_active
+                    || is_retained
+                    || (worktree.session_available()
+                        && !matches!(
+                            host.connection(),
+                            HostConnectionState::Disconnected | HostConnectionState::Unavailable
+                        ));
+                let can_kill = worktree.session_available()
+                    && !matches!(
+                        host.connection(),
+                        HostConnectionState::Disconnected | HostConnectionState::Unavailable
+                    );
+                tree = tree.child(Self::worktree_row(
+                    host_index,
+                    project_index,
+                    worktree_index,
+                    worktree.branch().to_owned(),
+                    selection,
+                    is_active,
+                    can_open,
+                    can_kill,
+                    cx,
+                ));
+            }
+        }
+        tree.children(Self::directory_workspace_rows(
+            host_index,
+            host,
+            active.as_ref(),
+            retained,
+            cx,
+        ))
+        .into_any_element()
+    }
+
+    fn directory_workspace_rows(
+        host_index: usize,
+        host: &HostItem,
+        active: Option<&SessionSelection>,
+        retained: &[SessionSelection],
+        cx: &mut Context<Self>,
+    ) -> Vec<gpui::AnyElement> {
+        let mut rows = Vec::new();
+        if !host.directory_workspaces().is_empty() {
+            rows.push(
+                div()
+                    .h(px(24.0))
+                    .flex()
+                    .items_center()
+                    .pl(px(31.0))
+                    .text_xs()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(rgb(0x73_7a87))
+                    .child("DIRECTORY WORKSPACES")
+                    .into_any_element(),
+            );
+        }
+        for (index, workspace) in host.directory_workspaces().iter().enumerate() {
+            let selection =
+                SessionSelection::new(host.id(), host.endpoint(), workspace.session_name());
+            let is_active = active == Some(&selection);
+            let is_retained = retained.contains(&selection);
+            let can_open = is_active
+                || is_retained
+                || (workspace.session_available()
+                    && !matches!(
+                        host.connection(),
+                        HostConnectionState::Disconnected | HostConnectionState::Unavailable
+                    ));
+            let can_kill = workspace.session_available()
+                && !matches!(
+                    host.connection(),
+                    HostConnectionState::Disconnected | HostConnectionState::Unavailable
+                );
+            rows.push(Self::worktree_row(
+                host_index,
+                usize::MAX,
+                index,
+                workspace.name().to_owned(),
+                selection,
+                is_active,
+                can_open,
+                can_kill,
+                cx,
+            ));
+        }
+        rows
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn worktree_row(
+        host_index: usize,
+        project_index: usize,
+        worktree_index: usize,
+        label: String,
+        selection: SessionSelection,
+        is_active: bool,
+        can_open: bool,
+        can_kill: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let mut row = div()
+            .id((
+                gpui::ElementId::named_usize("worktree-host", host_index),
+                format!("{project_index}-{worktree_index}"),
+            ))
+            .mr_1()
+            .h(px(SESSION_ROW_HEIGHT))
+            .flex()
+            .items_center()
+            .gap_1()
+            .pl(px(31.0))
+            .pr_2()
+            .bg(rgb(if is_active { 0x13_3d6a } else { 0x0f_1116 }))
+            .when(can_open, |element| {
+                element
+                    .cursor_pointer()
+                    .hover(|style| style.bg(rgb(if is_active { 0x17_477a } else { 0x1b_1f27 })))
+            })
+            .when(!can_open, |element| element.opacity(0.55))
+            .child(
+                div()
+                    .w(px(18.0))
+                    .flex_none()
+                    .text_xs()
+                    .text_color(rgb(if is_active { 0x9d_c7ed } else { 0x7f_8794 }))
+                    .child("◇"),
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .truncate()
+                    .text_sm()
+                    .text_color(rgb(if is_active { 0xe5_ed_f7 } else { 0xc4_c9_d2 }))
+                    .child(label),
+            );
+        if is_active {
+            row = row.child(Self::tree_detach_action(cx));
+        } else if can_open {
+            row = row.child(Self::worktree_open_action(
+                host_index,
+                project_index,
+                worktree_index,
+                selection.clone(),
+                cx,
+            ));
+        }
+        if can_kill {
+            row = row.child(Self::worktree_kill_action(
+                host_index,
+                project_index,
+                worktree_index,
+                selection.clone(),
+                cx,
+            ));
+        }
+        row.when(can_open, |element| {
+            element.on_click(cx.listener(move |this, _, window, cx| {
+                this.select_session(&selection, window, cx);
+            }))
+        })
+        .into_any_element()
+    }
+
+    fn worktree_open_action(
+        host_index: usize,
+        project_index: usize,
+        worktree_index: usize,
+        selection: SessionSelection,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        div()
+            .id((
+                gpui::ElementId::named_usize("open-worktree-host", host_index),
+                format!("{project_index}-{worktree_index}"),
+            ))
+            .flex_none()
+            .px_1()
+            .py_1()
+            .rounded_sm()
+            .cursor_pointer()
+            .text_xs()
+            .text_color(rgb(0x79_aee3))
+            .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xb6_d8_f8)))
+            .child("Open")
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.select_session(&selection, window, cx);
+                cx.stop_propagation();
+            }))
+            .into_any_element()
+    }
+
+    fn worktree_kill_action(
+        host_index: usize,
+        project_index: usize,
+        worktree_index: usize,
+        selection: SessionSelection,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        div()
+            .id((
+                gpui::ElementId::named_usize("kill-worktree-host", host_index),
+                format!("{project_index}-{worktree_index}"),
+            ))
+            .flex_none()
+            .px_1()
+            .py_1()
+            .rounded_sm()
+            .cursor_pointer()
+            .text_xs()
+            .text_color(rgb(0xc7_7378))
+            .hover(|style| style.bg(rgb(0x3a_2025)).text_color(rgb(0xff_a3_a8)))
+            .child("Kill")
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.request_session_kill(&selection, cx);
+                cx.stop_propagation();
+            }))
+            .into_any_element()
+    }
+
+    fn kwt_diagnostic_row(
+        host_index: usize,
+        message: String,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        div()
+            .mx_2()
+            .mb_1()
+            .px_2()
+            .py_1()
+            .rounded_sm()
+            .bg(rgb(0x16_1920))
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .truncate()
+                    .text_xs()
+                    .text_color(rgb(0x9b_a2ae))
+                    .child(message),
+            )
+            .child(
+                div()
+                    .id(("retry-kwt", host_index))
+                    .flex_none()
+                    .cursor_pointer()
+                    .text_xs()
+                    .text_color(rgb(0x79_aee3))
+                    .child("Retry")
+                    .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
+            )
+            .into_any_element()
     }
 
     fn herdr_tree(
@@ -3241,6 +3571,7 @@ fn tree_sessions(
     let mut selections = host
         .sessions()
         .iter()
+        .filter(|session| !host.kwt_owns_default_tmux_session(session.name()))
         .map(|session| {
             (
                 SessionSelection::new(host.id(), host.endpoint(), session.name()),
@@ -3251,9 +3582,15 @@ fn tree_sessions(
     for selection in retained
         .iter()
         .filter(|selection| {
-            selection.host_id() == host.id() && selection.kind() == workspace::SessionKind::Tmux
+            selection.host_id() == host.id()
+                && selection.kind() == workspace::SessionKind::Tmux
+                && !(selection.endpoint() == host.endpoint()
+                    && host.kwt_owns_default_tmux_session(selection.session()))
         })
-        .chain(active_for_host)
+        .chain(active_for_host.into_iter().filter(|selection| {
+            !(selection.endpoint() == host.endpoint()
+                && host.kwt_owns_default_tmux_session(selection.session()))
+        }))
     {
         if !selections
             .iter()
@@ -4131,8 +4468,8 @@ mod tests {
     use surface::{GridSize, SurfaceFrame, SurfaceStore};
     use workspace::{
         HerdrSessionItem, HerdrSessionState, HostConnectionState, HostDiagnostic, HostItem,
-        KeyEvent, KeyInput, Modifiers, MouseAction, MouseButton, MouseInput, NamedKey, SessionItem,
-        SessionSelection, WorkspaceContent, WorkspaceSnapshot,
+        KeyEvent, KeyInput, Modifiers, MouseAction, MouseButton, MouseInput, NamedKey, ProjectItem,
+        SessionItem, SessionSelection, WorkspaceContent, WorkspaceSnapshot, WorktreeItem,
     };
 
     #[test]
@@ -4332,6 +4669,59 @@ mod tests {
             assert!(rows[1].state.is_active());
             assert!(rows[1].state.can_open());
         }
+    }
+
+    #[test]
+    fn project_owned_tmux_sessions_are_not_duplicated_in_the_unbound_group() {
+        let host = HostItem::wsl(
+            "Ubuntu",
+            None,
+            HostConnectionState::Ready,
+            vec![
+                SessionItem::new("project-main", 0),
+                SessionItem::new("scratch", 0),
+                SessionItem::new("custom-socket", 0),
+            ],
+            None,
+        )
+        .with_kwt_inventory(
+            vec![ProjectItem::new(
+                "project-id",
+                "project",
+                "/repos/project",
+                vec![
+                    WorktreeItem::new(
+                        "/repos/project",
+                        "main",
+                        true,
+                        None,
+                        "project-main",
+                        None,
+                        true,
+                    ),
+                    WorktreeItem::new(
+                        "/repos/project-topic",
+                        "topic",
+                        false,
+                        None,
+                        "custom-socket",
+                        Some("project-socket".to_owned()),
+                        false,
+                    ),
+                ],
+            )],
+            Vec::new(),
+        );
+
+        let rows = tree_sessions(&host, &WorkspaceContent::Shell, &[]);
+
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().any(|row| row.selection.session() == "scratch"));
+        assert!(
+            rows.iter()
+                .any(|row| row.selection.session() == "custom-socket"),
+            "a custom-socket worktree cannot claim a default-socket tmux row"
+        );
     }
 
     #[test]
