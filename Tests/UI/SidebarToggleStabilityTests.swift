@@ -444,7 +444,6 @@ private final class SidePanelStabilityTestEnvironment {
     var isSidePanelVisible = false {
         didSet { updateView() }
     }
-    private let window: NSWindow
     private let hostingView: NSHostingView<AnyView>
     private let stableID = "stability-test-main-column"
 
@@ -456,14 +455,12 @@ private final class SidePanelStabilityTestEnvironment {
             )
         )
         hostingView = NSHostingView(rootView: view)
-        window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 960, height: 640),
-            styleMask: [.titled],
-            backing: .buffered,
-            defer: false
+        hostingView.frame = NSRect(
+            x: 0,
+            y: 0,
+            width: 960,
+            height: 640
         )
-        window.contentView = hostingView
-        window.makeKeyAndOrderFront(nil)
         settle()
     }
 
@@ -473,7 +470,7 @@ private final class SidePanelStabilityTestEnvironment {
     }
 
     func findStableContent() -> NSView? {
-        findView(id: stableID, in: window.contentView!)
+        findView(id: stableID, in: hostingView)
     }
 
     private func updateView() {
