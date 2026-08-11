@@ -875,6 +875,80 @@ struct WorkspaceRestorationTests {
         await model.shutdown()
     }
 
+    @Test("successful Zellij kill rejects a same-name restoration replacement")
+    func zellijRestorationStopsAfterSuccessfulKill() async throws {
+        let environment = try setupRemoteEnvironment()
+        var snapshot = environment.snapshot
+        snapshot.hosts[0].zellijAvailable = true
+        snapshot.hosts[0].zellijSessions = [
+            ZellijSessionSummary(name: "editor"),
+        ]
+        let killCoordinator = ZellijSessionKillCoordinator()
+        let discoveryAttempts = Mutex(0)
+        let store = RecordingNativeSessionSurfaceStore()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: UUID(),
+            snapshot: snapshot,
+            nativeZellijSurfaceStore: store,
+            nativeZellijPathProvider: { _ in .success("/usr/bin/zellij") },
+            zellijSessionKillCoordinator: killCoordinator,
+            zellijSessionDiscovery: { _ in
+                let attempt = discoveryAttempts.withLock {
+                    $0 += 1
+                    return $0
+                }
+                return attempt == 2
+                    ? .available([])
+                    : .available(["editor"])
+            },
+            zellijSessionValidationDiscovery: { _, _ in
+                .available(["editor"])
+            }
+        )
+        let state = WorkspaceWindowState(
+            windowID: UUID(),
+            navigation: WorkspaceNavigationDescriptor(
+                hostKey: environment.host.configKey,
+                projectKey: nil,
+                worktreeGeneration: nil
+            ),
+            tmux: nil,
+            zellij: WorkspaceZellijDescriptor(
+                hostKey: environment.host.configKey,
+                sessionName: "editor"
+            )
+        )
+        let operation = try #require(killCoordinator.begin(key: .init(
+            hostID: environment.host.id,
+            sessionName: "editor"
+        )))
+
+        model.startZellijSessionDiscovery()
+        model.beginRestoration(state)
+        await waitUntilMainActor {
+            discoveryAttempts.withLock { $0 } >= 1
+                && model.isWorkspaceRestorationPending
+        }
+
+        killCoordinator.finish(operation, outcome: .succeeded)
+        await waitUntilMainActor {
+            discoveryAttempts.withLock { $0 } >= 2
+        }
+        model.refreshKwtInventory()
+        await waitUntilMainActor {
+            discoveryAttempts.withLock { $0 } >= 3
+                && model.snapshot.host(id: environment.host.id)?
+                .zellijSessions.map(\.name) == ["editor"]
+        }
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(!model.isWorkspaceRestorationPending)
+        #expect(model.activeBorrowedZellijSelection == nil)
+        #expect(store.requestedConfigurations.isEmpty)
+        await model.shutdown()
+    }
+
     @Test("Zellij restoration cancels when a pending kill outlives its route")
     func zellijRestorationRejectsRouteDriftDuringPendingKill() async throws {
         let environment = try setupRemoteEnvironment()

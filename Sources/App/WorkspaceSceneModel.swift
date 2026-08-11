@@ -3833,6 +3833,12 @@ final class WorkspaceSceneModel: ObservableObject {
             if zellijPresentationIntent?.selection == selection {
                 invalidateZellijPresentationIntent()
             }
+            if let restoration = pendingRestoration?.zellij,
+               let host = snapshot.host(id: selection.hostID),
+               restoration.hostKey == host.configKey,
+               restoration.sessionName == selection.name {
+                cancelPendingRestoration()
+            }
             zellijDiscoveryGeneration += 1
             zellijDiscoveryTask?.cancel()
             zellijDiscoveryTask = nil
