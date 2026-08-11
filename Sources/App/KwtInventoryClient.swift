@@ -10,15 +10,54 @@ enum WorkspaceInventoryState: Equatable, Sendable {
     case failed(String)
 }
 
-struct KwtProjectRecord: Codable, Equatable, Sendable {
+struct KwtProjectRecord: Decodable, Equatable, Sendable {
     var repository: String
     var name: String
     var path: String
     var lastTouched: String?
+    var registrationFingerprint: String
+
+    init(
+        repository: String,
+        name: String,
+        path: String,
+        lastTouched: String?,
+        registrationFingerprint: String = ""
+    ) {
+        self.repository = repository
+        self.name = name
+        self.path = path
+        self.lastTouched = lastTouched
+        self.registrationFingerprint = registrationFingerprint
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        repository = try container.decode(String.self, forKey: .repository)
+        name = try container.decode(String.self, forKey: .name)
+        path = try container.decode(String.self, forKey: .path)
+        lastTouched = try container.decodeIfPresent(
+            String.self,
+            forKey: .lastTouched
+        )
+        registrationFingerprint = try container.decode(
+            String.self,
+            forKey: .registrationFingerprint
+        )
+        guard !registrationFingerprint.isEmpty else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .registrationFingerprint,
+                in: container,
+                debugDescription:
+                "registration_fingerprint must be nonempty"
+            )
+        }
+    }
 
     private enum CodingKeys: String, CodingKey {
         case repository, name, path
         case lastTouched = "last_touched"
+        case registrationFingerprint = "registration_fingerprint"
     }
 }
 
@@ -101,12 +140,25 @@ struct KwtHostInventory: Equatable, Sendable {
             projects: retainedProjects.map { item in
                 var retained = item
                 if item.warning != nil,
-                   item.worktrees.isEmpty,
                    let prior = previous?.projects.first(where: {
-                       $0.project.repository == item.project.repository
-                           || $0.project.path == item.project.path
+                       if item.project.repository.isEmpty,
+                          $0.project.repository.isEmpty {
+                           return $0.project.path == item.project.path
+                       }
+                       return !item.project.repository.isEmpty
+                           && $0.project.repository
+                           == item.project.repository
                    }) {
-                    retained.worktrees = prior.worktrees
+                    let refreshed = retained.worktrees
+                    retained.worktrees.append(contentsOf:
+                        prior.worktrees.filter { cached in
+                            !refreshed.contains { current in
+                                current.path == cached.path
+                                    || (cached.generation != nil
+                                        && current.generation
+                                        == cached.generation)
+                            }
+                        })
                 }
                 let exclusions =
                     excludingWorktrees[item.project.repository] ?? []
@@ -191,7 +243,7 @@ struct KwtInventoryClient: Sendable {
     init(
         localRunner: LocalRunner? = nil,
         remoteRunner: RemoteRunner? = nil,
-        processTimeout: TimeInterval = 15,
+        processTimeout: TimeInterval = 45,
         localBinaryPath: String? = KwtBinaryLocator.bundledPath(),
         remoteBinaryRevision: String? =
             KwtBinaryLocator.bundledRemoteRevision(),
@@ -602,6 +654,7 @@ enum KwtSnapshotMerger {
             project.registryID = nil
             project.name = record.name
             project.rootPath = record.path
+            project.registrationFingerprint = record.registrationFingerprint
             project.isStale = false
             project.kind = .repository
             project.isSynthesized = false

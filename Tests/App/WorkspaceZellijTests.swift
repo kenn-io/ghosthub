@@ -1428,6 +1428,7 @@ struct WorkspaceZellijTests {
         let releaseInitialRemote = DispatchSemaphore(value: 0)
         let releaseRetryLocal = DispatchSemaphore(value: 0)
         let releaseManualRemote = DispatchSemaphore(value: 0)
+        let retryTimedOut = Mutex(false)
         defer {
             releaseInitialLocal.signal()
             releaseInitialRemote.signal()
@@ -1464,7 +1465,11 @@ struct WorkspaceZellijTests {
                         releaseInitialLocal.wait()
                     }
                 } else if !isRemote, attempt == 3 {
-                    releaseRetryLocal.wait()
+                    if releaseRetryLocal.wait(
+                        timeout: .now() + .seconds(1)
+                    ) == .timedOut {
+                        retryTimedOut.withLock { $0 = true }
+                    }
                 } else if isRemote, attempt == 3 {
                     releaseManualRemote.wait()
                 }
@@ -1490,35 +1495,35 @@ struct WorkspaceZellijTests {
         )
 
         model.startZellijSessionDiscovery()
-        await waitUntilMainActor(timeout: .seconds(1)) {
+        await waitUntilMainActor {
             localProbes.withLock { $0 } == 1
                 && remoteProbes.withLock { $0 } == 1
         }
         releaseInitialLocal.signal()
         releaseInitialRemote.signal()
-        await waitUntilMainActor(timeout: .seconds(1)) {
+        await waitUntilMainActor {
             model.snapshot.host(id: remote.id)?.zellijSessions.map(\.name)
                 == ["initial"]
         }
         try await model.createZellijSession(selection)
-        await waitUntilMainActor(timeout: .seconds(1)) {
+        await waitUntilMainActor {
             localProbes.withLock { $0 } == 2
                 && remoteProbes.withLock { $0 } == 2
                 && model.snapshot.host(id: remote.id)?
                 .zellijSessions.map(\.name) == ["intermediate"]
         }
-        await waitUntilMainActor(timeout: .seconds(1)) {
+        await waitUntilMainActor {
             localProbes.withLock { $0 } == 3
                 && remoteProbes.withLock { $0 } == 2
         }
         model.refreshKwtInventory()
-        await waitUntilMainActor(timeout: .seconds(1)) {
-            localProbes.withLock { $0 } == 4
-                && remoteProbes.withLock { $0 } == 3
+        await waitUntilMainActor {
+            remoteProbes.withLock { $0 } == 3
         }
+        #expect(!retryTimedOut.withLock { $0 })
         releaseRetryLocal.signal()
         releaseManualRemote.signal()
-        await waitUntilMainActor(timeout: .seconds(1)) {
+        await waitUntilMainActor {
             model.snapshot.host(id: remote.id)?.zellijSessions.map(\.name)
                 == ["new"]
         }

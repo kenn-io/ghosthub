@@ -56,7 +56,7 @@ KWT_SOURCE_REVISION ?= unpinned
 endif
 SWIFT_TEST_FILTER ?=
 
-.PHONY: help bootstrap-kwt bootstrap-kwt-variants ensure-kwt ensure-kwt-variants bootstrap-libghostty bootstrap-libghostty-release check-libghostty check-libghostty-release test-libghostty-bootstrap test-terminal-fallback test-stage-release-app-bundles test-assemble-app-bundle test-essential-workflows test-ssh-authentication-live build swift-warning-check build-release debug-app release-app release-dmg release-appcast run-release-app run-app swift-test test-tmux-attach purge-test-tmux python-test test smoke-test docs-build docs-serve site-docs-serve site-deploy reset-app-state install-hooks format format-check
+.PHONY: help ensure-go ensure-tmux bootstrap-kwt bootstrap-kwt-variants ensure-kwt ensure-kwt-variants bootstrap-libghostty bootstrap-libghostty-release check-libghostty check-libghostty-release test-libghostty-bootstrap test-terminal-fallback test-stage-release-app-bundles test-assemble-app-bundle test-kwt-contract test-essential-workflows test-ssh-authentication-live build swift-warning-check build-release debug-app release-app release-dmg release-appcast run-release-app run-app swift-test test-tmux-attach purge-test-tmux python-test test smoke-test docs-build docs-serve site-docs-serve site-deploy reset-app-state install-hooks format format-check
 
 help:
 	@printf '%s\n' \
@@ -79,6 +79,10 @@ help:
 		'      Run the Ghosthub.app SwiftPM resource-bundle staging tests.' \
 		'  make test-assemble-app-bundle' \
 		'      Run the shared Ghosthub.app bundle assembly Python tests via uv-managed pytest.' \
+		'  make test-kwt-contract' \
+		'      Exercise the exact pinned kwt helper through its daemon-backed project lifecycle.' \
+		'  make test-essential-workflows' \
+		'      Run the pinned kwt contract and focused host, inventory, sidebar, and tmux workflows.' \
 		'  make build' \
 		'      Build the Swift package.' \
 		'  make build-release' \
@@ -145,7 +149,19 @@ help:
 		'  bootstrap-libghostty and check-libghostty prefer LIBGHOSTTY_ZIG first, then ~/.local/bin/zig-0.15.2-x86_64, then zig from PATH, and finally /opt/homebrew/bin/zig as a fallback.' \
 		'  libghostty bootstrap requires a full Xcode install and the Metal Toolchain, not just Command Line Tools.'
 
-bootstrap-kwt:
+ensure-go:
+	@if ! command -v go >/dev/null; then \
+		if [[ "$${GITHUB_ACTIONS:-}" == "true" \
+			&& "$$(uname -s)" == "Darwin" \
+			&& -x /opt/homebrew/bin/brew ]]; then \
+			/opt/homebrew/bin/brew install go; \
+		else \
+			printf 'Go is required to build the pinned kwt helper.\n' >&2; \
+			exit 1; \
+		fi; \
+	fi
+
+bootstrap-kwt: ensure-go
 	@tools/build_pinned_kwt.sh \
 		"$(KWT_REPOSITORY)" \
 		"$(KWT_REF)" \
@@ -262,8 +278,23 @@ test-stage-release-app-bundles:
 test-assemble-app-bundle:
 	@$(UV) run --frozen --group dev pytest Tests/test_assemble_app_bundle.py
 
+ensure-tmux:
+	@command -v tmux >/dev/null || { \
+		command -v brew >/dev/null || { \
+			echo "tmux is required for the pinned kwt contract tests" >&2; \
+			exit 1; \
+		}; \
+		brew install tmux; \
+	}
+
+test-kwt-contract: ensure-kwt ensure-tmux
+	@GHOSTHUB_RUN_PINNED_KWT_CONTRACT_TESTS=1 \
+		GHOSTHUB_KWT_CONTRACT_BINARY="$(KWT_BINARY_PATH)" \
+		sh tools/run_with_timeout.sh 600 sh tools/run_swift_tests.sh \
+			$(SWIFT) test --filter PinnedKwtContractTests
+
 # Essential workflow smoke for kwt inventory and ordinary tmux attachment.
-test-essential-workflows:
+test-essential-workflows: test-kwt-contract
 	@set -euo pipefail; \
 	for filter in \
 		KwtInventoryClientTests \

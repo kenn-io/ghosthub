@@ -96,7 +96,7 @@ struct KwtInventoryClientTests {
                     return (
                         0,
                         "zsh banner\nGHOSTHUB_KWT_JSON\n" +
-                            #"[{"repository":"github.com/kenn-io/docbank","name":"docbank","path":"/code/docbank","last_touched":"2026-07-20T00:00:00Z"}]"#
+                            #"[{"repository":"github.com/kenn-io/docbank","name":"docbank","path":"/code/docbank","last_touched":"2026-07-20T00:00:00Z","registration_fingerprint":"opaque-observation"}]"#
                     )
                 }
                 if command.contains("workspace list --json") {
@@ -116,6 +116,10 @@ struct KwtInventoryClientTests {
 
         #expect(inventory.projects.map(\.project.name) == ["docbank"])
         #expect(
+            inventory.projects[0].project.registrationFingerprint
+                == "opaque-observation"
+        )
+        #expect(
             inventory.projects[0].worktrees.map(\.sessionName)
                 == ["kwt-docbank-main"]
         )
@@ -124,6 +128,42 @@ struct KwtInventoryClientTests {
                 == ["kwt-pr-0123456789abcdef"]
         )
         #expect(inventory.projects[0].warning == nil)
+    }
+
+    @Test(
+        "project inventory requires a nonempty registration fingerprint",
+        arguments: [
+            #"{"repository":"repo","name":"repo","path":"/repo"}"#,
+            #"{"repository":"repo","name":"repo","path":"/repo","registration_fingerprint":""}"#,
+        ]
+    )
+    func rejectsMissingRegistrationFingerprint(record: String) async throws {
+        let client = KwtInventoryClient(
+            localRunner: { _, command in
+                if command.contains("projects --json") {
+                    return (0, "GHOSTHUB_KWT_JSON\n[\(record)]")
+                }
+                return (0, "GHOSTHUB_KWT_JSON\n[]")
+            }
+        )
+
+        let inventory = try await client.load(from: .local)
+
+        #expect(inventory.projects.isEmpty)
+        #expect(inventory.projectsWarning != nil)
+    }
+
+    @Test("project records preserve trailing path whitespace")
+    func projectRecordPreservesTrailingWhitespace() throws {
+        let record = try JSONDecoder().decode(
+            KwtProjectRecord.self,
+            from: Data(
+                #"{"repository":"repo","name":"repo","path":"/repo ","registration_fingerprint":"opaque"}"#
+                    .utf8
+            )
+        )
+
+        #expect(record.path == "/repo ")
     }
 
     @Test("registered directories are loaded independently of projects")
@@ -166,7 +206,7 @@ struct KwtInventoryClientTests {
                     return (
                         0,
                         "GHOSTHUB_KWT_JSON\n" +
-                            #"[{"repository":"repo","name":"repo","path":"/repo"}]"#
+                            #"[{"repository":"repo","name":"repo","path":"/repo","registration_fingerprint":"repo-fingerprint"}]"#
                     )
                 }
                 return (0, "GHOSTHUB_KWT_JSON\n[]")
@@ -332,7 +372,7 @@ struct KwtInventoryClientTests {
                     return (
                         0,
                         "GHOSTHUB_KWT_JSON\n" +
-                            #"[{"repository":"one","name":"one","path":"/one"},{"repository":"two","name":"two","path":"/two"}]"#
+                            #"[{"repository":"one","name":"one","path":"/one","registration_fingerprint":"one-fingerprint"},{"repository":"two","name":"two","path":"/two","registration_fingerprint":"two-fingerprint"}]"#
                     )
                 }
                 if command.contains("/one") {
@@ -966,6 +1006,54 @@ struct KwtInventoryClientTests {
         #expect(retained.projects[0].warning == "temporary failure")
     }
 
+    @Test("partial project failure retains omitted cached worktrees")
+    func retainsWorktreesOmittedByPartialProjectFailure() {
+        let project = KwtProjectRecord(
+            repository: "repo",
+            name: "repo",
+            path: "/repo",
+            lastTouched: nil
+        )
+        let refreshed = KwtWorktreeRecord(
+            path: "/repo",
+            branch: "main",
+            commitHash: "def",
+            isMain: true,
+            createdAt: nil,
+            generation: "refreshed-generation",
+            repository: "repo",
+            sessionName: "kwt-repo-main"
+        )
+        let omitted = KwtWorktreeRecord(
+            path: "/worktrees/feature",
+            branch: "feature",
+            commitHash: "abc",
+            isMain: false,
+            createdAt: nil,
+            generation: "omitted-generation",
+            repository: "repo",
+            sessionName: "kwt-repo-feature"
+        )
+        let previous = KwtHostInventory(projects: [
+            KwtProjectInventory(
+                project: project,
+                worktrees: [omitted],
+                warning: nil
+            ),
+        ])
+        let partial = KwtHostInventory(projects: [
+            KwtProjectInventory(
+                project: project,
+                worktrees: [refreshed],
+                warning: "temporary failure"
+            ),
+        ])
+
+        let retained = partial.retainingFailedProjectWorktrees(from: previous)
+
+        #expect(retained.projects[0].worktrees == [refreshed, omitted])
+    }
+
     @Test("failed project list refresh retains cached projects")
     func retainsCachedProjectsWhenProjectListFails() {
         let project = KwtProjectRecord(
@@ -1208,6 +1296,49 @@ struct KwtInventoryClientTests {
         )
 
         #expect(retained.projects[0].worktrees == [replacement])
+    }
+
+    @Test("partial refresh does not inherit a replaced repository's worktrees")
+    func partialRefreshRejectsSamePathReplacementCache() {
+        let staleWorktree = KwtWorktreeRecord(
+            path: "/worktrees/stale",
+            branch: "stale",
+            commitHash: "abc",
+            isMain: false,
+            createdAt: nil,
+            repository: "old-repo",
+            sessionName: "kwt-old-stale"
+        )
+        let previous = KwtHostInventory(projects: [
+            KwtProjectInventory(
+                project: KwtProjectRecord(
+                    repository: "old-repo",
+                    name: "old",
+                    path: "/repo",
+                    lastTouched: nil
+                ),
+                worktrees: [staleWorktree],
+                warning: nil
+            ),
+        ])
+        let replacement = KwtHostInventory(projects: [
+            KwtProjectInventory(
+                project: KwtProjectRecord(
+                    repository: "new-repo",
+                    name: "new",
+                    path: "/repo",
+                    lastTouched: nil
+                ),
+                worktrees: [],
+                warning: "temporary failure"
+            ),
+        ])
+
+        let retained = replacement.retainingFailedProjectWorktrees(
+            from: previous
+        )
+
+        #expect(retained.projects[0].worktrees.isEmpty)
     }
 
     @Test("worktree exclusions apply only to their own repository")

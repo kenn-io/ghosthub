@@ -35,6 +35,7 @@ final class SessionReconnectSupervisor {
     private let intervals: [Duration]
     private let probeDeadline: Duration
     private let sleep: Sleep
+    private let probeSleep: Sleep
     private(set) var isRunning = false
     private var phase = Phase.idle
     private var generation = UUID()
@@ -44,12 +45,14 @@ final class SessionReconnectSupervisor {
     init(
         intervals: [Duration] = defaultIntervals,
         probeDeadline: Duration = defaultProbeDeadline,
-        sleep: @escaping Sleep = { try await Task.sleep(for: $0) }
+        sleep: @escaping Sleep = { try await Task.sleep(for: $0) },
+        probeSleep: @escaping Sleep = { try await Task.sleep(for: $0) }
     ) {
         precondition(!intervals.isEmpty)
         self.intervals = intervals
         self.probeDeadline = probeDeadline
         self.sleep = sleep
+        self.probeSleep = probeSleep
     }
 
     func start(attempt: @escaping Attempt) {
@@ -124,13 +127,14 @@ final class SessionReconnectSupervisor {
         _ attempt: @escaping Attempt
     ) async -> SessionReconnectDecision {
         let deadline = probeDeadline
+        let probeSleep = probeSleep
         return await withTaskGroup(of: AttemptRace.self) { group in
             group.addTask {
                 await .decision(attempt())
             }
             group.addTask {
                 do {
-                    try await Task.sleep(for: deadline)
+                    try await probeSleep(deadline)
                     return .deadline
                 } catch {
                     return .cancelled

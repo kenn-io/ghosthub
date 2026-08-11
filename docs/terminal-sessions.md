@@ -502,6 +502,14 @@ group passes one user-supplied absolute checkout path to kwt's noninteractive
 registration command, then refreshes inventory. Immediately before
 registration, Ghosthub re-resolves the host ID and rejects the operation if its
 endpoint changed while Add Project was open. No filesystem scan occurs.
+The project row's confirmed **Remove Project** action similarly revalidates the
+project path and host endpoint, then asks kwt to unregister only that project
+metadata. Repository and worktree directories are untouched. Before
+unregistering, Ghosthub probes every protected-socket worktree and requires its
+tmux session to be absent; a live or unverifiable protected session blocks
+removal because it cannot be recovered through default-server discovery after
+the project disappears. Ordinary live tmux sessions remain discoverable under
+the host.
 
 On experimental Windows hosts, an explicit Install Bundled kwt action probes
 the process architecture, uploads the matching pinned AMD64 or ARM64 helper,
@@ -509,9 +517,9 @@ verifies its SHA-256 and exact revision, and activates it at
 `%USERPROFILE%\.ghosthub\helpers\kwt\<revision>\kwt.exe`. Inventory and
 workspace operations use only that exact per-user helper and never resolve
 `kwt.exe` from `PATH`.
-Project registration is not yet supported on Windows, so its Add Project
-actions are hidden. Inventory never installs or updates the unsigned Windows
-helper automatically.
+Project registry mutations are not yet supported on Windows, so its Add Project
+and Remove Project actions are hidden. Inventory never installs or updates the
+unsigned Windows helper automatically.
 
 Direct tmux discovery marks a default-server worktree session as running when
 its exact kwt session name is present and the host remains reachable. Cached

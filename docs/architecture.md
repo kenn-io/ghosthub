@@ -299,15 +299,28 @@ revision; installation also requires the uploaded helper's `version` output to
 report that revision before promotion. Every remote kwt operation invokes that
 exact revisioned path; failed upload or installation attempts also best-effort
 remove their unique staged file. Neither local nor remote operations select an
-unrelated kwt from `PATH`. This is a CLI boundary, not a vendored daemon or
-submodule. Kwt's machine-readable CLI provides project identity, worktree
-metadata, and exact tmux session names.
+unrelated kwt from `PATH`. Ghosthub integrates only through kwt's CLI and does
+not manage its daemon directly. Kwt may auto-start or reuse its same-account
+daemon behind that boundary. Kwt's machine-readable CLI provides project
+identity, worktree metadata, and exact tmux session names.
 On a macOS or Linux host with no existing kwt registry, the user adds one
 absolute repository path at a time through **Add Project**. Ghosthub delegates
 registration to `kwt projects add --json`, then refreshes ordinary kwt
 inventory; it does not search the host's filesystem or write kwt's
-configuration itself. Windows hosts do not expose project registration until
-that command boundary supports native Windows paths.
+configuration itself. A project's sidebar context menu exposes a confirmed
+**Remove Project** action backed by
+`kwt projects remove <path> --expected-repository <identity>
+--expected-registration <fingerprint> --json`. Ghosthub supplies the exact
+path, credential-free identity, and opaque registration fingerprint from the
+record the user confirmed. A changed registration fails closed and requires a
+new confirmation; a missing checkout remains removable when the guard
+succeeds. Ghosthub preflights protected endpoints it already knows for
+immediate feedback; kwt's daemon serializes the mutation with registration,
+worktree, and protected-attachment operations, verifies durable protected
+endpoint authority, and performs the final registry compare-and-swap. The
+operation only unregisters discovery metadata and never deletes repositories,
+worktrees, or tmux sessions. Windows hosts do not expose project registry
+mutations until that command boundary supports native Windows paths.
 On macOS and Linux, the account login shell initializes the command
 environment, while Ghosthub's own inventory and discovery commands execute
 under the host's POSIX `/bin/sh`; non-POSIX account shells such as fish are not
@@ -408,8 +421,9 @@ registration and tmux owns sessions. Ghosthub does not edit kwt's config file
 or present its retired Middleman-backed Add Repository flow. The **+** menu on
 macOS and Linux hosts exposes **Add Project**, which passes one explicit
 absolute checkout path to kwt's supported noninteractive registration command.
-Windows hosts omit that action. Ghosthub does not scan the host for
-repositories.
+Registered project rows expose a confirmed **Remove Project** action through
+kwt's noninteractive unregistration command. Windows hosts omit both actions.
+Ghosthub does not scan the host for repositories.
 
 ## Source Layout
 

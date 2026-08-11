@@ -247,6 +247,12 @@ they can create a parallel session on the credential-bearing default server.
 Ghosthub likewise rejects a successful import response with a missing or blank
 socket identity and never lets a pending default-server creation with the same
 session name authorize a protected workspace launch.
+Project removal supplies kwt the exact persisted path and credential-free
+repository identity returned by current project inventory. Kwt's daemon holds
+the shared project lifecycle fence while it resolves durable pull-request
+provenance, probes protected tmux endpoints, and compare-and-swaps the registry.
+A changed registration, live protected session, or incomplete endpoint set
+fails closed; the operation never kills sessions or removes filesystem data.
 Kwt unconditionally protects `KWT_GITHUB_TOKEN` and `KWT_FLEET_TOKEN` as well
 as the configured fleet token name. Non-secret kwt state such as `KWT_HOME`
 remains available inside panes.

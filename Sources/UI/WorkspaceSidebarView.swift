@@ -313,6 +313,7 @@ struct WorkspaceSidebarView: View {
     let onRequestKillTmuxSession: (WorkspaceTmuxSessionSelection) -> Void
     let onRequestKillZellijSession: (WorkspaceZellijSessionSelection) -> Void
     let onRequestRemoveWorktree: (WorktreeSummary) -> Void
+    let onRequestRemoveProject: (ProjectSummary) -> Void
     let onNewWorktree: (ProjectSummary) -> Void
     let onImportPullRequest: (ProjectSummary) -> Void
     let onNewTmuxSession: (HostSummary) -> Void
@@ -383,6 +384,9 @@ struct WorkspaceSidebarView: View {
         onRequestRemoveWorktree: @escaping (
             WorktreeSummary
         ) -> Void = { _ in },
+        onRequestRemoveProject: @escaping (
+            ProjectSummary
+        ) -> Void = { _ in },
         onNewWorktree: @escaping (ProjectSummary) -> Void = { _ in },
         onImportPullRequest: @escaping (ProjectSummary) -> Void = { _ in },
         onNewTmuxSession: @escaping (HostSummary) -> Void = { _ in },
@@ -420,6 +424,7 @@ struct WorkspaceSidebarView: View {
         self.onRequestKillTmuxSession = onRequestKillTmuxSession
         self.onRequestKillZellijSession = onRequestKillZellijSession
         self.onRequestRemoveWorktree = onRequestRemoveWorktree
+        self.onRequestRemoveProject = onRequestRemoveProject
         self.onNewWorktree = onNewWorktree
         self.onImportPullRequest = onImportPullRequest
         self.onNewTmuxSession = onNewTmuxSession
@@ -661,6 +666,19 @@ struct WorkspaceSidebarView: View {
                                             in: project.project
                                         )
                                     )
+                                    if snapshot.host(
+                                        id: project.project.hostID
+                                    )?.canRegisterProjects == true {
+                                        Divider()
+                                        Button(
+                                            "Remove Project…",
+                                            role: .destructive
+                                        ) {
+                                            onRequestRemoveProject(
+                                                project.project
+                                            )
+                                        }
+                                    }
                                 }
                                 if isExpanded(projectKey) {
                                     ForEach(project.worktreeRows) { row in
@@ -1711,6 +1729,9 @@ struct WorkspaceSidebarView: View {
     ) -> some View {
         let canCreate = snapshot.canCreateWorktree(in: project.project)
         let canImport = snapshot.canImportPullRequest(in: project.project)
+        let canRemove = snapshot.host(
+            id: project.project.hostID
+        )?.canRegisterProjects == true
         return HStack(spacing: 0) {
             hierarchyDisclosureButton(
                 project.row,
@@ -1755,6 +1776,23 @@ struct WorkspaceSidebarView: View {
                     : projectActionHelp(for: project.project)
             )
             .accessibilityIdentifier("project-actions")
+
+            if canRemove {
+                Button {
+                    onRequestRemoveProject(project.project)
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 10, weight: .semibold))
+                        .frame(width: 24, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Remove Project…")
+                .accessibilityLabel(
+                    "Remove project \(project.project.sidebarTitle)"
+                )
+            }
         }
     }
 

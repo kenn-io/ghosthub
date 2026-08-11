@@ -109,10 +109,12 @@ struct SidebarToggleStabilityTests {
         let firstTarget = SidebarToggleTarget()
         let secondTarget = SidebarToggleTarget()
         let first = StabilityTestEnvironment(
-            sidebarToggleTarget: firstTarget
+            sidebarToggleTarget: firstTarget,
+            presentsWindow: false
         )
         let second = StabilityTestEnvironment(
-            sidebarToggleTarget: secondTarget
+            sidebarToggleTarget: secondTarget,
+            presentsWindow: false
         )
         defer {
             first.close()
@@ -138,10 +140,12 @@ struct SidebarToggleStabilityTests {
         let firstTarget = SidebarToggleTarget()
         let secondTarget = SidebarToggleTarget()
         let first = StabilityTestEnvironment(
-            sidebarToggleTarget: firstTarget
+            sidebarToggleTarget: firstTarget,
+            presentsWindow: false
         )
         let second = StabilityTestEnvironment(
-            sidebarToggleTarget: secondTarget
+            sidebarToggleTarget: secondTarget,
+            presentsWindow: false
         )
         defer {
             first.close()
@@ -198,7 +202,7 @@ private final class StabilityTestEnvironment {
     let secondSession: WorkspaceTmuxSessionSelection
 
     private let model: StabilityTestModel
-    private let window: NSWindow
+    private let window: NSWindow?
     private let hostingView: NSHostingView<StabilityTestHarness>
     private let settingsStore: SettingsStore
     private let tempRoot: URL
@@ -241,7 +245,10 @@ private final class StabilityTestEnvironment {
         model.terminalResizeDeferrals
     }
 
-    init(sidebarToggleTarget: AnyObject = SidebarToggleTarget()) {
+    init(
+        sidebarToggleTarget: AnyObject = SidebarToggleTarget(),
+        presentsWindow: Bool = true
+    ) {
         self.sidebarToggleTarget = sidebarToggleTarget
         let hostID = UUID()
         firstSession = WorkspaceTmuxSessionSelection(
@@ -308,14 +315,25 @@ private final class StabilityTestEnvironment {
                 sidebarToggleTarget: sidebarToggleTarget
             )
         )
-        window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700),
-            styleMask: [.titled],
-            backing: .buffered,
-            defer: false
-        )
-        window.contentView = hostingView
-        window.makeKeyAndOrderFront(nil)
+        if presentsWindow {
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700),
+                styleMask: [.titled],
+                backing: .buffered,
+                defer: false
+            )
+            window.contentView = hostingView
+            window.makeKeyAndOrderFront(nil)
+            self.window = window
+        } else {
+            window = nil
+            hostingView.frame = NSRect(
+                x: 0,
+                y: 0,
+                width: 1000,
+                height: 700
+            )
+        }
         settle()
     }
 
@@ -350,7 +368,8 @@ private final class StabilityTestEnvironment {
     }
 
     func close() {
-        window.orderOut(nil)
+        window?.orderOut(nil)
+        hostingView.removeFromSuperview()
         defaults.removePersistentDomain(forName: defaultsSuiteName)
         try? FileManager.default.removeItem(at: tempRoot)
     }

@@ -217,6 +217,24 @@ EOF
   mv -f "$temporary" "$destination"
 }
 
+capture_project_removal() {
+  demo_input click "32,489"
+  sleep 1
+  demo_input click "300,450"
+  sleep 1
+  capture_state guide-project-removal.png
+  demo_input escape
+  sleep 1
+  demo_input click "32,489"
+  sleep 1
+}
+
+if [[ "${GHOSTHUB_DEMO_PROJECT_REMOVAL_ONLY:-}" == "1" ]]; then
+  echo "==> guide: project removal"
+  capture_project_removal
+  exit 0
+fi
+
 if [[ "${GHOSTHUB_DEMO_EXE_ONLY:-}" == "1" ]]; then
   echo "==> guide: exe.dev integration settings"
   palette "Open Integrations Settings" true sheet
@@ -237,6 +255,9 @@ if palette "$unmatched_command" \
   exit 1
 fi
 demo_input escape
+
+echo "==> guide: project removal"
+capture_project_removal
 
 echo "==> hero: active coding-agent worktree"
 palette "fix-reconnect-backoff"

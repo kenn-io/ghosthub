@@ -116,6 +116,7 @@ func setupStandardEnvironment() throws -> StandardEnvironment {
                 registryID: project.registryID,
                 name: project.name,
                 rootPath: project.rootPath,
+                registrationFingerprint: "standard-registration",
                 defaultBranch: project.defaultBranch
             ),
         ],
@@ -267,6 +268,7 @@ func setupRemoteEnvironment() throws -> RemoteEnvironment {
                 registryID: project.registryID,
                 name: project.name,
                 rootPath: project.rootPath,
+                registrationFingerprint: "remote-registration",
                 defaultBranch: project.defaultBranch
             ),
         ],
@@ -387,8 +389,18 @@ func makeModel(
     kwtProjectRegistration:
     @escaping WorkspaceSceneModel.KwtProjectRegistration = {
         projectPath, host in
-        try await KwtProjectRegistrar().register(
+        try await KwtProjectRegistryClient().register(
             projectPath: projectPath,
+            on: host
+        )
+    },
+    kwtProjectRemoval:
+    @escaping WorkspaceSceneModel.KwtProjectRemoval = {
+        projectPath, expectedRepository, expectedRegistration, host in
+        try await KwtProjectRegistryClient().unregister(
+            projectPath: projectPath,
+            expectedRepository: expectedRepository,
+            expectedRegistration: expectedRegistration,
             on: host
         )
     },
@@ -500,6 +512,7 @@ func makeModel(
         kwtPullRequestLister: kwtPullRequestLister,
         kwtPullRequestImporter: kwtPullRequestImporter,
         kwtProjectRegistration: kwtProjectRegistration,
+        kwtProjectRemoval: kwtProjectRemoval,
         tmuxSessionDiscovery: tmuxSessionDiscovery,
         herdrSessionDiscovery: herdrSessionDiscovery,
         zellijSessionDiscovery: zellijSessionDiscovery,
