@@ -2,7 +2,7 @@
 
 This document is the maintained design for native Ghosthub applications on
 Windows and Linux. The first product slice is Windows-only, uses tmux in WSL2,
-and discovers optional Herdr sessions there; Linux remains a
+and discovers optional Herdr and Zellij sessions there; Linux remains a
 compile-and-contract target until a native Linux product slice is authorized.
 The shipped macOS application remains SwiftUI/AppKit with libghostty. The
 shared product and terminal invariants remain authoritative in
@@ -23,8 +23,8 @@ away from SwiftUI.
   a WSL2 distro through `wsl.exe` and ConPTY.
 - Linux remains in Rust CI for compilation, contracts, architecture, lint, and
   dependency policy. A native Linux application is deferred.
-- All platforms preserve the Host, Project, Worktree, and ordinary tmux
-  Session mental model.
+- All platforms preserve the Host, Project, Worktree, and ordinary
+  multiplexer-session mental model.
 - Kwt remains authoritative for project/worktree identity and exact session
   names. Direct tmux-compatible discovery supplies otherwise-unbound sessions.
 - Tmux owns server-side windows, panes, layout, history, alternate-screen
@@ -83,7 +83,7 @@ bytes in, resize, modes queryable, semantic effects, and Rust-owned paint
 state out. No public crate or UI API presumes the outcome.
 
 The exact kwt revision in repository-root `KWT_REVISION` is
-1afb99003adaf686012be693a66adfff4ebfd2a1. That source uses KWT_HOME or the
+03dc3dcc2349282cda3cccfd20a9b1a1ebf83a98. That source uses KWT_HOME or the
 fixed $HOME/.config/kwt default. It does not read Ghosthub init.toml,
 config_home, or XDG_CONFIG_HOME. Rust must not reproduce the unsupported
 Ghosthub init.toml scanner. The two existing Swift copies are outside the Rust
@@ -280,6 +280,34 @@ Every constructive or lifecycle publication advances the inventory generation
 and cancels an older refresh, so an earlier full snapshot cannot overwrite the
 result. Rust does not reinterpret Herdr as a tmux-compatible server or use
 Herdr's remote mode.
+
+### Optional Zellij capability in WSL
+
+Zellij is a third optional capability of the same resolved WSL endpoint. Host
+resolves one absolute executable through the POSIX login profile, removes
+inherited `ZELLIJ`, `ZELLIJ_PANE_ID`, and `ZELLIJ_SESSION_NAME`, and invokes
+`zellij list-sessions --no-formatting` through direct argv. Exit 127 is silent
+absence. Zellij's exact no-active-sessions response is successful empty
+inventory; other failures remain Zellij-scoped diagnostics and never hide tmux
+or Herdr inventory. Exited entries that Zellij could resurrect are deliberately
+excluded.
+
+The sidebar gives Zellij its own compact group and creation action. Opening an
+active row consumes an attach-only plan for `zellij attach -- <exact-name>`.
+Creation consumes a non-cloneable one-shot launch for
+`zellij --session=<exact-name>`. Both run as ordinary ConPTY clients, share the
+retained-presentation switcher with tmux and Herdr, and never replay creation
+after failure. Closing the client only detaches.
+
+Kill Session is separate and confirmed. Host checks the current WSL runtime,
+absolute executable, and exact active name, closes the matching presentation,
+then repeats all checks immediately before `zellij kill-session --
+<exact-name>`. Attachment, creation, and kill share the serialized session
+operation lane, so an older launch cannot complete after an intentional kill.
+Zellij exposes no stable session-generation identity; the same-name
+replacement race described in [Terminal Sessions](terminal-sessions.md)
+remains an explicit backend limitation rather than a false tmux-strength
+guarantee.
 
 ### Terminal ownership
 
@@ -621,8 +649,9 @@ before the requested KWT command runs. Developer builds may omit the bundle,
 in which case KWT inventory alone is unavailable.
 
 KWT project and worktree reads are a separate cancellable host operation from
-tmux and Herdr inventory. The frequent session cadence never installs the KWT
-helper, invokes KWT, or replays worktree reconciliation. One KWT inventory read
+tmux, Herdr, and Zellij inventory. The frequent session cadence never installs
+the KWT helper, invokes KWT, or replays worktree reconciliation. One KWT
+inventory read
 uses exactly three machine-readable crossings: registered projects, the global
 worktree list, and directory workspaces. After the admitted host first
 publishes, Rust performs one background KWT read and then refreshes it every 60
@@ -640,7 +669,9 @@ path to the pinned helper's `projects add <path> --json` command. Each
 registered project also exposes a confirmed **Remove Project** action. Removal
 first re-reads project inventory, then invokes
 `projects remove <exact-path> --expected-repository <credential-free-id>
---json`; KWT performs the final identity check. Unregistration changes KWT
+--expected-registration <opaque-fingerprint> --json`; KWT performs the final
+identity check against both values. Empty or missing registration fingerprints
+are rejected as malformed inventory. Unregistration changes KWT
 metadata only. It cannot delete the repository or worktrees and cannot stop or
 kill tmux sessions. Ghosthub never scans WSL and never edits KWT configuration.
 
@@ -727,9 +758,9 @@ database transactions, Kwt reconciliation, or resource sampling. Host reads
 and future project/worktree inventory merges run on cancellable background read
 lanes. They build owned results before entering the short publication section;
 no snapshot publication guard may cross external I/O, process waits, or an
-await point. Runtime-only tmux or Herdr updates cannot replay project/worktree
-reconciliation. Each host publishes independently, so one slow host cannot
-delay completed inventory from another host.
+await point. Runtime-only tmux, Herdr, or Zellij updates cannot replay
+project/worktree reconciliation. Each host publishes independently, so one
+slow host cannot delay completed inventory from another host.
 
 Refresh generations are allocated monotonically. A result publishes only when
 its generation is newer than the published generation. Cancelled, timed-out,
@@ -824,8 +855,9 @@ exact host, resolved endpoint, socket directory, session, and live identity.
 Explicit close detaches only the selected presentation, and application
 shutdown detaches every retained client. Navigation never sends a mux kill
 command. The chrome is shaped for additional admitted local mux hosts, but
-Slice 1 exposes only WSL tmux; psmux remains rejection evidence until it
-satisfies the same capability bar.
+The initial slice exposed only WSL tmux; optional WSL Herdr and Zellij groups
+now use the same shell and retained-presentation boundary. Psmux remains
+rejection evidence until it satisfies the same capability bar.
 
 The active presentation keeps a detach action that only closes its ordinary
 client. Every session in the current live inventory separately exposes Kill
@@ -983,7 +1015,9 @@ Rust keeps the same separation:
 - cargo test-wsl-kwt-live installs and verifies a staged pinned KWT helper and
   reads its real inventory
 - `make rust-test-wsl-live` launches real isolated tmux servers inside a WSL2
-  distro plus PTYs and supervisor children for detach and app-death survival
+  distro plus PTYs and supervisor children for detach and app-death survival;
+  it also creates, detaches, reattaches, and explicitly kills one nonce-named
+  Zellij session without touching other Zellij sessions
 
 Cargo test binaries own cross-platform orchestration. Make targets are thin
 wrappers; Windows CI invokes the same Cargo tests without POSIX shell

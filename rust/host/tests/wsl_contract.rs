@@ -9,12 +9,13 @@ use std::sync::{Arc, Mutex};
 use contracts::{Manifest, PlatformTag};
 use host::{
     AdmissionAttacher, AttachTerm, CancellationToken, CommandOutput, CommandRunner, HerdrInventory,
-    HostErrorKind, WslConfig, WslExecutable, WslHost,
+    HostErrorKind, WslConfig, WslExecutable, WslHost, ZellijInventory,
 };
 use serde::Deserialize;
 use session::ExecutablePlatform;
 use session::{
     AdmissionPlan, HerdrLifecycleAction, HerdrSessionRecord, HerdrSessionState, SessionName,
+    ZellijSessionName,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -42,6 +43,7 @@ struct RecordingRunner {
     exact_targets_are_strict: bool,
     admission_directory: Mutex<AdmissionDirectoryState>,
     herdr_outputs: Mutex<VecDeque<CommandOutput>>,
+    zellij_outputs: Mutex<VecDeque<CommandOutput>>,
 }
 
 #[derive(Debug, Default)]
@@ -79,6 +81,7 @@ impl RecordingRunner {
             exact_targets_are_strict: true,
             admission_directory: Mutex::new(AdmissionDirectoryState::default()),
             herdr_outputs: Mutex::new(VecDeque::new()),
+            zellij_outputs: Mutex::new(VecDeque::new()),
         }
     }
 
@@ -100,6 +103,7 @@ impl RecordingRunner {
             exact_targets_are_strict: true,
             admission_directory: Mutex::new(AdmissionDirectoryState::default()),
             herdr_outputs: Mutex::new(VecDeque::new()),
+            zellij_outputs: Mutex::new(VecDeque::new()),
         }
     }
 
@@ -125,6 +129,7 @@ impl RecordingRunner {
             exact_targets_are_strict: true,
             admission_directory: Mutex::new(AdmissionDirectoryState::default()),
             herdr_outputs: Mutex::new(VecDeque::new()),
+            zellij_outputs: Mutex::new(VecDeque::new()),
         }
     }
 
@@ -154,6 +159,7 @@ impl RecordingRunner {
             exact_targets_are_strict: true,
             admission_directory: Mutex::new(AdmissionDirectoryState::default()),
             herdr_outputs: Mutex::new(VecDeque::new()),
+            zellij_outputs: Mutex::new(VecDeque::new()),
         }
     }
 
@@ -175,6 +181,7 @@ impl RecordingRunner {
             exact_targets_are_strict: true,
             admission_directory: Mutex::new(AdmissionDirectoryState::default()),
             herdr_outputs: Mutex::new(VecDeque::new()),
+            zellij_outputs: Mutex::new(VecDeque::new()),
         }
     }
 
@@ -218,7 +225,9 @@ impl RecordingRunner {
             .lock()
             .expect("calls lock")
             .iter()
-            .filter(|(_, args)| !is_admission_call(args) && !is_herdr_call(args))
+            .filter(|(_, args)| {
+                !is_admission_call(args) && !is_herdr_call(args) && !is_zellij_call(args)
+            })
             .cloned()
             .collect()
     }
@@ -229,6 +238,10 @@ impl RecordingRunner {
 
     fn set_herdr_outputs(&self, outputs: Vec<CommandOutput>) {
         *self.herdr_outputs.lock().expect("Herdr outputs lock") = outputs.into();
+    }
+
+    fn set_zellij_outputs(&self, outputs: Vec<CommandOutput>) {
+        *self.zellij_outputs.lock().expect("Zellij outputs lock") = outputs.into();
     }
 
     fn all_timeouts(&self) -> Vec<std::time::Duration> {
@@ -337,6 +350,14 @@ impl CommandRunner for RecordingRunner {
                 .expect("Herdr outputs lock")
                 .pop_front()
                 .unwrap_or_else(|| output(127, "", "herdr: not found")));
+        }
+        if is_zellij_call(args) {
+            return Ok(self
+                .zellij_outputs
+                .lock()
+                .expect("Zellij outputs lock")
+                .pop_front()
+                .unwrap_or_else(|| output(127, "", "zellij: not found")));
         }
         if self
             .admission_failure
@@ -477,6 +498,16 @@ fn is_herdr_call(args: &[OsString]) -> bool {
         || args
             .windows(2)
             .any(|arguments| arguments == ["session", "stop"] || arguments == ["session", "delete"])
+}
+
+fn is_zellij_call(args: &[OsString]) -> bool {
+    args.iter().any(|argument| {
+        argument
+            .to_str()
+            .is_some_and(|argument| argument.contains("GHOSTHUB_ZELLIJ_PATH"))
+    }) || args
+        .windows(2)
+        .any(|arguments| arguments == ["-u", "ZELLIJ"])
 }
 
 #[allow(
@@ -1016,6 +1047,117 @@ fn malformed_herdr_inventory_does_not_hide_tmux_sessions() {
     assert_eq!(snapshot.sessions()[0].name(), "work");
     assert!(
         matches!(snapshot.herdr(), HerdrInventory::Failed(error) if error.kind() == HostErrorKind::MalformedOutput)
+    );
+}
+
+#[test]
+fn zellij_inventory_and_launch_plans_preserve_exact_names_and_scrub_control_environment() {
+    let runner = RecordingRunner::new(vec![
+        instance_output(),
+        output(0, "4242\t$3\t1700000000\t1\t4\twork\n", ""),
+        instance_output(),
+    ]);
+    runner.set_zellij_outputs(vec![
+        output(0, "GHOSTHUB_ZELLIJ_PATH\n/opt/zellij/bin/zellij\n", ""),
+        output(0, "--review [Created 1m ago]\n", ""),
+    ]);
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        runner,
+    );
+
+    let snapshot = discover(&host).expect("Zellij discovery is host-capability scoped");
+    let ZellijInventory::Available {
+        executable,
+        sessions,
+    } = snapshot.zellij()
+    else {
+        panic!("Zellij is available");
+    };
+    assert_eq!(executable, "/opt/zellij/bin/zellij");
+    assert_eq!(sessions[0].name(), "--review");
+
+    let plan = host.zellij_attach_plan(
+        snapshot.endpoint(),
+        executable,
+        &sessions[0],
+        AttachTerm::Xterm256Color,
+    );
+    assert!(
+        plan.args()
+            .windows(3)
+            .any(|arguments| arguments == ["attach", "--", "--review"])
+    );
+    for variable in ["ZELLIJ", "ZELLIJ_PANE_ID", "ZELLIJ_SESSION_NAME"] {
+        assert!(
+            plan.args()
+                .windows(2)
+                .any(|arguments| arguments == ["-u", variable])
+        );
+    }
+
+    let launch = host.zellij_launch_once(
+        snapshot.endpoint(),
+        executable,
+        ZellijSessionName::parse("--new").expect("valid leading-dash name"),
+        AttachTerm::Xterm256Color,
+    );
+    let (_program, args, target) = launch.into_parts();
+    assert!(args.iter().any(|argument| argument == "--session=--new"));
+    assert_eq!(target.as_str(), "--new");
+}
+
+#[test]
+fn zellij_kill_revalidates_and_uses_an_exact_direct_argument() {
+    let mut command_outputs = vec![
+        instance_output(),
+        output(0, "4242\t$3\t1700000000\t1\t4\twork\n", ""),
+        instance_output(),
+    ];
+    command_outputs.extend((0..5).map(|_| instance_output()));
+    let runner = RecordingRunner::new(command_outputs);
+    runner.set_zellij_outputs(vec![
+        output(0, "GHOSTHUB_ZELLIJ_PATH\n/opt/zellij/bin/zellij\n", ""),
+        output(0, "--review [Created 1m ago]\n", ""),
+        output(0, "GHOSTHUB_ZELLIJ_PATH\n/opt/zellij/bin/zellij\n", ""),
+        output(0, "--review [Created 1m ago]\n", ""),
+        output(0, "GHOSTHUB_ZELLIJ_PATH\n/opt/zellij/bin/zellij\n", ""),
+        output(0, "--review [Created 1m ago]\n", ""),
+        output(0, "", ""),
+    ]);
+    let host = test_host(
+        WslConfig::with_distro("Ubuntu").expect("valid config"),
+        runner,
+    );
+    let snapshot = discover(&host).expect("initial inventory");
+    let callback_ran = AtomicBool::new(false);
+
+    host.kill_zellij_session(
+        snapshot.endpoint(),
+        snapshot.runtime(),
+        "/opt/zellij/bin/zellij",
+        "--review",
+        &CancellationToken::new(),
+        || callback_ran.store(true, Ordering::Release),
+    )
+    .expect("validated Zellij kill");
+
+    assert!(callback_ran.load(Ordering::Acquire));
+    let kill_call = host
+        .runner()
+        .all_calls()
+        .into_iter()
+        .find(|(_, args)| {
+            args.iter()
+                .any(|argument| argument == "/opt/zellij/bin/zellij")
+                && args.iter().any(|argument| argument == "kill-session")
+        })
+        .expect("Zellij kill call");
+    assert!(
+        kill_call
+            .1
+            .windows(3)
+            .any(|arguments| arguments == ["kill-session", "--", "--review"])
     );
 }
 

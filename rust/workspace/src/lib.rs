@@ -10,14 +10,14 @@ use config::TerminalAppearance;
 use host::{
     AdmissionAttacher, AttachTerm, CancellationToken, CommandRunner, HerdrInventory, HostError,
     HostSnapshot, KwtInventory, LiveSessionTarget, StdCommandRunner, WslConfig, WslExecutable,
-    WslHost,
+    WslHost, ZellijInventory,
 };
 pub use input::{KeyEvent, KeyInput, Modifiers, MouseAction, MouseButton, MouseInput, NamedKey};
 use model::DiagnosticKind;
 use session::HerdrLaunchTarget;
 pub use session::{
     HerdrLifecycleAction, HerdrSessionName, HerdrSessionNameError, HerdrSessionState, SessionName,
-    SessionNameError,
+    SessionNameError, ZellijSessionName, ZellijSessionNameError,
 };
 use surface::{GridSize, PixelSize, Rgb, SurfaceStore};
 use terminal::{
@@ -130,6 +130,7 @@ pub struct SessionSelection {
 pub enum SessionKind {
     Tmux,
     Herdr,
+    Zellij,
 }
 
 impl SessionSelection {
@@ -158,6 +159,20 @@ impl SessionSelection {
             endpoint: endpoint.into(),
             session: session.into(),
             kind: SessionKind::Herdr,
+        }
+    }
+
+    #[must_use]
+    pub fn zellij(
+        host_id: impl Into<String>,
+        endpoint: impl Into<String>,
+        session: impl Into<String>,
+    ) -> Self {
+        Self {
+            host_id: host_id.into(),
+            endpoint: endpoint.into(),
+            session: session.into(),
+            kind: SessionKind::Zellij,
         }
     }
 
@@ -234,6 +249,9 @@ pub struct HostItem {
     herdr_available: bool,
     herdr_sessions: Vec<HerdrSessionItem>,
     herdr_diagnostic: Option<HostDiagnostic>,
+    zellij_available: bool,
+    zellij_sessions: Vec<SessionItem>,
+    zellij_diagnostic: Option<HostDiagnostic>,
     projects: Vec<ProjectItem>,
     directory_workspaces: Vec<DirectoryWorkspaceItem>,
     kwt_state: KwtState,
@@ -254,6 +272,7 @@ pub struct ProjectItem {
     repository: String,
     name: String,
     path: String,
+    registration_fingerprint: String,
     worktrees: Vec<WorktreeItem>,
 }
 
@@ -263,12 +282,14 @@ impl ProjectItem {
         repository: impl Into<String>,
         name: impl Into<String>,
         path: impl Into<String>,
+        registration_fingerprint: impl Into<String>,
         worktrees: Vec<WorktreeItem>,
     ) -> Self {
         Self {
             repository: repository.into(),
             name: name.into(),
             path: path.into(),
+            registration_fingerprint: registration_fingerprint.into(),
             worktrees,
         }
     }
@@ -286,6 +307,11 @@ impl ProjectItem {
     #[must_use]
     pub fn path(&self) -> &str {
         &self.path
+    }
+
+    #[must_use]
+    pub fn registration_fingerprint(&self) -> &str {
+        &self.registration_fingerprint
     }
 
     #[must_use]
@@ -475,6 +501,9 @@ impl HostItem {
             herdr_available: false,
             herdr_sessions: Vec::new(),
             herdr_diagnostic: None,
+            zellij_available: false,
+            zellij_sessions: Vec::new(),
+            zellij_diagnostic: None,
             projects: Vec::new(),
             directory_workspaces: Vec::new(),
             kwt_state: KwtState::Uninitialized,
@@ -492,6 +521,19 @@ impl HostItem {
     #[must_use]
     pub fn with_herdr_diagnostic(mut self, diagnostic: HostDiagnostic) -> Self {
         self.herdr_diagnostic = Some(diagnostic);
+        self
+    }
+
+    #[must_use]
+    pub fn with_zellij_sessions(mut self, sessions: Vec<SessionItem>) -> Self {
+        self.zellij_available = true;
+        self.zellij_sessions = sessions;
+        self
+    }
+
+    #[must_use]
+    pub fn with_zellij_diagnostic(mut self, diagnostic: HostDiagnostic) -> Self {
+        self.zellij_diagnostic = Some(diagnostic);
         self
     }
 
@@ -543,6 +585,21 @@ impl HostItem {
     #[must_use]
     pub const fn herdr_diagnostic(&self) -> Option<&HostDiagnostic> {
         self.herdr_diagnostic.as_ref()
+    }
+
+    #[must_use]
+    pub const fn zellij_available(&self) -> bool {
+        self.zellij_available
+    }
+
+    #[must_use]
+    pub fn zellij_sessions(&self) -> &[SessionItem] {
+        &self.zellij_sessions
+    }
+
+    #[must_use]
+    pub const fn zellij_diagnostic(&self) -> Option<&HostDiagnostic> {
+        self.zellij_diagnostic.as_ref()
     }
 
     #[must_use]
@@ -1000,19 +1057,32 @@ struct PendingPaste {
     input: input::EncodedInput,
 }
 
-#[derive(Clone)]
-struct KillCaptureRequest {
-    selection: SessionSelection,
-    host: RuntimeHost,
-    endpoint: host::WslEndpoint,
-    runtime: host::WslRuntimeIdentity,
+enum KillCaptureRequest {
+    Tmux {
+        selection: SessionSelection,
+        host: RuntimeHost,
+        endpoint: host::WslEndpoint,
+        runtime: host::WslRuntimeIdentity,
+    },
+    Zellij(PendingKill),
 }
 
 struct PendingKill {
     generation: u64,
     selection: SessionSelection,
     host: RuntimeHost,
-    target: Arc<LiveSessionTarget>,
+    target: KillTarget,
+}
+
+#[derive(Clone)]
+enum KillTarget {
+    Tmux(Arc<LiveSessionTarget>),
+    Zellij {
+        endpoint: host::WslEndpoint,
+        runtime: host::WslRuntimeIdentity,
+        executable: String,
+        name: String,
+    },
 }
 
 #[derive(Clone)]
@@ -1238,13 +1308,17 @@ enum AttachTarget {
         session_directory: String,
         socket_path: String,
     },
+    Zellij {
+        executable: String,
+        name: String,
+    },
 }
 
 impl AttachTarget {
     fn tmux(&self) -> Option<&session::SessionIdentity> {
         match self {
             Self::Tmux(identity) => Some(identity),
-            Self::Herdr { .. } => None,
+            Self::Herdr { .. } | Self::Zellij { .. } => None,
         }
     }
 
@@ -1266,6 +1340,7 @@ impl AttachTarget {
         match self {
             Self::Tmux(_) => SessionKind::Tmux,
             Self::Herdr { .. } => SessionKind::Herdr,
+            Self::Zellij { .. } => SessionKind::Zellij,
         }
     }
 }
@@ -1289,6 +1364,17 @@ struct HerdrCreateRequest {
     term: AttachTerm,
     name: HerdrLaunchTarget,
     precondition: HerdrLaunchPrecondition,
+}
+
+#[derive(Clone)]
+struct ZellijCreateRequest {
+    host_id: String,
+    host: RuntimeHost,
+    endpoint: host::WslEndpoint,
+    runtime: host::WslRuntimeIdentity,
+    executable: String,
+    term: AttachTerm,
+    name: ZellijSessionName,
 }
 
 impl HerdrCreateRequest {
@@ -1369,6 +1455,9 @@ impl AttachRequest {
             }
             SessionKind::Herdr => {
                 SessionSelection::herdr(&self.host_id, self.endpoint.distro(), &self.name)
+            }
+            SessionKind::Zellij => {
+                SessionSelection::zellij(&self.host_id, self.endpoint.distro(), &self.name)
             }
         }
     }
@@ -1785,6 +1874,16 @@ fn refreshed_session_name<'a>(
                         && session.socket_path() == socket_path
                 })
                 .map(session::HerdrSessionRecord::name),
+            _ => None,
+        },
+        AttachTarget::Zellij { executable, name } => match snapshot.zellij() {
+            ZellijInventory::Available {
+                executable: current_executable,
+                sessions,
+            } if current_executable == executable => sessions
+                .iter()
+                .find(|session| session.name() == name)
+                .map(session::ZellijSessionRecord::name),
             _ => None,
         },
     })
@@ -2292,6 +2391,7 @@ impl Workspace {
         endpoint: &str,
         repository: &str,
         path: &str,
+        registration_fingerprint: &str,
     ) -> Result<(), WorkspaceError> {
         self.start_kwt_project_mutation(
             host_id,
@@ -2299,6 +2399,7 @@ impl Workspace {
             KwtProjectMutationRequest::Remove {
                 repository: repository.to_owned(),
                 path: path.to_owned(),
+                registration_fingerprint: registration_fingerprint.to_owned(),
             },
         )
     }
@@ -2722,6 +2823,75 @@ impl Workspace {
         self.start_herdr_launch(&request, navigation)
     }
 
+    /// Create one named Zellij session and attach its ordinary client.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the name is invalid, Zellij or the selected host
+    /// is unavailable, another session operation is active, or the background
+    /// launch task cannot be started.
+    pub fn create_zellij_session(
+        &self,
+        host_id: &str,
+        endpoint: &str,
+        name: &str,
+    ) -> Result<(), WorkspaceError> {
+        let name = ZellijSessionName::parse(name)
+            .map_err(|error| WorkspaceError::new(error.to_string()))?;
+        let _snapshot_write = begin_snapshot_write(&self.inner);
+        let navigation = self
+            .inner
+            .navigation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let request = capture_zellij_create_request(&self.inner, host_id, endpoint, name)?;
+        let navigation_generation = self.begin_navigation();
+        let in_flight_fallback = self.supersede_inflight_attachment()?;
+        let visible_previous = self.retain_active_presentation()?;
+        let previous = in_flight_fallback.or(visible_previous);
+        let cancellation = CancellationToken::new();
+        *self
+            .inner
+            .pending_creation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(PendingCreation {
+            navigation_generation,
+            previous,
+            cancellation: cancellation.clone(),
+            herdr_operation: None,
+        });
+        clear_terminal_notice(&self.inner);
+        set_inner_state(
+            &self.inner,
+            WorkspaceContent::Attaching {
+                host_id: request.host_id.clone(),
+                endpoint: request.endpoint.distro().to_owned(),
+                session: request.name.as_str().to_owned(),
+                kind: SessionKind::Zellij,
+            },
+        );
+        let inner = Arc::clone(&self.inner);
+        let spawn_request = request.clone();
+        if let Err(error) = thread::Builder::new()
+            .name("ghosthub-zellij-create".to_owned())
+            .spawn(move || {
+                run_zellij_create(&inner, &spawn_request, navigation_generation, &cancellation);
+            })
+        {
+            drop(navigation);
+            restore_inventory_after_creation_failure(
+                &self.inner,
+                None,
+                navigation_generation,
+                format!("start Zellij creation task: {error}"),
+            );
+            return Err(WorkspaceError::new(format!(
+                "start Zellij creation task: {error}"
+            )));
+        }
+        Ok(())
+    }
+
     /// Restart one stopped Herdr session and attach the launched client.
     ///
     /// Restart consumes the same one-shot constructive authority as creation,
@@ -3129,15 +3299,32 @@ impl Workspace {
         if herdr_removed {
             self.inner.revision.fetch_add(1, Ordering::Release);
         }
-        let request = capture_kill_request(&self.inner, selection)?;
+        let request = capture_kill_request(&self.inner, selection, generation)?;
+        if let KillCaptureRequest::Zellij(pending) = request {
+            if !publish_pending_kill(&self.inner, pending) {
+                return Err(WorkspaceError::new(
+                    "Zellij kill request was superseded before confirmation",
+                ));
+            }
+            return Ok(());
+        }
+        let KillCaptureRequest::Tmux {
+            selection,
+            host,
+            endpoint,
+            runtime,
+        } = request
+        else {
+            unreachable!("Zellij kill requests return above");
+        };
         let workspace = self.clone();
         thread::Builder::new()
             .name("ghosthub-session-kill-identity".to_owned())
             .spawn(move || {
-                let result = request.host.capture_live_session(
-                    &request.endpoint,
-                    &request.runtime,
-                    request.selection.session(),
+                let result = host.capture_live_session(
+                    &endpoint,
+                    &runtime,
+                    selection.session(),
                     &CancellationToken::new(),
                 );
                 match result {
@@ -3146,9 +3333,9 @@ impl Workspace {
                             &workspace.inner,
                             PendingKill {
                                 generation,
-                                selection: request.selection,
-                                host: request.host,
-                                target: Arc::new(target),
+                                selection,
+                                host,
+                                target: KillTarget::Tmux(Arc::new(target)),
                             },
                         );
                     }
@@ -3207,10 +3394,10 @@ impl Workspace {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
-            .ok_or_else(|| WorkspaceError::new("no tmux session kill is awaiting confirmation"))?;
+            .ok_or_else(|| WorkspaceError::new("no session kill is awaiting confirmation"))?;
         if self.inner.kill_generation.load(Ordering::Acquire) != pending.generation {
             return Err(WorkspaceError::new(
-                "tmux session kill confirmation is no longer current",
+                "session kill confirmation is no longer current",
             ));
         }
         self.inner.revision.fetch_add(1, Ordering::Release);
@@ -3219,17 +3406,44 @@ impl Workspace {
             generation: pending.generation,
             selection: pending.selection.clone(),
             host: pending.host.clone(),
-            target: Arc::clone(&pending.target),
+            target: pending.target.clone(),
         };
         if let Err(error) = thread::Builder::new()
             .name("ghosthub-session-kill".to_owned())
             .spawn(move || {
-                let result = pending
-                    .host
-                    .kill_live_session(&pending.target, &CancellationToken::new());
-                match result {
-                    Ok(()) => workspace.finish_session_kill(&pending.target),
-                    Err(error) => workspace.push_operation_error(error.to_string()),
+                let _operation = workspace
+                    .inner
+                    .session_operations
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                match &pending.target {
+                    KillTarget::Tmux(target) => {
+                        match pending
+                            .host
+                            .kill_live_session(target, &CancellationToken::new())
+                        {
+                            Ok(()) => workspace.finish_session_kill(target),
+                            Err(error) => workspace.push_operation_error(error.to_string()),
+                        }
+                    }
+                    KillTarget::Zellij {
+                        endpoint,
+                        runtime,
+                        executable,
+                        name,
+                    } => {
+                        let result = pending.host.kill_zellij_session(
+                            endpoint,
+                            runtime,
+                            executable,
+                            name,
+                            &CancellationToken::new(),
+                            || workspace.finish_zellij_presentation(endpoint, runtime, name),
+                        );
+                        if let Err(error) = result {
+                            workspace.push_operation_error(error.to_string());
+                        }
+                    }
                 }
                 let _refresh_started = workspace.refresh();
                 workspace.inner.revision.fetch_add(1, Ordering::Release);
@@ -3241,7 +3455,9 @@ impl Workspace {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(retry);
             self.inner.revision.fetch_add(1, Ordering::Release);
-            return Err(WorkspaceError::new(format!("kill tmux session: {error}")));
+            return Err(WorkspaceError::new(format!(
+                "start session kill task: {error}"
+            )));
         }
         Ok(())
     }
@@ -3445,6 +3661,48 @@ impl Workspace {
                 key.endpoint == endpoint.distro()
                     && key.runtime == *runtime
                     && key.target.tmux() == Some(identity)
+            });
+        if changed {
+            self.inner.revision.fetch_add(1, Ordering::Release);
+        }
+    }
+
+    fn finish_zellij_presentation(
+        &self,
+        endpoint: &host::WslEndpoint,
+        runtime: &host::WslRuntimeIdentity,
+        name: &str,
+    ) {
+        let _snapshot_write = begin_snapshot_write(&self.inner);
+        let _navigation = self
+            .inner
+            .navigation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let target_matches = |target: &AttachTarget| matches!(target, AttachTarget::Zellij { name: target_name, .. } if target_name == name);
+        let active_matches = self
+            .inner
+            .attachment
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .active()
+            .is_some_and(|active| {
+                active.request.endpoint == *endpoint
+                    && active.request.runtime == *runtime
+                    && target_matches(&active.request.target)
+            });
+        if active_matches {
+            self.detach_locked();
+        }
+        let changed = self
+            .inner
+            .retained_presentations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove_matching(|key| {
+                key.endpoint == endpoint.distro()
+                    && key.runtime == *runtime
+                    && target_matches(&key.target)
             });
         if changed {
             self.inner.revision.fetch_add(1, Ordering::Release);
@@ -4365,7 +4623,7 @@ fn capture_attach_request(
     inner: &Inner,
     selection: &SessionSelection,
 ) -> Result<AttachRequest, WorkspaceError> {
-    if selection.kind() == SessionKind::Herdr {
+    if matches!(selection.kind(), SessionKind::Herdr | SessionKind::Zellij) {
         require_host_session_actions(inner, selection)?;
     }
     let selected_host = inner
@@ -4432,6 +4690,28 @@ fn capture_attach_request(
                     session.name().to_owned(),
                 )
             }
+            SessionKind::Zellij => {
+                let ZellijInventory::Available {
+                    executable,
+                    sessions,
+                } = context.snapshot.zellij()
+                else {
+                    return Err(WorkspaceError::new("Zellij is not available on this host"));
+                };
+                let session = sessions
+                    .iter()
+                    .find(|session| session.name() == selection.session())
+                    .ok_or_else(|| {
+                        WorkspaceError::new("Zellij session is not in the current inventory")
+                    })?;
+                (
+                    AttachTarget::Zellij {
+                        executable: executable.clone(),
+                        name: session.name().to_owned(),
+                    },
+                    session.name().to_owned(),
+                )
+            }
         };
         Ok(AttachRequest {
             host_id: selection.host_id().to_owned(),
@@ -4448,10 +4728,11 @@ fn capture_attach_request(
 fn capture_kill_request(
     inner: &Inner,
     selection: &SessionSelection,
+    generation: u64,
 ) -> Result<KillCaptureRequest, WorkspaceError> {
-    if selection.kind() != SessionKind::Tmux {
+    if !matches!(selection.kind(), SessionKind::Tmux | SessionKind::Zellij) {
         return Err(WorkspaceError::new(
-            "Kill Session is available only for tmux sessions",
+            "Kill Session is available only for tmux and Zellij sessions",
         ));
     }
     if inner
@@ -4473,9 +4754,10 @@ fn capture_kill_request(
             request.host_id == selection.host_id()
                 && request.endpoint.distro() == selection.endpoint()
                 && request.name == selection.session()
+                && request.target.kind() == SessionKind::Tmux
         })
     {
-        return Ok(KillCaptureRequest {
+        return Ok(KillCaptureRequest::Tmux {
             selection: selection.clone(),
             host: request.host,
             endpoint: request.endpoint,
@@ -4495,22 +4777,55 @@ fn capture_kill_request(
                 "host endpoint changed; refresh the session selection",
             ));
         }
-        if !context
-            .snapshot
-            .sessions()
-            .iter()
-            .any(|session| session.name() == selection.session())
-        {
-            return Err(WorkspaceError::new(
-                "session is not in the current inventory",
-            ));
+        match selection.kind() {
+            SessionKind::Tmux => {
+                if !context
+                    .snapshot
+                    .sessions()
+                    .iter()
+                    .any(|session| session.name() == selection.session())
+                {
+                    return Err(WorkspaceError::new(
+                        "session is not in the current inventory",
+                    ));
+                }
+                Ok(KillCaptureRequest::Tmux {
+                    selection: selection.clone(),
+                    host: context.host.clone(),
+                    endpoint: context.snapshot.endpoint().clone(),
+                    runtime: context.snapshot.runtime().clone(),
+                })
+            }
+            SessionKind::Zellij => {
+                let ZellijInventory::Available {
+                    executable,
+                    sessions,
+                } = context.snapshot.zellij()
+                else {
+                    return Err(WorkspaceError::new("Zellij is not available on this host"));
+                };
+                if !sessions
+                    .iter()
+                    .any(|session| session.name() == selection.session())
+                {
+                    return Err(WorkspaceError::new(
+                        "Zellij session is not in the current inventory",
+                    ));
+                }
+                Ok(KillCaptureRequest::Zellij(PendingKill {
+                    generation,
+                    selection: selection.clone(),
+                    host: context.host.clone(),
+                    target: KillTarget::Zellij {
+                        endpoint: context.snapshot.endpoint().clone(),
+                        runtime: context.snapshot.runtime().clone(),
+                        executable: executable.clone(),
+                        name: selection.session().to_owned(),
+                    },
+                }))
+            }
+            SessionKind::Herdr => unreachable!("Herdr was rejected above"),
         }
-        Ok(KillCaptureRequest {
-            selection: selection.clone(),
-            host: context.host.clone(),
-            endpoint: context.snapshot.endpoint().clone(),
-            runtime: context.snapshot.runtime().clone(),
-        })
     })
 }
 
@@ -4705,6 +5020,66 @@ fn capture_herdr_create_request(
     })
 }
 
+fn capture_zellij_create_request(
+    inner: &Inner,
+    host_id: &str,
+    endpoint: &str,
+    name: ZellijSessionName,
+) -> Result<ZellijCreateRequest, WorkspaceError> {
+    if inner
+        .selected_host
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_deref()
+        != Some(host_id)
+    {
+        return Err(WorkspaceError::new("host is not selected"));
+    }
+
+    require_host_session_actions(
+        inner,
+        &SessionSelection::zellij(host_id, endpoint, name.as_str()),
+    )?;
+    let host = inner
+        .host
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let context = host
+        .as_ref()
+        .ok_or_else(|| WorkspaceError::new("WSL inventory is not ready"))?;
+    context.map(|context, _inventory_generation| {
+        if context.snapshot.endpoint().distro() != endpoint {
+            return Err(WorkspaceError::new(
+                "the WSL endpoint changed; choose the host again before creating a session",
+            ));
+        }
+        let ZellijInventory::Available {
+            executable,
+            sessions,
+        } = context.snapshot.zellij()
+        else {
+            return Err(WorkspaceError::new("Zellij is not available on this host"));
+        };
+        if sessions
+            .iter()
+            .any(|session| session.name() == name.as_str())
+        {
+            return Err(WorkspaceError::new(
+                "a Zellij session with this name already exists",
+            ));
+        }
+        Ok(ZellijCreateRequest {
+            host_id: host_id.to_owned(),
+            host: context.host.clone(),
+            endpoint: context.snapshot.endpoint().clone(),
+            runtime: context.snapshot.runtime().clone(),
+            executable: executable.clone(),
+            term: context.snapshot.creation_term(),
+            name,
+        })
+    })
+}
+
 fn capture_herdr_restart_request(
     inner: &Inner,
     selection: &SessionSelection,
@@ -4774,13 +5149,21 @@ fn require_host_session_actions(
         HostConnectionState::Disconnected | HostConnectionState::Unavailable
     ) {
         return Err(WorkspaceError::new(
-            "connect the WSL host before changing a Herdr session",
+            "connect the WSL host before changing a session",
         ));
     }
-    if host.herdr_diagnostic.is_some() {
-        return Err(WorkspaceError::new(
-            "refresh Herdr inventory before changing a session",
-        ));
+    match selection.kind() {
+        SessionKind::Herdr if host.herdr_diagnostic.is_some() => {
+            return Err(WorkspaceError::new(
+                "refresh Herdr inventory before changing a session",
+            ));
+        }
+        SessionKind::Zellij if host.zellij_diagnostic.is_some() => {
+            return Err(WorkspaceError::new(
+                "refresh Zellij inventory before changing a session",
+            ));
+        }
+        SessionKind::Tmux | SessionKind::Herdr | SessionKind::Zellij => {}
     }
     Ok(())
 }
@@ -4958,6 +5341,7 @@ fn publish_discovered_host(
     let reconciliation =
         reconcile_herdr_lifecycle_fences(inner, &context.snapshot, generation, true);
     set_herdr_inventory(inner, context.snapshot.herdr());
+    set_zellij_inventory(inner, context.snapshot.zellij());
     *inner
         .host
         .lock()
@@ -5103,8 +5487,14 @@ struct KwtRefresh {
 
 #[derive(Clone)]
 enum KwtProjectMutationRequest {
-    Add { path: String },
-    Remove { repository: String, path: String },
+    Add {
+        path: String,
+    },
+    Remove {
+        repository: String,
+        path: String,
+        registration_fingerprint: String,
+    },
 }
 
 impl KwtProjectMutationRequest {
@@ -5269,17 +5659,21 @@ fn capture_kwt_project_mutation(
                     ));
                 }
             }
-            KwtProjectMutationRequest::Remove { repository, path } => {
+            KwtProjectMutationRequest::Remove {
+                repository,
+                path,
+                registration_fingerprint,
+            } => {
                 if !item.can_remove_kwt_project() {
                     return Err(WorkspaceError::new(
                         "refresh KWT inventory before removing a project",
                     ));
                 }
-                if !item
-                    .projects
-                    .iter()
-                    .any(|project| project.repository == *repository && project.path == *path)
-                {
+                if !item.projects.iter().any(|project| {
+                    project.repository == *repository
+                        && project.path == *path
+                        && project.registration_fingerprint == *registration_fingerprint
+                }) {
                     return Err(WorkspaceError::new(
                         "the selected KWT project is no longer in the current inventory",
                     ));
@@ -5333,12 +5727,15 @@ fn run_kwt_project_mutation(inner: &Arc<Inner>, task: &KwtProjectMutationTask) {
                 .register_kwt_project(&task.endpoint, &task.runtime, path, &task.cancellation)
         }
         KwtProjectMutationRequest::Remove {
-            repository, path, ..
+            repository,
+            path,
+            registration_fingerprint,
         } => task.host.remove_kwt_project(
             &task.endpoint,
             &task.runtime,
             path,
             repository,
+            registration_fingerprint,
             &task.cancellation,
         ),
     };
@@ -5423,6 +5820,7 @@ fn publish_kwt_project_mutation(
                     project.repository(),
                     project.name(),
                     project.path(),
+                    project.registration_fingerprint(),
                     worktrees,
                 ));
                 host.projects.sort_by(|left, right| {
@@ -5623,6 +6021,7 @@ fn publish_kwt_inventory(
                     project.project().repository(),
                     project.project().name(),
                     project.project().path(),
+                    project.project().registration_fingerprint(),
                     project
                         .worktrees()
                         .iter()
@@ -5920,6 +6319,84 @@ fn run_herdr_create(
     );
 }
 
+fn run_zellij_create(
+    inner: &Inner,
+    request: &ZellijCreateRequest,
+    navigation_generation: u64,
+    cancellation: &CancellationToken,
+) {
+    let _operation = inner
+        .session_operations
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(inventory_publication) =
+        reserve_current_constructive_inventory(inner, navigation_generation, cancellation)
+    else {
+        return;
+    };
+    let created = create_zellij_fresh(inner, request, navigation_generation, cancellation);
+    let (worker, snapshot, session, initial_geometry) = match created {
+        Ok(created) => created,
+        Err(error) => {
+            settle_constructive_inventory(inner, inventory_publication);
+            restore_inventory_after_creation_failure(
+                inner,
+                None,
+                navigation_generation,
+                error.to_string(),
+            );
+            return;
+        }
+    };
+    if inner.navigation_generation.load(Ordering::Acquire) != navigation_generation {
+        settle_constructive_inventory(inner, inventory_publication);
+        drop(worker);
+        return;
+    }
+    let inventory_generation = match merge_constructive_inventory(
+        inner,
+        &request.host,
+        &request.endpoint,
+        &request.runtime,
+        snapshot.clone(),
+        inventory_publication,
+        "the created Zellij session",
+    ) {
+        Ok(generation) => generation,
+        Err(error) => {
+            settle_constructive_inventory(inner, inventory_publication);
+            drop(worker);
+            restore_inventory_after_creation_failure(
+                inner,
+                None,
+                navigation_generation,
+                error.to_string(),
+            );
+            return;
+        }
+    };
+    let attached = AttachRequest {
+        host_id: request.host_id.clone(),
+        host: request.host.clone(),
+        endpoint: snapshot.endpoint().clone(),
+        runtime: snapshot.runtime().clone(),
+        target: AttachTarget::Zellij {
+            executable: request.executable.clone(),
+            name: session.name().to_owned(),
+        },
+        name: session.name().to_owned(),
+        inventory_generation,
+    };
+    publish_created_presentation(
+        inner,
+        attached,
+        worker,
+        initial_geometry,
+        request.term,
+        navigation_generation,
+    );
+}
+
 fn run_herdr_lifecycle(workspace: &Workspace, pending: &PendingHerdrLifecycle) {
     let _operation = workspace
         .inner
@@ -6084,7 +6561,7 @@ fn create_herdr_fresh(
     )?;
 
     let expected_name = request.name.as_str();
-    let discovered = poll_herdr_startup(cancellation, &HERDR_STARTUP_BACKOFF, || {
+    let discovered = poll_session_startup("Zellij", cancellation, &HERDR_STARTUP_BACKOFF, || {
         if inner.navigation_generation.load(Ordering::Acquire) != navigation_generation {
             return Err(WorkspaceError::new("Herdr creation was superseded"));
         }
@@ -6120,7 +6597,109 @@ fn create_herdr_fresh(
     ))
 }
 
-fn poll_herdr_startup<T>(
+fn create_zellij_fresh(
+    inner: &Inner,
+    request: &ZellijCreateRequest,
+    navigation_generation: u64,
+    cancellation: &CancellationToken,
+) -> Result<
+    (
+        TerminalWorker,
+        HostSnapshot,
+        session::ZellijSessionRecord,
+        TerminalGeometry,
+    ),
+    WorkspaceError,
+> {
+    let before = request
+        .host
+        .discover_with_cancel(&ConptyAdmissionAttacher::new(), cancellation)
+        .map_err(|error| WorkspaceError::new(error.to_string()))?;
+    if before.endpoint() != &request.endpoint || before.runtime() != &request.runtime {
+        return Err(WorkspaceError::new(
+            "WSL changed; refresh before creating the Zellij session",
+        ));
+    }
+    let ZellijInventory::Available {
+        executable,
+        sessions,
+    } = before.zellij()
+    else {
+        return Err(WorkspaceError::new("Zellij is not available on this host"));
+    };
+    if executable != &request.executable {
+        return Err(WorkspaceError::new(
+            "the Zellij executable changed; refresh before creating the session",
+        ));
+    }
+    if sessions
+        .iter()
+        .any(|session| session.name() == request.name.as_str())
+    {
+        return Err(WorkspaceError::new(
+            "a Zellij session with this name already exists",
+        ));
+    }
+    if inner.navigation_generation.load(Ordering::Acquire) != navigation_generation {
+        return Err(WorkspaceError::new("Zellij creation was superseded"));
+    }
+    let authority = request.host.zellij_launch_once(
+        before.endpoint(),
+        &request.executable,
+        request.name.clone(),
+        request.term,
+    );
+    let geometry = *inner
+        .terminal_geometry
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let worker = TerminalWorker::launch_zellij_with_metadata(
+        authority,
+        geometry.grid,
+        geometry.sequence,
+        geometry.pixels,
+        ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
+        default_colors(&inner.appearance),
+    )
+    .map_err(|error| WorkspaceError::new(error.to_string()))?;
+
+    let expected_name = request.name.as_str();
+    let discovered = poll_session_startup("Herdr", cancellation, &HERDR_STARTUP_BACKOFF, || {
+        if inner.navigation_generation.load(Ordering::Acquire) != navigation_generation {
+            return Err(WorkspaceError::new("Zellij creation was superseded"));
+        }
+        let snapshot = request
+            .host
+            .discover_with_cancel(&ConptyAdmissionAttacher::new(), cancellation)
+            .map_err(|error| WorkspaceError::new(error.to_string()))?;
+        if snapshot.endpoint() != &request.endpoint || snapshot.runtime() != &request.runtime {
+            return Err(WorkspaceError::new(
+                "WSL changed while creating the Zellij session",
+            ));
+        }
+        let session = match snapshot.zellij() {
+            ZellijInventory::Available {
+                executable,
+                sessions,
+            } if executable == &request.executable => sessions
+                .iter()
+                .find(|session| session.name() == expected_name)
+                .cloned(),
+            _ => None,
+        };
+        Ok(session.map(|session| (snapshot, session)))
+    })?;
+    if let Some((snapshot, session)) = discovered {
+        return Ok((worker, snapshot, session, geometry));
+    }
+    drop(worker);
+    Err(WorkspaceError::new(
+        "Zellij started, but the new session did not appear in inventory; refresh before trying again",
+    ))
+}
+
+fn poll_session_startup<T>(
+    backend: &str,
     cancellation: &CancellationToken,
     delays: &[Duration],
     mut probe: impl FnMut() -> Result<Option<T>, WorkspaceError>,
@@ -6128,7 +6707,9 @@ fn poll_herdr_startup<T>(
     let mut delay_index = 0;
     loop {
         if cancellation.is_cancelled() {
-            return Err(WorkspaceError::new("Herdr startup was cancelled"));
+            return Err(WorkspaceError::new(format!(
+                "{backend} startup was cancelled"
+            )));
         }
         if let Some(value) = probe()? {
             return Ok(Some(value));
@@ -6138,7 +6719,9 @@ fn poll_herdr_startup<T>(
         };
         delay_index += 1;
         if cancellation.wait_cancelled(delay) {
-            return Err(WorkspaceError::new("Herdr startup was cancelled"));
+            return Err(WorkspaceError::new(format!(
+                "{backend} startup was cancelled"
+            )));
         }
     }
 }
@@ -6363,6 +6946,7 @@ fn create_fresh(
                 &request.runtime,
                 before.creation_term(),
                 before.herdr(),
+                before.zellij(),
                 cancellation,
             )
             .map_err(|error| WorkspaceError::new(error.to_string()))?;
@@ -6922,6 +7506,7 @@ fn merge_constructive_inventory(
     let inventory_state = ready_content(&snapshot);
     reconcile_herdr_lifecycle_fences(inner, &snapshot, publication_generation, false);
     set_herdr_inventory(inner, snapshot.herdr());
+    set_zellij_inventory(inner, snapshot.zellij());
     reconcile_retained_session_names(inner, &snapshot, runtime_host.socket_directory());
     *inner
         .host
@@ -6946,6 +7531,7 @@ fn publish_attach_inventory(inner: &Inner, request: &AttachRequest, snapshot: Ho
 fn set_attach_inventory(inner: &Inner, request: &AttachRequest, snapshot: HostSnapshot) {
     let inventory_state = ready_content(&snapshot);
     set_herdr_inventory(inner, snapshot.herdr());
+    set_zellij_inventory(inner, snapshot.zellij());
     reconcile_retained_session_names(inner, &snapshot, request.host.socket_directory());
     *inner
         .host
@@ -7179,6 +7765,31 @@ fn attach_fresh(
             };
             launch_fresh_herdr(inner, request, term, &fresh, &session)
         }
+        AttachTarget::Zellij { executable, name } => {
+            let ZellijInventory::Available {
+                executable: current_executable,
+                sessions,
+            } = fresh.zellij()
+            else {
+                return Err(AttachFreshError::SessionChanged {
+                    error: WorkspaceError::new("Zellij is no longer available on this host"),
+                    snapshot: Box::new(fresh),
+                });
+            };
+            let Some(session) = sessions
+                .iter()
+                .find(|session| session.name() == name && current_executable == executable)
+                .cloned()
+            else {
+                return Err(AttachFreshError::SessionChanged {
+                    error: WorkspaceError::new(
+                        "Zellij session changed since discovery; refresh and choose it again",
+                    ),
+                    snapshot: Box::new(fresh),
+                });
+            };
+            launch_fresh_zellij(inner, request, term, &fresh, &session)
+        }
     }
 }
 
@@ -7229,6 +7840,20 @@ fn attach_fresh_retained(
                 &fresh,
                 &session,
             )?
+        }
+        AttachTarget::Zellij { executable, name } => {
+            let ZellijInventory::Available {
+                executable: current_executable,
+                sessions,
+            } = fresh.zellij()
+            else {
+                unreachable!("resolved retained request has Zellij inventory");
+            };
+            let session = sessions
+                .iter()
+                .find(|session| session.name() == name && current_executable == executable)
+                .expect("resolved retained request has a matching Zellij session");
+            launch_fresh_zellij(inner, &resolved_request, AttachTerm::Xterm, &fresh, session)?
         }
     };
     Ok((worker, snapshot, resolved_request, geometry))
@@ -7369,6 +7994,35 @@ fn launch_fresh_herdr(
     Ok((worker, fresh.clone(), session.name().to_owned(), geometry))
 }
 
+fn launch_fresh_zellij(
+    inner: &Inner,
+    request: &AttachRequest,
+    term: AttachTerm,
+    fresh: &HostSnapshot,
+    session: &session::ZellijSessionRecord,
+) -> Result<(TerminalWorker, HostSnapshot, String, TerminalGeometry), AttachFreshError> {
+    let AttachTarget::Zellij { executable, .. } = &request.target else {
+        unreachable!("Zellij launch requires a Zellij target");
+    };
+    let plan = request
+        .host
+        .zellij_attach_plan(fresh.endpoint(), executable, session, term);
+    let geometry = *inner
+        .terminal_geometry
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let worker = TerminalWorker::attach_zellij_with_metadata(
+        &plan,
+        geometry.grid,
+        geometry.sequence,
+        geometry.pixels,
+        ClipboardPolicy::remote(inner.allow_remote_clipboard_write),
+        default_colors(&inner.appearance),
+    )
+    .map_err(|error| AttachFreshError::Host(WorkspaceError::new(error.to_string())))?;
+    Ok((worker, fresh.clone(), session.name().to_owned(), geometry))
+}
+
 fn set_terminal_notice(inner: &Inner, term: AttachTerm) {
     let notice = (term == AttachTerm::Xterm).then(|| REDUCED_COLOR_NOTICE.to_owned());
     *inner
@@ -7445,6 +8099,34 @@ fn set_herdr_inventory(inner: &Inner, inventory: &HerdrInventory) {
         }
         HerdrInventory::Failed(error) => {
             host.herdr_diagnostic = Some(HostDiagnostic::new(error.kind(), error.to_string()));
+        }
+    }
+}
+
+fn set_zellij_inventory(inner: &Inner, inventory: &ZellijInventory) {
+    let mut hosts = inner
+        .hosts
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(host) = hosts.iter_mut().find(|host| host.id == "wsl") else {
+        return;
+    };
+    match inventory {
+        ZellijInventory::Unavailable => {
+            host.zellij_available = false;
+            host.zellij_sessions.clear();
+            host.zellij_diagnostic = None;
+        }
+        ZellijInventory::Available { sessions, .. } => {
+            host.zellij_available = true;
+            host.zellij_sessions = sessions
+                .iter()
+                .map(|session| SessionItem::new(session.name(), 0))
+                .collect();
+            host.zellij_diagnostic = None;
+        }
+        ZellijInventory::Failed(error) => {
+            host.zellij_diagnostic = Some(HostDiagnostic::new(error.kind(), error.to_string()));
         }
     }
 }
@@ -10259,11 +10941,11 @@ mod tests {
             generation,
             selection: SessionSelection::new("wsl", "Ubuntu", "work"),
             host: host.clone(),
-            target: Arc::new(LiveSessionTarget::test_fixture(
+            target: KillTarget::Tmux(Arc::new(LiveSessionTarget::test_fixture(
                 &snapshot,
                 "work",
                 session::SessionIdentity::new(100, "$1", 200),
-            )),
+            ))),
         };
 
         workspace.inner.kill_generation.store(2, Ordering::Release);
@@ -11193,7 +11875,8 @@ mod tests {
         let cancellation = CancellationToken::new();
         let mut probes = 0;
 
-        let result = poll_herdr_startup(
+        let result = poll_session_startup(
+            "Herdr",
             &cancellation,
             &[Duration::ZERO; 6],
             || -> Result<Option<&'static str>, WorkspaceError> {
@@ -11250,7 +11933,43 @@ mod tests {
     }
 
     #[test]
-    fn host_refresh_keeps_cached_tmux_and_herdr_rows_visible() {
+    fn zellij_refresh_failure_preserves_cached_rows() {
+        let workspace = Workspace::preview(WorkspaceSnapshot::shell(
+            Appearance::default(),
+            vec![HostItem::wsl(
+                "Ubuntu",
+                None,
+                HostConnectionState::Ready,
+                Vec::new(),
+                None,
+            )],
+        ));
+        set_zellij_inventory(
+            &workspace.inner,
+            &ZellijInventory::Available {
+                executable: "/opt/zellij/bin/zellij".to_owned(),
+                sessions: vec![session::ZellijSessionRecord::discovered("review")],
+            },
+        );
+        set_zellij_inventory(
+            &workspace.inner,
+            &ZellijInventory::Failed(
+                WslExecutable::from_absolute("wsl.exe").expect_err("relative path is rejected"),
+            ),
+        );
+
+        let snapshot = workspace.snapshot();
+        let host = &snapshot.hosts()[0];
+        assert!(host.zellij_available());
+        assert_eq!(host.zellij_sessions()[0].name(), "review");
+        assert_eq!(
+            host.zellij_diagnostic().expect("scoped diagnostic").kind(),
+            DiagnosticKind::MalformedOutput
+        );
+    }
+
+    #[test]
+    fn host_refresh_keeps_cached_multiplexer_rows_visible() {
         let spec = WslHostSpec::available(
             WslConfig::with_distro("Ubuntu").expect("valid config"),
             WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
@@ -11268,6 +11987,8 @@ mod tests {
                 false,
                 HerdrSessionState::Running,
             )];
+            host.zellij_available = true;
+            host.zellij_sessions = vec![SessionItem::new("zellij-work", 0)];
         }
 
         begin_refresh(
@@ -11282,6 +12003,7 @@ mod tests {
         assert_eq!(host.connection(), HostConnectionState::Connecting);
         assert_eq!(host.sessions()[0].name(), "tmux-work");
         assert_eq!(host.herdr_sessions()[0].name(), "herdr-work");
+        assert_eq!(host.zellij_sessions()[0].name(), "zellij-work");
     }
 
     #[test]
@@ -11325,7 +12047,7 @@ mod tests {
             .kwt_refresh_generation
             .store(7, Ordering::Release);
         let inventory = KwtInventory::parse(
-            br#"[{"repository":"project-id","name":"project","path":"/repos/project","last_touched":null}]"#,
+            br#"[{"repository":"project-id","name":"project","path":"/repos/project","last_touched":null,"registration_fingerprint":"project-fingerprint"}]"#,
             br#"[{"path":"/repos/project","branch":"main","commit_hash":"abc","is_main":true,"created_at":null,"generation":"g1","repository":"project-id","session_name":"project-main","tmux_socket_name":null}]"#,
             br#"[{"name":"scratch","path":"/work/scratch","session_name":"scratch","session_live":false}]"#,
         )
@@ -11412,7 +12134,7 @@ mod tests {
             .kwt_refresh_generation
             .store(7, Ordering::Release);
         let added = KwtInventory::parse(
-            br#"[{"repository":"added-id","name":"added","path":"/repos/added","last_touched":null}]"#,
+            br#"[{"repository":"added-id","name":"added","path":"/repos/added","last_touched":null,"registration_fingerprint":"added-fingerprint"}]"#,
             b"[]",
             b"[]",
         )
@@ -11491,7 +12213,7 @@ mod tests {
             .kwt_refresh_generation
             .store(2, Ordering::Release);
         let inventory = KwtInventory::parse(
-            br#"[{"repository":"project-id","name":"stale","path":"/repos/stale","last_touched":null}]"#,
+            br#"[{"repository":"project-id","name":"stale","path":"/repos/stale","last_touched":null,"registration_fingerprint":"stale-fingerprint"}]"#,
             b"[]",
             b"[]",
         )

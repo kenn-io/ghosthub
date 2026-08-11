@@ -106,6 +106,73 @@ pub struct DiscoveredSession {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HerdrSessionName(String);
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ZellijSessionName(String);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ZellijSessionNameError {
+    Empty,
+    ForbiddenCharacter,
+}
+
+impl ZellijSessionName {
+    /// Normalize and validate a user-supplied Zellij session name.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an empty name, `.` or `..`, or a name containing
+    /// a slash or control character. These are the same restrictions exposed
+    /// by the Swift application; leading dashes remain valid because every
+    /// lifecycle command terminates option parsing explicitly.
+    pub fn parse(value: &str) -> Result<Self, ZellijSessionNameError> {
+        let value = value.trim();
+        if value.is_empty() {
+            return Err(ZellijSessionNameError::Empty);
+        }
+        if matches!(value, "." | "..")
+            || value
+                .chars()
+                .any(|character| character == '/' || character.is_control())
+        {
+            return Err(ZellijSessionNameError::ForbiddenCharacter);
+        }
+        Ok(Self(value.to_owned()))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for ZellijSessionNameError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => formatter.write_str("Name the Zellij session."),
+            Self::ForbiddenCharacter => {
+                formatter.write_str("Use a nonempty name without slashes or control characters.")
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ZellijSessionRecord {
+    name: String,
+}
+
+impl ZellijSessionRecord {
+    #[must_use]
+    pub fn discovered(name: impl Into<String>) -> Self {
+        Self { name: name.into() }
+    }
+
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HerdrSessionNameError {
     Empty,
@@ -313,6 +380,19 @@ pub struct HerdrAttachPlan {
     args: Vec<OsString>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ZellijAttachPlan {
+    program: OsString,
+    args: Vec<OsString>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct ZellijLaunchOnce {
+    program: OsString,
+    args: Vec<OsString>,
+    target_name: ZellijSessionName,
+}
+
 /// One Herdr launch-or-attach action. This constructive authority is consumed
 /// by the terminal launcher and is intentionally neither cloneable nor
 /// serializable.
@@ -340,6 +420,46 @@ impl HerdrAttachPlan {
     #[must_use]
     pub fn args(&self) -> &[OsString] {
         &self.args
+    }
+}
+
+impl ZellijAttachPlan {
+    #[must_use]
+    pub fn attach_only(program: impl Into<OsString>, args: Vec<OsString>) -> Self {
+        Self {
+            program: program.into(),
+            args,
+        }
+    }
+
+    #[must_use]
+    pub fn program(&self) -> &OsStr {
+        &self.program
+    }
+
+    #[must_use]
+    pub fn args(&self) -> &[OsString] {
+        &self.args
+    }
+}
+
+impl ZellijLaunchOnce {
+    #[must_use]
+    pub fn create(
+        program: impl Into<OsString>,
+        args: Vec<OsString>,
+        target_name: ZellijSessionName,
+    ) -> Self {
+        Self {
+            program: program.into(),
+            args,
+            target_name,
+        }
+    }
+
+    #[must_use]
+    pub fn into_parts(self) -> (OsString, Vec<OsString>, ZellijSessionName) {
+        (self.program, self.args, self.target_name)
     }
 }
 
@@ -696,12 +816,46 @@ fn parse_revision(output: &str) -> Option<String> {
 mod tests {
     use super::{
         CreateOnce, HerdrLaunchOnce, HerdrLaunchTarget, HerdrSessionName, HerdrSessionNameError,
-        HerdrSessionRecord, HerdrSessionState, SessionName, SessionNameError,
+        HerdrSessionRecord, HerdrSessionState, SessionName, SessionNameError, ZellijLaunchOnce,
+        ZellijSessionName, ZellijSessionNameError,
     };
     use static_assertions::assert_not_impl_any;
 
     assert_not_impl_any!(CreateOnce: Clone, serde::Serialize);
     assert_not_impl_any!(HerdrLaunchOnce: Clone, serde::Serialize);
+    assert_not_impl_any!(ZellijLaunchOnce: Clone, serde::Serialize);
+
+    #[test]
+    fn zellij_session_names_match_the_shipped_creation_contract() {
+        assert_eq!(
+            ZellijSessionName::parse("  review session  ")
+                .expect("valid name")
+                .as_str(),
+            "review session"
+        );
+        assert_eq!(
+            ZellijSessionName::parse(" "),
+            Err(ZellijSessionNameError::Empty)
+        );
+        assert_eq!(
+            ZellijSessionName::parse(".."),
+            Err(ZellijSessionNameError::ForbiddenCharacter)
+        );
+        assert_eq!(
+            ZellijSessionName::parse("folder/name"),
+            Err(ZellijSessionNameError::ForbiddenCharacter)
+        );
+        assert_eq!(
+            ZellijSessionName::parse("line\nbreak"),
+            Err(ZellijSessionNameError::ForbiddenCharacter)
+        );
+        assert_eq!(
+            ZellijSessionName::parse("--leading-option")
+                .expect("leading dashes remain valid")
+                .as_str(),
+            "--leading-option"
+        );
+    }
 
     #[test]
     fn herdr_session_names_match_the_shipped_creation_contract() {
