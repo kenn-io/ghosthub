@@ -1014,7 +1014,7 @@ impl<R: CommandRunner> WslHost<R> {
         cancellation: &CancellationToken,
     ) -> Result<CommandOutput, HostError> {
         let mut args = pinned_prefix(endpoint);
-        append_scrubbed_environment(&mut args);
+        append_tmux_environment(&mut args, None, self.config.tmux_tmpdir.as_deref(), &[]);
         args.extend(command.iter().map(OsString::from));
         self.run(&args, cancellation)
     }
@@ -1027,7 +1027,7 @@ impl<R: CommandRunner> WslHost<R> {
         cancellation: &CancellationToken,
     ) -> Result<CommandOutput, HostError> {
         let mut args = pinned_prefix(endpoint);
-        append_scrubbed_environment(&mut args);
+        append_tmux_environment(&mut args, None, self.config.tmux_tmpdir.as_deref(), &[]);
         args.extend(command.iter().map(OsString::from));
         self.runner
             .run_with_input(
@@ -3212,8 +3212,8 @@ fn creation_identity_receipt() -> Result<CreationReceipt, HostError> {
 
 fn creation_receipt_command(receipt: &CreationReceipt) -> String {
     format!(
-        "umask 077; set -C; /usr/bin/printf '%s|%s|%s|!' '#{{pid}}' '#{{session_id}}' '#{{session_created}}' > {} && /usr/bin/mv -T -- {} {}",
-        receipt.staging_path, receipt.staging_path, receipt.path
+        "/bin/sh -c 'umask 077; set -C; /usr/bin/printf \"%s|%s|%s|!\" \"$1\" \"$2\" \"$3\" > \"$4\" && /usr/bin/mv -T -- \"$4\" \"$5\"' ghosthub-receipt '#{{pid}}' '#{{session_id}}' '#{{session_created}}' '{}' '{}'",
+        receipt.staging_path, receipt.path
     )
 }
 
@@ -3701,6 +3701,17 @@ mod tests {
         WslEndpoint,
         WslRuntimeIdentity,
     ) {
+        kwt_mutation_host_with_config(WslConfig::with_distro("Ubuntu").expect("config"))
+    }
+
+    fn kwt_mutation_host_with_config(
+        config: WslConfig,
+    ) -> (
+        WslHost<KwtMutationRunner>,
+        KwtMutationRunner,
+        WslEndpoint,
+        WslRuntimeIdentity,
+    ) {
         let runner = KwtMutationRunner::default();
         let endpoint = WslEndpoint {
             distro: "Ubuntu".to_owned(),
@@ -3712,9 +3723,7 @@ mod tests {
         let bundle =
             KwtBundle::new("a".repeat(40), "b".repeat(64), vec![1_u8]).expect("valid bundle");
         let host = WslHost::new(
-            WslConfig::with_distro("Ubuntu")
-                .expect("config")
-                .with_kwt_bundle(bundle),
+            config.with_kwt_bundle(bundle),
             runner.clone(),
             WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("WSL path"),
         );
@@ -3763,6 +3772,33 @@ mod tests {
                 "github.com/acme/widget".to_owned(),
                 "--json".to_owned(),
             ])
+        }));
+    }
+
+    #[test]
+    fn kwt_commands_use_the_configured_tmux_socket_directory() {
+        let config = WslConfig::configured(
+            Some("Ubuntu".to_owned()),
+            "/usr/bin/tmux",
+            Some("/run/user/1000/ghosthub".to_owned()),
+        )
+        .expect("configured socket directory");
+        let (host, runner, endpoint, runtime) = kwt_mutation_host_with_config(config);
+
+        host.register_kwt_project(
+            &endpoint,
+            &runtime,
+            "/code/widget",
+            &CancellationToken::new(),
+        )
+        .expect("register project through configured tmux namespace");
+
+        let calls = runner.calls.lock().expect("calls");
+        assert!(calls.iter().any(|args| {
+            args.windows(2).any(|pair| pair == ["projects", "add"])
+                && args
+                    .iter()
+                    .any(|argument| argument == "TMUX_TMPDIR=/run/user/1000/ghosthub")
         }));
     }
 
@@ -4110,8 +4146,8 @@ mod tests {
             .into_iter()
             .map(OsString::from)
             .chain([OsString::from(format!(
-                "umask 077; set -C; /usr/bin/printf '%s|%s|%s|!' '#{{pid}}' '#{{session_id}}' '#{{session_created}}' > {} && /usr/bin/mv -T -- {} {}",
-                receipt.staging_path, receipt.staging_path, receipt.path
+                "/bin/sh -c 'umask 077; set -C; /usr/bin/printf \"%s|%s|%s|!\" \"$1\" \"$2\" \"$3\" > \"$4\" && /usr/bin/mv -T -- \"$4\" \"$5\"' ghosthub-receipt '#{{pid}}' '#{{session_id}}' '#{{session_created}}' '{}' '{}'",
+                receipt.staging_path, receipt.path
             ))])
             .collect::<Vec<_>>()
         );

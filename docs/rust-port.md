@@ -649,7 +649,9 @@ reconciliation cannot hide an add or resurrect a removal that KWT already
 confirmed. A mutation supersedes only older KWT reads, and ordinary KWT
 cadence waits for the mutation and its reconciliation to finish. Commands that
 may already have crossed the process boundary are not cancelled or silently
-retried.
+retried. Every KWT command receives the same explicit `TMUX_TMPDIR` as tmux
+discovery and attachment, so project session availability cannot be inferred
+from a different server namespace.
 
 The Rust sidebar projects KWT-owned default-socket tmux sessions under their
 project/worktree rows and removes only those exact sessions from the unbound
@@ -868,8 +870,9 @@ fresh admitted-host read, terminal consumes a non-cloneable CreateOnce whose
 ordinary client executes `new-session -A -E -s <name>`, and host captures the
 resulting runtime, server, session ID, and creation time from a nonce-scoped
 private WSL receipt written by the same tmux command queue. The receipt is
-opaque outside host, is removed after capture, and never crosses ConPTY or the
-VT. Admission proves
+written by an explicit `/bin/sh -c` command rather than tmux's configurable
+default shell, is opaque outside host, is removed after capture, and never
+crosses ConPTY or the VT. Admission proves
 `xterm-256color` on that same atomic client shape before caching it for
 creation; if the distro lacks that terminfo entry, admission proves `xterm`
 instead and creation immediately displays the reduced-color notice. Creation

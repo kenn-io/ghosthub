@@ -236,7 +236,9 @@ or failed KWT generation keeps the last usable project tree, and a session-only
 refresh updates only worktree session availability. The sidebar treats a
 KWT-owned default-socket tmux session as a project row instead of duplicating
 it in the unbound tmux group; custom-socket worktrees cannot claim a
-same-named default-socket session.
+same-named default-socket session. When WSL config selects an explicit
+`TMUX_TMPDIR`, KWT commands receive that same value as tmux discovery and
+attachment; cached rows never correlate sessions across those server roots.
 
 Ghosthub still has one UI application process and no Ghosthub-owned daemon.
 For the Windows MVP, tmux inside WSL2 is the long-lived session owner. Closing

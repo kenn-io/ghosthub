@@ -228,7 +228,9 @@ admitted-host read and consumes one CreateOnce by launching the ordinary
 ConPTY client with `tmux new-session -A -E -s <name>`. The same tmux command
 queue writes server PID, session ID, and creation time to a nonce-scoped
 private WSL receipt; identity framing never enters ConPTY or the terminal
-screen. Host reads and removes that opaque receipt, rechecks the runtime, and
+screen. The receipt writer invokes `/bin/sh -c` explicitly, so tmux's
+configurable `default-shell` cannot change its atomic POSIX semantics. Host
+reads and removes that opaque receipt, rechecks the runtime, and
 only then publishes the presentation. Every later activation is attach-only.
 If creation and identity capture race another creator, `-A` attaches to the
 exact same-named session.
