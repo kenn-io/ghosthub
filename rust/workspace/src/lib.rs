@@ -832,6 +832,22 @@ impl fmt::Display for WorkspaceError {
 
 impl std::error::Error for WorkspaceError {}
 
+/// Whether a user-entered project path is absolute in either the WSL or
+/// Windows namespace. Windows paths are resolved inside the selected distro
+/// before KWT receives them.
+#[must_use]
+pub fn is_absolute_project_path_input(path: &str) -> bool {
+    let path = path.trim();
+    if path.starts_with('/') || path.starts_with(r"\\") || path.starts_with("//") {
+        return true;
+    }
+    let bytes = path.as_bytes();
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'\\' | b'/')
+}
+
 pub struct WslHostSpec {
     config: WslConfig,
     executable: Option<WslExecutable>,
@@ -2236,9 +2252,9 @@ impl Workspace {
         path: &str,
     ) -> Result<(), WorkspaceError> {
         let path = path.trim();
-        if !path.starts_with('/') {
+        if !is_absolute_project_path_input(path) {
             return Err(WorkspaceError::new(
-                "Enter an absolute project path beginning with /.",
+                "Choose a project folder or enter an absolute Windows or WSL path.",
             ));
         }
         self.start_kwt_project_mutation(
@@ -7593,6 +7609,18 @@ fn default_terminal_geometry() -> TerminalGeometry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn project_path_input_accepts_windows_and_wsl_absolute_paths() {
+        assert!(is_absolute_project_path_input(r"C:\Users\test\code\widget"));
+        assert!(is_absolute_project_path_input("D:/code/widget"));
+        assert!(is_absolute_project_path_input(
+            r"\\wsl.localhost\Ubuntu\home\test\widget"
+        ));
+        assert!(is_absolute_project_path_input("/home/test/widget"));
+        assert!(!is_absolute_project_path_input(r"C:code\widget"));
+        assert!(!is_absolute_project_path_input("code/widget"));
+    }
     use std::collections::VecDeque;
     use std::sync::{Barrier, atomic::AtomicUsize, mpsc};
 

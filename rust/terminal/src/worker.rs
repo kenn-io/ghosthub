@@ -800,7 +800,15 @@ fn write_pty(
 struct CreationIdentityCapture {
     marker: Vec<u8>,
     pending: Vec<u8>,
+    state: CreationIdentityCaptureState,
+    observed: usize,
     result: Option<Sender<Result<SessionIdentity, String>>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CreationIdentityCaptureState {
+    Searching,
+    Payload,
 }
 
 impl CreationIdentityCapture {
@@ -808,6 +816,8 @@ impl CreationIdentityCapture {
         Self {
             marker: marker.into_bytes(),
             pending: Vec::new(),
+            state: CreationIdentityCaptureState::Searching,
+            observed: 0,
             result: Some(result),
         }
     }
@@ -817,39 +827,49 @@ impl CreationIdentityCapture {
             return bytes.to_vec();
         }
         // Tmux sends terminal queries before its identity message and waits for
-        // their replies. Observe the raw stream without withholding it from the
-        // VT engine, otherwise creation deadlocks before the report is emitted.
+        // their replies. Forward bytes that cannot begin the marker immediately,
+        // while retaining a possible split marker so internal framing is never
+        // painted into the terminal.
+        self.observed = self.observed.saturating_add(bytes.len());
         self.pending.extend_from_slice(bytes);
-        let Some(start) = find_bytes(&self.pending, &self.marker) else {
-            if self.pending.len() > CREATION_IDENTITY_BUFFER_LIMIT {
-                self.finish(Err(
-                    "tmux did not report creation identity before emitting terminal output"
-                        .to_owned(),
-                ));
-                return bytes.to_vec();
+        let mut visible = Vec::new();
+
+        if self.state == CreationIdentityCaptureState::Searching {
+            if let Some(start) = find_bytes(&self.pending, &self.marker) {
+                visible.extend(self.pending.drain(..start));
+                self.pending.drain(..self.marker.len());
+                self.state = CreationIdentityCaptureState::Payload;
+            } else {
+                let retained = marker_prefix_suffix_len(&self.pending, &self.marker);
+                let safe = self.pending.len().saturating_sub(retained);
+                visible.extend(self.pending.drain(..safe));
+                if self.observed > CREATION_IDENTITY_BUFFER_LIMIT {
+                    visible.append(&mut self.pending);
+                    self.finish(Err(
+                        "tmux did not report creation identity before emitting terminal output"
+                            .to_owned(),
+                    ));
+                }
+                return visible;
             }
-            return bytes.to_vec();
-        };
-        let payload_start = start + self.marker.len();
-        let Some(relative_end) = self.pending[payload_start..]
-            .iter()
-            .position(|byte| *byte == b'!')
-        else {
-            if self.pending.len() > CREATION_IDENTITY_BUFFER_LIMIT {
+        }
+
+        let Some(end) = self.pending.iter().position(|byte| *byte == b'!') else {
+            if self.observed > CREATION_IDENTITY_BUFFER_LIMIT {
                 self.finish(Err(
                     "tmux creation identity report was incomplete".to_owned()
                 ));
-                return bytes.to_vec();
             }
-            return bytes.to_vec();
+            return visible;
         };
-        let end = payload_start + relative_end;
-        let identity = parse_creation_identity(&self.pending[payload_start..end]);
+        let identity = parse_creation_identity(&self.pending[..end]);
+        let suffix = self.pending.split_off(end + 1);
         self.pending.clear();
+        visible.extend(suffix);
         if let Some(sender) = self.result.take() {
             let _ignored = sender.try_send(identity);
         }
-        bytes.to_vec()
+        visible
     }
 
     fn finish(&mut self, result: Result<SessionIdentity, String>) {
@@ -858,6 +878,14 @@ impl CreationIdentityCapture {
         }
         self.pending.clear();
     }
+}
+
+fn marker_prefix_suffix_len(bytes: &[u8], marker: &[u8]) -> usize {
+    let maximum = bytes.len().min(marker.len().saturating_sub(1));
+    (1..=maximum)
+        .rev()
+        .find(|length| bytes.ends_with(&marker[..*length]))
+        .unwrap_or(0)
 }
 
 fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -1666,14 +1694,11 @@ mod tests {
         let (sender, receiver) = bounded(1);
         let mut capture = CreationIdentityCapture::new(marker.to_owned(), sender);
 
-        assert_eq!(
-            capture.push(b"\x1b[?1049h__ghc_0123"),
-            b"\x1b[?1049h__ghc_0123"
-        );
+        assert_eq!(capture.push(b"\x1b[?1049h__ghc_0123"), b"\x1b[?1049h");
         let chunk = b"456789abcdef__321|$7|123456|!\x1b[2Jpane";
         let visible = capture.push(chunk);
 
-        assert_eq!(visible, chunk);
+        assert_eq!(visible, b"\x1b[2Jpane");
         assert_eq!(
             receiver.recv().expect("creation identity report"),
             Ok(SessionIdentity::new(321, "$7", 123_456))
@@ -1688,13 +1713,27 @@ mod tests {
 
         let visible = capture.push(b"prefix__ghc_marker__bad|$7|123|!suffix");
 
-        assert_eq!(visible, b"prefix__ghc_marker__bad|$7|123|!suffix");
+        assert_eq!(visible, b"prefixsuffix");
         assert!(
             receiver
                 .recv()
                 .expect("creation identity report")
                 .expect_err("invalid server PID")
                 .contains("server PID")
+        );
+    }
+
+    #[test]
+    fn creation_identity_capture_forwards_terminal_queries_before_the_marker() {
+        let marker = "__ghc_marker__";
+        let (sender, receiver) = bounded(1);
+        let mut capture = CreationIdentityCapture::new(marker.to_owned(), sender);
+
+        assert_eq!(capture.push(b"\x1b[c\x1b[?1;2c"), b"\x1b[c\x1b[?1;2c");
+        assert_eq!(capture.push(b"__ghc_marker__321|$7|123456|!pane"), b"pane");
+        assert_eq!(
+            receiver.recv().expect("creation identity report"),
+            Ok(SessionIdentity::new(321, "$7", 123_456))
         );
     }
 

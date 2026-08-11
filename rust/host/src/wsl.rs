@@ -684,10 +684,10 @@ impl<R: CommandRunner> WslHost<R> {
         cancellation: &CancellationToken,
     ) -> Result<KwtProject, HostError> {
         let project_path = project_path.trim();
-        if !is_posix_absolute(project_path) {
+        if !is_project_path_input_absolute(project_path) {
             return Err(HostError::new(
                 DiagnosticKind::MalformedOutput,
-                "Enter an absolute project path beginning with /.",
+                "Choose a project folder or enter an absolute Windows or WSL path.",
             ));
         }
         let bundle = self.config.kwt_bundle().ok_or_else(|| {
@@ -698,9 +698,11 @@ impl<R: CommandRunner> WslHost<R> {
         })?;
         self.require_runtime(endpoint, runtime, cancellation)?;
         let helper = self.ensure_kwt_helper(endpoint, runtime, bundle, cancellation)?;
+        let project_path = self.resolve_kwt_project_path(endpoint, project_path, cancellation)?;
+        self.require_runtime(endpoint, runtime, cancellation)?;
         let output = self.run_scrubbed(
             endpoint,
-            &[&helper, "projects", "add", project_path, "--json"],
+            &[&helper, "projects", "add", &project_path, "--json"],
             cancellation,
         )?;
         require_kwt_project_command(&output, "register the KWT project")?;
@@ -712,6 +714,41 @@ impl<R: CommandRunner> WslHost<R> {
         })?;
         self.require_runtime(endpoint, runtime, cancellation)?;
         Ok(project)
+    }
+
+    fn resolve_kwt_project_path(
+        &self,
+        endpoint: &WslEndpoint,
+        project_path: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<String, HostError> {
+        if is_posix_absolute(project_path) {
+            return Ok(project_path.to_owned());
+        }
+        let output = self.run_scrubbed(
+            endpoint,
+            &["/usr/bin/wslpath", "-a", "-u", project_path],
+            cancellation,
+        )?;
+        if output.status != 0 {
+            return Err(HostError::new(
+                DiagnosticKind::MalformedOutput,
+                format!(
+                    "That Windows folder is not available in {} through WSL.",
+                    endpoint.distro()
+                ),
+            ));
+        }
+        let stdout = decode(&output.stdout, "resolved WSL project path")?;
+        let mut lines = stdout.lines();
+        let resolved = lines.next().map(str::trim).unwrap_or_default();
+        if !is_posix_absolute(resolved) || lines.any(|line| !line.trim().is_empty()) {
+            return Err(HostError::new(
+                DiagnosticKind::MalformedOutput,
+                "WSL returned an invalid project path",
+            ));
+        }
+        Ok(resolved.to_owned())
     }
 
     /// Unregister one freshly revalidated project without deleting its checkout.
@@ -3362,6 +3399,17 @@ fn is_posix_absolute(path: &str) -> bool {
     path.starts_with('/')
 }
 
+fn is_project_path_input_absolute(path: &str) -> bool {
+    if is_posix_absolute(path) || path.starts_with(r"\\") || path.starts_with("//") {
+        return true;
+    }
+    let bytes = path.as_bytes();
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'\\' | b'/')
+}
+
 fn is_boot_id(value: &str) -> bool {
     value.len() == 36
         && value.bytes().enumerate().all(|(index, byte)| match index {
@@ -3425,6 +3473,8 @@ mod tests {
             self.calls.lock().expect("calls").push(args.clone());
             let stdout = if args.iter().any(|argument| argument == "/usr/bin/cat") {
                 TEST_RUNTIME_OUTPUT.to_vec()
+            } else if args.iter().any(|argument| argument == "/usr/bin/wslpath") {
+                b"/mnt/c/Users/test/code/widget\n".to_vec()
             } else if args.windows(2).any(|pair| pair == ["projects", "add"]) {
                 br#"{"status":"registered","project":{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null}}"#.to_vec()
             } else if args.windows(2).any(|pair| pair == ["projects", "remove"]) {
@@ -3510,6 +3560,38 @@ mod tests {
                 "/code/widget".to_owned(),
                 "--expected-repository".to_owned(),
                 "github.com/acme/widget".to_owned(),
+                "--json".to_owned(),
+            ])
+        }));
+    }
+
+    #[test]
+    fn kwt_project_registration_resolves_windows_paths_inside_the_distro() {
+        let (host, runner, endpoint, runtime) = kwt_mutation_host();
+        let cancellation = CancellationToken::new();
+
+        host.register_kwt_project(
+            &endpoint,
+            &runtime,
+            r"C:\Users\test\code\widget",
+            &cancellation,
+        )
+        .expect("register Windows project path");
+
+        let calls = runner.calls.lock().expect("calls");
+        assert!(calls.iter().any(|args| {
+            args.ends_with(&[
+                "/usr/bin/wslpath".to_owned(),
+                "-a".to_owned(),
+                "-u".to_owned(),
+                r"C:\Users\test\code\widget".to_owned(),
+            ])
+        }));
+        assert!(calls.iter().any(|args| {
+            args.ends_with(&[
+                "projects".to_owned(),
+                "add".to_owned(),
+                "/mnt/c/Users/test/code/widget".to_owned(),
                 "--json".to_owned(),
             ])
         }));

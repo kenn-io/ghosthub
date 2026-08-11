@@ -11,9 +11,9 @@ use std::time::Duration;
 use gpui::{
     App, Application, Bounds, ClipboardItem, Context, FocusHandle, Focusable, FontWeight,
     IntoElement, KeyBinding, KeyDownEvent, KeyUpEvent, MouseButton as GpuiMouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Render, ScrollWheelEvent, TitlebarOptions,
-    Window, WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowDecorations,
-    WindowOptions, actions, div, font, prelude::*, px, rgb, rgba, size,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathPromptOptions, Render, ScrollWheelEvent,
+    TitlebarOptions, Window, WindowBackgroundAppearance, WindowBounds, WindowControlArea,
+    WindowDecorations, WindowOptions, actions, div, font, prelude::*, px, rgb, rgba, size,
 };
 use model::PortStatus;
 use surface::{CellStyle, Damage, GridSize, Rgb, SurfaceFrame, SurfaceStore};
@@ -802,6 +802,52 @@ impl RootView {
         self.diagnostic = None;
         window.focus(&self.project_focus);
         cx.notify();
+    }
+
+    fn browse_for_project(&mut self, cx: &mut Context<Self>) {
+        if !matches!(
+            self.project_dialog.as_ref(),
+            Some(ProjectDialog::Add {
+                submitting: false,
+                ..
+            })
+        ) {
+            return;
+        }
+        let selection = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Choose project folder".into()),
+        });
+        cx.spawn(async move |view, cx| {
+            let result = selection.await;
+            let _ignored = view.update(cx, |view, cx| {
+                let Some(ProjectDialog::Add {
+                    path,
+                    submitting: false,
+                    error,
+                    ..
+                }) = &mut view.project_dialog
+                else {
+                    return;
+                };
+                match result {
+                    Ok(Ok(Some(paths))) => {
+                        if let Some(selected) = paths.into_iter().next() {
+                            *path = selected.to_string_lossy().into_owned();
+                            *error = None;
+                        }
+                    }
+                    Ok(Ok(None)) | Err(_) => {}
+                    Ok(Err(prompt_error)) => {
+                        *error = Some(format!("Could not open the folder browser: {prompt_error}"));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn open_remove_project(
@@ -2114,9 +2160,9 @@ impl RootView {
                     error,
                     ..
                 } => {
-                    let valid = path.trim().starts_with('/');
+                    let valid = workspace::is_absolute_project_path_input(path);
                     let text = if path.is_empty() && !focused {
-                        "/absolute/path/to/repository".to_owned()
+                        "Choose a folder or enter a WSL path".to_owned()
                     } else if path.is_empty() {
                         "▏".to_owned()
                     } else {
@@ -2124,9 +2170,9 @@ impl RootView {
                     };
                     let input = div()
                         .id("kwt-project-path-input")
-                        .m_4()
                         .px_3()
                         .h(px(38.0))
+                        .flex_1()
                         .flex()
                         .items_center()
                         .rounded_md()
@@ -2146,9 +2192,38 @@ impl RootView {
                             cx.notify();
                         }))
                         .into_any_element();
+                    let body = div()
+                        .m_4()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(input)
+                        .child(
+                            div()
+                                .id("browse-kwt-project")
+                                .h(px(38.0))
+                                .px_3()
+                                .flex()
+                                .items_center()
+                                .rounded_md()
+                                .border_1()
+                                .border_color(rgb(0x3a_404c))
+                                .text_sm()
+                                .text_color(rgb(if *submitting { 0x72_7986 } else { 0xc7_ccd5 }))
+                                .child("Browse…")
+                                .when(!*submitting, |element| {
+                                    element
+                                        .cursor_pointer()
+                                        .hover(|style| style.bg(rgb(0x29_2e38)))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.browse_for_project(cx);
+                                        }))
+                                }),
+                        )
+                        .into_any_element();
                     (
                         "Add Project",
-                        input,
+                        body,
                         if *submitting {
                             "Adding…"
                         } else {
