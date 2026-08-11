@@ -3834,8 +3834,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 invalidateZellijPresentationIntent()
             }
             if let restoration = pendingRestoration?.zellij,
-               let host = snapshot.host(id: selection.hostID),
-               restoration.hostKey == host.configKey,
+               restoration.hostKey == event.operation.hostKey,
                restoration.sessionName == selection.name {
                 cancelPendingRestoration()
             }
@@ -6556,7 +6555,10 @@ final class WorkspaceSceneModel: ObservableObject {
             hostID: selection.hostID,
             sessionName: selection.name
         )
-        guard let operation = zellijSessionKillCoordinator.begin(key: key)
+        guard let operation = zellijSessionKillCoordinator.begin(
+            key: key,
+            hostKey: request.confirmedHost.configKey
+        )
         else {
             throw ZellijSessionPresentationError.operationPending(
                 selection.name
@@ -8394,12 +8396,21 @@ final class WorkspaceSceneModel: ObservableObject {
             } onCancel: {
                 probe.cancel()
             }
+            let finalConnection = await zellijConnectionSnapshot(
+                on: context.host
+            )
             guard !Task.isCancelled else { return .retry }
             guard activeZellijReconnectContext == context,
                   activeBorrowedZellijHandle?.id == context.handleID,
                   snapshot.host(id: context.selection.hostID)
                   .flatMap(CommandHostResolver.resolve) == context.host
             else { return .stop }
+            guard finalConnection.cacheKey == connection.cacheKey else {
+                stopZellijReconnect(
+                    "The SSH connection changed while Ghosthub was checking the Zellij session. Reopen it to use the current connection."
+                )
+                return .stop
+            }
             switch resolution {
             case let .success(path):
                 executablePath = path
@@ -8411,13 +8422,6 @@ final class WorkspaceSceneModel: ObservableObject {
                     executablePath: nil
                 )
             }
-            let finalConnection = await zellijConnectionSnapshot(
-                on: context.host
-            )
-            guard !Task.isCancelled,
-                  activeZellijReconnectContext == context,
-                  finalConnection.cacheKey == connection.cacheKey
-            else { return .stop }
         } else {
             executablePath = nil
         }

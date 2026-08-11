@@ -22,6 +22,7 @@ final class ZellijSessionKillCoordinator {
     struct Operation: Identifiable, Equatable, Sendable {
         let id: UUID
         let key: Key
+        let hostKey: String
     }
 
     struct Event: Equatable, Sendable {
@@ -39,9 +40,9 @@ final class ZellijSessionKillCoordinator {
         eventSubject.eraseToAnyPublisher()
     }
 
-    func begin(key: Key) -> Operation? {
+    func begin(key: Key, hostKey: String) -> Operation? {
         guard activeOperations[key] == nil else { return nil }
-        let operation = Operation(id: UUID(), key: key)
+        let operation = Operation(id: UUID(), key: key, hostKey: hostKey)
         activeOperations[key] = operation
         revisions[key, default: 0] &+= 1
         eventSubject.send(Event(operation: operation, phase: .began))

@@ -856,7 +856,10 @@ struct WorkspaceRestorationTests {
             hostID: environment.host.id,
             sessionName: "editor"
         )
-        let operation = try #require(killCoordinator.begin(key: key))
+        let operation = try #require(killCoordinator.begin(
+            key: key,
+            hostKey: environment.host.configKey
+        ))
 
         model.startZellijSessionDiscovery()
         model.beginRestoration(state)
@@ -919,10 +922,13 @@ struct WorkspaceRestorationTests {
                 sessionName: "editor"
             )
         )
-        let operation = try #require(killCoordinator.begin(key: .init(
-            hostID: environment.host.id,
-            sessionName: "editor"
-        )))
+        let operation = try #require(killCoordinator.begin(
+            key: .init(
+                hostID: environment.host.id,
+                sessionName: "editor"
+            ),
+            hostKey: environment.host.configKey
+        ))
 
         model.startZellijSessionDiscovery()
         model.beginRestoration(state)
@@ -941,6 +947,112 @@ struct WorkspaceRestorationTests {
                 && model.snapshot.host(id: environment.host.id)?
                 .zellijSessions.map(\.name) == ["editor"]
         }
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(!model.isWorkspaceRestorationPending)
+        #expect(model.activeBorrowedZellijSelection == nil)
+        #expect(store.requestedConfigurations.isEmpty)
+        await model.shutdown()
+    }
+
+    @Test("successful Zellij kill retires restoration across host rename")
+    func zellijRestorationStopsAfterHostRenameDuringKill() async throws {
+        let environment = try setupRemoteEnvironment()
+        var snapshot = environment.snapshot
+        snapshot.hosts[0].zellijAvailable = true
+        snapshot.hosts[0].zellijSessions = [
+            ZellijSessionSummary(name: "editor"),
+        ]
+        let configuredHost = SSHHost(
+            configKey: environment.host.configKey,
+            name: environment.host.name,
+            platform: .linux,
+            sshDestination: environment.host.sshDestination ?? ""
+        )
+        let renamedHost = SSHHost(
+            configKey: "renamed-office-linux",
+            name: environment.host.name,
+            platform: .linux,
+            sshDestination: environment.host.sshDestination ?? ""
+        )
+        let configuredHosts = Mutex([configuredHost])
+        let killCoordinator = ZellijSessionKillCoordinator()
+        let discoveryState = Mutex((
+            attempts: 0,
+            blocked: false,
+            released: false
+        ))
+        defer { discoveryState.withLock { $0.released = true } }
+        let store = RecordingNativeSessionSurfaceStore()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: UUID(),
+            snapshot: snapshot,
+            nativeZellijSurfaceStore: store,
+            nativeZellijPathProvider: { _ in .success("/usr/bin/zellij") },
+            zellijSessionKillCoordinator: killCoordinator,
+            zellijSessionDiscovery: { _ in
+                let attempt = discoveryState.withLock {
+                    $0.attempts += 1
+                    return $0.attempts
+                }
+                if attempt == 2 {
+                    discoveryState.withLock { $0.blocked = true }
+                    while !discoveryState.withLock({ $0.released }) {
+                        Thread.sleep(forTimeInterval: 0.001)
+                    }
+                }
+                return .available(["editor"])
+            },
+            zellijSessionValidationDiscovery: { _, _ in
+                .available(["editor"])
+            },
+            configuredSSHHostsProvider: {
+                configuredHosts.withLock { $0 }
+            }
+        )
+        let state = WorkspaceWindowState(
+            windowID: UUID(),
+            navigation: WorkspaceNavigationDescriptor(
+                hostKey: environment.host.configKey,
+                projectKey: nil,
+                worktreeGeneration: nil
+            ),
+            tmux: nil,
+            zellij: WorkspaceZellijDescriptor(
+                hostKey: environment.host.configKey,
+                sessionName: "editor"
+            )
+        )
+        let operation = try #require(killCoordinator.begin(
+            key: .init(
+                hostID: environment.host.id,
+                sessionName: "editor"
+            ),
+            hostKey: environment.host.configKey
+        ))
+
+        model.startZellijSessionDiscovery()
+        model.beginRestoration(state)
+        await waitUntilMainActor {
+            discoveryState.withLock { $0.attempts } >= 1
+                && model.isWorkspaceRestorationPending
+        }
+
+        configuredHosts.withLock { $0 = [renamedHost] }
+        model.refreshHosts()
+        #expect(
+            model.snapshot.host(id: environment.host.id)?.configKey
+                == renamedHost.configKey
+        )
+        killCoordinator.finish(operation, outcome: .succeeded)
+        await waitUntilMainActor {
+            discoveryState.withLock { $0.blocked }
+        }
+
+        configuredHosts.withLock { $0 = [configuredHost] }
+        model.refreshHosts()
+        discoveryState.withLock { $0.released = true }
         try await Task.sleep(for: .milliseconds(50))
 
         #expect(!model.isWorkspaceRestorationPending)
@@ -997,10 +1109,13 @@ struct WorkspaceRestorationTests {
                 sessionName: "editor"
             )
         )
-        let operation = try #require(killCoordinator.begin(key: .init(
-            hostID: environment.host.id,
-            sessionName: "editor"
-        )))
+        let operation = try #require(killCoordinator.begin(
+            key: .init(
+                hostID: environment.host.id,
+                sessionName: "editor"
+            ),
+            hostKey: environment.host.configKey
+        ))
         model.startZellijSessionDiscovery()
         model.beginRestoration(state)
         await waitUntilMainActor {

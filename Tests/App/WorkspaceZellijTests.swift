@@ -2003,10 +2003,13 @@ struct WorkspaceZellijTests {
             hostID: host.id,
             name: "api"
         )
-        let operation = try #require(killCoordinator.begin(key: .init(
-            hostID: host.id,
-            sessionName: selection.name
-        )))
+        let operation = try #require(killCoordinator.begin(
+            key: .init(
+                hostID: host.id,
+                sessionName: selection.name
+            ),
+            hostKey: host.configKey
+        ))
 
         model.openBorrowedZellijSession(selection)
         configuredHost.withLock {
@@ -2392,6 +2395,91 @@ struct WorkspaceZellijTests {
             (model.sessionConnectionRecoveryRequest != nil)
                 == canReviewConnection
         )
+        await model.shutdown()
+    }
+
+    @Test("Zellij resolver failure rejects SSH connection drift")
+    func resolverFailureRejectsSSHConnectionDrift() async throws {
+        let host = HostSummary(
+            id: UUID(),
+            configKey: "builder",
+            name: "Builder",
+            kind: .remote,
+            platform: .linux,
+            sshDestination: "dev@builder",
+            zellijSessions: [ZellijSessionSummary(name: "api")],
+            zellijAvailable: true
+        )
+        let frozen = SSHConnectionArgumentsSnapshot(arguments: [
+            "-F", "/tmp/frozen-config",
+        ])
+        let changed = SSHConnectionArgumentsSnapshot(arguments: [
+            "-F", "/tmp/changed-config",
+        ])
+        let currentConnection = Mutex(frozen)
+        let resolverState = Mutex((calls: 0, blocked: false, released: false))
+        defer { resolverState.withLock { $0.released = true } }
+        let store = RecordingNativeSessionSurfaceStore()
+        let model = try makeModel(
+            database: .inMemory(),
+            localHostID: UUID(),
+            snapshot: WorkspaceSnapshot(
+                hosts: [host],
+                projects: [],
+                worktrees: []
+            ),
+            nativeZellijSurfaceStore: store,
+            nativeZellijPathProvider: { _ in
+                let call = resolverState.withLock {
+                    $0.calls += 1
+                    return $0.calls
+                }
+                guard call > 1 else { return .success("/usr/bin/zellij") }
+                resolverState.withLock { $0.blocked = true }
+                while !resolverState.withLock({ $0.released }) {
+                    Thread.sleep(forTimeInterval: 0.001)
+                }
+                return .failure(.commandFailed(
+                    status: 255,
+                    stderr: "Permission denied (publickey)."
+                ))
+            },
+            zellijSessionValidationDiscovery: { _, _ in
+                .available(["api"])
+            },
+            zellijSSHConnectionSnapshotProvider: { _ in
+                currentConnection.withLock { $0 }
+            },
+            tmuxReconnectIntervals: [.zero],
+            tmuxReconnectProbeDeadline: .seconds(1)
+        )
+        let selection = WorkspaceZellijSessionSelection(
+            hostID: host.id,
+            name: "api"
+        )
+
+        model.openBorrowedZellijSession(selection)
+        await waitUntilMainActor {
+            store.requestedConfigurations.count == 1
+                && !store.surface.closeObservers.isEmpty
+        }
+        let close = try #require(store.surface.closeObservers.values.first)
+        close(false, 255)
+        await waitUntilMainActor {
+            resolverState.withLock { $0.blocked }
+        }
+        currentConnection.withLock { $0 = changed }
+        resolverState.withLock { $0.released = true }
+        let changedConnectionReason =
+            "The SSH connection changed while Ghosthub was checking the Zellij session. Reopen it to use the current connection."
+        await waitUntilMainActor {
+            model.activeBorrowedZellijConnectionState == .disconnected(
+                reason: changedConnectionReason
+            )
+        }
+
+        #expect(model.sessionConnectionRecoveryRequest == nil)
+        #expect(model.activeBorrowedZellijRecoveryState == nil)
         await model.shutdown()
     }
 
