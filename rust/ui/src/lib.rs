@@ -2910,13 +2910,6 @@ impl RootView {
             }
             header
         });
-        if let Some(diagnostic) = host.kwt_diagnostic() {
-            tree = tree.child(Self::kwt_diagnostic_row(
-                host_index,
-                diagnostic.message().to_owned(),
-                cx,
-            ));
-        }
         for (project_index, project) in host.projects().iter().enumerate() {
             let project_for_remove = project.clone();
             let host_id = host.id().to_owned();
@@ -3195,43 +3188,6 @@ impl RootView {
                 this.request_session_kill(&selection, cx);
                 cx.stop_propagation();
             }))
-            .into_any_element()
-    }
-
-    fn kwt_diagnostic_row(
-        host_index: usize,
-        message: String,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        div()
-            .mx_2()
-            .mb_1()
-            .px_2()
-            .py_1()
-            .rounded_sm()
-            .bg(rgb(0x16_1920))
-            .flex()
-            .items_center()
-            .gap_2()
-            .child(
-                div()
-                    .min_w_0()
-                    .flex_1()
-                    .truncate()
-                    .text_xs()
-                    .text_color(rgb(0x9b_a2ae))
-                    .child(message),
-            )
-            .child(
-                div()
-                    .id(("retry-kwt", host_index))
-                    .flex_none()
-                    .cursor_pointer()
-                    .text_xs()
-                    .text_color(rgb(0x79_aee3))
-                    .child("Retry")
-                    .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
-            )
             .into_any_element()
     }
 
