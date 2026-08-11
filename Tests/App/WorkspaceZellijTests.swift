@@ -2110,6 +2110,126 @@ struct WorkspaceZellijTests {
         await killingModel.shutdown()
     }
 
+    @Test("successful kill does not close a newer same-name attachment")
+    func successfulKillPreservesNewerAttachment() async throws {
+        let host = HostSummary(
+            id: UUID(),
+            configKey: "builder",
+            name: "Builder",
+            kind: .remote,
+            platform: .linux,
+            sshDestination: "dev@builder",
+            zellijSessions: [ZellijSessionSummary(name: "api")],
+            zellijAvailable: true
+        )
+        let connectionState = Mutex((
+            calls: 0,
+            blocked: false,
+            released: false
+        ))
+        defer { connectionState.withLock { $0.released = true } }
+        let killCoordinator = ZellijSessionKillCoordinator()
+        let store = RecordingNativeSessionSurfaceStore()
+        let model = try makeModel(
+            database: .inMemory(),
+            localHostID: UUID(),
+            snapshot: WorkspaceSnapshot(
+                hosts: [host],
+                projects: [],
+                worktrees: []
+            ),
+            nativeZellijSurfaceStore: store,
+            nativeZellijPathProvider: { _ in .success("/usr/bin/zellij") },
+            zellijSessionKillCoordinator: killCoordinator,
+            zellijSessionValidationDiscovery: { _, _ in
+                .available(["api"])
+            },
+            zellijSSHConnectionSnapshotProvider: { _ in
+                let call = connectionState.withLock {
+                    $0.calls += 1
+                    return $0.calls
+                }
+                if call == 1 {
+                    connectionState.withLock { $0.blocked = true }
+                    while !connectionState.withLock({ $0.released }) {
+                        Thread.sleep(forTimeInterval: 0.001)
+                    }
+                }
+                return SSHConnectionArgumentsSnapshot(arguments: [])
+            }
+        )
+        let selection = WorkspaceZellijSessionSelection(
+            hostID: host.id,
+            name: "api"
+        )
+        let resolvedHost = try #require(CommandHostResolver.resolve(host))
+        let operation = try #require(killCoordinator.begin(
+            key: .init(hostID: host.id, sessionName: selection.name),
+            host: resolvedHost,
+            connectionCacheKey: SSHConnectionArgumentsSnapshot(
+                arguments: []
+            ).cacheKey
+        ))
+
+        killCoordinator.finish(operation, outcome: .succeeded)
+        await waitUntilMainActor {
+            connectionState.withLock { $0.blocked }
+        }
+        model.openBorrowedZellijSession(selection)
+        await waitUntilMainActor {
+            model.activeBorrowedZellijSelection == selection
+                && store.requestedConfigurations.count == 1
+        }
+        connectionState.withLock { $0.released = true }
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(model.activeBorrowedZellijSelection == selection)
+        #expect(model.snapshot.host(id: host.id)?.zellijSessions.map(\.name)
+            == ["api"])
+        await model.shutdown()
+    }
+
+    @Test("successful kill ignores transient Zellij availability")
+    func successfulKillIgnoresTransientAvailability() async throws {
+        let host = HostSummary(
+            id: UUID(),
+            configKey: "builder",
+            name: "Builder",
+            kind: .remote,
+            platform: .linux,
+            sshDestination: "dev@builder",
+            zellijSessions: [ZellijSessionSummary(name: "api")],
+            zellijAvailable: false
+        )
+        let killCoordinator = ZellijSessionKillCoordinator()
+        let model = try makeModel(
+            database: .inMemory(),
+            localHostID: UUID(),
+            snapshot: WorkspaceSnapshot(
+                hosts: [host],
+                projects: [],
+                worktrees: []
+            ),
+            zellijSessionKillCoordinator: killCoordinator
+        )
+        let resolvedHost = try #require(CommandHostResolver.resolve(host))
+        let operation = try #require(killCoordinator.begin(
+            key: .init(hostID: host.id, sessionName: "api"),
+            host: resolvedHost,
+            connectionCacheKey: SSHConnectionArgumentsSnapshot(
+                arguments: []
+            ).cacheKey
+        ))
+
+        killCoordinator.finish(operation, outcome: .succeeded)
+        await waitUntilMainActor(timeout: .seconds(1)) {
+            model.snapshot.host(id: host.id)?.zellijSessions.isEmpty == true
+        }
+
+        #expect(model.snapshot.host(id: host.id)?.zellijSessions.isEmpty == true)
+        await model.shutdown()
+    }
+
     @Test("reconnect rejects SSH route drift before probing")
     func reconnectRejectsSSHRouteDrift() async throws {
         let database = try WorkspaceDatabase.inMemory()
