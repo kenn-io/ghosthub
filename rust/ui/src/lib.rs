@@ -324,6 +324,7 @@ struct NewSessionDraft {
 enum NewSessionKind {
     Tmux,
     Herdr,
+    Zellij,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -355,6 +356,7 @@ enum ProjectDialog {
         name: String,
         repository: String,
         path: String,
+        registration_fingerprint: String,
         submitting: bool,
         error: Option<String>,
     },
@@ -870,6 +872,7 @@ impl RootView {
             name: project.name().to_owned(),
             repository: project.repository().to_owned(),
             path: project.path().to_owned(),
+            registration_fingerprint: project.registration_fingerprint().to_owned(),
             submitting: false,
             error: None,
         });
@@ -908,11 +911,16 @@ impl RootView {
                 endpoint,
                 repository,
                 path,
+                registration_fingerprint,
                 submitting: false,
                 ..
-            }) => self
-                .workspace
-                .remove_kwt_project(host_id, endpoint, repository, path),
+            }) => self.workspace.remove_kwt_project(
+                host_id,
+                endpoint,
+                repository,
+                path,
+                registration_fingerprint,
+            ),
             _ => return,
         };
         match result {
@@ -1016,6 +1024,10 @@ impl RootView {
             NewSessionKind::Herdr => {
                 self.workspace
                     .create_herdr_session(&draft.host_id, &draft.endpoint, &draft.name)
+            }
+            NewSessionKind::Zellij => {
+                self.workspace
+                    .create_zellij_session(&draft.host_id, &draft.endpoint, &draft.name)
             }
         };
         match result {
@@ -2137,6 +2149,7 @@ impl RootView {
                                 .child(match draft.kind {
                                     NewSessionKind::Tmux => "New tmux session",
                                     NewSessionKind::Herdr => "New Herdr session",
+                                    NewSessionKind::Zellij => "New Zellij session",
                                 }),
                         )
                         .child(Self::new_session_name_input(draft, focused, cx))
@@ -2654,7 +2667,7 @@ impl RootView {
     ) -> gpui::AnyElement {
         let (id, label, color) = match action {
             SessionRowAction::Detach => ("session-action-detach", "Detach", 0x87_b9e8),
-            SessionRowAction::KillTmux => ("tmux-action-kill", "Kill", 0xd6_747a),
+            SessionRowAction::KillSession => ("session-action-kill", "Kill", 0xd6_747a),
             SessionRowAction::Herdr(HerdrRowAction::Stop) => {
                 ("herdr-action-stop", "Stop", 0xd6_747a)
             }
@@ -2682,7 +2695,7 @@ impl RootView {
                 this.session_action_menu = None;
                 match action {
                     SessionRowAction::Detach => this.detach_session(window, cx),
-                    SessionRowAction::KillTmux => this.request_session_kill(&selection, cx),
+                    SessionRowAction::KillSession => this.request_session_kill(&selection, cx),
                     SessionRowAction::Herdr(HerdrRowAction::Stop) => this.request_herdr_lifecycle(
                         &selection,
                         workspace::HerdrLifecycleAction::Stop,
@@ -2877,12 +2890,33 @@ impl RootView {
 
         let sessions = tree_sessions(host, content, retained);
         let herdr_sessions = tree_herdr_sessions(host, content, retained);
-        let groups = session_group_visibility(host, &herdr_sessions);
+        let zellij_sessions = tree_zellij_sessions(host, content, retained);
+        let groups = session_group_visibility(host, &herdr_sessions, &zellij_sessions);
         if groups.tmux {
-            host_tree = host_tree.child(Self::session_tree(host_index, host, &sessions, cx));
+            host_tree = host_tree.child(Self::session_tree(
+                host_index,
+                host,
+                &sessions,
+                "TMUX SESSIONS",
+                NewSessionKind::Tmux,
+                None,
+                cx,
+            ));
         }
         if groups.herdr {
             host_tree = host_tree.child(Self::herdr_tree(host_index, host, &herdr_sessions, cx));
+        }
+        if groups.zellij {
+            host_tree = host_tree.child(Self::session_tree(
+                host_index,
+                host,
+                &zellij_sessions,
+                "ZELLIJ SESSIONS",
+                NewSessionKind::Zellij,
+                host.zellij_diagnostic()
+                    .map(|diagnostic| diagnostic.message().to_owned()),
+                cx,
+            ));
         }
         if host.kwt_available()
             || !host.projects().is_empty()
@@ -2984,6 +3018,9 @@ impl RootView {
         host_index: usize,
         host: &HostItem,
         sessions: &[TreeSession],
+        title: &'static str,
+        create_kind: NewSessionKind,
+        diagnostic: Option<String>,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let mut tree = div().w_full().flex().flex_col().child({
@@ -2997,13 +3034,27 @@ impl RootView {
                 .text_xs()
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(rgb(SESSION_GROUP_TEXT))
-                .child(div().flex_1().child("TMUX SESSIONS"));
-            if host.connection() == HostConnectionState::Ready {
+                .child(div().flex_1().child(title));
+            let create_available = match create_kind {
+                NewSessionKind::Tmux => true,
+                NewSessionKind::Zellij => {
+                    host.zellij_available() && host.zellij_diagnostic().is_none()
+                }
+                NewSessionKind::Herdr => false,
+            };
+            if host.connection() == HostConnectionState::Ready && create_available {
                 let host_id = host.id().to_owned();
                 let endpoint = host.endpoint().to_owned();
                 header = header.child(
                     div()
-                        .id(("create-tmux-session", host_index))
+                        .id((
+                            if create_kind == NewSessionKind::Tmux {
+                                "create-tmux-session"
+                            } else {
+                                "create-zellij-session"
+                            },
+                            host_index,
+                        ))
                         .size(px(22.0))
                         .flex()
                         .items_center()
@@ -3015,19 +3066,20 @@ impl RootView {
                         .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xd2_d7_df)))
                         .child("+")
                         .on_click(cx.listener(move |this, _, window, cx| {
-                            this.open_new_session(
-                                &host_id,
-                                &endpoint,
-                                NewSessionKind::Tmux,
-                                window,
-                                cx,
-                            );
+                            this.open_new_session(&host_id, &endpoint, create_kind, window, cx);
                         })),
                 );
             }
             header
         });
-        if sessions.is_empty() {
+        if let Some(message) = diagnostic {
+            tree = tree.child(Self::capability_diagnostic_row(
+                host_index,
+                "retry-zellij",
+                message,
+                cx,
+            ));
+        } else if sessions.is_empty() {
             tree = tree.child(
                 div()
                     .h(px(SESSION_ROW_HEIGHT))
@@ -3374,8 +3426,9 @@ impl RootView {
             header
         });
         if let Some(diagnostic) = host.herdr_diagnostic() {
-            tree = tree.child(Self::herdr_diagnostic_row(
+            tree = tree.child(Self::capability_diagnostic_row(
                 host_index,
+                "retry-herdr",
                 diagnostic.message().to_owned(),
                 cx,
             ));
@@ -3397,8 +3450,9 @@ impl RootView {
         tree.into_any_element()
     }
 
-    fn herdr_diagnostic_row(
+    fn capability_diagnostic_row(
         host_index: usize,
+        retry_id: &'static str,
         message: String,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
@@ -3423,7 +3477,7 @@ impl RootView {
             )
             .child(
                 div()
-                    .id(("retry-herdr", host_index))
+                    .id((retry_id, host_index))
                     .flex_none()
                     .cursor_pointer()
                     .text_xs()
@@ -3624,10 +3678,11 @@ impl RootView {
         let is_active = session.state.is_active();
         let can_open = session.state.can_open();
         let name = selection.session().to_owned();
-        let row_group = format!("tmux-session-actions-{host_index}-{index}");
+        let backend = session_backend_id(selection.kind());
+        let row_group = format!("{backend}-session-actions-{host_index}-{index}");
         let mut row = div()
             .id((
-                gpui::ElementId::named_usize("tree-session-host", host_index),
+                gpui::ElementId::named_usize(session_row_element_id(selection.kind()), host_index),
                 index.to_string(),
             ))
             .group(row_group.clone())
@@ -3675,7 +3730,7 @@ impl RootView {
         if !actions.is_empty() {
             row = row.child(Self::session_action_menu_button(
                 host_index,
-                format!("tmux-{index}"),
+                format!("{backend}-{index}"),
                 selection.clone(),
                 actions,
                 row_group,
@@ -3911,6 +3966,7 @@ struct HostTreeStatus {
 struct SessionGroupVisibility {
     tmux: bool,
     herdr: bool,
+    zellij: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -3923,7 +3979,7 @@ enum HerdrRowAction {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SessionRowAction {
     Detach,
-    KillTmux,
+    KillSession,
     Herdr(HerdrRowAction),
 }
 
@@ -3970,7 +4026,7 @@ fn tmux_row_actions(active: bool, can_kill: bool) -> Vec<SessionRowAction> {
         actions.push(SessionRowAction::Detach);
     }
     if can_kill {
-        actions.push(SessionRowAction::KillTmux);
+        actions.push(SessionRowAction::KillSession);
     }
     actions
 }
@@ -3987,6 +4043,22 @@ fn herdr_session_menu_actions(
     actions
 }
 
+const fn session_backend_id(kind: workspace::SessionKind) -> &'static str {
+    match kind {
+        workspace::SessionKind::Tmux => "tmux",
+        workspace::SessionKind::Herdr => "herdr",
+        workspace::SessionKind::Zellij => "zellij",
+    }
+}
+
+const fn session_row_element_id(kind: workspace::SessionKind) -> &'static str {
+    match kind {
+        workspace::SessionKind::Tmux => "tmux-session-host",
+        workspace::SessionKind::Herdr => "herdr-session-host",
+        workspace::SessionKind::Zellij => "zellij-session-host",
+    }
+}
+
 fn herdr_operation_label(session: &workspace::HerdrSessionItem) -> Option<&'static str> {
     match session.lifecycle_action() {
         Some(workspace::HerdrLifecycleAction::Stop) => Some("Stopping…"),
@@ -3999,12 +4071,16 @@ fn herdr_operation_label(session: &workspace::HerdrSessionItem) -> Option<&'stat
 fn session_group_visibility(
     host: &HostItem,
     herdr_sessions: &[TreeHerdrSession],
+    zellij_sessions: &[TreeSession],
 ) -> SessionGroupVisibility {
     SessionGroupVisibility {
         tmux: true,
         herdr: host.herdr_available()
             || !herdr_sessions.is_empty()
             || host.herdr_diagnostic().is_some(),
+        zellij: host.zellij_available()
+            || !zellij_sessions.is_empty()
+            || host.zellij_diagnostic().is_some(),
     }
 }
 
@@ -4069,6 +4145,7 @@ fn active_session_selection(content: &WorkspaceContent) -> Option<SessionSelecti
         } => Some(match kind {
             workspace::SessionKind::Tmux => SessionSelection::new(host_id, endpoint, session),
             workspace::SessionKind::Herdr => SessionSelection::herdr(host_id, endpoint, session),
+            workspace::SessionKind::Zellij => SessionSelection::zellij(host_id, endpoint, session),
         }),
         WorkspaceContent::Shell
         | WorkspaceContent::Loading
@@ -4201,6 +4278,66 @@ fn tree_herdr_sessions(
         };
     }
     sessions
+}
+
+fn tree_zellij_sessions(
+    host: &HostItem,
+    content: &WorkspaceContent,
+    retained: &[SessionSelection],
+) -> Vec<TreeSession> {
+    let active = active_session_selection(content);
+    let active_for_host = active.as_ref().filter(|selection| {
+        selection.host_id() == host.id() && selection.kind() == workspace::SessionKind::Zellij
+    });
+    let mut selections = host
+        .zellij_sessions()
+        .iter()
+        .map(|session| {
+            (
+                SessionSelection::zellij(host.id(), host.endpoint(), session.name()),
+                true,
+            )
+        })
+        .collect::<Vec<_>>();
+    for selection in retained
+        .iter()
+        .filter(|selection| {
+            selection.host_id() == host.id() && selection.kind() == workspace::SessionKind::Zellij
+        })
+        .chain(active_for_host)
+    {
+        if !selections
+            .iter()
+            .any(|(candidate, _)| candidate == selection)
+        {
+            selections.push((selection.clone(), false));
+        }
+    }
+    let host_accepts_actions = !matches!(
+        host.connection(),
+        HostConnectionState::Disconnected | HostConnectionState::Unavailable
+    ) && host.zellij_diagnostic().is_none();
+    selections
+        .into_iter()
+        .map(|(selection, discovered)| {
+            let retained = retained.contains(&selection);
+            let is_active = active.as_ref() == Some(&selection);
+            let can_kill = discovered && host_accepts_actions;
+            let state = match (is_active, retained, host_accepts_actions, can_kill) {
+                (true, _, _, true) => TreeSessionState::ActiveKillable,
+                (true, _, _, false) => TreeSessionState::Active,
+                (false, true, _, true) => TreeSessionState::RetainedKillable,
+                (false, true, _, false) => TreeSessionState::Retained,
+                (false, false, true, _) => TreeSessionState::Fresh,
+                (false, false, false, _) => TreeSessionState::Cached,
+            };
+            TreeSession {
+                show_endpoint: selection.endpoint() != host.endpoint(),
+                selection,
+                state,
+            }
+        })
+        .collect()
 }
 
 fn kill_confirmation_title(selection: &SessionSelection) -> String {
@@ -4513,6 +4650,20 @@ fn new_session_validation(
                     "A Herdr session with this name already exists on this host. Restart it instead."
                         .to_owned()
                 })
+        }
+        NewSessionKind::Zellij => {
+            if !host.zellij_available() || host.zellij_diagnostic().is_some() {
+                return Some("Zellij is not available on this host.".to_owned());
+            }
+            let Ok(name) = workspace::ZellijSessionName::parse(&draft.name) else {
+                return Some(
+                    "Use a nonempty name without slashes or control characters.".to_owned(),
+                );
+            };
+            host.zellij_sessions()
+                .iter()
+                .any(|session| session.name() == name.as_str())
+                .then(|| "A Zellij session with this name already exists on this host.".to_owned())
         }
     }
 }
@@ -5013,10 +5164,10 @@ mod tests {
         input_queue_has_capacity, is_toggle_sidebar_shortcut, kill_confirmation_description,
         kill_confirmation_title, named_key, new_session_validation, normalize_cell_width,
         queued_input_matches_presentation, retained_key_event_with, session_action_menu_position,
-        session_group_visibility, terminal_cell_at_with_offset, terminal_key_input,
-        terminal_key_input_with_canonical, terminal_line_height, terminal_wheel_steps,
-        tmux_row_actions, transitioned_presentation, tree_herdr_sessions, tree_sessions,
-        workspace_window_title,
+        session_backend_id, session_group_visibility, session_row_element_id,
+        terminal_cell_at_with_offset, terminal_key_input, terminal_key_input_with_canonical,
+        terminal_line_height, terminal_wheel_steps, tmux_row_actions, transitioned_presentation,
+        tree_herdr_sessions, tree_sessions, tree_zellij_sessions, workspace_window_title,
     };
     use model::DiagnosticKind;
     use std::sync::Arc;
@@ -5244,6 +5395,7 @@ mod tests {
                 "project-id",
                 "project",
                 "/repos/project",
+                "project-fingerprint",
                 vec![
                     WorktreeItem::new(
                         "/repos/project",
@@ -5290,7 +5442,7 @@ mod tests {
         );
 
         assert_eq!(host_tree_status(&host), None);
-        assert!(session_group_visibility(&host, &[]).tmux);
+        assert!(session_group_visibility(&host, &[], &[]).tmux);
     }
 
     #[test]
@@ -5320,7 +5472,7 @@ mod tests {
         let rows = tree_herdr_sessions(&host, &active, &retained);
 
         assert_eq!(rows.len(), 2);
-        assert!(session_group_visibility(&host, &rows).herdr);
+        assert!(session_group_visibility(&host, &rows, &[]).herdr);
         assert_eq!(rows[0].selection.session(), "retained");
         assert!(rows[0].show_endpoint);
         assert!(rows[0].inventory.is_none());
@@ -5354,6 +5506,61 @@ mod tests {
         assert_eq!(rows[0].selection.session(), "cached");
         assert!(!rows[0].access.can_open());
         assert!(!rows[0].access.can_mutate());
+    }
+
+    #[test]
+    fn retained_and_active_zellij_sessions_survive_unavailable_inventory() {
+        let size = GridSize::new(80, 24).expect("valid grid");
+        let active = WorkspaceContent::Terminal {
+            host_id: "wsl".to_owned(),
+            endpoint: "Ubuntu".to_owned(),
+            session: "active".to_owned(),
+            kind: workspace::SessionKind::Zellij,
+            presentation_id: 1,
+            surface: Arc::new(SurfaceStore::new(SurfaceFrame::blank(1, size))),
+        };
+        let host = HostItem::wsl(
+            "Ubuntu",
+            None,
+            HostConnectionState::Unavailable,
+            Vec::new(),
+            None,
+        );
+        let retained = vec![SessionSelection::zellij(
+            "wsl",
+            "Ubuntu-Previous",
+            "retained",
+        )];
+
+        let rows = tree_zellij_sessions(&host, &active, &retained);
+
+        assert_eq!(rows.len(), 2);
+        assert!(session_group_visibility(&host, &[], &rows).zellij);
+        assert_eq!(rows[0].selection.session(), "retained");
+        assert!(rows[0].show_endpoint);
+        assert!(rows[0].state.can_open());
+        assert!(!rows[0].state.can_kill());
+        assert_eq!(rows[1].selection.session(), "active");
+        assert!(rows[1].state.is_active());
+        assert!(rows[1].state.can_open());
+        assert!(!rows[1].state.can_kill());
+    }
+
+    #[test]
+    fn failed_current_zellij_inventory_exposes_cached_rows_only() {
+        let host = HostItem::wsl("Ubuntu", None, HostConnectionState::Ready, Vec::new(), None)
+            .with_zellij_sessions(vec![workspace::SessionItem::new("cached", 0)])
+            .with_zellij_diagnostic(HostDiagnostic::new(
+                DiagnosticKind::MalformedOutput,
+                "invalid Zellij inventory",
+            ));
+
+        let rows = tree_zellij_sessions(&host, &WorkspaceContent::Shell, &[]);
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].selection.session(), "cached");
+        assert!(!rows[0].state.can_open());
+        assert!(!rows[0].state.can_kill());
     }
 
     #[test]
@@ -5395,7 +5602,7 @@ mod tests {
     fn active_session_menus_include_detach_without_losing_backend_lifecycle() {
         assert_eq!(
             tmux_row_actions(true, true),
-            vec![SessionRowAction::Detach, SessionRowAction::KillTmux]
+            vec![SessionRowAction::Detach, SessionRowAction::KillSession]
         );
         assert_eq!(
             herdr_session_menu_actions(true, vec![HerdrRowAction::Stop]),
@@ -5406,7 +5613,7 @@ mod tests {
         );
         assert_eq!(
             tmux_row_actions(false, true),
-            vec![SessionRowAction::KillTmux]
+            vec![SessionRowAction::KillSession]
         );
     }
 
@@ -5421,6 +5628,18 @@ mod tests {
         let (left, top) = session_action_menu_position(2.0, 2.0, 100.0, 80.0, 4);
         assert!((left - 4.0).abs() <= f32::EPSILON);
         assert!((top - 4.0).abs() <= f32::EPSILON);
+    }
+
+    #[test]
+    fn multiplexer_rows_have_backend_scoped_interaction_ids() {
+        assert_ne!(
+            session_backend_id(workspace::SessionKind::Tmux),
+            session_backend_id(workspace::SessionKind::Zellij)
+        );
+        assert_ne!(
+            session_row_element_id(workspace::SessionKind::Tmux),
+            session_row_element_id(workspace::SessionKind::Zellij)
+        );
     }
 
     #[test]

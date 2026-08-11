@@ -1,7 +1,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer, de};
 
 #[derive(Clone, Eq, PartialEq)]
 pub struct KwtBundle {
@@ -82,6 +82,21 @@ pub struct KwtProject {
     name: String,
     path: String,
     last_touched: Option<String>,
+    #[serde(deserialize_with = "deserialize_nonempty_string")]
+    registration_fingerprint: String,
+}
+
+fn deserialize_nonempty_string<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    if value.is_empty() {
+        return Err(de::Error::custom(
+            "KWT registration_fingerprint must not be empty",
+        ));
+    }
+    Ok(value)
 }
 
 #[derive(Debug, Deserialize)]
@@ -119,6 +134,10 @@ impl KwtProject {
     #[must_use]
     pub fn last_touched(&self) -> Option<&str> {
         self.last_touched.as_deref()
+    }
+    #[must_use]
+    pub fn registration_fingerprint(&self) -> &str {
+        &self.registration_fingerprint
     }
 }
 
@@ -317,7 +336,7 @@ mod tests {
     #[test]
     fn inventory_joins_global_worktrees_without_reordering_projects() {
         let inventory = KwtInventory::parse(
-            br#"[{"repository":"two","name":"Second","path":"/r/two","last_touched":null},{"repository":"one","name":"First","path":"/r/one","last_touched":"now"}]"#,
+            br#"[{"repository":"two","name":"Second","path":"/r/two","last_touched":null,"registration_fingerprint":"two-fingerprint"},{"repository":"one","name":"First","path":"/r/one","last_touched":"now","registration_fingerprint":"one-fingerprint"}]"#,
             br#"[{"path":"/w/one","branch":"main","commit_hash":"abc","is_main":true,"created_at":null,"generation":"g1","repository":"one","session_name":"one-main","tmux_socket_name":null},{"path":"/w/two","branch":"topic","commit_hash":"def","is_main":false,"created_at":"then","generation":null,"repository":"two","session_name":"two-topic","tmux_socket_name":"alt"}]"#,
             br#"[{"name":"scratch","path":"/w/scratch","session_name":"scratch","session_live":false}]"#,
         ).expect("valid inventory");
@@ -334,7 +353,17 @@ mod tests {
     #[test]
     fn inventory_rejects_schema_drift() {
         let error = KwtInventory::parse(
-            br#"[{"repository":"one","name":"One","path":"/r/one","last_touched":null,"surprise":true}]"#,
+            br#"[{"repository":"one","name":"One","path":"/r/one","last_touched":null,"registration_fingerprint":"one-fingerprint","surprise":true}]"#,
+            b"[]",
+            b"[]",
+        );
+        assert!(error.is_err());
+    }
+
+    #[test]
+    fn inventory_rejects_an_empty_registration_fingerprint() {
+        let error = KwtInventory::parse(
+            br#"[{"repository":"one","name":"One","path":"/r/one","last_touched":null,"registration_fingerprint":""}]"#,
             b"[]",
             b"[]",
         );
@@ -344,14 +373,14 @@ mod tests {
     #[test]
     fn project_mutations_require_the_expected_machine_status() {
         let registered = parse_project_mutation(
-            br#"{"status":"registered","project":{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null}}"#,
+            br#"{"status":"registered","project":{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null,"registration_fingerprint":"opaque-registration"}}"#,
             "registered",
         )
         .expect("valid registration");
         assert_eq!(registered.path(), "/code/widget");
         assert!(
             parse_project_mutation(
-                br#"{"status":"unregistered","project":{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null}}"#,
+                br#"{"status":"unregistered","project":{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null,"registration_fingerprint":"opaque-registration"}}"#,
                 "registered",
             )
             .is_err()
