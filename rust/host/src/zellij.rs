@@ -35,9 +35,15 @@ pub(crate) fn parse_executable(status: i32, stdout: &[u8]) -> Result<ExecutableP
             resolved = lines.next();
         }
     }
-    let Some(path) = resolved.map(str::trim).filter(|path| path.starts_with('/')) else {
-        return Ok(ExecutableProbe::Unavailable);
-    };
+    let path = resolved
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .ok_or_else(|| "Zellij executable probe omitted its resolved path".to_owned())?;
+    if !path.starts_with('/') {
+        return Err(format!(
+            "Zellij executable probe returned a non-absolute path: {path}"
+        ));
+    }
     Ok(ExecutableProbe::Available(path.to_owned()))
 }
 
@@ -108,5 +114,16 @@ mod tests {
     #[test]
     fn malformed_inventory_is_rejected() {
         assert!(parse_inventory(0, b"not an inventory row\n", b"").is_err());
+    }
+
+    #[test]
+    fn only_status_127_means_zellij_is_unavailable() {
+        assert!(matches!(
+            parse_executable(127, b""),
+            Ok(ExecutableProbe::Unavailable)
+        ));
+        assert!(parse_executable(0, b"").is_err());
+        assert!(parse_executable(0, b"GHOSTHUB_ZELLIJ_PATH\n").is_err());
+        assert!(parse_executable(0, b"GHOSTHUB_ZELLIJ_PATH\nrelative/zellij\n").is_err());
     }
 }

@@ -3678,10 +3678,11 @@ impl RootView {
         let is_active = session.state.is_active();
         let can_open = session.state.can_open();
         let name = selection.session().to_owned();
-        let row_group = format!("tmux-session-actions-{host_index}-{index}");
+        let backend = session_backend_id(selection.kind());
+        let row_group = format!("{backend}-session-actions-{host_index}-{index}");
         let mut row = div()
             .id((
-                gpui::ElementId::named_usize("tree-session-host", host_index),
+                gpui::ElementId::named_usize(session_row_element_id(selection.kind()), host_index),
                 index.to_string(),
             ))
             .group(row_group.clone())
@@ -3729,7 +3730,7 @@ impl RootView {
         if !actions.is_empty() {
             row = row.child(Self::session_action_menu_button(
                 host_index,
-                format!("tmux-{index}"),
+                format!("{backend}-{index}"),
                 selection.clone(),
                 actions,
                 row_group,
@@ -4040,6 +4041,22 @@ fn herdr_session_menu_actions(
     }
     actions.extend(lifecycle.into_iter().map(SessionRowAction::Herdr));
     actions
+}
+
+const fn session_backend_id(kind: workspace::SessionKind) -> &'static str {
+    match kind {
+        workspace::SessionKind::Tmux => "tmux",
+        workspace::SessionKind::Herdr => "herdr",
+        workspace::SessionKind::Zellij => "zellij",
+    }
+}
+
+const fn session_row_element_id(kind: workspace::SessionKind) -> &'static str {
+    match kind {
+        workspace::SessionKind::Tmux => "tmux-session-host",
+        workspace::SessionKind::Herdr => "herdr-session-host",
+        workspace::SessionKind::Zellij => "zellij-session-host",
+    }
 }
 
 fn herdr_operation_label(session: &workspace::HerdrSessionItem) -> Option<&'static str> {
@@ -5147,10 +5164,10 @@ mod tests {
         input_queue_has_capacity, is_toggle_sidebar_shortcut, kill_confirmation_description,
         kill_confirmation_title, named_key, new_session_validation, normalize_cell_width,
         queued_input_matches_presentation, retained_key_event_with, session_action_menu_position,
-        session_group_visibility, terminal_cell_at_with_offset, terminal_key_input,
-        terminal_key_input_with_canonical, terminal_line_height, terminal_wheel_steps,
-        tmux_row_actions, transitioned_presentation, tree_herdr_sessions, tree_sessions,
-        tree_zellij_sessions, workspace_window_title,
+        session_backend_id, session_group_visibility, session_row_element_id,
+        terminal_cell_at_with_offset, terminal_key_input, terminal_key_input_with_canonical,
+        terminal_line_height, terminal_wheel_steps, tmux_row_actions, transitioned_presentation,
+        tree_herdr_sessions, tree_sessions, tree_zellij_sessions, workspace_window_title,
     };
     use model::DiagnosticKind;
     use std::sync::Arc;
@@ -5611,6 +5628,18 @@ mod tests {
         let (left, top) = session_action_menu_position(2.0, 2.0, 100.0, 80.0, 4);
         assert!((left - 4.0).abs() <= f32::EPSILON);
         assert!((top - 4.0).abs() <= f32::EPSILON);
+    }
+
+    #[test]
+    fn multiplexer_rows_have_backend_scoped_interaction_ids() {
+        assert_ne!(
+            session_backend_id(workspace::SessionKind::Tmux),
+            session_backend_id(workspace::SessionKind::Zellij)
+        );
+        assert_ne!(
+            session_row_element_id(workspace::SessionKind::Tmux),
+            session_row_element_id(workspace::SessionKind::Zellij)
+        );
     }
 
     #[test]

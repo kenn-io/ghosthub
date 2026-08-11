@@ -1420,11 +1420,17 @@ struct PresentationKey {
 
 struct SuppressedHerdrPresentation {
     active_selection: Option<SessionSelection>,
-    retained: Option<ClosedRetainedHerdrPresentation>,
+    retained: Option<ClosedRetainedPresentation>,
     navigation_generation: u64,
 }
 
-struct ClosedRetainedHerdrPresentation {
+struct SuppressedZellijPresentation {
+    active_selection: Option<SessionSelection>,
+    retained: Option<ClosedRetainedPresentation>,
+    navigation_generation: u64,
+}
+
+struct ClosedRetainedPresentation {
     key: PresentationKey,
     attachment: ActiveAttachment<AttachRequest>,
     presentation_id: u64,
@@ -3432,16 +3438,26 @@ impl Workspace {
                         executable,
                         name,
                     } => {
+                        let mut suppressed = None;
                         let result = pending.host.kill_zellij_session(
                             endpoint,
                             runtime,
                             executable,
                             name,
                             &CancellationToken::new(),
-                            || workspace.finish_zellij_presentation(endpoint, runtime, name),
+                            || {
+                                suppressed =
+                                    workspace.close_zellij_presentations(endpoint, runtime, name);
+                            },
                         );
-                        if let Err(error) = result {
-                            workspace.push_operation_error(error.to_string());
+                        match result {
+                            Ok(()) => {
+                                workspace.finish_zellij_presentation(endpoint, runtime, name);
+                            }
+                            Err(error) => {
+                                workspace.restore_suppressed_zellij_presentation(suppressed);
+                                workspace.push_operation_error(error.to_string());
+                            }
                         }
                     }
                 }
@@ -3709,6 +3725,115 @@ impl Workspace {
         }
     }
 
+    fn close_zellij_presentations(
+        &self,
+        endpoint: &host::WslEndpoint,
+        runtime: &host::WslRuntimeIdentity,
+        name: &str,
+    ) -> Option<SuppressedZellijPresentation> {
+        let _snapshot_write = begin_snapshot_write(&self.inner);
+        let _navigation = self
+            .inner
+            .navigation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let navigation_generation = self.inner.navigation_generation.load(Ordering::Acquire);
+        let target_matches = |target: &AttachTarget| matches!(target, AttachTarget::Zellij { name: target_name, .. } if target_name == name);
+        let mut attachment = self
+            .inner
+            .attachment
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let active_selection = attachment.active().and_then(|active| {
+            (active.request.endpoint == *endpoint
+                && active.request.runtime == *runtime
+                && target_matches(&active.request.target))
+            .then(|| active.request.selection())
+        });
+        if active_selection.is_some() {
+            attachment.invalidate();
+            self.inner
+                .worker
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .invalidate();
+            clear_pending_paste(&self.inner);
+            clear_terminal_notice(&self.inner);
+            self.restore_inventory_state();
+        }
+        drop(attachment);
+
+        let removed = self
+            .inner
+            .retained_presentations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take_matching(|key| {
+                key.endpoint == endpoint.distro()
+                    && key.runtime == *runtime
+                    && target_matches(&key.target)
+            });
+        let changed = active_selection.is_some() || !removed.is_empty();
+        let retained = active_selection.is_none().then(|| {
+            removed
+                .into_iter()
+                .next()
+                .map(|presentation| ClosedRetainedPresentation {
+                    key: presentation.key,
+                    attachment: presentation.attachment,
+                    presentation_id: presentation.presentation_id,
+                })
+        });
+        if changed {
+            self.inner.revision.fetch_add(1, Ordering::Release);
+        }
+        (active_selection.is_some() || retained.is_some()).then_some(SuppressedZellijPresentation {
+            active_selection,
+            retained: retained.flatten(),
+            navigation_generation,
+        })
+    }
+
+    fn restore_suppressed_zellij_presentation(
+        &self,
+        suppressed: Option<SuppressedZellijPresentation>,
+    ) {
+        let Some(suppressed) = suppressed else {
+            return;
+        };
+        if let Some(retained) = suppressed.retained {
+            match reopen_closed_retained_presentation(&self.inner, retained) {
+                Ok(presentation) => {
+                    publish_restored_retained_presentation(&self.inner, presentation);
+                }
+                Err(error) => {
+                    self.push_operation_error(format!(
+                        "could not restore a retained Zellij presentation after a failed kill: {error}"
+                    ));
+                }
+            }
+        }
+        let Some(selection) = suppressed.active_selection else {
+            return;
+        };
+        let _snapshot_write = begin_snapshot_write(&self.inner);
+        let _navigation = self
+            .inner
+            .navigation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.inner.navigation_generation.load(Ordering::Acquire)
+            != suppressed.navigation_generation
+        {
+            return;
+        }
+        if let Err(error) = self.switch_session_locked(&selection) {
+            self.push_operation_error(format!(
+                "could not restore the Zellij presentation after a failed kill: {error}"
+            ));
+        }
+    }
+
     fn finish_herdr_presentation(
         &self,
         endpoint: &host::WslEndpoint,
@@ -3802,7 +3927,7 @@ impl Workspace {
             removed
                 .into_iter()
                 .next()
-                .map(|presentation| ClosedRetainedHerdrPresentation {
+                .map(|presentation| ClosedRetainedPresentation {
                     key: presentation.key,
                     attachment: presentation.attachment,
                     presentation_id: presentation.presentation_id,
@@ -3826,9 +3951,9 @@ impl Workspace {
             return;
         };
         if let Some(retained) = suppressed.retained {
-            match reopen_closed_retained_herdr_presentation(&self.inner, retained) {
+            match reopen_closed_retained_presentation(&self.inner, retained) {
                 Ok(presentation) => {
-                    publish_restored_retained_herdr_presentation(&self.inner, presentation);
+                    publish_restored_retained_presentation(&self.inner, presentation);
                 }
                 Err(error) => {
                     self.push_operation_error(format!(
@@ -7676,9 +7801,9 @@ fn restore_presentation_inventory(inner: &Inner) {
     set_inner_state(inner, state);
 }
 
-fn reopen_closed_retained_herdr_presentation(
+fn reopen_closed_retained_presentation(
     inner: &Inner,
-    mut closed: ClosedRetainedHerdrPresentation,
+    mut closed: ClosedRetainedPresentation,
 ) -> Result<RetainedPresentation<TerminalWorker>, WorkspaceError> {
     let term = closed.attachment.term;
     let (worker, _snapshot, attached_name, initial_geometry) =
@@ -7710,7 +7835,7 @@ fn reopen_closed_retained_herdr_presentation(
     })
 }
 
-fn publish_restored_retained_herdr_presentation(
+fn publish_restored_retained_presentation(
     inner: &Inner,
     presentation: RetainedPresentation<TerminalWorker>,
 ) {
@@ -8618,7 +8743,7 @@ mod tests {
         };
         let suppressed = SuppressedHerdrPresentation {
             active_selection: None,
-            retained: Some(ClosedRetainedHerdrPresentation {
+            retained: Some(ClosedRetainedPresentation {
                 key: request.presentation_key(),
                 attachment: ActiveAttachment {
                     request,
@@ -8879,6 +9004,27 @@ mod tests {
                 is_default: false,
                 session_directory: "/tmp/herdr/review".to_owned(),
                 socket_path: "/tmp/herdr/review/herdr.sock".to_owned(),
+            },
+            name: name.to_owned(),
+            inventory_generation: 1,
+        }
+    }
+
+    #[cfg(windows)]
+    fn zellij_attach_request_fixture(snapshot: &HostSnapshot, name: &str) -> AttachRequest {
+        AttachRequest {
+            host_id: "wsl".to_owned(),
+            host: WslHost::new(
+                WslConfig::with_distro("Ubuntu").expect("valid WSL config"),
+                Arc::new(StdCommandRunner) as SharedCommandRunner,
+                WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe")
+                    .expect("absolute WSL path"),
+            ),
+            endpoint: snapshot.endpoint().clone(),
+            runtime: snapshot.runtime().clone(),
+            target: AttachTarget::Zellij {
+                executable: "/usr/bin/zellij".to_owned(),
+                name: name.to_owned(),
             },
             name: name.to_owned(),
             inventory_generation: 1,
@@ -11046,6 +11192,59 @@ mod tests {
                 .target,
             AttachTarget::Tmux(active_identity)
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn zellij_kill_suppression_keeps_active_recovery_authority() {
+        let workspace = Workspace::preview(WorkspaceSnapshot::ready(
+            Appearance::default(),
+            "Ubuntu",
+            Vec::new(),
+        ));
+        let snapshot = HostSnapshot::test_fixture("Ubuntu", "boot-id", 42, Vec::new());
+        let request = zellij_attach_request_fixture(&snapshot, "work");
+        workspace
+            .inner
+            .attachment
+            .lock()
+            .expect("attachment")
+            .reserve(request, AttachTerm::Xterm256Color)
+            .expect("reserve active attachment");
+        let size = GridSize::new(80, 24).expect("valid grid");
+        set_inner_state(
+            &workspace.inner,
+            WorkspaceContent::Terminal {
+                host_id: "wsl".to_owned(),
+                endpoint: "Ubuntu".to_owned(),
+                session: "work".to_owned(),
+                kind: SessionKind::Zellij,
+                presentation_id: 1,
+                surface: Arc::new(SurfaceStore::new(surface::SurfaceFrame::blank(1, size))),
+            },
+        );
+
+        let suppressed = workspace
+            .close_zellij_presentations(snapshot.endpoint(), snapshot.runtime(), "work")
+            .expect("matching presentation is recoverable");
+
+        assert_eq!(
+            suppressed.active_selection,
+            Some(SessionSelection::zellij("wsl", "Ubuntu", "work"))
+        );
+        assert!(
+            workspace
+                .inner
+                .attachment
+                .lock()
+                .expect("attachment")
+                .active()
+                .is_none()
+        );
+        assert!(matches!(
+            workspace.snapshot().content(),
+            WorkspaceContent::Ready { .. }
+        ));
     }
 
     #[test]
