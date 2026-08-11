@@ -15,7 +15,7 @@ use session::{
 };
 
 use crate::herdr::{self, ExecutableProbe};
-use crate::{CancellationToken, CommandOutput, CommandRunner};
+use crate::{CancellationToken, CommandOutput, CommandRunner, KwtBundle, KwtInventory};
 
 const DEFAULT_TMUX: &str = "/usr/bin/tmux";
 const DISCOVERY_ATTEMPTS: usize = 2;
@@ -48,6 +48,7 @@ pub struct WslConfig {
     distro: Option<String>,
     tmux_binary: String,
     tmux_tmpdir: Option<String>,
+    kwt_bundle: Option<KwtBundle>,
 }
 
 impl WslConfig {
@@ -59,6 +60,17 @@ impl WslConfig {
     #[must_use]
     pub fn socket_directory(&self) -> Option<&str> {
         self.tmux_tmpdir.as_deref()
+    }
+
+    #[must_use]
+    pub const fn kwt_bundle(&self) -> Option<&KwtBundle> {
+        self.kwt_bundle.as_ref()
+    }
+
+    #[must_use]
+    pub fn with_kwt_bundle(mut self, bundle: KwtBundle) -> Self {
+        self.kwt_bundle = Some(bundle);
+        self
     }
 
     /// Select a specific WSL distro with the default tmux path.
@@ -108,6 +120,7 @@ impl WslConfig {
             distro,
             tmux_binary,
             tmux_tmpdir,
+            kwt_bundle: None,
         })
     }
 }
@@ -118,6 +131,7 @@ impl Default for WslConfig {
             distro: None,
             tmux_binary: DEFAULT_TMUX.to_owned(),
             tmux_tmpdir: None,
+            kwt_bundle: None,
         }
     }
 }
@@ -174,6 +188,30 @@ pub struct HostSnapshot {
     creation_term: AttachTerm,
     sessions: Vec<DiscoveredSession>,
     herdr: Box<HerdrInventory>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KwtHostSnapshot {
+    endpoint: WslEndpoint,
+    runtime: WslRuntimeIdentity,
+    inventory: Option<KwtInventory>,
+}
+
+impl KwtHostSnapshot {
+    #[must_use]
+    pub const fn endpoint(&self) -> &WslEndpoint {
+        &self.endpoint
+    }
+
+    #[must_use]
+    pub const fn runtime(&self) -> &WslRuntimeIdentity {
+        &self.runtime
+    }
+
+    #[must_use]
+    pub const fn inventory(&self) -> Option<&KwtInventory> {
+        self.inventory.as_ref()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -519,6 +557,7 @@ pub struct WslHost<R> {
     runner: R,
     wsl_executable: WslExecutable,
     verified_tmux: Arc<Mutex<Option<VerifiedAdmission>>>,
+    verified_kwt: Arc<Mutex<Option<VerifiedKwtHelper>>>,
 }
 
 #[derive(Debug)]
@@ -529,6 +568,13 @@ struct VerifiedAdmission {
     _binary: VerifiedTmuxBinary,
 }
 
+#[derive(Clone, Debug)]
+struct VerifiedKwtHelper {
+    endpoint: WslEndpoint,
+    runtime: WslRuntimeIdentity,
+    path: String,
+}
+
 impl<R: CommandRunner> WslHost<R> {
     #[must_use]
     pub fn new(config: WslConfig, runner: R, wsl_executable: WslExecutable) -> Self {
@@ -537,6 +583,7 @@ impl<R: CommandRunner> WslHost<R> {
             runner,
             wsl_executable,
             verified_tmux: Arc::new(Mutex::new(None)),
+            verified_kwt: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -548,6 +595,276 @@ impl<R: CommandRunner> WslHost<R> {
     #[must_use]
     pub fn socket_directory(&self) -> Option<&str> {
         self.config.socket_directory()
+    }
+
+    /// Read KWT project and worktree inventory independently from session
+    /// discovery. Callers schedule this on the slower worktree cadence; tmux
+    /// and Herdr refreshes never invoke it.
+    ///
+    /// A missing embedded helper is normal in developer builds and returns
+    /// `Ok(None)`. Packaged builds require the bundle during compilation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified error when helper activation, execution, parsing,
+    /// or the WSL runtime boundary fails.
+    pub fn discover_kwt(
+        &self,
+        endpoint: &WslEndpoint,
+        runtime: &WslRuntimeIdentity,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<KwtInventory>, HostError> {
+        let Some(bundle) = self.config.kwt_bundle() else {
+            return Ok(None);
+        };
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let helper = self.ensure_kwt_helper(endpoint, runtime, bundle, cancellation)?;
+        let projects = self.run_kwt(endpoint, &helper, &["projects", "--json"], cancellation)?;
+        let worktrees = self.run_kwt(
+            endpoint,
+            &helper,
+            &["list", "--global", "--json"],
+            cancellation,
+        )?;
+        let directories = self.run_kwt(
+            endpoint,
+            &helper,
+            &["workspace", "list", "--json"],
+            cancellation,
+        )?;
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        KwtInventory::parse(&projects.stdout, &worktrees.stdout, &directories.stdout)
+            .map(Some)
+            .map_err(|error| {
+                HostError::new(
+                    DiagnosticKind::MalformedOutput,
+                    format!("KWT returned invalid project or worktree inventory: {error}"),
+                )
+            })
+    }
+
+    /// Resolve the current WSL instance and read only KWT inventory.
+    ///
+    /// This does not perform tmux admission, tmux discovery, or Herdr
+    /// discovery, making it suitable for the independent worktree cadence.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified WSL, helper, command, or schema error.
+    pub fn discover_kwt_current(
+        &self,
+        cancellation: &CancellationToken,
+    ) -> Result<KwtHostSnapshot, HostError> {
+        let endpoint = self.resolve_endpoint(cancellation)?;
+        let runtime = self.resolve_runtime(&endpoint, cancellation)?;
+        let inventory = self.discover_kwt(&endpoint, &runtime, cancellation)?;
+        Ok(KwtHostSnapshot {
+            endpoint,
+            runtime,
+            inventory,
+        })
+    }
+
+    fn ensure_kwt_helper(
+        &self,
+        endpoint: &WslEndpoint,
+        runtime: &WslRuntimeIdentity,
+        bundle: &KwtBundle,
+        cancellation: &CancellationToken,
+    ) -> Result<String, HostError> {
+        if let Some(path) = self
+            .verified_kwt
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .filter(|verified| verified.endpoint == *endpoint && verified.runtime == *runtime)
+            .map(|verified| verified.path.clone())
+        {
+            return Ok(path);
+        }
+
+        let home = self.resolve_home(endpoint, cancellation)?;
+        let directory = format!("{home}/.ghosthub/helpers/kwt/{}", bundle.revision());
+        let path = format!("{directory}/kwt");
+        if !self.kwt_helper_matches(endpoint, &path, bundle, cancellation)? {
+            self.install_kwt_helper(endpoint, &directory, &path, bundle, cancellation)?;
+        }
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        *self
+            .verified_kwt
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(VerifiedKwtHelper {
+            endpoint: endpoint.clone(),
+            runtime: runtime.clone(),
+            path: path.clone(),
+        });
+        Ok(path)
+    }
+
+    fn resolve_home(
+        &self,
+        endpoint: &WslEndpoint,
+        cancellation: &CancellationToken,
+    ) -> Result<String, HostError> {
+        let mut args = pinned_prefix(endpoint);
+        args.push(OsString::from("/usr/bin/env"));
+        let output = self.run(&args, cancellation)?;
+        if output.status != 0 {
+            return Err(classify_command_failure(
+                output.status,
+                &output.stderr,
+                "resolve the WSL home directory",
+            ));
+        }
+        let environment = decode(&output.stdout, "WSL environment")?;
+        environment
+            .lines()
+            .find_map(|line| line.strip_prefix("HOME="))
+            .filter(|home| is_posix_absolute(home))
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                HostError::new(
+                    DiagnosticKind::MalformedOutput,
+                    "WSL HOME is missing or is not an absolute path",
+                )
+            })
+    }
+
+    fn install_kwt_helper(
+        &self,
+        endpoint: &WslEndpoint,
+        directory: &str,
+        path: &str,
+        bundle: &KwtBundle,
+        cancellation: &CancellationToken,
+    ) -> Result<(), HostError> {
+        let output = self.run_scrubbed(
+            endpoint,
+            &["/usr/bin/install", "-d", "-m", "0700", directory],
+            cancellation,
+        )?;
+        require_kwt_command(&output, "create the managed KWT helper directory")?;
+
+        let temp = format!("{path}.tmp-{}", helper_nonce()?);
+        let upload = self.run_scrubbed_with_input(
+            endpoint,
+            &[
+                "/usr/bin/dd",
+                &format!("of={temp}"),
+                "status=none",
+                "conv=fsync",
+            ],
+            bundle.bytes(),
+            cancellation,
+        );
+        let result = upload.and_then(|output| {
+            require_kwt_command(&output, "upload the managed KWT helper")?;
+            let chmod =
+                self.run_scrubbed(endpoint, &["/usr/bin/chmod", "0755", &temp], cancellation)?;
+            require_kwt_command(&chmod, "make the managed KWT helper executable")?;
+            if !self.kwt_helper_matches(endpoint, &temp, bundle, cancellation)? {
+                return Err(HostError::new(
+                    DiagnosticKind::MalformedOutput,
+                    "uploaded KWT helper failed revision or digest verification",
+                ));
+            }
+            let activate =
+                self.run_scrubbed(endpoint, &["/usr/bin/mv", "-f", &temp, path], cancellation)?;
+            require_kwt_command(&activate, "activate the managed KWT helper")?;
+            if !self.kwt_helper_matches(endpoint, path, bundle, cancellation)? {
+                return Err(HostError::new(
+                    DiagnosticKind::MalformedOutput,
+                    "activated KWT helper failed revision or digest verification",
+                ));
+            }
+            Ok(())
+        });
+        if result.is_err() {
+            let _ignored = self.run_scrubbed(
+                endpoint,
+                &["/usr/bin/rm", "-f", &temp],
+                &CancellationToken::new(),
+            );
+        }
+        result
+    }
+
+    fn kwt_helper_matches(
+        &self,
+        endpoint: &WslEndpoint,
+        path: &str,
+        bundle: &KwtBundle,
+        cancellation: &CancellationToken,
+    ) -> Result<bool, HostError> {
+        let digest = self.run_scrubbed(endpoint, &["/usr/bin/sha256sum", path], cancellation)?;
+        if digest.status != 0 {
+            return Ok(false);
+        }
+        let digest = decode(&digest.stdout, "KWT helper digest")?;
+        if digest.split_whitespace().next() != Some(bundle.sha256()) {
+            return Ok(false);
+        }
+        let version = self.run_scrubbed(endpoint, &[path, "version"], cancellation)?;
+        if version.status != 0 {
+            return Ok(false);
+        }
+        let version = decode(&version.stdout, "KWT helper version")?;
+        Ok(version.lines().next() == Some(&format!("kwt version {}", bundle.revision())))
+    }
+
+    fn run_kwt(
+        &self,
+        endpoint: &WslEndpoint,
+        helper: &str,
+        command: &[&str],
+        cancellation: &CancellationToken,
+    ) -> Result<CommandOutput, HostError> {
+        let mut arguments = Vec::with_capacity(command.len() + 1);
+        arguments.push(helper);
+        arguments.extend_from_slice(command);
+        let output = self.run_scrubbed(endpoint, &arguments, cancellation)?;
+        if output.status == 0 {
+            Ok(output)
+        } else {
+            Err(classify_command_failure(
+                output.status,
+                &output.stderr,
+                "read KWT inventory",
+            ))
+        }
+    }
+
+    fn run_scrubbed(
+        &self,
+        endpoint: &WslEndpoint,
+        command: &[&str],
+        cancellation: &CancellationToken,
+    ) -> Result<CommandOutput, HostError> {
+        let mut args = pinned_prefix(endpoint);
+        append_scrubbed_environment(&mut args);
+        args.extend(command.iter().map(OsString::from));
+        self.run(&args, cancellation)
+    }
+
+    fn run_scrubbed_with_input(
+        &self,
+        endpoint: &WslEndpoint,
+        command: &[&str],
+        input: &[u8],
+        cancellation: &CancellationToken,
+    ) -> Result<CommandOutput, HostError> {
+        let mut args = pinned_prefix(endpoint);
+        append_scrubbed_environment(&mut args);
+        args.extend(command.iter().map(OsString::from));
+        self.runner
+            .run_with_input(
+                self.wsl_executable.as_os_str(),
+                &args,
+                input,
+                cancellation,
+                COMMAND_TIMEOUT,
+            )
+            .map_err(|error| classify_runner_error(&error))
     }
 
     /// Resolve the exact WSL runtime and discover its tmux inventory.
@@ -2618,6 +2935,40 @@ fn creation_identity_marker() -> Result<String, HostError> {
         )
     })?;
     Ok(format!("__ghc_{:032x}__", u128::from_ne_bytes(nonce)))
+}
+
+fn helper_nonce() -> Result<String, HostError> {
+    let mut nonce = [0_u8; 16];
+    getrandom::fill(&mut nonce).map_err(|error| {
+        HostError::new(
+            DiagnosticKind::Transport,
+            format!("generate managed KWT helper name: {error}"),
+        )
+    })?;
+    Ok(format!("{:032x}", u128::from_ne_bytes(nonce)))
+}
+
+fn require_kwt_command(output: &CommandOutput, subject: &str) -> Result<(), HostError> {
+    if output.status == 0 {
+        Ok(())
+    } else {
+        Err(classify_command_failure(
+            output.status,
+            &output.stderr,
+            subject,
+        ))
+    }
+}
+
+fn classify_runner_error(error: &std::io::Error) -> HostError {
+    HostError::new(
+        if error.kind() == std::io::ErrorKind::TimedOut {
+            DiagnosticKind::Timeout
+        } else {
+            DiagnosticKind::Transport
+        },
+        error.to_string(),
+    )
 }
 
 fn admission_scope(sequence: u64) -> Result<AdmissionScope, HostError> {

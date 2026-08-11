@@ -83,7 +83,7 @@ bytes in, resize, modes queryable, semantic effects, and Rust-owned paint
 state out. No public crate or UI API presumes the outcome.
 
 The exact kwt revision in repository-root `KWT_REVISION` is
-12463d3a0b194d2d3937037ac5b57ad630114854. That source uses KWT_HOME or the
+bd3c2e0d27548c63c3a25a4811eb364bc3cd8c43. That source uses KWT_HOME or the
 fixed $HOME/.config/kwt default. It does not read Ghosthub init.toml,
 config_home, or XDG_CONFIG_HOME. Rust must not reproduce the unsupported
 Ghosthub init.toml scanner. The two existing Swift copies are outside the Rust
@@ -603,6 +603,19 @@ GHOSTHUB_CONFIG_HOME changes only config. GHOSTHUB_STATE_HOME changes only
 state and never relocates helpers. The default POSIX state being the home root
 itself is a shipped irregularity. Local kwt operations use the packaged pinned
 binary, never a helper resolved from these directories or PATH.
+
+The Windows Rust build cross-compiles that exact revision for the WSL
+architecture with `tools/build_rust_kwt.ps1`. Cargo embeds the staged Linux
+binary plus its SHA-256 and revision; release builds fail if it is absent.
+The host activates it at the POSIX managed-helper path with an atomic rename
+and verifies both digest and reported revision before use. Developer builds
+may omit the bundle, in which case KWT inventory alone is unavailable.
+
+KWT project and worktree reads are a separate cancellable host operation from
+tmux and Herdr inventory. The frequent session cadence never installs the KWT
+helper, invokes KWT, or replays worktree reconciliation. One KWT inventory read
+uses exactly three machine-readable crossings: registered projects, the global
+worktree list, and directory workspaces.
 
 The remote helper activation root is a separate cross-controller contract:
 

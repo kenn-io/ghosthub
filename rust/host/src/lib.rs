@@ -1,7 +1,7 @@
 //! WSL host resolution and tmux inventory.
 
 use std::ffi::{OsStr, OsString};
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
@@ -13,14 +13,18 @@ pub use model::DiagnosticKind as HostErrorKind;
 
 mod command_process;
 mod herdr;
+mod kwt;
 #[cfg(windows)]
 mod windows_system;
 mod wsl;
 
+pub use kwt::{
+    KwtBundle, KwtDirectoryWorkspace, KwtInventory, KwtProject, KwtProjectInventory, KwtWorktree,
+};
 pub use wsl::{
-    AdmissionAttacher, AttachTerm, HerdrInventory, HostError, HostSnapshot, LiveSessionTarget,
-    SystemWslPresence, WslConfig, WslEndpoint, WslExecutable, WslHost, WslPresence,
-    WslRuntimeIdentity,
+    AdmissionAttacher, AttachTerm, HerdrInventory, HostError, HostSnapshot, KwtHostSnapshot,
+    LiveSessionTarget, SystemWslPresence, WslConfig, WslEndpoint, WslExecutable, WslHost,
+    WslPresence, WslRuntimeIdentity,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -96,6 +100,34 @@ pub trait CommandRunner: Send + Sync {
         cancellation: &CancellationToken,
         timeout: Duration,
     ) -> io::Result<CommandOutput>;
+
+    /// Run one executable with exact argv and finite binary standard input.
+    ///
+    /// Implementations that do not support input may retain the default for
+    /// empty payloads. KWT helper installation is the only production caller
+    /// that currently requires a non-empty payload.
+    ///
+    /// # Errors
+    ///
+    /// Returns the platform spawn, input, or wait error. The default rejects
+    /// non-empty input as unsupported.
+    fn run_with_input(
+        &self,
+        program: &OsStr,
+        args: &[OsString],
+        input: &[u8],
+        cancellation: &CancellationToken,
+        timeout: Duration,
+    ) -> io::Result<CommandOutput> {
+        if input.is_empty() {
+            self.run(program, args, cancellation, timeout)
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "command runner does not accept standard input",
+            ))
+        }
+    }
 }
 
 impl<R: CommandRunner + ?Sized> CommandRunner for Arc<R> {
@@ -107,6 +139,17 @@ impl<R: CommandRunner + ?Sized> CommandRunner for Arc<R> {
         timeout: Duration,
     ) -> io::Result<CommandOutput> {
         (**self).run(program, args, cancellation, timeout)
+    }
+
+    fn run_with_input(
+        &self,
+        program: &OsStr,
+        args: &[OsString],
+        input: &[u8],
+        cancellation: &CancellationToken,
+        timeout: Duration,
+    ) -> io::Result<CommandOutput> {
+        (**self).run_with_input(program, args, input, cancellation, timeout)
     }
 }
 
@@ -146,107 +189,165 @@ impl CommandRunner for StdCommandRunner {
         cancellation: &CancellationToken,
         timeout: Duration,
     ) -> io::Result<CommandOutput> {
-        let mut command = Command::new(program);
-        command_process::prepare(&mut command);
-        let mut child = command
-            .args(args)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
-        let mut containment = match command_process::CommandContainment::attach(&mut child) {
-            Ok(containment) => containment,
-            Err(error) => {
-                let _ignored = child.kill();
-                let _ignored = child.wait();
-                return Err(error);
-            }
-        };
-        let stdout = child.stdout.take().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::BrokenPipe, "child stdout was not captured")
-        })?;
-        let stderr = child.stderr.take().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::BrokenPipe, "child stderr was not captured")
-        })?;
-        let (sender, receiver) = sync_channel(OUTPUT_CHANNEL_DEPTH);
-        let stdout = spawn_reader(stdout, OutputStream::Stdout, sender.clone());
-        let stderr = spawn_reader(stderr, OutputStream::Stderr, sender);
-        let mut captured = CapturedOutput::default();
-        let deadline = Instant::now() + timeout;
-        let status = loop {
-            if let Err(error) = drain_available(&receiver, &mut captured) {
-                terminate_command(&mut child, &mut containment);
-                finish_or_detach_readers(
-                    &receiver,
-                    &mut captured,
-                    &CancellationToken::new(),
-                    Instant::now() + OUTPUT_DRAIN_TIMEOUT,
-                    stdout,
-                    stderr,
-                );
-                return Err(error);
-            }
-            if cancellation.is_cancelled() {
-                terminate_command(&mut child, &mut containment);
-                finish_or_detach_readers(
-                    &receiver,
-                    &mut captured,
-                    &CancellationToken::new(),
-                    Instant::now() + OUTPUT_DRAIN_TIMEOUT,
-                    stdout,
-                    stderr,
-                );
-                return Err(io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    "command cancelled",
-                ));
-            }
-            if Instant::now() >= deadline {
-                terminate_command(&mut child, &mut containment);
-                finish_or_detach_readers(
-                    &receiver,
-                    &mut captured,
-                    &CancellationToken::new(),
-                    Instant::now() + OUTPUT_DRAIN_TIMEOUT,
-                    stdout,
-                    stderr,
-                );
-                return Err(io::Error::new(io::ErrorKind::TimedOut, "command timed out"));
-            }
-            match child.try_wait() {
-                Ok(Some(status)) => break status,
-                Ok(None) => {}
-                Err(error) => {
-                    terminate_command(&mut child, &mut containment);
-                    finish_or_detach_readers(
-                        &receiver,
-                        &mut captured,
-                        &CancellationToken::new(),
-                        Instant::now() + OUTPUT_DRAIN_TIMEOUT,
-                        stdout,
-                        stderr,
-                    );
-                    return Err(error);
-                }
-            }
-            thread::sleep(Duration::from_millis(10));
-        };
-        containment.terminate();
-        finish_readers(
-            &receiver,
-            &mut captured,
-            cancellation,
-            Instant::now() + OUTPUT_DRAIN_TIMEOUT,
-        )?;
-        join_readers(stdout, stderr)?;
-        if let Some(error) = captured.reader_error {
+        run_command(program, args, None, cancellation, timeout)
+    }
+
+    fn run_with_input(
+        &self,
+        program: &OsStr,
+        args: &[OsString],
+        input: &[u8],
+        cancellation: &CancellationToken,
+        timeout: Duration,
+    ) -> io::Result<CommandOutput> {
+        run_command(program, args, Some(input), cancellation, timeout)
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn run_command(
+    program: &OsStr,
+    args: &[OsString],
+    input: Option<&[u8]>,
+    cancellation: &CancellationToken,
+    timeout: Duration,
+) -> io::Result<CommandOutput> {
+    let mut command = Command::new(program);
+    command_process::prepare(&mut command);
+    if input.is_some() {
+        command.stdin(Stdio::piped());
+    }
+    let mut child = command
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let mut containment = match command_process::CommandContainment::attach(&mut child) {
+        Ok(containment) => containment,
+        Err(error) => {
+            let _ignored = child.kill();
+            let _ignored = child.wait();
             return Err(error);
         }
-        Ok(CommandOutput {
-            status: status.code().unwrap_or(-1),
-            stdout: captured.stdout,
-            stderr: captured.stderr,
+    };
+    let stdin = input
+        .map(|input| {
+            let mut stdin = child.stdin.take().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::BrokenPipe, "child stdin was not captured")
+            })?;
+            let input = input.to_vec();
+            Ok::<_, io::Error>(thread::spawn(move || {
+                let result = stdin.write_all(&input);
+                drop(stdin);
+                result
+            }))
         })
+        .transpose()?;
+    let stdout = child.stdout.take().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::BrokenPipe, "child stdout was not captured")
+    })?;
+    let stderr = child.stderr.take().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::BrokenPipe, "child stderr was not captured")
+    })?;
+    let (sender, receiver) = sync_channel(OUTPUT_CHANNEL_DEPTH);
+    let stdout = spawn_reader(stdout, OutputStream::Stdout, sender.clone());
+    let stderr = spawn_reader(stderr, OutputStream::Stderr, sender);
+    let mut captured = CapturedOutput::default();
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        if let Err(error) = drain_available(&receiver, &mut captured) {
+            terminate_command(&mut child, &mut containment);
+            finish_or_detach_readers(
+                &receiver,
+                &mut captured,
+                &CancellationToken::new(),
+                Instant::now() + OUTPUT_DRAIN_TIMEOUT,
+                stdout,
+                stderr,
+            );
+            finish_or_detach_writer(stdin);
+            return Err(error);
+        }
+        if cancellation.is_cancelled() {
+            terminate_command(&mut child, &mut containment);
+            finish_or_detach_readers(
+                &receiver,
+                &mut captured,
+                &CancellationToken::new(),
+                Instant::now() + OUTPUT_DRAIN_TIMEOUT,
+                stdout,
+                stderr,
+            );
+            finish_or_detach_writer(stdin);
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "command cancelled",
+            ));
+        }
+        if Instant::now() >= deadline {
+            terminate_command(&mut child, &mut containment);
+            finish_or_detach_readers(
+                &receiver,
+                &mut captured,
+                &CancellationToken::new(),
+                Instant::now() + OUTPUT_DRAIN_TIMEOUT,
+                stdout,
+                stderr,
+            );
+            finish_or_detach_writer(stdin);
+            return Err(io::Error::new(io::ErrorKind::TimedOut, "command timed out"));
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(error) => {
+                terminate_command(&mut child, &mut containment);
+                finish_or_detach_readers(
+                    &receiver,
+                    &mut captured,
+                    &CancellationToken::new(),
+                    Instant::now() + OUTPUT_DRAIN_TIMEOUT,
+                    stdout,
+                    stderr,
+                );
+                finish_or_detach_writer(stdin);
+                return Err(error);
+            }
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+    containment.terminate();
+    finish_readers(
+        &receiver,
+        &mut captured,
+        cancellation,
+        Instant::now() + OUTPUT_DRAIN_TIMEOUT,
+    )?;
+    join_readers(stdout, stderr)?;
+    if let Some(stdin) = stdin {
+        stdin
+            .join()
+            .map_err(|_| io::Error::other("command input writer panicked"))??;
     }
+    if let Some(error) = captured.reader_error {
+        return Err(error);
+    }
+    Ok(CommandOutput {
+        status: status.code().unwrap_or(-1),
+        stdout: captured.stdout,
+        stderr: captured.stderr,
+    })
+}
+
+fn finish_or_detach_writer(writer: Option<thread::JoinHandle<io::Result<()>>>) {
+    if let Some(writer) = writer
+        && writer.is_finished()
+    {
+        let _ignored = writer.join();
+    }
+    // A writer still blocked in the platform pipe is detached. Process-group
+    // termination closes the read side and lets it settle without blocking
+    // cancellation or the refresh runtime.
 }
 
 fn finish_or_detach_readers(
