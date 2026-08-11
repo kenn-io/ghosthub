@@ -15,7 +15,8 @@ use session::{
 };
 
 use crate::herdr::{self, ExecutableProbe};
-use crate::{CancellationToken, CommandOutput, CommandRunner, KwtBundle, KwtInventory};
+use crate::kwt::{parse_project_mutation, project_command_error};
+use crate::{CancellationToken, CommandOutput, CommandRunner, KwtBundle, KwtInventory, KwtProject};
 
 const DEFAULT_TMUX: &str = "/usr/bin/tmux";
 const DISCOVERY_ATTEMPTS: usize = 2;
@@ -665,6 +666,124 @@ impl<R: CommandRunner> WslHost<R> {
             runtime,
             inventory,
         })
+    }
+
+    /// Register one explicit absolute repository path with the pinned KWT helper.
+    ///
+    /// Ghosthub never scans WSL or edits KWT configuration directly. The
+    /// returned project is the helper's authoritative machine-readable record.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified path, helper, command, schema, or runtime error.
+    pub fn register_kwt_project(
+        &self,
+        endpoint: &WslEndpoint,
+        runtime: &WslRuntimeIdentity,
+        project_path: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<KwtProject, HostError> {
+        let project_path = project_path.trim();
+        if !is_posix_absolute(project_path) {
+            return Err(HostError::new(
+                DiagnosticKind::MalformedOutput,
+                "Enter an absolute project path beginning with /.",
+            ));
+        }
+        let bundle = self.config.kwt_bundle().ok_or_else(|| {
+            HostError::new(
+                DiagnosticKind::ExecutableNotFound,
+                "The pinned KWT helper is unavailable in this build",
+            )
+        })?;
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let helper = self.ensure_kwt_helper(endpoint, runtime, bundle, cancellation)?;
+        let output = self.run_scrubbed(
+            endpoint,
+            &[&helper, "projects", "add", project_path, "--json"],
+            cancellation,
+        )?;
+        require_kwt_project_command(&output, "register the KWT project")?;
+        let project = parse_project_mutation(&output.stdout, "registered").map_err(|error| {
+            HostError::new(
+                DiagnosticKind::MalformedOutput,
+                format!("KWT returned an invalid project registration response: {error}"),
+            )
+        })?;
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        Ok(project)
+    }
+
+    /// Unregister one freshly revalidated project without deleting its checkout.
+    ///
+    /// KWT performs the final guarded compare-and-swap using both the exact
+    /// persisted path and credential-free repository identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified error when identity changed, KWT refuses the
+    /// removal, output is malformed, or the WSL runtime boundary moved.
+    pub fn remove_kwt_project(
+        &self,
+        endpoint: &WslEndpoint,
+        runtime: &WslRuntimeIdentity,
+        expected_path: &str,
+        expected_repository: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<KwtProject, HostError> {
+        let bundle = self.config.kwt_bundle().ok_or_else(|| {
+            HostError::new(
+                DiagnosticKind::ExecutableNotFound,
+                "The pinned KWT helper is unavailable in this build",
+            )
+        })?;
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let helper = self.ensure_kwt_helper(endpoint, runtime, bundle, cancellation)?;
+        let projects = self.run_kwt(endpoint, &helper, &["projects", "--json"], cancellation)?;
+        let current: Vec<KwtProject> =
+            serde_json::from_slice(&projects.stdout).map_err(|error| {
+                HostError::new(
+                    DiagnosticKind::MalformedOutput,
+                    format!("KWT returned invalid project inventory before removal: {error}"),
+                )
+            })?;
+        if !current.iter().any(|project| {
+            project.path() == expected_path && project.repository() == expected_repository
+        }) {
+            return Err(HostError::new(
+                DiagnosticKind::MalformedOutput,
+                "The project registration changed. Refresh and confirm removal again.",
+            ));
+        }
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let output = self.run_scrubbed(
+            endpoint,
+            &[
+                &helper,
+                "projects",
+                "remove",
+                expected_path,
+                "--expected-repository",
+                expected_repository,
+                "--json",
+            ],
+            cancellation,
+        )?;
+        require_kwt_project_command(&output, "unregister the KWT project")?;
+        let project = parse_project_mutation(&output.stdout, "unregistered").map_err(|error| {
+            HostError::new(
+                DiagnosticKind::MalformedOutput,
+                format!("KWT returned an invalid project removal response: {error}"),
+            )
+        })?;
+        if project.path() != expected_path || project.repository() != expected_repository {
+            return Err(HostError::new(
+                DiagnosticKind::MalformedOutput,
+                "KWT removed a project other than the confirmed identity",
+            ));
+        }
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        Ok(project)
     }
 
     fn ensure_kwt_helper(
@@ -2966,6 +3085,20 @@ fn require_kwt_command(output: &CommandOutput, subject: &str) -> Result<(), Host
     }
 }
 
+fn require_kwt_project_command(output: &CommandOutput, subject: &str) -> Result<(), HostError> {
+    if output.status == 0 {
+        return Ok(());
+    }
+    if let Some(message) = project_command_error(&output.stdout) {
+        return Err(HostError::new(DiagnosticKind::Transport, message));
+    }
+    Err(classify_command_failure(
+        output.status,
+        &output.stderr,
+        subject,
+    ))
+}
+
 fn classify_runner_error(error: &std::io::Error) -> HostError {
     HostError::new(
         if error.kind() == std::io::ErrorKind::TimedOut {
@@ -3264,9 +3397,123 @@ fn tmux_identity_condition(identity: &SessionIdentity) -> String {
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
+    use std::ffi::{OsStr, OsString};
     use std::io;
+    use std::sync::{Arc, Mutex};
 
     use super::*;
+
+    const TEST_RUNTIME_OUTPUT: &[u8] = b"Linux 6.6.0-WSL2\n12345678-1234-1234-1234-123456789abc\n1 (init) S 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 42\n";
+
+    #[derive(Clone, Default)]
+    struct KwtMutationRunner {
+        calls: Arc<Mutex<Vec<Vec<String>>>>,
+    }
+
+    impl CommandRunner for KwtMutationRunner {
+        fn run(
+            &self,
+            _program: &OsStr,
+            args: &[OsString],
+            _cancellation: &CancellationToken,
+            _timeout: Duration,
+        ) -> io::Result<CommandOutput> {
+            let args = args
+                .iter()
+                .map(|argument| argument.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            self.calls.lock().expect("calls").push(args.clone());
+            let stdout = if args.iter().any(|argument| argument == "/usr/bin/cat") {
+                TEST_RUNTIME_OUTPUT.to_vec()
+            } else if args.windows(2).any(|pair| pair == ["projects", "add"]) {
+                br#"{"status":"registered","project":{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null}}"#.to_vec()
+            } else if args.windows(2).any(|pair| pair == ["projects", "remove"]) {
+                br#"{"status":"unregistered","project":{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null}}"#.to_vec()
+            } else if args.iter().any(|argument| argument == "projects") {
+                br#"[{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null}]"#.to_vec()
+            } else {
+                return Err(io::Error::other(format!(
+                    "unexpected KWT mutation command: {args:?}"
+                )));
+            };
+            Ok(CommandOutput {
+                status: 0,
+                stdout,
+                stderr: Vec::new(),
+            })
+        }
+    }
+
+    fn kwt_mutation_host() -> (
+        WslHost<KwtMutationRunner>,
+        KwtMutationRunner,
+        WslEndpoint,
+        WslRuntimeIdentity,
+    ) {
+        let runner = KwtMutationRunner::default();
+        let endpoint = WslEndpoint {
+            distro: "Ubuntu".to_owned(),
+        };
+        let runtime = WslRuntimeIdentity {
+            kernel_boot_id: "12345678-1234-1234-1234-123456789abc".to_owned(),
+            init_start_ticks: 42,
+        };
+        let bundle =
+            KwtBundle::new("a".repeat(40), "b".repeat(64), vec![1_u8]).expect("valid bundle");
+        let host = WslHost::new(
+            WslConfig::with_distro("Ubuntu")
+                .expect("config")
+                .with_kwt_bundle(bundle),
+            runner.clone(),
+            WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").expect("WSL path"),
+        );
+        *host.verified_kwt.lock().expect("verified KWT") = Some(VerifiedKwtHelper {
+            endpoint: endpoint.clone(),
+            runtime: runtime.clone(),
+            path: "/home/test/.ghosthub/helpers/kwt/revision/kwt".to_owned(),
+        });
+        (host, runner, endpoint, runtime)
+    }
+
+    #[test]
+    fn kwt_project_mutations_use_exact_machine_readable_arguments() {
+        let (host, runner, endpoint, runtime) = kwt_mutation_host();
+        let cancellation = CancellationToken::new();
+        let registered = host
+            .register_kwt_project(&endpoint, &runtime, "/code/widget", &cancellation)
+            .expect("register project");
+        assert_eq!(registered.repository(), "github.com/acme/widget");
+        let removed = host
+            .remove_kwt_project(
+                &endpoint,
+                &runtime,
+                "/code/widget",
+                "github.com/acme/widget",
+                &cancellation,
+            )
+            .expect("remove project");
+        assert_eq!(removed.path(), "/code/widget");
+
+        let calls = runner.calls.lock().expect("calls");
+        assert!(calls.iter().any(|args| {
+            args.ends_with(&[
+                "projects".to_owned(),
+                "add".to_owned(),
+                "/code/widget".to_owned(),
+                "--json".to_owned(),
+            ])
+        }));
+        assert!(calls.iter().any(|args| {
+            args.ends_with(&[
+                "projects".to_owned(),
+                "remove".to_owned(),
+                "/code/widget".to_owned(),
+                "--expected-repository".to_owned(),
+                "github.com/acme/widget".to_owned(),
+                "--json".to_owned(),
+            ])
+        }));
+    }
 
     #[test]
     fn authoritative_herdr_lifecycle_updates_only_the_target_session() {

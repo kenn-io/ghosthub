@@ -230,9 +230,17 @@ pub struct HostItem {
     herdr_diagnostic: Option<HostDiagnostic>,
     projects: Vec<ProjectItem>,
     directory_workspaces: Vec<DirectoryWorkspaceItem>,
-    kwt_initialized: bool,
-    kwt_refreshing: bool,
+    kwt_state: KwtState,
     kwt_diagnostic: Option<HostDiagnostic>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum KwtState {
+    Uninitialized,
+    Unavailable,
+    Ready,
+    Refreshing { available: bool },
+    Mutating,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -463,8 +471,7 @@ impl HostItem {
             herdr_diagnostic: None,
             projects: Vec::new(),
             directory_workspaces: Vec::new(),
-            kwt_initialized: false,
-            kwt_refreshing: false,
+            kwt_state: KwtState::Uninitialized,
             kwt_diagnostic: None,
         }
     }
@@ -544,7 +551,28 @@ impl HostItem {
 
     #[must_use]
     pub const fn kwt_refreshing(&self) -> bool {
-        self.kwt_refreshing
+        matches!(
+            self.kwt_state,
+            KwtState::Refreshing { .. } | KwtState::Mutating
+        )
+    }
+
+    #[must_use]
+    pub const fn kwt_initialized(&self) -> bool {
+        !matches!(self.kwt_state, KwtState::Uninitialized)
+    }
+
+    #[must_use]
+    pub const fn kwt_available(&self) -> bool {
+        matches!(
+            self.kwt_state,
+            KwtState::Ready | KwtState::Refreshing { available: true } | KwtState::Mutating
+        )
+    }
+
+    #[must_use]
+    pub const fn kwt_mutating(&self) -> bool {
+        matches!(self.kwt_state, KwtState::Mutating)
     }
 
     #[must_use]
@@ -560,6 +588,7 @@ impl HostItem {
     ) -> Self {
         self.projects = projects;
         self.directory_workspaces = directory_workspaces;
+        self.kwt_state = KwtState::Ready;
         self
     }
 
@@ -697,10 +726,26 @@ impl ClipboardRead {
 }
 
 pub enum WorkspaceEvent {
-    ClipboardWrite { text: String, primary: bool },
+    ClipboardWrite {
+        text: String,
+        primary: bool,
+    },
     ClipboardRead(ClipboardRead),
     ConfirmPaste,
+    KwtProjectMutationFinished {
+        action: KwtProjectAction,
+    },
+    KwtProjectMutationFailed {
+        action: KwtProjectAction,
+        message: String,
+    },
     Error(String),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum KwtProjectAction {
+    Add,
+    Remove,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1867,6 +1912,7 @@ struct Inner {
     kwt_refresh_generation: AtomicU64,
     kwt_discovery_cancel: Mutex<Option<CancellationToken>>,
     kwt_publication: Mutex<()>,
+    kwt_mutation_in_flight: AtomicBool,
     discovery: Arc<dyn WslDiscovery>,
     refresh_runtime: Arc<dyn RefreshRuntime>,
     attachment: Mutex<AttachmentState<AttachRequest>>,
@@ -1975,6 +2021,7 @@ impl Workspace {
                 kwt_refresh_generation: AtomicU64::new(0),
                 kwt_discovery_cancel: Mutex::new(None),
                 kwt_publication: Mutex::new(()),
+                kwt_mutation_in_flight: AtomicBool::new(false),
                 discovery: Arc::new(SystemWslDiscovery::new()),
                 refresh_runtime: Arc::new(ThreadRefreshRuntime),
                 attachment: Mutex::new(AttachmentState::new()),
@@ -2047,6 +2094,7 @@ impl Workspace {
                 kwt_refresh_generation: AtomicU64::new(0),
                 kwt_discovery_cancel: Mutex::new(None),
                 kwt_publication: Mutex::new(()),
+                kwt_mutation_in_flight: AtomicBool::new(false),
                 discovery,
                 refresh_runtime,
                 attachment: Mutex::new(AttachmentState::new()),
@@ -2103,6 +2151,7 @@ impl Workspace {
                 kwt_refresh_generation: AtomicU64::new(0),
                 kwt_discovery_cancel: Mutex::new(None),
                 kwt_publication: Mutex::new(()),
+                kwt_mutation_in_flight: AtomicBool::new(false),
                 discovery: Arc::new(SystemWslDiscovery::new()),
                 refresh_runtime: Arc::new(ThreadRefreshRuntime),
                 attachment: Mutex::new(AttachmentState::new()),
@@ -2153,6 +2202,82 @@ impl Workspace {
             .clone();
         self.start_refresh(config, executable);
         start_kwt_refresh(&self.inner, true);
+        Ok(())
+    }
+
+    /// Register one explicit absolute WSL checkout through the pinned KWT helper.
+    ///
+    /// The command and subsequent inventory read run on the background refresh
+    /// runtime. Ghosthub never scans the host or edits KWT configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the host selection is stale, KWT is unavailable,
+    /// another project mutation is running, or the task cannot be scheduled.
+    pub fn add_kwt_project(
+        &self,
+        host_id: &str,
+        endpoint: &str,
+        path: &str,
+    ) -> Result<(), WorkspaceError> {
+        let path = path.trim();
+        if !path.starts_with('/') {
+            return Err(WorkspaceError::new(
+                "Enter an absolute project path beginning with /.",
+            ));
+        }
+        self.start_kwt_project_mutation(
+            host_id,
+            endpoint,
+            KwtProjectMutationRequest::Add {
+                path: path.to_owned(),
+            },
+        )
+    }
+
+    /// Unregister one freshly identified WSL project through the pinned KWT helper.
+    ///
+    /// This changes KWT metadata only. It never deletes a repository or
+    /// worktree and never terminates a tmux session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the host or project identity is stale, another
+    /// project mutation is running, or the task cannot be scheduled.
+    pub fn remove_kwt_project(
+        &self,
+        host_id: &str,
+        endpoint: &str,
+        repository: &str,
+        path: &str,
+    ) -> Result<(), WorkspaceError> {
+        self.start_kwt_project_mutation(
+            host_id,
+            endpoint,
+            KwtProjectMutationRequest::Remove {
+                repository: repository.to_owned(),
+                path: path.to_owned(),
+            },
+        )
+    }
+
+    fn start_kwt_project_mutation(
+        &self,
+        host_id: &str,
+        endpoint: &str,
+        request: KwtProjectMutationRequest,
+    ) -> Result<(), WorkspaceError> {
+        let task = reserve_kwt_project_mutation(&self.inner, host_id, endpoint, request)?;
+        let task_inner = Arc::clone(&self.inner);
+        if let Err(error) = self.inner.refresh_runtime.spawn(
+            "ghosthub-kwt-project-mutation",
+            Box::new(move || run_kwt_project_mutation(&task_inner, &task)),
+        ) {
+            finish_kwt_project_mutation(&self.inner, None);
+            return Err(WorkspaceError::new(format!(
+                "start KWT project operation: {error}"
+            )));
+        }
         Ok(())
     }
 
@@ -3210,6 +3335,10 @@ impl Workspace {
     }
 
     fn push_operation_error(&self, error: String) {
+        self.push_operation_event(WorkspaceEvent::Error(error));
+    }
+
+    fn push_operation_event(&self, event: WorkspaceEvent) {
         let mut events = self
             .inner
             .operation_events
@@ -3218,7 +3347,7 @@ impl Workspace {
         if events.len() >= MAX_EVENTS_PER_DRAIN {
             events.pop_front();
         }
-        events.push_back(WorkspaceEvent::Error(error));
+        events.push_back(event);
     }
 
     fn finish_session_kill(&self, target: &LiveSessionTarget) {
@@ -4786,8 +4915,7 @@ fn invalidate_kwt_inventory(inner: &Inner) {
     {
         host.projects.clear();
         host.directory_workspaces.clear();
-        host.kwt_initialized = false;
-        host.kwt_refreshing = false;
+        host.kwt_state = KwtState::Uninitialized;
         host.kwt_diagnostic = None;
     }
 }
@@ -4884,7 +5012,7 @@ fn start_initial_kwt_refresh(inner: &Arc<Inner>) {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .iter()
         .find(|host| host.id == "wsl")
-        .is_some_and(|host| !host.kwt_initialized && !host.kwt_refreshing);
+        .is_some_and(|host| !host.kwt_initialized() && !host.kwt_refreshing());
     if should_start {
         start_kwt_refresh(inner, false);
     }
@@ -4898,7 +5026,34 @@ struct KwtRefresh {
     generation: u64,
 }
 
+#[derive(Clone)]
+enum KwtProjectMutationRequest {
+    Add { path: String },
+    Remove { repository: String, path: String },
+}
+
+impl KwtProjectMutationRequest {
+    const fn action(&self) -> KwtProjectAction {
+        match self {
+            Self::Add { .. } => KwtProjectAction::Add,
+            Self::Remove { .. } => KwtProjectAction::Remove,
+        }
+    }
+}
+
+struct KwtProjectMutationTask {
+    host: RuntimeHost,
+    endpoint: host::WslEndpoint,
+    runtime: host::WslRuntimeIdentity,
+    cancellation: CancellationToken,
+    generation: u64,
+    request: KwtProjectMutationRequest,
+}
+
 fn reserve_kwt_refresh(inner: &Arc<Inner>, supersede: bool) -> Option<KwtRefresh> {
+    if inner.kwt_mutation_in_flight.load(Ordering::Acquire) {
+        return None;
+    }
     if inner
         .wsl_config
         .as_ref()
@@ -4925,7 +5080,7 @@ fn reserve_kwt_refresh(inner: &Arc<Inner>, supersede: bool) -> Option<KwtRefresh
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
             .find(|item| item.id == "wsl" && item.endpoint == endpoint.distro())
-            .is_some_and(|item| item.kwt_refreshing)
+            .is_some_and(HostItem::kwt_refreshing)
     {
         return None;
     }
@@ -4935,6 +5090,9 @@ fn reserve_kwt_refresh(inner: &Arc<Inner>, supersede: bool) -> Option<KwtRefresh
             .kwt_publication
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if inner.kwt_mutation_in_flight.load(Ordering::Acquire) {
+            return None;
+        }
         let generation = inner.kwt_refresh_generation.fetch_add(1, Ordering::AcqRel) + 1;
         if let Some(previous) = inner
             .kwt_discovery_cancel
@@ -4952,7 +5110,9 @@ fn reserve_kwt_refresh(inner: &Arc<Inner>, supersede: bool) -> Option<KwtRefresh
             .iter_mut()
             .find(|item| item.id == "wsl" && item.endpoint == endpoint.distro())
         {
-            item.kwt_refreshing = true;
+            item.kwt_state = KwtState::Refreshing {
+                available: item.kwt_available(),
+            };
             inner.revision.fetch_add(1, Ordering::Release);
         }
         generation
@@ -4964,6 +5124,244 @@ fn reserve_kwt_refresh(inner: &Arc<Inner>, supersede: bool) -> Option<KwtRefresh
         cancellation,
         generation,
     })
+}
+
+fn reserve_kwt_project_mutation(
+    inner: &Arc<Inner>,
+    host_id: &str,
+    endpoint: &str,
+    request: KwtProjectMutationRequest,
+) -> Result<KwtProjectMutationTask, WorkspaceError> {
+    if host_id != "wsl" {
+        return Err(WorkspaceError::new(
+            "KWT projects are available only on WSL",
+        ));
+    }
+    if inner
+        .kwt_mutation_in_flight
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return Err(WorkspaceError::new(
+            "another KWT project operation is already running",
+        ));
+    }
+    match capture_kwt_project_mutation(inner, endpoint, request) {
+        Ok(task) => Ok(task),
+        Err(error) => {
+            inner.kwt_mutation_in_flight.store(false, Ordering::Release);
+            Err(error)
+        }
+    }
+}
+
+fn capture_kwt_project_mutation(
+    inner: &Arc<Inner>,
+    endpoint: &str,
+    request: KwtProjectMutationRequest,
+) -> Result<KwtProjectMutationTask, WorkspaceError> {
+    let (host, resolved_endpoint, runtime) = inner
+        .host
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .filter(|published| published.value.snapshot.endpoint().distro() == endpoint)
+        .map(|published| {
+            (
+                published.value.host.clone(),
+                published.value.snapshot.endpoint().clone(),
+                published.value.snapshot.runtime().clone(),
+            )
+        })
+        .ok_or_else(|| WorkspaceError::new("refresh WSL before changing KWT projects"))?;
+    {
+        let hosts = inner
+            .hosts
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let item = hosts
+            .iter()
+            .find(|item| item.id == "wsl" && item.endpoint == endpoint)
+            .ok_or_else(|| WorkspaceError::new("the selected WSL host is no longer available"))?;
+        if item.connection != HostConnectionState::Ready || item.kwt_diagnostic.is_some() {
+            return Err(WorkspaceError::new(
+                "refresh KWT inventory before changing projects",
+            ));
+        }
+        if !item.kwt_available() {
+            return Err(WorkspaceError::new(
+                "the pinned KWT helper is unavailable in this build",
+            ));
+        }
+        if let KwtProjectMutationRequest::Remove {
+            repository, path, ..
+        } = &request
+            && !item
+                .projects
+                .iter()
+                .any(|project| project.repository == *repository && project.path == *path)
+        {
+            return Err(WorkspaceError::new(
+                "the selected KWT project is no longer in the current inventory",
+            ));
+        }
+    }
+    let cancellation = CancellationToken::new();
+    let generation = {
+        let _publication = inner
+            .kwt_publication
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let generation = inner.kwt_refresh_generation.fetch_add(1, Ordering::AcqRel) + 1;
+        if let Some(previous) = inner
+            .kwt_discovery_cancel
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            previous.cancel();
+        }
+        let _snapshot_write = begin_snapshot_write(inner);
+        if let Some(item) = inner
+            .hosts
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter_mut()
+            .find(|item| item.id == "wsl" && item.endpoint == endpoint)
+        {
+            item.kwt_state = KwtState::Mutating;
+            inner.revision.fetch_add(1, Ordering::Release);
+        }
+        generation
+    };
+    Ok(KwtProjectMutationTask {
+        host,
+        endpoint: resolved_endpoint,
+        runtime,
+        cancellation,
+        generation,
+        request,
+    })
+}
+
+fn run_kwt_project_mutation(inner: &Arc<Inner>, task: &KwtProjectMutationTask) {
+    let action = task.request.action();
+    let mutation = match &task.request {
+        KwtProjectMutationRequest::Add { path } => {
+            task.host
+                .register_kwt_project(&task.endpoint, &task.runtime, path, &task.cancellation)
+        }
+        KwtProjectMutationRequest::Remove {
+            repository, path, ..
+        } => task.host.remove_kwt_project(
+            &task.endpoint,
+            &task.runtime,
+            path,
+            repository,
+            &task.cancellation,
+        ),
+    };
+    match mutation {
+        Ok(_project) => {
+            let refreshed =
+                task.host
+                    .discover_kwt(&task.endpoint, &task.runtime, &task.cancellation);
+            match refreshed {
+                Ok(Some(inventory)) => publish_kwt_inventory(
+                    inner,
+                    task.generation,
+                    &task.endpoint,
+                    &task.runtime,
+                    &inventory,
+                ),
+                Ok(None) => {
+                    publish_kwt_unavailable(inner, task.generation, &task.endpoint, &task.runtime);
+                }
+                Err(error) => publish_kwt_error(
+                    inner,
+                    task.generation,
+                    &task.endpoint,
+                    &task.runtime,
+                    HostDiagnostic::new(error.kind(), error.to_string()),
+                ),
+            }
+            push_operation_event(inner, WorkspaceEvent::KwtProjectMutationFinished { action });
+        }
+        Err(error) => {
+            publish_kwt_mutation_failure(inner, task.generation, &task.endpoint, &task.runtime);
+            push_operation_event(
+                inner,
+                WorkspaceEvent::KwtProjectMutationFailed {
+                    action,
+                    message: error.to_string(),
+                },
+            );
+        }
+    }
+    finish_kwt_project_mutation(inner, Some((&task.endpoint, &task.runtime)));
+}
+
+fn publish_kwt_mutation_failure(
+    inner: &Inner,
+    generation: u64,
+    endpoint: &host::WslEndpoint,
+    runtime: &host::WslRuntimeIdentity,
+) {
+    publish_kwt(inner, generation, endpoint, runtime, |host| {
+        host.kwt_state = KwtState::Ready;
+    });
+}
+
+fn finish_kwt_project_mutation(
+    inner: &Inner,
+    target: Option<(&host::WslEndpoint, &host::WslRuntimeIdentity)>,
+) {
+    let _snapshot_write = begin_snapshot_write(inner);
+    if let Some((endpoint, runtime)) = target {
+        let current_matches = inner
+            .host
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .is_some_and(|published| {
+                published.value.snapshot.endpoint() == endpoint
+                    && published.value.snapshot.runtime() == runtime
+            });
+        if current_matches
+            && let Some(host) = inner
+                .hosts
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter_mut()
+                .find(|host| host.id == "wsl" && host.endpoint == endpoint.distro())
+        {
+            host.kwt_state = KwtState::Ready;
+        }
+    } else {
+        for host in inner
+            .hosts
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter_mut()
+        {
+            if host.kwt_mutating() {
+                host.kwt_state = KwtState::Ready;
+            }
+        }
+    }
+    inner.kwt_mutation_in_flight.store(false, Ordering::Release);
+    inner.revision.fetch_add(1, Ordering::Release);
+}
+
+fn push_operation_event(inner: &Inner, event: WorkspaceEvent) {
+    let mut events = inner
+        .operation_events
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if events.len() >= MAX_EVENTS_PER_DRAIN {
+        events.pop_front();
+    }
+    events.push_back(event);
 }
 
 fn start_kwt_refresh(inner: &Arc<Inner>, supersede: bool) -> bool {
@@ -5113,8 +5511,7 @@ fn publish_kwt_inventory(
                 )
             })
             .collect();
-        host.kwt_initialized = true;
-        host.kwt_refreshing = false;
+        host.kwt_state = KwtState::Ready;
         host.kwt_diagnostic = None;
     });
 }
@@ -5127,8 +5524,11 @@ fn publish_kwt_error(
     diagnostic: HostDiagnostic,
 ) {
     publish_kwt(inner, generation, endpoint, runtime, |host| {
-        host.kwt_initialized = true;
-        host.kwt_refreshing = false;
+        host.kwt_state = if host.kwt_available() {
+            KwtState::Ready
+        } else {
+            KwtState::Unavailable
+        };
         host.kwt_diagnostic = Some(diagnostic);
     });
 }
@@ -5142,8 +5542,7 @@ fn publish_kwt_unavailable(
     publish_kwt(inner, generation, endpoint, runtime, |host| {
         host.projects.clear();
         host.directory_workspaces.clear();
-        host.kwt_initialized = true;
-        host.kwt_refreshing = false;
+        host.kwt_state = KwtState::Unavailable;
         host.kwt_diagnostic = None;
     });
 }
@@ -6965,8 +7364,7 @@ fn set_inventory_state(inner: &Inner, state: WorkspaceContent) {
                     if host.endpoint != *endpoint {
                         host.projects.clear();
                         host.directory_workspaces.clear();
-                        host.kwt_initialized = false;
-                        host.kwt_refreshing = false;
+                        host.kwt_state = KwtState::Uninitialized;
                         host.kwt_diagnostic = None;
                     }
                     host.endpoint.clone_from(endpoint);
@@ -10727,6 +11125,7 @@ mod tests {
         let projected = workspace.snapshot();
         assert!(matches!(projected.content(), WorkspaceContent::Shell));
         let host = &projected.hosts()[0];
+        assert!(host.kwt_available());
         assert_eq!(host.projects()[0].name(), "project");
         assert_eq!(host.projects()[0].worktrees()[0].branch(), "main");
         assert!(host.projects()[0].worktrees()[0].session_available());
@@ -10746,6 +11145,28 @@ mod tests {
             !refreshed.hosts()[0].projects()[0].worktrees()[0].session_available(),
             "the fast tmux refresh reconciles availability without rerunning KWT"
         );
+
+        workspace
+            .inner
+            .kwt_mutation_in_flight
+            .store(true, Ordering::Release);
+        assert!(
+            !start_kwt_refresh(&workspace.inner, true),
+            "inventory reads cannot supersede a project mutation"
+        );
+        {
+            let mut hosts = workspace.inner.hosts.write().expect("hosts");
+            hosts[0].kwt_state = KwtState::Mutating;
+        }
+        publish_kwt_mutation_failure(&workspace.inner, 7, snapshot.endpoint(), snapshot.runtime());
+        finish_kwt_project_mutation(
+            &workspace.inner,
+            Some((snapshot.endpoint(), snapshot.runtime())),
+        );
+        let failed = workspace.snapshot();
+        assert_eq!(failed.hosts()[0].projects()[0].name(), "project");
+        assert!(failed.hosts()[0].kwt_diagnostic().is_none());
+        assert!(!failed.hosts()[0].kwt_mutating());
     }
 
     #[test]

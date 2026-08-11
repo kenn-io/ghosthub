@@ -561,6 +561,12 @@ group passes one user-supplied absolute checkout path to kwt's noninteractive
 registration command, then refreshes inventory. Immediately before
 registration, Ghosthub re-resolves the host ID and rejects the operation if its
 endpoint changed while Add Project was open. No filesystem scan occurs.
+The Rust Windows app exposes the same registration flow for its WSL host.
+Removing a registered project is separately confirmed and delegated to KWT
+with the exact registered path and expected credential-free repository
+identity. This unregisters metadata only: repositories, worktrees, and tmux
+sessions remain untouched. Reads and mutations stay off the UI thread, and the
+last usable project tree remains visible while either is in flight.
 
 On experimental Windows hosts, an explicit Install Bundled kwt action probes
 the process architecture, uploads the matching pinned AMD64 or ARM64 helper,
@@ -568,9 +574,10 @@ verifies its SHA-256 and exact revision, and activates it at
 `%USERPROFILE%\.ghosthub\helpers\kwt\<revision>\kwt.exe`. Inventory and
 workspace operations use only that exact per-user helper and never resolve
 `kwt.exe` from `PATH`.
-Project registration is not yet supported on Windows, so its Add Project
-actions are hidden. Inventory never installs or updates the unsigned Windows
-helper automatically.
+Project registration is not yet supported on native remote Windows hosts, so
+their Add Project actions are hidden. This does not apply to the Rust app's WSL
+host, which executes the pinned Linux helper. Inventory never installs or
+updates the unsigned Windows helper automatically.
 
 Direct tmux discovery marks a default-server worktree session as running when
 its exact kwt session name is present and the host remains reachable. Cached

@@ -84,6 +84,25 @@ pub struct KwtProject {
     last_touched: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct KwtProjectMutation {
+    status: String,
+    project: KwtProject,
+}
+
+#[derive(Debug, Deserialize)]
+struct KwtCommandErrorEnvelope {
+    error: KwtCommandError,
+}
+
+#[derive(Debug, Deserialize)]
+struct KwtCommandError {
+    code: String,
+    message: String,
+    retryable: bool,
+}
+
 impl KwtProject {
     #[must_use]
     pub fn repository(&self) -> &str {
@@ -101,6 +120,34 @@ impl KwtProject {
     pub fn last_touched(&self) -> Option<&str> {
         self.last_touched.as_deref()
     }
+}
+
+pub(crate) fn parse_project_mutation(
+    output: &[u8],
+    expected_status: &str,
+) -> Result<KwtProject, String> {
+    let response: KwtProjectMutation =
+        serde_json::from_slice(output).map_err(|error| error.to_string())?;
+    if response.status != expected_status {
+        return Err(format!(
+            "expected KWT project status {expected_status:?}, received {:?}",
+            response.status
+        ));
+    }
+    Ok(response.project)
+}
+
+pub(crate) fn project_command_error(output: &[u8]) -> Option<String> {
+    let response: KwtCommandErrorEnvelope = serde_json::from_slice(output).ok()?;
+    let retry = if response.error.retryable {
+        " Try again."
+    } else {
+        ""
+    };
+    Some(format!(
+        "{} ({}).{retry}",
+        response.error.message, response.error.code
+    ))
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -255,7 +302,7 @@ impl KwtInventory {
 
 #[cfg(test)]
 mod tests {
-    use super::{KwtBundle, KwtInventory};
+    use super::{KwtBundle, KwtInventory, parse_project_mutation, project_command_error};
 
     #[test]
     fn bundle_rejects_ambiguous_metadata_and_hides_payload_in_debug() {
@@ -292,5 +339,33 @@ mod tests {
             b"[]",
         );
         assert!(error.is_err());
+    }
+
+    #[test]
+    fn project_mutations_require_the_expected_machine_status() {
+        let registered = parse_project_mutation(
+            br#"{"status":"registered","project":{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null}}"#,
+            "registered",
+        )
+        .expect("valid registration");
+        assert_eq!(registered.path(), "/code/widget");
+        assert!(
+            parse_project_mutation(
+                br#"{"status":"unregistered","project":{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null}}"#,
+                "registered",
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn project_command_errors_preserve_retry_guidance() {
+        assert_eq!(
+            project_command_error(
+                br#"{"error":{"code":"registration_changed","message":"the project changed","retryable":true}}"#,
+            )
+            .as_deref(),
+            Some("the project changed (registration_changed). Try again.")
+        );
     }
 }

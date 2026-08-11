@@ -83,7 +83,7 @@ bytes in, resize, modes queryable, semantic effects, and Rust-owned paint
 state out. No public crate or UI API presumes the outcome.
 
 The exact kwt revision in repository-root `KWT_REVISION` is
-bd3c2e0d27548c63c3a25a4811eb364bc3cd8c43. That source uses KWT_HOME or the
+1afb99003adaf686012be693a66adfff4ebfd2a1. That source uses KWT_HOME or the
 fixed $HOME/.config/kwt default. It does not read Ghosthub init.toml,
 config_home, or XDG_CONFIG_HOME. Rust must not reproduce the unsupported
 Ghosthub init.toml scanner. The two existing Swift copies are outside the Rust
@@ -620,6 +620,23 @@ publishes, Rust performs one background KWT read and then refreshes it every 60
 seconds only while the window is active. A manual host refresh supersedes both
 read generations. Failed or in-flight KWT reads retain the last usable project
 tree and affect neither session availability nor terminal presentation.
+
+The Projects header exposes **Add Project** whenever the current WSL host has
+usable KWT inventory. It accepts one explicit POSIX absolute checkout path and
+delegates registration to the pinned helper's `projects add <path> --json`
+command. Each registered project also exposes a confirmed **Remove Project**
+action. Removal first re-reads project inventory, then invokes
+`projects remove <exact-path> --expected-repository <credential-free-id>
+--json`; KWT performs the final identity check. Unregistration changes KWT
+metadata only. It cannot delete the repository or worktrees and cannot stop or
+kill tmux sessions. Ghosthub never scans WSL and never edits KWT configuration.
+
+Project mutations use a serialized background lane distinct from GPUI and the
+terminal worker. The last usable project tree remains visible while a command
+runs. A mutation supersedes only older KWT reads, and ordinary KWT cadence
+waits for the mutation and its authoritative post-operation inventory read to
+finish. Commands that may already have crossed the process boundary are not
+cancelled or silently retried.
 
 The Rust sidebar projects KWT-owned default-socket tmux sessions under their
 project/worktree rows and removes only those exact sessions from the unbound

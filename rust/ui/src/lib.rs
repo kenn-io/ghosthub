@@ -19,8 +19,8 @@ use model::PortStatus;
 use surface::{CellStyle, Damage, GridSize, Rgb, SurfaceFrame, SurfaceStore};
 use workspace::{
     HerdrSessionState, HostConnectionState, HostItem, KeyEvent as InputKeyEvent, KeyInput,
-    Modifiers as InputModifiers, MouseAction, MouseButton, MouseInput, NamedKey, SessionName,
-    SessionSelection, Workspace, WorkspaceContent, WorkspaceEvent,
+    KwtProjectAction, Modifiers as InputModifiers, MouseAction, MouseButton, MouseInput, NamedKey,
+    SessionName, SessionSelection, Workspace, WorkspaceContent, WorkspaceEvent,
 };
 
 pub const WINDOW_TITLE: &str = "Ghosthub";
@@ -283,6 +283,7 @@ pub struct RootView {
     workspace: Workspace,
     focus: FocusHandle,
     create_focus: FocusHandle,
+    project_focus: FocusHandle,
     kill_focus: FocusHandle,
     diagnostic: Option<String>,
     paste_confirmation: bool,
@@ -300,6 +301,8 @@ pub struct RootView {
     pointer: TerminalPointer,
     sidebar_visible: bool,
     new_session: Option<NewSessionDraft>,
+    project_dialog: Option<ProjectDialog>,
+    restore_focus: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -314,6 +317,35 @@ struct NewSessionDraft {
 enum NewSessionKind {
     Tmux,
     Herdr,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ProjectDialog {
+    Add {
+        host_id: String,
+        endpoint: String,
+        path: String,
+        submitting: bool,
+        error: Option<String>,
+    },
+    Remove {
+        host_id: String,
+        endpoint: String,
+        name: String,
+        repository: String,
+        path: String,
+        submitting: bool,
+        error: Option<String>,
+    },
+}
+
+impl ProjectDialog {
+    const fn action(&self) -> KwtProjectAction {
+        match self {
+            Self::Add { .. } => KwtProjectAction::Add,
+            Self::Remove { .. } => KwtProjectAction::Remove,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -622,6 +654,7 @@ impl RootView {
             workspace,
             focus: cx.focus_handle(),
             create_focus: cx.focus_handle(),
+            project_focus: cx.focus_handle(),
             kill_focus: cx.focus_handle(),
             diagnostic: None,
             paste_confirmation: false,
@@ -639,6 +672,8 @@ impl RootView {
             pointer: TerminalPointer::default(),
             sidebar_visible: true,
             new_session: None,
+            project_dialog: None,
+            restore_focus: false,
         };
         view.resize_for_window(window);
         view
@@ -732,6 +767,164 @@ impl RootView {
         self.new_session = None;
         window.focus(&self.focus);
         cx.notify();
+    }
+
+    fn open_add_project(
+        &mut self,
+        host_id: &str,
+        endpoint: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.project_dialog = Some(ProjectDialog::Add {
+            host_id: host_id.to_owned(),
+            endpoint: endpoint.to_owned(),
+            path: String::new(),
+            submitting: false,
+            error: None,
+        });
+        self.diagnostic = None;
+        window.focus(&self.project_focus);
+        cx.notify();
+    }
+
+    fn open_remove_project(
+        &mut self,
+        host_id: &str,
+        endpoint: &str,
+        project: &workspace::ProjectItem,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.project_dialog = Some(ProjectDialog::Remove {
+            host_id: host_id.to_owned(),
+            endpoint: endpoint.to_owned(),
+            name: project.name().to_owned(),
+            repository: project.repository().to_owned(),
+            path: project.path().to_owned(),
+            submitting: false,
+            error: None,
+        });
+        self.diagnostic = None;
+        window.focus(&self.project_focus);
+        cx.notify();
+    }
+
+    fn cancel_project_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self
+            .project_dialog
+            .as_ref()
+            .is_some_and(|dialog| match dialog {
+                ProjectDialog::Add { submitting, .. }
+                | ProjectDialog::Remove { submitting, .. } => *submitting,
+            })
+        {
+            return;
+        }
+        self.project_dialog = None;
+        window.focus(&self.focus);
+        cx.notify();
+    }
+
+    fn submit_project_dialog(&mut self, cx: &mut Context<Self>) {
+        let result = match self.project_dialog.as_ref() {
+            Some(ProjectDialog::Add {
+                host_id,
+                endpoint,
+                path,
+                submitting: false,
+                ..
+            }) => self.workspace.add_kwt_project(host_id, endpoint, path),
+            Some(ProjectDialog::Remove {
+                host_id,
+                endpoint,
+                repository,
+                path,
+                submitting: false,
+                ..
+            }) => self
+                .workspace
+                .remove_kwt_project(host_id, endpoint, repository, path),
+            _ => return,
+        };
+        match result {
+            Ok(()) => {
+                if let Some(dialog) = &mut self.project_dialog {
+                    match dialog {
+                        ProjectDialog::Add {
+                            submitting, error, ..
+                        }
+                        | ProjectDialog::Remove {
+                            submitting, error, ..
+                        } => {
+                            *submitting = true;
+                            *error = None;
+                        }
+                    }
+                }
+            }
+            Err(error) => {
+                if let Some(dialog) = &mut self.project_dialog {
+                    match dialog {
+                        ProjectDialog::Add { error: inline, .. }
+                        | ProjectDialog::Remove { error: inline, .. } => {
+                            *inline = Some(error.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    fn on_project_dialog_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let key = event.keystroke.key.to_ascii_lowercase();
+        if key == "escape" && !event.is_held {
+            self.cancel_project_dialog(window, cx);
+            cx.stop_propagation();
+            return;
+        }
+        if key == "enter" && !event.is_held {
+            self.submit_project_dialog(cx);
+            cx.stop_propagation();
+            return;
+        }
+        let Some(ProjectDialog::Add {
+            path,
+            submitting: false,
+            error,
+            ..
+        }) = &mut self.project_dialog
+        else {
+            cx.stop_propagation();
+            return;
+        };
+        *error = None;
+        if is_paste_shortcut(&event.keystroke) {
+            if !event.is_held
+                && let Some(text) = cx.read_from_clipboard().and_then(|item| item.text())
+            {
+                path.extend(text.chars().filter(|character| !character.is_control()));
+                cx.notify();
+            }
+        } else if key == "backspace" {
+            path.pop();
+            cx.notify();
+        } else if !event.keystroke.modifiers.control
+            && !event.keystroke.modifiers.alt
+            && !event.keystroke.modifiers.platform
+            && !event.keystroke.modifiers.function
+            && let Some(text) = &event.keystroke.key_char
+        {
+            path.extend(text.chars().filter(|character| !character.is_control()));
+            cx.notify();
+        }
+        cx.stop_propagation();
     }
 
     fn submit_new_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -985,6 +1178,36 @@ impl RootView {
                     }
                 }
                 WorkspaceEvent::ConfirmPaste => self.paste_confirmation = true,
+                WorkspaceEvent::KwtProjectMutationFinished { action, .. } => {
+                    if self
+                        .project_dialog
+                        .as_ref()
+                        .is_some_and(|dialog| dialog.action() == action)
+                    {
+                        self.project_dialog = None;
+                        self.restore_focus = true;
+                    }
+                    self.diagnostic = None;
+                }
+                WorkspaceEvent::KwtProjectMutationFailed { action, message } => {
+                    if let Some(dialog) = &mut self.project_dialog
+                        && dialog.action() == action
+                    {
+                        match dialog {
+                            ProjectDialog::Add {
+                                submitting, error, ..
+                            }
+                            | ProjectDialog::Remove {
+                                submitting, error, ..
+                            } => {
+                                *submitting = false;
+                                *error = Some(message);
+                            }
+                        }
+                    } else {
+                        self.diagnostic = Some(message);
+                    }
+                }
                 WorkspaceEvent::Error(error) => self.diagnostic = Some(error),
             }
         }
@@ -1863,6 +2086,203 @@ impl RootView {
         )
     }
 
+    #[allow(clippy::too_many_lines)] // Declarative GPUI dialog hierarchy.
+    fn project_overlay(&self, window: &Window, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let dialog = self.project_dialog.as_ref()?;
+        let focused = self.project_focus.is_focused(window);
+        let (title, body, action_label, submitting, can_submit, error) =
+            match dialog {
+                ProjectDialog::Add {
+                    path,
+                    submitting,
+                    error,
+                    ..
+                } => {
+                    let valid = path.trim().starts_with('/');
+                    let text = if path.is_empty() && !focused {
+                        "/absolute/path/to/repository".to_owned()
+                    } else if path.is_empty() {
+                        "▏".to_owned()
+                    } else {
+                        format!("{path}▏")
+                    };
+                    let input = div()
+                        .id("kwt-project-path-input")
+                        .m_4()
+                        .px_3()
+                        .h(px(38.0))
+                        .flex()
+                        .items_center()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(rgb(if focused { 0x4a_8f_cf } else { 0x3a_404c }))
+                        .bg(rgb(0x0f_1218))
+                        .cursor_text()
+                        .text_sm()
+                        .text_color(rgb(if path.is_empty() && !focused {
+                            0x72_7986
+                        } else {
+                            0xe1_e5ec
+                        }))
+                        .child(text)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            window.focus(&this.project_focus);
+                            cx.notify();
+                        }))
+                        .into_any_element();
+                    (
+                        "Add Project",
+                        input,
+                        if *submitting {
+                            "Adding…"
+                        } else {
+                            "Add Project"
+                        },
+                        *submitting,
+                        valid && !*submitting,
+                        error.as_deref(),
+                    )
+                }
+                ProjectDialog::Remove {
+                    endpoint,
+                    name,
+                    path,
+                    submitting,
+                    error,
+                    ..
+                } => {
+                    let body =
+                        div()
+                            .px_4()
+                            .py_4()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .text_sm()
+                            .text_color(rgb(0xb6_bcc7))
+                            .child(format!("Remove “{name}” from {endpoint}?"))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(0x8f_96_a3))
+                                    .child(path.clone()),
+                            )
+                            .child(div().text_xs().text_color(rgb(0x8f_96_a3)).child(
+                                "The repository, worktrees, and tmux sessions are not deleted.",
+                            ))
+                            .into_any_element();
+                    (
+                        "Remove Project",
+                        body,
+                        if *submitting { "Removing…" } else { "Remove" },
+                        *submitting,
+                        !*submitting,
+                        error.as_deref(),
+                    )
+                }
+            };
+
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(rgba(0x00_00_00_80))
+                .child(
+                    div()
+                        .id("kwt-project-dialog")
+                        .track_focus(&self.project_focus)
+                        .w(px(460.0))
+                        .flex()
+                        .flex_col()
+                        .rounded_lg()
+                        .border_1()
+                        .border_color(rgb(0x36_3c48))
+                        .bg(rgb(0x18_1b22))
+                        .shadow_lg()
+                        .on_key_down(cx.listener(|this, event, window, cx| {
+                            this.on_project_dialog_key_down(event, window, cx);
+                        }))
+                        .child(
+                            div()
+                                .px_4()
+                                .py_3()
+                                .border_b_1()
+                                .border_color(rgb(0x2a_2f39))
+                                .text_sm()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(rgb(0xe0_e4eb))
+                                .child(title),
+                        )
+                        .child(body)
+                        .children(error.map(|message| {
+                            div()
+                                .px_4()
+                                .pb_3()
+                                .text_xs()
+                                .text_color(rgb(0xd0_7070))
+                                .child(message.to_owned())
+                        }))
+                        .child(
+                            div()
+                                .px_4()
+                                .py_3()
+                                .border_t_1()
+                                .border_color(rgb(0x2a_2f39))
+                                .flex()
+                                .items_center()
+                                .justify_end()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .id("cancel-kwt-project")
+                                        .px_3()
+                                        .py_1()
+                                        .rounded_sm()
+                                        .text_sm()
+                                        .text_color(rgb(if submitting {
+                                            0x72_7986
+                                        } else {
+                                            0xb6_bcc7
+                                        }))
+                                        .child("Cancel")
+                                        .when(!submitting, |element| {
+                                            element
+                                                .cursor_pointer()
+                                                .hover(|style| style.bg(rgb(0x29_2e38)))
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.cancel_project_dialog(window, cx);
+                                                }))
+                                        }),
+                                )
+                                .child(
+                                    div()
+                                        .id("submit-kwt-project")
+                                        .px_3()
+                                        .py_1()
+                                        .rounded_sm()
+                                        .bg(rgb(if can_submit { 0x1d_5f9a } else { 0x2b_3039 }))
+                                        .text_sm()
+                                        .text_color(rgb(if can_submit {
+                                            0xf1_f5fa
+                                        } else {
+                                            0x72_7986
+                                        }))
+                                        .child(action_label)
+                                        .when(can_submit, |element| {
+                                            element.cursor_pointer().on_click(cx.listener(
+                                                |this, _, _, cx| this.submit_project_dialog(cx),
+                                            ))
+                                        }),
+                                ),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
     fn session_kill_overlay(
         &self,
         confirmation: &workspace::SessionKillConfirmation,
@@ -2261,7 +2681,8 @@ impl RootView {
         if groups.herdr {
             host_tree = host_tree.child(Self::herdr_tree(host_index, host, &herdr_sessions, cx));
         }
-        if !host.projects().is_empty()
+        if host.kwt_available()
+            || !host.projects().is_empty()
             || !host.directory_workspaces().is_empty()
             || host.kwt_diagnostic().is_some()
         {
@@ -2429,6 +2850,7 @@ impl RootView {
         tree.into_any_element()
     }
 
+    #[allow(clippy::too_many_lines)] // Declarative GPUI tree hierarchy.
     fn project_tree(
         host_index: usize,
         host: &HostItem,
@@ -2437,14 +2859,18 @@ impl RootView {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let active = active_session_selection(content);
+        let can_mutate = host.connection() == HostConnectionState::Ready
+            && host.kwt_available()
+            && host.kwt_diagnostic().is_none()
+            && !host.kwt_mutating();
         let mut tree = div()
             .ml(px(18.0))
             .border_l_1()
             .border_color(rgb(0x25_2932))
             .flex()
             .flex_col()
-            .child(
-                div()
+            .child({
+                let mut header = div()
                     .h(px(24.0))
                     .flex()
                     .items_center()
@@ -2453,8 +2879,39 @@ impl RootView {
                     .text_xs()
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(rgb(0x73_7a87))
-                    .child("PROJECTS"),
-            );
+                    .child(div().flex_1().child("PROJECTS"));
+                if host.kwt_refreshing() {
+                    header = header.child(
+                        div()
+                            .px_1()
+                            .text_xs()
+                            .text_color(rgb(0x6f_7682))
+                            .child(if host.kwt_mutating() { "…" } else { "↻" }),
+                    );
+                }
+                if can_mutate {
+                    let host_id = host.id().to_owned();
+                    let endpoint = host.endpoint().to_owned();
+                    header = header.child(
+                        div()
+                            .id(("add-kwt-project", host_index))
+                            .size(px(22.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded_sm()
+                            .cursor_pointer()
+                            .text_sm()
+                            .text_color(rgb(0x8f_96_a3))
+                            .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xd2_d7_df)))
+                            .child("+")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_add_project(&host_id, &endpoint, window, cx);
+                            })),
+                    );
+                }
+                header
+            });
         if let Some(diagnostic) = host.kwt_diagnostic() {
             tree = tree.child(Self::kwt_diagnostic_row(
                 host_index,
@@ -2463,32 +2920,60 @@ impl RootView {
             ));
         }
         for (project_index, project) in host.projects().iter().enumerate() {
-            tree = tree.child(
-                div()
-                    .h(px(SESSION_ROW_HEIGHT))
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .pl(px(14.0))
-                    .pr_2()
-                    .text_sm()
-                    .text_color(rgb(0xb9_bfca))
-                    .child(
-                        div()
-                            .w(px(18.0))
-                            .flex_none()
-                            .text_xs()
-                            .text_color(rgb(0x7f_8794))
-                            .child("▾"),
-                    )
-                    .child(
-                        div()
-                            .min_w_0()
-                            .flex_1()
-                            .truncate()
-                            .child(project.name().to_owned()),
-                    ),
-            );
+            let project_for_remove = project.clone();
+            let host_id = host.id().to_owned();
+            let endpoint = host.endpoint().to_owned();
+            let mut row = div()
+                .h(px(SESSION_ROW_HEIGHT))
+                .flex()
+                .items_center()
+                .gap_1()
+                .pl(px(14.0))
+                .pr_2()
+                .text_sm()
+                .text_color(rgb(0xb9_bfca))
+                .child(
+                    div()
+                        .w(px(18.0))
+                        .flex_none()
+                        .text_xs()
+                        .text_color(rgb(0x7f_8794))
+                        .child("▾"),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .truncate()
+                        .child(project.name().to_owned()),
+                );
+            if can_mutate {
+                row = row.child(
+                    div()
+                        .id(("remove-kwt-project", project_index))
+                        .size(px(22.0))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .text_sm()
+                        .text_color(rgb(0x7f_8794))
+                        .hover(|style| style.bg(rgb(0x35_2329)).text_color(rgb(0xd0_7070)))
+                        .child("×")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_remove_project(
+                                &host_id,
+                                &endpoint,
+                                &project_for_remove,
+                                window,
+                                cx,
+                            );
+                        })),
+                );
+            }
+            tree = tree.child(row);
             for (worktree_index, worktree) in project.worktrees().iter().enumerate() {
                 let selection =
                     SessionSelection::new(host.id(), host.endpoint(), worktree.session_name());
@@ -3792,15 +4277,21 @@ impl Focusable for RootView {
 }
 
 impl Render for RootView {
+    #[allow(clippy::too_many_lines)] // Root composition keeps overlay ordering explicit.
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _scope_changed = self.sync_terminal_scope();
         let _handled = self.handle_events(cx);
         let snapshot = self.workspace.snapshot();
+        if self.restore_focus {
+            window.focus(&self.focus);
+            self.restore_focus = false;
+        }
         let title = workspace_window_title(snapshot.content());
         window.set_window_title(&title);
         self.synchronize_render_state(&snapshot);
         let content = self.content_element(&snapshot, cx);
         let creation_overlay = self.new_session_overlay(&snapshot, window, cx);
+        let project_overlay = self.project_overlay(window, cx);
         let kill_overlay = self.pending_session_kill_overlay(window, cx);
         let herdr_lifecycle_overlay = self.pending_herdr_lifecycle_overlay(window, cx);
         let mut root = div()
@@ -3815,6 +4306,7 @@ impl Render for RootView {
             .child(self.title_bar(title, cx))
             .child(div().flex_1().min_h_0().w_full().child(content))
             .children(creation_overlay)
+            .children(project_overlay)
             .children(kill_overlay)
             .children(herdr_lifecycle_overlay);
 
