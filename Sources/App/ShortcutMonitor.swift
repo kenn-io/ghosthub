@@ -7,6 +7,7 @@ final class ShortcutMonitor {
     private let shortcuts: () -> ResolvedApplicationShortcuts
     private let perform: (ApplicationShortcutAction) -> Bool
     private var handledKeyCodes: Set<UInt16> = []
+    private var menuOwnedKeyCodes: Set<UInt16> = []
 
     init(
         shortcuts: @escaping () -> ResolvedApplicationShortcuts,
@@ -38,6 +39,9 @@ final class ShortcutMonitor {
 
     private func process(_ event: NSEvent) -> NSEvent? {
         if event.type == .keyUp {
+            if menuOwnedKeyCodes.remove(event.keyCode) != nil {
+                return event
+            }
             return handledKeyCodes.remove(event.keyCode) == nil ? event : nil
         }
         guard event.type == .keyDown else { return event }
@@ -52,7 +56,13 @@ final class ShortcutMonitor {
 
         // The SwiftUI View menu owns this key equivalent. Intercepting it here
         // also invokes the menu command, toggling the sidebar twice.
-        guard action != .toggleSidebar else { return event }
+        if action == .toggleSidebar {
+            if event.isARepeat {
+                return menuOwnedKeyCodes.contains(event.keyCode) ? nil : event
+            }
+            menuOwnedKeyCodes.insert(event.keyCode)
+            return event
+        }
 
         if event.isARepeat, !action.definition.allowsKeyRepeat {
             return handledKeyCodes.contains(event.keyCode) ? nil : event

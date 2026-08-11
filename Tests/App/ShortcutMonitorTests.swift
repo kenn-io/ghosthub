@@ -54,13 +54,19 @@ struct ShortcutMonitorTests {
         let keyDown = try #require(keyEvent(
             modifiers: [.command], characters: "b", keyCode: 11
         ))
+        let keyRepeat = try #require(keyEvent(
+            modifiers: [.command], characters: "b", keyCode: 11,
+            isRepeat: true
+        ))
         let keyUp = try #require(keyEvent(
             type: .keyUp,
             modifiers: [.command], characters: "b", keyCode: 11
         ))
 
         #expect(monitor.processForTesting(keyDown) === keyDown)
+        #expect(monitor.processForTesting(keyRepeat) == nil)
         #expect(monitor.processForTesting(keyUp) === keyUp)
+        #expect(monitor.processForTesting(keyDown) === keyDown)
         #expect(actions.isEmpty)
     }
 
