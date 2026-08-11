@@ -16,6 +16,11 @@ struct IsolatedServer {
     tmpdir: String,
 }
 
+struct ZellijLiveSession {
+    executable: String,
+    name: String,
+}
+
 static WSL_LIVE: Mutex<()> = Mutex::new(());
 
 #[test]
@@ -115,6 +120,76 @@ impl IsolatedServer {
             .status()
             .expect("query isolated WSL path")
             .success()
+    }
+}
+
+impl ZellijLiveSession {
+    fn unique() -> Self {
+        let output = Command::new("wsl.exe")
+            .args(["--exec", "/bin/sh", "-lc", "command -v zellij"])
+            .output()
+            .expect("resolve Zellij in WSL");
+        assert!(
+            output.status.success(),
+            "Zellij is required for this live test: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let executable = String::from_utf8(output.stdout)
+            .expect("UTF-8 Zellij path")
+            .trim()
+            .to_owned();
+        assert!(executable.starts_with('/'), "absolute Zellij path");
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        Self {
+            executable,
+            name: format!("ghosthub-live-{:x}-{nonce:x}", std::process::id()),
+        }
+    }
+
+    fn run<I, S>(&self, args: I) -> Output
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let mut command = Command::new("wsl.exe");
+        command.args([
+            "--exec",
+            "/usr/bin/env",
+            "-u",
+            "ZELLIJ",
+            "-u",
+            "ZELLIJ_PANE_ID",
+            "-u",
+            "ZELLIJ_SESSION_NAME",
+            &self.executable,
+        ]);
+        command.args(args);
+        command.output().expect("run isolated Zellij command")
+    }
+
+    fn is_active(&self) -> bool {
+        let output = self.run(["list-sessions", "--no-formatting"]);
+        output.status.success()
+            && String::from_utf8_lossy(&output.stdout).lines().any(|line| {
+                line.strip_suffix(" (CURRENT)")
+                    .unwrap_or(line)
+                    .starts_with(&format!("{} [Created ", self.name))
+            })
+    }
+
+    fn selection(&self, workspace: &Workspace) -> SessionSelection {
+        let snapshot = workspace.snapshot();
+        let host = &snapshot.hosts()[0];
+        SessionSelection::zellij(host.id(), host.endpoint(), &self.name)
+    }
+}
+
+impl Drop for ZellijLiveSession {
+    fn drop(&mut self) {
+        let _ignored = self.run(["kill-session", "--", &self.name]);
     }
 }
 
@@ -811,6 +886,83 @@ fn detach_restores_the_inventory_revalidated_during_attachment() {
                 if sessions.iter().any(|session| session.name() == "appeared-before-attach")
         )
     });
+}
+
+#[test]
+#[ignore = "requires WSL2, tmux, and Zellij; uses a nonce-named Zellij session"]
+fn creates_detaches_reattaches_and_kills_a_zellij_session() {
+    let _serial = WSL_LIVE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let server = IsolatedServer::empty("zellij-lifecycle");
+    let zellij = ZellijLiveSession::unique();
+    let workspace = start_workspace(&server);
+
+    wait_until_with_diagnostic(
+        || {
+            workspace
+                .snapshot()
+                .hosts()
+                .first()
+                .is_some_and(workspace::HostItem::zellij_available)
+        },
+        || workspace_diagnostic(&workspace),
+    );
+    let endpoint = workspace.snapshot().hosts()[0].endpoint().to_owned();
+    workspace
+        .create_zellij_session("wsl", &endpoint, &zellij.name)
+        .expect("start one-shot Zellij creation");
+    wait_until_with_diagnostic(
+        || {
+            matches!(
+                workspace.snapshot().content(),
+                WorkspaceContent::Terminal {
+                    session,
+                    kind: workspace::SessionKind::Zellij,
+                    ..
+                } if session == &zellij.name
+            )
+        },
+        || workspace_diagnostic(&workspace),
+    );
+    assert!(zellij.is_active(), "created Zellij session must be active");
+
+    workspace.detach();
+    wait_until_with_diagnostic(
+        || {
+            workspace.snapshot().hosts()[0]
+                .zellij_sessions()
+                .iter()
+                .any(|session| session.name() == zellij.name)
+        },
+        || workspace_diagnostic(&workspace),
+    );
+    workspace
+        .attach(&zellij.selection(&workspace))
+        .expect("reattach the active Zellij session");
+    wait_until_with_diagnostic(
+        || {
+            matches!(
+                workspace.snapshot().content(),
+                WorkspaceContent::Terminal {
+                    session,
+                    kind: workspace::SessionKind::Zellij,
+                    ..
+                } if session == &zellij.name
+            )
+        },
+        || workspace_diagnostic(&workspace),
+    );
+
+    let selection = zellij.selection(&workspace);
+    workspace
+        .request_session_kill(&selection)
+        .expect("prepare confirmed Zellij kill");
+    wait_until(|| workspace.session_kill_confirmation().is_some());
+    workspace
+        .confirm_session_kill()
+        .expect("execute confirmed Zellij kill");
+    wait_until(|| !zellij.is_active());
 }
 
 fn terminal_contains(workspace: &Workspace, expected: &str) -> bool {

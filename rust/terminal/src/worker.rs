@@ -9,7 +9,10 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, Sender, TryRecvError, TrySendError, bounded, never, select};
 use input::{EncodedInput, KeyInput, MouseAction, MouseInput, encode_input, encode_mouse};
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
-use session::{AdmissionPlan, AttachPlan, CreateOnce, HerdrAttachPlan, HerdrLaunchOnce};
+use session::{
+    AdmissionPlan, AttachPlan, CreateOnce, HerdrAttachPlan, HerdrLaunchOnce, ZellijAttachPlan,
+    ZellijLaunchOnce,
+};
 use surface::{GridSize, PixelSize, SurfaceStore};
 
 use crate::windows_job::RelayJob;
@@ -308,6 +311,58 @@ impl TerminalWorker {
     /// cannot be established. The consumed authority is never returned.
     pub fn launch_herdr_with_metadata(
         plan: HerdrLaunchOnce,
+        size: GridSize,
+        resize_sequence: u64,
+        pixel_size: PixelSize,
+        clipboard_policy: ClipboardPolicy,
+        default_colors: DefaultColors,
+    ) -> Result<Self, WorkerError> {
+        let (program, args, _target_name) = plan.into_parts();
+        Self::launch(
+            &program,
+            &args,
+            size,
+            resize_sequence,
+            pixel_size,
+            clipboard_policy,
+            default_colors,
+        )
+    }
+
+    /// Spawn an attach-only Zellij client with UI-derived initial dimensions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the PTY, child process, or relay containment
+    /// cannot be established.
+    pub fn attach_zellij_with_metadata(
+        plan: &ZellijAttachPlan,
+        size: GridSize,
+        resize_sequence: u64,
+        pixel_size: PixelSize,
+        clipboard_policy: ClipboardPolicy,
+        default_colors: DefaultColors,
+    ) -> Result<Self, WorkerError> {
+        Self::launch(
+            plan.program(),
+            plan.args(),
+            size,
+            resize_sequence,
+            pixel_size,
+            clipboard_policy,
+            default_colors,
+        )
+    }
+
+    /// Consume one Zellij creation authority and spawn its ordinary client.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the PTY, child process, or relay containment
+    /// cannot be established. The consumed creation authority is never
+    /// returned for a retry.
+    pub fn launch_zellij_with_metadata(
+        plan: ZellijLaunchOnce,
         size: GridSize,
         resize_sequence: u64,
         pixel_size: PixelSize,
