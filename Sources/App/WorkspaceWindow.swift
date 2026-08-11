@@ -702,11 +702,13 @@ struct WorkspaceWindow: View {
                 },
                 zellijSessionContentBuilder: {
                     [sceneModel]
-                    host, sessionName, defersTerminalResize, _ in
+                    host, sessionName, defersTerminalResize, actions in
                     sceneModel.borrowedZellijSessionView(
                         host: host,
                         sessionName: sessionName,
-                        defersTerminalResize: defersTerminalResize
+                        defersTerminalResize: defersTerminalResize,
+                        onReconnectNow: actions.reconnectNow,
+                        onReviewConnection: actions.reviewConnection
                     )
                 },
                 settingsSheetBuilder: { settingsStore in
@@ -879,7 +881,7 @@ struct WorkspaceWindow: View {
                     sceneModel.openBorrowedZellijSession(selection)
                 },
                 createZellijSession: { [sceneModel] selection in
-                    sceneModel.createZellijSession(selection)
+                    try await sceneModel.createZellijSession(selection)
                 },
                 closeZellijSession: { [sceneModel] selection in
                     sceneModel.closeBorrowedZellijSession(selection)
@@ -932,6 +934,9 @@ struct WorkspaceWindow: View {
                 },
                 reconnectActiveHerdrSessionNow: { [sceneModel] in
                     sceneModel.reconnectActiveHerdrSessionNow()
+                },
+                reconnectActiveZellijSessionNow: { [sceneModel] in
+                    sceneModel.reconnectActiveZellijSessionNow()
                 },
                 resumeSessionReconnectAfterSSHRecovery: {
                     [sceneModel] request in

@@ -353,7 +353,8 @@ public struct InteractionHandlers {
     public let closeTmuxSession: ((WorkspaceTmuxSessionSelection) -> Void)?
     public let closeHerdrSession: ((WorkspaceHerdrSessionSelection) -> Void)?
     public let openZellijSession: ((WorkspaceZellijSessionSelection) -> Void)?
-    public let createZellijSession: ((WorkspaceZellijSessionSelection) -> Void)?
+    public let createZellijSession:
+        ((WorkspaceZellijSessionSelection) async throws -> Void)?
     public let closeZellijSession: ((WorkspaceZellijSessionSelection) -> Void)?
     public let cancelPendingZellijPresentation: (() -> Void)?
     public let prepareZellijSessionKill:
@@ -383,6 +384,7 @@ public struct InteractionHandlers {
     public let refreshWorkspaceInventory: (() -> Void)?
     public let reconnectActiveTmuxSessionNow: (() -> Void)?
     public let reconnectActiveHerdrSessionNow: (() -> Void)?
+    public let reconnectActiveZellijSessionNow: (() -> Void)?
     public let resumeSessionReconnectAfterSSHRecovery:
         ((SessionConnectionRecoveryRequest) -> Void)?
     public let reviewSSHHostKey:
@@ -429,7 +431,7 @@ public struct InteractionHandlers {
         openZellijSession:
         ((WorkspaceZellijSessionSelection) -> Void)? = nil,
         createZellijSession:
-        ((WorkspaceZellijSessionSelection) -> Void)? = nil,
+        ((WorkspaceZellijSessionSelection) async throws -> Void)? = nil,
         closeZellijSession:
         ((WorkspaceZellijSessionSelection) -> Void)? = nil,
         cancelPendingZellijPresentation: (() -> Void)? = nil,
@@ -460,6 +462,7 @@ public struct InteractionHandlers {
         refreshWorkspaceInventory: (() -> Void)? = nil,
         reconnectActiveTmuxSessionNow: (() -> Void)? = nil,
         reconnectActiveHerdrSessionNow: (() -> Void)? = nil,
+        reconnectActiveZellijSessionNow: (() -> Void)? = nil,
         resumeSessionReconnectAfterSSHRecovery:
         ((SessionConnectionRecoveryRequest) -> Void)? = nil,
         reviewSSHHostKey:
@@ -516,6 +519,7 @@ public struct InteractionHandlers {
         self.refreshWorkspaceInventory = refreshWorkspaceInventory
         self.reconnectActiveTmuxSessionNow = reconnectActiveTmuxSessionNow
         self.reconnectActiveHerdrSessionNow = reconnectActiveHerdrSessionNow
+        self.reconnectActiveZellijSessionNow = reconnectActiveZellijSessionNow
         self.resumeSessionReconnectAfterSSHRecovery =
             resumeSessionReconnectAfterSSHRecovery
         self.reviewSSHHostKey = reviewSSHHostKey

@@ -196,14 +196,15 @@ struct WorkspaceZellijTests {
             localHostID: environment.host.id,
             snapshot: environment.snapshot,
             nativeZellijSurfaceStore: store,
-            nativeZellijPathProvider: { _ in .success("/usr/bin/zellij") }
+            nativeZellijPathProvider: { _ in .success("/usr/bin/zellij") },
+            zellijSessionValidationDiscovery: { _, _ in .available([]) }
         )
         let selection = WorkspaceZellijSessionSelection(
             hostID: environment.host.id,
             name: "release work"
         )
 
-        model.createZellijSession(selection)
+        try await model.createZellijSession(selection)
         await waitUntilMainActor { store.lastCommand != nil }
 
         let command = try #require(store.lastCommand)
@@ -211,6 +212,154 @@ struct WorkspaceZellijTests {
         #expect(command.contains("release work"))
         #expect(!command.contains("'attach'"))
         #expect(model.activeBorrowedZellijSelection == selection)
+        await model.shutdown()
+    }
+
+    @Test("creation rejects a newly conflicting name without replacing tmux")
+    func creationConflictPreservesTmux() async throws {
+        var environment = try zellijEnvironment(sessions: [])
+        environment.snapshot.hosts[0].tmuxSessions = [
+            TmuxSessionSummary(
+                name: "tmux-work",
+                managed: false,
+                windows: []
+            ),
+        ]
+        let zellijStore = RecordingNativeSessionSurfaceStore()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeZellijSurfaceStore: zellijStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            nativeZellijPathProvider: { _ in .success("/usr/bin/zellij") },
+            zellijSessionValidationDiscovery: { _, _ in
+                .available(["release"])
+            }
+        )
+        let tmux = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "tmux-work"
+        )
+        let zellij = WorkspaceZellijSessionSelection(
+            hostID: environment.host.id,
+            name: "release"
+        )
+        model.openBorrowedTmuxSession(tmux)
+
+        await #expect(throws: ZellijSessionPresentationError.sessionExists(
+            "release"
+        )) {
+            try await model.createZellijSession(zellij)
+        }
+
+        #expect(model.activeBorrowedTmuxSelection == tmux)
+        #expect(model.activeBorrowedZellijSelection == nil)
+        #expect(zellijStore.requestedConfigurations.isEmpty)
+        await model.shutdown()
+    }
+
+    @Test("creation rejects executable failure without replacing tmux")
+    func creationExecutableFailurePreservesTmux() async throws {
+        var environment = try zellijEnvironment(sessions: [])
+        environment.snapshot.hosts[0].tmuxSessions = [
+            TmuxSessionSummary(
+                name: "tmux-work",
+                managed: false,
+                windows: []
+            ),
+        ]
+        let zellijStore = RecordingNativeSessionSurfaceStore()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeZellijSurfaceStore: zellijStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            nativeZellijPathProvider: { _ in .failure(.unavailable) },
+            zellijSessionValidationDiscovery: { _, _ in .available([]) }
+        )
+        let tmux = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "tmux-work"
+        )
+        let zellij = WorkspaceZellijSessionSelection(
+            hostID: environment.host.id,
+            name: "release"
+        )
+        model.openBorrowedTmuxSession(tmux)
+
+        await #expect(throws: ZellijSessionPresentationError.unavailable) {
+            try await model.createZellijSession(zellij)
+        }
+
+        #expect(model.activeBorrowedTmuxSelection == tmux)
+        #expect(model.activeBorrowedZellijSelection == nil)
+        #expect(zellijStore.requestedConfigurations.isEmpty)
+        await model.shutdown()
+    }
+
+    @Test("a delayed create cannot replace newer tmux navigation")
+    func delayedCreateRespectsNewerNavigation() async throws {
+        var environment = try zellijEnvironment(sessions: [])
+        environment.snapshot.hosts[0].tmuxSessions = [
+            TmuxSessionSummary(
+                name: "tmux-work",
+                managed: false,
+                windows: []
+            ),
+        ]
+        let zellijStore = RecordingNativeSessionSurfaceStore()
+        let probeStarted = Mutex(false)
+        let probeContinuation = Mutex<CheckedContinuation<Void, Never>?>(nil)
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            nativeZellijSurfaceStore: zellijStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            nativeZellijPathProvider: { _ in .success("/usr/bin/zellij") },
+            zellijSessionValidationDiscovery: { _, _ in
+                probeStarted.withLock { $0 = true }
+                await withCheckedContinuation { continuation in
+                    probeContinuation.withLock { $0 = continuation }
+                }
+                return .available([])
+            }
+        )
+        let createTarget = WorkspaceZellijSessionSelection(
+            hostID: environment.host.id,
+            name: "release"
+        )
+        let newerTmux = WorkspaceTmuxSessionSelection(
+            hostID: environment.host.id,
+            name: "tmux-work"
+        )
+
+        let create = Task {
+            try await model.createZellijSession(createTarget)
+        }
+        await waitUntilMainActor { probeStarted.withLock { $0 } }
+        model.openBorrowedTmuxSession(newerTmux)
+        let continuation = probeContinuation.withLock {
+            let continuation = $0
+            $0 = nil
+            return continuation
+        }
+        continuation?.resume()
+
+        await #expect(throws: CancellationError.self) {
+            try await create.value
+        }
+        #expect(model.activeBorrowedTmuxSelection == newerTmux)
+        #expect(model.activeBorrowedZellijSelection == nil)
+        #expect(zellijStore.requestedConfigurations.isEmpty)
         await model.shutdown()
     }
 
@@ -417,6 +566,69 @@ struct WorkspaceZellijTests {
         await model.shutdown()
     }
 
+    @Test("Reconnect Now interrupts the Zellij retry delay")
+    func reconnectNowInterruptsRetryDelay() async throws {
+        let host = HostSummary(
+            id: UUID(),
+            configKey: "builder",
+            name: "Builder",
+            kind: .remote,
+            platform: .linux,
+            sshDestination: "dev@builder",
+            zellijSessions: [ZellijSessionSummary(name: "api")],
+            zellijAvailable: true
+        )
+        let store = RecordingNativeSessionSurfaceStore()
+        let results = Mutex<[ZellijDiscoveryResult]>([
+            .available(["api"]),
+            .failure(.commandFailed(
+                status: 255,
+                stderr: "Connection timed out."
+            )),
+            .available(["api"]),
+        ])
+        let model = try makeModel(
+            database: .inMemory(),
+            localHostID: UUID(),
+            snapshot: WorkspaceSnapshot(
+                hosts: [host], projects: [], worktrees: []
+            ),
+            nativeZellijSurfaceStore: store,
+            nativeZellijPathProvider: { _ in .success("/usr/bin/zellij") },
+            zellijSessionDiscovery: { _ in
+                results.withLock { $0.removeFirst() }
+            },
+            tmuxReconnectIntervals: [.seconds(30)],
+            tmuxReconnectProbeDeadline: .seconds(1)
+        )
+        let selection = WorkspaceZellijSessionSelection(
+            hostID: host.id,
+            name: "api"
+        )
+
+        model.openBorrowedZellijSession(selection)
+        await waitUntilMainActor {
+            store.requestedConfigurations.count == 1
+                && !store.surface.closeObservers.isEmpty
+        }
+        let close = try #require(store.surface.closeObservers.values.first)
+        close(false, 255)
+        await waitUntilMainActor(timeout: .seconds(1)) {
+            model.activeBorrowedZellijRecoveryState?.isReconnecting == true
+                && results.withLock { $0.count } == 1
+        }
+        try await Task.sleep(for: .milliseconds(20))
+
+        model.reconnectActiveZellijSessionNow()
+
+        await waitUntilMainActor(timeout: .seconds(1)) {
+            store.requestedConfigurations.count == 2
+                && model.activeBorrowedZellijConnectionState == .connected
+        }
+        #expect(model.activeBorrowedZellijRecoveryState == nil)
+        await model.shutdown()
+    }
+
     @Test("initial validation retains an actionable failure", arguments: [
         ZellijValidationFailureCase(
             name: "missing session",
@@ -536,7 +748,8 @@ struct WorkspaceZellijTests {
             zellijSessionDiscovery: { _ in
                 probes.withLock { $0 += 1 }
                 return .available([])
-            }
+            },
+            zellijSessionValidationDiscovery: { _, _ in .available([]) }
         )
         let tmux = WorkspaceTmuxSessionSelection(
             hostID: environment.host.id,
@@ -549,7 +762,9 @@ struct WorkspaceZellijTests {
 
         model.openBorrowedTmuxSession(tmux)
         model.openBorrowedZellijSession(zellij)
-        await waitUntilMainActor { probes.withLock { $0 } == 1 }
+        await waitUntilMainActor {
+            model.pendingZellijPresentationSelection == nil
+        }
         try await Task.sleep(for: .milliseconds(50))
 
         #expect(model.activeBorrowedTmuxSelection == tmux)
@@ -785,7 +1000,7 @@ struct WorkspaceZellijTests {
         )
 
         model.startZellijSessionDiscovery()
-        model.createZellijSession(selection)
+        try await model.createZellijSession(selection)
         await waitUntilMainActor {
             store.lastCommand != nil && probes.withLock { $0 } >= 2
         }
@@ -840,6 +1055,7 @@ struct WorkspaceZellijTests {
                     return .available(["release", "confirmed"])
                 }
             },
+            zellijSessionValidationDiscovery: { _, _ in .available([]) },
             createdSessionDiscoveryDelays: [.zero]
         )
         let selection = WorkspaceZellijSessionSelection(
@@ -849,7 +1065,7 @@ struct WorkspaceZellijTests {
 
         model.startZellijSessionDiscovery()
         await waitUntilMainActor { probes.withLock { $0 } >= 1 }
-        model.createZellijSession(selection)
+        try await model.createZellijSession(selection)
         await waitUntilMainActor(timeout: .seconds(1)) {
             probes.withLock { $0 } >= 3
         }
@@ -924,6 +1140,7 @@ struct WorkspaceZellijTests {
                 }
                 return .available([])
             },
+            zellijSessionValidationDiscovery: { _, _ in .available([]) },
             createdSessionDiscoveryDelays: [
                 .milliseconds(20),
                 .seconds(60),
@@ -934,7 +1151,7 @@ struct WorkspaceZellijTests {
             name: "release"
         )
 
-        model.createZellijSession(selection)
+        try await model.createZellijSession(selection)
         await waitUntilMainActor {
             model.activeBorrowedZellijConnectionState == .connected
         }
@@ -1037,6 +1254,7 @@ struct WorkspaceZellijTests {
                 }
                 return .available([])
             },
+            zellijSessionValidationDiscovery: { _, _ in .available([]) },
             createdSessionDiscoveryDelays: [
                 .milliseconds(100),
                 .seconds(60),
@@ -1058,7 +1276,7 @@ struct WorkspaceZellijTests {
             model.snapshot.host(id: remote.id)?.zellijSessions.map(\.name)
                 == ["initial"]
         }
-        model.createZellijSession(selection)
+        try await model.createZellijSession(selection)
         await waitUntilMainActor(timeout: .seconds(1)) {
             localProbes.withLock { $0 } == 2
                 && remoteProbes.withLock { $0 } == 2
@@ -1774,6 +1992,15 @@ struct WorkspaceZellijTests {
         await waitUntilMainActor {
             model.sessionConnectionRecoveryRequest?.hostID == host.id
         }
+        guard case let .needsAttention(message, canReviewConnection) =
+            model.activeBorrowedZellijRecoveryState
+        else {
+            Issue.record("Expected Zellij SSH recovery to need attention")
+            await model.shutdown()
+            return
+        }
+        #expect(message.contains("SSH authentication"))
+        #expect(canReviewConnection)
         let recoveryRequest = try #require(
             model.sessionConnectionRecoveryRequest
         )
@@ -1785,6 +2012,7 @@ struct WorkspaceZellijTests {
                 && model.activeBorrowedZellijConnectionState == .connected
         }
         #expect(model.sessionConnectionRecoveryRequest == nil)
+        #expect(model.activeBorrowedZellijRecoveryState == nil)
         #expect(model.activeBorrowedZellijConnectionState == .connected)
         await model.shutdown()
     }
@@ -1817,6 +2045,7 @@ struct WorkspaceZellijTests {
                 probes.withLock { $0 += 1 }
                 return .available([])
             },
+            zellijSessionValidationDiscovery: { _, _ in .available([]) },
             tmuxReconnectIntervals: [.zero],
             tmuxReconnectProbeDeadline: .seconds(1)
         )
@@ -1828,7 +2057,7 @@ struct WorkspaceZellijTests {
         model.startZellijSessionDiscovery()
         await waitUntilMainActor { probes.withLock { $0 } >= 1 }
         let initialProbeCount = probes.withLock { $0 }
-        model.createZellijSession(selection)
+        try await model.createZellijSession(selection)
         await waitUntilMainActor {
             store.requestedConfigurations.count == 1
                 && !store.surface.closeObservers.isEmpty
@@ -1874,9 +2103,14 @@ struct WorkspaceZellijTests {
             ),
             nativeZellijSurfaceStore: store,
             nativeZellijPathProvider: { _ in .success("/usr/bin/zellij") },
-            zellijSessionDiscovery: { _ in
-                probes.withLock { $0 += 1 }
-                return .available(["api"])
+            zellijSessionDiscovery: { _ in .available(["api"]) },
+            zellijSessionValidationDiscovery: { _, _ in
+                let attempt = probes.withLock {
+                    $0 += 1
+                    return $0
+                }
+                return attempt == 1
+                    ? .available([]) : .available(["api"])
             },
             zellijSSHConnectionSnapshotProvider: { _ in frozen },
             tmuxReconnectIntervals: [.zero],
@@ -1887,7 +2121,7 @@ struct WorkspaceZellijTests {
             name: "api"
         )
 
-        model.createZellijSession(selection)
+        try await model.createZellijSession(selection)
         await waitUntilMainActor(timeout: .seconds(1)) {
             probes.withLock { $0 } >= 1
                 && store.requestedConfigurations.count == 2
@@ -1930,6 +2164,7 @@ struct WorkspaceZellijTests {
         )
         let store = RecordingNativeSessionSurfaceStore()
         let probes = Mutex(0)
+        let validations = Mutex(0)
         let model = try makeModel(
             database: database,
             localHostID: UUID(),
@@ -1947,6 +2182,13 @@ struct WorkspaceZellijTests {
                 }
                 return attempt == 1 ? failure.result : .available([])
             },
+            zellijSessionValidationDiscovery: { _, _ in
+                let attempt = validations.withLock {
+                    $0 += 1
+                    return $0
+                }
+                return attempt == 1 ? .available([]) : failure.result
+            },
             tmuxReconnectIntervals: [.zero],
             tmuxReconnectProbeDeadline: .seconds(1)
         )
@@ -1955,7 +2197,7 @@ struct WorkspaceZellijTests {
             name: "api"
         )
 
-        model.createZellijSession(selection)
+        try await model.createZellijSession(selection)
         await waitUntilMainActor {
             store.requestedConfigurations.count == 1
                 && !store.surface.closeObservers.isEmpty

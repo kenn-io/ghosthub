@@ -455,6 +455,49 @@ struct TmuxSessionPresentationLifecycleTests {
         ) == nil)
     }
 
+    @Test("Root forwards the active Zellij reconnect action")
+    func rootForwardsZellijReconnect() {
+        var host = HostSummary.fixture()
+        host.zellijAvailable = true
+        host.zellijSessions = [ZellijSessionSummary(name: "api")]
+        let zellij = WorkspaceZellijSessionSelection(
+            hostID: host.id,
+            name: "api"
+        )
+        var selection = WorkspaceSelection(selectedHostID: host.id)
+        var reconnectAction: (() -> Void)?
+        var reconnectCount = 0
+        let hostingView = hostView(
+            RootView(
+                display: WorkspaceDisplayState(
+                    snapshot: .fixture(hosts: [host]),
+                    activeZellijSession: zellij
+                ),
+                content: ContentBuilders(
+                    zellijSessionContentBuilder: { _, _, _, actions in
+                        reconnectAction = actions.reconnectNow
+                        return AnyView(ActiveHerdrPresentationMarker())
+                    }
+                ),
+                handlers: InteractionHandlers(
+                    reconnectActiveZellijSessionNow: {
+                        reconnectCount += 1
+                    }
+                ),
+                selection: Binding(
+                    get: { selection },
+                    set: { selection = $0 }
+                )
+            ),
+            size: CGSize(width: 960, height: 640)
+        )
+
+        reconnectAction?()
+
+        #expect(reconnectCount == 1)
+        withExtendedLifetime(hostingView) {}
+    }
+
     @Test("Herdr survives selection collapse to its host route")
     func herdrSurvivesHostRouteSelectionCollapse() {
         let model = HerdrRoutePresentationModel()

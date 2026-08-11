@@ -21,6 +21,7 @@ enum ZellijSessionName {
 
 struct NewZellijSessionSheet: View {
     let hosts: [HostSummary]
+    let isCreating: Bool
     let onCreate: (HostSummary, String) -> Void
     let onCancel: () -> Void
 
@@ -31,11 +32,13 @@ struct NewZellijSessionSheet: View {
     init(
         host: HostSummary,
         hosts: [HostSummary],
+        isCreating: Bool = false,
         onCreate: @escaping (HostSummary, String) -> Void,
         onCancel: @escaping () -> Void
     ) {
         let availableHosts = hosts.filter(\.zellijAvailable)
         self.hosts = availableHosts
+        self.isCreating = isCreating
         _selectedHost = State(initialValue:
             availableHosts.first(where: { $0.id == host.id })
                 ?? availableHosts.first ?? host)
@@ -78,6 +81,7 @@ struct NewZellijSessionSheet: View {
                 }
                 .buttonStyle(.borderless)
                 .fixedSize()
+                .disabled(isCreating)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
@@ -92,6 +96,7 @@ struct NewZellijSessionSheet: View {
                     .font(.system(size: 16))
                     .focused($isNameFieldFocused)
                     .onSubmit(create)
+                    .disabled(isCreating)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 13)
@@ -114,7 +119,7 @@ struct NewZellijSessionSheet: View {
                     .keyboardShortcut(.cancelAction)
                 Button("Create", action: create)
                     .keyboardShortcut(.defaultAction)
-                    .disabled(!canCreate)
+                    .disabled(!canCreate || isCreating)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
@@ -140,7 +145,7 @@ struct NewZellijSessionSheet: View {
     }
 
     private func create() {
-        guard canCreate else { return }
+        guard canCreate, !isCreating else { return }
         onCreate(selectedHost, normalizedName)
     }
 }

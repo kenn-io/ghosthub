@@ -91,7 +91,8 @@ final class NativeZellijSessionCoordinator {
         name: String,
         host: CommandHost,
         launchMode: ZellijAttachmentLaunchMode = .attachExisting,
-        sshConnectionSnapshot: SSHConnectionArgumentsSnapshot? = nil
+        sshConnectionSnapshot: SSHConnectionArgumentsSnapshot? = nil,
+        resolvedZellijPath: String? = nil
     ) -> BorrowedZellijSessionHandle {
         let key = NativeZellijSessionKey(hostID: hostID, name: name)
         if let existing = handlesByKey[key],
@@ -134,7 +135,9 @@ final class NativeZellijSessionCoordinator {
                 } else {
                     connection = SSHConnectionArgumentsSnapshot(arguments: [])
                 }
-                return (pathProvider(host, connection.arguments), connection)
+                let resolution = resolvedZellijPath.map(Result.success)
+                    ?? pathProvider(host, connection.arguments)
+                return (resolution, connection)
             }
             let (resolution, connection) = await withTaskCancellationHandler {
                 await probe.value

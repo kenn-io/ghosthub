@@ -42,6 +42,8 @@ public struct RootView: View {
     @State private var newZellijSessionHost: HostSummary?
     @State private var herdrCreationTask: Task<Void, Never>?
     @State private var herdrCreationRevision: UInt64 = 0
+    @State private var zellijCreationTask: Task<Void, Never>?
+    @State private var zellijCreationRevision: UInt64 = 0
     @State private var addProjectHost: HostSummary?
     @State private var workspaceAlert: WorkspaceAlert?
     @State private var pendingWorktreeRemoval: WorktreeRemovalRequest?
@@ -240,23 +242,20 @@ public struct RootView: View {
                     onCancel: { cancelHerdrCreation() }
                 )
             }
-            .sheet(item: $newZellijSessionHost) { host in
+            .sheet(
+                item: $newZellijSessionHost,
+                onDismiss: {
+                    cancelZellijCreation(dismissSheet: false)
+                }
+            ) { host in
                 NewZellijSessionSheet(
                     host: host,
                     hosts: snapshot.hosts,
+                    isCreating: zellijCreationTask != nil,
                     onCreate: { selectedHost, name in
-                        let session = WorkspaceZellijSessionSelection(
-                            hostID: selectedHost.id,
-                            name: name
-                        )
-                        selectWorkspace(.zellijSession(
-                            hostID: selectedHost.id,
-                            name: name
-                        ))
-                        handlers.createZellijSession?(session)
-                        newZellijSessionHost = nil
+                        createZellijSession(on: selectedHost, name: name)
                     },
-                    onCancel: { newZellijSessionHost = nil }
+                    onCancel: { cancelZellijCreation() }
                 )
             }
             .sheet(item: $addProjectHost) { host in
@@ -282,6 +281,7 @@ public struct RootView: View {
             .onDisappear {
                 cancelHerdrPresentationIntents()
                 cancelHerdrCreation()
+                cancelZellijCreation()
                 cancelHerdrLifecyclePreparation()
                 cancelZellijKillPreparation()
             }
@@ -1011,6 +1011,55 @@ public struct RootView: View {
         }
     }
 
+    private func createZellijSession(
+        on host: HostSummary,
+        name: String
+    ) {
+        guard zellijCreationTask == nil else { return }
+        let session = WorkspaceZellijSessionSelection(
+            hostID: host.id,
+            name: name
+        )
+        zellijCreationRevision &+= 1
+        let creationRevision = zellijCreationRevision
+        zellijCreationTask = Task { @MainActor in
+            do {
+                guard let create = handlers.createZellijSession else {
+                    throw ZellijLifecycleUnavailableError()
+                }
+                try await create(session)
+                guard zellijCreationRevision == creationRevision else {
+                    return
+                }
+                zellijCreationTask = nil
+                newZellijSessionHost = nil
+                selectWorkspace(.zellijSession(
+                    hostID: host.id,
+                    name: name
+                ))
+            } catch {
+                guard zellijCreationRevision == creationRevision else {
+                    return
+                }
+                zellijCreationTask = nil
+                guard !(error is CancellationError) else { return }
+                presentNonWorktreeWorkspaceAlert(.zellijCreationFailure(
+                    session: name,
+                    message: error.localizedDescription
+                ))
+            }
+        }
+    }
+
+    private func cancelZellijCreation(dismissSheet: Bool = true) {
+        zellijCreationRevision &+= 1
+        zellijCreationTask?.cancel()
+        zellijCreationTask = nil
+        if dismissSheet {
+            newZellijSessionHost = nil
+        }
+    }
+
     private func restartHerdrSession(
         _ session: WorkspaceHerdrSessionSelection
     ) {
@@ -1277,6 +1326,12 @@ public struct RootView: View {
         case let .zellijKillFailure(session, message):
             return Alert(
                 title: Text("Could Not Kill “\(session)”"),
+                message: Text(message),
+                dismissButton: .default(Text("OK"))
+            )
+        case let .zellijCreationFailure(session, message):
+            return Alert(
+                title: Text("Could Not Create “\(session)”"),
                 message: Text(message),
                 dismissButton: .default(Text("OK"))
             )
@@ -1649,8 +1704,23 @@ public struct RootView: View {
                activeZellijSession.name,
                isSidebarTransitioning,
                NativeSessionContentActions(
-                   reconnectNow: {},
-                   reviewConnection: {}
+                   reconnectNow: {
+                       handlers.reconnectActiveZellijSessionNow?()
+                   },
+                   reviewConnection: {
+                       reviewSSHHostKey(
+                           host.id,
+                           inventoryWarning: sessionRecoveryWarning(
+                               for: host.id
+                           ),
+                           sessionRecoveryRequestID:
+                           sessionRecoveryRequestRouter.recoveryRequestID(
+                               for: host.id,
+                               activeRequest:
+                               display.sessionConnectionRecoveryRequest
+                           )
+                       )
+                   }
                )
            ) {
             view
@@ -2065,6 +2135,9 @@ public struct RootView: View {
         if herdrCreationTask != nil {
             cancelHerdrCreation()
         }
+        if zellijCreationTask != nil {
+            cancelZellijCreation()
+        }
         cancelHerdrPresentationIntents()
         if let selectWorkspace = handlers.selectWorkspace {
             selectWorkspace(updatedSelection)
@@ -2395,6 +2468,7 @@ enum WorkspaceAlert: Identifiable {
     case sessionKillFailure(session: String, message: String)
     case zellijKillConfirmation(ZellijSessionKillRequest)
     case zellijKillFailure(session: String, message: String)
+    case zellijCreationFailure(session: String, message: String)
     case herdrLifecycleConfirmation(HerdrSessionLifecycleRequest)
     case herdrLifecycleFailure(
         session: String,
@@ -2415,6 +2489,8 @@ enum WorkspaceAlert: Identifiable {
             return "zellij:confirm:\(request.session.id)"
         case let .zellijKillFailure(session, message):
             return "zellij:failure:\(session):\(message)"
+        case let .zellijCreationFailure(session, message):
+            return "zellij:create:failure:\(session):\(message)"
         case let .herdrLifecycleConfirmation(request):
             return "herdr:confirm:\(request.session.id):\(request.action)"
         case let .herdrLifecycleFailure(session, action, message):
@@ -2444,6 +2520,12 @@ private struct SessionThemeUnavailableError: LocalizedError {
 private struct HerdrLifecycleUnavailableError: LocalizedError {
     var errorDescription: String? {
         "Herdr session lifecycle actions are unavailable."
+    }
+}
+
+private struct ZellijLifecycleUnavailableError: LocalizedError {
+    var errorDescription: String? {
+        "Zellij session creation is unavailable."
     }
 }
 
