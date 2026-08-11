@@ -6214,7 +6214,7 @@ fn create_fresh(
     if inner.navigation_generation.load(Ordering::Acquire) != navigation_generation {
         return Err(WorkspaceError::new("tmux creation was superseded"));
     }
-    let (authority, term) = request
+    let (authority, receipt, term) = request
         .host
         .create_once(before.endpoint(), before.runtime(), request.name.clone())
         .map_err(|error| WorkspaceError::new(error.to_string()))?;
@@ -6232,8 +6232,14 @@ fn create_fresh(
         default_colors(&inner.appearance),
     )
     .map_err(|error| WorkspaceError::new(error.to_string()))?;
-    let client_identity = worker
-        .wait_for_creation_identity(CREATE_IDENTITY_TIMEOUT)
+    let client_identity = request
+        .host
+        .wait_for_creation_identity(
+            before.endpoint(),
+            &receipt,
+            cancellation,
+            CREATE_IDENTITY_TIMEOUT,
+        )
         .map_err(|error| WorkspaceError::new(error.to_string()))?;
     for attempt in 0..TMUX_CREATE_DISCOVERY_ATTEMPTS {
         if inner.navigation_generation.load(Ordering::Acquire) != navigation_generation {

@@ -199,11 +199,13 @@ Tmux continues to expose separate detach and confirmed Kill Session controls
 rather than sharing Herdr lifecycle semantics.
 The ready host also exposes explicit bare-session creation. Rust consumes one
 non-cloneable CreateOnce as an ordinary ConPTY client running atomic
-`new-session -A`; it then captures the fresh WSL runtime and tmux live identity
-and retains only attach authority. Creation failure never authorizes a rerun or
-server cleanup. The creation interaction pins its selected endpoint and may use
-the existing admitted host while a background inventory refresh is in
-flight; it never follows a changed default distro implicitly.
+`new-session -A`; the same tmux command queue records live identity in a
+nonce-scoped private WSL receipt rather than the ConPTY stream. Host consumes
+and removes that opaque receipt, rechecks the WSL runtime, and retains only
+attach authority. Creation failure never authorizes a rerun or server cleanup.
+The creation interaction pins its selected endpoint and may use the existing
+admitted host while a background inventory refresh is in flight; it never
+follows a changed default distro implicitly.
 
 Rust keeps backend and authority boundaries structural: the UI package has
 direct dependencies only on workspace, model, and surface, while persistence

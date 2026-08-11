@@ -1496,14 +1496,14 @@ fn admission_does_not_require_xterm_256color_terminfo() {
                 .iter()
                 .any(|argument| argument == "TERM=xterm-256color")
     }));
-    let (creation, term) = host
+    let (creation, _receipt, term) = host
         .create_once(
             snapshot.endpoint(),
             snapshot.runtime(),
             SessionName::parse("baseline").expect("valid session name"),
         )
         .expect("baseline creation authority");
-    let (_, args, _, _) = creation.into_parts();
+    let (_, args, _) = creation.into_parts();
     assert_eq!(term, AttachTerm::Xterm);
     assert!(args.iter().any(|argument| argument == "TERM=xterm"));
     assert!(
@@ -1526,14 +1526,14 @@ fn admission_uses_xterm_256color_for_creation_when_the_client_proves_it() {
     );
     let snapshot = discover(&host).expect("admit full-color tmux client");
 
-    let (creation, term) = host
+    let (creation, _receipt, term) = host
         .create_once(
             snapshot.endpoint(),
             snapshot.runtime(),
             SessionName::parse("full-color").expect("valid session name"),
         )
         .expect("full-color creation authority");
-    let (_, args, _, _) = creation.into_parts();
+    let (_, args, _) = creation.into_parts();
 
     assert_eq!(term, AttachTerm::Xterm256Color);
     assert!(

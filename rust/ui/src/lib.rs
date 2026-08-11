@@ -58,7 +58,7 @@ pub fn host_status_text(host: &HostItem) -> String {
         HostConnectionState::Disconnected => format!("{} is ready to connect", host.endpoint()),
         HostConnectionState::Connecting => {
             format!(
-                "Connecting to {} and discovering tmux sessions…",
+                "Connecting to {} and discovering sessions…",
                 host.endpoint()
             )
         }
@@ -1927,7 +1927,7 @@ impl RootView {
         }
         match snapshot.content() {
             WorkspaceContent::Shell => centered("No terminal hosts are available."),
-            WorkspaceContent::Loading => centered("Starting WSL and discovering tmux sessions…"),
+            WorkspaceContent::Loading => centered("Starting WSL and discovering sessions…"),
             WorkspaceContent::Error { message } => div()
                 .size_full()
                 .flex()
@@ -1989,7 +1989,7 @@ impl RootView {
             WorkspaceContent::Attaching {
                 endpoint, session, ..
             } => centered(format!("Attaching to {endpoint} · {session}…")),
-            WorkspaceContent::Loading => centered("Starting WSL and discovering tmux sessions…"),
+            WorkspaceContent::Loading => centered("Starting WSL and discovering sessions…"),
             WorkspaceContent::Error { message } => centered(message.clone()),
             WorkspaceContent::Shell | WorkspaceContent::Ready { .. } => selected.map_or_else(
                 || centered("No terminal hosts are available."),

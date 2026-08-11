@@ -22,9 +22,9 @@ pub use kwt::{
     KwtBundle, KwtDirectoryWorkspace, KwtInventory, KwtProject, KwtProjectInventory, KwtWorktree,
 };
 pub use wsl::{
-    AdmissionAttacher, AttachTerm, HerdrInventory, HostError, HostSnapshot, KwtHostSnapshot,
-    LiveSessionTarget, SystemWslPresence, WslConfig, WslEndpoint, WslExecutable, WslHost,
-    WslPresence, WslRuntimeIdentity,
+    AdmissionAttacher, AttachTerm, CreationReceipt, HerdrInventory, HostError, HostSnapshot,
+    KwtHostSnapshot, LiveSessionTarget, SystemWslPresence, WslConfig, WslEndpoint, WslExecutable,
+    WslHost, WslPresence, WslRuntimeIdentity,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]

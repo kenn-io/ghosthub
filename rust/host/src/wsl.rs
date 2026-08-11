@@ -155,6 +155,13 @@ pub struct WslRuntimeIdentity {
     init_start_ticks: u64,
 }
 
+/// Opaque authority to read and remove one nonce-scoped creation receipt.
+/// Only [`WslHost`] can construct its private path.
+#[derive(Debug, Eq, PartialEq)]
+pub struct CreationReceipt {
+    path: String,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AttachTerm {
     Xterm256Color,
@@ -1303,7 +1310,7 @@ impl<R: CommandRunner> WslHost<R> {
         endpoint: &WslEndpoint,
         runtime: &WslRuntimeIdentity,
         name: SessionName,
-    ) -> Result<(CreateOnce, AttachTerm), HostError> {
+    ) -> Result<(CreateOnce, CreationReceipt, AttachTerm), HostError> {
         let term = self
             .verified_tmux
             .lock()
@@ -1319,8 +1326,8 @@ impl<R: CommandRunner> WslHost<R> {
                     "tmux creation requires fresh admission for this WSL runtime",
                 )
             })?;
-        let authority = self.create_once_with_term(endpoint, name, term)?;
-        Ok((authority, term))
+        let (authority, receipt) = self.create_once_with_term(endpoint, name, term)?;
+        Ok((authority, receipt, term))
     }
 
     fn create_once_with_term(
@@ -1328,8 +1335,8 @@ impl<R: CommandRunner> WslHost<R> {
         endpoint: &WslEndpoint,
         name: SessionName,
         term: AttachTerm,
-    ) -> Result<CreateOnce, HostError> {
-        let identity_marker = creation_identity_marker()?;
+    ) -> Result<(CreateOnce, CreationReceipt), HostError> {
+        let receipt = creation_identity_receipt()?;
         let mut args = pinned_prefix(endpoint);
         append_tmux_environment(
             &mut args,
@@ -1344,20 +1351,104 @@ impl<R: CommandRunner> WslHost<R> {
                 .map(OsString::from),
         );
         args.push(OsString::from(name.as_str()));
+        args.extend([";", "run-shell", "-b"].into_iter().map(OsString::from));
+        args.push(OsString::from(creation_receipt_command(&receipt)));
+        Ok((
+            CreateOnce::local_atomic(self.wsl_executable.as_os_str(), args, name),
+            receipt,
+        ))
+    }
+
+    /// Read the exact identity written by the consumed create-or-attach
+    /// command queue without sending internal framing through `ConPTY`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the receipt is absent, malformed, or cannot be
+    /// read before the bounded creation deadline.
+    pub fn wait_for_creation_identity(
+        &self,
+        endpoint: &WslEndpoint,
+        receipt: &CreationReceipt,
+        cancellation: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<SessionIdentity, HostError> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if cancellation.is_cancelled() {
+                self.remove_creation_receipt(endpoint, receipt);
+                return Err(HostError::new(
+                    DiagnosticKind::Transport,
+                    "tmux creation identity wait was cancelled",
+                ));
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                self.remove_creation_receipt(endpoint, receipt);
+                return Err(HostError::new(
+                    DiagnosticKind::Timeout,
+                    "timed out waiting for the ordinary tmux client identity",
+                ));
+            }
+            let mut args = pinned_prefix(endpoint);
+            args.extend(
+                ["/usr/bin/cat", "--", receipt.path.as_str()]
+                    .into_iter()
+                    .map(OsString::from),
+            );
+            let output = self
+                .runner
+                .run(
+                    self.wsl_executable.as_os_str(),
+                    &args,
+                    cancellation,
+                    remaining.min(COMMAND_TIMEOUT),
+                )
+                .map_err(|error| {
+                    HostError::new(
+                        if error.kind() == std::io::ErrorKind::TimedOut {
+                            DiagnosticKind::Timeout
+                        } else {
+                            DiagnosticKind::Transport
+                        },
+                        error.to_string(),
+                    )
+                })?;
+            if output.status == 0 {
+                self.remove_creation_receipt(endpoint, receipt);
+                return parse_creation_receipt(&output.stdout);
+            }
+            if !is_missing_creation_receipt(&output.stderr) {
+                self.remove_creation_receipt(endpoint, receipt);
+                return Err(classify_command_failure(
+                    output.status,
+                    &output.stderr,
+                    "read tmux creation identity",
+                ));
+            }
+            if cancellation.wait_cancelled(Duration::from_millis(20)) {
+                self.remove_creation_receipt(endpoint, receipt);
+                return Err(HostError::new(
+                    DiagnosticKind::Transport,
+                    "tmux creation identity wait was cancelled",
+                ));
+            }
+        }
+    }
+
+    fn remove_creation_receipt(&self, endpoint: &WslEndpoint, receipt: &CreationReceipt) {
+        let mut args = pinned_prefix(endpoint);
         args.extend(
-            [";", "display-message", "-p", "-F"]
+            ["/usr/bin/rm", "-f", "--", receipt.path.as_str()]
                 .into_iter()
                 .map(OsString::from),
         );
-        args.push(OsString::from(format!(
-            "{identity_marker}#{{pid}}|#{{session_id}}|#{{session_created}}|!"
-        )));
-        Ok(CreateOnce::local_atomic(
+        let _ignored = self.runner.run(
             self.wsl_executable.as_os_str(),
-            args,
-            name,
-            identity_marker,
-        ))
+            &args,
+            &CancellationToken::new(),
+            CLEANUP_COMMAND_TIMEOUT,
+        );
     }
 
     /// Capture the exact inventory after a one-shot create client has started,
@@ -3088,15 +3179,76 @@ struct AdmissionScope {
     name_nonce: String,
 }
 
-fn creation_identity_marker() -> Result<String, HostError> {
+fn creation_identity_receipt() -> Result<CreationReceipt, HostError> {
     let mut nonce = [0_u8; 16];
     getrandom::fill(&mut nonce).map_err(|error| {
         HostError::new(
             DiagnosticKind::Transport,
-            format!("generate tmux creation identity marker: {error}"),
+            format!("generate tmux creation identity receipt: {error}"),
         )
     })?;
-    Ok(format!("__ghc_{:032x}__", u128::from_ne_bytes(nonce)))
+    Ok(CreationReceipt {
+        path: format!("/tmp/.ghosthub-create-{:032x}", u128::from_ne_bytes(nonce)),
+    })
+}
+
+fn creation_receipt_command(receipt: &CreationReceipt) -> String {
+    format!(
+        "umask 077; set -C; /usr/bin/printf '%s|%s|%s|!' '#{{pid}}' '#{{session_id}}' '#{{session_created}}' > {}",
+        receipt.path
+    )
+}
+
+fn parse_creation_receipt(bytes: &[u8]) -> Result<SessionIdentity, HostError> {
+    let value = decode(bytes, "tmux creation identity")?
+        .strip_suffix("|!")
+        .ok_or_else(|| {
+            HostError::new(
+                DiagnosticKind::MalformedOutput,
+                "tmux creation identity had invalid framing",
+            )
+        })?;
+    let mut fields = value.split('|');
+    let server_pid = fields
+        .next()
+        .and_then(|field| field.parse::<u32>().ok())
+        .ok_or_else(|| {
+            HostError::new(
+                DiagnosticKind::MalformedOutput,
+                "tmux creation identity had an invalid server PID",
+            )
+        })?;
+    let session_id = fields
+        .next()
+        .filter(|field| !field.is_empty())
+        .ok_or_else(|| {
+            HostError::new(
+                DiagnosticKind::MalformedOutput,
+                "tmux creation identity had an empty session ID",
+            )
+        })?;
+    let created_at = fields
+        .next()
+        .and_then(|field| field.parse::<u64>().ok())
+        .ok_or_else(|| {
+            HostError::new(
+                DiagnosticKind::MalformedOutput,
+                "tmux creation identity had an invalid creation time",
+            )
+        })?;
+    if fields.next().is_some() {
+        return Err(HostError::new(
+            DiagnosticKind::MalformedOutput,
+            "tmux creation identity had extra fields",
+        ));
+    }
+    Ok(SessionIdentity::new(server_pid, session_id, created_at))
+}
+
+fn is_missing_creation_receipt(stderr: &[u8]) -> bool {
+    String::from_utf8_lossy(stderr)
+        .to_ascii_lowercase()
+        .contains("no such file")
 }
 
 fn helper_nonce() -> Result<String, HostError> {
@@ -3817,14 +3969,14 @@ mod tests {
         let endpoint = WslEndpoint {
             distro: "Ubuntu Work".to_owned(),
         };
-        let plan = host
+        let (plan, receipt) = host
             .create_once_with_term(
                 &endpoint,
                 SessionName::parse("release work").expect("valid name"),
                 AttachTerm::Xterm256Color,
             )
             .expect("creation plan");
-        let (program, args, target, marker) = plan.into_parts();
+        let (program, args, target) = plan.into_parts();
 
         assert_eq!(program, r"C:\Windows\System32\wsl.exe");
         assert_eq!(target.as_str(), "release work");
@@ -3850,18 +4002,18 @@ mod tests {
                 "-s",
                 "release work",
                 ";",
-                "display-message",
-                "-p",
-                "-F",
+                "run-shell",
+                "-b",
             ]
             .into_iter()
             .map(OsString::from)
             .chain([OsString::from(format!(
-                "{marker}#{{pid}}|#{{session_id}}|#{{session_created}}|!"
+                "umask 077; set -C; /usr/bin/printf '%s|%s|%s|!' '#{{pid}}' '#{{session_id}}' '#{{session_created}}' > {}",
+                receipt.path
             ))])
             .collect::<Vec<_>>()
         );
-        assert!(marker.starts_with("__ghc_") && marker.ends_with("__"));
+        assert!(receipt.path.starts_with("/tmp/.ghosthub-create-"));
     }
 
     #[test]

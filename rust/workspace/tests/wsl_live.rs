@@ -238,6 +238,13 @@ fn creates_attaches_and_detaches_one_atomic_local_session() {
         },
         || workspace_diagnostic(&workspace),
     );
+    workspace
+        .send_key(KeyInput::text("echo creation-clean", Modifiers::default()))
+        .expect("send text through the created client");
+    workspace
+        .send_key(KeyInput::named(NamedKey::Enter, Modifiers::default()))
+        .expect("send enter through the created client");
+    wait_until(|| terminal_contains(&workspace, "creation-clean"));
     assert!(
         !terminal_contains(&workspace, "__ghc_"),
         "the internal creation identity report must not reach the rendered surface"

@@ -853,7 +853,10 @@ host performs a background inventory refresh; a disconnected, unavailable, or
 changed endpoint must be selected again. Workspace performs one
 fresh admitted-host read, terminal consumes a non-cloneable CreateOnce whose
 ordinary client executes `new-session -A -E -s <name>`, and host captures the
-resulting runtime, server, session ID, and creation time. Admission proves
+resulting runtime, server, session ID, and creation time from a nonce-scoped
+private WSL receipt written by the same tmux command queue. The receipt is
+opaque outside host, is removed after capture, and never crosses ConPTY or the
+VT. Admission proves
 `xterm-256color` on that same atomic client shape before caching it for
 creation; if the distro lacks that terminfo entry, admission proves `xterm`
 instead and creation immediately displays the reduced-color notice. Creation
