@@ -105,18 +105,31 @@ def test_forwarded_interrupt_keeps_its_grace(tmp_path: Path) -> None:
     child_pid_file = tmp_path / "child.pid"
     term_file = tmp_path / "term-received"
     done_file = tmp_path / "int-done"
-    command = tmp_path / "graceful-int.sh"
+    command = tmp_path / "graceful_int.py"
     command.write_text(
-        "#!/bin/sh\n"
-        f"trap 'echo term > \"{term_file}\"; exit 1' TERM\n"
-        f"trap 'sleep 1; echo done > \"{done_file}\"; exit 0' INT\n"
-        f'echo $$ > "{child_pid_file}"\n'
-        "while :; do sleep 0.1; done\n"
+        "import os\n"
+        "from pathlib import Path\n"
+        "import signal\n"
+        "import time\n"
+        f"child_pid_file = Path({str(child_pid_file)!r})\n"
+        f"term_file = Path({str(term_file)!r})\n"
+        f"done_file = Path({str(done_file)!r})\n"
+        "def handle_term(signum, frame):\n"
+        "    term_file.write_text('term')\n"
+        "    raise SystemExit(1)\n"
+        "def handle_int(signum, frame):\n"
+        "    time.sleep(1)\n"
+        "    done_file.write_text('done')\n"
+        "    raise SystemExit(0)\n"
+        "signal.signal(signal.SIGTERM, handle_term)\n"
+        "signal.signal(signal.SIGINT, handle_int)\n"
+        "child_pid_file.write_text(str(os.getpid()))\n"
+        "while True:\n"
+        "    signal.pause()\n"
     )
-    command.chmod(0o755)
 
     wrapper = subprocess.Popen(
-        ["sh", str(SCRIPT), str(command)],
+        ["sh", str(SCRIPT), sys.executable, str(command)],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         env={**os.environ, "GHOSTHUB_TEST_STOP_GRACE": "5"},

@@ -1061,6 +1061,87 @@ struct WorkspaceRestorationTests {
         await model.shutdown()
     }
 
+    @Test("successful Zellij kill retires restoration begun after host rename")
+    func zellijRestorationStartedAfterHostRenameStopsDuringKill() async throws {
+        let environment = try setupRemoteEnvironment()
+        var snapshot = environment.snapshot
+        snapshot.hosts[0].zellijAvailable = true
+        snapshot.hosts[0].zellijSessions = [
+            ZellijSessionSummary(name: "editor"),
+        ]
+        let configuredHost = SSHHost(
+            configKey: environment.host.configKey,
+            name: environment.host.name,
+            platform: .linux,
+            sshDestination: environment.host.sshDestination ?? ""
+        )
+        let renamedHost = SSHHost(
+            configKey: "renamed-office-linux",
+            name: environment.host.name,
+            platform: .linux,
+            sshDestination: environment.host.sshDestination ?? ""
+        )
+        let configuredHosts = Mutex([configuredHost])
+        let killCoordinator = ZellijSessionKillCoordinator()
+        let store = RecordingNativeSessionSurfaceStore()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: UUID(),
+            snapshot: snapshot,
+            nativeZellijSurfaceStore: store,
+            nativeZellijPathProvider: { _ in .success("/usr/bin/zellij") },
+            zellijSessionKillCoordinator: killCoordinator,
+            zellijSessionDiscovery: { _ in .available(["editor"]) },
+            zellijSessionValidationDiscovery: { _, _ in
+                .available(["editor"])
+            },
+            configuredSSHHostsProvider: {
+                configuredHosts.withLock { $0 }
+            }
+        )
+        let operation = try #require(killCoordinator.begin(
+            key: .init(
+                hostID: environment.host.id,
+                sessionName: "editor"
+            ),
+            hostKey: environment.host.configKey
+        ))
+
+        configuredHosts.withLock { $0 = [renamedHost] }
+        model.refreshHosts()
+        #expect(
+            model.snapshot.host(id: environment.host.id)?.configKey
+                == renamedHost.configKey
+        )
+        let state = WorkspaceWindowState(
+            windowID: UUID(),
+            navigation: WorkspaceNavigationDescriptor(
+                hostKey: renamedHost.configKey,
+                projectKey: nil,
+                worktreeGeneration: nil
+            ),
+            tmux: nil,
+            zellij: WorkspaceZellijDescriptor(
+                hostKey: renamedHost.configKey,
+                sessionName: "editor"
+            )
+        )
+        model.startZellijSessionDiscovery()
+        model.beginRestoration(state)
+        await waitUntilMainActor {
+            model.isWorkspaceRestorationPending
+                && model.snapshot.host(id: environment.host.id)?
+                .zellijSessions.map(\.name) == ["editor"]
+        }
+
+        killCoordinator.finish(operation, outcome: .succeeded)
+
+        #expect(!model.isWorkspaceRestorationPending)
+        #expect(model.activeBorrowedZellijSelection == nil)
+        #expect(store.requestedConfigurations.isEmpty)
+        await model.shutdown()
+    }
+
     @Test("Zellij restoration cancels when a pending kill outlives its route")
     func zellijRestorationRejectsRouteDriftDuringPendingKill() async throws {
         let environment = try setupRemoteEnvironment()
