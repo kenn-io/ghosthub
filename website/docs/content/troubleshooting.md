@@ -58,6 +58,28 @@ shape with new processes. **Stop Session…** intentionally terminates all
 current processes; **Delete Session…** permanently removes saved state and is
 not available for Herdr's default session.
 
+## Zellij Sessions does not appear
+
+Zellij is optional and independent from tmux, Herdr, and projects. On the local
+Mac or a remote macOS/Linux host, run:
+
+```sh
+command -v zellij
+zellij list-sessions --no-formatting
+```
+
+Ghosthub lists active Zellij sessions only. If `zellij` is missing, the host
+stays fully usable and Ghosthub silently omits **Zellij Sessions**. If the
+command exists but fails unexpectedly or returns malformed output, the host
+header shows a warning with **Retry** and a shortcut to Host Settings. Zellij
+is not probed on experimental Windows hosts.
+
+Closing a Zellij client never kills its server. A normal detach offers manual
+**Reconnect**; automatic retry is reserved for remote SSH transport loss and
+stops if the exact session is no longer active. Ghosthub does not expose
+Zellij resurrection or exited-session deletion. To end an active session,
+choose its confirmed **Kill Session…** action.
+
 ## Reconnect needs attention
 
 Automatic retry pauses for action when SSH requires a credential or host-key

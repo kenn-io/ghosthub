@@ -5,16 +5,37 @@ test, and documentation-only changes are omitted.
 
 ## [Unreleased]
 
-### Added
+## [0.8.0] - 2026-08-11
 
-- exe.dev accounts can limit discovery to VMs carrying specific exe.dev tags,
-  so a fleet of dozens of VMs shows only the ones you work in.
+### Added
 
 - Zellij joins Ghosthub's all-multiplexer fleet as a first-class peer on the
   local Mac and remote macOS and Linux hosts. Ghosthub discovers active
   sessions, creates or attaches through the ordinary Zellij client, reconnects
   remote attachments after transport loss, and provides a confirmed Kill
   Session action without exposing resurrection or pane management.
+- Registered projects can be removed from Ghosthub without deleting their
+  repositories, worktrees, or tmux sessions, including when the checkout is
+  already missing. Ghosthub revalidates the exact kwt registration before
+  removing it.
+- exe.dev accounts can limit discovery to VMs carrying specific exe.dev tags,
+  so a fleet of dozens of VMs shows only the ones you work in.
+
+### Changed
+
+- **Control-Tab** and **Control-Shift-Tab** cycle visible sibling worktrees,
+  directory workspaces, or tmux, running Herdr, and active Zellij sessions.
+  These and numbered sibling shortcuts can be customized in Keyboard Settings
+  or `config.toml`.
+
+### Fixed
+
+- Returning focus to Ghosthub no longer starts a fresh fleet inventory sweep
+  or process sample, keeping window activation responsive as the number of
+  hosts and workspaces grows.
+- Zellij reconnect, restoration, and confirmed kill recovery now stop when SSH
+  settings, host identity, or exact session state changes instead of resuming a
+  stale attachment.
 
 ## [0.7.0] - 2026-08-09
 
@@ -249,7 +270,8 @@ test, and documentation-only changes are omitted.
   and SSH tmux session discovery, automatic reconnect, and kwt-backed project
   and worktree navigation.
 
-[Unreleased]: https://github.com/kenn-io/ghosthub/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/kenn-io/ghosthub/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/kenn-io/ghosthub/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/kenn-io/ghosthub/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/kenn-io/ghosthub/compare/v0.5.3...v0.6.0
 [0.5.3]: https://github.com/kenn-io/ghosthub/compare/v0.5.2...v0.5.3

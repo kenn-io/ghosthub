@@ -387,6 +387,23 @@ def test_demo_zellij_accepts_hardened_session_arguments(
     assert killed.returncode == 0, killed.stderr
     assert (scratch / f"zellij-killed-{kill_name}").is_file()
 
+
+def test_demo_kwt_projects_include_registration_fingerprints(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [str(DEMO / "bin/kwt"), "projects", "--json"],
+        cwd=ROOT,
+        env={**os.environ, "GHOSTHUB_DEMO_SCRATCH": str(tmp_path)},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    projects = json.loads(result.stdout)
+    assert projects
+    assert all(project.get("registration_fingerprint") for project in projects)
+
+
 @pytest.mark.parametrize(
     ("launcher_shell", "launcher_zdotdir"),
     [

@@ -25,6 +25,7 @@ Sibling navigation is local to what you are currently using:
 - A standalone tmux session cycles through visible standalone tmux sessions on
   the same host.
 - A Herdr session cycles through running Herdr sessions on the same host.
+- A Zellij session cycles through active Zellij sessions on the same host.
 
 The order matches the sidebar, including custom ordering and visibility
 settings. At least two eligible siblings must exist. If navigation is not
@@ -49,8 +50,8 @@ default. Unlike earlier alpha builds, Ghosthub does not capture
 | Reload configuration | ++shift+cmd+comma++ |
 | Open application log | ++option+cmd+l++ |
 
-New tmux Session and New Herdr Session remain available in menus and the
-Command Palette but are unbound by default.
+New tmux Session, New Herdr Session, and New Zellij Session remain available
+in menus and the Command Palette but are unbound by default.
 
 Standard macOS commands are fixed rather than configurable in Ghosthub. These
 include Settings (++cmd+comma++), New Window (++cmd+n++), New Tab (++cmd+t++),

@@ -15,6 +15,54 @@ private let testSplitClient = TmuxPaneSplitClientIdentity(
     paneID: "%9"
 )
 
+private func testClientTokenPath(_ token: String) throws -> URL {
+    let shellHome = try #require(
+        ProcessInfo.processInfo.environment["HOME"]
+    )
+    return URL(fileURLWithPath: shellHome, isDirectory: true)
+        .appendingPathComponent(
+            ".ghosthub/tmux-clients/\(token)"
+        )
+}
+
+private enum PublishedClientTTYError: LocalizedError {
+    case processExited(Int32)
+    case timedOut
+
+    var errorDescription: String? {
+        switch self {
+        case let .processExited(status):
+            "tmux client exited before publishing its TTY (status \(status))"
+        case .timedOut:
+            "tmux client did not publish its TTY within 30 seconds"
+        }
+    }
+}
+
+private func publishedClientTTY(
+    at tokenPath: URL,
+    whileRunning process: Process
+) async throws -> String {
+    let clock = ContinuousClock()
+    let deadline = clock.now.advanced(by: .seconds(30))
+    while clock.now < deadline {
+        let published = ((try? String(
+            contentsOf: tokenPath,
+            encoding: .utf8
+        )) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !published.isEmpty {
+            return published
+        }
+        guard process.isRunning else {
+            throw PublishedClientTTYError.processExited(
+                process.terminationStatus
+            )
+        }
+        try await Task.sleep(for: .milliseconds(25))
+    }
+    throw PublishedClientTTYError.timedOut
+}
+
 private final class TestTmuxClient {
     let process = Process()
     private let input = Pipe()
@@ -26,8 +74,7 @@ private final class TestTmuxClient {
         sessionName: String,
         clientToken: String
     ) throws {
-        tokenPath = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".ghosthub/tmux-clients/\(clientToken)")
+        tokenPath = try testClientTokenPath(clientToken)
         let command = TmuxAttachmentInfo(
             sessionName: sessionName,
             host: .local,
@@ -57,11 +104,8 @@ private final class TestTmuxClient {
         try? FileManager.default.removeItem(at: tokenPath)
     }
 
-    func waitForIdentityPublication() async {
-        for _ in 0 ..< 600
-            where !FileManager.default.fileExists(atPath: tokenPath.path) {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
+    func publishedTTY() async throws -> String {
+        try await publishedClientTTY(at: tokenPath, whileRunning: process)
     }
 }
 
@@ -110,7 +154,7 @@ struct TmuxPaneSplitterTests {
     }
 
     @Test("custom prefix and key bindings do not affect semantic splits")
-    func customizedBindings() async {
+    func customizedBindings() async throws {
         guard case let .success(tmuxPath) =
             TmuxBinaryResolver().resolveTmuxPath()
         else {
@@ -153,20 +197,20 @@ struct TmuxPaneSplitterTests {
             sshConnectionArguments: [],
             clientToken: UUID().uuidString.lowercased()
         )
-        let unrelatedClient = try? TestTmuxClient(
+        let unrelatedClient = try TestTmuxClient(
             tmuxPath: tmuxPath,
             socketName: socketName,
             sessionName: "customized",
             clientToken: UUID().uuidString.lowercased()
         )
-        defer { unrelatedClient?.stop() }
-        let clientProcess = try? TestTmuxClient(
+        defer { unrelatedClient.stop() }
+        let clientProcess = try TestTmuxClient(
             tmuxPath: tmuxPath,
             socketName: socketName,
             sessionName: "customized",
             clientToken: unresolvedTarget.clientToken ?? ""
         )
-        defer { clientProcess?.stop() }
+        defer { clientProcess.stop() }
         var attachedClientCount = 0
         for _ in 0 ..< 100 where attachedClientCount != 2 {
             let listed = AccountCommandRunner.runProcess(
@@ -183,7 +227,7 @@ struct TmuxPaneSplitterTests {
             }
         }
         #expect(attachedClientCount == 2)
-        await clientProcess?.waitForIdentityPublication()
+        let expectedTTY = try await clientProcess.publishedTTY()
         let initialClient = try? await TmuxPaneSplitter().clientIdentity(
             target: unresolvedTarget
         ).get()
@@ -205,15 +249,6 @@ struct TmuxPaneSplitterTests {
             target: renamedTarget
         ).get()
         #expect(client != nil)
-        let expectedTTY = unresolvedTarget.clientToken.flatMap { token in
-            try? String(
-                contentsOf: FileManager.default.homeDirectoryForCurrentUser
-                    .appendingPathComponent(
-                        ".ghosthub/tmux-clients/\(token)"
-                    ),
-                encoding: .utf8
-            ).trimmingCharacters(in: .whitespacesAndNewlines)
-        }
         #expect(client?.clientTTY == expectedTTY)
 
         let failure = await TmuxPaneSplitter().split(
@@ -306,8 +341,8 @@ struct TmuxPaneSplitterTests {
             clientToken: secondToken
         )
         defer { secondClientProcess.stop() }
-        await firstClientProcess.waitForIdentityPublication()
-        await secondClientProcess.waitForIdentityPublication()
+        _ = try await firstClientProcess.publishedTTY()
+        _ = try await secondClientProcess.publishedTTY()
         let splitter = TmuxPaneSplitter()
         let firstClient = try await splitter.clientIdentity(
             target: firstClientTarget
@@ -512,8 +547,7 @@ struct TmuxPaneSplitterTests {
         )
 
         let token = UUID().uuidString.lowercased()
-        let tokenPath = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".ghosthub/tmux-clients/\(token)")
+        let tokenPath = try testClientTokenPath(token)
         defer { try? FileManager.default.removeItem(at: tokenPath) }
         let command = TmuxAttachmentInfo(
             sessionName: "slow",
@@ -544,16 +578,10 @@ struct TmuxPaneSplitterTests {
             }
         }
 
-        var publishedTTY = ""
-        for _ in 0 ..< 200 where publishedTTY.isEmpty {
-            publishedTTY = ((try? String(
-                contentsOf: tokenPath,
-                encoding: .utf8
-            )) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            if publishedTTY.isEmpty {
-                try await Task.sleep(for: .milliseconds(10))
-            }
-        }
+        let publishedTTY = try await publishedClientTTY(
+            at: tokenPath,
+            whileRunning: process
+        )
         #expect(publishedTTY.hasPrefix("/dev/"))
 
         let target = TmuxPaneSplitTarget(
@@ -591,8 +619,7 @@ struct TmuxPaneSplitterTests {
         let targetSocketName = "gh-target-\(runID)"
         let launcherSocketName = "gh-launcher-\(runID)"
         let token = UUID().uuidString.lowercased()
-        let tokenPath = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".ghosthub/tmux-clients/\(token)")
+        let tokenPath = try testClientTokenPath(token)
         let targetCreate = [
             tmuxPath, "-f", "/dev/null", "-L", targetSocketName,
             "new-session", "-d", "-s", "inherited-target",
@@ -670,16 +697,10 @@ struct TmuxPaneSplitterTests {
             }
         }
 
-        var published = ""
-        for _ in 0 ..< 200 where published.isEmpty {
-            published = (try? String(
-                contentsOf: tokenPath,
-                encoding: .utf8
-            )) ?? ""
-            if published.isEmpty {
-                try? await Task.sleep(for: .milliseconds(10))
-            }
-        }
+        let published = try await publishedClientTTY(
+            at: tokenPath,
+            whileRunning: process
+        )
         let targetIdentity = [
             tmuxPath, "-L", targetSocketName, "display-message", "-p", "-t",
             "=inherited-renamed:",
@@ -916,8 +937,8 @@ struct TmuxPaneSplitterTests {
             clientToken: replacementToken
         )
         defer { replacement.stop() }
-        await original.waitForIdentityPublication()
-        await replacement.waitForIdentityPublication()
+        _ = try await original.publishedTTY()
+        _ = try await replacement.publishedTTY()
         let splitter = TmuxPaneSplitter()
         let originalClient = try await splitter.clientIdentity(
             target: TmuxPaneSplitTarget(
@@ -968,7 +989,7 @@ struct TmuxPaneSplitterTests {
     }
 
     @Test("same-name replacements cannot receive a queued split")
-    func replacementIsRejected() async {
+    func replacementIsRejected() async throws {
         guard case let .success(tmuxPath) =
             TmuxBinaryResolver().resolveTmuxPath()
         else {
@@ -999,14 +1020,14 @@ struct TmuxPaneSplitterTests {
             timeout: 5
         )
         #expect(created.status == 0)
-        let clientProcess = try? TestTmuxClient(
+        let clientProcess = try TestTmuxClient(
             tmuxPath: tmuxPath,
             socketName: socketName,
             sessionName: "replaceable",
             clientToken: target.clientToken ?? ""
         )
-        defer { clientProcess?.stop() }
-        await clientProcess?.waitForIdentityPublication()
+        defer { clientProcess.stop() }
+        _ = try await clientProcess.publishedTTY()
         let client = try? await TmuxPaneSplitter().clientIdentity(
             target: target
         ).get()
@@ -1047,7 +1068,7 @@ struct TmuxPaneSplitterTests {
     }
 
     @Test("a client switched to another session cannot split the hidden session")
-    func switchedClientIsRejected() async {
+    func switchedClientIsRejected() async throws {
         guard case let .success(tmuxPath) =
             TmuxBinaryResolver().resolveTmuxPath()
         else { return }
@@ -1078,18 +1099,15 @@ struct TmuxPaneSplitterTests {
             sshConnectionArguments: [],
             clientToken: UUID().uuidString.lowercased()
         )
-        let clientProcess = try? TestTmuxClient(
+        let clientProcess = try TestTmuxClient(
             tmuxPath: tmuxPath,
             socketName: socketName,
             sessionName: "original",
             clientToken: target.clientToken ?? ""
         )
-        defer { clientProcess?.stop() }
-        await clientProcess?.waitForIdentityPublication()
-        let tokenPath = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(
-                ".ghosthub/tmux-clients/\(target.clientToken ?? "")"
-            )
+        defer { clientProcess.stop() }
+        _ = try await clientProcess.publishedTTY()
+        let tokenPath = try testClientTokenPath(target.clientToken ?? "")
         let client = try? await TmuxPaneSplitter().clientIdentity(
             target: target
         ).get()
