@@ -249,8 +249,8 @@ guarantee. Closing or disconnecting never implies a kill.
 
 ## Rust Client Lifetime and Application Death
 
-The planned Rust applications use the same ordinary-client boundary. The first
-product slice is a native Windows GPUI client attaching to tmux inside WSL2;
+The Rust applications use the same ordinary-client boundary. The native
+Windows GPUI client attaches to tmux, Herdr, and Zellij inside WSL2;
 Linux remains a compile-and-contract target until its native product slice is
 authorized. A terminal worker and PTY own only the disposable client. The WSL
 tmux server owns session lifetime and must survive client close, graceful

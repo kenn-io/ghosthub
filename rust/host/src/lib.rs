@@ -17,6 +17,7 @@ mod kwt;
 #[cfg(windows)]
 mod windows_system;
 mod wsl;
+mod zellij;
 
 pub use kwt::{
     KwtBundle, KwtDirectoryWorkspace, KwtInventory, KwtProject, KwtProjectInventory, KwtWorktree,
@@ -24,7 +25,7 @@ pub use kwt::{
 pub use wsl::{
     AdmissionAttacher, AttachTerm, CreationReceipt, HerdrInventory, HostError, HostSnapshot,
     KwtHostSnapshot, LiveSessionTarget, SystemWslPresence, WslConfig, WslEndpoint, WslExecutable,
-    WslHost, WslPresence, WslRuntimeIdentity,
+    WslHost, WslPresence, WslRuntimeIdentity, ZellijInventory,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
