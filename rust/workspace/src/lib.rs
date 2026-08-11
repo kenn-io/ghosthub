@@ -576,6 +576,21 @@ impl HostItem {
     }
 
     #[must_use]
+    pub fn can_add_kwt_project(&self) -> bool {
+        self.connection == HostConnectionState::Ready
+            && !self.kwt_mutating()
+            && (self.kwt_available() || self.kwt_diagnostic.is_some())
+    }
+
+    #[must_use]
+    pub fn can_remove_kwt_project(&self) -> bool {
+        self.connection == HostConnectionState::Ready
+            && !self.kwt_mutating()
+            && self.kwt_available()
+            && self.kwt_diagnostic.is_none()
+    }
+
+    #[must_use]
     pub const fn kwt_diagnostic(&self) -> Option<&HostDiagnostic> {
         self.kwt_diagnostic.as_ref()
     }
@@ -5183,27 +5198,30 @@ fn capture_kwt_project_mutation(
             .iter()
             .find(|item| item.id == "wsl" && item.endpoint == endpoint)
             .ok_or_else(|| WorkspaceError::new("the selected WSL host is no longer available"))?;
-        if item.connection != HostConnectionState::Ready || item.kwt_diagnostic.is_some() {
-            return Err(WorkspaceError::new(
-                "refresh KWT inventory before changing projects",
-            ));
-        }
-        if !item.kwt_available() {
-            return Err(WorkspaceError::new(
-                "the pinned KWT helper is unavailable in this build",
-            ));
-        }
-        if let KwtProjectMutationRequest::Remove {
-            repository, path, ..
-        } = &request
-            && !item
-                .projects
-                .iter()
-                .any(|project| project.repository == *repository && project.path == *path)
-        {
-            return Err(WorkspaceError::new(
-                "the selected KWT project is no longer in the current inventory",
-            ));
+        match &request {
+            KwtProjectMutationRequest::Add { .. } => {
+                if !item.can_add_kwt_project() {
+                    return Err(WorkspaceError::new(
+                        "the pinned KWT helper is unavailable on this host",
+                    ));
+                }
+            }
+            KwtProjectMutationRequest::Remove { repository, path } => {
+                if !item.can_remove_kwt_project() {
+                    return Err(WorkspaceError::new(
+                        "refresh KWT inventory before removing a project",
+                    ));
+                }
+                if !item
+                    .projects
+                    .iter()
+                    .any(|project| project.repository == *repository && project.path == *path)
+                {
+                    return Err(WorkspaceError::new(
+                        "the selected KWT project is no longer in the current inventory",
+                    ));
+                }
+            }
         }
     }
     let cancellation = CancellationToken::new();
@@ -11167,6 +11185,19 @@ mod tests {
         assert_eq!(failed.hosts()[0].projects()[0].name(), "project");
         assert!(failed.hosts()[0].kwt_diagnostic().is_none());
         assert!(!failed.hosts()[0].kwt_mutating());
+    }
+
+    #[test]
+    fn failed_kwt_inventory_keeps_constructive_add_separate_from_remove_authority() {
+        let mut host = HostItem::wsl("Ubuntu", None, HostConnectionState::Ready, Vec::new(), None);
+        host.kwt_state = KwtState::Unavailable;
+        host.kwt_diagnostic = Some(HostDiagnostic::new(
+            DiagnosticKind::Transport,
+            "automatic inventory failed",
+        ));
+
+        assert!(host.can_add_kwt_project());
+        assert!(!host.can_remove_kwt_project());
     }
 
     #[test]

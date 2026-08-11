@@ -308,6 +308,7 @@ pub struct RootView {
     sidebar_visible: bool,
     new_session: Option<NewSessionDraft>,
     project_dialog: Option<ProjectDialog>,
+    herdr_action_menu: Option<HerdrActionMenu>,
     restore_focus: bool,
 }
 
@@ -323,6 +324,14 @@ struct NewSessionDraft {
 enum NewSessionKind {
     Tmux,
     Herdr,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct HerdrActionMenu {
+    selection: SessionSelection,
+    actions: Vec<HerdrRowAction>,
+    left: f32,
+    top: f32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -679,6 +688,7 @@ impl RootView {
             sidebar_visible: true,
             new_session: None,
             project_dialog: None,
+            herdr_action_menu: None,
             restore_focus: false,
         };
         view.resize_for_window(window);
@@ -2506,6 +2516,89 @@ impl RootView {
         Some(self.herdr_lifecycle_overlay(&confirmation, cx))
     }
 
+    fn herdr_action_menu_overlay(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let menu = self.herdr_action_menu.clone()?;
+        let mut items = div()
+            .id("herdr-action-menu")
+            .absolute()
+            .left(px(menu.left))
+            .top(px(menu.top))
+            .w(px(112.0))
+            .py_1()
+            .rounded_md()
+            .border_1()
+            .border_color(rgb(0x36_3c48))
+            .bg(rgb(0x1b_1f27))
+            .shadow_lg()
+            .on_mouse_down(GpuiMouseButton::Left, |_, _, cx| cx.stop_propagation());
+        for action in menu.actions {
+            items = items.child(Self::herdr_action_menu_item(
+                menu.selection.clone(),
+                action,
+                cx,
+            ));
+        }
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .on_mouse_down(
+                    GpuiMouseButton::Left,
+                    cx.listener(|this, _, _, cx| {
+                        this.herdr_action_menu = None;
+                        cx.notify();
+                    }),
+                )
+                .child(items)
+                .into_any_element(),
+        )
+    }
+
+    fn herdr_action_menu_item(
+        selection: SessionSelection,
+        action: HerdrRowAction,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let (id, label, color) = match action {
+            HerdrRowAction::Stop => ("herdr-action-stop", "Stop", 0xd6_747a),
+            HerdrRowAction::Restart => ("herdr-action-restart", "Restart", 0x87_b9e8),
+            HerdrRowAction::Delete => ("herdr-action-delete", "Delete", 0xd6_747a),
+        };
+        div()
+            .id(id)
+            .mx_1()
+            .h(px(26.0))
+            .px_2()
+            .flex()
+            .items_center()
+            .rounded_sm()
+            .cursor_pointer()
+            .text_sm()
+            .text_color(rgb(color))
+            .hover(|style| style.bg(rgb(0x2a_2f39)))
+            .child(label)
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.herdr_action_menu = None;
+                match action {
+                    HerdrRowAction::Stop => this.request_herdr_lifecycle(
+                        &selection,
+                        workspace::HerdrLifecycleAction::Stop,
+                        cx,
+                    ),
+                    HerdrRowAction::Restart => {
+                        this.restart_herdr_session(&selection, window, cx);
+                    }
+                    HerdrRowAction::Delete => this.request_herdr_lifecycle(
+                        &selection,
+                        workspace::HerdrLifecycleAction::Delete,
+                        cx,
+                    ),
+                }
+                cx.stop_propagation();
+            }))
+            .into_any_element()
+    }
+
     fn synchronize_render_state(&mut self, snapshot: &workspace::WorkspaceSnapshot) {
         self.observed_revision = snapshot.revision();
         if !matches!(snapshot.content(), WorkspaceContent::Terminal { .. }) {
@@ -2862,10 +2955,8 @@ impl RootView {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let active = active_session_selection(content);
-        let can_mutate = host.connection() == HostConnectionState::Ready
-            && host.kwt_available()
-            && host.kwt_diagnostic().is_none()
-            && !host.kwt_mutating();
+        let can_add = host.can_add_kwt_project();
+        let can_remove = host.can_remove_kwt_project();
         let mut tree = div().w_full().flex().flex_col().child({
             let mut header = div()
                 .h(px(SESSION_GROUP_ROW_HEIGHT))
@@ -2887,7 +2978,7 @@ impl RootView {
                         .child(if host.kwt_mutating() { "…" } else { "↻" }),
                 );
             }
-            if can_mutate {
+            if can_add {
                 let host_id = host.id().to_owned();
                 let endpoint = host.endpoint().to_owned();
                 header = header.child(
@@ -2938,7 +3029,7 @@ impl RootView {
                         .truncate()
                         .child(project.name().to_owned()),
                 );
-            if can_mutate {
+            if can_remove {
                 row = row.child(
                     div()
                         .id(("remove-kwt-project", project_index))
@@ -3302,6 +3393,7 @@ impl RootView {
             .into_any_element()
     }
 
+    #[allow(clippy::too_many_lines)] // Declarative row composition keeps controls in visual order.
     fn herdr_session_row(
         host_index: usize,
         index: usize,
@@ -3329,11 +3421,13 @@ impl RootView {
         } else {
             session.access.can_mutate()
         };
+        let row_group = format!("herdr-session-actions-{host_index}-{index}");
         let mut row = div()
             .id((
                 gpui::ElementId::named_usize("herdr-session-host", host_index),
                 index.to_string(),
             ))
+            .group(row_group.clone())
             .mr_1()
             .h(px(SESSION_ROW_HEIGHT))
             .flex()
@@ -3385,9 +3479,16 @@ impl RootView {
         if active {
             row = row.child(Self::tree_detach_action(cx));
         }
-        row = row.children(actions.into_iter().map(|action| {
-            Self::herdr_row_action(host_index, index, selection.clone(), action, cx)
-        }));
+        if !actions.is_empty() {
+            row = row.child(Self::herdr_action_menu_button(
+                host_index,
+                index,
+                selection.clone(),
+                actions,
+                row_group,
+                cx,
+            ));
+        }
         row = if operation_pending {
             row
         } else if running && session.access.can_open() {
@@ -3404,48 +3505,44 @@ impl RootView {
         row.into_any_element()
     }
 
-    fn herdr_row_action(
+    fn herdr_action_menu_button(
         host_index: usize,
         index: usize,
         selection: SessionSelection,
-        action: HerdrRowAction,
+        actions: Vec<HerdrRowAction>,
+        row_group: String,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let (label, color) = match action {
-            HerdrRowAction::Stop => ("Stop", 0xc7_7378),
-            HerdrRowAction::Restart => ("Restart", 0x79_aee3),
-            HerdrRowAction::Delete => ("Delete", 0xc7_7378),
-        };
         div()
             .id((
-                gpui::ElementId::named_usize("herdr-action-host", host_index),
-                format!("{index}-{label}"),
+                gpui::ElementId::named_usize("herdr-menu-host", host_index),
+                index.to_string(),
             ))
             .flex_none()
-            .px_1()
-            .py_1()
+            .size(px(22.0))
+            .flex()
+            .items_center()
+            .justify_center()
             .rounded_sm()
+            .opacity(0.0)
+            .group_hover(row_group, |style| style.opacity(1.0))
+            .cursor_pointer()
             .text_xs()
-            .text_color(rgb(color))
-            .hover(|style| style.bg(rgb(0x25_2a34)))
-            .child(label)
-            .on_click(cx.listener(move |this, _, window, cx| {
-                match action {
-                    HerdrRowAction::Stop => this.request_herdr_lifecycle(
-                        &selection,
-                        workspace::HerdrLifecycleAction::Stop,
-                        cx,
-                    ),
-                    HerdrRowAction::Restart => {
-                        this.restart_herdr_session(&selection, window, cx);
-                    }
-                    HerdrRowAction::Delete => this.request_herdr_lifecycle(
-                        &selection,
-                        workspace::HerdrLifecycleAction::Delete,
-                        cx,
-                    ),
-                }
+            .text_color(rgb(0x9b_a2ae))
+            .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xe1_e5ec)))
+            .child("…")
+            .on_click(cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
+                let position = event.position();
+                let x: f32 = position.x.into();
+                let y: f32 = position.y.into();
+                this.herdr_action_menu = Some(HerdrActionMenu {
+                    selection: selection.clone(),
+                    actions: actions.clone(),
+                    left: (x - 112.0).max(4.0),
+                    top: y + 3.0,
+                });
                 cx.stop_propagation();
+                cx.notify();
             }))
             .into_any_element()
     }
@@ -4241,6 +4338,7 @@ impl Render for RootView {
         let content = self.content_element(&snapshot, cx);
         let creation_overlay = self.new_session_overlay(&snapshot, window, cx);
         let project_overlay = self.project_overlay(window, cx);
+        let herdr_action_menu = self.herdr_action_menu_overlay(cx);
         let kill_overlay = self.pending_session_kill_overlay(window, cx);
         let herdr_lifecycle_overlay = self.pending_herdr_lifecycle_overlay(window, cx);
         let mut root = div()
@@ -4256,6 +4354,7 @@ impl Render for RootView {
             .child(div().flex_1().min_h_0().w_full().child(content))
             .children(creation_overlay)
             .children(project_overlay)
+            .children(herdr_action_menu)
             .children(kill_overlay)
             .children(herdr_lifecycle_overlay);
 
