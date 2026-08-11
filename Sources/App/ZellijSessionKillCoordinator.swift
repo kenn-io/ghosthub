@@ -24,6 +24,7 @@ final class ZellijSessionKillCoordinator {
         let id: UUID
         let key: Key
         let host: CommandHost
+        let connectionCacheKey: SSHConnectionArgumentsCacheKey
     }
 
     struct Event: Equatable, Sendable {
@@ -41,9 +42,18 @@ final class ZellijSessionKillCoordinator {
         eventSubject.eraseToAnyPublisher()
     }
 
-    func begin(key: Key, host: CommandHost) -> Operation? {
+    func begin(
+        key: Key,
+        host: CommandHost,
+        connectionCacheKey: SSHConnectionArgumentsCacheKey
+    ) -> Operation? {
         guard activeOperations[key] == nil else { return nil }
-        let operation = Operation(id: UUID(), key: key, host: host)
+        let operation = Operation(
+            id: UUID(),
+            key: key,
+            host: host,
+            connectionCacheKey: connectionCacheKey
+        )
         activeOperations[key] = operation
         revisions[key, default: 0] &+= 1
         eventSubject.send(Event(operation: operation, phase: .began))

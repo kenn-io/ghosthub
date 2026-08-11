@@ -718,6 +718,7 @@ final class WorkspaceSceneModel: ObservableObject {
         var state: WorkspaceWindowState
         var selection: WorkspaceZellijSessionSelection
         var host: CommandHost
+        var connectionCacheKey: SSHConnectionArgumentsCacheKey?
     }
     private var zellijRestorationRoute: ZellijRestorationRoute?
     var activeBorrowedTmuxSessionIsConnected: Bool {
@@ -1808,7 +1809,8 @@ final class WorkspaceSceneModel: ObservableObject {
                     hostID: hostSummary.id,
                     name: descriptor.sessionName
                 ),
-                host: host
+                host: host,
+                connectionCacheKey: nil
             )
         }
         pendingRestoration = state
@@ -2096,16 +2098,56 @@ final class WorkspaceSceneModel: ObservableObject {
             zellijRestorationRoute = ZellijRestorationRoute(
                 state: expectedState,
                 selection: zellijSelection,
-                host: host
+                host: host,
+                connectionCacheKey: nil
             )
         }
-        guard !zellijSessionKillCoordinator.isPending(killKey) else { return }
-        let killRevision = zellijSessionKillCoordinator.revision(for: killKey)
         let validationID = UUID()
         zellijRestorationValidationID = validationID
         zellijRestorationValidationTask = Task { [weak self] in
             guard let self else { return }
-            let validation = await validatedZellijSession(on: host)
+            let connection = await zellijConnectionSnapshot(on: host)
+            guard !Task.isCancelled,
+                  zellijRestorationValidationID == validationID,
+                  pendingRestoration == expectedState
+            else { return }
+            guard snapshot.host(id: zellijSelection.hostID)
+                .flatMap(CommandHostResolver.resolve) == host,
+                var route = zellijRestorationRoute,
+                route.state == expectedState,
+                route.selection == zellijSelection,
+                route.host == host
+            else {
+                cancelZellijRestorationValidation(
+                    validationID,
+                    expectedState: expectedState
+                )
+                return
+            }
+            if let frozenKey = route.connectionCacheKey {
+                guard frozenKey == connection.cacheKey else {
+                    cancelZellijRestorationValidation(
+                        validationID,
+                        expectedState: expectedState
+                    )
+                    return
+                }
+            } else {
+                route.connectionCacheKey = connection.cacheKey
+                zellijRestorationRoute = route
+            }
+            guard !zellijSessionKillCoordinator.isPending(killKey) else {
+                zellijRestorationValidationTask = nil
+                zellijRestorationValidationID = nil
+                return
+            }
+            let killRevision = zellijSessionKillCoordinator.revision(
+                for: killKey
+            )
+            let validation = await validatedZellijSession(
+                on: host,
+                connection: connection
+            )
             guard !Task.isCancelled,
                   zellijRestorationValidationID == validationID,
                   pendingRestoration == expectedState
@@ -3830,40 +3872,12 @@ final class WorkspaceSceneModel: ObservableObject {
             suppressedZellijKillPresentations.removeValue(
                 forKey: event.operation.id
             )
-            if zellijPresentationIntent?.selection == selection {
-                invalidateZellijPresentationIntent()
+            Task { [weak self] in
+                await self?.reconcileSuccessfulZellijKill(
+                    event.operation,
+                    selection: selection
+                )
             }
-            if let restorationState = pendingRestoration,
-               let restoration = restorationState.zellij,
-               restoration.sessionName == selection.name,
-               let route = zellijRestorationRoute,
-               route.state == restorationState,
-               route.selection.name == selection.name,
-               route.host == event.operation.host {
-                cancelPendingRestoration()
-            }
-            zellijDiscoveryGeneration += 1
-            zellijDiscoveryTask?.cancel()
-            zellijDiscoveryTask = nil
-            zellijFreshHostIDs.remove(selection.hostID)
-            pendingCreatedZellijSessions = pendingCreatedZellijSessions.filter {
-                $0.value != selection
-            }
-            if failedZellijCreationIntent == selection {
-                failedZellijCreationIntent = nil
-            }
-            if activeBorrowedZellijSelection == selection {
-                closeBorrowedZellijSession(selection)
-            }
-            let sessions = zellijSessionsByHost[selection.hostID]
-                ?? snapshot.host(id: selection.hostID)?.zellijSessions
-                ?? []
-            zellijSessionsByHost[selection.hostID] = sessions.filter {
-                $0.name != selection.name
-            }
-            applyRuntimeInventoryOverlayIfNeeded(hostID: selection.hostID)
-            updateWorkspaceInventoryState()
-            scheduleZellijSessionDiscovery()
         case .failed:
             let suppressed = suppressedZellijKillPresentations.removeValue(
                 forKey: event.operation.id
@@ -3911,6 +3925,95 @@ final class WorkspaceSceneModel: ObservableObject {
                 }
                 attemptPendingRestoration()
             }
+        }
+    }
+
+    private func reconcileSuccessfulZellijKill(
+        _ operation: ZellijSessionKillCoordinator.Operation,
+        selection: WorkspaceZellijSessionSelection
+    ) async {
+        guard !isShutDown,
+              let hostSummary = snapshot.host(id: selection.hostID),
+              hostSummary.zellijAvailable,
+              CommandHostResolver.resolve(hostSummary) == operation.host
+        else {
+            resumeZellijRouteAfterIgnoredKill(selection)
+            return
+        }
+        let connection = await zellijConnectionSnapshot(on: operation.host)
+        guard !Task.isCancelled, !isShutDown,
+              let currentHostSummary = snapshot.host(id: selection.hostID),
+              currentHostSummary.zellijAvailable,
+              CommandHostResolver.resolve(currentHostSummary)
+              == operation.host,
+              connection.cacheKey == operation.connectionCacheKey
+        else {
+            resumeZellijRouteAfterIgnoredKill(selection)
+            return
+        }
+        if zellijPresentationIntent?.selection == selection {
+            invalidateZellijPresentationIntent()
+        }
+        if let restorationState = pendingRestoration,
+           let restoration = restorationState.zellij,
+           restoration.sessionName == selection.name,
+           var route = zellijRestorationRoute,
+           route.state == restorationState,
+           route.selection == selection,
+           route.host == operation.host,
+           route.connectionCacheKey == nil
+           || route.connectionCacheKey == operation.connectionCacheKey {
+            route.connectionCacheKey = operation.connectionCacheKey
+            zellijRestorationRoute = route
+            cancelPendingRestoration()
+        }
+        zellijDiscoveryGeneration += 1
+        zellijDiscoveryTask?.cancel()
+        zellijDiscoveryTask = nil
+        zellijFreshHostIDs.remove(selection.hostID)
+        pendingCreatedZellijSessions = pendingCreatedZellijSessions.filter {
+            $0.value != selection
+        }
+        if failedZellijCreationIntent == selection {
+            failedZellijCreationIntent = nil
+        }
+        if activeBorrowedZellijSelection == selection {
+            closeBorrowedZellijSession(selection)
+        }
+        let sessions = zellijSessionsByHost[selection.hostID]
+            ?? snapshot.host(id: selection.hostID)?.zellijSessions
+            ?? []
+        zellijSessionsByHost[selection.hostID] = sessions.filter {
+            $0.name != selection.name
+        }
+        applyRuntimeInventoryOverlayIfNeeded(hostID: selection.hostID)
+        updateWorkspaceInventoryState()
+        scheduleZellijSessionDiscovery()
+    }
+
+    private func resumeZellijRouteAfterIgnoredKill(
+        _ selection: WorkspaceZellijSessionSelection
+    ) {
+        let currentHost = snapshot.host(id: selection.hostID)
+            .flatMap(CommandHostResolver.resolve)
+        if let intent = zellijPresentationIntent,
+           intent.selection == selection,
+           intent.navigationRevision == userNavigationRevision,
+           intent.revision == zellijPresentationRevision,
+           intent.host == currentHost,
+           activeBorrowedTmuxSelection == nil,
+           activeBorrowedHerdrSelection == nil,
+           activeBorrowedZellijSelection == nil {
+            validateAndPresentZellijSession(selection)
+            return
+        }
+        if let restorationState = pendingRestoration,
+           restorationState.zellij?.sessionName == selection.name,
+           let route = zellijRestorationRoute,
+           route.state == restorationState,
+           route.selection == selection,
+           route.host == currentHost {
+            attemptPendingRestoration()
         }
     }
 
@@ -6412,9 +6515,14 @@ final class WorkspaceSceneModel: ObservableObject {
     }
 
     private func validatedZellijSession(
-        on host: CommandHost
+        on host: CommandHost,
+        connection frozenConnection: SSHConnectionArgumentsSnapshot? = nil
     ) async -> ZellijSessionValidation? {
-        let connection = await zellijConnectionSnapshot(on: host)
+        let connection = if let frozenConnection {
+            frozenConnection
+        } else {
+            await zellijConnectionSnapshot(on: host)
+        }
         let result = await zellijSessionValidationDiscovery(
             host,
             connection.arguments
@@ -6561,7 +6669,8 @@ final class WorkspaceSceneModel: ObservableObject {
         )
         guard let operation = zellijSessionKillCoordinator.begin(
             key: key,
-            host: authority.host
+            host: authority.host,
+            connectionCacheKey: authority.connection.cacheKey
         )
         else {
             throw ZellijSessionPresentationError.operationPending(
@@ -6602,9 +6711,6 @@ final class WorkspaceSceneModel: ObservableObject {
         try killResult.get()
         outcome = .succeeded
         try requireActiveScene(activityGeneration)
-        if activeBorrowedZellijSelection == selection {
-            closeBorrowedZellijSession(selection)
-        }
     }
 
     func cancelPreparedZellijSessionKill(

@@ -2009,7 +2009,10 @@ struct WorkspaceZellijTests {
                 hostID: host.id,
                 sessionName: selection.name
             ),
-            host: confirmedHost
+            host: confirmedHost,
+            connectionCacheKey: SSHConnectionArgumentsSnapshot(
+                arguments: []
+            ).cacheKey
         ))
 
         model.openBorrowedZellijSession(selection)
@@ -2087,8 +2090,10 @@ struct WorkspaceZellijTests {
         )
         try await killingModel.killZellijSession(request)
 
-        #expect(inventoryModel.snapshot.host(id: host.id)?
-            .zellijSessions.isEmpty == true)
+        await waitUntilMainActor {
+            inventoryModel.snapshot.host(id: host.id)?
+                .zellijSessions.isEmpty == true
+        }
 
         releaseFirstProbe.signal()
         await waitUntilMainActor {
@@ -2877,6 +2882,10 @@ struct WorkspaceZellijTests {
         #expect(kills.withLock { $0.count } == 1)
         #expect(kills.withLock { $0.first?.0 } == "api")
         #expect(kills.withLock { $0.first?.1 } == .local)
+        await waitUntilMainActor {
+            model.snapshot.host(id: environment.host.id)?
+                .zellijSessions.isEmpty == true
+        }
         #expect(model.snapshot.host(id: environment.host.id)?
             .zellijSessions.isEmpty == true)
         await model.shutdown()
