@@ -50,6 +50,10 @@ final class ShortcutMonitor {
             let action = shortcuts().action(for: binding)
         else { return event }
 
+        // The SwiftUI View menu owns this key equivalent. Intercepting it here
+        // also invokes the menu command, toggling the sidebar twice.
+        guard action != .toggleSidebar else { return event }
+
         if event.isARepeat, !action.definition.allowsKeyRepeat {
             return handledKeyCodes.contains(event.keyCode) ? nil : event
         }

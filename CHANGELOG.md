@@ -5,6 +5,13 @@ test, and documentation-only changes are omitted.
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-08-11
+
+### Fixed
+
+- **Command-B** now toggles the sidebar exactly once instead of briefly
+  animating it closed and immediately reopening it.
+
 ## [0.8.0] - 2026-08-11
 
 ### Added
