@@ -506,6 +506,11 @@ a host's system kwt. Versioned directories retain older pinned helpers, so an
 older Ghosthub build can select and restore its own revision; reinstalling one
 revision also retains `kwt.previous`.
 
+In the Rust port's WSL host, a managed-helper path cache is never execution
+authority. The host revalidates the pinned digest and revision before every
+helper operation and atomically repairs a missing or replaced helper before it
+runs the requested command.
+
 Native Windows installation uses a separate PowerShell boundary. The explicit
 **Install Bundled kwt** action probes the remote process architecture, uploads
 the matching PE helper over OpenSSH, verifies its SHA-256 and exact pinned

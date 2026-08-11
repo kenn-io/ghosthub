@@ -614,8 +614,11 @@ even before it exists and accepts the helper only when its ELF machine matches
 the selected Linux architecture and its bytes contain the pinned revision;
 release builds fail if the helper is absent or invalid.
 The host activates it at the POSIX managed-helper path with an atomic rename
-and verifies both digest and reported revision before use. Developer builds
-may omit the bundle, in which case KWT inventory alone is unavailable.
+and verifies both digest and reported revision before use. A process-local
+cache remembers only the managed path: every operation revalidates the helper
+before execution, and a missing or replaced helper is repaired atomically
+before the requested KWT command runs. Developer builds may omit the bundle,
+in which case KWT inventory alone is unavailable.
 
 KWT project and worktree reads are a separate cancellable host operation from
 tmux and Herdr inventory. The frequent session cadence never installs the KWT

@@ -845,15 +845,22 @@ impl<R: CommandRunner> WslHost<R> {
             .kwt_activation
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(path) = self
+        let cached = self
             .verified_kwt
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
             .filter(|verified| verified.endpoint == *endpoint && verified.runtime == *runtime)
-            .map(|verified| verified.path.clone())
-        {
-            return Ok(path);
+            .cloned();
+        if let Some(verified) = cached {
+            if self.kwt_helper_matches(endpoint, &verified.path, bundle, cancellation)? {
+                self.require_runtime(endpoint, runtime, cancellation)?;
+                return Ok(verified.path);
+            }
+            *self
+                .verified_kwt
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         }
 
         let home = self.resolve_home(endpoint, cancellation)?;
@@ -3648,15 +3655,25 @@ mod tests {
     use std::cell::Cell;
     use std::ffi::{OsStr, OsString};
     use std::io;
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, atomic::AtomicBool};
 
     use super::*;
 
     const TEST_RUNTIME_OUTPUT: &[u8] = b"Linux 6.6.0-WSL2\n12345678-1234-1234-1234-123456789abc\n1 (init) S 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 42\n";
 
-    #[derive(Clone, Default)]
+    #[derive(Clone)]
     struct KwtMutationRunner {
         calls: Arc<Mutex<Vec<Vec<String>>>>,
+        helper_matches: Arc<AtomicBool>,
+    }
+
+    impl Default for KwtMutationRunner {
+        fn default() -> Self {
+            Self {
+                calls: Arc::default(),
+                helper_matches: Arc::new(AtomicBool::new(true)),
+            }
+        }
     }
 
     impl CommandRunner for KwtMutationRunner {
@@ -3674,6 +3691,20 @@ mod tests {
             self.calls.lock().expect("calls").push(args.clone());
             let stdout = if args.iter().any(|argument| argument == "/usr/bin/cat") {
                 TEST_RUNTIME_OUTPUT.to_vec()
+            } else if args.iter().any(|argument| argument == "/usr/bin/sha256sum") {
+                let digest = if self.helper_matches.load(Ordering::Acquire) {
+                    "b".repeat(64)
+                } else {
+                    "c".repeat(64)
+                };
+                format!("{digest}  helper\n").into_bytes()
+            } else if args.last().is_some_and(|argument| argument == "version") {
+                format!("kwt version {}\n", "a".repeat(40)).into_bytes()
+            } else if args
+                .last()
+                .is_some_and(|argument| argument == "/usr/bin/env")
+            {
+                b"HOME=/home/test\n".to_vec()
             } else if args.iter().any(|argument| argument == "/usr/bin/wslpath") {
                 b"/mnt/c/Users/test/code/widget\n".to_vec()
             } else if args.windows(2).any(|pair| pair == ["projects", "add"]) {
@@ -3682,6 +3713,17 @@ mod tests {
                 br#"{"status":"unregistered","project":{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null}}"#.to_vec()
             } else if args.iter().any(|argument| argument == "projects") {
                 br#"[{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","last_touched":null}]"#.to_vec()
+            } else if args.iter().any(|argument| {
+                matches!(
+                    argument.as_str(),
+                    "/usr/bin/install"
+                        | "/usr/bin/dd"
+                        | "/usr/bin/chmod"
+                        | "/usr/bin/mv"
+                        | "/usr/bin/rm"
+                )
+            }) {
+                Vec::new()
             } else {
                 return Err(io::Error::other(format!(
                     "unexpected KWT mutation command: {args:?}"
@@ -3692,6 +3734,18 @@ mod tests {
                 stdout,
                 stderr: Vec::new(),
             })
+        }
+
+        fn run_with_input(
+            &self,
+            program: &OsStr,
+            args: &[OsString],
+            _input: &[u8],
+            cancellation: &CancellationToken,
+            timeout: Duration,
+        ) -> io::Result<CommandOutput> {
+            self.helper_matches.store(true, Ordering::Release);
+            self.run(program, args, cancellation, timeout)
         }
     }
 
@@ -3800,6 +3854,35 @@ mod tests {
                     .iter()
                     .any(|argument| argument == "TMUX_TMPDIR=/run/user/1000/ghosthub")
         }));
+    }
+
+    #[test]
+    fn cached_kwt_helper_is_revalidated_and_repaired_before_execution() {
+        let (host, runner, endpoint, runtime) = kwt_mutation_host();
+        runner.helper_matches.store(false, Ordering::Release);
+
+        host.register_kwt_project(
+            &endpoint,
+            &runtime,
+            "/code/widget",
+            &CancellationToken::new(),
+        )
+        .expect("replace the stale helper before project execution");
+
+        let calls = runner.calls.lock().expect("calls");
+        let digest_check = calls
+            .iter()
+            .position(|args| args.iter().any(|argument| argument == "/usr/bin/sha256sum"))
+            .expect("cached helper digest is checked");
+        let upload = calls
+            .iter()
+            .position(|args| args.iter().any(|argument| argument == "/usr/bin/dd"))
+            .expect("stale helper is reinstalled");
+        let project_command = calls
+            .iter()
+            .position(|args| args.windows(2).any(|pair| pair == ["projects", "add"]))
+            .expect("project command executes after repair");
+        assert!(digest_check < upload && upload < project_command);
     }
 
     #[test]

@@ -330,9 +330,15 @@ enum NewSessionKind {
 struct SessionActionMenu {
     selection: SessionSelection,
     actions: Vec<SessionRowAction>,
-    left: f32,
-    top: f32,
+    anchor_x: f32,
+    anchor_y: f32,
 }
+
+const SESSION_ACTION_MENU_WIDTH: f32 = 112.0;
+const SESSION_ACTION_MENU_ITEM_HEIGHT: f32 = 26.0;
+const SESSION_ACTION_MENU_VERTICAL_CHROME: f32 = 8.0;
+const SESSION_ACTION_MENU_MARGIN: f32 = 4.0;
+const SESSION_ACTION_MENU_OFFSET: f32 = 3.0;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum ProjectDialog {
@@ -2591,14 +2597,26 @@ impl RootView {
         Some(self.herdr_lifecycle_overlay(&confirmation, cx))
     }
 
-    fn session_action_menu_overlay(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+    fn session_action_menu_overlay(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
         let menu = self.session_action_menu.clone()?;
+        let bounds = window.bounds();
+        let (left, top) = session_action_menu_position(
+            menu.anchor_x,
+            menu.anchor_y,
+            f32::from(bounds.size.width),
+            f32::from(bounds.size.height),
+            menu.actions.len(),
+        );
         let mut items = div()
             .id("session-action-menu")
             .absolute()
-            .left(px(menu.left))
-            .top(px(menu.top))
-            .w(px(112.0))
+            .left(px(left))
+            .top(px(top))
+            .w(px(SESSION_ACTION_MENU_WIDTH))
             .py_1()
             .rounded_md()
             .border_1()
@@ -3559,8 +3577,8 @@ impl RootView {
                 this.session_action_menu = Some(SessionActionMenu {
                     selection: selection.clone(),
                     actions: actions.clone(),
-                    left: (x - 112.0).max(4.0),
-                    top: y + 3.0,
+                    anchor_x: x,
+                    anchor_y: y,
                 });
                 cx.stop_propagation();
                 cx.notify();
@@ -4308,7 +4326,7 @@ impl Render for RootView {
         let content = self.content_element(&snapshot, cx);
         let creation_overlay = self.new_session_overlay(&snapshot, window, cx);
         let project_overlay = self.project_overlay(window, cx);
-        let session_action_menu = self.session_action_menu_overlay(cx);
+        let session_action_menu = self.session_action_menu_overlay(window, cx);
         let kill_overlay = self.pending_session_kill_overlay(window, cx);
         let herdr_lifecycle_overlay = self.pending_herdr_lifecycle_overlay(window, cx);
         let mut root = div()
@@ -4404,6 +4422,31 @@ impl Render for RootView {
         }
         root
     }
+}
+
+fn session_action_menu_position(
+    anchor_x: f32,
+    anchor_y: f32,
+    viewport_width: f32,
+    viewport_height: f32,
+    action_count: usize,
+) -> (f32, f32) {
+    let action_count = u16::try_from(action_count).unwrap_or(u16::MAX);
+    let menu_height = f32::from(action_count) * SESSION_ACTION_MENU_ITEM_HEIGHT
+        + SESSION_ACTION_MENU_VERTICAL_CHROME;
+    let max_left = (viewport_width - SESSION_ACTION_MENU_WIDTH - SESSION_ACTION_MENU_MARGIN)
+        .max(SESSION_ACTION_MENU_MARGIN);
+    let left = (anchor_x - SESSION_ACTION_MENU_WIDTH).clamp(SESSION_ACTION_MENU_MARGIN, max_left);
+    let max_top = (viewport_height - menu_height - SESSION_ACTION_MENU_MARGIN)
+        .max(SESSION_ACTION_MENU_MARGIN);
+    let below = anchor_y + SESSION_ACTION_MENU_OFFSET;
+    let preferred_top = if below + menu_height > viewport_height - SESSION_ACTION_MENU_MARGIN {
+        anchor_y - menu_height - SESSION_ACTION_MENU_OFFSET
+    } else {
+        below
+    };
+    let top = preferred_top.clamp(SESSION_ACTION_MENU_MARGIN, max_top);
+    (left, top)
 }
 
 fn centered(text: impl Into<String>) -> gpui::AnyElement {
@@ -4969,10 +5012,11 @@ mod tests {
         coalesce_last_wheel, herdr_row_actions, herdr_session_menu_actions, host_tree_status,
         input_queue_has_capacity, is_toggle_sidebar_shortcut, kill_confirmation_description,
         kill_confirmation_title, named_key, new_session_validation, normalize_cell_width,
-        queued_input_matches_presentation, retained_key_event_with, session_group_visibility,
-        terminal_cell_at_with_offset, terminal_key_input, terminal_key_input_with_canonical,
-        terminal_line_height, terminal_wheel_steps, tmux_row_actions, transitioned_presentation,
-        tree_herdr_sessions, tree_sessions, workspace_window_title,
+        queued_input_matches_presentation, retained_key_event_with, session_action_menu_position,
+        session_group_visibility, terminal_cell_at_with_offset, terminal_key_input,
+        terminal_key_input_with_canonical, terminal_line_height, terminal_wheel_steps,
+        tmux_row_actions, transitioned_presentation, tree_herdr_sessions, tree_sessions,
+        workspace_window_title,
     };
     use model::DiagnosticKind;
     use std::sync::Arc;
@@ -5364,6 +5408,19 @@ mod tests {
             tmux_row_actions(false, true),
             vec![SessionRowAction::KillTmux]
         );
+    }
+
+    #[test]
+    fn session_action_menus_open_upward_and_stay_inside_the_viewport() {
+        let (left, top) = session_action_menu_position(325.0, 695.0, 1_100.0, 720.0, 4);
+
+        assert!((left - 213.0).abs() <= f32::EPSILON);
+        assert!((top - 580.0).abs() <= f32::EPSILON);
+        assert!(top + 112.0 <= 716.0);
+
+        let (left, top) = session_action_menu_position(2.0, 2.0, 100.0, 80.0, 4);
+        assert!((left - 4.0).abs() <= f32::EPSILON);
+        assert!((top - 4.0).abs() <= f32::EPSILON);
     }
 
     #[test]
