@@ -46,6 +46,14 @@ pub enum TerminalEvent {
     Error(String),
 }
 
+#[derive(Debug, Eq, PartialEq)]
+pub enum TerminalStartup {
+    Pending,
+    Confirmed,
+    Exited { code: u32, output_tail: String },
+    Failed(String),
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum WorkerErrorKind {
     Other,
@@ -587,6 +595,22 @@ impl TerminalWorker {
         self.confirmed_live.load(Ordering::Acquire)
     }
 
+    /// Observe whether a newly launched ordinary client established its
+    /// terminal presentation without consuming unrelated semantic events.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the worker event channel disconnects before the
+    /// client is confirmed or reports its exit.
+    pub fn startup_status(&self) -> Result<TerminalStartup, WorkerError> {
+        observe_startup(
+            &self.events,
+            &self.deferred_events,
+            self.confirmed_live.load(Ordering::Acquire),
+            self.clipboard_visibility.load(Ordering::Acquire),
+        )
+    }
+
     /// Enable or suppress clipboard writes emitted by this presentation.
     ///
     /// Disabling also discards writes already queued for the UI while retaining
@@ -737,6 +761,39 @@ impl TerminalWorker {
             {
                 return Ok(Some(event));
             }
+        }
+    }
+}
+
+fn observe_startup(
+    events: &Receiver<TerminalEvent>,
+    deferred_events: &Mutex<VecDeque<TerminalEvent>>,
+    confirmed_live: bool,
+    clipboard_visibility: u64,
+) -> Result<TerminalStartup, WorkerError> {
+    if confirmed_live {
+        return Ok(TerminalStartup::Confirmed);
+    }
+    let mut deferred = deferred_events
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    loop {
+        let event = match events.try_recv() {
+            Ok(event) => event,
+            Err(TryRecvError::Empty) => return Ok(TerminalStartup::Pending),
+            Err(error @ TryRecvError::Disconnected) => {
+                return Err(WorkerError::new("observe terminal startup", error));
+            }
+        };
+        if !clipboard_event_is_visible(&event, clipboard_visibility) {
+            continue;
+        }
+        match event {
+            TerminalEvent::Exited { code, output_tail } => {
+                return Ok(TerminalStartup::Exited { code, output_tail });
+            }
+            TerminalEvent::Error(error) => return Ok(TerminalStartup::Failed(error)),
+            event => deferred.push_back(event),
         }
     }
 }
@@ -1596,6 +1653,57 @@ mod tests {
         ));
         assert!(deferred.is_empty());
         assert!(receiver.is_empty());
+    }
+
+    #[test]
+    fn startup_observation_preserves_semantic_events_and_reports_early_exit() {
+        let (sender, receiver) = bounded(4);
+        sender
+            .send(TerminalEvent::ClipboardWrite {
+                write: ClipboardWrite {
+                    target: ClipboardTarget::Clipboard,
+                    text: "preserved".to_owned(),
+                },
+                visibility: 1,
+            })
+            .expect("queue semantic event");
+        sender
+            .send(TerminalEvent::Exited {
+                code: 7,
+                output_tail: "guard rejected".to_owned(),
+            })
+            .expect("queue early exit");
+        let deferred = Mutex::new(VecDeque::new());
+
+        let status =
+            observe_startup(&receiver, &deferred, false, 1).expect("startup observation succeeds");
+
+        assert_eq!(
+            status,
+            TerminalStartup::Exited {
+                code: 7,
+                output_tail: "guard rejected".to_owned(),
+            }
+        );
+        assert!(matches!(
+            deferred.lock().expect("deferred events").pop_front(),
+            Some(TerminalEvent::ClipboardWrite { .. })
+        ));
+    }
+
+    #[test]
+    fn startup_observation_requires_terminal_confirmation() {
+        let (_sender, receiver) = bounded(1);
+        let deferred = Mutex::new(VecDeque::new());
+
+        assert_eq!(
+            observe_startup(&receiver, &deferred, false, 1).expect("pending observation succeeds"),
+            TerminalStartup::Pending
+        );
+        assert_eq!(
+            observe_startup(&receiver, &deferred, true, 1).expect("confirmed observation succeeds"),
+            TerminalStartup::Confirmed
+        );
     }
 
     #[test]

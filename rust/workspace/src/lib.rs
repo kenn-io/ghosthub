@@ -22,7 +22,7 @@ pub use session::{
 use surface::{GridSize, PixelSize, Rgb, SurfaceStore};
 use terminal::{
     ClipboardPolicy, ClipboardReadRequest as TerminalClipboardRead, ClipboardTarget, DefaultColors,
-    TerminalEvent, TerminalWorker,
+    TerminalEvent, TerminalStartup, TerminalWorker,
 };
 
 const REDUCED_COLOR_NOTICE: &str =
@@ -9789,6 +9789,16 @@ fn launch_fresh_worktree(
         default_colors(&inner.appearance),
     )
     .map_err(|error| AttachFreshError::Host(WorkspaceError::new(error.to_string())))?;
+    if let Err(error) =
+        wait_for_worktree_client_startup(cancellation, &HERDR_STARTUP_BACKOFF, || {
+            worker
+                .startup_status()
+                .map_err(|error| WorkspaceError::new(error.to_string()))
+        })
+    {
+        drop(worker);
+        return Err(kwt_attachment_failure(fresh, error));
+    }
     let discovered = poll_session_startup("tmux", cancellation, &HERDR_STARTUP_BACKOFF, || {
         let snapshot = request
             .host
@@ -9808,11 +9818,57 @@ fn launch_fresh_worktree(
     .map_err(AttachFreshError::Host)?;
     let Some(discovered) = discovered else {
         drop(worker);
-        return Err(AttachFreshError::Host(WorkspaceError::new(
-            "KWT opened the worktree, but its tmux session did not appear in inventory",
-        )));
+        return Err(kwt_attachment_failure(
+            fresh,
+            "KWT attached its client, but the worktree session did not appear in inventory",
+        ));
     };
     Ok((worker, discovered, plan.target_name().to_owned(), geometry))
+}
+
+fn wait_for_worktree_client_startup(
+    cancellation: &CancellationToken,
+    backoff: &[Duration],
+    mut observe: impl FnMut() -> Result<TerminalStartup, WorkspaceError>,
+) -> Result<(), WorkspaceError> {
+    for delay in backoff {
+        match observe()? {
+            TerminalStartup::Confirmed => return Ok(()),
+            TerminalStartup::Exited { code, output_tail } => {
+                return Err(WorkspaceError::new(format!(
+                    "KWT could not open the worktree: {}",
+                    classify_kwt_client_exit(code, &output_tail)
+                )));
+            }
+            TerminalStartup::Failed(error) => {
+                return Err(WorkspaceError::new(format!(
+                    "KWT could not open the worktree: {error}"
+                )));
+            }
+            TerminalStartup::Pending => {}
+        }
+        if cancellation.wait_cancelled(*delay) {
+            return Err(WorkspaceError::new("KWT worktree startup was cancelled"));
+        }
+    }
+    match observe()? {
+        TerminalStartup::Confirmed => Ok(()),
+        TerminalStartup::Exited { code, output_tail } => Err(WorkspaceError::new(format!(
+            "KWT could not open the worktree: {}",
+            classify_kwt_client_exit(code, &output_tail)
+        ))),
+        TerminalStartup::Failed(error) => Err(WorkspaceError::new(format!(
+            "KWT could not open the worktree: {error}"
+        ))),
+        TerminalStartup::Pending => Err(WorkspaceError::new(
+            "KWT worktree client did not establish an attached terminal",
+        )),
+    }
+}
+
+fn classify_kwt_client_exit(code: u32, output_tail: &str) -> String {
+    host::kwt_command_failure_message(output_tail.as_bytes())
+        .unwrap_or_else(|| format!("KWT client exited with status {code}"))
 }
 
 fn fresh_herdr_session(
@@ -10752,6 +10808,47 @@ mod tests {
         assert_eq!(error.to_string(), "KWT inventory failed");
         assert_eq!(preserved.endpoint(), snapshot.endpoint());
         assert_eq!(preserved.runtime(), snapshot.runtime());
+    }
+
+    #[test]
+    fn worktree_startup_rejects_an_early_guard_failure_before_inventory() {
+        let cancellation = CancellationToken::new();
+        let mut observations = VecDeque::from([
+            TerminalStartup::Pending,
+            TerminalStartup::Exited {
+                code: 1,
+                output_tail: r#"{"error":{"code":"registration_changed","message":"the worktree changed","retryable":true}}"#.to_owned(),
+            },
+        ]);
+
+        let error = wait_for_worktree_client_startup(
+            &cancellation,
+            &[Duration::ZERO, Duration::ZERO],
+            || {
+                Ok(observations
+                    .pop_front()
+                    .expect("one observation per startup attempt"))
+            },
+        )
+        .expect_err("guard rejection must prevent session publication");
+
+        assert!(error.to_string().contains("registration_changed"));
+        assert!(observations.is_empty());
+    }
+
+    #[test]
+    fn worktree_startup_never_accepts_inventory_without_client_confirmation() {
+        let cancellation = CancellationToken::new();
+        let mut observations = 0;
+
+        let error = wait_for_worktree_client_startup(&cancellation, &[Duration::ZERO; 3], || {
+            observations += 1;
+            Ok(TerminalStartup::Pending)
+        })
+        .expect_err("a same-named session cannot prove client attachment");
+
+        assert_eq!(observations, 4);
+        assert!(error.to_string().contains("did not establish"));
     }
     use std::collections::VecDeque;
     use std::sync::{Barrier, atomic::AtomicUsize, mpsc};

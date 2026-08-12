@@ -186,6 +186,14 @@ pub(crate) fn parse_command_failure(output: &[u8]) -> Option<KwtCommandFailure> 
     })
 }
 
+/// Decode a machine-readable KWT command failure for presentation by an
+/// owning workflow layer.
+#[must_use]
+pub fn kwt_command_failure_message(output: &[u8]) -> Option<String> {
+    let failure = parse_command_failure(output)?;
+    Some(format!("{} ({})", failure.message(), failure.code()))
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct KwtWorktree {
