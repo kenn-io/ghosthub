@@ -267,7 +267,8 @@ Commit: `Capture immutable terminal preview frames`
 Extend the smoke suite to prove:
 
 - setting parked state while the surface is first responder resigns it;
-- `acceptsFirstResponder` is false and next/previous key-view links are nil while parked;
+- `acceptsFirstResponder` and `canBecomeKeyView` are false while parked, without
+  mutating next/previous key-view links;
 - parking sets `suppressAutoFocus` before `viewDidMoveToWindow` can run;
 - the container's `hitTest(_:)` returns nil and it exposes no accessibility children;
 - parking into a visible covered host preserves `frame.size`, `surfaceSize`, and grid dimensions;
@@ -288,7 +289,12 @@ Add `public private(set) var isParkedForPreview` and one transition method:
 public func setParkedForPreview(_ parked: Bool)
 ```
 
-When entering parked state, set `suppressAutoFocus = true`, resign any AppKit and libghostty focus, clear key-view links, and make `acceptsFirstResponder` return false. Guard imperative focus and primary mouse paths against parked state as a second line of defense. Leaving parked state restores eligibility but does not request focus; the normal tmux mount owns that request.
+When entering parked state, set `suppressAutoFocus = true`, resign any AppKit
+and libghostty focus, and make `acceptsFirstResponder` and `canBecomeKeyView`
+return false. Do not mutate next/previous key-view links. Guard imperative focus
+and primary mouse paths against parked state as a second line of defense.
+Leaving parked state restores eligibility through those reversible overrides but
+does not request focus; the normal tmux mount owns that request.
 
 - [ ] **Step 4: Implement `LivePreviewParkingHost`**
 
@@ -346,7 +352,12 @@ Inject a budget, clock, snapshot closure, 500ms Live clock, 250ms activation del
 - capture failure preserves the prior frame;
 - sidebar hiding releases only the coordinator's scene requests;
 - app deactivation releases all requests immediately;
-- app activation waits 250ms and revalidates the key-window predicate before reacquiring.
+- app activation waits 250ms and revalidates the activation generation,
+  current app-active state, and key-window predicate before reacquiring;
+- activate followed by resign before the delay completes never reacquires a
+  slot or parks a surface;
+- suspended snapshot completions cannot publish after Off, removal,
+  replacement, or reconnect invalidates their capture generation.
 
 - [ ] **Step 2: Run focused tests and confirm failure**
 
@@ -376,6 +387,14 @@ final class TmuxSessionPreviewCoordinator: ObservableObject {
 ```
 
 `Presentation` supplies the current surface, connection state, generation, and verified identity through closures so the coordinator does not create attachments. The coordinator subscribes to `LivePreviewBudget.$granted`, owns one coalescing Live task per scene, and publishes immutable `NSImage` view state.
+
+Every capture receives a coordinator generation token. After any suspension,
+the completion revalidates that token together with mode, presentation
+generation, current handle, and verified identity before publishing. Off,
+removal, replacement, and reconnect advance the generation and cancel pending
+capture work. Activation-delay tasks use the same pattern: resigning active
+cancels the task and advances an activation generation, and delayed
+reacquisition also requires the application to still be active.
 
 - [ ] **Step 4: Implement parking and click handoff order**
 
@@ -424,7 +443,11 @@ Using the existing scene-model harness, cover:
 - a non-nil worktree generation replacement clears old pixels even when endpoint key is reused;
 - transport reconnect releases the stale surface and budget slot while quarantining the frame;
 - equal verified `TmuxSessionIdentity` restores the frame;
-- nil or changed server PID/session ID/creation time clears it.
+- nil or changed server PID/session ID/creation time clears it;
+- an initially connected protected-socket or newly created session with no
+  discovery identity reads and stores its identity before its first capture;
+- a suspended initial identity read is discarded after handle, endpoint, or
+  generation replacement.
 
 - [ ] **Step 2: Run focused tests and confirm failures**
 
@@ -434,7 +457,15 @@ Expected: the new lifecycle assertions fail because retained presentations do no
 
 - [ ] **Step 3: Make presentation identity explicit**
 
-Move `TmuxPresentationKey` to file scope if necessary for coordinator use, preserving exactly `hostID`, `name`, and `socketName`. Store the current verified `TmuxSessionIdentity?` on `RetainedTmuxPresentation`; seed it from `discoveredTmuxSessionIdentity` on initial attachment.
+Move `TmuxPresentationKey` to file scope if necessary for coordinator use,
+preserving exactly `hostID`, `name`, and `socketName`. Store the current verified
+`TmuxSessionIdentity?` on `RetainedTmuxPresentation`; seed it from
+`discoveredTmuxSessionIdentity` on initial attachment when available. When an
+ordinary attachment first reports connected without a verified identity,
+including protected-socket and newly created sessions, use the existing
+injected `tmuxSessionIdentityReader` to read it before enabling capture.
+Revalidate presentation endpoint, handle, connection state, and generation
+after the asynchronous read before storing the identity.
 
 For reconnect, clear the parked surface immediately and quarantine the frame. After connection recovery reports connected, use the existing injected `tmuxSessionIdentityReader` to verify the exact identity. Reuse the frame only on equality; clear it on missing/changed identity. Pass the verified identity into any relaunched attachment that supports the existing identity fence.
 

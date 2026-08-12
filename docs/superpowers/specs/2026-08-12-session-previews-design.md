@@ -181,7 +181,8 @@ an inactive parked preview performs this ordered handoff:
    its live-preview slot;
 4. activate the retained presentation;
 5. let the existing `BorrowedTmuxSessionView` path mount the surface, clear
-   `isParkedForPreview`, restore key-view eligibility, reset
+   `isParkedForPreview`, restore key-view eligibility without rebuilding the
+   window's key-view links, reset
    `suppressAutoFocus` to false, and request keyboard focus.
 
 At no point does the surface have two parents.
@@ -197,9 +198,11 @@ only an immutable image.
 Parking obeys these invariants:
 
 - set an explicit `isParkedForPreview` state before attachment; while set,
-  `TerminalSurfaceView.acceptsFirstResponder` returns false, the view has no
-  next/previous key-view links, and any existing first-responder/focused state
-  is resigned before the surface enters the parking host;
+  `TerminalSurfaceView.acceptsFirstResponder` and `canBecomeKeyView` return
+  false, and any existing first-responder/focused state is resigned before the
+  surface enters the parking host. Parking does not mutate next/previous
+  key-view links, so leaving parked state restores traversal eligibility
+  without reconstructing the window's key-view topology;
 - set `suppressAutoFocus = true` before attaching the surface because
   `viewDidMoveToWindow` otherwise requests first responder in a key window;
 - bypass `BorrowedTmuxSessionView` and its focus-requesting `onAppear` path;
