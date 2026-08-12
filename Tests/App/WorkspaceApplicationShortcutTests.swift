@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import GhosthubPersistence
 import GhosthubTerminalSupport
@@ -225,7 +226,7 @@ struct WorkspaceApplicationShortcutTests {
         await model.shutdown()
     }
 
-    @Test("menu-owned shortcuts read sheet eligibility at dispatch time")
+    @Test("menu-owned shortcuts read attached sheet eligibility at dispatch time")
     func menuOwnedShortcutsUseLiveSheetEligibility() async throws {
         let environment = try setupHostEnvironment()
         let model = try makeModel(
@@ -234,7 +235,21 @@ struct WorkspaceApplicationShortcutTests {
             snapshot: environment.snapshot
         )
         model.isFocusedWindow = true
-        model.isSettingsPresented = true
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        let sheet = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        model.workspaceWindow = window
+        window.beginSheet(sheet) { _ in }
+        #expect(window.attachedSheet === sheet)
 
         #expect(!model.performApplicationShortcut(.toggleSidebar))
         #expect(!model.performApplicationShortcut(
@@ -244,7 +259,8 @@ struct WorkspaceApplicationShortcutTests {
         #expect(!model.performApplicationShortcut(.commandPalette))
         #expect(!model.isCommandPalettePresented)
 
-        model.isSettingsPresented = false
+        window.endSheet(sheet)
+        #expect(window.attachedSheet == nil)
 
         #expect(model.performApplicationShortcut(.toggleSidebar))
         #expect(model.performApplicationShortcut(.commandPalette))

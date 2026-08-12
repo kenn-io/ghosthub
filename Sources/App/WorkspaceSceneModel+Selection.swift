@@ -127,9 +127,7 @@ extension WorkspaceSceneModel {
     }
 
     private var hasAttachedApplicationSheet: Bool {
-        isSettingsPresented
-            || isCommandPalettePresented
-            || isLogViewerPresented
+        workspaceWindow?.attachedSheet != nil
     }
 
     private var activeNavigationTarget: WorkspaceNavigationTarget {
