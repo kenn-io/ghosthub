@@ -607,6 +607,9 @@ session model and die with the app process.
 - Keep `TERM_PROGRAM=ghosthub`.
 - Do not leak launcher-terminal `EDITOR` or `VISUAL` into embedded shells.
 - Keep Ghosthub terminal config at `~/.config/ghosthub/ghostty.conf`.
+- Keep a modest client-local minimum text contrast so inherited ANSI colors
+  remain legible on light and dark backgrounds without rewriting shared tmux
+  styles. Preserve an explicit user-configured value.
 - Keep the generated base config independent of tmux themes. Built-in Tmux
   Theme colors or libghostty's effective Follow ghostty.conf colors are applied
   at session creation, through the explicit shared-session override, or by the

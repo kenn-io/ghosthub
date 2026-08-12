@@ -31,6 +31,7 @@ struct LibghosttyConfigPipelineTests {
             "term = xterm-256color",
             "cursor-style = block",
             "copy-on-select = clipboard",
+            "minimum-contrast = 3",
             "macos-option-as-alt = true",
             "shell-integration = detect",
         ], omits: [
@@ -183,6 +184,7 @@ struct LibghosttyConfigPipelineTests {
         expectConfig(contents, contains: [
             "scrollback-limit = 50000000",
             "term = xterm-256color",
+            "minimum-contrast = 3",
             "macos-option-as-alt = true",
             "shell-integration = detect",
         ], omits: [

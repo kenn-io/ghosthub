@@ -181,6 +181,7 @@ public struct LibghosttyConfigPipeline {
     scrollback-limit = 50000000
     term = xterm-256color
     cursor-style = block
+    minimum-contrast = 3
     mouse-hide-while-typing = true
     copy-on-select = clipboard
     macos-option-as-alt = true
@@ -252,6 +253,7 @@ public struct LibghosttyConfigPipeline {
         let defaults: [(key: String, value: String)] = [
             ("scrollback-limit", "50000000"),
             ("term", "xterm-256color"),
+            ("minimum-contrast", "3"),
             ("macos-option-as-alt", "true"),
             ("shell-integration", "detect"),
         ]
